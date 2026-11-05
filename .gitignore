@@ -1,0 +1,45 @@
+/nafaz-arb
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test artifacts and coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Local configuration and secrets
+config.json
+.env
+.env.*
+*.pem
+*.key
+
+# Runtime data and logs
+/data/*
+!/data/.gitkeep
+*.log
+logs/
+
+# Knowledge graph and AI tool outputs
+graphify-out/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating System files
+.DS_Store

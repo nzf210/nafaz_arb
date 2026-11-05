@@ -1,0 +1,50 @@
+services:
+  redis:
+    image: docker.io/library/redis:7-alpine
+    container_name: nafaz-redis
+    command: redis-server --port 6380
+    restart: always
+    ports:
+      - "6380:6380"
+
+  nafaz-scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nafaz-scanner
+    restart: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./data:/app/data:Z
+    environment:
+      - TZ=Asia/Jakarta
+      - REDIS_ENABLED=true
+      - REDIS_ADDR=redis:6380
+      - GLOBAL_FUTURES_EXCHANGE=okx
+      # Optional override for Telegram config:
+      # - TELEGRAM_ENABLED=true
+      # - TELEGRAM_BOT_TOKEN=your_bot_token
+      # - TELEGRAM_CHAT_ID=your_chat_id
+    depends_on:
+      - redis
+
+  nafaz-executor:
+    build:
+      context: .
+      dockerfile: Dockerfile.executor
+    container_name: nafaz-executor
+    restart: always
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./executor:/app/executor:ro
+    environment:
+      - TZ=Asia/Jakarta
+      - REDIS_URL=redis://redis:6380/0
+      - LOCAL_EXCHANGE=indodax
+      - GLOBAL_EXCHANGE=okx
+      - EXECUTOR_MOCK_MODE=true
+    depends_on:
+      - redis
+
