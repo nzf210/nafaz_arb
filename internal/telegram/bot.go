@@ -465,7 +465,11 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
 			"🔔 <b>Alert Diaktifkan Kembali</b>\n\nNotifikasi peluang baru akan dikirimkan normal sesuai konfigurasi.", b.defaultKeyboard())
 	case "/killswitch":
-		b.handleKillSwitchCommand(ctx, msg.Chat.ID, msg.MessageID, parts)
+		userID := int64(0)
+		if msg.From != nil {
+			userID = msg.From.ID
+		}
+		b.handleKillSwitchCommand(ctx, msg.Chat.ID, userID, msg.MessageID, parts)
 	default:
 	}
 }
@@ -956,7 +960,12 @@ func (b *Bot) formatActiveOpportunities() string {
 	return strings.TrimSpace(sb.String())
 }
 
-func (b *Bot) handleKillSwitchCommand(ctx context.Context, chatID int64, replyToID int64, parts []string) {
+func (b *Bot) handleKillSwitchCommand(ctx context.Context, chatID int64, userID int64, replyToID int64, parts []string) {
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⛔ <b>Akses ditolak:</b> User tidak diizinkan mengubah status kill switch.", b.defaultKeyboard())
+		return
+	}
+
 	b.mu.Lock()
 	rc := b.redisClient
 	b.mu.Unlock()

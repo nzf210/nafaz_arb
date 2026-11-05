@@ -1571,9 +1571,10 @@ class ArbitrageEngine:
         reason: str,
         message: str,
         detail: Optional[Dict[str, Any]] = None,
+        state: PositionState = PositionState.FAILED,
     ) -> None:
-        """Puts a pair into the terminal FAILED state and records why."""
-        self.states[pair_tag] = PositionState.FAILED
+        """Puts a pair into a failure state and records why."""
+        self.states[pair_tag] = state
         entry = {
             "reason": reason,
             "message": message,
@@ -1581,7 +1582,7 @@ class ArbitrageEngine:
             "timestamp_ms": int(time.time() * 1000),
         }
         self._failure_reasons[pair_tag] = entry
-        logger.critical(f"[FAILED] {pair_tag}: {reason} - {message}")
+        logger.critical(f"[{state.value}] {pair_tag}: {reason} - {message}")
 
     @staticmethod
     def _utc_day() -> str:
@@ -2461,11 +2462,12 @@ class ArbitrageEngine:
 
         pos = self.active_positions.get(pair_key)
         spot_sell_failed = False
+        futures_closed = True
         pnl = {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
 
         # 3. Close open Short position on Global Futures & record trade
         if pos and pos.qty > 0:
-            await self._close_global_short_leg(pair_key, pos)
+            futures_closed = await self._close_global_short_leg(pair_key, pos)
 
             spot_exit_price_idr = await self._liquidate_spot_leg(pair_key, pos)
             if spot_exit_price_idr <= 0:
@@ -2485,20 +2487,39 @@ class ArbitrageEngine:
                 usdt_rate,
             )
 
-        # 4. Remove active position from Redis and memory
-        await self.redis.delete(f"arb:active_pos:{pair_key}")
-        self.active_positions.pop(pair_key, None)
-        self.last_pegged_global_ask.pop(pair_key, None)
-        if pos and pos.qty > 0:
-            self.record_realized_pnl(pnl["net_profit_usdt"])
-        if spot_sell_failed:
+        # 4. State resolution and Redis persistence
+        if not futures_closed or spot_sell_failed:
+            # P0: Do NOT delete position from Redis/memory if any leg failed.
+            # Retain persistent state with RECONCILIATION_REQUIRED so unhedged exposure is never lost.
+            fail_reason = "FORCE_CLOSE_PARTIAL_OR_FAILED"
+            fail_msg = (
+                f"futures_closed={futures_closed}, spot_liquidated={not spot_sell_failed}. "
+                "Manual reconciliation required; position retained in state."
+            )
             self._mark_failed(
                 pair_key,
-                "SPOT_LIQUIDATION_FAILED",
-                "futures leg closed but spot leg could not be sold",
-                detail={"qty": pos.qty if pos else 0.0, "symbol": pos.symbol if pos else ""},
+                fail_reason,
+                fail_msg,
+                detail={
+                    "qty": pos.qty if pos else 0.0,
+                    "symbol": pos.symbol if pos else "",
+                    "futures_closed": futures_closed,
+                    "spot_sell_failed": spot_sell_failed,
+                },
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+            if pos:
+                pos.updated_at = int(time.time() * 1000)
+                await self.redis.set(f"arb:active_pos:{pair_key}", json.dumps(pos.to_dict()))
+            logger.critical(
+                f"[Force Close Alert] {pair_key} incomplete! Retaining active position in Redis: {fail_msg}"
             )
         else:
+            await self.redis.delete(f"arb:active_pos:{pair_key}")
+            self.active_positions.pop(pair_key, None)
+            self.last_pegged_global_ask.pop(pair_key, None)
+            if pos and pos.qty > 0:
+                self.record_realized_pnl(pnl["net_profit_usdt"])
             self.states[pair_key] = PositionState.CLOSED
+            logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")
         await self.publish_status()
-        logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")

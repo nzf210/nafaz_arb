@@ -1226,10 +1226,45 @@ async def test_p0_05_force_close_records_failed_spot_liquidation(fake_redis):
     history = await fake_redis.lrange("arb:trade_history", 0, 0)
     trade = json.loads(history[0])
     assert trade["spot_liquidation_failed"] is True
-    assert pair_tag not in engine.active_positions
-    assert engine.states[pair_tag] == PositionState.FAILED
-    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "SPOT_LIQUIDATION_FAILED"
+    # P0 safety: Position must NOT be deleted from active positions or Redis when liquidation fails
+    assert pair_tag in engine.active_positions
+    assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is not None
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "FORCE_CLOSE_PARTIAL_OR_FAILED"
 
+
+@pytest.mark.asyncio
+async def test_p0_05_force_close_retains_position_on_futures_close_failure(fake_redis):
+    """P0: If futures short close fails during force close, position must NOT be removed from state or Redis."""
+    pair_tag = "indodax:btc_idr"
+    client = MockExchangeClient()
+
+    async def fail_close_short(*args, **kwargs):
+        raise RuntimeError("futures exchange connection error")
+
+    client.close_global_short_market = fail_close_short
+
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
+
+    assert pair_tag in engine.active_positions
+    assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is not None
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "FORCE_CLOSE_PARTIAL_OR_FAILED"
 
 @pytest.mark.asyncio
 async def test_paper_client_market_sell_fills_at_bid():

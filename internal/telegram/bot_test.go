@@ -478,6 +478,29 @@ func TestHandlePositionsAndForceClose(t *testing.T) {
 	if !strings.Contains(msg4.Text, "Perintah Tutup Paksa Dikonfirmasi & Terkirim") {
 		t.Errorf("expected confirmed force close, got: %s", msg4.Text)
 	}
+
+	// 5. Test /killswitch authorization
+	// Unauthorized user
+	bot.handleCommand(ctx, &Message{
+		Chat:      Chat{ID: allowedChatID},
+		From:      &User{ID: 99999999},
+		MessageID: 5,
+	}, "/killswitch", []string{"/killswitch", "on"})
+	msg5 := <-sentMsgs
+	if !strings.Contains(msg5.Text, "Akses ditolak") {
+		t.Errorf("expected access denied for unauthorized user on /killswitch, got: %s", msg5.Text)
+	}
+
+	// Authorized user
+	bot.handleCommand(ctx, &Message{
+		Chat:      Chat{ID: allowedChatID},
+		From:      &User{ID: allowedChatID},
+		MessageID: 6,
+	}, "/killswitch", []string{"/killswitch", "on"})
+	msg6 := <-sentMsgs
+	if !strings.Contains(msg6.Text, "KILL SWITCH AKTIF") {
+		t.Errorf("expected kill switch activated for authorized user, got: %s", msg6.Text)
+	}
 }
 
 func TestFormatStatusTruncation(t *testing.T) {

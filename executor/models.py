@@ -16,7 +16,7 @@ class PositionState(Enum):
     # could not be liquidated). Distinguishing this from CLOSED means a failure
     # is observable through the status API instead of looking like a clean exit.
     FAILED = "FAILED"
-
+    RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
 
 @dataclass
 class PairInfo:
