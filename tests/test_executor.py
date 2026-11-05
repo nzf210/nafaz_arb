@@ -2275,6 +2275,80 @@ async def test_entry_revalidation_disabled_by_zero_floor(engine, fake_redis, moc
     assert called == []
     assert len(mock_client.placed_buys) == 1
 
+@pytest.mark.asyncio
+async def test_modular_exchanges_config_and_env():
+    """Verify modular exchanges loaded from file and dynamic env vars."""
+    import os
+    cfg = ExecutorConfig()
+    cfg.local_exchange_name = "indodax"
+    cfg.global_exchange_name = "okx"
+
+    # Test modular exchanges dictionary via _apply_file logic
+    import tempfile
+    with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as f:
+        json.dump({
+            "exchanges": {
+                "okx": {
+                    "api_key": "okx_key_1",
+                    "api_secret": "okx_secret_1",
+                    "passphrase": "pass_1",
+                    "testnet": True,
+                    "options": {"defaultType": "swap"}
+                },
+                "bybit": {
+                    "api_key": "bybit_key_1",
+                    "api_secret": "bybit_secret_1"
+                }
+            }
+        }, f)
+        f_path = f.name
+
+    try:
+        cfg._apply_file(f_path)
+        assert "okx" in cfg.exchanges
+        assert cfg.exchanges["okx"].api_key == "okx_key_1"
+        assert cfg.exchanges["okx"].options.get("defaultType") == "swap"
+        assert "bybit" in cfg.exchanges
+        assert cfg.exchanges["bybit"].api_key == "bybit_key_1"
+
+        # Test dynamic env overrides: e.g. BINANCE_API_KEY
+        os.environ["BINANCE_API_KEY"] = "binance_key_env"
+        os.environ["BINANCE_API_SECRET"] = "binance_sec_env"
+        cfg._apply_env()
+        assert "binance" in cfg.exchanges
+        assert cfg.exchanges["binance"].api_key == "binance_key_env"
+        assert cfg.exchanges["binance"].api_secret == "binance_sec_env"
+
+        # Verify global credentials synced from okx
+        assert cfg.global_credentials.api_key == "okx_key_1"
+        assert cfg.global_credentials.passphrase == "pass_1"
+        assert cfg.global_credentials.testnet is True
+
+        # Test Supabase config from file
+        cfg_sup = ExecutorConfig()
+        with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as f2:
+            json.dump({
+                "supabase": {
+                    "enabled": True,
+                    "url": "https://xyz.supabase.co",
+                    "key": "secret_key_123"
+                }
+            }, f2)
+            f2_path = f2.name
+        try:
+            cfg_sup._apply_file(f2_path)
+            assert cfg_sup.supabase.enabled is True
+            assert cfg_sup.supabase.url == "https://xyz.supabase.co"
+            assert cfg_sup.supabase.key == "secret_key_123"
+        finally:
+            if os.path.exists(f2_path):
+                os.remove(f2_path)
+    finally:
+        os.environ.pop("BINANCE_API_KEY", None)
+        os.environ.pop("BINANCE_API_SECRET", None)
+        if os.path.exists(f_path):
+            os.remove(f_path)
+
 
 @pytest.mark.asyncio
 async def test_entry_revalidation_config_floor_overrides_payload(engine, fake_redis, mock_client):

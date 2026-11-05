@@ -67,5 +67,39 @@
         "alert_min_net_profit_quote": 0
     },
     "check_open_positions": true,
-    "exclude_open_orders": true
+    "exclude_open_orders": true,
+    "exchanges": {
+        "indodax": {
+            "api_key": "",
+            "api_secret": ""
+        },
+        "tokocrypto": {
+            "api_key": "",
+            "api_secret": ""
+        },
+        "okx": {
+            "api_key": "",
+            "api_secret": "",
+            "passphrase": "",
+            "testnet": false,
+            "options": {
+                "defaultType": "swap"
+            }
+        },
+        "mexc": {
+            "api_key": "",
+            "api_secret": "",
+            "testnet": false
+        },
+        "bybit": {
+            "api_key": "",
+            "api_secret": "",
+            "testnet": false
+        }
+    },
+    "supabase": {
+        "enabled": false,
+        "url": "",
+        "key": ""
+    }
 }

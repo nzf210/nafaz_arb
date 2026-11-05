@@ -10,7 +10,14 @@ class ExchangeCredentials:
     api_secret: str = ""
     passphrase: Optional[str] = None
     testnet: bool = False
+    options: Dict[str, Any] = field(default_factory=dict)
 
+
+@dataclass
+class SupabaseConfig:
+    enabled: bool = False
+    url: str = ""
+    key: str = ""
 
 @dataclass
 class ExecutorConfig:
@@ -54,8 +61,10 @@ class ExecutorConfig:
     private_stream_max_age_seconds: float = 5.0
     local_exchange_name: str = "indodax"
     global_exchange_name: str = "okx"
+    exchanges: Dict[str, ExchangeCredentials] = field(default_factory=dict)
     local_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
     global_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
+    supabase: SupabaseConfig = field(default_factory=SupabaseConfig)
 
     def _apply_file(self, config_path: str) -> None:
         if not os.path.exists(config_path):
@@ -100,6 +109,24 @@ class ExecutorConfig:
             ):
                 if key in exec_cfg:
                     setattr(self, key, conv(exec_cfg[key]))
+            # Load modular exchanges dictionary if provided in config
+            if "exchanges" in data and isinstance(data["exchanges"], dict):
+                for ex_name, ex_data in data["exchanges"].items():
+                    if isinstance(ex_data, dict):
+                        self.exchanges[ex_name.lower()] = ExchangeCredentials(
+                            api_key=str(ex_data.get("api_key", "")),
+                            api_secret=str(ex_data.get("api_secret", "")),
+                            passphrase=ex_data.get("passphrase"),
+                            testnet=bool(ex_data.get("testnet", False)),
+                            options=dict(ex_data.get("options", {})),
+                        )
+
+            # Load Supabase configuration if present
+            if "supabase" in data and isinstance(data["supabase"], dict):
+                sup_data = data["supabase"]
+                self.supabase.enabled = bool(sup_data.get("enabled", False))
+                self.supabase.url = str(sup_data.get("url", ""))
+                self.supabase.key = str(sup_data.get("key", ""))
         except Exception as e:
             print(f"warning: error loading config file: {e}")
 
@@ -182,6 +209,58 @@ class ExecutorConfig:
 
         if os.getenv("GLOBAL_TESTNET", "").lower() in ("true", "1"):
             self.global_credentials.testnet = True
+
+        # Scan environment variables dynamically for any <EXCHANGE>_API_KEY / <EXCHANGE>_API_SECRET
+        # e.g., OKX_API_KEY, BYBIT_API_KEY, MEXC_API_KEY, BINANCE_API_KEY, INDODAX_API_KEY
+        for env_k, env_v in os.environ.items():
+            if env_k.endswith("_API_KEY") and not env_k.startswith("LOCAL_") and not env_k.startswith("GLOBAL_"):
+                prefix = env_k[:-8].lower()
+                cred = self.exchanges.setdefault(prefix, ExchangeCredentials())
+                cred.api_key = env_v
+                if secret := os.getenv(f"{env_k[:-8]}_API_SECRET"):
+                    cred.api_secret = secret
+                if passp := os.getenv(f"{env_k[:-8]}_PASSPHRASE"):
+                    cred.passphrase = passp
+                if testnet_val := os.getenv(f"{env_k[:-8]}_TESTNET"):
+                    cred.testnet = testnet_val.lower() in ("true", "1", "yes")
+
+        # Sync local and global credentials from modular exchanges if available
+        if self.local_exchange_name.lower() in self.exchanges:
+            src = self.exchanges[self.local_exchange_name.lower()]
+            if src.api_key:
+                self.local_credentials.api_key = src.api_key
+            if src.api_secret:
+                self.local_credentials.api_secret = src.api_secret
+            if src.passphrase:
+                self.local_credentials.passphrase = src.passphrase
+            if src.testnet:
+                self.local_credentials.testnet = src.testnet
+            if src.options:
+                self.local_credentials.options.update(src.options)
+        else:
+            self.exchanges[self.local_exchange_name.lower()] = self.local_credentials
+
+        if self.global_exchange_name.lower() in self.exchanges:
+            src = self.exchanges[self.global_exchange_name.lower()]
+            if src.api_key:
+                self.global_credentials.api_key = src.api_key
+            if src.api_secret:
+                self.global_credentials.api_secret = src.api_secret
+            if src.passphrase:
+                self.global_credentials.passphrase = src.passphrase
+            if src.testnet:
+                self.global_credentials.testnet = src.testnet
+            if src.options:
+                self.global_credentials.options.update(src.options)
+        else:
+            self.exchanges[self.global_exchange_name.lower()] = self.global_credentials
+
+        if sup_url := os.getenv("SUPABASE_URL"):
+            self.supabase.url = sup_url
+            self.supabase.enabled = True
+        if sup_key := os.getenv("SUPABASE_KEY"):
+            self.supabase.key = sup_key
+            self.supabase.enabled = True
 
     # Bounds applied by sanitize(): (field, minimum, maximum, default when invalid).
     # A bad value is replaced by the default rather than aborting the boot, so a

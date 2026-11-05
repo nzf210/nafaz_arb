@@ -849,7 +849,7 @@ class ArbitrageEngine:
         self, pair_tag: str, order_info: dict, order: dict
     ) -> bool:
         """Cancel an unfilled entry order past its TTL. Returns True if cancelled."""
-        if order.get("status") != "open" or math.isclose(float(order.get("filled", 0.0)), 0.0, abs_tol=1e-12):
+        if order.get("status") != "open" or not math.isclose(float(order.get("filled", 0.0)), 0.0, abs_tol=1e-12):
             return False
 
         order_id = order_info["order_id"]

@@ -406,28 +406,28 @@ def create_exchange_client(config: Any) -> Any:
     )
 
 
+def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot") -> Any:
+    """Helper to initialize a CCXT async exchange with proper credentials and settings."""
+    ex_class = getattr(ccxt, exchange_name.lower())
+    cfg: Dict[str, Any] = {
+        "apiKey": getattr(creds, "api_key", ""),
+        "secret": getattr(creds, "api_secret", ""),
+        "enableRateLimit": True,
+        "options": {"defaultType": default_type},
+    }
+    if hasattr(creds, "options") and isinstance(creds.options, dict):
+        cfg["options"].update(creds.options)
+
+    if getattr(creds, "passphrase", None):
+        cfg["password"] = creds.passphrase
+
+    instance = ex_class(cfg)
+    if getattr(creds, "testnet", False) and hasattr(instance, "set_sandbox_mode"):
+        instance.set_sandbox_mode(True)
+    return instance
+
 def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds) -> ExchangeClient:
     """Factory creating CCXT async instances."""
-    local_class = getattr(ccxt, local_name.lower())
-    local_cfg = {
-        "apiKey": local_creds.api_key,
-        "secret": local_creds.api_secret,
-        "enableRateLimit": True,
-    }
-    local_ex = local_class(local_cfg)
-
-    global_class = getattr(ccxt, global_name.lower())
-    global_cfg = {
-        "apiKey": global_creds.api_key,
-        "secret": global_creds.api_secret,
-        "enableRateLimit": True,
-        "options": {"defaultType": "future"},
-    }
-    if global_creds.passphrase:
-        global_cfg["password"] = global_creds.passphrase
-    global_ex = global_class(global_cfg)
-
-    if global_creds.testnet and hasattr(global_ex, "set_sandbox_mode"):
-        global_ex.set_sandbox_mode(True)
-
+    local_ex = init_ccxt_exchange(local_name, local_creds, default_type="spot")
+    global_ex = init_ccxt_exchange(global_name, global_creds, default_type="future")
     return ExchangeClient(local_ex, global_ex)
