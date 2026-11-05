@@ -13,6 +13,7 @@ type TelegramConfig struct {
 	BotToken               string  `json:"bot_token"`
 	ChatID                 int64   `json:"chat_id"`
 	AllowedChatIDs         []int64 `json:"allowed_chat_ids"`
+	AllowedUserIDs         []int64 `json:"allowed_user_ids"`
 	AlertOnNew             bool    `json:"alert_on_new"`
 	AlertCooldownMinutes   int     `json:"alert_cooldown_minutes"`
 	AlertMinNetROIPct      float64 `json:"alert_min_net_roi_pct"`
@@ -82,6 +83,7 @@ type Config struct {
 	FundingSubsidyFloorPct        float64        `json:"funding_subsidy_floor_pct"`
 	LocalPriceTick                float64        `json:"local_price_tick"`
 	GlobalFuturesExchange         string         `json:"global_futures_exchange"`
+	EnableExecutorSignals         bool           `json:"enable_executor_signals"`
 	Telegram                      TelegramConfig `json:"telegram"`
 }
 
@@ -95,10 +97,10 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 	c.setDefaults()
+	c.applyEnvOverrides()
 	if err := c.validate(); err != nil {
 		return Config{}, err
 	}
-	c.applyEnvOverrides()
 	return c, nil
 }
 
@@ -314,6 +316,7 @@ func (c *Config) applyEnvOverrides() {
 	setEnvBool(&c.EnableWebSocketFeed, "ENABLE_WEBSOCKET_FEED")
 	setEnvInt(&c.WebSocketBookMaxAgeSeconds, "WEBSOCKET_BOOK_MAX_AGE_SECONDS")
 	setEnvString(&c.GlobalFuturesExchange, "GLOBAL_FUTURES_EXCHANGE")
+	setEnvBool(&c.EnableExecutorSignals, "ENABLE_EXECUTOR_SIGNALS")
 	setEnvSlice(&c.ExcludedSymbols, "EXCLUDED_SYMBOLS")
 }
 

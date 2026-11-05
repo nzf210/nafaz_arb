@@ -150,6 +150,9 @@ func (b *Bot) Start(ctx context.Context) error {
 	if b.cfg.Telegram.BotToken == "" {
 		return fmt.Errorf("telegram bot token is required when enabled")
 	}
+	if b.cfg.Telegram.ChatID == 0 && len(b.cfg.Telegram.AllowedChatIDs) == 0 {
+		return fmt.Errorf("telegram fail-closed: chat_id or allowed_chat_ids must be configured when enabled")
+	}
 
 	// Verify bot token and fetch bot info
 	user, err := b.getMe(ctx)
@@ -303,7 +306,20 @@ func (b *Bot) isChatAllowed(chatID int64) bool {
 		}
 		return false
 	}
-	return b.cfg.Telegram.ChatID == 0
+	return false
+}
+
+func (b *Bot) isUserAllowedForSensitiveActions(userID int64) bool {
+	if len(b.cfg.Telegram.AllowedUserIDs) > 0 {
+		for _, id := range b.cfg.Telegram.AllowedUserIDs {
+			if id == userID {
+				return true
+			}
+		}
+		return false
+	}
+	// Fallback to chat authorization if user list is empty
+	return b.isChatAllowed(userID)
 }
 
 func (b *Bot) defaultKeyboard() *InlineKeyboardMarkup {
@@ -498,15 +514,26 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 	case "help":
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatHelp(), b.defaultKeyboard())
 	default:
-		if strings.HasPrefix(cb.Data, "pair:") {
-			sym := strings.TrimPrefix(cb.Data, "pair:")
-			b.sendReplyWithMarkup(ctx, chatID, 0, b.formatPairDetail(sym), b.defaultKeyboard())
-			return
-		}
-		if pairKey, ok := strings.CutPrefix(cb.Data, "force_close:"); ok {
-			b.handleForceCloseCallback(ctx, chatID, pairKey)
-			return
-		}
+		b.handleExtendedCallback(ctx, chatID, cb)
+	}
+}
+
+func (b *Bot) handleExtendedCallback(ctx context.Context, chatID int64, cb *CallbackQuery) {
+	if sym, ok := strings.CutPrefix(cb.Data, "pair:"); ok {
+		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatPairDetail(sym), b.defaultKeyboard())
+		return
+	}
+	if pairKey, ok := strings.CutPrefix(cb.Data, "force_close:"); ok {
+		b.handleForceCloseCallback(ctx, chatID, cb.From.ID, pairKey)
+		return
+	}
+	if pairKey, ok := strings.CutPrefix(cb.Data, "confirm_fc:"); ok {
+		b.handleConfirmForceCloseCallback(ctx, chatID, cb.From.ID, pairKey)
+		return
+	}
+	if cb.Data == "cancel_fc" {
+		b.sendReplyWithMarkup(ctx, chatID, 0, "❌ Tutup paksa dibatalkan.", b.defaultKeyboard())
+		return
 	}
 }
 
@@ -990,39 +1017,7 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 	balances, _ := rc.GetBalances(ctx)
 
 	if len(positions) == 0 {
-		var noPos strings.Builder
-		noPos.WriteString("💼 <b>Status Posisi Executor</b>\n\n")
-		noPos.WriteString("<i>Saat ini tidak ada posisi arbitrase yang sedang aktif (semua posisi closed/idle).</i>\n\n")
-
-		if balances != nil && balances.TotalEquity > 0 {
-			noPos.WriteString("💰 <b>Saldo Bursa Executor (Simulasi $100/Exchange):</b>\n")
-			noPos.WriteString(fmt.Sprintf("• Spot: <code>$%.2f USDT</code> (Tersedia: <code>$%.2f</code>)\n",
-				balances.SpotTotal, balances.SpotAvailable))
-			noPos.WriteString(fmt.Sprintf("• Futures: <code>$%.2f USDT</code> (Tersedia: <code>$%.2f</code>)\n",
-				balances.FuturesTotal, balances.FuturesAvailable))
-			noPos.WriteString(fmt.Sprintf("• Total Ekuitas: <b>$%.2f USDT</b>\n\n", balances.TotalEquity))
-		}
-
-		if stats.TotalClosed > 0 {
-			noPos.WriteString("📊 <b>Statistik Realisasi Arbitrase:</b>\n")
-			noPos.WriteString(fmt.Sprintf("• Berhasil Ditutup: <code>%d transaksi</code> (Menang: <code>%d</code>)\n",
-				stats.TotalClosed, stats.WinCount))
-			noPos.WriteString(fmt.Sprintf("• Total Realized Profit: <b>%+.4f USDT</b> (Rp %+.2f)\n",
-				stats.TotalPnLUSDT, stats.TotalPnLIDR))
-		}
-
-		kb := &InlineKeyboardMarkup{
-			InlineKeyboard: [][]InlineKeyboardButton{
-				{
-					{Text: HistoryText, CallbackData: "history"},
-					{Text: "🔄 Refresh", CallbackData: "positions"},
-				},
-				{
-					{Text: MenuUtamaText, CallbackData: "menu"},
-				},
-			},
-		}
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, noPos.String(), kb)
+		b.sendEmptyPositionsReply(ctx, chatID, replyToID, balances, stats)
 		return
 	}
 
@@ -1040,67 +1035,9 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 	}
 
 	var kbRows [][]InlineKeyboardButton
-
 	for i, pos := range positions {
+		b.formatPositionBlock(&sb, i+1, pos, rc, ctx)
 		tag := redishandler.CleanPairKey(pos.LocalExchange, pos.Symbol)
-		sb.WriteString(fmt.Sprintf("<b>[%d] %s</b>\n", i+1, html.EscapeString(strings.ToUpper(pos.Symbol))))
-		sb.WriteString(fmt.Sprintf("• Bursa: <code>%s (Spot)</code> vs <code>%s (Futures 1x)</code>\n",
-			html.EscapeString(strings.ToUpper(pos.LocalExchange)),
-			html.EscapeString(strings.ToUpper(pos.GlobalExchange))))
-		sb.WriteString(fmt.Sprintf("• Kuantitas: <code>%.6f koin</code>\n", pos.Qty))
-		sb.WriteString(fmt.Sprintf("• Entry Spot: <code>Rp %.2f</code>\n", pos.EntryPriceIDR))
-		sb.WriteString(fmt.Sprintf("• Entry Short: <code>$%.4f USDT</code>\n", pos.ShortEntryUSDT))
-		sb.WriteString(fmt.Sprintf("• Akumulasi Funding: <code>+$%.4f USDT</code>\n", pos.AccumulatedFundingUSDT))
-
-		// Floating PnL breakdown. Only shown when the executor has published
-		// fresh mark-to-market data; stale/absent data renders a warning
-		// instead of numbers that would look authoritative but are not.
-		var floatingUSDT, floatingIDR, spotDiffUSDT, shortDiffUSDT float64
-		hasFloating := false
-		staleData := false
-
-		if pos.CurrentPerpAskUSDT > 0 || pos.FuturesUnrealizedPnLUSDT != 0 {
-			const staleThresholdMS = 120000 // must match executor LIVE_PRICE_STALE_MS
-			if pos.UpdatedAt > 0 && time.Now().UnixMilli()-pos.UpdatedAt > staleThresholdMS {
-				staleData = true
-			} else {
-				shortDiffUSDT = pos.FuturesUnrealizedPnLUSDT
-				floatingUSDT = pos.NetUnrealizedPnLUSDT
-				floatingIDR = pos.NetUnrealizedPnLIDR
-				spotDiffUSDT = floatingUSDT - shortDiffUSDT - pos.AccumulatedFundingUSDT
-				hasFloating = true
-			}
-		} else if live, errLive := rc.GetLivePrice(ctx, pos.LocalExchange, pos.Symbol); errLive == nil && live != nil && live.USDTIDRRate > 0 && live.TimestampMS > 0 && time.Now().UnixMilli()-live.TimestampMS <= 120000 {
-			spotDiffIDR := (live.LocalBestBid - pos.EntryPriceIDR) * pos.Qty
-			spotDiffUSDT = spotDiffIDR / live.USDTIDRRate
-			shortDiffUSDT = (pos.ShortEntryUSDT - live.GlobalBestAskUSDT) * pos.Qty
-			floatingUSDT = spotDiffUSDT + shortDiffUSDT + pos.AccumulatedFundingUSDT
-			floatingIDR = floatingUSDT * live.USDTIDRRate
-			hasFloating = true
-		} else {
-			staleData = true
-		}
-
-		if staleData {
-			sb.WriteString("• ⚠️ <i>Harga live tidak tersedia/stale — floating PnL disembunyikan (jangan diandalkan).</i>\n")
-		}
-
-		if hasFloating {
-			futuresTag := "PROFIT"
-			if shortDiffUSDT < 0 {
-				futuresTag = "MINUS"
-			}
-			spotTag := "PROFIT"
-			if spotDiffUSDT < 0 {
-				spotTag = "MINUS"
-			}
-			sb.WriteString(fmt.Sprintf("• PnL Short Futures: <b>%+.4f USDT (%s)</b>\n", shortDiffUSDT, futuresTag))
-			sb.WriteString(fmt.Sprintf("• PnL Spot Lokal: <b>%+.4f USDT (%s)</b>\n", spotDiffUSDT, spotTag))
-			sb.WriteString(fmt.Sprintf("• Estimasi Floating PnL: <b>%+.4f USDT</b> (Rp %+.2f)\n", floatingUSDT, floatingIDR))
-		}
-
-		sb.WriteString("• Status: <code>HEDGED (Delta Neutral 100%)</code>\n\n")
-
 		btnText := fmt.Sprintf("🚨 Tutup Paksa %s", strings.ToUpper(pos.Symbol))
 		kbRows = append(kbRows, []InlineKeyboardButton{
 			{Text: btnText, CallbackData: "force_close:" + tag},
@@ -1126,6 +1063,122 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 
 	markup := &InlineKeyboardMarkup{InlineKeyboard: kbRows}
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, sb.String(), markup)
+}
+
+func (b *Bot) sendEmptyPositionsReply(ctx context.Context, chatID int64, replyToID int64, balances *domain.BalancesRecord, stats redishandler.TradeStats) {
+	var noPos strings.Builder
+	noPos.WriteString("💼 <b>Status Posisi Executor</b>\n\n")
+	noPos.WriteString("<i>Saat ini tidak ada posisi arbitrase yang sedang aktif (semua posisi closed/idle).</i>\n\n")
+
+	if balances != nil && balances.TotalEquity > 0 {
+		noPos.WriteString("💰 <b>Saldo Bursa Executor (Simulasi $100/Exchange):</b>\n")
+		noPos.WriteString(fmt.Sprintf("• Spot: <code>$%.2f USDT</code> (Tersedia: <code>$%.2f</code>)\n",
+			balances.SpotTotal, balances.SpotAvailable))
+		noPos.WriteString(fmt.Sprintf("• Futures: <code>$%.2f USDT</code> (Tersedia: <code>$%.2f</code>)\n",
+			balances.FuturesTotal, balances.FuturesAvailable))
+		noPos.WriteString(fmt.Sprintf("• Total Ekuitas: <b>$%.2f USDT</b>\n\n", balances.TotalEquity))
+	}
+
+	if stats.TotalClosed > 0 {
+		noPos.WriteString("📊 <b>Statistik Realisasi Arbitrase:</b>\n")
+		noPos.WriteString(fmt.Sprintf("• Berhasil Ditutup: <code>%d transaksi</code> (Menang: <code>%d</code>)\n",
+			stats.TotalClosed, stats.WinCount))
+		noPos.WriteString(fmt.Sprintf("• Total Realized Profit: <b>%+.4f USDT</b> (Rp %+.2f)\n",
+			stats.TotalPnLUSDT, stats.TotalPnLIDR))
+	}
+
+	kb := &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: HistoryText, CallbackData: "history"},
+				{Text: "🔄 Refresh", CallbackData: "positions"},
+			},
+			{
+				{Text: MenuUtamaText, CallbackData: "menu"},
+			},
+		},
+	}
+	b.sendReplyWithMarkup(ctx, chatID, replyToID, noPos.String(), kb)
+}
+
+type positionFloatingPnL struct {
+	hasFloating   bool
+	staleData     bool
+	shortDiffUSDT float64
+	spotDiffUSDT  float64
+	floatingUSDT  float64
+	floatingIDR   float64
+}
+
+func calculatePositionPnL(ctx context.Context, pos domain.ActivePosition, rc *redishandler.Client) positionFloatingPnL {
+	const staleThresholdMS = 120000 // must match executor LIVE_PRICE_STALE_MS
+
+	if pos.CurrentPerpAskUSDT > 0 || pos.FuturesUnrealizedPnLUSDT != 0 {
+		if pos.UpdatedAt > 0 && time.Now().UnixMilli()-pos.UpdatedAt > staleThresholdMS {
+			return positionFloatingPnL{staleData: true}
+		}
+		shortDiffUSDT := pos.FuturesUnrealizedPnLUSDT
+		floatingUSDT := pos.NetUnrealizedPnLUSDT
+		floatingIDR := pos.NetUnrealizedPnLIDR
+		spotDiffUSDT := floatingUSDT - shortDiffUSDT - pos.AccumulatedFundingUSDT
+		return positionFloatingPnL{
+			hasFloating:   true,
+			shortDiffUSDT: shortDiffUSDT,
+			spotDiffUSDT:  spotDiffUSDT,
+			floatingUSDT:  floatingUSDT,
+			floatingIDR:   floatingIDR,
+		}
+	}
+
+	live, errLive := rc.GetLivePrice(ctx, pos.LocalExchange, pos.Symbol)
+	if errLive == nil && live != nil && live.USDTIDRRate > 0 && live.TimestampMS > 0 && time.Now().UnixMilli()-live.TimestampMS <= staleThresholdMS {
+		spotDiffIDR := (live.LocalBestBid - pos.EntryPriceIDR) * pos.Qty
+		spotDiffUSDT := spotDiffIDR / live.USDTIDRRate
+		shortDiffUSDT := (pos.ShortEntryUSDT - live.GlobalBestAskUSDT) * pos.Qty
+		floatingUSDT := spotDiffUSDT + shortDiffUSDT + pos.AccumulatedFundingUSDT
+		floatingIDR := floatingUSDT * live.USDTIDRRate
+		return positionFloatingPnL{
+			hasFloating:   true,
+			shortDiffUSDT: shortDiffUSDT,
+			spotDiffUSDT:  spotDiffUSDT,
+			floatingUSDT:  floatingUSDT,
+			floatingIDR:   floatingIDR,
+		}
+	}
+
+	return positionFloatingPnL{staleData: true}
+}
+
+func (b *Bot) formatPositionBlock(sb *strings.Builder, idx int, pos domain.ActivePosition, rc *redishandler.Client, ctx context.Context) {
+	sb.WriteString(fmt.Sprintf("<b>[%d] %s</b>\n", idx, html.EscapeString(strings.ToUpper(pos.Symbol))))
+	sb.WriteString(fmt.Sprintf("• Bursa: <code>%s (Spot)</code> vs <code>%s (Futures 1x)</code>\n",
+		html.EscapeString(strings.ToUpper(pos.LocalExchange)),
+		html.EscapeString(strings.ToUpper(pos.GlobalExchange))))
+	sb.WriteString(fmt.Sprintf("• Kuantitas: <code>%.6f koin</code>\n", pos.Qty))
+	sb.WriteString(fmt.Sprintf("• Entry Spot: <code>Rp %.2f</code>\n", pos.EntryPriceIDR))
+	sb.WriteString(fmt.Sprintf("• Entry Short: <code>$%.4f USDT</code>\n", pos.ShortEntryUSDT))
+	sb.WriteString(fmt.Sprintf("• Akumulasi Funding: <code>+$%.4f USDT</code>\n", pos.AccumulatedFundingUSDT))
+
+	pnl := calculatePositionPnL(ctx, pos, rc)
+	if pnl.staleData {
+		sb.WriteString("• ⚠️ <i>Harga live tidak tersedia/stale — floating PnL disembunyikan (jangan diandalkan).</i>\n")
+	}
+
+	if pnl.hasFloating {
+		futuresTag := "PROFIT"
+		if pnl.shortDiffUSDT < 0 {
+			futuresTag = "MINUS"
+		}
+		spotTag := "PROFIT"
+		if pnl.spotDiffUSDT < 0 {
+			spotTag = "MINUS"
+		}
+		sb.WriteString(fmt.Sprintf("• PnL Short Futures: <b>%+.4f USDT (%s)</b>\n", pnl.shortDiffUSDT, futuresTag))
+		sb.WriteString(fmt.Sprintf("• PnL Spot Lokal: <b>%+.4f USDT (%s)</b>\n", pnl.spotDiffUSDT, spotTag))
+		sb.WriteString(fmt.Sprintf("• Estimasi Floating PnL: <b>%+.4f USDT</b> (Rp %+.2f)\n", pnl.floatingUSDT, pnl.floatingIDR))
+	}
+
+	sb.WriteString("• Status: <code>HEDGED (Delta Neutral 100%)</code>\n\n")
 }
 
 func (b *Bot) handleHistoryCommand(ctx context.Context, chatID int64, replyToID int64) {
@@ -1301,7 +1354,12 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 	b.sendReplyWithMarkup(ctx, b.cfg.Telegram.ChatID, 0, text, b.defaultKeyboard())
 }
 
-func (b *Bot) handleForceCloseCallback(ctx context.Context, chatID int64, pairKey string) {
+func (b *Bot) handleForceCloseCallback(ctx context.Context, chatID int64, userID int64, pairKey string) {
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, chatID, 0, "⛔ <b>Akses ditolak:</b> User tidak diizinkan mengeksekusi force close.", b.defaultKeyboard())
+		return
+	}
+
 	b.mu.Lock()
 	rc := b.redisClient
 	b.mu.Unlock()
@@ -1312,7 +1370,42 @@ func (b *Bot) handleForceCloseCallback(ctx context.Context, chatID int64, pairKe
 		return
 	}
 
-	err := rc.PublishForceClose(ctx, "", "", pairKey, "telegram_user")
+	previewMsg := fmt.Sprintf("⚠️ <b>Konfirmasi Tutup Paksa (Preview)</b>\n\n"+
+		"• Pasangan: <code>%s</code>\n"+
+		"• Tindakan yang akan diambil:\n"+
+		"  1. Batalkan semua order lokal (entry/exit) yang terbuka\n"+
+		"  2. Market Buy (reduceOnly) untuk menutup short futures\n"+
+		"  3. Market Sell spot untuk melikuidasi koin spot\n\n"+
+		"Apakah Anda yakin ingin mengeksekusi force close sekarang?", html.EscapeString(pairKey))
+
+	confirmKb := &InlineKeyboardMarkup{
+		InlineKeyboard: [][]InlineKeyboardButton{
+			{
+				{Text: "✅ Ya, Eksekusi Sekarang", CallbackData: "confirm_fc:" + pairKey},
+				{Text: "❌ Batalkan", CallbackData: "cancel_fc"},
+			},
+		},
+	}
+	b.sendReplyWithMarkup(ctx, chatID, 0, previewMsg, confirmKb)
+}
+
+func (b *Bot) handleConfirmForceCloseCallback(ctx context.Context, chatID int64, userID int64, pairKey string) {
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, chatID, 0, "⛔ <b>Akses ditolak:</b> User tidak diizinkan mengeksekusi force close.", b.defaultKeyboard())
+		return
+	}
+
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, chatID, 0,
+			"❌ <b>Gagal Tutup Paksa:</b> <i>Redis tidak terhubung.</i>", b.defaultKeyboard())
+		return
+	}
+
+	err := rc.PublishForceClose(ctx, "", "", pairKey, fmt.Sprintf("user_%d", userID))
 	if err != nil {
 		b.sendReplyWithMarkup(ctx, chatID, 0,
 			fmt.Sprintf("❌ <b>Gagal mengirim perintah tutup paksa:</b> %s", html.EscapeString(err.Error())),
@@ -1320,14 +1413,15 @@ func (b *Bot) handleForceCloseCallback(ctx context.Context, chatID int64, pairKe
 		return
 	}
 
-	msg := fmt.Sprintf("🚨 <b>Perintah Tutup Paksa Terkirim!</b>\n\n"+
+	msg := fmt.Sprintf("🚨 <b>Perintah Tutup Paksa Dikonfirmasi & Terkirim!</b>\n\n"+
 		"• Pasangan: <code>%s</code>\n"+
+		"• Operator: <code>user_%d</code>\n"+
 		"• Aksi Executor:\n"+
 		"  1. Membatalkan antrean Limit Sell/Buy di bursa lokal\n"+
 		"  2. Mengeksekusi Market Buy (<code>reduceOnly=True</code>) untuk menutup Short di Futures Global\n"+
-		"  3. Mengosongkan status posisi aktif di Redis\n\n"+
+		"  3. Likuidasi leg spot dan verifikasi exposure bersih\n\n"+
 		"<i>Periksa /positions dalam beberapa detik untuk melihat status terbaru.</i>",
-		html.EscapeString(pairKey))
+		html.EscapeString(pairKey), userID)
 
 	b.sendReplyWithMarkup(ctx, chatID, 0, msg, b.defaultKeyboard())
 }

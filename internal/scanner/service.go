@@ -497,7 +497,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 			op.ExclusionReasons = append(op.ExclusionReasons, "LIVE_PRICE_PUBLISH_FAILED")
 		}
 
-		if op.TradingEligible && !hasActive {
+		if op.TradingEligible && !hasActive && s.cfg.EnableExecutorSignals {
 			maxPosUSDT := s.cfg.CapitalTotal * s.cfg.AllocationPerPair
 			payload := domain.ExecutorPayload{
 				PairInfo: domain.PairInfo{

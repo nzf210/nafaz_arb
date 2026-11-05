@@ -451,19 +451,32 @@ func TestHandlePositionsAndForceClose(t *testing.T) {
 		t.Fatal("expected inline keyboard with force close button")
 	}
 
-	// 4. Test force close callback
+	// 4. Test force close callback with 2-step confirmation
 	sub := rdb.Subscribe(ctx, redishandler.ChannelForceClose)
 	defer sub.Close()
 	time.Sleep(10 * time.Millisecond)
 
 	bot.handleCallbackQuery(ctx, &CallbackQuery{
 		ID:      "cb1",
+		From:    User{ID: allowedChatID},
 		Message: &Message{Chat: Chat{ID: allowedChatID}},
 		Data:    "force_close:indodax:beatidr",
 	})
 	msg3 := <-sentMsgs
-	if !strings.Contains(msg3.Text, "Perintah Tutup Paksa Terkirim") {
-		t.Errorf("expected force close confirmation, got: %s", msg3.Text)
+	if !strings.Contains(msg3.Text, "Konfirmasi Tutup Paksa (Preview)") {
+		t.Errorf("expected force close preview confirmation, got: %s", msg3.Text)
+	}
+
+	// Confirm force close
+	bot.handleCallbackQuery(ctx, &CallbackQuery{
+		ID:      "cb2",
+		From:    User{ID: allowedChatID},
+		Message: &Message{Chat: Chat{ID: allowedChatID}},
+		Data:    "confirm_fc:indodax:beatidr",
+	})
+	msg4 := <-sentMsgs
+	if !strings.Contains(msg4.Text, "Perintah Tutup Paksa Dikonfirmasi & Terkirim") {
+		t.Errorf("expected confirmed force close, got: %s", msg4.Text)
 	}
 }
 

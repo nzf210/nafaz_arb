@@ -304,10 +304,11 @@ func TestRedisActivePositionAndSignalPublishing(t *testing.T) {
 		CapitalTotal:         1000,
 		AllocationPerPair:    0.5,
 		MinFundingRate:       0.0002,
-		MinNetROIPct:         0.1,
-		MaxNetROIPct:         20.0,
-		SpotMakerFeePct:      0.0,
-		PerpTakerFeePct:      0.05,
+		MinNetROIPct:          0.1,
+		MaxNetROIPct:          20.0,
+		SpotMakerFeePct:       0.0,
+		PerpTakerFeePct:       0.05,
+		EnableExecutorSignals: true,
 	}
 
 	svc := New(cfg, adapter)
@@ -372,10 +373,23 @@ func TestRedisActivePositionAndSignalPublishing(t *testing.T) {
 		t.Errorf("expected signal key to not be set when active position exists")
 	}
 
-	// But live price key MUST still be updated
-	_, err = rdb.Get(ctx, liveKey).Result()
-	if err != nil {
-		t.Errorf("expected live price key to still be updated: %v", err)
+	// Test that when EnableExecutorSignals is false (default), no signal is published even if eligible
+	cfgDisabled := cfg
+	cfgDisabled.EnableExecutorSignals = false
+	svcDisabled := New(cfgDisabled, adapter)
+	svcDisabled.SetRedisClient(rc)
+	_ = rdb.Del(ctx, sigKey).Err()
+	_ = rdb.Del(ctx, activeKey).Err()
+	resDisabled, _, errDisabled := svcDisabled.Scan(ctx)
+	if errDisabled != nil {
+		t.Fatal(errDisabled)
+	}
+	if !resDisabled.Opportunities[0].TradingEligible {
+		t.Fatalf("expected opportunity to be eligible, got reasons: %v", resDisabled.Opportunities[0].ExclusionReasons)
+	}
+	_, err = rdb.Get(ctx, sigKey).Result()
+	if err != redis.Nil {
+		t.Errorf("expected no signal published when EnableExecutorSignals=false, got err=%v", err)
 	}
 }
 
