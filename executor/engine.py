@@ -3,7 +3,7 @@ import json
 import logging
 import math
 import time
-from typing import Awaitable, Callable, Optional, Dict, Any, TypeVar
+from typing import Awaitable, Callable, Optional, Dict, Any, TypeVar, Tuple
 
 import redis.asyncio as aioredis
 from executor.models import (
@@ -726,7 +726,7 @@ class ArbitrageEngine:
                 return
             # Sync balances to Redis
             bals = self.client.get_balances()
-            await self.redis.set("arb:balances", json.dumps(bals))
+            await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
         try:
             logger.info(
@@ -889,7 +889,7 @@ class ArbitrageEngine:
                 float(order_info.get("futures_margin_usdt", 0.0)),
             )
             bals = self.client.get_balances()
-            await self.redis.set("arb:balances", json.dumps(bals))
+            await self.redis.set(BALANCES_KEY, json.dumps(bals))
         self.pending_entry_orders.pop(pair_tag, None)
         await self._clear_pending_entry(pair_tag)
         self.states[pair_tag] = PositionState.IDLE
@@ -935,7 +935,7 @@ class ArbitrageEngine:
                 float(order_info.get("futures_margin_usdt", 0.0)),
             )
             bals = self.client.get_balances()
-            await self.redis.set("arb:balances", json.dumps(bals))
+            await self.redis.set(BALANCES_KEY, json.dumps(bals))
         del self.pending_entry_orders[pair_tag]
         await self._clear_pending_entry(pair_tag)
         self.states[pair_tag] = PositionState.IDLE
@@ -1983,6 +1983,9 @@ class ArbitrageEngine:
 
     async def _process_pending_exit(self, pair_tag: str) -> None:
         """Fetch local exit order and trigger short closure on fills."""
+        if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+            return
+
         order_info = self.pending_exit_orders.get(pair_tag)
         pos = self.active_positions.get(pair_tag)
         if not order_info or not pos:
@@ -2118,8 +2121,8 @@ class ArbitrageEngine:
             }
 
             # Save to Redis list arb:trade_history (kept up to 50 items)
-            await self.redis.lpush("arb:trade_history", json.dumps(closed_trade))
-            await self.redis.ltrim("arb:trade_history", 0, 49)
+            await self.redis.lpush(ARB_TRADE_HISTORY_KEY, json.dumps(closed_trade))
+            await self.redis.ltrim(ARB_TRADE_HISTORY_KEY, 0, 49)
 
             # Update exchange account balances with realized PnL & release locked funds
             spot_cost = getattr(pos, "spot_cost_usdt", unclosed_delta * entry_price_idr / usdt_rate)
@@ -2135,7 +2138,7 @@ class ArbitrageEngine:
                     futures_fees_usdt=fees_usdt,
                 )
                 bals = self.client.get_balances()
-                await self.redis.set("arb:balances", json.dumps(bals))
+                await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
             # Update stats in Redis
             pipe = self.redis.pipeline()
@@ -2256,18 +2259,25 @@ class ArbitrageEngine:
     async def _cancel_pending_order_for_force_close(
         self, pair_key: str, orders: dict, order_label: str
     ) -> bool:
-        """Cancels a pending order (exit/entry) tracked in `orders`. Returns True if one was removed."""
+        """Cancels a pending order (exit/entry) tracked in `orders`. Returns True ONLY if cancellation succeeded on the exchange."""
         order_info = orders.get(pair_key)
         if not order_info:
             return False
         try:
-            await self.client.cancel_local_order(order_info["order_id"], order_info["symbol"])
+            res = await self.client.cancel_local_order(order_info["order_id"], order_info["symbol"])
+            # If exchange client returns status, ensure it's not an explicit failure
+            if isinstance(res, dict) and res.get("status") in ("failed", "rejected"):
+                logger.error(
+                    f"[Force Close] Exchange rejected cancellation of {order_label} order {order_info['order_id']}: {res}"
+                )
+                return False
             logger.info(
                 f"[Force Close] Canceled pending {order_label} order {order_info['order_id']}"
             )
+            return True
         except Exception:
-            logger.exception(f"failed to cancel {order_label} order on force close")
-        return True
+            logger.exception(f"failed to cancel {order_label} order {order_info.get('order_id')} on force close")
+            return False
 
     async def _cancel_pending_exit_for_force_close(self, pair_key: str):
         if await self._cancel_pending_order_for_force_close(
@@ -2287,22 +2297,28 @@ class ArbitrageEngine:
                 float(order_info.get("futures_margin_usdt", 0.0)),
             )
             bals = self.client.get_balances()
-            await self.redis.set("arb:balances", json.dumps(bals))
+            await self.redis.set(BALANCES_KEY, json.dumps(bals))
         del self.pending_entry_orders[pair_key]
         await self._clear_pending_entry(pair_key)
 
     async def _close_global_short_leg(self, pair_key: str, pos):
-        """Closes the global futures short leg at market. Returns True on success."""
+        """Closes the global futures short leg at market. Returns True on verified success."""
         global_sym = self._resolve_global_symbol(pos.symbol)
         logger.warning(f"[Force Close] Closing global short {pos.qty} on {global_sym}...")
         try:
-            await self.client.close_global_short_market(
+            res = await self.client.close_global_short_market(
                 global_sym,
                 pos.qty,
                 client_order_id=build_client_order_id(
                     pair_key, "force-close", self._next_order_seq()
                 ),
             )
+            # If the exchange returned an order object, verify status is not rejected/failed
+            if isinstance(res, dict):
+                status = str(res.get("status", "")).lower()
+                if status in ("rejected", "failed", "canceled"):
+                    logger.error(f"[Force Close] Futures close order rejected/failed: {res}")
+                    return False
             logger.info(f"[Force Close] Global short closed for {pos.qty} {global_sym}")
             return True
         except Exception:
@@ -2311,8 +2327,8 @@ class ArbitrageEngine:
 
     async def _liquidate_spot_leg(self, pair_key: str, pos) -> float:
         """
-        Liquidates the local spot leg. Returns the realized exit price in IDR,
-        falling back to the entry price if the sell fails.
+        Liquidates the local spot leg. Returns the realized exit price in IDR
+        only if the order actually filled. Never falls back to entry price.
         """
         logger.warning(f"[Force Close] Selling {pos.qty} {pos.symbol} spot leg...")
         try:
@@ -2327,16 +2343,21 @@ class ArbitrageEngine:
                 base_delay=0.5,
                 label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
             )
-            spot_exit_price_idr = self._extract_fill_price(spot_order, pos.entry_price_idr)
-            if spot_exit_price_idr > 0:
-                logger.info(
-                    f"[Force Close] Spot leg liquidated: {pos.qty} {pos.symbol} "
-                    f"@ {spot_exit_price_idr}"
-                )
-                return spot_exit_price_idr
+            # Verify actual fill and positive exit price without falling back to entry price
+            if isinstance(spot_order, dict):
+                filled_qty = float(spot_order.get("filled", 0.0) or spot_order.get("amount", 0.0) or 0.0)
+                status = str(spot_order.get("status", "")).lower()
+                spot_exit_price_idr = self._extract_fill_price(spot_order)
+                if (status == "closed" or filled_qty > 0) and spot_exit_price_idr > 0:
+                    logger.info(
+                        f"[Force Close] Spot leg liquidated: {pos.qty} {pos.symbol} "
+                        f"@ {spot_exit_price_idr} (filled={filled_qty})"
+                    )
+                    return spot_exit_price_idr
+
             logger.critical(
                 f"[Force Close] FAILED to liquidate spot leg for {pair_key}. "
-                f"MANUAL INTERVENTION REQUIRED: {pos.qty} {pos.symbol} is UNHEDGED."
+                f"MANUAL INTERVENTION REQUIRED: {pos.qty} {pos.symbol} is UNHEDGED. Response: {spot_order}"
             )
         except RetryExhausted:
             logger.exception(
@@ -2472,81 +2493,93 @@ class ArbitrageEngine:
         async with self._pair_lock(pair_key):
             await self._force_close_locked(pair_key)
 
-    async def _force_close_locked(self, pair_key: str) -> None:
-        # 1. Cancel pending exit order if any
+    async def _cancel_pending_orders_for_force_close(self, pair_key: str) -> None:
+        """Cancels pending exit and entry orders before closing position legs."""
         await self._cancel_pending_exit_for_force_close(pair_key)
-        # 2. Cancel pending entry order if any
         await self._cancel_pending_entry_for_force_close(pair_key)
 
-        pos = self.active_positions.get(pair_key)
-        spot_sell_failed = False
-        futures_closed = True
-        pnl = {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
+    async def _execute_force_close_legs(self, pair_key: str, pos) -> Tuple[bool, bool, dict]:
+        """
+        Executes short closure on futures and spot liquidation.
+        Returns (futures_closed, spot_sell_failed, pnl).
+        """
+        if not pos or pos.qty <= 0:
+            return True, False, {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
 
-        # 3. Close open Short position on Global Futures & record trade
-        if pos and pos.qty > 0:
-            futures_closed = await self._close_global_short_leg(pair_key, pos)
+        futures_closed = await self._close_global_short_leg(pair_key, pos)
+        spot_sell_failed = True
+        spot_exit_price_idr = 0.0
 
-            # Only attempt spot liquidation if futures short leg succeeded or is closed.
-            # If futures short closure fails, attempting to sell spot would leave an unhedged SHORT exposure!
-            if futures_closed:
-                spot_exit_price_idr = await self._liquidate_spot_leg(pair_key, pos)
-                if spot_exit_price_idr <= 0:
-                    spot_sell_failed = True
-            else:
-                spot_sell_failed = True
+        if futures_closed:
+            spot_exit_price_idr = await self._liquidate_spot_leg(pair_key, pos)
+            spot_sell_failed = spot_exit_price_idr <= 0
 
-            current_ask, usdt_rate, current_spot_bid = await self._resolve_force_close_prices(
-                pair_key, pos, spot_exit_price_idr if futures_closed else 0.0
-            )
-            pnl = self._compute_force_close_pnl(pos, current_ask, usdt_rate, current_spot_bid)
+        current_ask, usdt_rate, current_spot_bid = await self._resolve_force_close_prices(
+            pair_key, pos, spot_exit_price_idr if futures_closed else 0.0
+        )
+        pnl = self._compute_force_close_pnl(pos, current_ask, usdt_rate, current_spot_bid)
 
-            # Only record finalized trade and apply realized PnL if both legs successfully closed!
-            if futures_closed and not spot_sell_failed:
-                await self._record_force_close_trade(
-                    pair_key,
-                    pos,
-                    pnl,
-                    current_ask,
-                    current_spot_bid,
-                    spot_sell_failed,
-                    usdt_rate,
-                )
-
-        # 4. State resolution and Redis persistence
-        if not futures_closed or spot_sell_failed:
-            # P0: Do NOT delete position from Redis/memory if any leg failed.
-            # Retain persistent state with RECONCILIATION_REQUIRED so unhedged exposure is never lost.
-            fail_reason = "FORCE_CLOSE_PARTIAL_OR_FAILED"
-            fail_msg = (
-                f"futures_closed={futures_closed}, spot_liquidated={not spot_sell_failed}. "
-                "Manual reconciliation required; position retained in state."
-            )
-            if pos:
-                pos.state = "RECONCILIATION_REQUIRED"
-                pos.updated_at = int(time.time() * 1000)
-                await self.redis.set(f"arb:active_pos:{pair_key}", json.dumps(pos.to_dict()))
-            self._mark_failed(
+        if futures_closed and not spot_sell_failed:
+            await self._record_force_close_trade(
                 pair_key,
-                fail_reason,
-                fail_msg,
-                detail={
-                    "qty": pos.qty if pos else 0.0,
-                    "symbol": pos.symbol if pos else "",
-                    "futures_closed": futures_closed,
-                    "spot_sell_failed": spot_sell_failed,
-                },
-                state=PositionState.RECONCILIATION_REQUIRED,
+                pos,
+                pnl,
+                current_ask,
+                current_spot_bid,
+                spot_sell_failed,
+                usdt_rate,
             )
-            logger.critical(
-                f"[Force Close Alert] {pair_key} incomplete! Retaining active position in Redis: {fail_msg}"
-            )
+
+        return futures_closed, spot_sell_failed, pnl
+
+    async def _handle_force_close_failure(
+        self, pair_key: str, pos, futures_closed: bool, spot_sell_failed: bool
+    ) -> None:
+        """P0: Retains persistent state with RECONCILIATION_REQUIRED on partial or failed force close."""
+        fail_reason = "FORCE_CLOSE_PARTIAL_OR_FAILED"
+        fail_msg = (
+            f"futures_closed={futures_closed}, spot_liquidated={not spot_sell_failed}. "
+            "Manual reconciliation required; position retained in state."
+        )
+        if pos:
+            pos.state = "RECONCILIATION_REQUIRED"
+            pos.updated_at = int(time.time() * 1000)
+            await self.redis.set(f"arb:active_pos:{pair_key}", json.dumps(pos.to_dict()))
+
+        self._mark_failed(
+            pair_key,
+            fail_reason,
+            fail_msg,
+            detail={
+                "qty": pos.qty if pos else 0.0,
+                "symbol": pos.symbol if pos else "",
+                "futures_closed": futures_closed,
+                "spot_sell_failed": spot_sell_failed,
+            },
+            state=PositionState.RECONCILIATION_REQUIRED,
+        )
+        logger.critical(
+            f"[Force Close Alert] {pair_key} incomplete! Retaining active position in Redis: {fail_msg}"
+        )
+
+    async def _handle_force_close_success(self, pair_key: str, pos, pnl: dict) -> None:
+        """Cleans up active state in Redis and memory when force close fully succeeds."""
+        await self.redis.delete(f"arb:active_pos:{pair_key}")
+        self.active_positions.pop(pair_key, None)
+        self.last_pegged_global_ask.pop(pair_key, None)
+        if pos and pos.qty > 0:
+            self.record_realized_pnl(pnl["net_profit_usdt"])
+        self.states[pair_key] = PositionState.CLOSED
+        logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")
+
+    async def _force_close_locked(self, pair_key: str) -> None:
+        await self._cancel_pending_orders_for_force_close(pair_key)
+        pos = self.active_positions.get(pair_key)
+        futures_closed, spot_sell_failed, pnl = await self._execute_force_close_legs(pair_key, pos)
+
+        if not futures_closed or spot_sell_failed:
+            await self._handle_force_close_failure(pair_key, pos, futures_closed, spot_sell_failed)
         else:
-            await self.redis.delete(f"arb:active_pos:{pair_key}")
-            self.active_positions.pop(pair_key, None)
-            self.last_pegged_global_ask.pop(pair_key, None)
-            if pos and pos.qty > 0:
-                self.record_realized_pnl(pnl["net_profit_usdt"])
-            self.states[pair_key] = PositionState.CLOSED
-            logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")
+            await self._handle_force_close_success(pair_key, pos, pnl)
+
         await self.publish_status()
