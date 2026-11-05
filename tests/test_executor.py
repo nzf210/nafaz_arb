@@ -1133,6 +1133,32 @@ async def test_p0_03_startup_recovery_restores_active_positions(fake_redis, mock
 
 
 @pytest.mark.asyncio
+async def test_p0_03_recovery_preserves_reconciliation_required_state(fake_redis, mock_client):
+    """Positions persisted with RECONCILIATION_REQUIRED must not be treated as HEDGED_ACTIVE on recovery."""
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+        spot_cost_usdt=50.0,
+        futures_margin_usdt=50.0,
+        state="RECONCILIATION_REQUIRED",
+    )
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=mock_client, redis_client=fake_redis
+    )
+    await engine.initialize()
+
+    assert pair_tag in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "RESTORED_RECONCILIATION_REQUIRED"
+
+@pytest.mark.asyncio
 async def test_p0_03_recovery_drops_zero_qty_position(fake_redis, mock_client):
     """Recovery must not resurrect a degenerate zero-quantity position."""
     pair_tag = "indodax:btc_idr"
@@ -1223,9 +1249,9 @@ async def test_p0_05_force_close_records_failed_spot_liquidation(fake_redis):
 
     await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
 
-    history = await fake_redis.lrange("arb:trade_history", 0, 0)
-    trade = json.loads(history[0])
-    assert trade["spot_liquidation_failed"] is True
+    # Trade is NOT finalized or recorded as closed in trade_history because liquidation failed
+    history = await fake_redis.lrange("arb:trade_history", 0, -1)
+    assert len(history) == 0
     # P0 safety: Position must NOT be deleted from active positions or Redis when liquidation fails
     assert pair_tag in engine.active_positions
     assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is not None

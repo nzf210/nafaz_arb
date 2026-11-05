@@ -295,11 +295,26 @@ class ArbitrageEngine:
                     continue
 
                 self.active_positions[pair_tag] = pos
-                self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+                pos_state_str = getattr(pos, "state", "HEDGED_ACTIVE")
+                if pos_state_str == "RECONCILIATION_REQUIRED":
+                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                    self._failure_reasons[pair_tag] = {
+                        "reason": "RESTORED_RECONCILIATION_REQUIRED",
+                        "message": "Position restored from Redis with RECONCILIATION_REQUIRED state. Manual intervention required.",
+                        "detail": {"qty": pos.qty, "symbol": pos.symbol},
+                        "timestamp_ms": int(time.time() * 1000),
+                    }
+                    logger.critical(
+                        f"[Recovery] Position {pair_tag} has RECONCILIATION_REQUIRED status! "
+                        f"Manual intervention required; skipping automatic active exit management."
+                    )
+                else:
+                    self.states[pair_tag] = PositionState.HEDGED_ACTIVE
                 recovered += 1
                 logger.warning(
                     f"[Recovery] Restored position {pair_tag}: qty={pos.qty}, "
-                    f"entry_idr={pos.entry_price_idr}, short_entry_usdt={pos.short_entry_usdt}"
+                    f"entry_idr={pos.entry_price_idr}, short_entry_usdt={pos.short_entry_usdt}, "
+                    f"state={self.states[pair_tag].value}"
                 )
             except Exception:
                 logger.exception(f"[Recovery] failed to restore position from {key}")
@@ -1863,6 +1878,9 @@ class ArbitrageEngine:
             logger.exception(f"[State 3] failed to place dynamic limit sell for {pair_tag}")
 
     async def _check_dynamic_exit_pair(self, pair_tag: str) -> None:
+        if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+            return
+
         pos = self.active_positions.get(pair_tag)
         if not pos or pos.qty <= 0:
             return
@@ -2469,23 +2487,31 @@ class ArbitrageEngine:
         if pos and pos.qty > 0:
             futures_closed = await self._close_global_short_leg(pair_key, pos)
 
-            spot_exit_price_idr = await self._liquidate_spot_leg(pair_key, pos)
-            if spot_exit_price_idr <= 0:
+            # Only attempt spot liquidation if futures short leg succeeded or is closed.
+            # If futures short closure fails, attempting to sell spot would leave an unhedged SHORT exposure!
+            if futures_closed:
+                spot_exit_price_idr = await self._liquidate_spot_leg(pair_key, pos)
+                if spot_exit_price_idr <= 0:
+                    spot_sell_failed = True
+            else:
                 spot_sell_failed = True
 
             current_ask, usdt_rate, current_spot_bid = await self._resolve_force_close_prices(
-                pair_key, pos, spot_exit_price_idr
+                pair_key, pos, spot_exit_price_idr if futures_closed else 0.0
             )
             pnl = self._compute_force_close_pnl(pos, current_ask, usdt_rate, current_spot_bid)
-            await self._record_force_close_trade(
-                pair_key,
-                pos,
-                pnl,
-                current_ask,
-                current_spot_bid,
-                spot_sell_failed,
-                usdt_rate,
-            )
+
+            # Only record finalized trade and apply realized PnL if both legs successfully closed!
+            if futures_closed and not spot_sell_failed:
+                await self._record_force_close_trade(
+                    pair_key,
+                    pos,
+                    pnl,
+                    current_ask,
+                    current_spot_bid,
+                    spot_sell_failed,
+                    usdt_rate,
+                )
 
         # 4. State resolution and Redis persistence
         if not futures_closed or spot_sell_failed:
@@ -2496,6 +2522,10 @@ class ArbitrageEngine:
                 f"futures_closed={futures_closed}, spot_liquidated={not spot_sell_failed}. "
                 "Manual reconciliation required; position retained in state."
             )
+            if pos:
+                pos.state = "RECONCILIATION_REQUIRED"
+                pos.updated_at = int(time.time() * 1000)
+                await self.redis.set(f"arb:active_pos:{pair_key}", json.dumps(pos.to_dict()))
             self._mark_failed(
                 pair_key,
                 fail_reason,
@@ -2508,9 +2538,6 @@ class ArbitrageEngine:
                 },
                 state=PositionState.RECONCILIATION_REQUIRED,
             )
-            if pos:
-                pos.updated_at = int(time.time() * 1000)
-                await self.redis.set(f"arb:active_pos:{pair_key}", json.dumps(pos.to_dict()))
             logger.critical(
                 f"[Force Close Alert] {pair_key} incomplete! Retaining active position in Redis: {fail_msg}"
             )

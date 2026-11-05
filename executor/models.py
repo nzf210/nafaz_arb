@@ -157,6 +157,7 @@ class ActivePosition:
     net_unrealized_roi_pct: float = 0.0
     spot_cost_usdt: float = 0.0
     futures_margin_usdt: float = 0.0
+    state: str = "HEDGED_ACTIVE"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -184,6 +185,7 @@ class ActivePosition:
             "net_unrealized_roi_pct": self.net_unrealized_roi_pct,
             "spot_cost_usdt": self.spot_cost_usdt,
             "futures_margin_usdt": self.futures_margin_usdt,
+            "state": self.state,
         }
 
     @classmethod
@@ -213,6 +215,7 @@ class ActivePosition:
             net_unrealized_roi_pct=float(d.get("net_unrealized_roi_pct", 0.0)),
             spot_cost_usdt=float(d.get("spot_cost_usdt", 0.0)),
             futures_margin_usdt=float(d.get("futures_margin_usdt", 0.0)),
+            state=d.get("state", "HEDGED_ACTIVE"),
         )
 
 

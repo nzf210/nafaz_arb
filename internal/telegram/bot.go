@@ -1187,7 +1187,11 @@ func (b *Bot) formatPositionBlock(sb *strings.Builder, idx int, pos domain.Activ
 		sb.WriteString(fmt.Sprintf("• Estimasi Floating PnL: <b>%+.4f USDT</b> (Rp %+.2f)\n", pnl.floatingUSDT, pnl.floatingIDR))
 	}
 
-	sb.WriteString("• Status: <code>HEDGED (Delta Neutral 100%)</code>\n\n")
+	statusStr := "HEDGED (Delta Neutral 100%)"
+	if pos.State == "RECONCILIATION_REQUIRED" {
+		statusStr = "⚠️ RECONCILIATION REQUIRED (Unhedged / Leg Failed)"
+	}
+	sb.WriteString(fmt.Sprintf("• Status: <code>%s</code>\n\n", statusStr))
 }
 
 func (b *Bot) handleHistoryCommand(ctx context.Context, chatID int64, replyToID int64) {

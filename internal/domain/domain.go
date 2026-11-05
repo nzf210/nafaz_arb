@@ -193,6 +193,7 @@ type ActivePosition struct {
 	NetUnrealizedPnLUSDT     float64 `json:"net_unrealized_pnl_usdt,omitempty"`
 	NetUnrealizedPnLIDR      float64 `json:"net_unrealized_pnl_idr,omitempty"`
 	NetUnrealizedROIPct      float64 `json:"net_unrealized_roi_pct,omitempty"`
+	State                    string  `json:"state,omitempty"`
 }
 
 type BalancesRecord struct {

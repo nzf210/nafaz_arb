@@ -479,8 +479,12 @@ func TestHandlePositionsAndForceClose(t *testing.T) {
 		t.Errorf("expected confirmed force close, got: %s", msg4.Text)
 	}
 
-	// 5. Test /killswitch authorization
-	// Unauthorized user
+	// 5. Test /killswitch authorization with user allowlist in group chat
+	// Group chat ID is negative (-100123456789), whereas user ID is positive.
+	// When AllowedUserIDs is configured, only listed users can execute sensitive actions.
+	bot.cfg.Telegram.AllowedUserIDs = []int64{12345678}
+
+	// Unauthorized user in group
 	bot.handleCommand(ctx, &Message{
 		Chat:      Chat{ID: allowedChatID},
 		From:      &User{ID: 99999999},
@@ -491,10 +495,10 @@ func TestHandlePositionsAndForceClose(t *testing.T) {
 		t.Errorf("expected access denied for unauthorized user on /killswitch, got: %s", msg5.Text)
 	}
 
-	// Authorized user
+	// Authorized user in group
 	bot.handleCommand(ctx, &Message{
 		Chat:      Chat{ID: allowedChatID},
-		From:      &User{ID: allowedChatID},
+		From:      &User{ID: 12345678},
 		MessageID: 6,
 	}, "/killswitch", []string{"/killswitch", "on"})
 	msg6 := <-sentMsgs
