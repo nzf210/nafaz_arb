@@ -253,3 +253,17 @@ Order placement sends a deterministic `clientOrderId` (`{pair}-{leg}-{seq}`) on
 every leg so a retried submit is rejected by the venue instead of double-filling.
 The sequence is seeded from wall-clock time at startup, so ids never collide
 across process restarts.
+
+
+## Supabase Database
+
+The initial Supabase PostgreSQL schema and migration workflow are documented in
+[`supabase/README.md`](./supabase/README.md). The versioned migration creates
+operational tables for exchange accounts, strategy/risk configuration, market pairs,
+scanner opportunities, orders/fills, positions/legs, funding payments, closed trades,
+balances, risk events, and executor events/status snapshots.
+
+**Important:** the schema is created, but runtime persistence is not yet connected.
+Redis remains the live coordination layer and scanner opportunity history still uses
+the configured JSON file. Do not assume Supabase is receiving live orders or trades
+until the persistence adapter and its idempotent retry/outbox tests are merged.
