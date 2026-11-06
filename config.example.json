@@ -18,6 +18,7 @@
         "db": 0
     },
     "listen_addr": ":8080",
+  "api_auth_token": "CHANGE_ME_USE_A_LONG_RANDOM_SECRET",
     "scan_interval_seconds": 30,
     "quote_assets": [
         "USDT",
