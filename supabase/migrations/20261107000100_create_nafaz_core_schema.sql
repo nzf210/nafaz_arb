@@ -170,10 +170,16 @@ create table if not exists public.orders (
 create index if not exists idx_orders_pair_created on public.orders (pair_key, created_at desc);
 create index if not exists idx_orders_status on public.orders (status, updated_at desc);
 create unique index if not exists uq_orders_exchange_client_id
-    on public.orders (exchange_name, client_order_id)
+    on public.orders (
+        coalesce(exchange_account_id, '00000000-0000-0000-0000-000000000000'::uuid),
+        exchange_name, client_order_id
+    )
     where client_order_id is not null;
 create unique index if not exists uq_orders_exchange_order_id
-    on public.orders (exchange_name, exchange_order_id)
+    on public.orders (
+        coalesce(exchange_account_id, '00000000-0000-0000-0000-000000000000'::uuid),
+        exchange_name, exchange_order_id
+    )
     where exchange_order_id is not null;
 
 create table if not exists public.order_fills (
@@ -233,7 +239,10 @@ create table if not exists public.funding_payments (
     created_at timestamptz not null default now()
 );
 create unique index if not exists uq_funding_exchange_payment
-    on public.funding_payments (exchange_name, exchange_payment_id)
+    on public.funding_payments (
+        coalesce(exchange_account_id, '00000000-0000-0000-0000-000000000000'::uuid),
+        exchange_name, exchange_payment_id
+    )
     where exchange_payment_id is not null;
 create index if not exists idx_funding_position_time
     on public.funding_payments (position_id, settled_at desc);
@@ -335,6 +344,8 @@ do $$
 declare
     tbl text;
 begin
+    revoke all on schema public from anon, authenticated;
+    grant usage on schema public to service_role;
     foreach tbl in array array[
         'exchange_accounts','strategy_configs','risk_limits','market_pairs',
         'scanner_opportunities','positions','orders','order_fills','position_legs',
