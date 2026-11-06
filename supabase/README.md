@@ -10,6 +10,7 @@ The initial migration creates:
 
 - `exchange_accounts`: exchange account metadata and encrypted credential slots.
   Credential columns are ciphertext-only; never store API secrets as plaintext.
+- `strategy_configs` and `risk_limits`: versionable strategy parameters and hard risk limits.
 - `market_pairs`: normalized local spot / global perpetual market mapping.
 - `scanner_opportunities`: time-series snapshots of evaluated opportunities.
 - `positions` and `position_legs`: lifecycle and each exchange leg.
@@ -19,6 +20,7 @@ The initial migration creates:
 - `closed_trades`: realized PnL snapshots.
 - `balance_snapshots`: historical balance observations.
 - `risk_events` and `executor_events`: operational and audit event journals.
+- `executor_status_snapshots`: time-series snapshots for monitoring and incident review.
 
 All financial quantities are PostgreSQL `NUMERIC`, not floating point. Tables have
 RLS enabled and no grants for `anon` or `authenticated`; server components use
@@ -39,6 +41,16 @@ Studio after adopting versioned migrations.
 ## Runtime integration status
 
 This migration establishes the durable schema only. The current scanner/executor
-still uses Redis and the configured JSON opportunity-history file at runtime.
-A subsequent integration step must add a tested persistence adapter and idempotent
-outbox/retry behavior before treating Supabase as the operational source of truth.
+still uses Redis for live coordination and the configured JSON opportunity-history
+file for scanner history. The Supabase tables are not yet wired into runtime writes.
+Do not treat Supabase as the operational source of truth until a persistence adapter
+with idempotent writes, retry/outbox handling, and integration tests has been merged.
+
+The intended runtime split is:
+
+- Redis: ephemeral signals, live prices, pub/sub, fast executor coordination.
+- Supabase: durable order/fill ledger, position lifecycle, funding settlement ledger,
+  closed trades, risk/audit events, scanner opportunity history and status snapshots.
+
+The executor must continue protecting/closing live exposure if Supabase is unavailable.
+A Supabase outage must never prevent a required hedge, rollback, or emergency close.
