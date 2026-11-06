@@ -432,3 +432,50 @@ async def test_funding_rollover_never_estimates_missing_settlement(engine, fake_
     assert applied is False
     assert pos.accumulated_funding_usdt == 0.0
     assert pos.next_funding_time_ms == now_ms + 4 * 60 * 60 * 1000
+
+
+@pytest.mark.asyncio
+async def test_partial_futures_close_after_spot_fill_requires_reconciliation(engine, fake_redis, mock_client):
+    """Do not reduce the recorded position when the futures leg did not fully close."""
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.EXIT_PENDING
+    engine.pending_exit_orders[pair_tag] = {
+        "order_id": "992",
+        "symbol": "btc_idr",
+        "price": 1_010_000_000.0,
+        "qty": 0.01,
+        "filled": 0.0,
+        "closed_short_qty": 0.0,
+    }
+    mock_client.orders["992"] = {
+        "id": "992", "symbol": "btc_idr", "status": "closed", "filled": 0.005
+    }
+
+    async def partial_close(symbol, amount, client_order_id=None):
+        return {
+            "id": "partial-close",
+            "symbol": symbol,
+            "status": "closed",
+            "amount": amount,
+            "filled": 0.002,
+            "average": 65_100.0,
+        }
+
+    mock_client.close_global_short_market = partial_close
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    await engine._check_exit_orders()
+
+    assert pos.qty == pytest.approx(0.01)
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is not None
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "EXIT_HEDGE_RECONCILIATION_REQUIRED"
