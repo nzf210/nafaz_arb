@@ -24,8 +24,14 @@ class CancelMixin:
         order_info = orders.get(pair_key)
         if not order_info:
             return True
-        order_id = str(order_info["order_id"])
-        symbol = str(order_info["symbol"])
+        order_id = str(order_info.get("order_id", ""))
+        symbol = str(order_info.get("symbol", ""))
+        if not order_id or not symbol:
+            logger.critical(
+                f"[Force Close] cannot reconcile malformed {order_label} order "
+                f"record for {pair_key}; force close is blocked"
+            )
+            return False
         try:
             await self.client.cancel_local_order(order_id, symbol)
         except Exception:
