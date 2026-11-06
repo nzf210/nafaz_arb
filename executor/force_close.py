@@ -38,7 +38,7 @@ class ForceCloseMixin:
             return None
 
 
-        async def _close_global_short_leg(self, pair_key: str, pos):
+        async def _close_global_short_leg(self, pair_key: str, pos) -> Tuple[bool, float]:
             """Closes the futures short; returns its actual fill price only after flat verification."""
             global_sym = self._resolve_global_symbol(pos.symbol)
             logger.warning(f"[Force Close] Closing global short {pos.qty} on {global_sym}...")
@@ -70,13 +70,13 @@ class ForceCloseMixin:
                     logger.critical(
                         f"[Force Close] futures close returned no verifiable order for {pair_key}"
                     )
-                    return 0.0
+                    return False, 0.0
                 status = str(res.get("status", "")).lower()
                 if status not in ("closed", "filled"):
                     logger.error(
                         f"[Force Close] futures close is not terminal (status={status}): {res}"
                     )
-                    return 0.0
+                    return False, 0.0
                 try:
                     filled_qty = float(res.get("filled") or 0.0)
                 except (TypeError, ValueError):
@@ -87,7 +87,7 @@ class ForceCloseMixin:
                         f"[Force Close] futures close fill incomplete for {pair_key}: "
                         f"requested={pos.qty}, filled={filled_qty}"
                     )
-                    return 0.0
+                    return False, 0.0
 
                 # Order acknowledgement is not proof that the short is flat.
                 # The authoritative position endpoint must confirm zero exposure.
@@ -96,19 +96,19 @@ class ForceCloseMixin:
                         f"[Force Close] cannot verify futures position for {pair_key}: "
                         "client has no fetch_positions method"
                     )
-                    return 0.0
+                    return False, 0.0
                 positions = await self.client.fetch_positions(global_sym)
                 if positions is None:
                     logger.critical(
                         f"[Force Close] futures position lookup returned None for {pair_key}"
                     )
-                    return 0.0
+                    return False, 0.0
                 for position in positions:
                     if not isinstance(position, dict):
                         logger.critical(
                             f"[Force Close] invalid position payload for {pair_key}: {position!r}"
                         )
-                        return 0.0
+                        return False, 0.0
                     info = position.get("info") or {}
                     raw_size = position.get("contracts")
                     if raw_size is None:
@@ -117,35 +117,35 @@ class ForceCloseMixin:
                         logger.critical(
                             f"[Force Close] position size unavailable for {pair_key}: {position}"
                         )
-                        return 0.0
+                        return False, 0.0
                     try:
                         remaining = abs(float(raw_size))
                     except (TypeError, ValueError):
-                        return 0.0
+                        return False, 0.0
                     if remaining > 1e-12:
                         logger.critical(
                             f"[Force Close] residual futures exposure for {pair_key}: "
                             f"{remaining} contracts/units remain"
                         )
-                        return 0.0
+                        return False, 0.0
 
                 fill_price = helpers.extract_fill_price(res)
                 if fill_price <= 0:
                     logger.critical(
                         f"[Force Close] futures position is flat but actual close fill price "
-                        f"is unavailable for {pair_key}; PnL cannot be safely finalized"
+                        f"is unavailable for {pair_key}; spot liquidation will continue, "
+                        "but realized PnL will be marked unverified"
                     )
-                    return 0.0
                 logger.info(
                     f"[Force Close] Futures position verified flat for {pair_key} "
                     f"after close response {res!r}"
                 )
-                return fill_price
+                return True, fill_price
             except Exception:
                 logger.exception(
                     f"failed to close or verify global short on force close for {pair_key}"
                 )
-                return 0.0
+                return False, 0.0
 
         async def _liquidate_spot_leg(self, pair_key: str, pos) -> float:
             """
@@ -355,11 +355,15 @@ class ForceCloseMixin:
                 )
                 return False, True, {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
 
-            short_exit_price_usdt = await self._close_global_short_leg(pair_key, pos)
-            futures_closed = short_exit_price_usdt > 0
+            futures_closed, short_exit_price_usdt = await self._close_global_short_leg(
+                pair_key, pos
+            )
             spot_sell_failed = True
             spot_exit_price_idr = 0.0
 
+            # Even when the futures close fill price is unavailable, a verified-flat
+            # futures leg must not leave the spot leg exposed. Liquidate spot, but
+            # mark the realized PnL as unverified instead of substituting a quote.
             if futures_closed:
                 spot_exit_price_idr = await self._liquidate_spot_leg(pair_key, pos)
                 spot_sell_failed = spot_exit_price_idr <= 0
@@ -367,11 +371,19 @@ class ForceCloseMixin:
             current_ask, usdt_rate, current_spot_bid = await self._resolve_force_close_prices(
                 pair_key, pos, spot_exit_price_idr if futures_closed else 0.0
             )
-            if futures_closed:
+            if futures_closed and short_exit_price_usdt > 0:
                 current_ask = short_exit_price_usdt
-            pnl = self._compute_force_close_pnl(pos, current_ask, usdt_rate, current_spot_bid)
+                pnl = self._compute_force_close_pnl(
+                    pos, current_ask, usdt_rate, current_spot_bid
+                )
+            else:
+                pnl = {
+                    "net_profit_usdt": 0.0,
+                    "net_profit_idr": 0.0,
+                    "pnl_unverified": True,
+                }
 
-            if futures_closed and not spot_sell_failed:
+            if futures_closed and not spot_sell_failed and not pnl.get("pnl_unverified"):
                 await self._record_force_close_trade(
                     pair_key,
                     pos,
@@ -381,7 +393,7 @@ class ForceCloseMixin:
                     spot_sell_failed,
                     usdt_rate,
                 )
-            elif futures_closed and spot_sell_failed:
+            elif futures_closed and spot_sell_failed and not pnl.get("pnl_unverified"):
                 # Futures leg closed but spot liquidation failed — record partial close so
                 # the futures PnL is not lost from history, and flag it clearly.
                 logger.error(
@@ -435,10 +447,16 @@ class ForceCloseMixin:
             await self.redis.delete(f"arb:active_pos:{pair_key}")
             self.active_positions.pop(pair_key, None)
             self.last_pegged_global_ask.pop(pair_key, None)
-            if pos and pos.qty > 0:
+            if pos and pos.qty > 0 and not pnl.get("pnl_unverified"):
                 self.record_realized_pnl(pnl["net_profit_usdt"])
             self.states[pair_key] = PositionState.CLOSED
-            logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")
+            if pnl.get("pnl_unverified"):
+                logger.critical(
+                    f"[Force Close Complete] Exposure for {pair_key} is flat, but realized "
+                    "PnL could not be verified from exchange fills; review manually."
+                )
+            else:
+                logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")
 
         async def _force_close_locked(self, pair_key: str) -> None:
             # A corrupted persisted position has no trustworthy quantity/symbol to
