@@ -346,8 +346,14 @@ class ForceCloseMixin:
             Executes short closure on futures and spot liquidation.
             Returns (futures_closed, spot_sell_failed, pnl).
             """
-            if not pos or pos.qty <= 0:
+            if not pos:
                 return True, False, {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
+            if pos.qty <= 0:
+                logger.critical(
+                    f"[Force Close] refusing to clear {pair_key}: persisted position qty "
+                    f"is invalid ({pos.qty}); manual reconciliation required"
+                )
+                return False, True, {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
 
             short_exit_price_usdt = await self._close_global_short_leg(pair_key, pos)
             futures_closed = short_exit_price_usdt > 0
