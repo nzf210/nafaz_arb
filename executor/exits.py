@@ -481,9 +481,9 @@ class ExitMixin:
                         "futures close returned no verifiable order payload after spot exit fill"
                     )
                 close_status = str(close_order.get("status", "")).lower()
-                if close_status in ("rejected", "failed", "canceled", "cancelled"):
+                if close_status not in ("closed", "filled"):
                     raise ValueError(
-                        f"futures close was rejected after spot exit fill: {close_status}"
+                        f"futures close is not terminal after spot exit fill: {close_status}"
                     )
                 try:
                     actual_closed_qty = float(close_order.get("filled") or 0.0)
