@@ -31,6 +31,7 @@ type Config struct {
 	Mode                          string         `json:"mode"`
 	ExecutionMode                 string         `json:"execution_mode"`
 	ListenAddr                    string         `json:"listen_addr"`
+	APIAuthToken                  string         `json:"api_auth_token"`
 	ScanIntervalSeconds           int            `json:"scan_interval_seconds"`
 	QuoteAssets                   []string       `json:"quote_assets"`
 	CheckOpenPositions            bool           `json:"check_open_positions"`
@@ -166,6 +167,9 @@ func (c *Config) AdaptiveSizingEnabled() bool {
 }
 
 func (c *Config) validate() error {
+	if strings.EqualFold(c.Mode, "LIVE") && strings.TrimSpace(c.APIAuthToken) == "" {
+		return fmt.Errorf("api_auth_token is required when mode=LIVE")
+	}
 	if c.ExecutionMode != "" && c.ExecutionMode != "TAKER_TAKER" && c.ExecutionMode != "MAKER_TAKER" {
 		return fmt.Errorf("execution_mode must be TAKER_TAKER or MAKER_TAKER")
 	}
@@ -284,6 +288,7 @@ func setEnvFloat(target *float64, key string) {
 }
 
 func (c *Config) applyEnvOverrides() {
+	setEnvString(&c.APIAuthToken, "API_AUTH_TOKEN")
 	setEnvString(&c.ExecutionMode, "EXECUTION_MODE")
 	if v := os.Getenv("ENABLE_ADAPTIVE_SIZING"); v != "" {
 		b := v == "true" || v == "1"
