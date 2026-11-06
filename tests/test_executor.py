@@ -720,6 +720,78 @@ async def test_entry_order_ttl_expiration(engine, fake_redis, mock_client):
 
 
 @pytest.mark.asyncio
+async def test_entry_ttl_cancel_failure_keeps_order_tracked(engine, fake_redis, mock_client):
+    """A failed/unverifiable cancel must not release funds or forget a live order."""
+    pair_tag = "indodax:btc_idr"
+    order_info = {
+        "order_id": "702",
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "qty": 0.01,
+        "filled": 0.0,
+        "hedged_short_qty": 0.0,
+        "placed_time": time.time() - 30.0,
+        "spot_cost_usdt": 100.0,
+        "futures_margin_usdt": 50.0,
+    }
+    engine.config.max_order_ttl_seconds = 10
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["702"] = {
+        "id": "702", "symbol": "btc_idr", "status": "open", "filled": 0.0
+    }
+    await engine._persist_pending_entry(pair_tag, order_info)
+
+    async def cancel_fails(order_id, symbol):
+        raise TimeoutError("cancel request timed out")
+
+    mock_client.cancel_local_order = cancel_fails
+    resolved = await engine._expire_stale_entry_order(
+        pair_tag, order_info, mock_client.orders["702"]
+    )
+
+    assert resolved is False
+    assert pair_tag in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.ENTRY_PENDING
+    assert await fake_redis.get("arb:pending_entry:" + pair_tag) is not None
+
+
+@pytest.mark.asyncio
+async def test_entry_ttl_cancel_timeout_reconciles_terminal_order(engine, fake_redis, mock_client):
+    """A timeout is safe to resolve only when a follow-up venue read is terminal."""
+    pair_tag = "indodax:btc_idr"
+    order_info = {
+        "order_id": "703",
+        "symbol": "btc_idr",
+        "qty": 0.01,
+        "filled": 0.0,
+        "hedged_short_qty": 0.0,
+        "placed_time": time.time() - 30.0,
+    }
+    engine.config.max_order_ttl_seconds = 10
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["703"] = {
+        "id": "703", "symbol": "btc_idr", "status": "open", "filled": 0.0
+    }
+    await engine._persist_pending_entry(pair_tag, order_info)
+
+    async def cancel_processed_but_timed_out(order_id, symbol):
+        mock_client.orders[order_id]["status"] = "canceled"
+        raise TimeoutError("response lost after venue processed cancel")
+
+    mock_client.cancel_local_order = cancel_processed_but_timed_out
+    resolved = await engine._expire_stale_entry_order(
+        pair_tag, order_info, mock_client.orders["703"]
+    )
+
+    assert resolved is True
+    assert pair_tag not in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.IDLE
+    assert await fake_redis.get("arb:pending_entry:" + pair_tag) is None
+
+
+@pytest.mark.asyncio
 async def test_active_position_floating_pnl_tracking(engine, fake_redis, mock_client):
     """
     Test State 3 Floating PnL Tracking:
