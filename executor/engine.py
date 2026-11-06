@@ -842,14 +842,14 @@ class ArbitrageEngine(
                 if not order_info:
                     continue
                 order_id = order_info["order_id"]
-                symbol = order_info["symbol"]
                 logger.warning(
                     f"[Emergency Cancel] Cancelling pending entry order {order_id} for {p_key} due to negative funding"
                 )
-                try:
-                    await self.client.cancel_local_order(order_id, symbol)
-                except Exception:
-                    logger.exception(f"emergency cancel failed for {order_id}")
-                del self.pending_entry_orders[p_key]
-                await self._clear_pending_entry(p_key)
-                self.states[p_key] = PositionState.IDLE
+                resolved = await self._cancel_entry_order_and_reconcile(
+                    p_key, order_info, "Emergency Cancel"
+                )
+                if not resolved:
+                    logger.critical(
+                        f"[Emergency Cancel] order {order_id} remains unresolved; "
+                        "pending state and reserved funds are retained"
+                    )
