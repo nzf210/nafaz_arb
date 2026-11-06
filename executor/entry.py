@@ -373,9 +373,7 @@ class EntryMixin:
             nor the expected futures ask is known, fail loudly so the position cannot
             be recorded with a wrong basis.
             """
-            short_entry_usdt = helpers.extract_fill_price(
-                short_order, float(short_order.get("expected_price") or 0.0)
-            )
+            short_entry_usdt = helpers.extract_fill_price(short_order)
             if short_entry_usdt <= 0:
                 raise ValueError(
                     "short entry price unavailable from futures fill; refusing to "
