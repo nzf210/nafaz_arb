@@ -414,13 +414,24 @@ class ExitMixin:
             if live_price_raw and hasattr(self.client, "update_market_price"):
                 try:
                     live_snapshot = json.loads(live_price_raw)
-                    self.client.update_market_price(
-                        symbol=local_symbol,
-                        best_bid=float(live_snapshot.get("local_best_bid", 0.0)),
-                        best_ask=float(live_snapshot.get("local_best_ask", 0.0)),
-                    )
+                    if not helpers.snapshot_is_stale(live_snapshot):
+                        self.client.update_market_price(
+                            symbol=local_symbol,
+                            best_bid=float(live_snapshot.get("local_best_bid", 0.0)),
+                            best_ask=float(live_snapshot.get("local_best_ask", 0.0)),
+                        )
+                        # Paper execution must use the same live futures quote that
+                        # triggered the local spot fill, not an unrelated/stale price.
+                        global_symbol = self._resolve_global_symbol(pos.symbol)
+                        self.client.update_market_price(
+                            symbol=global_symbol,
+                            best_bid=float(live_snapshot.get("global_best_bid_usdt", 0.0)),
+                            best_ask=float(live_snapshot.get("global_best_ask_usdt", 0.0)),
+                        )
                 except Exception:
-                    pass
+                    logger.exception(
+                        f"failed to synchronize market prices before exit hedge for {pair_tag}"
+                    )
 
             try:
                 order = await fetch_order_preferring_stream(
