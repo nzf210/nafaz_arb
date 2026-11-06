@@ -293,10 +293,36 @@ class EntryMixin:
                     price=expected_short_price,
                     client_order_id=build_client_order_id(pair_tag, "hedge", self._next_order_seq()),
                 )
-                order_info["hedged_short_qty"] += unhedged_delta
+                if not isinstance(short_order, dict):
+                    raise ValueError(
+                        "futures hedge returned no verifiable order payload; "
+                        "reconciliation required"
+                    )
+                hedge_status = str(short_order.get("status", "")).lower()
+                if hedge_status in ("rejected", "failed", "canceled", "cancelled"):
+                    raise ValueError(
+                        f"futures hedge was not accepted (status={hedge_status})"
+                    )
+                try:
+                    actual_hedged_qty = float(short_order.get("filled") or 0.0)
+                except (TypeError, ValueError):
+                    actual_hedged_qty = 0.0
+                qty_tolerance = max(1e-12, unhedged_delta * 1e-8)
+                if actual_hedged_qty + qty_tolerance < unhedged_delta:
+                    raise ValueError(
+                        f"futures hedge fill incomplete: requested={unhedged_delta}, "
+                        f"filled={actual_hedged_qty}; spot rollback will be guarded by "
+                        "an authoritative futures-position check"
+                    )
+                if actual_hedged_qty > unhedged_delta + qty_tolerance:
+                    raise ValueError(
+                        f"futures hedge overfilled: requested={unhedged_delta}, "
+                        f"filled={actual_hedged_qty}; manual reconciliation required"
+                    )
 
+                order_info["hedged_short_qty"] += actual_hedged_qty
                 self._record_hedged_position(
-                    pair_tag, order_info, unhedged_delta, short_order, price_idr, usdt_rate
+                    pair_tag, order_info, actual_hedged_qty, short_order, price_idr, usdt_rate
                 )
 
                 active_key = f"arb:active_pos:{pair_tag}"
