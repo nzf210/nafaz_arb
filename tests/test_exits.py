@@ -353,3 +353,82 @@ async def test_bug10_short_exit_uses_actual_close_fill(fake_redis):
 
     trade = json.loads((await fake_redis.lrange("arb:trade_history", 0, 0))[0])
     assert trade["short_exit_usdt"] == 65_200.0
+
+
+@pytest.mark.asyncio
+async def test_funding_rollover_uses_actual_exchange_settlement(engine, fake_redis, mock_client):
+    """Funding PnL must use the signed settlement amount, not qty * mark * rate."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="BTC/IDR",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        accumulated_funding_usdt=1.0,
+        current_funding_rate=0.0003,
+        next_funding_time_ms=now_ms - 1_000,
+    )
+    mock_client.funding_history = [
+        {
+            "id": "funding-001",
+            "timestamp": now_ms - 500,
+            "amount": -0.025,
+            "code": "USDT",
+            "rate": 0.0003,
+        }
+    ]
+    mock_client.funding_rate_data = {
+        "fundingRate": 0.0002,
+        "nextFundingTimestamp": now_ms + 8 * 60 * 60 * 1000,
+    }
+
+    applied = await engine._handle_funding_rollover(
+        pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms
+    )
+
+    assert applied is True
+    assert pos.accumulated_funding_usdt == pytest.approx(0.975)
+    assert pos.last_funding_time_ms == now_ms - 500
+    assert pos.current_funding_rate == pytest.approx(0.0002)
+    assert pos.next_funding_time_ms == now_ms + 8 * 60 * 60 * 1000
+
+    # Replaying the same cycle cannot credit the same settlement twice.
+    applied_again = await engine._handle_funding_rollover(
+        pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms + 1
+    )
+    assert applied_again is False
+    assert pos.accumulated_funding_usdt == pytest.approx(0.975)
+
+
+@pytest.mark.asyncio
+async def test_funding_rollover_never_estimates_missing_settlement(engine, fake_redis, mock_client):
+    """No ledger payment means no funding credit, even when a funding time elapsed."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="BTC/IDR",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        accumulated_funding_usdt=0.0,
+        current_funding_rate=0.0003,
+        next_funding_time_ms=now_ms - 1_000,
+    )
+    mock_client.funding_history = []
+    mock_client.funding_rate_data = {
+        "fundingRate": 0.0001,
+        "nextFundingTimestamp": now_ms + 4 * 60 * 60 * 1000,
+    }
+
+    applied = await engine._handle_funding_rollover(
+        pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms
+    )
+
+    assert applied is False
+    assert pos.accumulated_funding_usdt == 0.0
+    assert pos.next_funding_time_ms == now_ms + 4 * 60 * 60 * 1000
