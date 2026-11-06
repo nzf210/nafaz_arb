@@ -299,9 +299,9 @@ class EntryMixin:
                         "reconciliation required"
                     )
                 hedge_status = str(short_order.get("status", "")).lower()
-                if hedge_status in ("rejected", "failed", "canceled", "cancelled"):
+                if hedge_status not in ("closed", "filled"):
                     raise ValueError(
-                        f"futures hedge was not accepted (status={hedge_status})"
+                        f"futures hedge is not terminal (status={hedge_status})"
                     )
                 try:
                     actual_hedged_qty = float(short_order.get("filled") or 0.0)
