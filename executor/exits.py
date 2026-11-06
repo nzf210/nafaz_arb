@@ -468,6 +468,31 @@ class ExitMixin:
                     unclosed_delta,
                     client_order_id=build_client_order_id(pair_tag, "unwind", self._next_order_seq()),
                 )
+                if not isinstance(close_order, dict):
+                    raise ValueError(
+                        "futures close returned no verifiable order payload after spot exit fill"
+                    )
+                close_status = str(close_order.get("status", "")).lower()
+                if close_status in ("rejected", "failed", "canceled", "cancelled"):
+                    raise ValueError(
+                        f"futures close was rejected after spot exit fill: {close_status}"
+                    )
+                try:
+                    actual_closed_qty = float(close_order.get("filled") or 0.0)
+                except (TypeError, ValueError):
+                    actual_closed_qty = 0.0
+                qty_tolerance = max(1e-12, unclosed_delta * 1e-8)
+                if actual_closed_qty + qty_tolerance < unclosed_delta:
+                    raise ValueError(
+                        f"futures close fill incomplete after spot sold: "
+                        f"requested={unclosed_delta}, filled={actual_closed_qty}"
+                    )
+                if actual_closed_qty > unclosed_delta + qty_tolerance:
+                    raise ValueError(
+                        f"futures close overfilled: requested={unclosed_delta}, "
+                        f"filled={actual_closed_qty}"
+                    )
+
                 # Snapshot qty before mutation so PnL fractions stay consistent.
                 total_qty_before = pos.qty
                 order_info["closed_short_qty"] += unclosed_delta
@@ -579,9 +604,31 @@ class ExitMixin:
                 await self.publish_status()
                 await self._finalize_exit_position(pair_tag, pos)
             except Exception as ee:
-                logger.critical(
-                    f"[State 4 CRITICAL] Failed to execute close short market buy for {pair_tag}: {ee}"
+                # The local spot sell has already filled. Do not retry this exit
+                # automatically: the futures close may have failed, partially filled,
+                # or timed out after acceptance. Preserve state for manual reconciliation.
+                pos.state = "RECONCILIATION_REQUIRED"
+                pos.updated_at = int(time.time() * 1000)
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                await self.redis.set(
+                    f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
                 )
+                self._mark_failed(
+                    pair_tag,
+                    "EXIT_HEDGE_RECONCILIATION_REQUIRED",
+                    "Spot exit filled but futures close could not be verified; automatic exit retries blocked.",
+                    detail={
+                        "spot_order_id": order_info.get("order_id"),
+                        "spot_sold_qty": unclosed_delta,
+                        "futures_close_error": str(ee),
+                    },
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                logger.critical(
+                    f"[State 4 CRITICAL] Futures close not verified after spot exit fill "
+                    f"for {pair_tag}: {ee}. Manual reconciliation required."
+                )
+                await self.publish_status()
 
         def _resolve_global_symbol(self, symbol: str) -> str:
             """Convert local/pos symbol into global futures symbol format."""
