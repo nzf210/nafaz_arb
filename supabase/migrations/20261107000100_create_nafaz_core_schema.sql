@@ -56,6 +56,8 @@ create table if not exists public.market_pairs (
     base_asset text not null,
     local_quote_asset text not null,
     global_quote_asset text not null default 'USDT',
+    local_exchange_account_id uuid references public.exchange_accounts(id) on delete set null,
+    global_exchange_account_id uuid references public.exchange_accounts(id) on delete set null,
     price_tick numeric(38,18),
     lot_size numeric(38,18),
     is_enabled boolean not null default true,
@@ -186,6 +188,7 @@ create table if not exists public.order_fills (
     id uuid primary key default gen_random_uuid(),
     order_id uuid not null references public.orders(id) on delete cascade,
     exchange_name text not null,
+    exchange_account_id uuid references public.exchange_accounts(id) on delete set null,
     exchange_fill_id text,
     qty numeric(38,18) not null check (qty > 0),
     price numeric(38,18) not null check (price >= 0),
@@ -197,7 +200,10 @@ create table if not exists public.order_fills (
     created_at timestamptz not null default now()
 );
 create unique index if not exists uq_order_fills_exchange_fill
-    on public.order_fills (exchange_name, exchange_fill_id)
+    on public.order_fills (
+        coalesce(exchange_account_id, '00000000-0000-0000-0000-000000000000'::uuid),
+        exchange_name, exchange_fill_id
+    )
     where exchange_fill_id is not null;
 create index if not exists idx_order_fills_order_time on public.order_fills (order_id, filled_at);
 
