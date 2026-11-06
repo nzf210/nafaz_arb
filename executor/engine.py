@@ -290,13 +290,27 @@ class ArbitrageEngine(
                 order_id = str(order_info.get("order_id", ""))
                 symbol = str(order_info.get("symbol", ""))
                 if not order_id or not symbol:
-                    await self.redis.delete(key)
+                    self.pending_entry_orders[pair_tag] = order_info
+                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                    self._mark_failed(
+                        pair_tag,
+                        "ENTRY_ORDER_RECORD_INVALID",
+                        "Persisted pending entry is missing order_id or symbol; record retained.",
+                        detail={"order_id": order_id, "symbol": symbol},
+                        state=PositionState.RECONCILIATION_REQUIRED,
+                    )
+                    logger.critical(
+                        f"[Recovery] malformed pending entry record for {pair_tag}; "
+                        "Redis record retained for manual reconciliation"
+                    )
                     continue
                 status, filled = await self._resolve_venue_order_state(order_id, symbol)
                 terminal_statuses = ("closed", "canceled", "cancelled", "rejected", "expired")
                 if status == "unknown":
                     # Missing/ambiguous venue state is not proof that an order is gone.
-                    # Keep the durable record and block this pair for manual reconciliation.
+                    # Keep both durable and in-memory records so force-close cannot
+                    # silently skip an order whose venue state is unknown.
+                    self.pending_entry_orders[pair_tag] = order_info
                     self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
                     self._mark_failed(
                         pair_tag,
@@ -353,6 +367,7 @@ class ArbitrageEngine(
                     )
                     continue
 
+                self.pending_entry_orders[pair_tag] = order_info
                 self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
                 self._mark_failed(
                     pair_tag,
@@ -405,10 +420,23 @@ class ArbitrageEngine(
                 pos = ActivePosition.from_dict(json.loads(raw))
                 pair_tag = key.split("arb:active_pos:", 1)[-1]
                 if pos.qty <= 0:
-                    logger.warning(
-                        f"[Recovery] Dropping {pair_tag}: recovered qty is {pos.qty}"
+                    # A zero/invalid Redis quantity is not proof that the exchange
+                    # is flat. Retain the record and require explicit reconciliation.
+                    self.active_positions[pair_tag] = pos
+                    pos.state = "RECONCILIATION_REQUIRED"
+                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                    await self.redis.set(key, json.dumps(pos.to_dict()))
+                    self._mark_failed(
+                        pair_tag,
+                        "RECOVERED_POSITION_QTY_INVALID",
+                        f"Recovered position quantity is invalid ({pos.qty}); exchange exposure must be checked.",
+                        detail={"qty": pos.qty, "symbol": pos.symbol},
+                        state=PositionState.RECONCILIATION_REQUIRED,
                     )
-                    await self.redis.delete(key)
+                    logger.critical(
+                        f"[Recovery] retaining {pair_tag}: recovered qty is {pos.qty}; "
+                        "manual reconciliation required"
+                    )
                     continue
 
                 self.active_positions[pair_tag] = pos
