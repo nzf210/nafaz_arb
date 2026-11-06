@@ -200,6 +200,7 @@ create table if not exists public.position_legs (
     position_id uuid not null references public.positions(id) on delete cascade,
     leg text not null check (leg in ('spot','perpetual')),
     exchange_name text not null,
+    exchange_account_id uuid references public.exchange_accounts(id) on delete set null,
     symbol text not null,
     side text not null check (side in ('long','short')),
     status text not null,
