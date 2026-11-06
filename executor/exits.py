@@ -49,22 +49,118 @@ class ExitMixin:
         async def _handle_funding_rollover(
             self, pair_tag: str, pos: ActivePosition, global_ask_usdt: float, now_ms: int
         ) -> bool:
+            """
+            Applies only funding payments returned by the exchange settlement ledger.
+            The market's settlement interval is never assumed to be eight hours.
+            """
             if pos.next_funding_time_ms <= 0 or now_ms < pos.next_funding_time_ms:
                 return False
 
-            pos_val_usdt = pos.qty * global_ask_usdt
-            accumulated = pos_val_usdt * pos.current_funding_rate
-            pos.accumulated_funding_usdt += accumulated
-            pos.last_funding_time_ms = pos.next_funding_time_ms
-            pos.next_funding_time_ms += 8 * 3600 * 1000  # advance 8h
+            retry_after = getattr(self, "_funding_reconcile_retry_after_ms", {})
+            if now_ms < retry_after.get(pair_tag, 0):
+                return False
+            retry_after[pair_tag] = now_ms + 30_000
+            self._funding_reconcile_retry_after_ms = retry_after
+
+            symbol = self._resolve_global_symbol(pos.symbol)
+            since_ms = (
+                pos.last_funding_time_ms
+                if pos.last_funding_time_ms > 0
+                else max(0, pos.next_funding_time_ms - 1)
+            )
+            try:
+                payments = await self.client.fetch_funding_history(
+                    symbol, since=since_ms, limit=100
+                )
+            except Exception:
+                logger.exception(
+                    f"[Funding Reconciliation] cannot fetch actual settlement history "
+                    f"for {pair_tag}; estimated funding will not be credited"
+                )
+                return False
+
+            if not isinstance(payments, list):
+                logger.error(
+                    f"[Funding Reconciliation] invalid funding history response for {pair_tag}"
+                )
+                return False
+
+            settled = []
+            for payment in payments:
+                if not isinstance(payment, dict):
+                    continue
+                timestamp = int(payment.get("timestamp") or 0)
+                if timestamp <= pos.last_funding_time_ms or timestamp > now_ms:
+                    continue
+                asset = str(payment.get("code") or payment.get("currency") or "USDT").upper()
+                if asset != "USDT":
+                    logger.error(
+                        f"[Funding Reconciliation] unsupported settlement asset {asset} "
+                        f"for {pair_tag}; payment is not added to USDT PnL"
+                    )
+                    continue
+                try:
+                    amount = float(payment.get("amount"))
+                except (TypeError, ValueError):
+                    logger.error(
+                        f"[Funding Reconciliation] invalid payment amount for {pair_tag}: {payment}"
+                    )
+                    continue
+                settled.append((timestamp, amount, payment))
+
+            # Refresh the venue's actual next settlement schedule. Different
+            # contracts/venues can use 1h, 2h, 4h, 8h or custom intervals.
+            next_funding_ms = 0
+            current_rate = pos.current_funding_rate
+            try:
+                rate_data = await self.client.fetch_funding_rate(symbol)
+                if isinstance(rate_data, dict):
+                    next_funding_ms = int(
+                        rate_data.get("nextFundingTimestamp")
+                        or rate_data.get("nextFundingTime")
+                        or 0
+                    )
+                    if rate_data.get("fundingRate") is not None:
+                        current_rate = float(rate_data["fundingRate"])
+            except Exception:
+                logger.exception(
+                    f"[Funding Reconciliation] cannot refresh next settlement schedule "
+                    f"for {pair_tag}; automatic funding rollover is paused"
+                )
+
+            if not settled:
+                if next_funding_ms > now_ms:
+                    pos.next_funding_time_ms = next_funding_ms
+                    pos.current_funding_rate = current_rate
+                    pos.updated_at = now_ms
+                    await self.redis.set(
+                        f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+                    )
+                return False
+
+            settled.sort(key=lambda item: item[0])
+            actual_amount = sum(item[1] for item in settled)
+            pos.accumulated_funding_usdt += actual_amount
+            pos.last_funding_time_ms = settled[-1][0]
+            pos.current_funding_rate = current_rate
+            pos.next_funding_time_ms = (
+                next_funding_ms if next_funding_ms > pos.last_funding_time_ms else 0
+            )
             pos.updated_at = now_ms
 
-            active_key = f"arb:active_pos:{pair_tag}"
-            await self.redis.set(active_key, json.dumps(pos.to_dict()))
-            logger.info(
-                f"[State 3 Funding Rollover] Funding hour passed for {pair_tag}. "
-                f"Added ${accumulated:.4f} funding. Total: ${pos.accumulated_funding_usdt:.4f}"
+            await self.redis.set(
+                f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
             )
+            logger.info(
+                f"[Funding Reconciliation] {pair_tag}: applied {len(settled)} actual "
+                f"settlement(s), net {actual_amount:+.8f} USDT; "
+                f"cumulative={pos.accumulated_funding_usdt:+.8f} USDT"
+            )
+            if pos.next_funding_time_ms <= 0:
+                logger.critical(
+                    f"[Funding Reconciliation] next settlement time unavailable for "
+                    f"{pair_tag}; funding accrual paused pending a valid exchange schedule"
+                )
             return True
 
         def _should_repeg_exit(
