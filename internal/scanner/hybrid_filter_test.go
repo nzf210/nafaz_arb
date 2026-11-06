@@ -296,14 +296,14 @@ func TestRedisActivePositionAndSignalPublishing(t *testing.T) {
 	}
 
 	cfg := config.Config{
-		Mode:                 "MOCK",
-		ExecutionMode:        "MAKER_TAKER",
-		QuoteAssets:          []string{"USDT"},
-		EnableSyntheticIDR:   true,
-		SyntheticUSDTIDRRate: 16000.0,
-		CapitalTotal:         1000,
-		AllocationPerPair:    0.5,
-		MinFundingRate:       0.0002,
+		Mode:                  "MOCK",
+		ExecutionMode:         "MAKER_TAKER",
+		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR:    true,
+		SyntheticUSDTIDRRate:  16000.0,
+		CapitalTotal:          1000,
+		AllocationPerPair:     0.5,
+		MinFundingRate:        0.0002,
 		MinNetROIPct:          0.1,
 		MaxNetROIPct:          20.0,
 		SpotMakerFeePct:       0.0,

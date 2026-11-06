@@ -715,7 +715,6 @@ func TestEmptyBookFreezeMinutesCircuitBreaker(t *testing.T) {
 	}
 }
 
-
 func TestFeeAssetSurcharge(t *testing.T) {
 	adapter := &hybridMockAdapter{
 		spotBid: 100.0,

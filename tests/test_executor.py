@@ -1692,16 +1692,17 @@ async def test_p2_03_retry_with_backoff_raises_after_exhaustion():
 @pytest.mark.asyncio
 async def test_p2_03_force_close_uses_backoff_helper(fake_redis, monkeypatch):
     """Force close must go through the shared retry helper, not an inline loop."""
-    import executor.engine as engine_module
+    import executor.helpers as helpers_module
 
     seen = {"n": 0}
-    real_helper = engine_module.retry_with_backoff
+    real_helper = helpers_module.retry_with_backoff
 
     async def spy(fn, **kwargs):
         seen["n"] += 1
         return await real_helper(fn, **kwargs)
 
-    monkeypatch.setattr(engine_module, "retry_with_backoff", spy)
+    # Patch the module the force-close path resolves the helper through.
+    monkeypatch.setattr(helpers_module, "retry_with_backoff", spy)
 
     pair_tag = "indodax:btc_idr"
     client = SpotSellFailureClient()

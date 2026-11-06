@@ -100,7 +100,8 @@ func (s *Service) SpikeThresholds() (multiple float64, scans int) {
 // noise; once the anomaly persists across the required scans it is accepted as a
 // genuine dislocation and the counter lets the signal through. Requires
 // SpikeSpreadPct > 0 to be enabled, so default deployments are unchanged.
-func (s *Service) validateSpikePersistence(pairID string, spreadPct float64) error {	spikePct, minScans := s.SpikeThresholds()
+func (s *Service) validateSpikePersistence(pairID string, spreadPct float64) error {
+	spikePct, minScans := s.SpikeThresholds()
 	if spikePct <= 0 {
 		return nil
 	}
