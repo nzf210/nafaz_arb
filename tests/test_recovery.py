@@ -496,3 +496,56 @@ async def test_partial_futures_hedge_fill_is_not_recorded_as_fully_hedged(fake_r
     assert client.placed_sells == []
     assert engine.states[pair_tag] == PositionState.FAILED
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "HEDGE_STATE_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis):
+    """A restored live position is active only when the exchange confirms its short size."""
+    client = MockExchangeClient()
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+    async def matching_short(symbol):
+        return [{"symbol": symbol, "contracts": 0.005, "contractSize": 1.0, "side": "short"}]
+    client.fetch_positions = matching_short
+    await fake_redis.set("arb:active_pos:indodax:btc_idr", json.dumps(pos.to_dict()))
+
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
+    )
+    await engine.initialize()
+
+    assert engine.states["indodax:btc_idr"] == PositionState.HEDGED_ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redis):
+    """A Redis snapshot must not resume automatic exits if exchange size differs."""
+    client = MockExchangeClient()
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+    async def mismatched_short(symbol):
+        return [{"symbol": symbol, "contracts": 0.003, "contractSize": 1.0, "side": "short"}]
+    client.fetch_positions = mismatched_short
+    await fake_redis.set("arb:active_pos:indodax:btc_idr", json.dumps(pos.to_dict()))
+
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
+    )
+    await engine.initialize()
+
+    assert engine.states["indodax:btc_idr"] == PositionState.RECONCILIATION_REQUIRED
+    restored = json.loads(await fake_redis.get("arb:active_pos:indodax:btc_idr"))
+    assert restored["state"] == "RECONCILIATION_REQUIRED"
+    assert engine.status_snapshot()["failures"]["indodax:btc_idr"]["reason"] == "RECOVERY_POSITION_MISMATCH"
