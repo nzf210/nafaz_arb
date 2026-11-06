@@ -295,7 +295,10 @@ async def test_p0_pending_entry_adopted_on_startup(engine, fake_redis, mock_clie
 
     assert "indodax:btc_idr" in engine.pending_entry_orders
     assert engine.states["indodax:btc_idr"] == PositionState.ENTRY_PENDING
-    assert await fake_redis.get("arb:pending_entry:indodax:btc_idr") is None
+    # Re-adoption must remain durable across another process restart.
+    persisted = await fake_redis.get("arb:pending_entry:indodax:btc_idr")
+    assert persisted is not None
+    assert json.loads(persisted)["order_id"] == "777"
 
 @pytest.mark.asyncio
 async def test_p0_pending_entry_closed_on_venue_cleared_at_startup(engine, fake_redis, mock_client):
@@ -391,3 +394,64 @@ async def test_p2_03_retry_with_backoff_raises_after_exhaustion():
     assert calls["n"] == 3
     assert exc_info.value.attempts == 3
     assert "boom-3" in str(exc_info.value.last_error)
+
+
+@pytest.mark.asyncio
+async def test_p0_pending_entry_terminal_partial_fill_is_hedged_on_recovery(engine, fake_redis, mock_client):
+    """A canceled order with a final partial fill must hedge that fill before clearing state."""
+    pair_tag = "indodax:btc_idr"
+    order_info = {
+        "order_id": "889",
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "price": 1_000_000_000.0,
+        "qty": 0.01,
+        "filled": 0.0,
+        "hedged_short_qty": 0.0,
+        "global_ask_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "next_funding_time_ms": int(time.time() * 1000) + 3_600_000,
+        "base_target_exit_spread_pct": 0.3,
+        "current_funding_rate": 0.0003,
+        "tick_size": 1.0,
+        "spot_cost_usdt": 625.0,
+        "futures_margin_usdt": 625.0,
+    }
+    await fake_redis.set("arb:pending_entry:" + pair_tag, json.dumps(order_info))
+    mock_client.orders["889"] = {
+        "id": "889", "symbol": "btc_idr", "status": "canceled", "filled": 0.004
+    }
+
+    await engine._recover_pending_entry_orders()
+
+    assert pair_tag in engine.active_positions
+    assert engine.active_positions[pair_tag].qty == pytest.approx(0.004)
+    assert len(mock_client.global_short_sells) == 1
+    assert mock_client.global_short_sells[0]["amount"] == pytest.approx(0.004)
+    assert await fake_redis.get("arb:pending_entry:" + pair_tag) is None
+
+
+@pytest.mark.asyncio
+async def test_p0_pending_entry_unknown_venue_state_is_retained_and_blocked(engine, fake_redis, mock_client):
+    """An unresolvable venue order must remain durable and block the pair."""
+    pair_tag = "indodax:btc_idr"
+    order_info = {
+        "order_id": "890",
+        "symbol": "btc_idr",
+        "qty": 0.01,
+        "filled": 0.0,
+        "hedged_short_qty": 0.0,
+    }
+    await fake_redis.set("arb:pending_entry:" + pair_tag, json.dumps(order_info))
+
+    async def fetch_unknown(order_id, symbol):
+        raise TimeoutError("exchange API unavailable")
+
+    mock_client.fetch_local_order = fetch_unknown
+    await engine._recover_pending_entry_orders()
+
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert await fake_redis.get("arb:pending_entry:" + pair_tag) is not None
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "ENTRY_ORDER_STATE_UNKNOWN"
