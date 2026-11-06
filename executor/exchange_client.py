@@ -91,7 +91,7 @@ class ExchangeClient:
         fetcher = getattr(self.global_fut, "fetch_funding_history", None)
         if fetcher is None:
             raise NotImplementedError(
-                f"{self.global_name} adapter does not support fetch_funding_history"
+                f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_history"
             )
         return await fetcher(symbol, since, limit)
 
@@ -100,7 +100,7 @@ class ExchangeClient:
         fetcher = getattr(self.global_fut, "fetch_funding_rate", None)
         if fetcher is None:
             raise NotImplementedError(
-                f"{self.global_name} adapter does not support fetch_funding_rate"
+                f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_rate"
             )
         return await fetcher(symbol)
 
