@@ -126,6 +126,8 @@ class MockExchangeClient:
             "symbol": symbol,
             "side": "sell",
             "amount": amount,
+            "filled": amount,
+            "status": "closed",
             "price": price,
             "average": price,
             "client_order_id": client_order_id,
