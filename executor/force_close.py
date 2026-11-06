@@ -50,13 +50,28 @@ class ForceCloseMixin:
                         pair_key, "force-close", self._next_order_seq()
                     ),
                 )
-                if isinstance(res, dict):
-                    status = str(res.get("status", "")).lower()
-                    if status in ("rejected", "failed", "canceled", "cancelled"):
-                        logger.error(
-                            f"[Force Close] Futures close order rejected/failed: {res}"
-                        )
-                        return False
+                if not isinstance(res, dict):
+                    logger.critical(
+                        f"[Force Close] futures close returned no verifiable order for {pair_key}"
+                    )
+                    return False
+                status = str(res.get("status", "")).lower()
+                if status not in ("closed", "filled"):
+                    logger.error(
+                        f"[Force Close] futures close is not terminal (status={status}): {res}"
+                    )
+                    return False
+                try:
+                    filled_qty = float(res.get("filled") or 0.0)
+                except (TypeError, ValueError):
+                    filled_qty = 0.0
+                qty_tolerance = max(1e-12, pos.qty * 1e-8)
+                if filled_qty + qty_tolerance < pos.qty:
+                    logger.critical(
+                        f"[Force Close] futures close fill incomplete for {pair_key}: "
+                        f"requested={pos.qty}, filled={filled_qty}"
+                    )
+                    return False
 
                 # Order acknowledgement is not proof that the short is flat.
                 # The authoritative position endpoint must confirm zero exposure.
