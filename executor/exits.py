@@ -388,9 +388,17 @@ class ExitMixin:
             for pair_tag in pair_tags:
                 await self._process_pending_exit(pair_tag)
 
-        async def _process_pending_exit(self, pair_tag: str) -> None:
-            """Fetch local exit order and trigger short closure on fills."""
-            if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+        async def _process_pending_exit(
+            self, pair_tag: str, force_reconcile: bool = False
+        ) -> None:
+            """Fetch local exit order and trigger short closure on fills.
+
+            ``force_reconcile`` is used only by force close while holding the pair lock.
+            """
+            if (
+                self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED
+                and not force_reconcile
+            ):
                 return
 
             order_info = self.pending_exit_orders.get(pair_tag)
