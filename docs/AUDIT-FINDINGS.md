@@ -69,3 +69,6 @@ after the executor was split into mixins.
 
 These changes are static-code remediations with regression tests added. They have not
 been executed in this environment; CI must pass before the branch is approved.
+
+
+| R-10 | Scanner HTTP API was unauthenticated | API | Go API now requires a Bearer token in LIVE mode; health remains public |
