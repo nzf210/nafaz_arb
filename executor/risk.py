@@ -68,13 +68,27 @@ class RiskMixin:
         the spot leg naked.
         """
         fraction = float(getattr(self.config, "balance_mismatch_fraction", 0.0) or 0.0)
-        if fraction <= 0 or not hasattr(self.client, "get_balances"):
+        if fraction <= 0:
+            return
+
+        if not hasattr(self.client, "get_balances"):
+            reason = "balance API unavailable; new entries disabled"
+            self._exchange_halted[self.config.local_exchange_name] = reason
+            self._exchange_halted[self.config.global_exchange_name] = reason
+            logger.critical(f"[Risk Control] {reason}")
             return
 
         try:
             balances = self.client.get_balances()
-        except Exception:
-            logger.exception("[Risk Control] failed to read balances; skipping mismatch check")
+            if not isinstance(balances, dict) or "spot_available" not in balances or "futures_available" not in balances:
+                raise ValueError("balance response missing spot_available/futures_available")
+        except Exception as exc:
+            reason = f"balance feed unavailable: {exc}"
+            self._exchange_halted[self.config.local_exchange_name] = reason
+            self._exchange_halted[self.config.global_exchange_name] = reason
+            logger.exception(
+                "[Risk Control] balance read failed; both venues halted for new entries"
+            )
             return
 
         venue_available = {}
@@ -239,9 +253,19 @@ class RiskMixin:
                 return None
 
         if hasattr(self.client, "get_balances"):
-            balances = self.client.get_balances()
-            avail_spot = float(balances.get("spot_available", 0.0))
-            avail_fut = float(balances.get("futures_available", 0.0))
+            try:
+                balances = self.client.get_balances()
+                if not isinstance(balances, dict) or "spot_available" not in balances or "futures_available" not in balances:
+                    raise ValueError("balance response missing spot_available/futures_available")
+                avail_spot = float(balances["spot_available"])
+                avail_fut = float(balances["futures_available"])
+            except Exception:
+                logger.exception(
+                    f"[Risk Control] cannot size entry for {pair_tag}: balance read failed"
+                )
+                self._exchange_halted[local_ex] = "balance feed unavailable; manual resume required"
+                self._exchange_halted[global_ex] = "balance feed unavailable; manual resume required"
+                return None
             usable_capital = min(avail_spot, avail_fut)
 
             if usable_capital < min_cap:
