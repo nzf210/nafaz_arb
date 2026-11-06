@@ -38,6 +38,17 @@ class MockExchangeClient:
         self.global_close_buys = []
         self.market_prices = {}
         self.client_order_ids = []
+        self.funding_history = []
+        self.funding_rate_data = {}
+
+    async def fetch_funding_history(self, symbol: str, since=None, limit=100):
+        return [
+            payment for payment in self.funding_history
+            if int(payment.get("timestamp", 0)) >= int(since or 0)
+        ][:limit]
+
+    async def fetch_funding_rate(self, symbol: str):
+        return dict(self.funding_rate_data)
 
     async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None):
         self.order_counter += 1
