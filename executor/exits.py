@@ -515,11 +515,12 @@ class ExitMixin:
                 # pegged quote: a market buy fills through the book and the gap is
                 # real money. Fall back to the live ask only when the venue returns
                 # no fill price at all.
-                short_exit_usdt = helpers.extract_fill_price(
-                    close_order or {}, live_global_ask
-                )
+                short_exit_usdt = helpers.extract_fill_price(close_order)
                 if short_exit_usdt <= 0:
-                    short_exit_usdt = live_global_ask
+                    raise ValueError(
+                        "futures close fill price unavailable after spot sell; "
+                        "PnL cannot be safely finalized"
+                    )
 
                 spot_pnl_idr = unclosed_delta * (exit_price_idr - entry_price_idr)
                 spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
