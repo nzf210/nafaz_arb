@@ -455,3 +455,44 @@ async def test_p0_pending_entry_unknown_venue_state_is_retained_and_blocked(engi
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
     assert await fake_redis.get("arb:pending_entry:" + pair_tag) is not None
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "ENTRY_ORDER_STATE_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_partial_futures_hedge_fill_is_not_recorded_as_fully_hedged(fake_redis):
+    """A partial futures fill blocks spot rollback and forces manual reconciliation."""
+    client = OpenShortPositionClient()
+    client.amount_unused = 0.002
+
+    async def partial_hedge(symbol, amount, price=0.0, client_order_id=None):
+        return {
+            "id": "partial-hedge",
+            "symbol": symbol,
+            "status": "closed",
+            "amount": amount,
+            "filled": 0.002,
+            "average": price,
+        }
+
+    client.open_global_short_market = partial_hedge
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True),
+        client=client,
+        redis_client=fake_redis,
+    )
+    pair_tag = "indodax:btc_idr"
+    order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
+    await engine._execute_entry_hedge(
+        pair_tag,
+        order_info,
+        unhedged_delta=0.005,
+        price_idr=1_000_000_000.0,
+        usdt_rate=16_000.0,
+    )
+
+    assert pair_tag not in engine.active_positions
+    assert client.placed_sells == []
+    assert engine.states[pair_tag] == PositionState.FAILED
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "HEDGE_STATE_UNKNOWN"
