@@ -156,6 +156,7 @@ class EntryMixin:
 
             # A fill can win the race against cancellation. Hedge every newly
             # executed unit before finalizing the order and releasing unused funds.
+            order["status"] = status
             await self._handle_entry_fills(pair_tag, order_info, order)
             await self._finalize_entry_order(pair_tag, status)
             return True
@@ -204,9 +205,8 @@ class EntryMixin:
 
         async def _cancel_pending_entry_due_to_adverse_selection(
             self, pair_tag: str, order_info: dict, global_bid: float, threshold: float
-        ) -> None:
+        ) -> bool:
             order_id = order_info["order_id"]
-            local_symbol = order_info["symbol"]
             logger.warning(
                 f"[State 1 Adverse Selection] Global Bid {global_bid} dropped below "
                 f"threshold {threshold} for {pair_tag}. Cancelling local Limit Buy {order_id}"
@@ -231,7 +231,7 @@ class EntryMixin:
             price_idr = order_info.get("price", 1.0)
             delta_val_usd = (unhedged_delta * price_idr) / usdt_rate
 
-            is_complete = status in ("closed", "canceled", "rejected")
+            is_complete = status in ("closed", "canceled", "cancelled", "rejected", "expired")
             if delta_val_usd >= self.config.min_partial_fill_usd or is_complete:
                 logger.info(
                     f"[State 2 Instant Short Hedge] Fill detected: delta_qty={unhedged_delta} "
@@ -438,7 +438,7 @@ class EntryMixin:
 
         async def _finalize_entry_order(self, pair_tag: str, status: str) -> None:
             """Remove finished entry order from pending list and transition state."""
-            if status not in ("closed", "canceled", "rejected"):
+            if status not in ("closed", "canceled", "cancelled", "rejected", "expired"):
                 return
 
             order_info = self.pending_entry_orders.get(pair_tag, {})
