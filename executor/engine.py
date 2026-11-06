@@ -32,6 +32,7 @@ from executor.helpers import (  # noqa: F401
     round_to_tick,
 )
 from executor import helpers
+from executor.cancel import CancelMixin
 from executor.entry import EntryMixin
 from executor.exits import ExitMixin
 from executor.force_close import ForceCloseMixin
@@ -42,7 +43,12 @@ logger = logging.getLogger("executor.engine")
 
 
 class ArbitrageEngine(
-    EntryMixin, ExitMixin, ForceCloseMixin, RollbackMixin, RiskMixin
+    CancelMixin,
+    EntryMixin,
+    ExitMixin,
+    ForceCloseMixin,
+    RollbackMixin,
+    RiskMixin,
 ):
     """
     Hybrid Maker-Taker + Positive Funding Rate Arbitrage Engine.
