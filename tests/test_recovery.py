@@ -551,3 +551,26 @@ async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redi
     restored = json.loads(await fake_redis.get("arb:active_pos:indodax:btc_idr"))
     assert restored["state"] == "RECONCILIATION_REQUIRED"
     assert engine.status_snapshot()["failures"]["indodax:btc_idr"]["reason"] == "RECOVERY_POSITION_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_malformed_active_position_record_is_retained_and_force_close_blocked(fake_redis):
+    """A corrupted snapshot must never be mistaken for an empty/flat position."""
+    client = MockExchangeClient()
+    pair_tag = "indodax:btc_idr"
+    key = "arb:active_pos:" + pair_tag
+    await fake_redis.set(key, "{invalid-json")
+
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    await engine.initialize()
+
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert await fake_redis.get(key) == "{invalid-json"
+
+    await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
+
+    assert client.global_close_buys == []
+    assert client.placed_sells == []
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
