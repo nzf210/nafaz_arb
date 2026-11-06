@@ -42,6 +42,22 @@ class ForceCloseMixin:
             """Closes the futures short; returns its actual fill price only after flat verification."""
             global_sym = self._resolve_global_symbol(pos.symbol)
             logger.warning(f"[Force Close] Closing global short {pos.qty} on {global_sym}...")
+            # Keep paper-mode market fills tied to the latest observed futures book.
+            if hasattr(self.client, "update_market_price"):
+                try:
+                    raw = await self.redis.get(f"arb:live_price:{pair_key}")
+                    if raw:
+                        snapshot = json.loads(raw)
+                        if not helpers.snapshot_is_stale(snapshot):
+                            self.client.update_market_price(
+                                symbol=global_sym,
+                                best_bid=float(snapshot.get("global_best_bid_usdt", 0.0)),
+                                best_ask=float(snapshot.get("global_best_ask_usdt", 0.0)),
+                            )
+                except Exception:
+                    logger.exception(
+                        f"[Force Close] failed to sync futures quote for {pair_key}"
+                    )
             try:
                 res = await self.client.close_global_short_market(
                     global_sym,
