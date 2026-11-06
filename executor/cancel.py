@@ -68,7 +68,7 @@ class CancelMixin:
         elif order_label == "exit":
             already_closed = float(order_info.get("closed_short_qty", 0.0) or 0.0)
             if filled > already_closed:
-                await self._process_pending_exit(pair_key)
+                await self._process_pending_exit(pair_key, force_reconcile=True)
                 reconciled = float(order_info.get("closed_short_qty", 0.0) or 0.0)
                 if reconciled + 1e-12 < filled:
                     logger.critical(
