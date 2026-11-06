@@ -39,7 +39,7 @@ class ForceCloseMixin:
 
 
         async def _close_global_short_leg(self, pair_key: str, pos):
-            """Closes the futures short and verifies the exchange reports no residual position."""
+            """Closes the futures short; returns its actual fill price only after flat verification."""
             global_sym = self._resolve_global_symbol(pos.symbol)
             logger.warning(f"[Force Close] Closing global short {pos.qty} on {global_sym}...")
             try:
@@ -54,13 +54,13 @@ class ForceCloseMixin:
                     logger.critical(
                         f"[Force Close] futures close returned no verifiable order for {pair_key}"
                     )
-                    return False
+                    return 0.0
                 status = str(res.get("status", "")).lower()
                 if status not in ("closed", "filled"):
                     logger.error(
                         f"[Force Close] futures close is not terminal (status={status}): {res}"
                     )
-                    return False
+                    return 0.0
                 try:
                     filled_qty = float(res.get("filled") or 0.0)
                 except (TypeError, ValueError):
@@ -71,7 +71,7 @@ class ForceCloseMixin:
                         f"[Force Close] futures close fill incomplete for {pair_key}: "
                         f"requested={pos.qty}, filled={filled_qty}"
                     )
-                    return False
+                    return 0.0
 
                 # Order acknowledgement is not proof that the short is flat.
                 # The authoritative position endpoint must confirm zero exposure.
@@ -92,7 +92,7 @@ class ForceCloseMixin:
                         logger.critical(
                             f"[Force Close] invalid position payload for {pair_key}: {position!r}"
                         )
-                        return False
+                        return 0.0
                     info = position.get("info") or {}
                     raw_size = position.get("contracts")
                     if raw_size is None:
@@ -113,11 +113,18 @@ class ForceCloseMixin:
                         )
                         return False
 
+                fill_price = helpers.extract_fill_price(res)
+                if fill_price <= 0:
+                    logger.critical(
+                        f"[Force Close] futures position is flat but actual close fill price "
+                        f"is unavailable for {pair_key}; PnL cannot be safely finalized"
+                    )
+                    return 0.0
                 logger.info(
                     f"[Force Close] Futures position verified flat for {pair_key} "
                     f"after close response {res!r}"
                 )
-                return True
+                return fill_price
             except Exception:
                 logger.exception(
                     f"failed to close or verify global short on force close for {pair_key}"
@@ -326,7 +333,8 @@ class ForceCloseMixin:
             if not pos or pos.qty <= 0:
                 return True, False, {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
 
-            futures_closed = await self._close_global_short_leg(pair_key, pos)
+            short_exit_price_usdt = await self._close_global_short_leg(pair_key, pos)
+            futures_closed = short_exit_price_usdt > 0
             spot_sell_failed = True
             spot_exit_price_idr = 0.0
 
@@ -337,6 +345,8 @@ class ForceCloseMixin:
             current_ask, usdt_rate, current_spot_bid = await self._resolve_force_close_prices(
                 pair_key, pos, spot_exit_price_idr if futures_closed else 0.0
             )
+            if futures_closed:
+                current_ask = short_exit_price_usdt
             pnl = self._compute_force_close_pnl(pos, current_ask, usdt_rate, current_spot_bid)
 
             if futures_closed and not spot_sell_failed:
