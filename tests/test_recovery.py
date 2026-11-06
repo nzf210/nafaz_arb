@@ -13,7 +13,7 @@ import pytest
 from executor.config import ExecutorConfig
 from executor.engine import ArbitrageEngine, RetryExhausted, retry_with_backoff
 
-from tests.conftest import BlockingSellClient, FailingHedgeClient, OpenShortPositionClient, _entry_order_info, _fresh_signal_payload, engine, fake_redis, mock_client
+from tests.conftest import BlockingSellClient, FailingHedgeClient, MockExchangeClient, OpenShortPositionClient, _entry_order_info, _fresh_signal_payload, engine, fake_redis, mock_client
 
 @pytest.mark.asyncio
 async def test_p0_01_hedge_failure_rolls_back_spot_leg(fake_redis):
