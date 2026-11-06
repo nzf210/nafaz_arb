@@ -223,8 +223,8 @@ async def test_p0_03_recovery_preserves_reconciliation_required_state(fake_redis
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "RESTORED_RECONCILIATION_REQUIRED"
 
 @pytest.mark.asyncio
-async def test_p0_03_recovery_drops_zero_qty_position(fake_redis, mock_client):
-    """Recovery must not resurrect a degenerate zero-quantity position."""
+async def test_p0_03_recovery_retains_zero_qty_position_for_reconciliation(fake_redis, mock_client):
+    """A zero Redis quantity is not proof the exchange has no residual exposure."""
     pair_tag = "indodax:btc_idr"
     pos = ActivePosition(
         local_exchange="indodax",
@@ -241,8 +241,9 @@ async def test_p0_03_recovery_drops_zero_qty_position(fake_redis, mock_client):
     )
     await engine.initialize()
 
-    assert pair_tag not in engine.active_positions
-    assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is None
+    assert pair_tag in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is not None
 
 @pytest.mark.asyncio
 async def test_p0_pending_entry_persisted_and_cleared(engine, fake_redis):
@@ -453,6 +454,7 @@ async def test_p0_pending_entry_unknown_venue_state_is_retained_and_blocked(engi
     await engine._recover_pending_entry_orders()
 
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert pair_tag in engine.pending_entry_orders
     assert await fake_redis.get("arb:pending_entry:" + pair_tag) is not None
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "ENTRY_ORDER_STATE_UNKNOWN"
 
