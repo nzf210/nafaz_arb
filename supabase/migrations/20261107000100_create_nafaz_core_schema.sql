@@ -22,6 +22,30 @@ create table if not exists public.exchange_accounts (
     unique (exchange_name, market_type, account_label)
 );
 
+create table if not exists public.strategy_configs (
+    id uuid primary key default gen_random_uuid(),
+    name text not null unique,
+    is_enabled boolean not null default false,
+    execution_mode text not null default 'MAKER_TAKER',
+    config jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
+create table if not exists public.risk_limits (
+    id uuid primary key default gen_random_uuid(),
+    name text not null unique,
+    is_enabled boolean not null default true,
+    max_daily_loss_usdt numeric(38,18),
+    max_exposure_per_exchange_usdt numeric(38,18),
+    max_position_usdt numeric(38,18),
+    max_entry_slippage_pct numeric(20,10),
+    max_consecutive_order_failures integer,
+    parameters jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+);
+
 create table if not exists public.market_pairs (
     id uuid primary key default gen_random_uuid(),
     pair_key text not null unique,
@@ -78,6 +102,8 @@ create table if not exists public.positions (
     global_symbol text not null,
     base_asset text not null,
     quote_asset text not null,
+    local_exchange_account_id uuid references public.exchange_accounts(id) on delete set null,
+    global_exchange_account_id uuid references public.exchange_accounts(id) on delete set null,
     status text not null check (status in (
         'ENTRY_PENDING','ENTRY_PARTIAL','HEDGED_ACTIVE','EXIT_PENDING',
         'RECONCILIATION_REQUIRED','CLOSED','FAILED'
@@ -115,6 +141,7 @@ create table if not exists public.orders (
     position_id uuid references public.positions(id) on delete set null,
     pair_key text not null,
     exchange_name text not null,
+    exchange_account_id uuid references public.exchange_accounts(id) on delete set null,
     market_type text not null check (market_type in ('spot','perpetual')),
     leg text not null check (leg in ('spot_entry','futures_entry','spot_exit','futures_exit','rollback','force_close')),
     exchange_order_id text,
@@ -190,6 +217,7 @@ create table if not exists public.funding_payments (
     id uuid primary key default gen_random_uuid(),
     position_id uuid references public.positions(id) on delete set null,
     exchange_name text not null,
+    exchange_account_id uuid references public.exchange_accounts(id) on delete set null,
     symbol text not null,
     exchange_payment_id text,
     funding_rate numeric(24,16),
@@ -242,6 +270,7 @@ create index if not exists idx_closed_trades_pair on public.closed_trades (pair_
 create table if not exists public.balance_snapshots (
     id uuid primary key default gen_random_uuid(),
     exchange_name text not null,
+    exchange_account_id uuid references public.exchange_accounts(id) on delete set null,
     market_type text not null check (market_type in ('spot','perpetual')),
     asset text not null,
     total numeric(38,18) not null default 0,
@@ -271,6 +300,18 @@ create table if not exists public.risk_events (
 create index if not exists idx_risk_events_time on public.risk_events (occurred_at desc);
 create index if not exists idx_risk_events_pair_time on public.risk_events (pair_key, occurred_at desc);
 
+create table if not exists public.executor_status_snapshots (
+    id uuid primary key default gen_random_uuid(),
+    instance_id text not null,
+    status text not null,
+    mode text not null,
+    is_mock boolean not null default true,
+    snapshot jsonb not null,
+    observed_at timestamptz not null default now()
+);
+create index if not exists idx_executor_status_instance_time
+    on public.executor_status_snapshots (instance_id, observed_at desc);
+
 create table if not exists public.executor_events (
     event_id text primary key,
     event_type text not null,
@@ -294,9 +335,10 @@ declare
     tbl text;
 begin
     foreach tbl in array array[
-        'exchange_accounts','market_pairs','scanner_opportunities','positions',
-        'orders','order_fills','position_legs','funding_payments','closed_trades',
-        'balance_snapshots','risk_events','executor_events'
+        'exchange_accounts','strategy_configs','risk_limits','market_pairs',
+        'scanner_opportunities','positions','orders','order_fills','position_legs',
+        'funding_payments','closed_trades','balance_snapshots','risk_events',
+        'executor_events','executor_status_snapshots'
     ] loop
         execute format('alter table public.%I enable row level security', tbl);
         execute format('revoke all on table public.%I from anon, authenticated', tbl);
