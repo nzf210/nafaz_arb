@@ -31,7 +31,7 @@ Then call:
 
 ```sh
 curl http://localhost:8080/health
-curl -X POST http://localhost:8080/api/v1/scanner/scan
+curl -X POST -H "Authorization: Bearer $API_AUTH_TOKEN" http://localhost:8080/api/v1/scanner/scan
 curl http://localhost:8080/api/v1/scanner/latest
 curl 'http://localhost:8080/api/v1/scanner/opportunities/metrics'
 curl 'http://localhost:8080/api/v1/scanner/opportunities/history'
@@ -93,7 +93,7 @@ Only `PROFITABLE_IN_RANGE` candidates that pass other filters are marked eligibl
 - Monetary and financial calculations in `scanner.Service` (quantity allocation, VWAP depth matching, slippage, spread, fees, and net ROI) use exact fixed-point arithmetic via `github.com/shopspring/decimal` to eliminate binary floating-point drift. Results are marshaled cleanly to output domain structures.
 - The recorded duration is the time the scanner observed an opportunity, not the exact time it existed in the market. Resolution is limited by scan interval.
 - API error scans do not count as successful misses and do not end an active opportunity.
-- All endpoints are unauthenticated local-development endpoints. Add authentication, authorization, rate limiting, and network restrictions before deployment.
+- MOCK mode keeps the local API unauthenticated for development. LIVE mode requires `api_auth_token` (or `API_AUTH_TOKEN`) and protects all API routes with Bearer authentication; `/health` remains public for liveness checks. Keep the token in server-side secrets only. Rate limiting and network restrictions are still recommended.
 
 ## Telegram Bot Interface
 
@@ -267,3 +267,6 @@ balances, risk events, and executor events/status snapshots.
 Redis remains the live coordination layer and scanner opportunity history still uses
 the configured JSON file. Do not assume Supabase is receiving live orders or trades
 until the persistence adapter and its idempotent retry/outbox tests are merged.
+
+
+For LIVE mode, configure a long random `api_auth_token` in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it.
