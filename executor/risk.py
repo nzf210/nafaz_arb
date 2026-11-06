@@ -57,7 +57,7 @@ class RiskMixin:
             return True
         return False
 
-    def _check_balance_mismatch(self) -> None:
+    def _check_balance_mismatch(self, pair_info: Optional[PairInfo] = None) -> None:
         """
         Detects when an exchange's available balance drops far below what the
         engine last observed - e.g. a withdrawal, liquidation, or another
@@ -68,9 +68,15 @@ class RiskMixin:
         the spot leg naked.
         """
         if not hasattr(self.client, "get_balances"):
+            # Paper clients may intentionally omit exchange balance simulation.
+            # A live client without balance reads is not safe for new entries.
+            if getattr(self.config, "mock_mode", False):
+                return
             reason = "balance API unavailable; new entries disabled"
-            self._exchange_halted[self.config.local_exchange_name] = reason
-            self._exchange_halted[self.config.global_exchange_name] = reason
+            local_name = pair_info.local_exchange if pair_info else self.config.local_exchange_name
+            global_name = pair_info.global_exchange if pair_info else self.config.global_exchange_name
+            self._exchange_halted[local_name] = reason
+            self._exchange_halted[global_name] = reason
             logger.critical(f"[Risk Control] {reason}")
             return
 
@@ -84,8 +90,10 @@ class RiskMixin:
                 raise ValueError("balance response missing spot_available/futures_available")
         except Exception as exc:
             reason = f"balance feed unavailable: {exc}"
-            self._exchange_halted[self.config.local_exchange_name] = reason
-            self._exchange_halted[self.config.global_exchange_name] = reason
+            local_name = pair_info.local_exchange if pair_info else self.config.local_exchange_name
+            global_name = pair_info.global_exchange if pair_info else self.config.global_exchange_name
+            self._exchange_halted[local_name] = reason
+            self._exchange_halted[global_name] = reason
             logger.exception(
                 "[Risk Control] balance read failed; both venues halted for new entries"
             )
@@ -242,7 +250,7 @@ class RiskMixin:
         # Check exchange balance limits ($100 balance per exchange in simulation)
         min_cap = getattr(self.config, "min_allocated_capital", 10.0)
 
-        self._check_balance_mismatch()
+        self._check_balance_mismatch(pair_info)
         local_ex, global_ex = self._pair_venues(pair_tag)
         for venue in (local_ex, global_ex):
             if venue and venue in self._exchange_halted:
