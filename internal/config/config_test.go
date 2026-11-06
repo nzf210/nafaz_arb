@@ -375,3 +375,34 @@ func TestFeeAssetSurchargeValidation(t *testing.T) {
 		t.Fatalf("expected 0.5 to be valid, got %v", err)
 	}
 }
+
+
+func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
+    path := filepath.Join(t.TempDir(), "config.json")
+    if err := os.WriteFile(path, []byte(`{
+        "mode":"LIVE",
+        "capital_total":100,
+        "allocation_per_pair":0.5
+    }`), 0600); err != nil {
+        t.Fatal(err)
+    }
+    if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "api_auth_token") {
+        t.Fatalf("expected live API token validation error, got %v", err)
+    }
+
+    if err := os.WriteFile(path, []byte(`{
+        "mode":"LIVE",
+        "api_auth_token":"test-secret",
+        "capital_total":100,
+        "allocation_per_pair":0.5
+    }`), 0600); err != nil {
+        t.Fatal(err)
+    }
+    cfg, err := Load(path)
+    if err != nil {
+        t.Fatal(err)
+    }
+    if cfg.APIAuthToken != "test-secret" {
+        t.Fatalf("APIAuthToken=%q, want configured token", cfg.APIAuthToken)
+    }
+}
