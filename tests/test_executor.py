@@ -1229,7 +1229,12 @@ async def test_p0_05_force_close_liquidates_spot_leg(engine, fake_redis, mock_cl
 
 @pytest.mark.asyncio
 async def test_p0_05_force_close_records_failed_spot_liquidation(fake_redis):
-    """A failed spot liquidation must be flagged in trade history for operators."""
+    """A failed spot liquidation must be flagged in trade history for operators.
+
+    When futures leg closes successfully but spot liquidation fails, the futures PnL
+    must be recorded (with spot_liquidation_failed=True) so the operator knows exactly
+    what happened and no realized PnL is silently lost from history.
+    """
     pair_tag = "indodax:btc_idr"
     client = SpotSellFailureClient()
     engine = ArbitrageEngine(
@@ -1249,10 +1254,13 @@ async def test_p0_05_force_close_records_failed_spot_liquidation(fake_redis):
 
     await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
 
-    # Trade is NOT finalized or recorded as closed in trade_history because liquidation failed
+    # Futures closed → partial trade record must exist in history with failure flag.
     history = await fake_redis.lrange("arb:trade_history", 0, -1)
-    assert len(history) == 0
-    # P0 safety: Position must NOT be deleted from active positions or Redis when liquidation fails
+    assert len(history) == 1, "partial force-close (futures OK, spot failed) must be recorded"
+    record = json.loads(history[0])
+    assert record["spot_liquidation_failed"] is True
+
+    # P0 safety: Position must NOT be deleted when spot liquidation fails.
     assert pair_tag in engine.active_positions
     assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is not None
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED

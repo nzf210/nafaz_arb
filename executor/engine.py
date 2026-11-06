@@ -24,7 +24,7 @@ logger = logging.getLogger("executor.engine")
 T = TypeVar("T")
 
 ARB_TRADE_HISTORY_KEY = "arb:trade_history"
-ARB_TRADE_HISTORY_MAX_LEN = 49
+ARB_TRADE_HISTORY_MAX_LEN = 49  # ltrim keeps indices 0..49 → 50 entries
 
 def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     """
@@ -2061,8 +2061,15 @@ class ArbitrageEngine:
                 unclosed_delta,
                 client_order_id=build_client_order_id(pair_tag, "unwind", self._next_order_seq()),
             )
+            # Snapshot qty before mutation so PnL fractions stay consistent.
+            total_qty_before = pos.qty
             order_info["closed_short_qty"] += unclosed_delta
             pos.qty -= unclosed_delta
+
+            # Persist updated qty and closed_short_qty immediately so a crash before
+            # _finalize_exit_position does not cause the next poll to double-close.
+            pos.updated_at = int(time.time() * 1000)
+            await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
 
             # PnL must use the price the short actually closed at, not the last
             # pegged quote: a market buy fills through the book and the gap is
@@ -2078,7 +2085,13 @@ class ArbitrageEngine:
             spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
             futures_pnl_usdt = unclosed_delta * (short_entry_usdt - short_exit_usdt)
 
-            funding_usdt = float(pos.accumulated_funding_usdt)
+            # Allocate only the pro-rata share of accumulated funding for this
+            # partial fill. Using the full accumulator per fill inflates PnL on
+            # multi-fill exits; the remainder stays on the position for later fills.
+            fill_ratio = (unclosed_delta / total_qty_before) if total_qty_before > 0 else 1.0
+            funding_usdt = float(pos.accumulated_funding_usdt) * fill_ratio
+            pos.accumulated_funding_usdt -= funding_usdt
+
             fees_usdt = (unclosed_delta * (short_entry_usdt + short_exit_usdt)) * 0.0005
             net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
             net_profit_idr = net_profit_usdt * usdt_rate
@@ -2120,13 +2133,12 @@ class ArbitrageEngine:
                 "closed_at_ms": int(time.time() * 1000),
             }
 
-            # Save to Redis list arb:trade_history (kept up to 50 items)
             await self.redis.lpush(ARB_TRADE_HISTORY_KEY, json.dumps(closed_trade))
-            await self.redis.ltrim(ARB_TRADE_HISTORY_KEY, 0, 49)
+            await self.redis.ltrim(ARB_TRADE_HISTORY_KEY, 0, ARB_TRADE_HISTORY_MAX_LEN)
 
-            # Update exchange account balances with realized PnL & release locked funds
-            spot_cost = getattr(pos, "spot_cost_usdt", unclosed_delta * entry_price_idr / usdt_rate)
-            fut_margin = getattr(pos, "futures_margin_usdt", unclosed_delta * short_entry_usdt)
+            # Release only the pro-rata share of locked capital for this fill.
+            spot_cost = getattr(pos, "spot_cost_usdt", unclosed_delta * entry_price_idr / usdt_rate) * fill_ratio
+            fut_margin = getattr(pos, "futures_margin_usdt", unclosed_delta * short_entry_usdt) * fill_ratio
             if hasattr(self.client, "apply_realized_trade"):
                 self.client.apply_realized_trade(
                     spot_cost_usdt=spot_cost,
@@ -2283,7 +2295,7 @@ class ArbitrageEngine:
         if await self._cancel_pending_order_for_force_close(
             pair_key, self.pending_exit_orders, "exit"
         ):
-            del self.pending_exit_orders[pair_key]
+            self.pending_exit_orders.pop(pair_key, None)
 
     async def _cancel_pending_entry_for_force_close(self, pair_key: str):
         order_info = self.pending_entry_orders.get(pair_key)
@@ -2298,7 +2310,7 @@ class ArbitrageEngine:
             )
             bals = self.client.get_balances()
             await self.redis.set(BALANCES_KEY, json.dumps(bals))
-        del self.pending_entry_orders[pair_key]
+        self.pending_entry_orders.pop(pair_key, None)
         await self._clear_pending_entry(pair_key)
 
     async def _close_global_short_leg(self, pair_key: str, pos):
@@ -2313,8 +2325,15 @@ class ArbitrageEngine:
                     pair_key, "force-close", self._next_order_seq()
                 ),
             )
-            # If the exchange returned an order object, verify status is not rejected/failed
-            if isinstance(res, dict):
+            # If the exchange returned an order object, verify status is not rejected/failed.
+            # Treat None/non-dict as unverified — log a warning but allow the caller
+            # to proceed; the position will be caught by RECONCILIATION_REQUIRED if
+            # a later reconcile detects residual exposure.
+            if res is None:
+                logger.warning(
+                    f"[Force Close] Futures close returned None for {pair_key}; treating as unverified success."
+                )
+            elif isinstance(res, dict):
                 status = str(res.get("status", "")).lower()
                 if status in ("rejected", "failed", "canceled"):
                     logger.error(f"[Force Close] Futures close order rejected/failed: {res}")
@@ -2343,9 +2362,10 @@ class ArbitrageEngine:
                 base_delay=0.5,
                 label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
             )
-            # Verify actual fill and positive exit price without falling back to entry price
+            # Verify actual fill and positive exit price. `amount` is the requested
+            # quantity (not filled), so only use `filled` for fill verification.
             if isinstance(spot_order, dict):
-                filled_qty = float(spot_order.get("filled", 0.0) or spot_order.get("amount", 0.0) or 0.0)
+                filled_qty = float(spot_order.get("filled", 0.0) or 0.0)
                 status = str(spot_order.get("status", "")).lower()
                 spot_exit_price_idr = self._extract_fill_price(spot_order)
                 if (status == "closed" or filled_qty > 0) and spot_exit_price_idr > 0:
@@ -2529,6 +2549,22 @@ class ArbitrageEngine:
                 spot_sell_failed,
                 usdt_rate,
             )
+        elif futures_closed and spot_sell_failed:
+            # Futures leg closed but spot liquidation failed — record partial close so
+            # the futures PnL is not lost from history, and flag it clearly.
+            logger.error(
+                f"[Force Close] Recording partial force-close for {pair_key}: "
+                f"futures closed, spot liquidation FAILED. Manual spot sale required."
+            )
+            await self._record_force_close_trade(
+                pair_key,
+                pos,
+                pnl,
+                current_ask,
+                current_spot_bid,
+                spot_sell_failed,
+                usdt_rate,
+            )
 
         return futures_closed, spot_sell_failed, pnl
 
@@ -2573,6 +2609,8 @@ class ArbitrageEngine:
         logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")
 
     async def _force_close_locked(self, pair_key: str) -> None:
+        # Guard concurrent exit-fill processing for this pair while force close runs.
+        self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
         await self._cancel_pending_orders_for_force_close(pair_key)
         pos = self.active_positions.get(pair_key)
         futures_closed, spot_sell_failed, pnl = await self._execute_force_close_legs(pair_key, pos)
