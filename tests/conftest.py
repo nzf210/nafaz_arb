@@ -140,7 +140,10 @@ class MockExchangeClient:
             "symbol": symbol,
             "side": "buy",
             "amount": amount,
+            "filled": amount,
+            "status": "closed",
             "price": 65050.0,
+            "average": 65050.0,
             "params": {"reduceOnly": True},
             "client_order_id": client_order_id,
         }
