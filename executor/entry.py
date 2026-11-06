@@ -112,15 +112,73 @@ class EntryMixin:
             except Exception:
                 pass
 
+        async def _cancel_entry_order_and_reconcile(
+            self, pair_tag: str, order_info: dict, reason: str
+        ) -> bool:
+            """
+            Cancel an entry and verify the authoritative venue state before
+            releasing funds or deleting its recovery record.
+            """
+            order_id = str(order_info["order_id"])
+            local_symbol = str(order_info["symbol"])
+            try:
+                await self.client.cancel_local_order(order_id, local_symbol)
+            except Exception:
+                # A timeout is ambiguous: the venue may have accepted the cancel.
+                logger.exception(
+                    f"[{reason}] cancel request failed for {order_id}; "
+                    "reconciling the order directly with the exchange"
+                )
+
+            try:
+                order = await self.client.fetch_local_order(order_id, local_symbol)
+            except Exception:
+                logger.exception(
+                    f"[{reason}] cannot verify order {order_id}; pending state and "
+                    "reserved funds are retained"
+                )
+                return False
+
+            if not isinstance(order, dict):
+                logger.critical(
+                    f"[{reason}] invalid exchange response for {order_id}; "
+                    "pending state is retained"
+                )
+                return False
+
+            status = str(order.get("status", "unknown")).lower()
+            terminal = ("closed", "canceled", "cancelled", "rejected", "expired")
+            if status not in terminal:
+                logger.critical(
+                    f"[{reason}] order {order_id} is not confirmed terminal "
+                    f"(status={status}); pending state and funds are retained"
+                )
+                return False
+
+            # A fill can race the cancel. Hedge the final cumulative fill before
+            # releasing the unused reservation.
+            order_info["filled"] = float(order.get("filled", 0.0) or 0.0)
+            await self._handle_entry_fills(pair_tag, order_info, order)
+            if self.states.get(pair_tag) in (
+                PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+            ):
+                logger.critical(
+                    f"[{reason}] order {order_id} reached terminal state but its "
+                    "fill could not be safely reconciled; retaining recovery state"
+                )
+                return False
+
+            await self._finalize_entry_order(pair_tag, status)
+            return True
+
         async def _expire_stale_entry_order(
             self, pair_tag: str, order_info: dict, order: dict
         ) -> bool:
-            """Cancel an unfilled entry order past its TTL. Returns True if cancelled."""
+            """Cancel an unfilled entry past TTL; resolve only after venue verification."""
             if order.get("status") != "open" or not math.isclose(float(order.get("filled", 0.0)), 0.0, abs_tol=1e-12):
                 return False
 
             order_id = order_info["order_id"]
-            local_symbol = order_info["symbol"]
             placed_time = float(order_info.get("placed_time", 0.0))
             max_ttl = getattr(self.config, "max_order_ttl_seconds", 30)
             age = time.time() - placed_time
@@ -131,24 +189,12 @@ class EntryMixin:
                 f"[State 1 Order Expired] Maker Limit Buy {order_id} for {pair_tag} "
                 f"expired after {age:.1f}s without market fill. Cancelling."
             )
-            try:
-                await self.client.cancel_local_order(order_id, local_symbol)
-            except Exception:
-                pass
-            if hasattr(self.client, "unlock_funds"):
-                self.client.unlock_funds(
-                    float(order_info.get("spot_cost_usdt", 0.0)),
-                    float(order_info.get("futures_margin_usdt", 0.0)),
-                )
-                bals = self.client.get_balances()
-                await self.redis.set(BALANCES_KEY, json.dumps(bals))
-            self.pending_entry_orders.pop(pair_tag, None)
-            await self._clear_pending_entry(pair_tag)
-            self.states[pair_tag] = PositionState.IDLE
-            return True
+            return await self._cancel_entry_order_and_reconcile(
+                pair_tag, order_info, "Order Expired"
+            )
 
         async def _check_adverse_selection(self, pair_tag: str, order_info: dict) -> bool:
-            """Adverse Selection Protection: Check Global Bid Price and cancel if below threshold."""
+            """Cancel a maker entry on adverse movement, but only resolve after verification."""
             live_price_key = f"arb:live_price:{pair_tag}"
             live_price_raw = await self.redis.get(live_price_key)
             if not live_price_raw:
@@ -159,10 +205,9 @@ class EntryMixin:
                 global_bid = float(live_snapshot.get("global_best_bid_usdt", 0.0))
                 threshold = order_info.get("cancel_threshold_usdt", 0.0)
                 if threshold > 0 and 0 < global_bid < threshold:
-                    await self._cancel_pending_entry_due_to_adverse_selection(
+                    return await self._cancel_pending_entry_due_to_adverse_selection(
                         pair_tag, order_info, global_bid, threshold
                     )
-                    return True
             except Exception as e:
                 logger.debug(f"error reading live price for adverse selection: {e}")
 
@@ -170,27 +215,15 @@ class EntryMixin:
 
         async def _cancel_pending_entry_due_to_adverse_selection(
             self, pair_tag: str, order_info: dict, global_bid: float, threshold: float
-        ) -> None:
+        ) -> bool:
             order_id = order_info["order_id"]
-            local_symbol = order_info["symbol"]
             logger.warning(
                 f"[State 1 Adverse Selection] Global Bid {global_bid} dropped below "
                 f"threshold {threshold} for {pair_tag}. Cancelling local Limit Buy {order_id}"
             )
-            try:
-                await self.client.cancel_local_order(order_id, local_symbol)
-            except Exception:
-                logger.exception(f"failed to cancel order {order_id}")
-            if hasattr(self.client, "unlock_funds"):
-                self.client.unlock_funds(
-                    float(order_info.get("spot_cost_usdt", 0.0)),
-                    float(order_info.get("futures_margin_usdt", 0.0)),
-                )
-                bals = self.client.get_balances()
-                await self.redis.set(BALANCES_KEY, json.dumps(bals))
-            del self.pending_entry_orders[pair_tag]
-            await self._clear_pending_entry(pair_tag)
-            self.states[pair_tag] = PositionState.IDLE
+            return await self._cancel_entry_order_and_reconcile(
+                pair_tag, order_info, "Adverse Selection"
+            )
 
         async def _handle_entry_fills(
             self, pair_tag: str, order_info: dict, order: dict
@@ -208,7 +241,7 @@ class EntryMixin:
             price_idr = order_info.get("price", 1.0)
             delta_val_usd = (unhedged_delta * price_idr) / usdt_rate
 
-            is_complete = status in ("closed", "canceled", "rejected")
+            is_complete = status in ("closed", "canceled", "cancelled", "rejected", "expired")
             if delta_val_usd >= self.config.min_partial_fill_usd or is_complete:
                 logger.info(
                     f"[State 2 Instant Short Hedge] Fill detected: delta_qty={unhedged_delta} "
@@ -415,7 +448,7 @@ class EntryMixin:
 
         async def _finalize_entry_order(self, pair_tag: str, status: str) -> None:
             """Remove finished entry order from pending list and transition state."""
-            if status not in ("closed", "canceled", "rejected"):
+            if status not in ("closed", "canceled", "cancelled", "rejected", "expired"):
                 return
 
             order_info = self.pending_entry_orders.get(pair_tag, {})
