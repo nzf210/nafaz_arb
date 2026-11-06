@@ -285,3 +285,42 @@ async def test_force_close_blocks_when_pending_order_cancel_is_not_confirmed(fak
     assert client.placed_sells == []
     assert pair_tag in engine.active_positions
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_force_close_still_sells_spot_when_futures_fill_price_is_missing(fake_redis):
+    """Flat futures exposure must not leave spot unhedged merely because PnL price is absent."""
+    client = MockExchangeClient()
+
+    async def close_without_price(symbol, amount, client_order_id=None):
+        return {
+            "id": "close-no-price",
+            "symbol": symbol,
+            "status": "closed",
+            "amount": amount,
+            "filled": amount,
+        }
+
+    client.close_global_short_market = close_without_price
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
+
+    assert len(client.global_close_buys) == 0  # custom close method used
+    assert len(client.placed_sells) == 1
+    assert pair_tag not in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.CLOSED
