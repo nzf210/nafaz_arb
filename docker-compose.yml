@@ -20,6 +20,7 @@ services:
       - ./data:/app/data:Z
     environment:
       - TZ=Asia/Jakarta
+      - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}
       - REDIS_ENABLED=true
       - REDIS_ADDR=redis:6380
       - GLOBAL_FUTURES_EXCHANGE=okx
