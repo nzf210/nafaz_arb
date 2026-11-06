@@ -173,28 +173,78 @@ class ArbitrageEngine(
                     await self.redis.delete(key)
                     continue
                 status, filled = await self._resolve_venue_order_state(order_id, symbol)
+                terminal_statuses = ("closed", "canceled", "cancelled", "rejected", "expired")
                 if status == "unknown":
-                    # Cannot confirm venue state: leave the record for the next
-                    # startup and refuse fresh entries for this pair.
+                    # Missing/ambiguous venue state is not proof that an order is gone.
+                    # Keep the durable record and block this pair for manual reconciliation.
+                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                    self._mark_failed(
+                        pair_tag,
+                        "ENTRY_ORDER_STATE_UNKNOWN",
+                        f"Cannot verify local order {order_id}; pending record retained.",
+                        detail={"order_id": order_id, "symbol": symbol},
+                        state=PositionState.RECONCILIATION_REQUIRED,
+                    )
                     logger.critical(
                         f"[Recovery] cannot verify venue state of order {order_id} "
                         f"({pair_tag}) - MANUAL CHECK REQUIRED"
                     )
                     continue
+
+                order_info["filled"] = float(filled or 0.0)
                 if status == "open":
-                    order_info["filled"] = float(filled or 0.0)
                     self.pending_entry_orders[pair_tag] = order_info
-                    self.states[pair_tag] = PositionState.ENTRY_PENDING
+                    self.states[pair_tag] = (
+                        PositionState.ENTRY_PARTIAL
+                        if order_info["filled"] > 0
+                        else PositionState.ENTRY_PENDING
+                    )
+                    # Keep the Redis key: in-memory adoption alone is not restart-safe.
+                    await self._persist_pending_entry(pair_tag, order_info)
                     logger.warning(
                         f"[Recovery] re-adopted pending entry order {order_id} "
                         f"for {pair_tag} (filled={filled})"
                     )
-                else:
-                    logger.warning(
-                        f"[Recovery] pending entry order {order_id} for {pair_tag} "
-                        f"is {status} on the venue - clearing record"
+                    continue
+
+                if status in terminal_statuses:
+                    # A terminal order can still contain fills that occurred before
+                    # cancellation or before the process crashed. Hedge that final
+                    # cumulative fill before releasing the unused reservation.
+                    self.pending_entry_orders[pair_tag] = order_info
+                    self.states[pair_tag] = PositionState.ENTRY_PENDING
+                    await self._handle_entry_fills(
+                        pair_tag,
+                        order_info,
+                        {"id": order_id, "status": status, "filled": order_info["filled"]},
                     )
-                await self.redis.delete(key)
+                    if self.states.get(pair_tag) in (
+                        PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+                    ):
+                        logger.critical(
+                            f"[Recovery] fill reconciliation failed for {pair_tag}; "
+                            "pending record retained"
+                        )
+                        continue
+                    await self._finalize_entry_order(pair_tag, status)
+                    logger.info(
+                        f"[Recovery] reconciled terminal order {order_id} for "
+                        f"{pair_tag} (status={status}, filled={filled})"
+                    )
+                    continue
+
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                self._mark_failed(
+                    pair_tag,
+                    "ENTRY_ORDER_STATE_UNSUPPORTED",
+                    f"Unsupported exchange order status '{status}' for {order_id}.",
+                    detail={"order_id": order_id, "symbol": symbol, "status": status},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                logger.critical(
+                    f"[Recovery] unsupported order status '{status}' for {order_id}; "
+                    "pending record retained"
+                )
             except Exception:
                 logger.exception(f"[Recovery] failed to restore pending entry from {key}")
 
@@ -206,9 +256,9 @@ class ArbitrageEngine(
             logger.warning(f"[Recovery] fetch order {order_id} failed: {exc}")
             return "unknown", None
         if not isinstance(order, dict) or not order.get("id") and order_id not in str(order):
-            # fetch_order on a missing order typically raises; a None-ish reply
-            # means the venue does not know the order.
-            return "not_found", 0.0
+            # A missing response is ambiguous (history retention, API lag, or
+            # wrong symbol); never interpret it as a safely canceled order.
+            return "unknown", None
         return str(order.get("status", "unknown")), float(order.get("filled", 0.0) or 0.0)
 
     async def _recover_active_positions(self) -> None:
