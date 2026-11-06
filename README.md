@@ -269,4 +269,4 @@ the configured JSON file. Do not assume Supabase is receiving live orders or tra
 until the persistence adapter and its idempotent retry/outbox tests are merged.
 
 
-For LIVE mode, configure a long random `api_auth_token` in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it.
+For LIVE mode, configure a long random `api_auth_token` in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.
