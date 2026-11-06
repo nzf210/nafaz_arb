@@ -413,12 +413,12 @@ class ArbitrageEngine(
             return
 
         for key in keys or []:
+            pair_tag = key.split("arb:active_pos:", 1)[-1]
             try:
                 raw = await self.redis.get(key)
                 if not raw:
                     continue
                 pos = ActivePosition.from_dict(json.loads(raw))
-                pair_tag = key.split("arb:active_pos:", 1)[-1]
                 if pos.qty <= 0:
                     # A zero/invalid Redis quantity is not proof that the exchange
                     # is flat. Retain the record and require explicit reconciliation.
@@ -461,8 +461,18 @@ class ArbitrageEngine(
                     f"entry_idr={pos.entry_price_idr}, short_entry_usdt={pos.short_entry_usdt}, "
                     f"state={self.states[pair_tag].value}"
                 )
-            except Exception:
-                logger.exception(f"[Recovery] failed to restore position from {key}")
+            except Exception as exc:
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                self._mark_failed(
+                    pair_tag,
+                    "ACTIVE_POSITION_RECORD_INVALID",
+                    f"Persisted active position cannot be parsed: {exc}",
+                    detail={"redis_key": key},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                logger.exception(
+                    f"[Recovery] invalid active position record {key}; Redis key retained"
+                )
 
         if recovered:
             logger.warning(
