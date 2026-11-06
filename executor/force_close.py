@@ -441,6 +441,17 @@ class ForceCloseMixin:
             logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")
 
         async def _force_close_locked(self, pair_key: str) -> None:
+            # A corrupted persisted position has no trustworthy quantity/symbol to
+            # submit against the venue. Never treat it as an already-flat position.
+            failure = self._failure_reasons.get(pair_key, {})
+            if failure.get("reason") == "ACTIVE_POSITION_RECORD_INVALID":
+                logger.critical(
+                    f"[Force Close] cannot execute for {pair_key}: persisted position "
+                    "record is invalid; manual exchange-side reconciliation required"
+                )
+                await self.publish_status()
+                return
+
             # Guard concurrent exit-fill processing for this pair while force close runs.
             self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
             orders_reconciled = await self._cancel_pending_orders_for_force_close(pair_key)
