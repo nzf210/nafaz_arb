@@ -80,13 +80,13 @@ class ForceCloseMixin:
                         f"[Force Close] cannot verify futures position for {pair_key}: "
                         "client has no fetch_positions method"
                     )
-                    return False
+                    return 0.0
                 positions = await self.client.fetch_positions(global_sym)
                 if positions is None:
                     logger.critical(
                         f"[Force Close] futures position lookup returned None for {pair_key}"
                     )
-                    return False
+                    return 0.0
                 for position in positions:
                     if not isinstance(position, dict):
                         logger.critical(
@@ -101,17 +101,17 @@ class ForceCloseMixin:
                         logger.critical(
                             f"[Force Close] position size unavailable for {pair_key}: {position}"
                         )
-                        return False
+                        return 0.0
                     try:
                         remaining = abs(float(raw_size))
                     except (TypeError, ValueError):
-                        return False
+                        return 0.0
                     if remaining > 1e-12:
                         logger.critical(
                             f"[Force Close] residual futures exposure for {pair_key}: "
                             f"{remaining} contracts/units remain"
                         )
-                        return False
+                        return 0.0
 
                 fill_price = helpers.extract_fill_price(res)
                 if fill_price <= 0:
@@ -129,7 +129,7 @@ class ForceCloseMixin:
                 logger.exception(
                     f"failed to close or verify global short on force close for {pair_key}"
                 )
-                return False
+                return 0.0
 
         async def _liquidate_spot_leg(self, pair_key: str, pos) -> float:
             """
