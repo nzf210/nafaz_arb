@@ -67,15 +67,15 @@ class RiskMixin:
         with actual missing funds, and refusing to hedge on a stale read leaves
         the spot leg naked.
         """
-        fraction = float(getattr(self.config, "balance_mismatch_fraction", 0.0) or 0.0)
-        if fraction <= 0:
-            return
-
         if not hasattr(self.client, "get_balances"):
             reason = "balance API unavailable; new entries disabled"
             self._exchange_halted[self.config.local_exchange_name] = reason
             self._exchange_halted[self.config.global_exchange_name] = reason
             logger.critical(f"[Risk Control] {reason}")
+            return
+
+        fraction = float(getattr(self.config, "balance_mismatch_fraction", 0.0) or 0.0)
+        if fraction <= 0:
             return
 
         try:
