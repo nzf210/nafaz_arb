@@ -1,0 +1,393 @@
+"""Startup recovery, hedge-failure rollback, emergency cancel, engine lifecycle, backoff helper."""
+
+import asyncio
+import json
+import re
+import time
+
+from executor.models import ActivePosition, PositionState
+
+import fakeredis.aioredis as fake_aioredis
+import pytest
+
+from executor.config import ExecutorConfig
+from executor.engine import ArbitrageEngine, RetryExhausted, retry_with_backoff
+
+from tests.conftest import BlockingSellClient, FailingHedgeClient, OpenShortPositionClient, _entry_order_info, _fresh_signal_payload, engine, fake_redis, mock_client
+
+@pytest.mark.asyncio
+async def test_p0_01_hedge_failure_rolls_back_spot_leg(fake_redis):
+    """BUG-02/P0-01: a failed hedge must market-sell the unhedged spot leg back."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    client = FailingHedgeClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+
+    engine.pending_entry_orders[pair_tag] = _entry_order_info(pair_tag, now_ms)
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    client.orders["301"] = {"id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.005}
+
+    pubsub = fake_redis.pubsub()
+    await pubsub.subscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
+    await engine._check_entry_orders()
+
+    # No position recorded, but the spot leg was sold back
+    assert pair_tag not in engine.active_positions
+    assert len(client.placed_sells) == 1
+    assert client.placed_sells[0]["type"] == "market"
+    assert client.placed_sells[0]["amount"] == 0.005
+    assert engine.states[pair_tag] == PositionState.CLOSED
+
+    msg = None
+    for _ in range(10):
+        m = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+        if m and m.get("type") == "message":
+            msg = json.loads(m["data"])
+            break
+    assert msg is not None
+    assert msg["event"] == "HEDGE_FAILED"
+    assert msg["rollback_succeeded"] is True
+    assert msg["symbol"] == "btc_idr"
+
+@pytest.mark.asyncio
+async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_redis):
+    """Rollback retries 5 times and emits a manual-intervention alert when it cannot sell."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    client = BlockingSellClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+
+    engine.pending_entry_orders[pair_tag] = _entry_order_info(pair_tag, now_ms)
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    client.orders["301"] = {"id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.005}
+
+    attempts = 0
+    original = client.place_local_market_sell
+
+    async def counting_sell(symbol, amount, client_order_id=None):
+        nonlocal attempts
+        attempts += 1
+        return await original(symbol, amount, client_order_id=client_order_id)
+
+    client.place_local_market_sell = counting_sell
+
+    pubsub = fake_redis.pubsub()
+    await pubsub.subscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
+    await engine._check_entry_orders()
+
+    assert attempts == 5
+    # A failed rollback leaves coins unhedged: the pair must surface as FAILED,
+    # not as a clean CLOSED (P1-04).
+    assert engine.states[pair_tag] == PositionState.FAILED
+    assert pair_tag not in engine.active_positions
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "HEDGE_FAILED"
+
+    msg = None
+    for _ in range(10):
+        m = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+        if m and m.get("type") == "message":
+            msg = json.loads(m["data"])
+            break
+    assert msg is not None
+    assert msg["event"] == "HEDGE_FAILED"
+    assert msg["rollback_succeeded"] is False
+    assert "local spot exchange unavailable" in msg["rollback_error"]
+
+@pytest.mark.asyncio
+async def test_p0_hedge_ambiguity_open_short_blocks_rollback(engine, fake_redis):
+    """Timeout hedge with an actually-open short must NOT market-sell the spot."""
+    pair_tag = "indodax:btc_idr"
+    client = OpenShortPositionClient()
+    client.amount_unused = 0.01
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    order_info = {
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+    }
+
+    await engine._rollback_hedge_failure(pair_tag, order_info, 0.01, 1e9, 16000.0, RuntimeError("timeout"))
+
+    assert len(client.placed_sells) == 0
+    assert engine.states[pair_tag] == PositionState.FAILED
+    assert engine._failure_reasons[pair_tag]["reason"] == "HEDGE_STATE_UNKNOWN"
+
+@pytest.mark.asyncio
+async def test_p0_hedge_ambiguity_zero_position_rolls_back(engine, fake_redis):
+    """Confirmed zero futures position proceeds with the spot rollback."""
+    pair_tag = "indodax:btc_idr"
+    client = FailingHedgeClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    order_info = {
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+    }
+
+    await engine._rollback_hedge_failure(pair_tag, order_info, 0.01, 1e9, 16000.0, RuntimeError("timeout"))
+
+    assert len(client.placed_sells) == 1
+
+@pytest.mark.asyncio
+async def test_p0_hedge_ambiguity_query_failure_blocks_rollback(engine, fake_redis):
+    """If the position query itself fails, rollback must be blocked (fail-safe)."""
+    pair_tag = "indodax:btc_idr"
+
+    class BrokenPositionClient(FailingHedgeClient):
+        async def fetch_positions(self, symbol: str):
+            raise RuntimeError("position endpoint down")
+
+    client = BrokenPositionClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    order_info = {
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+    }
+
+    await engine._rollback_hedge_failure(pair_tag, order_info, 0.01, 1e9, 16000.0, RuntimeError("timeout"))
+
+    assert len(client.placed_sells) == 0
+    assert engine.states[pair_tag] == PositionState.FAILED
+
+@pytest.mark.asyncio
+async def test_p0_03_startup_recovery_restores_active_positions(fake_redis, mock_client):
+    """BUG-03/P0-03: positions persisted in Redis must be reloaded on initialise()."""
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+        spot_cost_usdt=50.0,
+        futures_margin_usdt=50.0,
+    )
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=mock_client, redis_client=fake_redis
+    )
+    assert engine.active_positions == {}
+
+    await engine.initialize()
+
+    assert pair_tag in engine.active_positions
+    restored = engine.active_positions[pair_tag]
+    assert restored.qty == 0.005
+    assert restored.short_entry_usdt == 65_000.0
+    assert engine.states[pair_tag] == PositionState.HEDGED_ACTIVE
+
+@pytest.mark.asyncio
+async def test_p0_03_recovery_preserves_reconciliation_required_state(fake_redis, mock_client):
+    """Positions persisted with RECONCILIATION_REQUIRED must not be treated as HEDGED_ACTIVE on recovery."""
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+        spot_cost_usdt=50.0,
+        futures_margin_usdt=50.0,
+        state="RECONCILIATION_REQUIRED",
+    )
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=mock_client, redis_client=fake_redis
+    )
+    await engine.initialize()
+
+    assert pair_tag in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "RESTORED_RECONCILIATION_REQUIRED"
+
+@pytest.mark.asyncio
+async def test_p0_03_recovery_drops_zero_qty_position(fake_redis, mock_client):
+    """Recovery must not resurrect a degenerate zero-quantity position."""
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.0,
+    )
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=mock_client, redis_client=fake_redis
+    )
+    await engine.initialize()
+
+    assert pair_tag not in engine.active_positions
+    assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is None
+
+@pytest.mark.asyncio
+async def test_p0_pending_entry_persisted_and_cleared(engine, fake_redis):
+    """A placed entry order is persisted to Redis and cleared when resolved."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(_fresh_signal_payload(now_ms)))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    raw = await fake_redis.get("arb:pending_entry:indodax:btc_idr")
+    assert raw is not None
+    stored = json.loads(raw)
+    assert stored["client_order_id"] == list(engine.pending_entry_orders.values())[0]["client_order_id"]
+
+    # Resolve the order (closed) -> persisted record must be removed.
+    order_id = list(engine.pending_entry_orders.keys())[0]
+    engine.pending_entry_orders[order_id]["order_id"] = "1"
+    engine.orders_pending = None
+    mock_order = engine.pending_entry_orders[order_id]
+    mock_order["order_id"] = "501"
+    mock_client_order = mock_order
+    client = engine.client
+    client.orders["501"] = {"id": "501", "status": "closed", "filled": 0.5}
+    await engine._check_entry_orders()
+    assert await fake_redis.get("arb:pending_entry:indodax:btc_idr") is None
+
+@pytest.mark.asyncio
+async def test_p0_pending_entry_adopted_on_startup(engine, fake_redis, mock_client):
+    """A persisted pending entry still open on the venue is re-adopted at startup."""
+    order_info = {
+        "order_id": "777",
+        "client_order_id": "indodax-btc-idr-entry-5",
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "price": 1_000_000_000.0,
+        "qty": 0.0001,
+        "filled": 0.0,
+        "hedged_short_qty": 0.0,
+        "placed_time": time.time(),
+        "spot_cost_usdt": 10.0,
+        "futures_margin_usdt": 10.0,
+    }
+    await fake_redis.set("arb:pending_entry:indodax:btc_idr", json.dumps(order_info))
+    mock_client.orders["777"] = {"id": "777", "status": "open", "filled": 0.0}
+
+    await engine._recover_pending_entry_orders()
+
+    assert "indodax:btc_idr" in engine.pending_entry_orders
+    assert engine.states["indodax:btc_idr"] == PositionState.ENTRY_PENDING
+    assert await fake_redis.get("arb:pending_entry:indodax:btc_idr") is None
+
+@pytest.mark.asyncio
+async def test_p0_pending_entry_closed_on_venue_cleared_at_startup(engine, fake_redis, mock_client):
+    """A persisted pending entry no longer open on the venue is cleaned up."""
+    order_info = {
+        "order_id": "888",
+        "symbol": "btc_idr",
+        "placed_time": time.time(),
+        "spot_cost_usdt": 10.0,
+        "futures_margin_usdt": 10.0,
+    }
+    await fake_redis.set("arb:pending_entry:indodax:btc_idr", json.dumps(order_info))
+    mock_client.orders["888"] = {"id": "888", "status": "canceled", "filled": 0.0}
+
+    await engine._recover_pending_entry_orders()
+
+    assert "indodax:btc_idr" not in engine.pending_entry_orders
+    assert await fake_redis.get("arb:pending_entry:indodax:btc_idr") is None
+
+@pytest.mark.asyncio
+async def test_p0_order_seq_seeded_from_clock(mock_client):
+    """A fresh engine must not start its client-order-id sequence at 1."""
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=mock_client, redis_client=fake_aioredis.FakeRedis(decode_responses=True)
+    )
+    assert engine._order_seq > 1000
+
+@pytest.mark.asyncio
+async def test_emergency_cancel_on_negative_funding(engine, fake_redis, mock_client):
+    """Test Emergency Cancel: Cancels pending entry order on negative funding signal."""
+    pair_tag = "indodax:btc_idr"
+
+    engine.pending_entry_orders[pair_tag] = {
+        "order_id": "401",
+        "symbol": "btc_idr",
+        "price": 1000000000.0,
+        "qty": 0.01,
+    }
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["401"] = {"id": "401", "symbol": "btc_idr", "status": "open"}
+
+    cancel_msg = json.dumps({
+        "action": "CANCEL_ALL_NEGATIVE_FUNDING",
+        "pair_key": pair_tag,
+        "funding_rate": -0.0001,
+    })
+    await engine.handle_emergency_cancel(cancel_msg)
+
+    assert ("401", "btc_idr") in mock_client.cancelled_orders
+    assert pair_tag not in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.IDLE
+
+@pytest.mark.asyncio
+async def test_engine_lifecycle_start_stop(engine):
+    """Test engine start and stop coroutine lifecycle to prevent TypeError."""
+    await engine.start()
+    assert engine._running is True
+    assert len(engine._tasks) == 5
+    await engine.stop()
+    assert engine._running is False
+
+@pytest.mark.asyncio
+async def test_p2_03_retry_with_backoff_retries_until_success():
+    from executor.engine import retry_with_backoff
+
+    calls = {"n": 0}
+
+    async def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("transient")
+        return "ok"
+
+    result = await retry_with_backoff(flaky, max_retries=4, base_delay=0.0)
+
+    assert result == "ok"
+    assert calls["n"] == 3
+
+@pytest.mark.asyncio
+async def test_p2_03_retry_with_backoff_raises_after_exhaustion():
+    from executor.engine import RetryExhausted, retry_with_backoff
+
+    calls = {"n": 0}
+
+    async def always_fails():
+        calls["n"] += 1
+        raise RuntimeError(f"boom-{calls['n']}")
+
+    with pytest.raises(RetryExhausted) as exc_info:
+        await retry_with_backoff(always_fails, max_retries=2, base_delay=0.0)
+
+    # max_retries=2 means 3 total attempts
+    assert calls["n"] == 3
+    assert exc_info.value.attempts == 3
+    assert "boom-3" in str(exc_info.value.last_error)

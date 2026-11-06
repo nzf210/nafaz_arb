@@ -1,8 +1,10 @@
-import pytest, json
-from tests.test_executor import fake_redis, mock_client
-from executor.engine import ArbitrageEngine
-from executor.config import ExecutorConfig
+import pytest
 
-def test_probe9():
+from executor.config import ExecutorConfig
+from executor.engine import ArbitrageEngine
+
+
+def test_probe9(mock_client):
     cfg = ExecutorConfig()
-    eng = ArbitrageEngine(config=cfg, client=mock_client.__wrapped__() if hasattr(mock_client,'__wrapped__') else None, redis_client=None)
+    eng = ArbitrageEngine(config=cfg, client=mock_client, redis_client=None)
+    assert eng.config is cfg
