@@ -84,6 +84,26 @@ class ExchangeClient:
             params["clientOrderId"] = client_order_id
         return await self.global_fut.create_market_buy_order(symbol, amount, params)
 
+    async def fetch_funding_history(
+        self, symbol: str, since: Optional[int] = None, limit: int = 100
+    ) -> list:
+        """Fetches actual settled funding payments for a perpetual contract."""
+        fetcher = getattr(self.global_fut, "fetch_funding_history", None)
+        if fetcher is None:
+            raise NotImplementedError(
+                f"{self.global_name} adapter does not support fetch_funding_history"
+            )
+        return await fetcher(symbol, since, limit)
+
+    async def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
+        """Fetches current funding rate and the venue's next settlement timestamp."""
+        fetcher = getattr(self.global_fut, "fetch_funding_rate", None)
+        if fetcher is None:
+            raise NotImplementedError(
+                f"{self.global_name} adapter does not support fetch_funding_rate"
+            )
+        return await fetcher(symbol)
+
     async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetches ticker from global futures exchange."""
         return await self.global_fut.fetch_ticker(symbol)
@@ -375,6 +395,16 @@ class PaperTradingExchangeClient:
         if qty <= 0:
             return []
         return [{"symbol": symbol, "contracts": qty, "side": "short"}]
+
+    async def fetch_funding_history(
+        self, symbol: str, since: Optional[int] = None, limit: int = 100
+    ) -> list:
+        """Paper mode has no exchange settlement ledger; never invent funding credits."""
+        return []
+
+    async def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
+        """Paper mode does not fabricate a future settlement schedule."""
+        return {}
 
     async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
         """Mirrors the live client: returns the last known ask for this symbol."""
