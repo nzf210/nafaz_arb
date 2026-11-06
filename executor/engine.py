@@ -36,11 +36,14 @@ from executor.entry import EntryMixin
 from executor.exits import ExitMixin
 from executor.force_close import ForceCloseMixin
 from executor.risk import RiskMixin
+from executor.rollback import RollbackMixin
 
 logger = logging.getLogger("executor.engine")
 
 
-class ArbitrageEngine(EntryMixin, ExitMixin, ForceCloseMixin, RiskMixin):
+class ArbitrageEngine(
+    EntryMixin, ExitMixin, ForceCloseMixin, RollbackMixin, RiskMixin
+):
     """
     Hybrid Maker-Taker + Positive Funding Rate Arbitrage Engine.
     Implements 4 States with non-blocking CCXT + redis.asyncio.
