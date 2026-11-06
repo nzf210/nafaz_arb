@@ -98,6 +98,9 @@ class ArbitrageEngine(
         # operator can query why a pair stopped instead of scraping logs.
         self._failure_reasons: Dict[str, Dict[str, Any]] = {}
         self._last_status_publish: float = 0.0
+        # Funding settlement reconciliation is rate-limited per pair so a delayed
+        # exchange history endpoint is not polled on every 50ms monitoring tick.
+        self._funding_reconcile_retry_after_ms: Dict[str, int] = {}
 
         # Daily loss circuit breaker (UTC day boundary).
         self._daily_realized_loss_usdt: float = 0.0
