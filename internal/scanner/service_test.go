@@ -840,9 +840,15 @@ func TestFXFallbackExcludesPair(t *testing.T) {
 		PerpLeverage:         1,
 	}
 	s := New(cfg, &failingFXAdapter{})
-	r, _, err := s.Scan(context.Background())
-	if err != nil {
-		t.Fatal(err)
+	r, complete, err := s.Scan(context.Background())
+	if err == nil || complete {
+		t.Fatalf("expected FX preflight to abort scan, err=%v complete=%v", err, complete)
+	}
+	if r.Complete {
+		t.Fatal("scan result must be marked incomplete when FX preflight fails")
+	}
+	if !strings.Contains(err.Error(), "USDT/IDR live ticker unavailable") {
+		t.Fatalf("unexpected FX preflight error: %v", err)
 	}
 	// IDR pairs must be absent from the result entirely (skipped, not just excluded).
 	for _, op := range r.Opportunities {
@@ -850,14 +856,8 @@ func TestFXFallbackExcludesPair(t *testing.T) {
 			t.Fatalf("IDR pair must be skipped when live FX ticker fails, got opportunity %+v", op)
 		}
 	}
-	// And the scan must record the skip as an error so operators see it.
-	found := false
-	for _, e := range r.Errors {
-		if strings.Contains(e, "USDT/IDR live ticker unavailable") {
-			found = true
-		}
-	}
-	if !found {
+	// The failed preflight must be visible in the result payload too.
+	if len(r.Errors) == 0 || !strings.Contains(r.Errors[len(r.Errors)-1], "USDT/IDR live ticker unavailable") {
 		t.Fatalf("expected FX-unavailable error in scan errors, got %v", r.Errors)
 	}
 }
