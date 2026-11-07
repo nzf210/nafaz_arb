@@ -220,6 +220,11 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
     tokocrypto = FakeVenue("tokocrypto", "BTC_USDT", "BTC/USDT")
     okx = FakeVenue("okx", "BTC-USDT-SWAP", "BTC/USDT:USDT")
     binance = FakeVenue("binance", "BTCUSDT", "BTC/USDT:USDT")
+    # CCXT derivative amount is contracts; engine amount is always base-asset units.
+    okx.markets["BTC/USDT:USDT"].update({"contract": True, "contractSize": 1.0})
+    okx.markets_by_id["BTC-USDT-SWAP"].update({"contract": True, "contractSize": 1.0})
+    binance.markets["BTC/USDT:USDT"].update({"contract": True, "contractSize": 0.001})
+    binance.markets_by_id["BTCUSDT"].update({"contract": True, "contractSize": 0.001})
     client = ExchangeClient(
         indodax, okx,
         local_exchanges={"indodax": indodax, "tokocrypto": tokocrypto},
@@ -233,6 +238,7 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
 
     assert tokocrypto.calls[0][0:2] == ("buy", "BTC/USDT")
     assert binance.calls[0][0:2] == ("market_sell", "BTC/USDT:USDT")
+    assert binance.calls[0][2] == 10.0, "0.01 BTC must be converted to 10 contracts at 0.001 BTC/contract"
     positions = await client.fetch_positions("binance:BTCUSDT")
     assert len(positions) == 1
     assert positions[0]["side"] == "short"
