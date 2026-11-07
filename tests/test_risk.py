@@ -337,6 +337,30 @@ def test_resume_exchange_clears_halt_and_failures(engine):
 
 
 @pytest.mark.asyncio
+async def test_balance_feed_failure_halts_even_when_mismatch_threshold_disabled(engine, fake_redis):
+    """Disabling mismatch detection must not disable fail-closed balance availability."""
+    engine.config.balance_mismatch_fraction = 0.0
+    client = BalancesMockClient(spot_available=1000.0, futures_available=1000.0)
+
+    def fail_balances():
+        raise TimeoutError("balance endpoint unavailable")
+
+    client.get_balances = fail_balances
+    engine.client = client
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}", json.dumps(_fresh_signal_payload(now_ms))
+    )
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert pair_tag not in engine.pending_entry_orders
+    assert "indodax" in engine._exchange_halted
+    assert "binance" in engine._exchange_halted
+
+
+@pytest.mark.asyncio
 async def test_balance_feed_failure_halts_new_entries(engine, fake_redis):
     """A failed balance read blocks new entries but does not stop position management."""
     client = BalancesMockClient(spot_available=1000.0, futures_available=1000.0)
