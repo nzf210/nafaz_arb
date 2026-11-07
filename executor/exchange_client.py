@@ -222,7 +222,7 @@ class ExchangeClient:
             # BTC/USDT:USDT depending on venue/version.
             return value.split(":")[0].replace("/", "").replace("-", "").replace("_", "").upper()
 
-        target_symbol = normalize_symbol(symbol.split(":", 1)[-1])
+        target_symbol = normalize_symbol(market_symbol)
         matched = []
         for position in positions:
             if not isinstance(position, dict):
