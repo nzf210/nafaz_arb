@@ -97,7 +97,8 @@ func (l *LiveAdapter) fetchBybitPerpetualMarkets(ctx context.Context) ([]domain.
 		if payload.RetCode != 0 { return nil, fmt.Errorf("bybit instruments error: %s (%d)", payload.RetMsg, payload.RetCode) }
 		for _, s := range payload.Result.List {
 			quote := strings.ToUpper(s.QuoteCoin)
-			if s.Status != "Trading" || !strings.Contains(strings.ToLower(s.ContractType), "perpetual") || s.Symbol == "" || s.BaseCoin == "" || (quote != "USDT" && quote != "USDC") { continue }
+			settle := strings.ToUpper(s.SettleCoin)
+			if s.Status != "Trading" || !strings.Contains(strings.ToLower(s.ContractType), "perpetual") || s.Symbol == "" || s.BaseCoin == "" || (quote != "USDT" && quote != "USDC") || settle != quote { continue }
 			tick, _ := strconv.ParseFloat(s.PriceFilter.TickSize, 64)
 			step, _ := strconv.ParseFloat(s.LotSizeFilter.QtyStep, 64)
 			minQty, _ := strconv.ParseFloat(s.LotSizeFilter.MinOrderQty, 64)
