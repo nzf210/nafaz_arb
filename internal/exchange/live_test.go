@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
@@ -61,8 +62,13 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpotMarkets: %v", err)
 	}
-	if len(markets) != 6 {
-		t.Fatalf("expected 6 spot markets (2 toko + 2 indodax + 2 mexc), got %d", len(markets))
+	if len(markets) != 4 {
+		t.Fatalf("expected 4 local spot markets (2 toko + 2 indodax), got %d", len(markets))
+	}
+	for _, market := range markets {
+		if market.Exchange == "mexc" || strings.HasPrefix(market.Symbol, "mexc_spot:") {
+			t.Fatalf("MEXC Spot must not be included in the local spot candidate universe: %+v", market)
+		}
 	}
 }
 

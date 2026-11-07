@@ -30,7 +30,7 @@
     "empty_book_freeze_minutes": 15,
     "enable_adaptive_sizing": true,
     "min_allocated_capital": 10.0,
-    "enable_synthetic_idr": false,
+    "enable_synthetic_idr": true,
     "synthetic_usdt_idr_rate": 16000.0,
     "estimated_holding_hours": 8,
     "min_net_roi_pct": 0.1,
