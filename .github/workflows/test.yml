@@ -80,3 +80,12 @@ jobs:
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
             -f supabase/tests/schema_smoke.sql
+
+  docker-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build scanner image
+        run: docker build -f Dockerfile -t nafaz-scanner:ci .
+      - name: Build executor image
+        run: docker build -f Dockerfile.executor -t nafaz-executor:ci .
