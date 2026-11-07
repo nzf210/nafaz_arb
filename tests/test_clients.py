@@ -190,9 +190,13 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
             self.markets_by_id = {market_id: {"symbol": unified_symbol, "quote": quote}}
             self.markets = {unified_symbol: {"symbol": unified_symbol, "quote": quote}}
             self.calls = []
+            self.leverage_calls = []
 
         async def load_markets(self):
             return self.markets
+
+        async def set_leverage(self, leverage, symbol):
+            self.leverage_calls.append((leverage, symbol))
 
         async def create_limit_buy_order(self, symbol, amount, price, *params):
             self.calls.append(("buy", symbol, amount, price))
@@ -241,6 +245,7 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
     assert tokocrypto.calls[0][3] == 60_000.0, "IDR-normalized order price must be converted to USDT quote"
     assert binance.calls[0][0:2] == ("market_sell", "BTC/USDT:USDT")
     assert binance.calls[0][2] == 10.0, "0.01 BTC must be converted to 10 contracts at 0.001 BTC/contract"
+    assert binance.leverage_calls == [(1, "BTC/USDT:USDT")], "futures entry must enforce 1x leverage"
     positions = await client.fetch_positions("binance:BTCUSDT")
     assert len(positions) == 1
     assert positions[0]["side"] == "short"
