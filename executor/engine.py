@@ -649,7 +649,6 @@ class ArbitrageEngine(
         """
         async with self._pair_lock(pair_tag):
             self._roll_loss_day_if_needed()
-            self._check_balance_mismatch()
             if self._trading_halted:
                 logger.warning(
                     f"[Circuit Breaker] rejecting entry for {pair_tag}: "
@@ -802,8 +801,13 @@ class ArbitrageEngine(
                 )
                 return
             # Sync balances to Redis
-            bals = self.client.get_balances()
-            await self.redis.set(BALANCES_KEY, json.dumps(bals))
+            bals = await self._get_balance_snapshot(
+                pair_tag=pair_tag,
+                pair_info=pair_info,
+                usdt_idr_rate=snapshot.usdt_idr_rate,
+            )
+            if bals is not None:
+                await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
         try:
             logger.info(
