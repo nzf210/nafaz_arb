@@ -137,6 +137,7 @@ class ActivePosition:
     global_exchange: str
     symbol: str
     entry_price_idr: float
+    quote_asset: str = "IDR"
     short_entry_usdt: float
     qty: float
     accumulated_funding_usdt: float = 0.0
@@ -165,6 +166,7 @@ class ActivePosition:
             "global_exchange": self.global_exchange,
             "symbol": self.symbol,
             "entry_price_idr": self.entry_price_idr,
+            "quote_asset": self.quote_asset,
             "short_entry_usdt": self.short_entry_usdt,
             "qty": self.qty,
             "accumulated_funding_usdt": self.accumulated_funding_usdt,
@@ -195,6 +197,7 @@ class ActivePosition:
             global_exchange=d.get("global_exchange", ""),
             symbol=d.get("symbol", ""),
             entry_price_idr=float(d.get("entry_price_idr", 0.0)),
+            quote_asset=str(d.get("quote_asset", "IDR") or "IDR").upper(),
             short_entry_usdt=float(d.get("short_entry_usdt", 0.0)),
             qty=float(d.get("qty", 0.0)),
             accumulated_funding_usdt=float(d.get("accumulated_funding_usdt", 0.0)),
