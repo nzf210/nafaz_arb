@@ -367,6 +367,43 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			ev.EntryPriceIDR,
 			ev.ShortEntryUSDT,
 		)
+	case "HEDGE_FAILED":
+		heading := "ROLLBACK BERHASIL"
+		status := "Spot telah dijual kembali setelah hedge Futures gagal."
+		if !ev.RollbackSucceeded {
+			heading = "ROLLBACK TIDAK TERVERIFIKASI"
+			status = "⛔ Posisi Spot mungkin masih terbuka. Hentikan entry baru dan periksa posisi secara manual sekarang."
+		}
+		text = fmt.Sprintf(
+			"🚨 <b>[%s] HEDGE FUTURES GAGAL — %s</b>\n\n"+
+				"• Pasangan: <b>%s</b>\n"+
+				"• Bursa: <code>%s (Spot)</code> vs <code>%s (Futures)</code>\n"+
+				"• Kuantitas terdampak: <code>%.8f</code>\n"+
+				"• Alasan: <code>%s</code>\n"+
+				"• Hasil: %s\n"+
+				"• Detail rollback: <code>%s</code>",
+			modeTag, heading, html.EscapeString(strings.ToUpper(ev.Symbol)),
+			html.EscapeString(strings.ToUpper(ev.LocalExchange)),
+			html.EscapeString(strings.ToUpper(ev.GlobalExchange)), ev.Qty,
+			html.EscapeString(ev.Reason), status, html.EscapeString(ev.RollbackError),
+		)
+	case "INSUFFICIENT_BALANCE", "ENTRY_REJECTED", "BALANCE_READ_FAILED", "BALANCE_MISMATCH":
+		emoji := "⚠️"
+		if ev.Event == "BALANCE_READ_FAILED" || ev.Event == "BALANCE_MISMATCH" {
+			emoji = "🚨"
+		}
+		text = fmt.Sprintf(
+			"%s <b>[%s] ENTRY DITOLAK — %s</b>\n\n"+
+				"• Pasangan: <b>%s</b>\n"+
+				"• Bursa: <code>%s (Spot)</code> vs <code>%s (Futures)</code>\n"+
+				"• Alasan: %s\n\n"+
+				"<i>Tidak ada posisi baru yang boleh dibuka sampai kondisi ini teratasi.</i>",
+			emoji, modeTag, html.EscapeString(ev.Event),
+			html.EscapeString(strings.ToUpper(ev.Symbol)),
+			html.EscapeString(strings.ToUpper(ev.LocalExchange)),
+			html.EscapeString(strings.ToUpper(ev.GlobalExchange)),
+			html.EscapeString(ev.Reason),
+		)
 	case "POSITION_CLOSED":
 		emoji := "🎉"
 		statusWord := "PROFIT"
