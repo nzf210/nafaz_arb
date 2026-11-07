@@ -94,7 +94,7 @@ class RiskMixin:
         local_symbol = (pair_info.local_symbol if pair_info else symbol) or symbol or ""
         quote_asset = (pair_info.quote_asset if pair_info else "").upper()
         if not quote_asset and local_symbol:
-            normalized = local_symbol.upper().split(":")[0].replace("/", "_").replace("-", "_")
+            normalized = local_symbol.upper().split(":")[-1].replace("/", "_").replace("-", "_")
             quote_asset = normalized.split("_")[-1] if "_" in normalized else "IDR"
 
         global_symbol = pair_info.global_symbol.upper() if pair_info else ""
