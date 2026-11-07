@@ -82,7 +82,10 @@ class ExchangeClient:
         def amount(balance: Dict[str, Any], asset: str, bucket: str) -> float:
             section = balance.get(bucket)
             if isinstance(section, dict) and asset in section:
-                return float(section.get(asset) or 0.0)
+                value = float(section.get(asset) or 0.0)
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError(f"exchange returned invalid {asset} {bucket} balance")
+                return value
             per_asset = balance.get(asset)
             if isinstance(per_asset, dict):
                 value = float(per_asset.get(bucket) or 0.0)
@@ -97,7 +100,7 @@ class ExchangeClient:
         spot_free = amount(spot_raw, local_quote, "free")
         spot_total = amount(spot_raw, local_quote, "total")
         if local_quote == "IDR":
-            if usdt_idr_rate <= 0:
+            if not math.isfinite(float(usdt_idr_rate)) or usdt_idr_rate <= 0:
                 raise ValueError("live USDT/IDR rate is required to normalize IDR spot balance")
             spot_free /= usdt_idr_rate
             spot_total /= usdt_idr_rate
