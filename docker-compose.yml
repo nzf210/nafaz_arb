@@ -5,7 +5,7 @@ services:
     command: redis-server --port 6380
     restart: always
     ports:
-      - "6380:6380"
+      - "127.0.0.1:6380:6380"
 
   nafaz-scanner:
     build:
@@ -45,7 +45,7 @@ services:
       - REDIS_URL=redis://redis:6380/0
       - LOCAL_EXCHANGE=indodax
       - GLOBAL_EXCHANGE=okx
-      - EXECUTOR_MOCK_MODE=true
+      - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-true}
     depends_on:
       - redis
 
