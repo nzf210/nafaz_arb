@@ -312,7 +312,7 @@ class ForceCloseMixin:
         async def _resolve_force_close_prices(self, pair_key: str, pos, spot_exit_price_idr: float):
             """Returns (current_ask_usdt, usdt_rate, current_spot_bid_idr) for PnL accounting."""
             current_ask = pos.short_entry_usdt
-            usdt_rate = self.FALLBACK_USDT_IDR_RATE
+            usdt_rate = 0.0
             current_spot_bid = pos.entry_price_idr
 
             price_data = await self._fetch_live_price(pair_key, pos)
@@ -343,6 +343,7 @@ class ForceCloseMixin:
             net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
             capital_usdt = pos.qty * pos.short_entry_usdt
             return {
+                "pnl_complete": usdt_rate > 0 and math.isfinite(usdt_rate),
                 "spot_pnl_idr": spot_pnl_idr,
                 "spot_pnl_usdt": spot_pnl_usdt,
                 "futures_pnl_usdt": futures_pnl_usdt,
