@@ -146,7 +146,11 @@ class RiskMixin:
             return None
 
         if balances is None:
+            if pair_tag:
+                self._balance_snapshots.pop(pair_tag, None)
             return None
+        if pair_tag:
+            self._balance_snapshots[pair_tag] = balances
 
         fraction = float(getattr(self.config, "balance_mismatch_fraction", 0.0) or 0.0)
         if fraction <= 0:
@@ -300,11 +304,13 @@ class RiskMixin:
         # Check exchange balance limits ($100 balance per exchange in simulation)
         min_cap = getattr(self.config, "min_allocated_capital", 10.0)
 
-        balances = await self._check_balance_mismatch(
-            pair_info,
-            payload.pricing_snapshot.usdt_idr_rate,
-            pair_tag,
-        )
+        balances = self._balance_snapshots.pop(pair_tag, None)
+        if balances is None:
+            balances = await self._check_balance_mismatch(
+                pair_info,
+                payload.pricing_snapshot.usdt_idr_rate,
+                pair_tag,
+            )
         local_ex, global_ex = self._pair_venues(pair_tag)
         for venue in (local_ex, global_ex):
             if venue and venue in self._exchange_halted:
