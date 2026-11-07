@@ -25,7 +25,9 @@ USDT/IDR rate from the scanner signal; missing FX or balance data blocks new ent
 USDT/USDC quote balances are treated at a 1:1 stablecoin assumption for sizing, so
 USDC depeg risk is not eliminated.
 
-The executor image runs as a non-root user. Do not bake `config.json`, exchange API keys,
+Both images run as a non-root user. Set `APP_UID` and `APP_GID` in the deployment `.env`
+file to the owner IDs of the host `data/` directory (default: 1000/1000) so the
+scanner can write its persistent history bind mount without running as root. The executor image runs as a non-root user. Do not bake `config.json`, exchange API keys,
 or Supabase service-role credentials into images; mount the runtime config or inject
 secrets through the deployment environment. Redis is bound to host loopback in the
 provided Compose file because it has no authentication configured.
