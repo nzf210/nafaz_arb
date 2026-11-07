@@ -86,11 +86,26 @@ class RiskMixin:
                 return None
             raise RuntimeError("exchange client does not implement get_balances")
 
-        result = getter(
-            local_quote_asset=quote_asset or "IDR",
-            global_quote_asset=global_quote_asset,
-            usdt_idr_rate=float(usdt_idr_rate or 0.0),
-        )
+        balance_kwargs = {
+            "local_quote_asset": quote_asset or "IDR",
+            "global_quote_asset": global_quote_asset,
+            "usdt_idr_rate": float(usdt_idr_rate or 0.0),
+        }
+        try:
+            signature = inspect.signature(getter)
+        except (TypeError, ValueError):
+            signature = None
+        if signature is None or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        ):
+            result = getter(**balance_kwargs)
+        else:
+            accepted = {
+                key: value for key, value in balance_kwargs.items()
+                if key in signature.parameters
+            }
+            result = getter(**accepted)
         if inspect.isawaitable(result):
             result = await result
 
