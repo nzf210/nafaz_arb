@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -405,19 +406,21 @@ func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
         t.Fatalf("expected live API token validation error, got %v", err)
     }
 
-    if err := os.WriteFile(path, []byte(`{
+    token := strings.Repeat("x", 32)
+    validConfig := fmt.Sprintf(`{
         "mode":"LIVE",
-        "api_auth_token":"test-secret-must-be-at-least-32-chars",
+        "api_auth_token":%q,
         "capital_total":100,
         "allocation_per_pair":0.5
-    }`), 0600); err != nil {
+    }`, token)
+    if err := os.WriteFile(path, []byte(validConfig), 0600); err != nil {
         t.Fatal(err)
     }
     cfg, err := Load(path)
     if err != nil {
         t.Fatal(err)
     }
-    if cfg.APIAuthToken != "test-secret-must-be-at-least-32-chars" {
+    if cfg.APIAuthToken != token {
         t.Fatalf("APIAuthToken=%q, want configured token", cfg.APIAuthToken)
     }
 }
