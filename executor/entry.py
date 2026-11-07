@@ -371,18 +371,6 @@ class EntryMixin:
                     self._record_order_failure(
                         global_exchange, "hedge order placement failed"
                     )
-                await self._publish_execution_failure(
-                    pair_tag,
-                    "FUTURES_HEDGE_FAILED",
-                    "Gagal membuka hedge Futures setelah Spot terisi; rollback Spot dijalankan.",
-                    detail={
-                        "exchange": global_exchange,
-                        "symbol": global_symbol,
-                        "unhedged_qty": unhedged_delta,
-                        "error": str(he),
-                    },
-                    state=PositionState.RECONCILIATION_REQUIRED,
-                )
                 # The spot leg is already filled but unhedged: roll it back immediately.
                 await self._rollback_hedge_failure(
                     pair_tag, order_info, unhedged_delta, price_idr, usdt_rate, he
