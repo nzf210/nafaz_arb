@@ -509,8 +509,22 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	}
 
 	hundred := decimal.NewFromInt(100)
-	spotTakerFeeRate := decimal.NewFromFloat(s.cfg.SpotTakerFeePct).Div(hundred)
-	perpTakerFeeRate := decimal.NewFromFloat(s.cfg.PerpTakerFeePct).Div(hundred)
+	spotMakerFeePct := s.cfg.SpotMakerFeePct
+	spotTakerFeePct := s.cfg.SpotTakerFeePct
+	perpTakerFeePct := s.cfg.PerpTakerFeePct
+	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(sm.Exchange)]; ok {
+		if profile.SpotMakerFeePct != nil {
+			spotMakerFeePct = *profile.SpotMakerFeePct
+		}
+		if profile.SpotTakerFeePct != nil {
+			spotTakerFeePct = *profile.SpotTakerFeePct
+		}
+	}
+	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(pm.Exchange)]; ok && profile.PerpTakerFeePct != nil {
+		perpTakerFeePct = *profile.PerpTakerFeePct
+	}
+	spotTakerFeeRate := decimal.NewFromFloat(spotTakerFeePct).Div(hundred)
+	perpTakerFeeRate := decimal.NewFromFloat(perpTakerFeePct).Div(hundred)
 	// Fee-asset surcharge: model non-quote-asset fee effects (BNB discount,
 	// fee billed in another asset) as a flat extra rate on notional so the
 	// net profit is not overstated. 0 = disabled.
@@ -532,7 +546,7 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 			Add(prices.perpExit.Sub(perpAsk)).
 			Mul(qty)
 
-		spotMakerFeeRate := decimal.NewFromFloat(s.cfg.SpotMakerFeePct).Div(hundred)
+		spotMakerFeeRate := decimal.NewFromFloat(spotMakerFeePct).Div(hundred)
 		spotEntryFee := prices.spotEntry.Mul(qty).Mul(spotMakerFeeRate)
 		spotExitFee := prices.spotExit.Mul(qty).Mul(spotTakerFeeRate)
 		spotFees = spotEntryFee.Add(spotExitFee)
