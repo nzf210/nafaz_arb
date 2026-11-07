@@ -113,6 +113,9 @@ class ArbitrageEngine(
         self._consecutive_order_failures: Dict[str, int] = {}
         # Last observed available balances per venue leg, for mismatch detection.
         self._last_balances: Dict[str, float] = {}
+        # Balance snapshot fetched once per signal; reused by entry sizing so the
+        # venue is checked even when the signal is a duplicate and no order follows.
+        self._balance_snapshots: Dict[str, Dict[str, Any]] = {}
         # Venue names seen from recent payloads, for pair-tag -> exchange mapping.
         self._pair_infos: Dict[str, Any] = {}
 
@@ -649,6 +652,17 @@ class ArbitrageEngine(
         """
         async with self._pair_lock(pair_tag):
             self._roll_loss_day_if_needed()
+            payload = await self._load_signal_payload(pair_tag)
+            if payload is None:
+                return
+            self._pair_infos[pair_tag] = payload.pair_info
+            balances = await self._check_balance_mismatch(
+                payload.pair_info,
+                payload.pricing_snapshot.usdt_idr_rate,
+                pair_tag,
+            )
+            if balances is None and not getattr(self.config, "mock_mode", False):
+                return
             if self._trading_halted:
                 logger.warning(
                     f"[Circuit Breaker] rejecting entry for {pair_tag}: "
@@ -661,7 +675,7 @@ class ArbitrageEngine(
                     f"exchange halted ({venue_reason})"
                 )
                 return
-            await self._handle_signal_locked(pair_tag)
+            await self._handle_signal_locked(pair_tag, payload)
 
     def _next_order_seq(self) -> int:
         """Monotonic per-process sequence used to keep client order ids unique."""
@@ -754,8 +768,11 @@ class ArbitrageEngine(
             return False
         return True
 
-    async def _handle_signal_locked(self, pair_tag: str):
-        payload = await self._load_signal_payload(pair_tag)
+    async def _handle_signal_locked(
+        self, pair_tag: str, payload: Optional[ExecutorPayload] = None
+    ):
+        if payload is None:
+            payload = await self._load_signal_payload(pair_tag)
         if payload is None:
             return
 
