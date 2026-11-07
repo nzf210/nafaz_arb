@@ -17,6 +17,13 @@ go test ./...
 go run ./cmd/nafaz-scanner -config config.json
 ```
 
+### Container security
+
+The executor image runs as a non-root user. Do not bake `config.json`, exchange API keys,
+or Supabase service-role credentials into images; mount the runtime config or inject
+secrets through the deployment environment. Redis is bound to host loopback in the
+provided Compose file because it has no authentication configured.
+
 ### Run with Podman (VPS)
 
 Untuk panduan lengkap deployment menggunakan Podman di VPS, lihat panduan di [PODMAN.md](./PODMAN.md).
