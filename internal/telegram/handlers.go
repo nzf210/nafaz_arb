@@ -387,9 +387,9 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			html.EscapeString(strings.ToUpper(ev.GlobalExchange)), ev.Qty,
 			html.EscapeString(ev.Reason), status, html.EscapeString(ev.RollbackError),
 		)
-	case "INSUFFICIENT_BALANCE", "ENTRY_REJECTED", "BALANCE_READ_FAILED", "BALANCE_MISMATCH":
+	case "INSUFFICIENT_BALANCE", "ENTRY_REJECTED", "BALANCE_READ_FAILED", "BALANCE_MISMATCH", "EXCHANGE_ERROR":
 		emoji := "⚠️"
-		if ev.Event == "BALANCE_READ_FAILED" || ev.Event == "BALANCE_MISMATCH" {
+		if ev.Event == "BALANCE_READ_FAILED" || ev.Event == "BALANCE_MISMATCH" || ev.Event == "EXCHANGE_ERROR" {
 			emoji = "🚨"
 		}
 		text = fmt.Sprintf(
