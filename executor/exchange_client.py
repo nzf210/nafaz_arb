@@ -132,6 +132,12 @@ class ExchangeClient:
         if positions is None or not isinstance(positions, (list, tuple)):
             raise ValueError("exchange returned an invalid futures positions payload")
 
+        def normalize_symbol(value: str) -> str:
+            # CCXT may represent the same linear contract as BTCUSDT or
+            # BTC/USDT:USDT depending on venue/version.
+            return value.split(":")[0].replace("/", "").replace("-", "").replace("_", "").upper()
+
+        target_symbol = normalize_symbol(symbol)
         matched = []
         for position in positions:
             if not isinstance(position, dict):
@@ -141,7 +147,7 @@ class ExchangeClient:
                 raise ValueError(
                     "exchange futures position is missing its symbol; flat state cannot be verified"
                 )
-            if position_symbol == symbol:
+            if normalize_symbol(position_symbol) == target_symbol:
                 matched.append(position)
         return matched
 
