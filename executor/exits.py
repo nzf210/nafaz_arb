@@ -261,6 +261,7 @@ class ExitMixin:
             limit_sell_idr: float,
             tick_size: float,
             global_ask_usdt: float,
+            usdt_idr_rate: float,
         ) -> None:
             try:
                 order = await self.client.place_local_limit_sell(
@@ -268,6 +269,7 @@ class ExitMixin:
                     pos.qty,
                     limit_sell_idr,
                     client_order_id=build_client_order_id(pair_tag, "exit", self._next_order_seq()),
+                    usdt_idr_rate=usdt_idr_rate,
                 )
                 order_id = str(order.get("id", ""))
                 self.pending_exit_orders[pair_tag] = {
@@ -355,7 +357,7 @@ class ExitMixin:
             )
             await self._cancel_existing_exit_order(pair_tag, pos.symbol)
             await self._place_dynamic_limit_sell(
-                pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt
+                pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt, usdt_idr_rate
             )
 
         async def _check_dynamic_exits(self):
