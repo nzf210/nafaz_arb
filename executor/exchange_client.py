@@ -55,12 +55,31 @@ class ExchangeClient:
         return await self.local.fetch_order(order_id, symbol)
 
     async def fetch_positions(self, symbol: str) -> list:
-        """Fetches open futures positions for a symbol (global exchange)."""
+        """Fetches open futures positions for a symbol (global exchange).
+
+        A malformed position response must never be converted into an empty list:
+        callers use an empty list as proof that the futures leg is flat.
+        """
         try:
             positions = await self.global_fut.fetch_positions([symbol])
         except (TypeError, AttributeError):
             positions = await self.global_fut.fetch_positions()
-        return [p for p in positions or [] if p.get("symbol") == symbol]
+
+        if positions is None or not isinstance(positions, (list, tuple)):
+            raise ValueError("exchange returned an invalid futures positions payload")
+
+        matched = []
+        for position in positions:
+            if not isinstance(position, dict):
+                raise ValueError("exchange returned a malformed futures position")
+            position_symbol = position.get("symbol")
+            if not isinstance(position_symbol, str) or not position_symbol:
+                raise ValueError(
+                    "exchange futures position is missing its symbol; flat state cannot be verified"
+                )
+            if position_symbol == symbol:
+                matched.append(position)
+        return matched
 
     async def open_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """
