@@ -377,6 +377,21 @@ func TestFeeAssetSurchargeValidation(t *testing.T) {
 }
 
 
+func TestLiveModeRejectsWeakAPIAuthToken(t *testing.T) {
+    path := filepath.Join(t.TempDir(), "config.json")
+    if err := os.WriteFile(path, []byte(`{
+        "mode":"LIVE",
+        "api_auth_token":"short-token",
+        "capital_total":100,
+        "allocation_per_pair":0.5
+    }`), 0600); err != nil {
+        t.Fatal(err)
+    }
+    if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "32 characters") {
+        t.Fatalf("expected weak token validation error, got %v", err)
+    }
+}
+
 func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
     path := filepath.Join(t.TempDir(), "config.json")
     if err := os.WriteFile(path, []byte(`{
@@ -392,7 +407,7 @@ func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
 
     if err := os.WriteFile(path, []byte(`{
         "mode":"LIVE",
-        "api_auth_token":"test-secret",
+        "api_auth_token":"test-secret-must-be-at-least-32-chars",
         "capital_total":100,
         "allocation_per_pair":0.5
     }`), 0600); err != nil {
@@ -402,7 +417,7 @@ func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
     if err != nil {
         t.Fatal(err)
     }
-    if cfg.APIAuthToken != "test-secret" {
+    if cfg.APIAuthToken != "test-secret-must-be-at-least-32-chars" {
         t.Fatalf("APIAuthToken=%q, want configured token", cfg.APIAuthToken)
     }
 }
