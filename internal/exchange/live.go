@@ -29,6 +29,12 @@ type LiveAdapter struct {
 	spotExchangeFilter string
 	mexcSpotBaseURL   string
 
+	// WebSocket endpoints are separate hosts from the REST bases; deriving one
+	// from the other yields 404 (verified against okx and mexc).
+	indodaxWSURL string
+	okxWSURL     string
+	mexcWSURL    string
+
 	mu                 sync.RWMutex
 	contractSizes      map[string]float64
 	lastUSDTIDRRate    float64
@@ -97,6 +103,9 @@ func NewLiveAdapter() *LiveAdapter {
 		binanceBaseURL:    "https://fapi.binance.com",
 		bybitBaseURL:      "https://api.bybit.com",
 		mexcSpotBaseURL:   "https://api.mexc.com",
+		indodaxWSURL:      "https://indodax.com",
+		okxWSURL:          "https://ws.okx.com:8443",
+		mexcWSURL:         "https://wbs.mexc.com",
 		contractSizes:     make(map[string]float64),
 	}
 }
@@ -228,9 +237,9 @@ func (l *LiveAdapter) EnableWebSocketFeed(ctx context.Context, maxAge time.Durat
 	l.mu.Unlock()
 
 	client := NewWSClient(l.wsCache, nil,
-		indodaxDepthStream(l.indodaxBaseURL),
-		okxBookStream(l.okxBaseURL),
-		mexcSpotDepthStream(l.mexcSpotBaseURL),
+		indodaxDepthStream(l.indodaxWSURL),
+		okxBookStream(l.okxWSURL),
+		mexcSpotDepthStream(l.mexcWSURL),
 	)
 	l.mu.Lock()
 	l.wsClient = client

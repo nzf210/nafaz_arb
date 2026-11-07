@@ -10,7 +10,7 @@ import (
 
 func TestLoadTelegramAlertDefaultsAndThresholds(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5,"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -28,6 +28,7 @@ func TestLoadTelegramAlertDefaultsAndThresholds(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"telegram":{
 			"alert_cooldown_minutes":7,
 			"alert_min_net_roi_pct":1.25,
@@ -52,6 +53,7 @@ func TestLoadRejectsNegativeAlertThreshold(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"telegram":{"alert_min_net_roi_pct":-0.1}
 	}`), 0600); err != nil {
 		t.Fatal(err)
@@ -65,7 +67,7 @@ func TestLoadRejectsNegativeAlertThreshold(t *testing.T) {
 
 func TestExecutionModeDefaultsAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5,"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,6 +86,7 @@ func TestExecutionModeDefaultsAndValidation(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"execution_mode":"MAKER_TAKER",
 		"spot_maker_fee_pct":0.1,
 		"max_order_ttl_seconds":45
@@ -102,6 +105,7 @@ func TestExecutionModeDefaultsAndValidation(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"execution_mode":"INVALID"
 	}`), 0600); err != nil {
 		t.Fatal(err)
@@ -114,7 +118,7 @@ func TestExecutionModeDefaultsAndValidation(t *testing.T) {
 
 func TestOptimizationFeaturesDefaultsAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5,"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -142,6 +146,7 @@ func TestOptimizationFeaturesDefaultsAndValidation(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"enable_adaptive_sizing":false,
 		"min_allocated_capital":25.0,
 		"empty_book_freeze_minutes":30,
@@ -165,7 +170,7 @@ func TestOptimizationFeaturesDefaultsAndValidation(t *testing.T) {
 func TestMinFundingRateAndExcludedSymbols(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	// Test default is 0 when omitted
-	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5,"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -180,6 +185,7 @@ func TestMinFundingRateAndExcludedSymbols(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"min_funding_rate": 0,
 		"excluded_symbols": ["META", "LPT/USDT"]
 	}`), 0600); err != nil {
@@ -200,6 +206,7 @@ func TestMinFundingRateAndExcludedSymbols(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"min_funding_rate": -0.001
 	}`), 0600); err != nil {
 		t.Fatal(err)
@@ -212,7 +219,7 @@ func TestMinFundingRateAndExcludedSymbols(t *testing.T) {
 	// Test env override
 	t.Setenv("EXCLUDED_SYMBOLS", "BTC, ETH,SOL")
 	t.Setenv("MIN_FUNDING_RATE", "0.0001")
-	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5,"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err = Load(path)
@@ -229,7 +236,7 @@ func TestMinFundingRateAndExcludedSymbols(t *testing.T) {
 
 func TestExchangeHealthDefaultsAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5,"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -250,6 +257,7 @@ func TestExchangeHealthDefaultsAndValidation(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"exchange_error_window_seconds":60,
 		"exchange_error_rate_threshold":0.75,
 		"exchange_error_min_requests":3
@@ -267,6 +275,7 @@ func TestExchangeHealthDefaultsAndValidation(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"exchange_error_rate_threshold":1.5
 	}`), 0600); err != nil {
 		t.Fatal(err)
@@ -286,7 +295,7 @@ func TestExchangeHealthDefaultsAndValidation(t *testing.T) {
 
 func TestTopOfBookLiquidityConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5,"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -301,6 +310,7 @@ func TestTopOfBookLiquidityConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"min_top_of_book_quote_usdt":250
 	}`), 0600); err != nil {
 		t.Fatal(err)
@@ -324,7 +334,7 @@ func TestTopOfBookLiquidityConfig(t *testing.T) {
 
 func TestWebSocketFeedConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5,"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -342,6 +352,7 @@ func TestWebSocketFeedConfig(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{
 		"capital_total":100,
 		"allocation_per_pair":0.5,
+		"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
 		"enable_websocket_feed":true,
 		"websocket_book_max_age_seconds":5
 	}`), 0600); err != nil {
@@ -428,7 +439,7 @@ func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
 
 func TestExchangeRoleAllowlistDefaultsAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5,"api_auth_token":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}`), 0600); err != nil { t.Fatal(err) }
 	cfg, err := Load(path)
 	if err != nil { t.Fatal(err) }
 	if cfg.GlobalFuturesExchange != "all" { t.Fatalf("global futures default=%q, want all", cfg.GlobalFuturesExchange) }
@@ -458,25 +469,40 @@ func TestNafazModeEnvOverridesConfigFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv("NAFAZ_MODE", "MOCK")
+	// The scanner has no paper mode: market data is always live. NAFAZ_MODE is
+	// only a deployment escape hatch to force LIVE without editing config.json.
+	t.Setenv("NAFAZ_MODE", "LIVE")
 	cfg, err := Load(path)
 	if err != nil {
-		t.Fatalf("NAFAZ_MODE=MOCK must bypass LIVE token validation, got %v", err)
+		t.Fatalf("NAFAZ_MODE=LIVE with a 32-char token must load, got %v", err)
 	}
-	if cfg.Mode != "MOCK" {
-		t.Fatalf("Mode=%q, want NAFAZ_MODE to override config.json", cfg.Mode)
+	if cfg.Mode != "LIVE" {
+		t.Fatalf("Mode=%q, want LIVE", cfg.Mode)
+	}
+}
+
+func TestScannerModeDefaultsToLive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"api_auth_token":"`+strings.Repeat("x", 32)+`",
+		"capital_total":100,
+		"allocation_per_pair":0.5
+	}`), 0600); err != nil {
+		t.Fatal(err)
 	}
 
-	t.Setenv("NAFAZ_MODE", "LIVE")
-	if _, err := Load(path); err != nil {
-		t.Fatalf("NAFAZ_MODE=LIVE with a 32-char token must load, got %v", err)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Mode != "LIVE" {
+		t.Fatalf("Mode=%q, want default LIVE (scanner has no paper mode)", cfg.Mode)
 	}
 }
 
 func TestNafazModeEnvForcesLiveTokenValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{
-		"mode":"MOCK",
 		"capital_total":100,
 		"allocation_per_pair":0.5
 	}`), 0600); err != nil {

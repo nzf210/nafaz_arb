@@ -107,7 +107,7 @@ func Load(path string) (Config, error) {
 }
 
 func (c *Config) setDefaults() {
-	c.Mode = defaultString(c.Mode, "MOCK")
+	c.Mode = defaultString(c.Mode, "LIVE")
 	c.ExecutionMode = defaultString(c.ExecutionMode, "TAKER_TAKER")
 	c.ListenAddr = defaultString(c.ListenAddr, ":8080")
 	c.ScanIntervalSeconds = defaultInt(c.ScanIntervalSeconds, 30)
