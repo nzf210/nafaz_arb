@@ -70,6 +70,7 @@ after the executor was split into mixins.
 | R-11 | Startup restored Redis active positions without checking actual futures exposure | Recovery | Live startup compares exchange short quantity with restored base-asset quantity; mismatch/unknown state is blocked
 | R-12 | LIVE API accepted arbitrarily short bearer tokens | API | LIVE config now requires a minimum 32-character token
 | R-13 | Malformed futures position payload could be filtered into an empty list and mistaken for a flat account | Exchange adapter / recovery | `fetch_positions` now rejects non-list, malformed, or symbol-less position payloads; only a valid empty list means flat
+| R-14 | Executor container ran as root and copied `config.json` into an image layer | Deployment | Executor now runs as a dedicated non-root user and receives config only at runtime; CI builds both images
 
 These changes are static-code remediations with regression tests added. They have not
 been executed in this environment; CI must pass before the branch is approved.
