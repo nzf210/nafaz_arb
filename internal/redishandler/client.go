@@ -59,7 +59,11 @@ type ClosedTradeRecord struct {
 }
 
 type TradeEvent struct {
-	Event                  string  `json:"event"` // "POSITION_OPENED" or "POSITION_CLOSED"
+	Event                  string  `json:"event"`
+	PairKey                string  `json:"pair_key,omitempty"`
+	Reason                 string  `json:"reason,omitempty"`
+	RollbackSucceeded      bool    `json:"rollback_succeeded,omitempty"`
+	RollbackError          string  `json:"rollback_error,omitempty"`
 	LocalExchange          string  `json:"local_exchange"`
 	GlobalExchange         string  `json:"global_exchange"`
 	Symbol                 string  `json:"symbol"`
