@@ -574,3 +574,30 @@ async def test_malformed_active_position_record_is_retained_and_force_close_bloc
     assert client.global_close_buys == []
     assert client.placed_sells == []
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_fetch_positions_rejects_missing_symbol_in_exchange_payload():
+    """A malformed non-empty positions response must not be mistaken for flat."""
+    from executor.exchange_client import ExchangeClient
+
+    class GlobalFutures:
+        async def fetch_positions(self, symbols=None):
+            return [{"contracts": 0.01, "contractSize": 1.0, "side": "short"}]
+
+    client = ExchangeClient(local_exchange=object(), global_exchange=GlobalFutures())
+    with pytest.raises(ValueError, match="missing its symbol"):
+        await client.fetch_positions("BTC/USDT:USDT")
+
+
+@pytest.mark.asyncio
+async def test_fetch_positions_returns_empty_only_for_valid_empty_payload():
+    """An actual empty exchange response remains the only valid empty result."""
+    from executor.exchange_client import ExchangeClient
+
+    class GlobalFutures:
+        async def fetch_positions(self, symbols=None):
+            return []
+
+    client = ExchangeClient(local_exchange=object(), global_exchange=GlobalFutures())
+    assert await client.fetch_positions("BTC/USDT:USDT") == []
