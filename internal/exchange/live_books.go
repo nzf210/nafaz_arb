@@ -210,8 +210,10 @@ func (l *LiveAdapter) PerpetualOrderBook(ctx context.Context, symbol string) (do
 		return l.trackedBookForSymbol("binance", symbol, func() (domain.OrderBook, error) { return l.fetchBinanceOrderBook(ctx, symbol) })
 	case strings.HasPrefix(symbol, "bybit:"):
 		return l.trackedBookForSymbol("bybit", symbol, func() (domain.OrderBook, error) { return l.fetchBybitOrderBook(ctx, symbol) })
-	default:
+	case strings.HasPrefix(symbol, "okx:"):
 		return l.trackedBookForSymbol("okx", symbol, func() (domain.OrderBook, error) { return l.fetchOKXOrderBook(ctx, symbol) })
+	default:
+		return domain.OrderBook{}, fmt.Errorf("unknown foreign perpetual symbol prefix: %q", symbol)
 	}
 }
 
