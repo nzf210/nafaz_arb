@@ -148,6 +148,12 @@ class RiskMixin:
             logger.exception(
                 "[Risk Control] balance read failed; both venues halted for new entries"
             )
+            await self._publish_execution_failure(
+                pair_tag or "unknown",
+                "BALANCE_FEED_UNAVAILABLE",
+                "Gagal membaca saldo live; entry dihentikan pada kedua exchange.",
+                detail={"local_exchange": local_name, "global_exchange": global_name, "error": str(exc)},
+            )
             return None
 
         if balances is None:
@@ -187,6 +193,12 @@ class RiskMixin:
             )
             logger.critical(
                 f"[Risk Control] Exchange {venue} HALTED: {self._exchange_halted[venue]}"
+            )
+            await self._publish_execution_failure(
+                pair_tag or "unknown",
+                "BALANCE_MISMATCH",
+                f"Saldo {venue} berubah tidak sesuai exposure tercatat; entry dihentikan.",
+                detail={"exchange": venue, "available_drop": drop, "committed_exposure": explained},
             )
         return balances
 
@@ -332,6 +344,12 @@ class RiskMixin:
                 return None
 
         if balances is None and not getattr(self.config, "mock_mode", False):
+            await self._publish_execution_failure(
+                pair_tag,
+                "BALANCE_SNAPSHOT_UNAVAILABLE",
+                "Snapshot saldo live tidak tersedia; entry ditolak.",
+                detail={"local_exchange": local_ex, "global_exchange": global_ex},
+            )
             return None
 
         if balances is not None:
@@ -345,10 +363,22 @@ class RiskMixin:
                     f"Spot Avail=${avail_spot:.2f}, Futures Avail=${avail_fut:.2f}, "
                     f"Min Required=${min_cap:.2f}. Rejecting entry signal."
                 )
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "INSUFFICIENT_OR_UNBALANCED_BALANCE",
+                    "Saldo Spot/Futures tidak mencukupi atau tidak seimbang untuk membuka posisi.",
+                    detail={"spot_available_usdt": avail_spot, "futures_available_usdt": avail_fut, "minimum_required_usdt": min_cap},
+                )
                 return None
 
             max_pos_usdt = min(max_pos_usdt, usable_capital)
             if not self._exposure_allows(pair_tag, pair_info, max_pos_usdt):
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "EXPOSURE_LIMIT_REACHED",
+                    "Entry ditolak karena batas exposure exchange akan terlampaui.",
+                    detail={"planned_usdt": max_pos_usdt, "limit_usdt": getattr(self.config, "max_exposure_per_exchange_usdt", 0.0)},
+                )
                 return None
 
             fee_pct = float(getattr(self.config, "estimated_round_trip_fee_pct", 0.0) or 0.0)
@@ -364,6 +394,12 @@ class RiskMixin:
                 logger.warning(
                     f"[State 1 Balance Check] Position size ${max_pos_usdt:.2f} "
                     f"< min required ${min_cap:.2f} for {pair_tag}"
+                )
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "INSUFFICIENT_AFTER_FEE_RESERVE",
+                    "Ukuran posisi setelah cadangan fee berada di bawah minimum exchange.",
+                    detail={"position_usdt": max_pos_usdt, "minimum_required_usdt": min_cap},
                 )
                 return None
 
