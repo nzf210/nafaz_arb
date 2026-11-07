@@ -776,6 +776,25 @@ class ArbitrageEngine(
         if payload is None:
             return
 
+        # IDR sizing is only valid with the live FX rate carried by this scan.
+        # Never let mock-mode defaults or a static fallback turn an invalid
+        # FX snapshot into a tradable order.
+        quote_asset = str(payload.pair_info.quote_asset or "").upper()
+        if quote_asset in ("IDR", "BIDR"):
+            fx_rate = float(payload.pricing_snapshot.usdt_idr_rate or 0.0)
+            if not math.isfinite(fx_rate) or fx_rate <= 0:
+                logger.error(
+                    f"[FX Preflight] rejecting {pair_tag}: live USDT/IDR rate is missing or invalid"
+                )
+                self._mark_failed(
+                    pair_tag,
+                    "LIVE_FX_RATE_INVALID",
+                    "IDR spot entry requires a finite, positive live USDT/IDR rate.",
+                    detail={"quote_asset": quote_asset, "usdt_idr_rate": fx_rate},
+                )
+                await self.publish_status()
+                return
+
         # Cache the venue names so venue-halt checks work before the next
         # payload read (and during monitoring after the signal key expires).
         self._pair_infos[pair_tag] = payload.pair_info
@@ -852,7 +871,9 @@ class ArbitrageEngine(
                 "hedged_short_qty": 0.0,
                 "cancel_threshold_usdt": directives.cancel_if_global_bid_drops_below_usdt,
                 "tick_size": pair_info.local_price_tick,
+                "quote_asset": pair_info.quote_asset,
                 "usdt_idr_rate": snapshot.usdt_idr_rate,
+                "fx_rate_timestamp_ms": snapshot.timestamp_ms,
                 "global_ask_usdt": snapshot.global_best_ask_usdt,
                 "base_target_exit_spread_pct": directives.base_target_exit_spread_pct,
                 "current_funding_rate": payload.funding_metrics.current_funding_rate,
