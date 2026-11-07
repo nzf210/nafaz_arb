@@ -22,7 +22,7 @@ The initial migration creates:
 - `balance_snapshots`: historical balance observations.
 - `risk_events` and `executor_events`: operational and audit event journals.
 - `executor_status_snapshots`: time-series snapshots for monitoring and incident review.
-- Automatic `updated_at` triggers for mutable records; the CI migration check validates RLS, grants, trigger behavior, and migration idempotency.
+- Automatic `updated_at` triggers for mutable records; the CI migration check validates RLS, grants, trigger behavior, migration idempotency, and the trade currency/FX columns.
 
 All financial quantities are PostgreSQL `NUMERIC`, not floating point. Tables have
 RLS enabled and no grants for `anon` or `authenticated`; server components use
