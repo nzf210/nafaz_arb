@@ -1,4 +1,4 @@
--- Runs after the initial migration against a clean PostgreSQL instance.
+-- Runs after all migrations against a clean PostgreSQL instance.
 do $$
 declare
     tbl text;
@@ -70,4 +70,25 @@ begin
     ) then
         raise exception 'trade currency / FX audit columns are missing';
     end if;
+end $$;
+
+
+-- Exchange roles are enforced in the database, not just in application config.
+do $$
+begin
+    begin
+        insert into public.exchange_accounts (exchange_name, market_type, account_label)
+        values ('mexc', 'spot', 'invalid-role-smoke');
+        raise exception 'MEXC Spot account was incorrectly accepted';
+    exception when check_violation then
+        null;
+    end;
+
+    begin
+        insert into public.exchange_accounts (exchange_name, market_type, account_label)
+        values ('indodax', 'perpetual', 'invalid-role-smoke');
+        raise exception 'Indodax perpetual account was incorrectly accepted';
+    exception when check_violation then
+        null;
+    end;
 end $$;
