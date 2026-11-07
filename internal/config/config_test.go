@@ -446,3 +446,45 @@ func TestExchangeRoleAllowlistDefaultsAndValidation(t *testing.T) {
 	valid := Config{CapitalTotal: 100, AllocationPerPair: 0.5, PerpLeverage: 1, GlobalFuturesExchange: "mexc,okx,binance,bybit", EnabledSpotExchanges: []string{"indodax", "tokocrypto"}}
 	if err := valid.validate(); err != nil { t.Fatalf("valid six-venue role configuration rejected: %v", err) }
 }
+
+func TestNafazModeEnvOverridesConfigFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"mode":"LIVE",
+		"api_auth_token":"`+strings.Repeat("x", 32)+`",
+		"capital_total":100,
+		"allocation_per_pair":0.5
+	}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("NAFAZ_MODE", "MOCK")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("NAFAZ_MODE=MOCK must bypass LIVE token validation, got %v", err)
+	}
+	if cfg.Mode != "MOCK" {
+		t.Fatalf("Mode=%q, want NAFAZ_MODE to override config.json", cfg.Mode)
+	}
+
+	t.Setenv("NAFAZ_MODE", "LIVE")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("NAFAZ_MODE=LIVE with a 32-char token must load, got %v", err)
+	}
+}
+
+func TestNafazModeEnvForcesLiveTokenValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"mode":"MOCK",
+		"capital_total":100,
+		"allocation_per_pair":0.5
+	}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("NAFAZ_MODE", "LIVE")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "api_auth_token") {
+		t.Fatalf("expected live token validation error from NAFAZ_MODE override, got %v", err)
+	}
+}

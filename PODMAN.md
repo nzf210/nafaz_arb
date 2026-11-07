@@ -60,6 +60,9 @@ Pastikan VPS Anda telah terpasang:
 
 4. Edit file `config.json` sesuai kebutuhan:
    * Ubah `"mode"`: `"MOCK"` (testing simulasi) atau `"LIVE"` (koneksi data bursa live).
+     Bisa juga dioverride lewat environment variable `NAFAZ_MODE` tanpa mengedit file.
+   * Executor memakai mode terpisah lewat `EXECUTOR_MOCK_MODE` di `docker-compose.yml`
+     (default `true` = paper trading), bukan field `"mode"` di atas.
    * Konfigurasi alert Telegram jika ingin notifikasi aktif:
      ```json
      {

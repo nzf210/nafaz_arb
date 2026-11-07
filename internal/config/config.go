@@ -300,6 +300,7 @@ func setEnvFloat(target *float64, key string) {
 }
 
 func (c *Config) applyEnvOverrides() {
+	setEnvString(&c.Mode, "NAFAZ_MODE")
 	setEnvString(&c.APIAuthToken, "API_AUTH_TOKEN")
 	setEnvString(&c.ExecutionMode, "EXECUTION_MODE")
 	if v := os.Getenv("ENABLE_ADAPTIVE_SIZING"); v != "" {

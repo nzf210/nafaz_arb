@@ -100,5 +100,8 @@
         "enabled": false,
         "url": "",
         "key": ""
+    },
+    "executor": {
+        "mock_mode": true
     }
 }
