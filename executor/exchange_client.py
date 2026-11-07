@@ -755,17 +755,25 @@ def create_ccxt_client(local_name: str, global_name: str, local_creds, global_cr
             market_type = "future" if name == "binance" else "swap"
             global_clients[name] = init_ccxt_exchange(name, creds, default_type=market_type)
 
-    if local_name not in local_clients:
+    if local_name not in local_clients and getattr(local_creds, "api_key", "") and getattr(local_creds, "api_secret", ""):
         local_clients[local_name] = init_ccxt_exchange(local_name, local_creds, default_type="spot")
-    if global_name not in global_clients:
+    if global_name not in global_clients and getattr(global_creds, "api_key", "") and getattr(global_creds, "api_secret", ""):
         market_type = "future" if global_name == "binance" else "swap"
         global_clients[global_name] = init_ccxt_exchange(global_name, global_creds, default_type=market_type)
 
+    if not local_clients:
+        raise RuntimeError("no enabled local Spot CEX credentials found; configure Indodax and/or Tokocrypto")
+    if not global_clients:
+        raise RuntimeError("no enabled foreign Futures CEX credentials found; configure MEXC, OKX, Binance, and/or Bybit")
+
+    # Prefer configured defaults, otherwise use the first explicitly credentialed venue.
+    local_default = local_name if local_name in local_clients else next(iter(local_clients))
+    global_default = global_name if global_name in global_clients else next(iter(global_clients))
     return ExchangeClient(
-        local_clients[local_name],
-        global_clients[global_name],
+        local_clients[local_default],
+        global_clients[global_default],
         local_exchanges=local_clients,
         global_exchanges=global_clients,
-        local_default_name=local_name,
-        global_default_name=global_name,
+        local_default_name=local_default,
+        global_default_name=global_default,
     )
