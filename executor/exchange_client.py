@@ -1,4 +1,5 @@
 import asyncio
+import math
 import time
 from typing import Optional, Dict, Any
 import ccxt.async_support as ccxt
@@ -84,8 +85,14 @@ class ExchangeClient:
                 return float(section.get(asset) or 0.0)
             per_asset = balance.get(asset)
             if isinstance(per_asset, dict):
-                return float(per_asset.get(bucket) or 0.0)
-            return 0.0
+                value = float(per_asset.get(bucket) or 0.0)
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError(f"exchange returned invalid {asset} {bucket} balance")
+                return value
+            value = float(section.get(asset) or 0.0) if isinstance(section, dict) else 0.0
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"exchange returned invalid {asset} {bucket} balance")
+            return value
 
         spot_free = amount(spot_raw, local_quote, "free")
         spot_total = amount(spot_raw, local_quote, "total")
