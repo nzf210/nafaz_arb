@@ -298,7 +298,8 @@ func (s *Server) executorStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, found, err := s.executor.GetExecutorStatus(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		log.Printf("executor status lookup failed: %v", err)
+		http.Error(w, "executor status unavailable", http.StatusInternalServerError)
 		return
 	}
 	if !found {
@@ -319,7 +320,8 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.runScan(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		log.Printf("scanner run failed: %v", err)
+		http.Error(w, "scan failed", http.StatusInternalServerError)
 		return
 	}
 	write(w, result)
