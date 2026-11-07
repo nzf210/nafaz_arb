@@ -375,6 +375,7 @@ class ForceCloseMixin:
                 "exit_price_idr": current_spot_bid,
                 "short_entry_usdt": pos.short_entry_usdt,
                 "short_exit_usdt": current_ask,
+                "pnl_complete": pnl.get("pnl_complete", True),
                 "spot_pnl_idr": pnl["spot_pnl_idr"],
                 "futures_pnl_usdt": pnl["futures_pnl_usdt"],
                 "accumulated_funding_usdt": pnl["funding_usdt"],
