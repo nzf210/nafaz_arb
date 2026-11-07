@@ -6,6 +6,7 @@ self.* state and helper methods stay on one object.
 
 import json
 import logging
+import math
 import time
 from typing import Tuple
 
