@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	MEXC_SPOT        = "mexc_spot:"
+	MEXC_SPOT        = "mexc_spot:" // Legacy symbol prefix; MEXC is futures-only.
 	USER_AGENT       = "User-Agent"
 	USER_AGENT_VALUE = "Mozilla/5.0 (compatible; NafazScanner/1.0)"
 )
@@ -24,6 +24,9 @@ type LiveAdapter struct {
 	tokocryptoBaseURL string
 	okxBaseURL        string
 	mexcBaseURL       string
+	binanceBaseURL    string
+	bybitBaseURL      string
+	spotExchangeFilter string
 	mexcSpotBaseURL   string
 
 	mu                 sync.RWMutex
@@ -91,6 +94,8 @@ func NewLiveAdapter() *LiveAdapter {
 		tokocryptoBaseURL: "https://www.tokocrypto.com",
 		okxBaseURL:        "https://www.okx.com",
 		mexcBaseURL:       "https://contract.mexc.com",
+		binanceBaseURL:    "https://fapi.binance.com",
+		bybitBaseURL:      "https://api.bybit.com",
 		mexcSpotBaseURL:   "https://api.mexc.com",
 		contractSizes:     make(map[string]float64),
 	}
@@ -265,7 +270,7 @@ func (l *LiveAdapter) LastBookUpdate(exchange, symbol string) time.Time {
 	return cache.LastBookUpdate(exchange, symbol)
 }
 
-// SetTargetPerpExchange filters which perpetual exchange(s) to scan (e.g. "okx", "mexc", or "" for all).
+// SetTargetPerpExchange filters perpetual venues. Accepts a comma-separated allowlist or "all".
 func (l *LiveAdapter) SetTargetPerpExchange(ex string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -283,4 +288,26 @@ func (l *LiveAdapter) Close() {
 		l.wsClient.Stop()
 		l.wsClient = nil
 	}
+}
+
+
+// SetEnabledSpotExchanges restricts local spot discovery to Indodax and Tokocrypto.
+// Unknown names and foreign venues are ignored by the market discovery methods.
+func (l *LiveAdapter) SetEnabledSpotExchanges(exchanges []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.spotExchangeFilter = strings.ToLower(strings.Join(exchanges, ","))
+}
+
+func exchangeInFilter(filter, name string) bool {
+	filter = strings.TrimSpace(strings.ToLower(filter))
+	if filter == "" || filter == "all" {
+		return true
+	}
+	for _, item := range strings.Split(filter, ",") {
+		if strings.TrimSpace(item) == name {
+			return true
+		}
+	}
+	return false
 }
