@@ -514,3 +514,17 @@ async def test_filled_idr_order_without_persisted_fx_requires_reconciliation(eng
 
     assert mock_client.global_short_sells == []
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_idr_entry_rejects_missing_fx_field_without_model_default(engine, fake_redis, mock_client):
+    """An omitted FX field must not be silently replaced by a static rate."""
+    pair_tag = "indodax:btc_idr"
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    payload["pricing_snapshot"].pop("usdt_idr_rate", None)
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert mock_client.placed_buys == []
+    assert engine.states[pair_tag] == PositionState.FAILED
