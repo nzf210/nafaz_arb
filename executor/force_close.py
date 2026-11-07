@@ -119,6 +119,12 @@ class ForceCloseMixin:
                     actual_short_qty += abs(signed_size) * (contract_size if contracts is not None else 1.0)
 
                 tolerance = max(1e-10, pos.qty * 1e-4)
+                if actual_short_qty <= tolerance:
+                    logger.warning(
+                        f"[Force Close] futures leg for {pair_key} is already flat; "
+                        "skipping duplicate futures close and retrying spot liquidation"
+                    )
+                    return True, 0.0
                 if actual_short_qty > tolerance:
                     # The previous close attempt may still be pending or its
                     # exchange outcome may be unknown. Do not submit another
