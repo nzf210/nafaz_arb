@@ -50,9 +50,9 @@ Then call:
 ```sh
 curl http://localhost:8080/health
 curl -X POST -H "Authorization: Bearer $API_AUTH_TOKEN" http://localhost:8080/api/v1/scanner/scan
-curl http://localhost:8080/api/v1/scanner/latest
-curl 'http://localhost:8080/api/v1/scanner/opportunities/metrics'
-curl 'http://localhost:8080/api/v1/scanner/opportunities/history'
+curl -H "Authorization: Bearer $API_AUTH_TOKEN" http://localhost:8080/api/v1/scanner/latest
+curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/scanner/opportunities/metrics'
+curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/scanner/opportunities/history'
 ```
 
 The periodic scanner runs at `scan_interval_seconds`. `POST /api/v1/scanner/scan` also triggers a scan immediately. The mock account snapshot contains an untracked BTC perpetual exposure, so BTC/USDT is excluded with `RECONCILIATION_REQUIRED`; ETH is evaluated independently. If the required exposure read fails, candidates are marked `POSITION_STATUS_UNKNOWN` and fail closed. Opportunity history is stored in the configured JSON file using atomic replacement; replace `history.Store` with PostgreSQL (or another durable database) before multi-instance or production deployment.
