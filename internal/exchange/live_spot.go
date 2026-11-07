@@ -89,18 +89,6 @@ func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) 
 		errs = append(errs, fmt.Sprintf("indodax: %v", err))
 	}
 
-	l.mu.RLock()
-	includeMEXCSpot := l.targetPerpExchange == "" || l.targetPerpExchange == "mexc" || l.targetPerpExchange == "all"
-	l.mu.RUnlock()
-
-	if includeMEXCSpot {
-		mexcMarkets, err := l.fetchMEXCSpotMarkets(ctx)
-		if err == nil {
-			allMarkets = append(allMarkets, mexcMarkets...)
-		} else {
-			errs = append(errs, fmt.Sprintf("mexc_spot: %v", err))
-		}
-	}
 
 	if len(allMarkets) == 0 {
 		return nil, fmt.Errorf("failed to discover spot markets (%s)", strings.Join(errs, "; "))
@@ -253,58 +241,4 @@ func (l *LiveAdapter) getFallbackIndodaxSpot(err error) ([]domain.Market, error)
 		return l.cachedIndodaxSpot, nil
 	}
 	return nil, err
-}
-
-func (l *LiveAdapter) fetchMEXCSpotMarkets(ctx context.Context) ([]domain.Market, error) {
-	endpoint := l.mexcSpotBaseURL + "/api/v3/defaultSymbols"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("mexc spot symbols req: %w", err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("mexc spot symbols request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("mexc spot symbols status: %d", resp.StatusCode)
-	}
-
-	var raw struct {
-		Code int      `json:"code"`
-		Data []string `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("decode mexc spot symbols: %w", err)
-	}
-
-	var markets []domain.Market
-	for _, sym := range raw.Data {
-		var base, quote string
-		switch {
-		case strings.HasSuffix(sym, "USDT"):
-			quote = "USDT"
-			base = strings.TrimSuffix(sym, "USDT")
-		case strings.HasSuffix(sym, "USDC"):
-			quote = "USDC"
-			base = strings.TrimSuffix(sym, "USDC")
-		default:
-			continue
-		}
-		if base == "" {
-			continue
-		}
-		markets = append(markets, domain.Market{
-			Exchange:   "mexc",
-			Symbol:     MEXC_SPOT + sym,
-			BaseAsset:  strings.ToUpper(base),
-			QuoteAsset: strings.ToUpper(quote),
-			MarketType: "SPOT",
-			Active:     true,
-		})
-	}
-	return markets, nil
 }
