@@ -32,6 +32,7 @@ func (l *LiveAdapter) fetchBinancePerpetualMarkets(ctx context.Context) ([]domai
 			Status string `json:"status"`
 			BaseAsset string `json:"baseAsset"`
 			QuoteAsset string `json:"quoteAsset"`
+			MarginAsset string `json:"marginAsset"`
 			Filters []struct {
 				FilterType string `json:"filterType"`
 				TickSize string `json:"tickSize"`
@@ -44,7 +45,7 @@ func (l *LiveAdapter) fetchBinancePerpetualMarkets(ctx context.Context) ([]domai
 	markets := make([]domain.Market, 0, len(payload.Symbols))
 	for _, s := range payload.Symbols {
 		quote := strings.ToUpper(s.QuoteAsset)
-		if s.Status != "TRADING" || s.ContractType != "PERPETUAL" || s.Symbol == "" || s.BaseAsset == "" || (quote != "USDT" && quote != "USDC") { continue }
+		if s.Status != "TRADING" || s.ContractType != "PERPETUAL" || s.Symbol == "" || s.BaseAsset == "" || (quote != "USDT" && quote != "USDC") || strings.ToUpper(s.MarginAsset) != quote { continue }
 		m := domain.Market{Exchange:"binance", Symbol:"binance:"+s.Symbol, BaseAsset:strings.ToUpper(s.BaseAsset), QuoteAsset:quote, MarketType:"PERPETUAL", Active:true, ContractSize:1}
 		for _, filter := range s.Filters {
 			switch filter.FilterType {
