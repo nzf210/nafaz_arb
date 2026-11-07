@@ -305,8 +305,13 @@ class ForceCloseMixin:
                     funding_usdt=pnl["funding_usdt"],
                     futures_fees_usdt=pnl["fees_usdt"],
                 )
-                bals = self.client.get_balances()
-                await self.redis.set(BALANCES_KEY, json.dumps(bals))
+                bals = await self._get_balance_snapshot(
+                    pair_tag=pair_key,
+                    symbol=pos.symbol,
+                    usdt_idr_rate=usdt_rate,
+                )
+                if bals is not None:
+                    await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
             pipe = self.redis.pipeline()
             pipe.hincrby("arb:stats", "total_closed", 1)
