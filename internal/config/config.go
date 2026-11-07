@@ -27,6 +27,16 @@ type RedisConfig struct {
 	DB       int    `json:"db"`
 }
 
+// ExchangeFeeProfile overrides the conservative global fee defaults for one venue.
+// Values are percentages (0.1 means 0.1%). Pointer fields distinguish an
+// intentional zero maker fee from an omitted setting.
+type ExchangeFeeProfile struct {
+	SpotMakerFeePct *float64 `json:"spot_maker_fee_pct,omitempty"`
+	SpotTakerFeePct *float64 `json:"spot_taker_fee_pct,omitempty"`
+	PerpMakerFeePct *float64 `json:"perp_maker_fee_pct,omitempty"`
+	PerpTakerFeePct *float64 `json:"perp_taker_fee_pct,omitempty"`
+}
+
 type Config struct {
 	Mode                          string         `json:"mode"`
 	ExecutionMode                 string         `json:"execution_mode"`
@@ -45,6 +55,7 @@ type Config struct {
 	MinNetProfitQuote             float64        `json:"min_net_profit_quote"`
 	MaxSlippagePct                float64        `json:"max_slippage_pct"`
 	SpotTakerFeePct               float64        `json:"spot_taker_fee_pct"`
+	FeeProfiles                   map[string]ExchangeFeeProfile `json:"fee_profiles,omitempty"`
 	SpotMakerFeePct               float64        `json:"spot_maker_fee_pct"`
 	PerpTakerFeePct               float64        `json:"perp_taker_fee_pct"`
 	// FeeAssetSurchargePct adds a conservative surcharge (in percent of
@@ -116,7 +127,9 @@ func (c *Config) setDefaults() {
 	c.ExchangeErrorRateThreshold = defaultFloat(c.ExchangeErrorRateThreshold, 0.5)
 	c.ExchangeErrorMinRequests = defaultInt(c.ExchangeErrorMinRequests, 5)
 	c.WebSocketBookMaxAgeSeconds = defaultInt(c.WebSocketBookMaxAgeSeconds, 2)
-	c.MaxCrossExchangeSkewSeconds = defaultInt(c.MaxCrossExchangeSkewSeconds, 1000)
+	// Require recent order books and tight cross-venue alignment by default.
+	c.MaxOrderBookAgeSeconds = defaultInt(c.MaxOrderBookAgeSeconds, 5)
+	c.MaxCrossExchangeSkewSeconds = defaultInt(c.MaxCrossExchangeSkewSeconds, 3)
 	c.HistoryPath = defaultString(c.HistoryPath, "./data/opportunities.json")
 	c.MaxMissedSuccessfulScans = defaultInt(c.MaxMissedSuccessfulScans, 2)
 	c.EmptyBookFreezeHours = defaultInt(c.EmptyBookFreezeHours, 6)
@@ -172,6 +185,18 @@ func (c *Config) validate() error {
 	}
 	if c.ExecutionMode != "" && c.ExecutionMode != "TAKER_TAKER" && c.ExecutionMode != "MAKER_TAKER" {
 		return fmt.Errorf("execution_mode must be TAKER_TAKER or MAKER_TAKER")
+	}
+	for exchange, profile := range c.FeeProfiles {
+		for name, value := range map[string]*float64{
+			"spot_maker_fee_pct": profile.SpotMakerFeePct,
+			"spot_taker_fee_pct": profile.SpotTakerFeePct,
+			"perp_maker_fee_pct": profile.PerpMakerFeePct,
+			"perp_taker_fee_pct": profile.PerpTakerFeePct,
+		} {
+			if value != nil && (*value < 0 || *value > 100) {
+				return fmt.Errorf("fee_profiles.%s.%s must be in [0,100]", exchange, name)
+			}
+		}
 	}
 	if c.SpotMakerFeePct < 0 {
 		return fmt.Errorf("spot_maker_fee_pct cannot be negative")
