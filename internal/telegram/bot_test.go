@@ -582,3 +582,59 @@ func TestSendReplyWithMarkupHTMLEntityFallback(t *testing.T) {
 }
 
 
+
+
+func TestBroadcastExecutionFailure(t *testing.T) {
+	var received []SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SendMessageReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		received = append(received, req)
+		_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	bot.broadcastTradeEvent(context.Background(), redishandler.TradeEvent{
+		Event:         "EXECUTION_FAILURE",
+		PairTag:       "indodax:btc_idr",
+		Reason:        "INSUFFICIENT_OR_UNBALANCED_BALANCE",
+		Message:       "Saldo Spot/Futures tidak mencukupi.",
+		LocalExchange: "indodax",
+		GlobalExchange: "okx",
+		State:         "FAILED",
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("expected one Telegram failure notification, got %d", len(received))
+	}
+	for _, want := range []string{"ENTRY / EXECUTION GAGAL", "INSUFFICIENT_OR_UNBALANCED_BALANCE", "Saldo Spot/Futures"} {
+		if !strings.Contains(received[0].Text, want) {
+			t.Errorf("Telegram failure notification missing %q: %s", want, received[0].Text)
+		}
+	}
+}
+
+func TestBroadcastExecutionFailureCooldown(t *testing.T) {
+	var received int
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		received++
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	ev := redishandler.TradeEvent{
+		Event: "EXECUTION_FAILURE",
+		PairTag: "indodax:btc_idr",
+		Reason: "BALANCE_FEED_UNAVAILABLE",
+		Message: "Saldo live tidak tersedia.",
+	}
+	bot.broadcastTradeEvent(context.Background(), ev)
+	bot.broadcastTradeEvent(context.Background(), ev)
+	if received != 1 {
+		t.Fatalf("expected cooldown to suppress duplicate alert, got %d messages", received)
+	}
+}
