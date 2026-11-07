@@ -64,7 +64,7 @@ func (l *LiveAdapter) processOKXInstrument(inst okxInstrumentData) (domain.Marke
 
 	return domain.Market{
 		Exchange:     "okx",
-		Symbol:       inst.InstID,
+		Symbol:       "okx:" + inst.InstID,
 		BaseAsset:    strings.ToUpper(baseAsset),
 		QuoteAsset:   strings.ToUpper(inst.SettleCcy),
 		MarketType:   "PERPETUAL",
