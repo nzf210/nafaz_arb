@@ -922,14 +922,15 @@ class ArbitrageEngine(
         }
         self._failure_reasons[pair_tag] = entry
         logger.critical(f"[{state.value}] {pair_tag}: {reason} - {message}")
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(
-                self._publish_execution_failure(
-                    pair_tag, reason, message, detail=detail, state=state
+        if reason != "HEDGE_FAILED":
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._publish_execution_failure(
+                        pair_tag, reason, message, detail=detail, state=state
+                    )
                 )
-            )
-        except RuntimeError:
+            except RuntimeError:
             # A synchronous caller without an active event loop still records
             # the failure locally; the next status poll remains available.
             pass
