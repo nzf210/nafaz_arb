@@ -59,7 +59,7 @@ class PricingSnapshot:
             local_best_ask=float(d.get("local_best_ask", 0.0)),
             global_best_bid_usdt=float(d.get("global_best_bid_usdt", 0.0)),
             global_best_ask_usdt=float(d.get("global_best_ask_usdt", 0.0)),
-            usdt_idr_rate=float(d.get("usdt_idr_rate", 16000.0)),
+            usdt_idr_rate=float(d.get("usdt_idr_rate", 0.0)),
             timestamp_ms=int(d.get("timestamp_ms", 0)),
         )
 

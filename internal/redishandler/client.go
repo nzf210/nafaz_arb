@@ -59,8 +59,14 @@ type ClosedTradeRecord struct {
 }
 
 type TradeEvent struct {
-	Event                  string  `json:"event"` // "POSITION_OPENED" or "POSITION_CLOSED"
-	LocalExchange          string  `json:"local_exchange"`
+	Event                  string                 `json:"event"`
+	PairTag                string                 `json:"pair_tag,omitempty"`
+	PairKey                string                 `json:"pair_key,omitempty"`
+	Reason                 string                 `json:"reason,omitempty"`
+	Message                string                 `json:"message,omitempty"`
+	State                  string                 `json:"state,omitempty"`
+	Detail                 map[string]interface{} `json:"detail,omitempty"`
+	LocalExchange          string                 `json:"local_exchange"`
 	GlobalExchange         string  `json:"global_exchange"`
 	Symbol                 string  `json:"symbol"`
 	Qty                    float64 `json:"qty"`

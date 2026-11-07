@@ -776,6 +776,25 @@ class ArbitrageEngine(
         if payload is None:
             return
 
+        # IDR sizing is only valid with the live FX rate carried by this scan.
+        # Never let mock-mode defaults or a static fallback turn an invalid
+        # FX snapshot into a tradable order.
+        quote_asset = str(payload.pair_info.quote_asset or "").upper()
+        if quote_asset in ("IDR", "BIDR"):
+            fx_rate = float(payload.pricing_snapshot.usdt_idr_rate or 0.0)
+            if not math.isfinite(fx_rate) or fx_rate <= 0:
+                logger.error(
+                    f"[FX Preflight] rejecting {pair_tag}: live USDT/IDR rate is missing or invalid"
+                )
+                self._mark_failed(
+                    pair_tag,
+                    "LIVE_FX_RATE_INVALID",
+                    "IDR spot entry requires a finite, positive live USDT/IDR rate.",
+                    detail={"quote_asset": quote_asset, "usdt_idr_rate": fx_rate},
+                )
+                await self.publish_status()
+                return
+
         # Cache the venue names so venue-halt checks work before the next
         # payload read (and during monitoring after the signal key expires).
         self._pair_infos[pair_tag] = payload.pair_info
@@ -816,6 +835,12 @@ class ArbitrageEngine(
                 logger.warning(
                     f"[State 1 Balance Check] Failed to lock funds for {actual_cost_usdt:.2f} USDT on {pair_tag}"
                 )
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "BALANCE_LOCK_FAILED",
+                    "Exchange client gagal mengunci saldo untuk entry.",
+                    detail={"required_usdt_per_leg": actual_cost_usdt},
+                )
                 return
             # Sync balances to Redis
             bals = await self._get_balance_snapshot(
@@ -852,7 +877,9 @@ class ArbitrageEngine(
                 "hedged_short_qty": 0.0,
                 "cancel_threshold_usdt": directives.cancel_if_global_bid_drops_below_usdt,
                 "tick_size": pair_info.local_price_tick,
+                "quote_asset": pair_info.quote_asset,
                 "usdt_idr_rate": snapshot.usdt_idr_rate,
+                "fx_rate_timestamp_ms": snapshot.timestamp_ms,
                 "global_ask_usdt": snapshot.global_best_ask_usdt,
                 "base_target_exit_spread_pct": directives.base_target_exit_spread_pct,
                 "current_funding_rate": payload.funding_metrics.current_funding_rate,
@@ -867,6 +894,12 @@ class ArbitrageEngine(
                 self.client.unlock_funds(actual_cost_usdt, actual_cost_usdt)
             self._record_order_failure(pair_info.local_exchange, "entry order placement failed")
             logger.exception(f"[State 1] failed to place limit buy for {pair_tag}")
+            await self._publish_execution_failure(
+                pair_tag,
+                "SPOT_ORDER_OPEN_FAILED",
+                "Gagal membuka order Spot; periksa error exchange dan saldo.",
+                detail={"exchange": pair_info.local_exchange, "symbol": pair_info.local_symbol},
+            )
     # -------------------------------------------------------------
     # Failure tracking & status reporting
     # -------------------------------------------------------------
@@ -889,6 +922,48 @@ class ArbitrageEngine(
         }
         self._failure_reasons[pair_tag] = entry
         logger.critical(f"[{state.value}] {pair_tag}: {reason} - {message}")
+        if reason != "HEDGE_FAILED":
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._publish_execution_failure(
+                        pair_tag, reason, message, detail=detail, state=state
+                    )
+                )
+            except RuntimeError:
+                # A synchronous caller without an active event loop still records
+                # the failure locally; the next status poll remains available.
+                pass
+
+    async def _publish_execution_failure(
+        self,
+        pair_tag: str,
+        reason: str,
+        message: str,
+        detail: Optional[Dict[str, Any]] = None,
+        state: Optional[PositionState] = None,
+    ) -> None:
+        """Publish actionable execution failures for the Telegram notifier."""
+        if self.redis is None:
+            return
+        pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
+        payload = {
+            "event": "EXECUTION_FAILURE",
+            "pair_tag": pair_tag,
+            "local_exchange": pair_info.local_exchange if pair_info else "",
+            "global_exchange": pair_info.global_exchange if pair_info else "",
+            "symbol": pair_info.local_symbol if pair_info else pair_tag,
+            "reason": reason,
+            "message": message,
+            "detail": detail or {},
+            "state": state.value if state else "",
+            "is_mock": bool(getattr(self.config, "mock_mode", False)),
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        try:
+            await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(payload, default=str))
+        except Exception:
+            logger.exception("failed to publish execution failure event for %s", pair_tag)
 
     @staticmethod
     def _utc_day() -> str:

@@ -104,12 +104,15 @@ func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol s
 	bids := parseStringLevels(raw.Data.Bids, 1.0)
 	asks := parseStringLevels(raw.Data.Asks, 1.0)
 
+	receivedAt := time.Now().UTC()
 	return domain.OrderBook{
-		Exchange:  "tokocrypto",
-		Symbol:    symbol,
-		Bids:      bids,
-		Asks:      asks,
-		Timestamp: time.Now().UTC(),
+		Exchange:   "tokocrypto",
+		Symbol:     symbol,
+		Bids:       bids,
+		Asks:       asks,
+		Timestamp:  receivedAt,
+		ReceivedAt: receivedAt,
+		Source:     "receive_time",
 	}, nil
 }
 
@@ -147,12 +150,15 @@ func (l *LiveAdapter) fetchIndodaxSpotOrderBook(ctx context.Context, symbol stri
 	bids := parseLevels(rawBook.Buy, 1.0)
 	asks := parseLevels(rawBook.Sell, 1.0)
 
+	receivedAt := time.Now().UTC()
 	return domain.OrderBook{
-		Exchange:  "indodax",
-		Symbol:    symbol,
-		Bids:      bids,
-		Asks:      asks,
-		Timestamp: time.Now().UTC(),
+		Exchange:   "indodax",
+		Symbol:     symbol,
+		Bids:       bids,
+		Asks:       asks,
+		Timestamp:  receivedAt,
+		ReceivedAt: receivedAt,
+		Source:     "receive_time",
 	}, nil
 }
 
@@ -279,11 +285,13 @@ func (l *LiveAdapter) fetchOKXOrderBook(ctx context.Context, symbol string) (dom
 	}
 
 	return domain.OrderBook{
-		Exchange:  "okx",
-		Symbol:    symbol,
-		Bids:      bids,
-		Asks:      asks,
-		Timestamp: ts,
+		Exchange:   "okx",
+		Symbol:     symbol,
+		Bids:       bids,
+		Asks:       asks,
+		Timestamp:  ts,
+		ReceivedAt: time.Now().UTC(),
+		Source:     "exchange_timestamp",
 	}, nil
 }
 
@@ -345,10 +353,12 @@ func (l *LiveAdapter) fetchMEXCOrderBook(ctx context.Context, symbol string) (do
 	}
 
 	return domain.OrderBook{
-		Exchange:  "mexc",
-		Symbol:    symbol,
-		Bids:      bids,
-		Asks:      asks,
-		Timestamp: ts,
+		Exchange:   "mexc",
+		Symbol:     symbol,
+		Bids:       bids,
+		Asks:       asks,
+		Timestamp:  ts,
+		ReceivedAt: time.Now().UTC(),
+		Source:     "exchange_timestamp",
 	}, nil
 }

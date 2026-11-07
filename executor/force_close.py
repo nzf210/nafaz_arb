@@ -312,7 +312,7 @@ class ForceCloseMixin:
         async def _resolve_force_close_prices(self, pair_key: str, pos, spot_exit_price_idr: float):
             """Returns (current_ask_usdt, usdt_rate, current_spot_bid_idr) for PnL accounting."""
             current_ask = pos.short_entry_usdt
-            usdt_rate = self.FALLBACK_USDT_IDR_RATE
+            usdt_rate = 0.0
             current_spot_bid = pos.entry_price_idr
 
             price_data = await self._fetch_live_price(pair_key, pos)
@@ -343,6 +343,7 @@ class ForceCloseMixin:
             net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
             capital_usdt = pos.qty * pos.short_entry_usdt
             return {
+                "pnl_complete": usdt_rate > 0 and math.isfinite(usdt_rate),
                 "spot_pnl_idr": spot_pnl_idr,
                 "spot_pnl_usdt": spot_pnl_usdt,
                 "futures_pnl_usdt": futures_pnl_usdt,
@@ -374,6 +375,7 @@ class ForceCloseMixin:
                 "exit_price_idr": current_spot_bid,
                 "short_entry_usdt": pos.short_entry_usdt,
                 "short_exit_usdt": current_ask,
+                "pnl_complete": pnl.get("pnl_complete", True),
                 "spot_pnl_idr": pnl["spot_pnl_idr"],
                 "futures_pnl_usdt": pnl["futures_pnl_usdt"],
                 "accumulated_funding_usdt": pnl["funding_usdt"],
@@ -390,8 +392,18 @@ class ForceCloseMixin:
             )
 
             # Update exchange account balances with realized PnL & release locked funds
-            spot_cost = getattr(pos, "spot_cost_usdt", pos.qty * pos.entry_price_idr / usdt_rate)
-            fut_margin = getattr(pos, "futures_margin_usdt", pos.qty * pos.short_entry_usdt)
+            spot_cost = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)
+            if spot_cost <= 0 and usdt_rate > 0 and math.isfinite(usdt_rate):
+                spot_cost = pos.qty * pos.entry_price_idr / usdt_rate
+            if spot_cost <= 0:
+                logger.warning(
+                    f"[Force Close] {pair_key}: live FX unavailable and no stored "
+                    "USDT spot-cost basis; balance accounting is incomplete"
+                )
+            fut_margin = float(
+                getattr(pos, "futures_margin_usdt", 0.0)
+                or (pos.qty * pos.short_entry_usdt)
+            )
             if hasattr(self.client, "apply_realized_trade"):
                 self.client.apply_realized_trade(
                     spot_cost_usdt=spot_cost,
@@ -402,13 +414,14 @@ class ForceCloseMixin:
                     funding_usdt=pnl["funding_usdt"],
                     futures_fees_usdt=pnl["fees_usdt"],
                 )
-                bals = await self._get_balance_snapshot(
-                    pair_tag=pair_key,
-                    symbol=pos.symbol,
-                    usdt_idr_rate=usdt_rate,
-                )
-                if bals is not None:
-                    await self.redis.set(BALANCES_KEY, json.dumps(bals))
+                if usdt_rate > 0 and math.isfinite(usdt_rate):
+                    bals = await self._get_balance_snapshot(
+                        pair_tag=pair_key,
+                        symbol=pos.symbol,
+                        usdt_idr_rate=usdt_rate,
+                    )
+                    if bals is not None:
+                        await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
             pipe = self.redis.pipeline()
             pipe.hincrby("arb:stats", "total_closed", 1)

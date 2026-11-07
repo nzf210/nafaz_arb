@@ -7,6 +7,7 @@ Extracted from executor/engine.py as a mixin.
 
 import json
 import logging
+import math
 import time
 from typing import Optional
 
@@ -38,8 +39,8 @@ class ExitMixin:
                 try:
                     live_snapshot = json.loads(live_price_raw)
                     global_ask_usdt = float(live_snapshot.get("global_best_ask_usdt", 0.0))
-                    usdt_idr_rate = float(live_snapshot.get("usdt_idr_rate", helpers.FALLBACK_USDT_IDR_RATE))
-                    if global_ask_usdt > 0 and not helpers.snapshot_is_stale(live_snapshot):
+                    usdt_idr_rate = float(live_snapshot.get("usdt_idr_rate", 0.0) or 0.0)
+                    if global_ask_usdt > 0 and math.isfinite(usdt_idr_rate) and usdt_idr_rate > 0 and not helpers.snapshot_is_stale(live_snapshot):
                         return global_ask_usdt, usdt_idr_rate
                 except Exception:
                     pass

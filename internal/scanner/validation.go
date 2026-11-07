@@ -24,13 +24,18 @@ func validateOrderBookAge(sb, pb domain.OrderBook, now time.Time, maxAgeSeconds 
 	}
 	maxAge := time.Duration(maxAgeSeconds) * time.Second
 	for _, book := range []domain.OrderBook{sb, pb} {
-		if book.Timestamp.IsZero() {
-			// A zero timestamp means the venue did not provide one. Treat as
-			// potentially stale rather than silently accepting it.
+		stamp := book.Timestamp
+		if book.Source == "receive_time" && !book.ReceivedAt.IsZero() {
+			stamp = book.ReceivedAt
+		}
+		if stamp.IsZero() {
 			return fmt.Errorf("stale order book: %s %s missing timestamp", book.Exchange, book.Symbol)
 		}
-		// Timestamps slightly in the future mean clock skew, not staleness.
-		if age := now.Sub(book.Timestamp); age > maxAge {
+		age := now.Sub(stamp)
+		if age < -time.Second {
+			return fmt.Errorf("order book clock skew: %s %s timestamp is %s in the future", book.Exchange, book.Symbol, (-age).Round(time.Millisecond))
+		}
+		if age > maxAge {
 			return fmt.Errorf("stale order book: %s %s age=%s exceeds %s", book.Exchange, book.Symbol, age.Round(time.Millisecond), maxAge)
 		}
 	}
@@ -45,10 +50,16 @@ func validateCrossExchangeTimestampAlignment(sb, pb domain.OrderBook, maxSkew ti
 	if maxSkew <= 0 {
 		return nil
 	}
-	if sb.Timestamp.IsZero() || pb.Timestamp.IsZero() {
+	// Compare local receive times when both are available. Exchange timestamps
+	// from different venue clocks are not directly comparable.
+	sbTime, pbTime := sb.Timestamp, pb.Timestamp
+	if !sb.ReceivedAt.IsZero() && !pb.ReceivedAt.IsZero() {
+		sbTime, pbTime = sb.ReceivedAt, pb.ReceivedAt
+	}
+	if sbTime.IsZero() || pbTime.IsZero() {
 		return fmt.Errorf("cross-exchange timestamp alignment: %s %s or %s %s missing timestamp", sb.Exchange, sb.Symbol, pb.Exchange, pb.Symbol)
 	}
-	skew := sb.Timestamp.Sub(pb.Timestamp)
+	skew := sbTime.Sub(pbTime)
 	if skew < 0 {
 		skew = -skew
 	}

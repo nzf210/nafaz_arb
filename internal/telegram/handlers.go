@@ -338,10 +338,6 @@ func (b *Bot) listenTradeEvents(ctx context.Context) {
 }
 
 func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEvent) {
-	if b.cfg.Telegram.ChatID == 0 {
-		return
-	}
-
 	modeTag := "REAL"
 	if ev.IsMock {
 		modeTag = "SIMULASI"
@@ -357,7 +353,7 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 				"• Kuantitas: <code>%.6f koin</code>\n"+
 				"• Beli Spot (Maker): <code>Rp %.2f</code>\n"+
 				"• Short Futures (1x): <code>$%.4f USDT</code>\n"+
-				"• Proteksi: <code>100%% Delta Neutral (Nol Risiko Arah Pasar)</code>\n\n"+
+				"• Hedge: <code>Target delta-neutral; risiko eksekusi tetap ada</code>\n\n"+
 				"<i>Gunakan /positions untuk memantau posisi dan opsi tutup paksa.</i>",
 			modeTag,
 			html.EscapeString(strings.ToUpper(ev.Symbol)),
@@ -366,6 +362,50 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			ev.Qty,
 			ev.EntryPriceIDR,
 			ev.ShortEntryUSDT,
+		)
+	case "EXECUTION_FAILURE", "HEDGE_FAILED":
+		pairLabel := ev.PairTag
+		if pairLabel == "" {
+			pairLabel = ev.PairKey
+		}
+		if pairLabel == "" {
+			pairLabel = ev.Symbol
+		}
+		reason := ev.Reason
+		if reason == "" {
+			reason = "EXECUTION_FAILURE"
+		}
+		message := ev.Message
+		if message == "" {
+			message = "Proses entry atau hedge tidak berhasil."
+		}
+		// Avoid flooding Telegram when the same pair repeatedly rejects the
+		// same signal or balance snapshot.
+		alertKey := "failure:" + pairLabel + ":" + reason
+		b.mu.Lock()
+		lastAlert, alreadyAlerted := b.alertedKeys[alertKey]
+		if alreadyAlerted && time.Since(lastAlert) < 2*time.Minute {
+			b.mu.Unlock()
+			return
+		}
+		b.alertedKeys[alertKey] = time.Now()
+		b.mu.Unlock()
+
+		text = fmt.Sprintf(
+			"🚨 <b>[%s] ENTRY / EXECUTION GAGAL</b>\n\n"+
+				"• Pair: <code>%s</code>\n"+
+				"• Exchange: <code>%s</code> → <code>%s</code>\n"+
+				"• Alasan: <b>%s</b>\n"+
+				"• Detail: %s\n"+
+				"• State: <code>%s</code>\n\n"+
+				"<i>Entry baru untuk kondisi ini ditolak. Periksa saldo, order, dan posisi di kedua exchange sebelum mencoba lagi.</i>",
+			modeTag,
+			html.EscapeString(pairLabel),
+			html.EscapeString(ev.LocalExchange),
+			html.EscapeString(ev.GlobalExchange),
+			html.EscapeString(reason),
+			html.EscapeString(message),
+			html.EscapeString(ev.State),
 		)
 	case "POSITION_CLOSED":
 		emoji := "🎉"
@@ -399,5 +439,13 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 		return
 	}
 
-	b.sendReplyWithMarkup(ctx, b.cfg.Telegram.ChatID, 0, text, b.defaultKeyboard())
+	chatIDs := make([]int64, 0, len(b.cfg.Telegram.AllowedChatIDs)+1)
+	if b.cfg.Telegram.ChatID != 0 {
+		chatIDs = append(chatIDs, b.cfg.Telegram.ChatID)
+	} else {
+		chatIDs = append(chatIDs, b.cfg.Telegram.AllowedChatIDs...)
+	}
+	for _, chatID := range chatIDs {
+		b.sendReplyWithMarkup(ctx, chatID, 0, text, b.defaultKeyboard())
+	}
 }

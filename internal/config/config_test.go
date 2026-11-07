@@ -424,3 +424,49 @@ func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
         t.Fatalf("APIAuthToken=%q, want configured token", cfg.APIAuthToken)
     }
 }
+
+
+func TestFeeProfilesAndFreshnessDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"capital_total":100,
+		"allocation_per_pair":0.5,
+		"fee_profiles":{
+			"indodax":{"spot_maker_fee_pct":0,"spot_taker_fee_pct":0.2},
+			"okx":{"perp_taker_fee_pct":0.04}
+		}
+	}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MaxOrderBookAgeSeconds != 5 || cfg.MaxCrossExchangeSkewSeconds != 3 {
+		t.Fatalf("unsafe freshness defaults: age=%d skew=%d", cfg.MaxOrderBookAgeSeconds, cfg.MaxCrossExchangeSkewSeconds)
+	}
+	indodax := cfg.FeeProfiles["indodax"]
+	if indodax.SpotMakerFeePct == nil || *indodax.SpotMakerFeePct != 0 {
+		t.Fatal("explicit zero maker fee must be preserved")
+	}
+	if indodax.SpotTakerFeePct == nil || *indodax.SpotTakerFeePct != 0.2 {
+		t.Fatal("spot taker profile not loaded")
+	}
+	if cfg.FeeProfiles["okx"].PerpTakerFeePct == nil || *cfg.FeeProfiles["okx"].PerpTakerFeePct != 0.04 {
+		t.Fatal("perpetual fee profile not loaded")
+	}
+}
+
+func TestRejectsInvalidFeeProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"capital_total":100,
+		"allocation_per_pair":0.5,
+		"fee_profiles":{"okx":{"perp_taker_fee_pct":101}}
+	}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "fee_profiles.okx.perp_taker_fee_pct") {
+		t.Fatalf("expected fee profile validation error, got %v", err)
+	}
+}
