@@ -143,6 +143,65 @@ async def test_p0_hedge_ambiguity_zero_position_rolls_back(engine, fake_redis):
     assert len(client.placed_sells) == 1
 
 @pytest.mark.asyncio
+async def test_hedge_ambiguity_binance_position_amt_blocks_rollback(engine, fake_redis):
+    """Binance signed positionAmt must be treated as an open short, not flat."""
+    class BinancePositionClient(FailingHedgeClient):
+        async def fetch_positions(self, symbol: str):
+            return [{"symbol": symbol, "info": {"positionAmt": "-0.01"}}]
+
+    client = BinancePositionClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    order_info = {
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+    }
+
+    await engine._rollback_hedge_failure(
+        "indodax:btc_idr", order_info, 0.01, 1e9, 16000.0, RuntimeError("timeout")
+    )
+
+    assert client.placed_sells == []
+    assert engine.states["indodax:btc_idr"] == PositionState.FAILED
+    assert engine._failure_reasons["indodax:btc_idr"]["reason"] == "HEDGE_STATE_UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_partial_spot_rollback_does_not_release_reserve_or_close(engine, fake_redis):
+    """A partial market sell is not a completed rollback and must remain FAILED."""
+    class PartialRollbackClient(FailingHedgeClient):
+        async def place_local_market_sell(self, symbol, amount, client_order_id=None):
+            return {
+                "id": "partial-1",
+                "symbol": symbol,
+                "status": "closed",
+                "filled": amount / 2,
+                "average": 1000.0,
+            }
+
+    client = PartialRollbackClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    order_info = {
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+    }
+
+    await engine._rollback_hedge_failure(
+        "indodax:btc_idr", order_info, 0.01, 1e9, 16000.0, RuntimeError("hedge rejected")
+    )
+
+    assert engine.states["indodax:btc_idr"] == PositionState.FAILED
+    assert engine._failure_reasons["indodax:btc_idr"]["reason"] == "HEDGE_FAILED"
+
+
+@pytest.mark.asyncio
 async def test_p0_hedge_ambiguity_query_failure_blocks_rollback(engine, fake_redis):
     """If the position query itself fails, rollback must be blocked (fail-safe)."""
     pair_tag = "indodax:btc_idr"
