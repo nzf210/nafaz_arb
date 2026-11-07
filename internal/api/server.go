@@ -266,9 +266,6 @@ func (s *Server) OperationalStatus() OperationalStatus {
 	if !s.lastAttemptAt.IsZero() {
 		status.Status = "degraded"
 	}
-	if s.lastScanError != "" {
-		status.LastError = "scan degraded; see server logs"
-	}
 	if !s.lastSuccessAt.IsZero() && !status.Stale && s.lastScanError == "" {
 		status.Status = "healthy"
 	}
@@ -290,7 +287,11 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, METHOD, 405)
 		return
 	}
-	write(w, s.OperationalStatus())
+	status := s.OperationalStatus()
+	if status.LastError != "" {
+		status.LastError = "scan degraded; see server logs"
+	}
+	write(w, status)
 }
 
 // executorStatus exposes the executor's self-reported state, including the
