@@ -75,6 +75,11 @@ class ExecutorConfig:
             with open(config_path, "r") as f:
                 data = json.load(f)
 
+            # Keep scanner and executor modes aligned: setting root config mode to LIVE
+            # activates real exchange adapters here too. EXECUTOR_MOCK_MODE remains an override.
+            scanner_mode = str(data.get("mode", "MOCK")).strip().upper()
+            self.mock_mode = scanner_mode != "LIVE"
+
             redis_cfg = data.get("redis", {})
             if addr := redis_cfg.get("addr"):
                 password = redis_cfg.get("password", "")
@@ -339,4 +344,23 @@ class ExecutorConfig:
         cfg._apply_env()
         for warning in cfg.sanitize():
             print(f"warning: executor config: {warning}")
+        cfg.validate_live_credentials()
         return cfg
+
+    def validate_live_credentials(self) -> None:
+        """Fail fast instead of starting a live executor with incomplete keys."""
+        if self.mock_mode:
+            return
+        missing = []
+        if not self.local_credentials.api_key or not self.local_credentials.api_secret:
+            missing.append(f"{self.local_exchange_name} API key/secret")
+        if not self.global_credentials.api_key or not self.global_credentials.api_secret:
+            missing.append(f"{self.global_exchange_name} API key/secret")
+        if self.global_exchange_name.lower() == "okx" and not self.global_credentials.passphrase:
+            missing.append("okx API passphrase")
+        if missing:
+            raise ValueError(
+                "LIVE mode requested but exchange credentials are incomplete: "
+                + ", ".join(missing)
+                + ". Configure exchanges.<name> in config.json or matching environment variables."
+            )
