@@ -106,11 +106,16 @@ class RollbackMixin:
             return
         spot_cost = (unhedged_delta * price_idr) / usdt_rate if usdt_rate > 0 else 0.0
         self.client.unlock_funds(spot_cost, 0.0)
-        if hasattr(self.client, "get_balances"):
-            try:
-                await self.redis.set(BALANCES_KEY, json.dumps(self.client.get_balances()))
-            except Exception:
-                logger.exception("failed to persist balances after hedge rollback")
+        try:
+            balances = await self._get_balance_snapshot(
+                pair_tag=pair_tag,
+                symbol=order_info.get("symbol"),
+                usdt_idr_rate=float(order_info.get("usdt_idr_rate", 0.0) or 0.0),
+            )
+            if balances is not None:
+                await self.redis.set(BALANCES_KEY, json.dumps(balances))
+        except Exception:
+            logger.exception("failed to persist balances after hedge rollback")
 
     async def _rollback_hedge_failure(
         self,
