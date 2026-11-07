@@ -435,14 +435,14 @@ func TestExchangeRoleAllowlistDefaultsAndValidation(t *testing.T) {
 	if len(cfg.EnabledSpotExchanges) != 2 || cfg.EnabledSpotExchanges[0] != "indodax" || cfg.EnabledSpotExchanges[1] != "tokocrypto" {
 		t.Fatalf("unexpected local spot defaults: %v", cfg.EnabledSpotExchanges)
 	}
-	invalid := Config{EnabledSpotExchanges: []string{"mexc"}}
+	invalid := Config{CapitalTotal: 100, AllocationPerPair: 0.5, EnabledSpotExchanges: []string{"mexc"}}
 	if err := invalid.validate(); err == nil || !strings.Contains(err.Error(), "enabled_spot_exchanges") {
 		t.Fatalf("expected foreign Spot venue rejection, got %v", err)
 	}
-	invalid = Config{GlobalFuturesExchange: "tokocrypto"}
+	invalid = Config{CapitalTotal: 100, AllocationPerPair: 0.5, GlobalFuturesExchange: "tokocrypto"}
 	if err := invalid.validate(); err == nil || !strings.Contains(err.Error(), "global_futures_exchange") {
 		t.Fatalf("expected local Futures venue rejection, got %v", err)
 	}
-	valid := Config{GlobalFuturesExchange: "mexc,okx,binance,bybit", EnabledSpotExchanges: []string{"indodax", "tokocrypto"}}
+	valid := Config{CapitalTotal: 100, AllocationPerPair: 0.5, PerpLeverage: 1, GlobalFuturesExchange: "mexc,okx,binance,bybit", EnabledSpotExchanges: []string{"indodax", "tokocrypto"}}
 	if err := valid.validate(); err != nil { t.Fatalf("valid six-venue role configuration rejected: %v", err) }
 }
