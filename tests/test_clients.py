@@ -239,7 +239,7 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
     )
 
     await client.place_local_limit_buy("toko:BTC_USDT", 0.01, 960_000_000, usdt_idr_rate=16_000)
-    await client.open_global_short_market("binance:BTCUSDT", 0.01)
+    await client.open_global_short_market("binance:BTCUSDT", 0.01, price=60_000.0)
 
     assert tokocrypto.calls[0][0:2] == ("buy", "BTC/USDT")
     assert tokocrypto.calls[0][3] == 60_000.0, "IDR-normalized order price must be converted to USDT quote"
