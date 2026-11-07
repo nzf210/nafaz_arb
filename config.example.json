@@ -94,7 +94,7 @@
             "api_key": "",
             "api_secret": "",
             "testnet": false
-        },
+        }
     },
     "supabase": {
         "enabled": false,
