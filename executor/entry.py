@@ -237,8 +237,24 @@ class EntryMixin:
             if unhedged_delta <= 0:
                 return
 
-            usdt_rate = order_info.get("usdt_idr_rate", self.FALLBACK_USDT_IDR_RATE)
-            price_idr = order_info.get("price", 1.0)
+            try:
+                usdt_rate = float(order_info.get("usdt_idr_rate", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                usdt_rate = 0.0
+            price_idr = float(order_info.get("price", 0.0) or 0.0)
+            if not math.isfinite(usdt_rate) or usdt_rate <= 0:
+                # A filled IDR order without its persisted live FX snapshot is
+                # an unreconciled exposure. Do not fabricate USD value from a
+                # hardcoded fallback or record a position on a guessed basis.
+                self._mark_failed(
+                    pair_tag,
+                    "FILLED_ORDER_FX_RATE_MISSING",
+                    "Filled IDR order has no valid persisted live USDT/IDR rate; manual reconciliation required.",
+                    detail={"order_id": order_info.get("order_id"), "unhedged_qty": unhedged_delta},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                await self.publish_status()
+                return
             delta_val_usd = (unhedged_delta * price_idr) / usdt_rate
 
             is_complete = status in ("closed", "canceled", "cancelled", "rejected", "expired")
