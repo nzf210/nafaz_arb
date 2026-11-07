@@ -26,6 +26,7 @@ func main(){
 		live := exchange.NewLiveAdapter()
 		if cfg.GlobalFuturesExchange != "" {
 			live.SetTargetPerpExchange(cfg.GlobalFuturesExchange)
+		live.SetEnabledSpotExchanges(cfg.EnabledSpotExchanges)
 		}
 		live.SetHealthPolicy(exchange.HealthPolicy{
 			Window:             time.Duration(cfg.ExchangeErrorWindowSeconds) * time.Second,
