@@ -931,9 +931,9 @@ class ArbitrageEngine(
                     )
                 )
             except RuntimeError:
-            # A synchronous caller without an active event loop still records
-            # the failure locally; the next status poll remains available.
-            pass
+                # A synchronous caller without an active event loop still records
+                # the failure locally; the next status poll remains available.
+                pass
 
     async def _publish_execution_failure(
         self,
