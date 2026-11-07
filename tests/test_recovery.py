@@ -657,3 +657,23 @@ async def test_live_exchange_balance_snapshot_requires_live_idr_fx():
             global_quote_asset="USDT",
             usdt_idr_rate=0.0,
         )
+
+
+@pytest.mark.asyncio
+async def test_fetch_positions_matches_ccxt_contract_symbol_aliases():
+    """Equivalent CCXT futures symbols must not be mistaken for an empty position."""
+    from executor.exchange_client import ExchangeClient
+
+    class GlobalFutures:
+        async def fetch_positions(self, symbols=None):
+            return [{
+                "symbol": "BTC/USDT:USDT",
+                "contracts": 0.005,
+                "contractSize": 1.0,
+                "side": "short",
+            }]
+
+    client = ExchangeClient(local_exchange=object(), global_exchange=GlobalFutures())
+    positions = await client.fetch_positions("BTCUSDT")
+    assert len(positions) == 1
+    assert positions[0]["side"] == "short"
