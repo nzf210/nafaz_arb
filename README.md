@@ -37,6 +37,9 @@ provided Compose file because it has no authentication configured.
 Untuk panduan lengkap deployment menggunakan Podman di VPS, lihat panduan di [PODMAN.md](./PODMAN.md).
 
 ```sh
+mkdir -p data
+sudo chown -R "$(id -u):$(id -g)" data
+# Set APP_UID/APP_GID in .env only if your host data owner is not 1000:1000.
 podman compose up -d --build
 # atau:
 # podman build -t nafaz-scanner . && podman run -d --name nafaz-scanner -p 8080:8080 -v $(pwd)/config.json:/app/config.json:ro,Z -v $(pwd)/data:/app/data:Z nafaz-scanner
