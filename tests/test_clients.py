@@ -263,3 +263,6 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
         client._local_for("binance:BTCUSDT")
     with pytest.raises(ValueError, match="local Spot symbol"):
         client._global_for("toko:BTC_USDT")
+    with pytest.raises(ValueError, match="unknown or local symbol"):
+        client._global_for("unknown:BTCUSDT")
+    assert client._global_for("BTCUSDT") is okx, "legacy unprefixed symbols stay on the configured default only"
