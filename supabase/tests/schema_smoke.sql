@@ -51,3 +51,23 @@ begin
 end $$;
 
 delete from public.strategy_configs where name = 'schema-smoke-test';
+
+
+do $$
+begin
+    if not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'closed_trades'
+          and column_name = 'spot_pnl_asset'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'closed_trades'
+          and column_name = 'entry_usdt_idr_rate'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'positions'
+          and column_name = 'futures_quote_asset'
+    ) then
+        raise exception 'trade currency / FX audit columns are missing';
+    end if;
+end $$;
