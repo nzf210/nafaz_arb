@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -859,5 +860,39 @@ func TestFXFallbackExcludesPair(t *testing.T) {
 	// The failed preflight must be visible in the result payload too.
 	if len(r.Errors) == 0 || !strings.Contains(r.Errors[len(r.Errors)-1], "USDT/IDR live ticker unavailable") {
 		t.Fatalf("expected FX-unavailable error in scan errors, got %v", r.Errors)
+	}
+}
+
+func TestFXPreflightRejectsNonFiniteRate(t *testing.T) {
+	cfg := config.Config{
+		Mode:                 "MOCK",
+		QuoteAssets:          []string{"USDT"},
+		EnableSyntheticIDR:   true,
+		SyntheticUSDTIDRRate: 16000,
+		CapitalTotal:         1000,
+		AllocationPerPair:    0.5,
+		PerpLeverage:         1,
+	}
+	adapter := &syntheticMockAdapter{idrRate: math.NaN()}
+	s := New(cfg, adapter)
+	_, complete, err := s.Scan(context.Background())
+	if err == nil || complete {
+		t.Fatalf("expected non-finite FX rate to abort scan, err=%v complete=%v", err, complete)
+	}
+	if !strings.Contains(err.Error(), "USDT/IDR live ticker unavailable") {
+		t.Fatalf("unexpected error for non-finite FX rate: %v", err)
+	}
+}
+
+func TestApplyEvaluationResultsCountsFailedPairs(t *testing.T) {
+	result := domain.ScanResult{}
+	complete := applyEvaluationResults([]evalResult{
+		{err: fmt.Errorf("pair data unavailable")},
+	}, &result)
+	if !complete {
+		t.Fatal("non-fatal pair-level errors should not mark the whole scan incomplete")
+	}
+	if result.FailedPairs != 1 {
+		t.Fatalf("failed_pairs=%d, want 1", result.FailedPairs)
 	}
 }
