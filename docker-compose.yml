@@ -11,6 +11,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     container_name: nafaz-scanner
     restart: always
     ports:
@@ -35,6 +38,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.executor
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
     container_name: nafaz-executor
     restart: always
     volumes:
