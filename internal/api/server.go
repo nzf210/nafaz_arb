@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -108,6 +109,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/scanner/opportunities/history", s.opportunityHistory)
 	mux.HandleFunc("/api/v1/scanner/opportunities/metrics", s.opportunityMetrics)
 	mux.HandleFunc("/api/v1/executor/status", s.executorStatus)
+
+	// Keep local MOCK development frictionless, but require a constant-time
+	// bearer-token check for LIVE mode or whenever an API token is configured.
+	if strings.EqualFold(s.cfg.Mode, "LIVE") || strings.TrimSpace(s.cfg.APIAuthToken) != "" {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/health" {
+				mux.ServeHTTP(w, r)
+				return
+			}
+			expected := strings.TrimSpace(s.cfg.APIAuthToken)
+			if expected == "" {
+				http.Error(w, "API authentication is not configured", http.StatusServiceUnavailable)
+				return
+			}
+			const prefix = "Bearer "
+			header := r.Header.Get("Authorization")
+			if !strings.HasPrefix(header, prefix) ||
+				subtle.ConstantTimeCompare([]byte(strings.TrimSpace(strings.TrimPrefix(header, prefix))), []byte(expected)) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			mux.ServeHTTP(w, r)
+		})
+	}
 	return mux
 }
 func (s *Server) RunPeriodic(ctx context.Context) {
@@ -174,6 +199,11 @@ func (s *Server) finishScan(r domain.ScanResult, complete bool, scanErr error) {
 	}
 	if complete && (s.lastSuccessAt.IsZero() || r.CompletedAt.After(s.lastSuccessAt)) {
 		s.lastSuccessAt = r.CompletedAt
+	}
+	if scanErr != nil {
+		log.Printf("scanner scan failed: %v", scanErr)
+	} else if !complete && len(r.Errors) > 0 {
+		log.Printf("scanner scan incomplete: %s", strings.Join(r.Errors, "; "))
 	}
 	if s.activeScans > 0 {
 		s.activeScans--
@@ -257,7 +287,11 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, METHOD, 405)
 		return
 	}
-	write(w, s.OperationalStatus())
+	status := s.OperationalStatus()
+	if status.LastError != "" {
+		status.LastError = "scan degraded; see server logs"
+	}
+	write(w, status)
 }
 
 // executorStatus exposes the executor's self-reported state, including the
@@ -273,7 +307,8 @@ func (s *Server) executorStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	raw, found, err := s.executor.GetExecutorStatus(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		log.Printf("executor status lookup failed: %v", err)
+		http.Error(w, "executor status unavailable", http.StatusInternalServerError)
 		return
 	}
 	if !found {
@@ -294,10 +329,11 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.runScan(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), 500)
+		log.Printf("scanner run failed: %v", err)
+		http.Error(w, "scan failed", http.StatusInternalServerError)
 		return
 	}
-	write(w, result)
+	write(w, sanitizeScanResult(result))
 }
 func (s *Server) latestScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -305,8 +341,15 @@ func (s *Server) latestScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	write(w, s.latest)
+	latest := s.latest
+	s.mu.RUnlock()
+	write(w, sanitizeScanResult(latest))
+}
+func sanitizeScanResult(result domain.ScanResult) domain.ScanResult {
+	if len(result.Errors) > 0 {
+		result.Errors = []string{"scan completed with errors; see server logs"}
+	}
+	return result
 }
 func (s *Server) opportunityHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

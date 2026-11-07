@@ -46,7 +46,8 @@ class ExecutorConfig:
     # Balance-mismatch guard: when an exchange's available balance drops below
     # (last observed available - this fraction of total) between two checks,
     # something took our capital (withdrawal, liquidation, another bot) and the
-    # venue is halted for new entries. 0 disables the check.
+    # venue is halted for new entries. 0 disables only mismatch comparison;
+    # live balance reads remain mandatory for entry sizing.
     balance_mismatch_fraction: float = 0.20
     # Consecutive order-placement failures tolerated per exchange before the
     # venue is halted for new entries. 0 disables the breaker.

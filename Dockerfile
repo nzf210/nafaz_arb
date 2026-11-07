@@ -17,10 +17,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o nafaz-scanne
 # Stage 2: Minimal runtime image
 FROM docker.io/library/alpine:3.20
 
+ARG APP_UID=1000
+ARG APP_GID=1000
+
 # ca-certificates required for HTTPS requests to exchange APIs and Telegram
 RUN apk --no-cache add ca-certificates tzdata \
-    && addgroup -S appgroup \
-    && adduser -S appuser -G appgroup
+    && addgroup -S -g ${APP_GID} appgroup \
+    && adduser -S -u ${APP_UID} -G appgroup appuser
 
 WORKDIR /app
 

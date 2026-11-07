@@ -1,0 +1,17 @@
+# Never send local secrets or runtime state to the Docker build context.
+config.json
+config.*.json
+.env
+.env.*
+*.pem
+*.key
+
+# Local repository and generated artifacts.
+.git
+.github
+.pytest_cache
+__pycache__
+*.py[cod]
+coverage.*
+data/
+logs/
