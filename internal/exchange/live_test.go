@@ -193,7 +193,7 @@ func TestLiveAdapterPerpetualMarketsAndDepth(t *testing.T) {
 	}
 
 	// OKX Order book (100 * 0.01 = 1.0 BTC)
-	okxBook, err := adapter.PerpetualOrderBook(context.Background(), "BTC-USDT-SWAP")
+	okxBook, err := adapter.PerpetualOrderBook(context.Background(), "okx:BTC-USDT-SWAP")
 	if err != nil {
 		t.Fatalf("OKX PerpetualOrderBook: %v", err)
 	}
