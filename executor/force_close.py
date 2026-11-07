@@ -344,6 +344,9 @@ class ForceCloseMixin:
             capital_usdt = pos.qty * pos.short_entry_usdt
             return {
                 "pnl_complete": usdt_rate > 0 and math.isfinite(usdt_rate),
+                # A force close can flatten both legs while FX is unavailable.
+                # Do not publish or persist partial USDT PnL as fully realized.
+                "pnl_unverified": not (usdt_rate > 0 and math.isfinite(usdt_rate)),
                 "spot_pnl_idr": spot_pnl_idr,
                 "spot_pnl_usdt": spot_pnl_usdt,
                 "futures_pnl_usdt": futures_pnl_usdt,
