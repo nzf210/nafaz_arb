@@ -167,8 +167,8 @@ func (c *Config) AdaptiveSizingEnabled() bool {
 }
 
 func (c *Config) validate() error {
-	if strings.EqualFold(c.Mode, "LIVE") && strings.TrimSpace(c.APIAuthToken) == "" {
-		return fmt.Errorf("api_auth_token is required when mode=LIVE")
+	if strings.EqualFold(c.Mode, "LIVE") && len(strings.TrimSpace(c.APIAuthToken)) < 32 {
+		return fmt.Errorf("api_auth_token must contain at least 32 characters when mode=LIVE")
 	}
 	if c.ExecutionMode != "" && c.ExecutionMode != "TAKER_TAKER" && c.ExecutionMode != "MAKER_TAKER" {
 		return fmt.Errorf("execution_mode must be TAKER_TAKER or MAKER_TAKER")
