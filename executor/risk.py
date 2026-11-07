@@ -80,10 +80,6 @@ class RiskMixin:
             logger.critical(f"[Risk Control] {reason}")
             return
 
-        fraction = float(getattr(self.config, "balance_mismatch_fraction", 0.0) or 0.0)
-        if fraction <= 0:
-            return
-
         try:
             balances = self.client.get_balances()
             if not isinstance(balances, dict) or "spot_available" not in balances or "futures_available" not in balances:
@@ -97,6 +93,12 @@ class RiskMixin:
             logger.exception(
                 "[Risk Control] balance read failed; both venues halted for new entries"
             )
+            return
+
+        # The fraction disables only mismatch comparison, never the basic
+        # requirement that live exchange balances must be readable.
+        fraction = float(getattr(self.config, "balance_mismatch_fraction", 0.0) or 0.0)
+        if fraction <= 0:
             return
 
         venue_available = {}
