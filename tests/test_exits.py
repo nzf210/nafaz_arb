@@ -479,3 +479,16 @@ async def test_partial_futures_close_after_spot_fill_requires_reconciliation(eng
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
     assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is not None
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "EXIT_HEDGE_RECONCILIATION_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_exit_price_snapshot_without_live_fx_is_rejected(engine, fake_redis):
+    """IDR exit pricing must not use the old hardcoded USDT/IDR fallback."""
+    pair_tag = "indodax:btc_idr"
+    snapshot = {
+        "global_best_ask_usdt": 65000.0,
+        "timestamp_ms": int(time.time() * 1000),
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+
+    assert await engine._fetch_live_price(pair_tag) is None
