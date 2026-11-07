@@ -313,9 +313,11 @@ class ExchangeClient:
                 matched.append(position)
         return matched
 
-    async def open_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def open_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None, price: Optional[float] = None) -> Dict[str, Any]:
         """
         Executes an instant Short 1x Market Hedge on Global Futures.
+        ``price`` is an optional reference quote supplied by the engine; the
+        order remains a market order and the venue-reported fill is authoritative.
         STRICT: Only executes Market SELL. Never buy/long to open.
         """
         if amount <= 0:
