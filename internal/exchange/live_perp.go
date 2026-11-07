@@ -45,7 +45,7 @@ func (l *LiveAdapter) getCachedOKXPerp() ([]domain.Market, bool) {
 }
 
 func (l *LiveAdapter) processOKXInstrument(inst okxInstrumentData) (domain.Market, bool) {
-	if inst.State != "live" || inst.InstID == "" {
+	if inst.State != "live" || inst.InstID == "" || (strings.ToUpper(inst.SettleCcy) != "USDT" && strings.ToUpper(inst.SettleCcy) != "USDC") {
 		return domain.Market{}, false
 	}
 
@@ -209,7 +209,7 @@ func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.M
 	defer l.mu.Unlock()
 
 	for _, c := range mexcResp.Data {
-		if c.State != 0 || c.Symbol == "" {
+		if c.State != 0 || c.Symbol == "" || (strings.ToUpper(c.QuoteCoin) != "USDT" && strings.ToUpper(c.QuoteCoin) != "USDC") {
 			continue
 		}
 
