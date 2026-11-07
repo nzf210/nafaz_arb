@@ -141,7 +141,7 @@ Add your Telegram bot configuration in `config.json` or pass via environment var
 {
   "telegram": {
     "enabled": true,
-    "bot_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
+    "bot_token": "",
     "chat_id": -100123456789,
     "allowed_chat_ids": [-100123456789],
     "alert_on_new": true,
