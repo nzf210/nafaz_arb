@@ -659,7 +659,10 @@ class ArbitrageEngine(
             configured_global = str(self.config.global_exchange_name or "").strip().lower()
             signal_local = str(payload.pair_info.local_exchange or "").strip().lower()
             signal_global = str(payload.pair_info.global_exchange or "").strip().lower()
-            if signal_local != configured_local or signal_global != configured_global:
+            if (
+                not getattr(self.config, "mock_mode", False)
+                and (signal_local != configured_local or signal_global != configured_global)
+            ):
                 reason = "EXECUTOR_VENUE_MISMATCH"
                 message = (
                     "Signal exchange pair does not match this executor instance; "
