@@ -6,6 +6,7 @@ state and helper methods stay on one object.
 
 import json
 import logging
+import math
 import time
 from typing import Any, Dict, Optional
 
@@ -55,6 +56,22 @@ class RollbackMixin:
                 f"MANUAL INTERVENTION REQUIRED: {unhedged_delta} {symbol} is UNHEDGED."
             )
             return None, exhausted.last_error
+        if not isinstance(emergency_order, dict):
+            return None, RuntimeError("spot rollback returned no verifiable order")
+        status = str(emergency_order.get("status", "")).lower()
+        if status not in ("closed", "filled"):
+            return None, RuntimeError(
+                f"spot rollback is not terminal (status={status or 'unknown'})"
+            )
+        try:
+            filled = float(emergency_order.get("filled") or 0.0)
+        except (TypeError, ValueError):
+            filled = 0.0
+        tolerance = max(1e-12, unhedged_delta * 1e-8)
+        if filled + tolerance < unhedged_delta:
+            return None, RuntimeError(
+                f"spot rollback fill incomplete: requested={unhedged_delta}, filled={filled}"
+            )
         return emergency_order, None
 
     async def _hedge_may_be_open(
@@ -86,14 +103,57 @@ class RollbackMixin:
         if not positions:
             return False
         total = 0.0
-        for p in positions:
-            side = str(p.get("side", "")).lower()
-            qty = abs(float(p.get("contracts", 0.0) or 0.0))
-            total += qty if side != "long" else -qty
+        for position in positions:
+            if not isinstance(position, dict):
+                logger.critical(
+                    f"[Hedge Ambiguity] {pair_tag}: malformed futures position; "
+                    "spot rollback blocked"
+                )
+                return True
+            info = position.get("info") or {}
+            raw_contracts = position.get("contracts")
+            if raw_contracts is not None:
+                try:
+                    qty = abs(float(raw_contracts)) * abs(
+                        float(position.get("contractSize") or 1.0)
+                    )
+                except (TypeError, ValueError):
+                    return True
+                if not math.isfinite(qty):
+                    return True
+                if qty <= 1e-12:
+                    continue
+                side = str(
+                    position.get("side")
+                    or position.get("positionSide")
+                    or info.get("posSide")
+                    or info.get("positionSide")
+                    or ""
+                ).lower()
+                if side == "short":
+                    total += qty
+                elif side == "long":
+                    total -= qty
+                else:
+                    return True
+                continue
+
+            raw_amount = position.get("positionAmt", info.get("positionAmt"))
+            if raw_amount is None:
+                return True
+            try:
+                signed_amount = float(raw_amount)
+            except (TypeError, ValueError):
+                return True
+            if not math.isfinite(signed_amount):
+                return True
+            # Binance-style positionAmt is signed: negative is short, positive long.
+            total -= signed_amount
         if abs(total) > 1e-12:
             logger.critical(
-                f"[Hedge Ambiguity] {pair_tag}: venue reports net short {total} on "
-                f"{global_symbol} despite hedge error ({error}) - spot NOT rolled back"
+                f"[Hedge Ambiguity] {pair_tag}: venue reports non-flat futures exposure "
+                f"(net short {total}) on {global_symbol} despite hedge error "
+                f"({error}) - spot NOT rolled back"
             )
             return True
         return False
@@ -187,16 +247,18 @@ class RollbackMixin:
             pair_tag, symbol, unhedged_delta
         )
 
-        exit_price_idr = 0.0
-        if emergency_order:
-            exit_price_idr = helpers.extract_fill_price(emergency_order, price_idr)
-            if exit_price_idr <= 0:
-                exit_price_idr = price_idr
-
-        # Release the reserved capital for the leg that never got hedged.
-        await self._release_unhedged_reserve(
-            pair_tag, order_info, unhedged_delta, price_idr, usdt_rate
+        exit_price_idr = (
+            helpers.extract_fill_price(emergency_order)
+            if emergency_order is not None
+            else 0.0
         )
+
+        # Release reserved capital only after the exchange confirms a full,
+        # terminal rollback fill. An ambiguous/partial sell must remain blocked.
+        if emergency_error is None:
+            await self._release_unhedged_reserve(
+                pair_tag, order_info, unhedged_delta, price_idr, usdt_rate
+            )
 
         event = {
             "event": "HEDGE_FAILED",
@@ -215,11 +277,11 @@ class RollbackMixin:
         }
         await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(event))
 
-        if emergency_order is None:
+        if emergency_error is not None:
             self._mark_failed(
                 pair_tag,
                 "HEDGE_FAILED",
-                f"hedge failed and spot rollback failed: {emergency_error}",
+                f"hedge failed and spot rollback was not fully verified: {emergency_error}",
                 detail={
                     "unhedged_qty": unhedged_delta,
                     "symbol": symbol,
