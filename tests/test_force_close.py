@@ -402,3 +402,22 @@ async def test_force_close_retry_does_not_resubmit_when_short_remains_open(fake_
     assert client.placed_sells == []
     assert pair_tag in engine.active_positions
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+
+
+def test_force_close_pnl_is_unverified_without_live_fx():
+    """Do not present futures-only PnL as complete when spot FX is unavailable."""
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+
+    pnl = ArbitrageEngine._compute_force_close_pnl(
+        pos, current_ask=64_900.0, usdt_rate=0.0, current_spot_bid=1_010_000_000.0
+    )
+
+    assert pnl["pnl_complete"] is False
+    assert pnl["pnl_unverified"] is True
