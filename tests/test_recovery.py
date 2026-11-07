@@ -601,3 +601,59 @@ async def test_fetch_positions_returns_empty_only_for_valid_empty_payload():
 
     client = ExchangeClient(local_exchange=object(), global_exchange=GlobalFutures())
     assert await client.fetch_positions("BTC/USDT:USDT") == []
+
+
+@pytest.mark.asyncio
+async def test_live_exchange_balance_snapshot_normalizes_idr_to_usdt():
+    """Live sizing converts local IDR quote balance using the current scanner FX rate."""
+    from executor.exchange_client import ExchangeClient
+
+    class LocalSpot:
+        async def fetch_balance(self):
+            return {
+                "free": {"IDR": 1_600_000.0},
+                "used": {"IDR": 400_000.0},
+                "total": {"IDR": 2_000_000.0},
+            }
+
+    class GlobalFutures:
+        async def fetch_balance(self):
+            return {
+                "free": {"USDT": 75.0},
+                "used": {"USDT": 25.0},
+                "total": {"USDT": 100.0},
+            }
+
+    client = ExchangeClient(LocalSpot(), GlobalFutures())
+    balances = await client.get_balances(
+        local_quote_asset="IDR",
+        global_quote_asset="USDT",
+        usdt_idr_rate=16_000.0,
+    )
+
+    assert balances["spot_available"] == pytest.approx(100.0)
+    assert balances["spot_total"] == pytest.approx(125.0)
+    assert balances["futures_available"] == pytest.approx(75.0)
+    assert balances["futures_total"] == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_live_exchange_balance_snapshot_requires_live_idr_fx():
+    """Missing FX must fail closed instead of treating IDR as USDT."""
+    from executor.exchange_client import ExchangeClient
+
+    class LocalSpot:
+        async def fetch_balance(self):
+            return {"free": {"IDR": 1_600_000.0}, "total": {"IDR": 1_600_000.0}}
+
+    class GlobalFutures:
+        async def fetch_balance(self):
+            return {"free": {"USDT": 100.0}, "total": {"USDT": 100.0}}
+
+    client = ExchangeClient(LocalSpot(), GlobalFutures())
+    with pytest.raises(ValueError, match="live USDT/IDR rate"):
+        await client.get_balances(
+            local_quote_asset="IDR",
+            global_quote_asset="USDT",
+            usdt_idr_rate=0.0,
+        )
