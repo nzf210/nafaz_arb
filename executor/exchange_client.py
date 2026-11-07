@@ -468,7 +468,7 @@ class PaperTradingExchangeClient:
             "updated_at": time.time(),
         }
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None, usdt_idr_rate: float = 0.0) -> Dict[str, Any]:
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
             if existing is not None:
@@ -493,7 +493,7 @@ class PaperTradingExchangeClient:
         self.orders[oid] = order
         return order
 
-    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None, usdt_idr_rate: float = 0.0) -> Dict[str, Any]:
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
             if existing is not None:
