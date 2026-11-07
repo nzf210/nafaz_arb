@@ -78,6 +78,7 @@ func (failedMarketAdapter) SpotMarkets(context.Context) ([]domain.Market, error)
 func TestOperationalStatusReportsScanFailureAndStaleness(t *testing.T) {
 	cfg := config.Config{
 		Mode:                "LIVE",
+		APIAuthToken:        strings.Repeat("x", 32),
 		ScanIntervalSeconds: 30,
 		CapitalTotal:        1000,
 		AllocationPerPair:   0.5,
@@ -99,10 +100,9 @@ func TestOperationalStatusReportsScanFailureAndStaleness(t *testing.T) {
 		t.Fatalf("internal scanner error leaked through status: %s", status.LastError)
 	}
 	latestRec := httptest.NewRecorder()
-	server.Handler().ServeHTTP(
-		latestRec,
-		httptest.NewRequest(http.MethodGet, "/api/v1/scanner/latest", nil),
-	)
+	latestReq := httptest.NewRequest(http.MethodGet, "/api/v1/scanner/latest", nil)
+	latestReq.Header.Set("Authorization", "Bearer "+cfg.APIAuthToken)
+	server.Handler().ServeHTTP(latestRec, latestReq)
 	if strings.Contains(latestRec.Body.String(), "market API unavailable") {
 		t.Fatalf("internal scanner error leaked through latest result: %s", latestRec.Body.String())
 	}
