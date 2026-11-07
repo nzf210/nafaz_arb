@@ -70,42 +70,34 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 	return last, nil
 }
 
-// SpotMarkets discovers active spot pairs on Tokocrypto and Indodax (and MEXC Spot if target is mexc/all).
+// SpotMarkets discovers local spot markets only: Indodax and Tokocrypto.
+// Foreign venues are never queried for spot markets in this strategy.
 func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
 	var allMarkets []domain.Market
 	var errs []string
-
-	tokoMarkets, err := l.fetchTokocryptoSpotMarkets(ctx)
-	if err == nil {
-		allMarkets = append(allMarkets, tokoMarkets...)
-	} else {
-		errs = append(errs, fmt.Sprintf("toko: %v", err))
-	}
-
-	indodaxMarkets, err := l.fetchIndodaxSpotMarkets(ctx)
-	if err == nil {
-		allMarkets = append(allMarkets, indodaxMarkets...)
-	} else {
-		errs = append(errs, fmt.Sprintf("indodax: %v", err))
-	}
-
 	l.mu.RLock()
-	includeMEXCSpot := l.targetPerpExchange == "" || l.targetPerpExchange == "mexc" || l.targetPerpExchange == "all"
+	filter := l.spotExchangeFilter
 	l.mu.RUnlock()
 
-	if includeMEXCSpot {
-		mexcMarkets, err := l.fetchMEXCSpotMarkets(ctx)
+	if exchangeInFilter(filter, "tokocrypto") {
+		tokoMarkets, err := l.fetchTokocryptoSpotMarkets(ctx)
 		if err == nil {
-			allMarkets = append(allMarkets, mexcMarkets...)
+			allMarkets = append(allMarkets, tokoMarkets...)
 		} else {
-			errs = append(errs, fmt.Sprintf("mexc_spot: %v", err))
+			errs = append(errs, fmt.Sprintf("tokocrypto: %v", err))
 		}
 	}
-
-	if len(allMarkets) == 0 {
-		return nil, fmt.Errorf("failed to discover spot markets (%s)", strings.Join(errs, "; "))
+	if exchangeInFilter(filter, "indodax") {
+		indodaxMarkets, err := l.fetchIndodaxSpotMarkets(ctx)
+		if err == nil {
+			allMarkets = append(allMarkets, indodaxMarkets...)
+		} else {
+			errs = append(errs, fmt.Sprintf("indodax: %v", err))
+		}
 	}
-
+	if len(allMarkets) == 0 {
+		return nil, fmt.Errorf("failed to discover enabled local spot markets (%s)", strings.Join(errs, "; "))
+	}
 	return allMarkets, nil
 }
 
