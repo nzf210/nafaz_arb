@@ -835,6 +835,12 @@ class ArbitrageEngine(
                 logger.warning(
                     f"[State 1 Balance Check] Failed to lock funds for {actual_cost_usdt:.2f} USDT on {pair_tag}"
                 )
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "BALANCE_LOCK_FAILED",
+                    "Exchange client gagal mengunci saldo untuk entry.",
+                    detail={"required_usdt_per_leg": actual_cost_usdt},
+                )
                 return
             # Sync balances to Redis
             bals = await self._get_balance_snapshot(
@@ -888,6 +894,12 @@ class ArbitrageEngine(
                 self.client.unlock_funds(actual_cost_usdt, actual_cost_usdt)
             self._record_order_failure(pair_info.local_exchange, "entry order placement failed")
             logger.exception(f"[State 1] failed to place limit buy for {pair_tag}")
+            await self._publish_execution_failure(
+                pair_tag,
+                "SPOT_ORDER_OPEN_FAILED",
+                "Gagal membuka order Spot; periksa error exchange dan saldo.",
+                detail={"exchange": pair_info.local_exchange, "symbol": pair_info.local_symbol},
+            )
     # -------------------------------------------------------------
     # Failure tracking & status reporting
     # -------------------------------------------------------------
