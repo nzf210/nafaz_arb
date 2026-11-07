@@ -115,6 +115,7 @@ type ScanResult struct {
 	FrozenPairs               int                   `json:"frozen_pairs"`
 	EligiblePairs             int                   `json:"eligible_pairs"`
 	ExcludedPairs             int                   `json:"excluded_pairs"`
+	FailedPairs               int                   `json:"failed_pairs"`
 	Opportunities             []Opportunity         `json:"opportunities"`
 	Errors                    []string              `json:"errors,omitempty"`
 }
