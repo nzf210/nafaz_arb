@@ -63,9 +63,9 @@ class RiskMixin:
         engine last observed - e.g. a withdrawal, liquidation, or another
         process consuming the capital. Halts that venue for new entries.
 
-        Fail-open on read errors: a broken balance feed must not be conflated
-        with actual missing funds, and refusing to hedge on a stale read leaves
-        the spot leg naked.
+        Fail-closed for new entries when the configured balance guard cannot
+        read balances. Existing positions remain under the independent monitoring
+        and emergency-close paths; this check never blocks a required hedge.
         """
         if not hasattr(self.client, "get_balances"):
             # Paper clients may intentionally omit exchange balance simulation.
