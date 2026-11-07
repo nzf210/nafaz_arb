@@ -211,7 +211,7 @@ func TestLiveAdapterPerpetualMarketsAndDepth(t *testing.T) {
 	}
 
 	// OKX Funding rate
-	okxFR, err := adapter.FundingRate(context.Background(), "BTC-USDT-SWAP")
+	okxFR, err := adapter.FundingRate(context.Background(), "okx:BTC-USDT-SWAP")
 	if err != nil {
 		t.Fatalf("OKX FundingRate: %v", err)
 	}
