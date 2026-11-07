@@ -369,14 +369,14 @@ create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
 set search_path = pg_catalog, public
-as $
+as $fn$
 begin
     new.updated_at = now();
     return new;
 end;
-$;
+$fn$;
 
-do $
+do $block$
 declare
     tbl text;
 begin
@@ -391,7 +391,7 @@ begin
             tbl, tbl
         );
     end loop;
-end $;
+end $block$;
 
 comment on table public.orders is 'Exchange order lifecycle; idempotent client_order_id is recorded before/after exchange reconciliation.';
 comment on table public.order_fills is 'Append-only exchange fills, deduplicated by exchange fill id.';
