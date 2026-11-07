@@ -212,10 +212,16 @@ class RiskMixin:
         for order_info in self.pending_entry_orders.values():
             remaining_qty = float(order_info.get("qty", 0.0)) - float(order_info.get("filled", 0.0))
             remaining_qty = max(0.0, remaining_qty)
-            usdt_rate = float(order_info.get("usdt_idr_rate", self.FALLBACK_USDT_IDR_RATE) or self.FALLBACK_USDT_IDR_RATE)
-            value = remaining_qty * float(order_info.get("price", 0.0))
-            total_spot += value / usdt_rate if usdt_rate > 0 else 0.0
-            total_futures += value / usdt_rate if usdt_rate > 0 else 0.0
+            original_qty = float(order_info.get("qty", 0.0) or 0.0)
+            if original_qty <= 0:
+                continue
+            remaining_fraction = min(1.0, remaining_qty / original_qty)
+            # The pending order already stores the USDT-equivalent reservation
+            # calculated from the validated live FX snapshot at placement time.
+            # Scale that persisted amount by the unfilled fraction; never
+            # recalculate with a hardcoded FX fallback.
+            total_spot += float(order_info.get("spot_cost_usdt", 0.0) or 0.0) * remaining_fraction
+            total_futures += float(order_info.get("futures_margin_usdt", 0.0) or 0.0) * remaining_fraction
         return total_spot, total_futures
 
     def _exposure_allows(
