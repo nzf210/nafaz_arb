@@ -427,6 +427,7 @@ func applyEvaluationResults(results []evalResult, result *domain.ScanResult) boo
 			exchangeMetrics[metric.Exchange] = aggregate
 		}
 		if res.err != nil {
+			result.FailedPairs++
 			if res.fatalErr {
 				complete = false
 			}
