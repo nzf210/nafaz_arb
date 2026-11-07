@@ -51,18 +51,17 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 	return book, err
 }
 
-// SpotOrderBook fetches live order book depth from Tokocrypto, Indodax, or MEXC Spot.
+// SpotOrderBook fetches local spot depth only. Foreign CEX spot access is deliberately rejected.
 func (l *LiveAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	if strings.HasPrefix(symbol, MEXC_SPOT) || strings.HasPrefix(symbol, "mexc:") || strings.HasPrefix(symbol, "binance:") || strings.HasPrefix(symbol, "bybit:") {
+		return domain.OrderBook{}, fmt.Errorf("spot market is not allowed for foreign futures venue symbol %q", symbol)
+	}
 	if strings.HasPrefix(symbol, "toko:") {
 		return l.trackedBookForSymbol("tokocrypto", symbol, func() (domain.OrderBook, error) {
 			return l.fetchTokocryptoSpotOrderBook(ctx, symbol)
 		})
 	}
-	if strings.HasPrefix(symbol, MEXC_SPOT) || strings.HasPrefix(symbol, "mexc:") {
-		return l.trackedBookForSymbol("mexc", symbol, func() (domain.OrderBook, error) {
-			return l.fetchMEXCSpotOrderBook(ctx, symbol)
-		})
-	}
+
 	return l.trackedBookForSymbol("indodax", symbol, func() (domain.OrderBook, error) {
 		return l.fetchIndodaxSpotOrderBook(ctx, symbol)
 	})
@@ -199,16 +198,18 @@ func (l *LiveAdapter) fetchMEXCSpotOrderBook(ctx context.Context, symbol string)
 	}, nil
 }
 
-// PerpetualOrderBook fetches live order book from OKX or MEXC with contract size normalization.
+// PerpetualOrderBook routes only to the foreign perpetual venue encoded in the market symbol.
 func (l *LiveAdapter) PerpetualOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
-	if isMEXCSymbol(symbol) {
-		return l.trackedBookForSymbol("mexc", symbol, func() (domain.OrderBook, error) {
-			return l.fetchMEXCOrderBook(ctx, symbol)
-		})
+	switch {
+	case isMEXCSymbol(symbol):
+		return l.trackedBookForSymbol("mexc", symbol, func() (domain.OrderBook, error) { return l.fetchMEXCOrderBook(ctx, symbol) })
+	case strings.HasPrefix(symbol, "binance:"):
+		return l.trackedBookForSymbol("binance", symbol, func() (domain.OrderBook, error) { return l.fetchBinanceOrderBook(ctx, symbol) })
+	case strings.HasPrefix(symbol, "bybit:"):
+		return l.trackedBookForSymbol("bybit", symbol, func() (domain.OrderBook, error) { return l.fetchBybitOrderBook(ctx, symbol) })
+	default:
+		return l.trackedBookForSymbol("okx", symbol, func() (domain.OrderBook, error) { return l.fetchOKXOrderBook(ctx, symbol) })
 	}
-	return l.trackedBookForSymbol("okx", symbol, func() (domain.OrderBook, error) {
-		return l.fetchOKXOrderBook(ctx, symbol)
-	})
 }
 
 func isMEXCSymbol(symbol string) bool {
