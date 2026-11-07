@@ -6,8 +6,10 @@ state and helper methods stay on one object.
 
 import asyncio
 import inspect
+import json
 import logging
 import math
+import time
 from typing import Dict, Optional
 
 from executor.models import ExecutorPayload, PairInfo
@@ -18,6 +20,25 @@ logger = logging.getLogger("executor.engine")
 
 class RiskMixin:
     """Exposure caps, per-venue halts and balance-drift detection."""
+
+    async def _publish_risk_event(self, event: str, pair_tag: str, pair_info: Optional[PairInfo], reason: str) -> None:
+        """Publish an actionable risk rejection to the Telegram event channel."""
+        if not getattr(self, "redis", None):
+            return
+        payload = {
+            "event": event,
+            "pair_key": pair_tag,
+            "local_exchange": pair_info.local_exchange if pair_info else self.config.local_exchange_name,
+            "global_exchange": pair_info.global_exchange if pair_info else self.config.global_exchange_name,
+            "symbol": pair_info.local_symbol if pair_info else "",
+            "reason": str(reason),
+            "is_mock": bool(getattr(self.config, "mock_mode", False)),
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        try:
+            await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(payload))
+        except Exception:
+            logger.exception("failed to publish executor risk event %s for %s", event, pair_tag)
 
     def _record_order_success(self, exchange: str) -> None:
         """Clears the consecutive-failure counter for an exchange after a clean order."""
@@ -91,6 +112,8 @@ class RiskMixin:
             "local_quote_asset": quote_asset or "IDR",
             "global_quote_asset": global_quote_asset,
             "usdt_idr_rate": float(usdt_idr_rate or 0.0),
+            "local_exchange": pair_info.local_exchange if pair_info else self.config.local_exchange_name,
+            "global_exchange": pair_info.global_exchange if pair_info else self.config.global_exchange_name,
         }
         try:
             signature = inspect.signature(getter)
@@ -149,6 +172,7 @@ class RiskMixin:
             logger.exception(
                 "[Risk Control] balance read failed; both venues halted for new entries"
             )
+            await self._publish_risk_event("BALANCE_READ_FAILED", pair_tag or "", pair_info, reason)
             return None
 
         if balances is None:
@@ -189,6 +213,7 @@ class RiskMixin:
             logger.critical(
                 f"[Risk Control] Exchange {venue} HALTED: {self._exchange_halted[venue]}"
             )
+            await self._publish_risk_event("BALANCE_MISMATCH", pair_tag or "", pair_info, self._exchange_halted[venue])
         return balances
 
     def _open_exposure_by_venue(self) -> Dict[str, float]:
@@ -320,10 +345,11 @@ class RiskMixin:
         local_ex, global_ex = self._pair_venues(pair_tag)
         for venue in (local_ex, global_ex):
             if venue and venue in self._exchange_halted:
+                reason = f"{venue} halted ({self._exchange_halted[venue]})"
                 logger.warning(
-                    f"[Risk Control] rejecting entry for {pair_tag}: "
-                    f"{venue} halted ({self._exchange_halted[venue]})"
+                    f"[Risk Control] rejecting entry for {pair_tag}: {reason}"
                 )
+                await self._publish_risk_event("ENTRY_REJECTED", pair_tag, pair_info, reason)
                 return None
 
         if balances is None and not getattr(self.config, "mock_mode", False):
@@ -335,11 +361,13 @@ class RiskMixin:
             usable_capital = min(avail_spot, avail_fut)
 
             if usable_capital < min_cap:
-                logger.warning(
-                    f"[State 1 Balance Check] Insufficient available balance for {pair_tag}: "
-                    f"Spot Avail=${avail_spot:.2f}, Futures Avail=${avail_fut:.2f}, "
-                    f"Min Required=${min_cap:.2f}. Rejecting entry signal."
+                reason = (
+                    f"Insufficient available balance: Spot={avail_spot:.2f} USDT-equivalent, "
+                    f"Futures margin={avail_fut:.2f} {balances.get('futures_quote_asset', 'USDT')}, "
+                    f"minimum required={min_cap:.2f}."
                 )
+                logger.warning(f"[State 1 Balance Check] {pair_tag}: {reason} Rejecting entry signal.")
+                await self._publish_risk_event("INSUFFICIENT_BALANCE", pair_tag, pair_info, reason)
                 return None
 
             max_pos_usdt = min(max_pos_usdt, usable_capital)
