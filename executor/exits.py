@@ -601,8 +601,13 @@ class ExitMixin:
                         funding_usdt=funding_usdt,
                         futures_fees_usdt=fees_usdt,
                     )
-                    bals = self.client.get_balances()
-                    await self.redis.set(BALANCES_KEY, json.dumps(bals))
+                    bals = await self._get_balance_snapshot(
+                        pair_tag=pair_tag,
+                        symbol=pos.symbol,
+                        usdt_idr_rate=usdt_rate,
+                    )
+                    if bals is not None:
+                        await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
                 # Update stats in Redis
                 pipe = self.redis.pipeline()
