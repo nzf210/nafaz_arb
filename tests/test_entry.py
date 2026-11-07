@@ -533,6 +533,7 @@ async def test_idr_entry_rejects_missing_fx_field_without_model_default(engine, 
 async def test_signal_for_unconfigured_venue_is_rejected(engine, fake_redis, mock_client):
     """A single-venue executor must never route a signal to a different exchange."""
     pair_tag = "indodax:btc_idr"
+    engine.config.mock_mode = False
     payload = _fresh_signal_payload(int(time.time() * 1000))
     payload["pair_info"]["local_exchange"] = "tokocrypto"
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
