@@ -22,7 +22,8 @@ func (l *LiveAdapter) FundingRate(ctx context.Context, symbol string) (domain.Fu
 	case isMEXCSymbol(symbol): return l.fetchMEXCFundingRate(ctx, symbol)
 	case strings.HasPrefix(symbol, "binance:"): return l.fetchBinanceFundingRate(ctx, symbol)
 	case strings.HasPrefix(symbol, "bybit:"): return l.fetchBybitFundingRate(ctx, symbol)
-	default: return l.fetchOKXFundingRate(ctx, symbol)
+	case strings.HasPrefix(symbol, "okx:"): return l.fetchOKXFundingRate(ctx, symbol)
+	default: return domain.FundingRate{}, fmt.Errorf("unknown foreign perpetual symbol prefix: %q", symbol)
 	}
 }
 
