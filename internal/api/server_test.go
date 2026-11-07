@@ -185,7 +185,8 @@ func TestRunScanRejectsOverlap(t *testing.T) {
 
 
 func TestLiveAPIRequiresBearerTokenExceptHealth(t *testing.T) {
-    cfg := config.Config{Mode: "LIVE", APIAuthToken: "test-secret"}
+    token := strings.Repeat("x", 32)
+    cfg := config.Config{Mode: "LIVE", APIAuthToken: token}
     srv := New(nil, nil, cfg)
     handler := srv.Handler()
 
@@ -202,7 +203,7 @@ func TestLiveAPIRequiresBearerTokenExceptHealth(t *testing.T) {
     }
 
     authorizedReq := httptest.NewRequest(http.MethodGet, "/api/v1/executor/status", nil)
-    authorizedReq.Header.Set("Authorization", "Bearer test-secret")
+    authorizedReq.Header.Set("Authorization", "Bearer "+token)
     authorized := httptest.NewRecorder()
     handler.ServeHTTP(authorized, authorizedReq)
     if authorized.Code != http.StatusOK {
