@@ -212,6 +212,10 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
         async def fetch_balance(self):
             return {"free": {"USDT": 120.0}, "total": {"USDT": 150.0}}
 
+        async def fetch_positions(self, symbols=None):
+            self.calls.append(("positions", symbols))
+            return [{"symbol": "BTC/USDT:USDT", "side": "short", "contracts": 0.01}]
+
     indodax = FakeVenue("indodax", "btcidr", "BTC/IDR")
     tokocrypto = FakeVenue("tokocrypto", "BTC_USDT", "BTC/USDT")
     okx = FakeVenue("okx", "BTC-USDT-SWAP", "BTC/USDT:USDT")
@@ -229,6 +233,9 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
 
     assert tokocrypto.calls[0][0:2] == ("buy", "BTC/USDT")
     assert binance.calls[0][0:2] == ("market_sell", "BTC/USDT:USDT")
+    positions = await client.fetch_positions("binance:BTCUSDT")
+    assert len(positions) == 1
+    assert positions[0]["side"] == "short"
 
     balances = await client.get_balances(
         local_quote_asset="USDT",
