@@ -384,10 +384,12 @@ class RiskMixin:
                 )
 
             if max_pos_usdt < min_cap:
-                logger.warning(
-                    f"[State 1 Balance Check] Position size ${max_pos_usdt:.2f} "
-                    f"< min required ${min_cap:.2f} for {pair_tag}"
+                reason = (
+                    f"position size after fee reserve is ${max_pos_usdt:.2f} USDT, "
+                    f"below minimum required ${min_cap:.2f}"
                 )
+                logger.warning(f"[State 1 Balance Check] {reason} for {pair_tag}")
+                await self._publish_risk_event("ENTRY_REJECTED", pair_tag, pair_info, reason)
                 return None
 
         return max_pos_usdt, min_cap
