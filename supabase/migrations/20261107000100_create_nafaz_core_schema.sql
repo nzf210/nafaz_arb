@@ -355,23 +355,68 @@ create index if not exists idx_executor_events_type_time
 
 -- No anon/authenticated access is granted. The backend must use the Supabase
 -- service-role key from a secret manager/environment variable, never a browser.
-do $$
-declare
-    tbl text;
-begin
-    revoke all on schema public from anon, authenticated;
-    grant usage on schema public to service_role;
-    foreach tbl in array array[
-        'exchange_accounts','strategy_configs','risk_limits','market_pairs',
-        'scanner_opportunities','positions','orders','order_fills','position_legs',
-        'funding_payments','closed_trades','balance_snapshots','risk_events',
-        'executor_events','executor_status_snapshots'
-    ] loop
-        execute format('alter table public.%I enable row level security', tbl);
-        execute format('revoke all on table public.%I from anon, authenticated', tbl);
-        execute format('grant select, insert, update, delete on table public.%I to service_role', tbl);
-    end loop;
-end $$;
+revoke all on schema public from anon, authenticated;
+grant usage on schema public to service_role;
+
+alter table public.exchange_accounts enable row level security;
+revoke all on table public.exchange_accounts from anon, authenticated;
+grant select, insert, update, delete on table public.exchange_accounts to service_role;
+
+alter table public.strategy_configs enable row level security;
+revoke all on table public.strategy_configs from anon, authenticated;
+grant select, insert, update, delete on table public.strategy_configs to service_role;
+
+alter table public.risk_limits enable row level security;
+revoke all on table public.risk_limits from anon, authenticated;
+grant select, insert, update, delete on table public.risk_limits to service_role;
+
+alter table public.market_pairs enable row level security;
+revoke all on table public.market_pairs from anon, authenticated;
+grant select, insert, update, delete on table public.market_pairs to service_role;
+
+alter table public.scanner_opportunities enable row level security;
+revoke all on table public.scanner_opportunities from anon, authenticated;
+grant select, insert, update, delete on table public.scanner_opportunities to service_role;
+
+alter table public.positions enable row level security;
+revoke all on table public.positions from anon, authenticated;
+grant select, insert, update, delete on table public.positions to service_role;
+
+alter table public.orders enable row level security;
+revoke all on table public.orders from anon, authenticated;
+grant select, insert, update, delete on table public.orders to service_role;
+
+alter table public.order_fills enable row level security;
+revoke all on table public.order_fills from anon, authenticated;
+grant select, insert, update, delete on table public.order_fills to service_role;
+
+alter table public.position_legs enable row level security;
+revoke all on table public.position_legs from anon, authenticated;
+grant select, insert, update, delete on table public.position_legs to service_role;
+
+alter table public.funding_payments enable row level security;
+revoke all on table public.funding_payments from anon, authenticated;
+grant select, insert, update, delete on table public.funding_payments to service_role;
+
+alter table public.closed_trades enable row level security;
+revoke all on table public.closed_trades from anon, authenticated;
+grant select, insert, update, delete on table public.closed_trades to service_role;
+
+alter table public.balance_snapshots enable row level security;
+revoke all on table public.balance_snapshots from anon, authenticated;
+grant select, insert, update, delete on table public.balance_snapshots to service_role;
+
+alter table public.risk_events enable row level security;
+revoke all on table public.risk_events from anon, authenticated;
+grant select, insert, update, delete on table public.risk_events to service_role;
+
+alter table public.executor_events enable row level security;
+revoke all on table public.executor_events from anon, authenticated;
+grant select, insert, update, delete on table public.executor_events to service_role;
+
+alter table public.executor_status_snapshots enable row level security;
+revoke all on table public.executor_status_snapshots from anon, authenticated;
+grant select, insert, update, delete on table public.executor_status_snapshots to service_role;
 
 -- Keep audit timestamps correct for every mutable operational row.
 create or replace function public.set_updated_at()
