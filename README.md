@@ -288,3 +288,9 @@ until the persistence adapter and its idempotent retry/outbox tests are merged.
 
 
 For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.
+
+The executor remains in paper mode by default (`EXECUTOR_MOCK_MODE=true`). Do not set
+`EXECUTOR_MOCK_MODE=false` until the scanner's `mode`, exchange credentials,
+quote assets, balance permissions, and venue-specific order/funding/position behavior
+have all been validated in paper mode. Scanner LIVE mode and executor LIVE mode are
+separate switches and must be configured deliberately.
