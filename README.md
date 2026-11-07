@@ -19,6 +19,12 @@ go run ./cmd/nafaz-scanner -config config.json
 
 ### Container security
 
+The live executor reads spot/futures balances through CCXT. For IDR-quoted spot pairs,
+it converts the available IDR balance to a USDT-equivalent amount using the fresh
+USDT/IDR rate from the scanner signal; missing FX or balance data blocks new entries.
+USDT/USDC quote balances are treated at a 1:1 stablecoin assumption for sizing, so
+USDC depeg risk is not eliminated.
+
 The executor image runs as a non-root user. Do not bake `config.json`, exchange API keys,
 or Supabase service-role credentials into images; mount the runtime config or inject
 secrets through the deployment environment. Redis is bound to host loopback in the
