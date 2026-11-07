@@ -74,6 +74,7 @@ after the executor was split into mixins.
 | R-15 | Live CCXT client had no balance adapter, so fail-closed checks would halt every LIVE entry; sizing also requires IDR-to-USDT normalization | Risk / exchange adapter | Added async live balance reads for spot and futures, FX normalization from the fresh scanner snapshot, and fail-closed handling when FX/balance data is unavailable
 | R-16 | Docker build context could include local `config.json` and `.env` secrets even when the image did not copy them | Deployment | Added `.dockerignore` to exclude secrets, credentials, runtime data, and repository metadata from build context
 | R-17 | Scanner API returned raw Redis/scanner error details to HTTP clients, including status/latest result payloads | API | Return generic 500 responses, sanitize status/latest scan errors, log internal details server-side, and add regression tests
+| R-18 | Repeating force close after futures closed but spot liquidation failed could submit a duplicate futures close and fail to retry spot | Force close | Retry now verifies actual futures exposure first; if already flat, skips duplicate futures close and retries spot liquidation
 
 These changes are static-code remediations with regression tests added. They have not
 been executed in this environment; CI must pass before the branch is approved.
