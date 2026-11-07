@@ -53,7 +53,7 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 
 // SpotOrderBook fetches local spot depth only. Foreign CEX spot access is deliberately rejected.
 func (l *LiveAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
-	if strings.HasPrefix(symbol, MEXC_SPOT) || strings.HasPrefix(symbol, "mexc:") || strings.HasPrefix(symbol, "binance:") || strings.HasPrefix(symbol, "bybit:") {
+	if strings.HasPrefix(symbol, MEXC_SPOT) || strings.HasPrefix(symbol, "mexc:") || strings.HasPrefix(symbol, "binance:") || strings.HasPrefix(symbol, "bybit:") || strings.HasPrefix(symbol, "okx:") {
 		return domain.OrderBook{}, fmt.Errorf("spot market is not allowed for foreign futures venue symbol %q", symbol)
 	}
 	if strings.HasPrefix(symbol, "toko:") {
@@ -200,6 +200,9 @@ func (l *LiveAdapter) fetchMEXCSpotOrderBook(ctx context.Context, symbol string)
 
 // PerpetualOrderBook routes only to the foreign perpetual venue encoded in the market symbol.
 func (l *LiveAdapter) PerpetualOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	if strings.HasPrefix(symbol, "toko:") {
+		return domain.OrderBook{}, fmt.Errorf("local Spot symbol cannot be routed to a foreign perpetual order book")
+	}
 	switch {
 	case isMEXCSymbol(symbol):
 		return l.trackedBookForSymbol("mexc", symbol, func() (domain.OrderBook, error) { return l.fetchMEXCOrderBook(ctx, symbol) })
