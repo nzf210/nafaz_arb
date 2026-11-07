@@ -200,6 +200,11 @@ func (s *Server) finishScan(r domain.ScanResult, complete bool, scanErr error) {
 	if complete && (s.lastSuccessAt.IsZero() || r.CompletedAt.After(s.lastSuccessAt)) {
 		s.lastSuccessAt = r.CompletedAt
 	}
+	if scanErr != nil {
+		log.Printf("scanner scan failed: %v", scanErr)
+	} else if !complete && len(r.Errors) > 0 {
+		log.Printf("scanner scan incomplete: %s", strings.Join(r.Errors, "; "))
+	}
 	if s.activeScans > 0 {
 		s.activeScans--
 	}
@@ -260,6 +265,9 @@ func (s *Server) OperationalStatus() OperationalStatus {
 	}
 	if !s.lastAttemptAt.IsZero() {
 		status.Status = "degraded"
+	}
+	if s.lastScanError != "" {
+		status.LastError = "scan degraded; see server logs"
 	}
 	if !s.lastSuccessAt.IsZero() && !status.Stale && s.lastScanError == "" {
 		status.Status = "healthy"
@@ -324,7 +332,7 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "scan failed", http.StatusInternalServerError)
 		return
 	}
-	write(w, result)
+	write(w, sanitizeScanResult(result))
 }
 func (s *Server) latestScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -332,8 +340,15 @@ func (s *Server) latestScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	write(w, s.latest)
+	latest := s.latest
+	s.mu.RUnlock()
+	write(w, sanitizeScanResult(latest))
+}
+func sanitizeScanResult(result domain.ScanResult) domain.ScanResult {
+	if len(result.Errors) > 0 {
+		result.Errors = []string{"scan completed with errors; see server logs"}
+	}
+	return result
 }
 func (s *Server) opportunityHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
