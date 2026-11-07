@@ -54,6 +54,60 @@ class ExchangeClient:
         """Fetches status of an order on local spot exchange."""
         return await self.local.fetch_order(order_id, symbol)
 
+    async def get_balances(
+        self,
+        local_quote_asset: str = "IDR",
+        global_quote_asset: str = "USDT",
+        usdt_idr_rate: float = 0.0,
+    ) -> Dict[str, Any]:
+        """
+        Fetches normalized available balances for entry sizing and risk checks.
+
+        Local IDR is converted using the live USDT/IDR rate supplied by the
+        scanner snapshot. USDT and USDC are treated as stable quote units for
+        sizing; unsupported quote assets fail closed rather than guessing.
+        """
+        local_quote = str(local_quote_asset or "").upper()
+        global_quote = str(global_quote_asset or "").upper()
+        supported = ("IDR", "USDT", "USDC")
+        if local_quote not in supported or global_quote not in ("USDT", "USDC"):
+            raise ValueError(
+                f"unsupported balance quote conversion: local={local_quote}, global={global_quote}"
+            )
+
+        spot_raw = await self.local.fetch_balance()
+        futures_raw = await self.global_fut.fetch_balance()
+
+        def amount(balance: Dict[str, Any], asset: str, bucket: str) -> float:
+            section = balance.get(bucket)
+            if isinstance(section, dict) and asset in section:
+                return float(section.get(asset) or 0.0)
+            per_asset = balance.get(asset)
+            if isinstance(per_asset, dict):
+                return float(per_asset.get(bucket) or 0.0)
+            return 0.0
+
+        spot_free = amount(spot_raw, local_quote, "free")
+        spot_total = amount(spot_raw, local_quote, "total")
+        if local_quote == "IDR":
+            if usdt_idr_rate <= 0:
+                raise ValueError("live USDT/IDR rate is required to normalize IDR spot balance")
+            spot_free /= usdt_idr_rate
+            spot_total /= usdt_idr_rate
+
+        futures_free = amount(futures_raw, global_quote, "free")
+        futures_total = amount(futures_raw, global_quote, "total")
+
+        return {
+            "spot_available": spot_free,
+            "futures_available": futures_free,
+            "spot_total": spot_total,
+            "futures_total": futures_total,
+            "spot_quote_asset": local_quote,
+            "futures_quote_asset": global_quote,
+            "stablecoin_peg_assumed": local_quote == "USDC" or global_quote == "USDC",
+        }
+
     async def fetch_positions(self, symbol: str) -> list:
         """Fetches open futures positions for a symbol (global exchange).
 
@@ -162,8 +216,13 @@ class PaperTradingExchangeClient:
         self.trades = []
         self.market_prices: Dict[str, Dict[str, float]] = {}
 
-    def get_balances(self) -> Dict[str, float]:
-        """Returns balance breakdown per exchange, including available and locked amounts."""
+    def get_balances(
+        self,
+        local_quote_asset: str = "IDR",
+        global_quote_asset: str = "USDT",
+        usdt_idr_rate: float = 0.0,
+    ) -> Dict[str, float]:
+        """Returns simulated balance breakdown; quote arguments mirror the live client."""
         return {
             "spot_total": round(self.balance_spot, 4),
             "spot_available": round(max(0.0, self.balance_spot - self.locked_spot), 4),
