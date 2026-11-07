@@ -84,6 +84,7 @@ type Config struct {
 	FundingSubsidyFloorPct        float64        `json:"funding_subsidy_floor_pct"`
 	LocalPriceTick                float64        `json:"local_price_tick"`
 	GlobalFuturesExchange         string         `json:"global_futures_exchange"`
+	EnabledSpotExchanges           []string       `json:"enabled_spot_exchanges"`
 	EnableExecutorSignals         bool           `json:"enable_executor_signals"`
 	Telegram                      TelegramConfig `json:"telegram"`
 }
@@ -106,7 +107,7 @@ func Load(path string) (Config, error) {
 }
 
 func (c *Config) setDefaults() {
-	c.Mode = defaultString(c.Mode, "MOCK")
+	c.Mode = defaultString(c.Mode, "LIVE")
 	c.ExecutionMode = defaultString(c.ExecutionMode, "TAKER_TAKER")
 	c.ListenAddr = defaultString(c.ListenAddr, ":8080")
 	c.ScanIntervalSeconds = defaultInt(c.ScanIntervalSeconds, 30)
@@ -136,7 +137,8 @@ func (c *Config) setDefaults() {
 	c.SnipingWindowMinutes = defaultInt(c.SnipingWindowMinutes, 30)
 	c.FundingSubsidyFloorPct = defaultFloat(c.FundingSubsidyFloorPct, 0.08)
 	c.LocalPriceTick = defaultFloat(c.LocalPriceTick, 1.0)
-	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "binance")
+	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "all")
+	if len(c.EnabledSpotExchanges) == 0 { c.EnabledSpotExchanges = []string{"indodax", "tokocrypto"} }
 	c.Redis.Addr = defaultString(c.Redis.Addr, "localhost:6380")
 }
 
@@ -239,6 +241,16 @@ func (c *Config) validate() error {
 	if c.EstimatedHoldingHours < 0 {
 		return fmt.Errorf("estimated_holding_hours cannot be negative")
 	}
+	for _, venue := range c.EnabledSpotExchanges {
+		name := strings.ToLower(strings.TrimSpace(venue))
+		if name != "indodax" && name != "tokocrypto" { return fmt.Errorf("enabled_spot_exchanges only allows indodax and tokocrypto; got %q", venue) }
+	}
+	if target := strings.ToLower(strings.TrimSpace(c.GlobalFuturesExchange)); target != "" && target != "all" {
+		for _, venue := range strings.Split(target, ",") {
+			name := strings.TrimSpace(venue)
+			if name != "mexc" && name != "okx" && name != "binance" && name != "bybit" { return fmt.Errorf("global_futures_exchange only allows mexc, okx, binance, bybit, or all; got %q", venue) }
+		}
+	}
 	if c.MinFundingRate < 0 {
 		return fmt.Errorf("min_funding_rate cannot be negative")
 	}
@@ -288,6 +300,7 @@ func setEnvFloat(target *float64, key string) {
 }
 
 func (c *Config) applyEnvOverrides() {
+	setEnvString(&c.Mode, "NAFAZ_MODE")
 	setEnvString(&c.APIAuthToken, "API_AUTH_TOKEN")
 	setEnvString(&c.ExecutionMode, "EXECUTION_MODE")
 	if v := os.Getenv("ENABLE_ADAPTIVE_SIZING"); v != "" {
@@ -321,6 +334,7 @@ func (c *Config) applyEnvOverrides() {
 	setEnvBool(&c.EnableWebSocketFeed, "ENABLE_WEBSOCKET_FEED")
 	setEnvInt(&c.WebSocketBookMaxAgeSeconds, "WEBSOCKET_BOOK_MAX_AGE_SECONDS")
 	setEnvString(&c.GlobalFuturesExchange, "GLOBAL_FUTURES_EXCHANGE")
+	setEnvSlice(&c.EnabledSpotExchanges, "ENABLED_SPOT_EXCHANGES")
 	setEnvBool(&c.EnableExecutorSignals, "ENABLE_EXECUTOR_SIGNALS")
 	setEnvSlice(&c.ExcludedSymbols, "EXCLUDED_SYMBOLS")
 }

@@ -104,10 +104,20 @@ class EntryMixin:
                 return
             try:
                 live_snapshot = json.loads(live_price_raw)
+                best_bid = float(live_snapshot.get("local_best_bid", 0.0))
+                best_ask = float(live_snapshot.get("local_best_ask", 0.0))
+                pending = self.pending_entry_orders.get(pair_tag) or {}
+                quote_asset = str(pending.get("quote_asset", "IDR") or "IDR").upper()
+                if quote_asset in ("USDT", "USDC"):
+                    fx_rate = float(live_snapshot.get("usdt_idr_rate", 0.0) or 0.0)
+                    if fx_rate <= 0:
+                        return
+                    best_bid *= fx_rate
+                    best_ask *= fx_rate
                 self.client.update_market_price(
                     symbol=local_symbol,
-                    best_bid=float(live_snapshot.get("local_best_bid", 0.0)),
-                    best_ask=float(live_snapshot.get("local_best_ask", 0.0)),
+                    best_bid=best_bid,
+                    best_ask=best_ask,
                 )
             except Exception:
                 pass
@@ -455,6 +465,7 @@ class EntryMixin:
                     global_exchange=order_info["global_exchange"],
                     symbol=order_info["symbol"],
                     entry_price_idr=price_idr,
+                    quote_asset=str(order_info.get("quote_asset", "IDR") or "IDR").upper(),
                     short_entry_usdt=short_entry_usdt,
                     qty=qty,
                     accumulated_funding_usdt=0.0,

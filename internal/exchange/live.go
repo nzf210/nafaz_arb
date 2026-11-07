@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	MEXC_SPOT        = "mexc_spot:"
+	MEXC_SPOT        = "mexc_spot:" // Legacy symbol prefix; MEXC is futures-only.
 	USER_AGENT       = "User-Agent"
 	USER_AGENT_VALUE = "Mozilla/5.0 (compatible; NafazScanner/1.0)"
 )
@@ -24,7 +24,16 @@ type LiveAdapter struct {
 	tokocryptoBaseURL string
 	okxBaseURL        string
 	mexcBaseURL       string
+	binanceBaseURL    string
+	bybitBaseURL      string
+	spotExchangeFilter string
 	mexcSpotBaseURL   string
+
+	// WebSocket endpoints are separate hosts from the REST bases; deriving one
+	// from the other yields 404 (verified against okx and mexc).
+	indodaxWSURL string
+	okxWSURL     string
+	mexcWSURL    string
 
 	mu                 sync.RWMutex
 	contractSizes      map[string]float64
@@ -91,7 +100,12 @@ func NewLiveAdapter() *LiveAdapter {
 		tokocryptoBaseURL: "https://www.tokocrypto.com",
 		okxBaseURL:        "https://www.okx.com",
 		mexcBaseURL:       "https://contract.mexc.com",
+		binanceBaseURL:    "https://fapi.binance.com",
+		bybitBaseURL:      "https://api.bybit.com",
 		mexcSpotBaseURL:   "https://api.mexc.com",
+		indodaxWSURL:      "https://indodax.com",
+		okxWSURL:          "https://ws.okx.com:8443",
+		mexcWSURL:         "https://wbs.mexc.com",
 		contractSizes:     make(map[string]float64),
 	}
 }
@@ -114,6 +128,12 @@ func (l *LiveAdapter) SetBaseURLs(urls ...string) {
 	}
 	if len(urls) > 4 && urls[4] != "" {
 		l.tokocryptoBaseURL = urls[4]
+	}
+	if len(urls) > 5 && urls[5] != "" {
+		l.binanceBaseURL = urls[5]
+	}
+	if len(urls) > 6 && urls[6] != "" {
+		l.bybitBaseURL = urls[6]
 	}
 }
 
@@ -217,9 +237,9 @@ func (l *LiveAdapter) EnableWebSocketFeed(ctx context.Context, maxAge time.Durat
 	l.mu.Unlock()
 
 	client := NewWSClient(l.wsCache, nil,
-		indodaxDepthStream(l.indodaxBaseURL),
-		okxBookStream(l.okxBaseURL),
-		mexcSpotDepthStream(l.mexcSpotBaseURL),
+		indodaxDepthStream(l.indodaxWSURL),
+		okxBookStream(l.okxWSURL),
+		mexcSpotDepthStream(l.mexcWSURL),
 	)
 	l.mu.Lock()
 	l.wsClient = client
@@ -265,7 +285,7 @@ func (l *LiveAdapter) LastBookUpdate(exchange, symbol string) time.Time {
 	return cache.LastBookUpdate(exchange, symbol)
 }
 
-// SetTargetPerpExchange filters which perpetual exchange(s) to scan (e.g. "okx", "mexc", or "" for all).
+// SetTargetPerpExchange filters perpetual venues. Accepts a comma-separated allowlist or "all".
 func (l *LiveAdapter) SetTargetPerpExchange(ex string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -283,4 +303,26 @@ func (l *LiveAdapter) Close() {
 		l.wsClient.Stop()
 		l.wsClient = nil
 	}
+}
+
+
+// SetEnabledSpotExchanges restricts local spot discovery to Indodax and Tokocrypto.
+// Unknown names and foreign venues are ignored by the market discovery methods.
+func (l *LiveAdapter) SetEnabledSpotExchanges(exchanges []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.spotExchangeFilter = strings.ToLower(strings.Join(exchanges, ","))
+}
+
+func exchangeInFilter(filter, name string) bool {
+	filter = strings.TrimSpace(strings.ToLower(filter))
+	if filter == "" || filter == "all" {
+		return true
+	}
+	for _, item := range strings.Split(filter, ",") {
+		if strings.TrimSpace(item) == name {
+			return true
+		}
+	}
+	return false
 }

@@ -382,3 +382,38 @@ async def test_balance_feed_failure_halts_new_entries(engine, fake_redis):
     assert "indodax" in engine._exchange_halted
     assert "binance" in engine._exchange_halted
     assert "balance feed unavailable" in engine._exchange_halted["indodax"]
+
+
+@pytest.mark.asyncio
+async def test_risk_event_is_published_for_telegram():
+    client = MockExchangeClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True),
+        client=client,
+        redis_client=None,
+    )
+
+    class RecordingRedis:
+        def __init__(self):
+            self.messages = []
+
+        async def publish(self, channel, payload):
+            self.messages.append((channel, payload))
+            return 1
+
+    recorder = RecordingRedis()
+    engine.redis = recorder
+    await engine._publish_risk_event(
+        "INSUFFICIENT_BALANCE",
+        "indodax:btc_idr",
+        None,
+        "spot balance below minimum",
+    )
+
+    assert len(recorder.messages) == 1
+    channel, payload = recorder.messages[0]
+    event = json.loads(payload)
+    assert channel == "arb:trade_events"
+    assert event["event"] == "INSUFFICIENT_BALANCE"
+    assert event["pair_key"] == "indodax:btc_idr"
+    assert event["reason"] == "spot balance below minimum"

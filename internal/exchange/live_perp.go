@@ -45,7 +45,7 @@ func (l *LiveAdapter) getCachedOKXPerp() ([]domain.Market, bool) {
 }
 
 func (l *LiveAdapter) processOKXInstrument(inst okxInstrumentData) (domain.Market, bool) {
-	if inst.State != "live" || inst.InstID == "" {
+	if inst.State != "live" || inst.InstID == "" || (strings.ToUpper(inst.SettleCcy) != "USDT" && strings.ToUpper(inst.SettleCcy) != "USDC") {
 		return domain.Market{}, false
 	}
 
@@ -64,7 +64,7 @@ func (l *LiveAdapter) processOKXInstrument(inst okxInstrumentData) (domain.Marke
 
 	return domain.Market{
 		Exchange:     "okx",
-		Symbol:       inst.InstID,
+		Symbol:       "okx:" + inst.InstID,
 		BaseAsset:    strings.ToUpper(baseAsset),
 		QuoteAsset:   strings.ToUpper(inst.SettleCcy),
 		MarketType:   "PERPETUAL",
@@ -76,40 +76,29 @@ func (l *LiveAdapter) processOKXInstrument(inst okxInstrumentData) (domain.Marke
 	}, true
 }
 
-// PerpetualMarkets discovers active perpetual SWAP instruments on OKX and MEXC, respecting targetPerpExchange filter if set.
+// PerpetualMarkets discovers active linear perpetual contracts from the enabled
+// foreign venues only: MEXC, OKX, Binance USD-M and Bybit linear.
 func (l *LiveAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, error) {
 	var allMarkets []domain.Market
-
 	l.mu.RLock()
 	targetEx := l.targetPerpExchange
 	l.mu.RUnlock()
-
-	includeOKX := targetEx == "" || targetEx == "okx" || targetEx == "all"
-	includeMEXC := targetEx == "" || targetEx == "mexc" || targetEx == "all"
-
 	var errs []string
-	if includeOKX {
-		okxMarkets, err := l.fetchOKXPerpetualMarkets(ctx)
-		if err == nil {
-			allMarkets = append(allMarkets, okxMarkets...)
-		} else {
-			errs = append(errs, fmt.Sprintf("okx: %v", err))
-		}
+	fetchers := []struct{name string; fetch func(context.Context) ([]domain.Market,error)}{
+		{"okx", l.fetchOKXPerpetualMarkets},
+		{"mexc", l.fetchMEXCPerpetualMarkets},
+		{"binance", l.fetchBinancePerpetualMarkets},
+		{"bybit", l.fetchBybitPerpetualMarkets},
 	}
-
-	if includeMEXC {
-		mexcMarkets, err := l.fetchMEXCPerpetualMarkets(ctx)
-		if err == nil {
-			allMarkets = append(allMarkets, mexcMarkets...)
-		} else {
-			errs = append(errs, fmt.Sprintf("mexc: %v", err))
-		}
+	for _, venue := range fetchers {
+		if !exchangeInFilter(targetEx, venue.name) { continue }
+		markets, err := venue.fetch(ctx)
+		if err != nil { errs = append(errs, fmt.Sprintf("%s: %v", venue.name, err)); continue }
+		allMarkets = append(allMarkets, markets...)
 	}
-
 	if len(allMarkets) == 0 {
-		return nil, fmt.Errorf("failed to discover perpetual markets (target: %s, errors: %s)", targetEx, strings.Join(errs, "; "))
+		return nil, fmt.Errorf("failed to discover enabled perpetual markets (target: %s, errors: %s)", targetEx, strings.Join(errs, "; "))
 	}
-
 	return allMarkets, nil
 }
 
@@ -220,7 +209,7 @@ func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.M
 	defer l.mu.Unlock()
 
 	for _, c := range mexcResp.Data {
-		if c.State != 0 || c.Symbol == "" {
+		if c.State != 0 || c.Symbol == "" || (strings.ToUpper(c.QuoteCoin) != "USDT" && strings.ToUpper(c.QuoteCoin) != "USDC") {
 			continue
 		}
 

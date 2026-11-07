@@ -50,7 +50,7 @@ class MockExchangeClient:
     async def fetch_funding_rate(self, symbol: str):
         return dict(self.funding_rate_data)
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None):
+    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None, usdt_idr_rate: float = 0.0):
         self.order_counter += 1
         order_id = str(self.order_counter)
         order = {
@@ -69,7 +69,7 @@ class MockExchangeClient:
         self.placed_buys.append(order)
         return order
 
-    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id=None):
+    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id=None, usdt_idr_rate: float = 0.0):
         self.order_counter += 1
         order_id = str(self.order_counter)
         order = {
@@ -336,7 +336,7 @@ class SlowLimitBuyClient(MockExchangeClient):
         super().__init__()
         self.entry_orders = 0
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None):
+    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None, usdt_idr_rate: float = 0.0):
         self.entry_orders += 1
         await asyncio.sleep(0.05)
         return await super().place_local_limit_buy(symbol, amount, price)

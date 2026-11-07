@@ -2,7 +2,7 @@
 
 Starter Go project for the **read-only** Scanner described in the PRD: discover/match spot and perpetual markets, estimate a buy-spot/short-perpetual opportunity, apply a configurable net-ROI range, and record opportunity counts and observed duration.
 
-> This is a development scaffold, not production trading software. It does not place, cancel, or close orders. Supports both `MOCK` mode and `LIVE` mode (Spot: Tokocrypto, Indodax, MEXC; Perpetual: OKX, MEXC read-only market data). Do not grant trading or withdrawal permissions.
+> This is a development scaffold, not production-ready trading software. The exchange roles are strict: **local Spot only: Indodax and Tokocrypto; foreign linear Perpetual/Futures only: MEXC, OKX, Binance, and Bybit.** Foreign CEX Spot markets are never used. The Go scanner uses public market data; the Python executor uses separate authenticated CCXT clients for each configured venue. Do not grant withdrawal permissions.
 
 ## Requirements
 
@@ -287,7 +287,7 @@ the configured JSON file. Do not assume Supabase is receiving live orders or tra
 until the persistence adapter and its idempotent retry/outbox tests are merged.
 
 
-For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.
+For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. `NAFAZ_MODE` overrides `config.json`'s `mode` when set in the environment, so a deployment can force `MOCK` without editing the mounted config file. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.
 
 The executor remains in paper mode by default (`EXECUTOR_MOCK_MODE=true`). Do not set
 `EXECUTOR_MOCK_MODE=false` until the scanner's `mode`, exchange credentials,

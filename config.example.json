@@ -10,7 +10,8 @@
     "sniping_window_minutes": 30,
     "funding_subsidy_floor_pct": 0.08,
     "local_price_tick": 1.0,
-    "global_futures_exchange": "okx",
+    "global_futures_exchange": "all",
+    "enabled_spot_exchanges": ["indodax", "tokocrypto"],
     "redis": {
         "enabled": false,
         "addr": "localhost:6380",
@@ -87,12 +88,9 @@
                 "defaultType": "swap"
             }
         },
+        "binance": { "api_key": "", "api_secret": "", "testnet": false },
+        "bybit": { "api_key": "", "api_secret": "", "testnet": false },
         "mexc": {
-            "api_key": "",
-            "api_secret": "",
-            "testnet": false
-        },
-        "bybit": {
             "api_key": "",
             "api_secret": "",
             "testnet": false
@@ -102,5 +100,8 @@
         "enabled": false,
         "url": "",
         "key": ""
+    },
+    "executor": {
+        "mock_mode": true
     }
 }

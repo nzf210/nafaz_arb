@@ -26,6 +26,7 @@ func main(){
 		live := exchange.NewLiveAdapter()
 		if cfg.GlobalFuturesExchange != "" {
 			live.SetTargetPerpExchange(cfg.GlobalFuturesExchange)
+		live.SetEnabledSpotExchanges(cfg.EnabledSpotExchanges)
 		}
 		live.SetHealthPolicy(exchange.HealthPolicy{
 			Window:             time.Duration(cfg.ExchangeErrorWindowSeconds) * time.Second,
@@ -37,9 +38,11 @@ func main(){
 		}
 		adapter = live
 	case "MOCK":
+		// Test fixture only: MockAdapter serves hardcoded BTC/ETH books. The
+		// scanner has no paper mode; run it with LIVE in any real deployment.
 		adapter = exchange.NewMockAdapter()
 	default:
-		log.Fatalf("invalid mode %q: must be MOCK or LIVE", cfg.Mode)
+		log.Fatalf("invalid mode %q: must be LIVE or MOCK (fixture)", cfg.Mode)
 	}
 	svc:=scanner.New(cfg,adapter)
 

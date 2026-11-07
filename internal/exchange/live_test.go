@@ -61,8 +61,13 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpotMarkets: %v", err)
 	}
-	if len(markets) != 6 {
-		t.Fatalf("expected 6 spot markets (2 toko + 2 indodax + 2 mexc), got %d", len(markets))
+	if len(markets) != 4 {
+		t.Fatalf("expected 4 local spot markets (2 Tokocrypto + 2 Indodax), got %d", len(markets))
+	}
+	for _, market := range markets {
+		if market.Exchange != "indodax" && market.Exchange != "tokocrypto" {
+			t.Fatalf("foreign exchange %q leaked into local spot discovery", market.Exchange)
+		}
 	}
 }
 
@@ -177,7 +182,8 @@ func TestLiveAdapterPerpetualMarketsAndDepth(t *testing.T) {
 	adapter := NewLiveAdapter()
 	adapter.SetBaseURLs("", okxServer.URL, mexcServer.URL)
 
-	// Fetch instruments from both OKX and MEXC
+	// Fetch instruments from the selected OKX and MEXC perpetual venues.
+	adapter.SetTargetPerpExchange("okx,mexc")
 	perps, err := adapter.PerpetualMarkets(context.Background())
 	if err != nil {
 		t.Fatalf("PerpetualMarkets: %v", err)
@@ -187,7 +193,7 @@ func TestLiveAdapterPerpetualMarketsAndDepth(t *testing.T) {
 	}
 
 	// OKX Order book (100 * 0.01 = 1.0 BTC)
-	okxBook, err := adapter.PerpetualOrderBook(context.Background(), "BTC-USDT-SWAP")
+	okxBook, err := adapter.PerpetualOrderBook(context.Background(), "okx:BTC-USDT-SWAP")
 	if err != nil {
 		t.Fatalf("OKX PerpetualOrderBook: %v", err)
 	}
@@ -205,7 +211,7 @@ func TestLiveAdapterPerpetualMarketsAndDepth(t *testing.T) {
 	}
 
 	// OKX Funding rate
-	okxFR, err := adapter.FundingRate(context.Background(), "BTC-USDT-SWAP")
+	okxFR, err := adapter.FundingRate(context.Background(), "okx:BTC-USDT-SWAP")
 	if err != nil {
 		t.Fatalf("OKX FundingRate: %v", err)
 	}
@@ -287,13 +293,9 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 		t.Errorf("unexpected indodax bids: %+v", ibook.Bids)
 	}
 
-	// MEXC spot depth
-	mbook, err := adapter.SpotOrderBook(context.Background(), "mexc_spot:BTCUSDT")
-	if err != nil {
-		t.Fatalf("SpotOrderBook mexc: %v", err)
-	}
-	if len(mbook.Bids) != 1 || mbook.Bids[0].Price != 60050 || mbook.Bids[0].Quantity != 1.5 {
-		t.Errorf("unexpected mexc spot bids: %+v", mbook.Bids)
+	// Foreign CEX must never be routed through the spot order-book interface.
+	if _, err := adapter.SpotOrderBook(context.Background(), "mexc_spot:BTCUSDT"); err == nil {
+		t.Fatal("expected MEXC spot order book to be rejected")
 	}
 }
 
@@ -310,5 +312,61 @@ func TestMatchMarketsMultiplePerpExchanges(t *testing.T) {
 	pairs := MatchMarkets(spot, perp, []string{"USDT"})
 	if len(pairs) != 4 {
 		t.Fatalf("expected 4 matched pairs (2 spot * 2 perp), got %d", len(pairs))
+	}
+}
+
+
+func TestBinanceAndBybitPerpetualMarketsBooksAndFunding(t *testing.T) {
+	binance := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/fapi/v1/exchangeInfo":
+			w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"}]}]}`))
+		case "/fapi/v1/depth":
+			w.Write([]byte(`{"bids":[["60000","2"]],"asks":[["60010","3"]],"E":1690000000000}`))
+		case "/fapi/v1/premiumIndex":
+			w.Write([]byte(`{"lastFundingRate":"0.0002","nextFundingTime":1690028800000,"time":1690000000000}`))
+		default: http.NotFound(w,r)
+		}
+	}))
+	defer binance.Close()
+
+	bybit := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v5/market/instruments-info":
+			w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"nextPageCursor":"","list":[{"symbol":"ETHUSDT","contractType":"LinearPerpetual","status":"Trading","baseCoin":"ETH","quoteCoin":"USDT","settleCoin":"USDT","priceFilter":{"tickSize":"0.01"},"lotSizeFilter":{"qtyStep":"0.01","minOrderQty":"0.01"}}]}}`))
+		case "/v5/market/orderbook":
+			w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"b":[["3000","4"]],"a":[["3001","5"]],"ts":1690000000000}}`))
+		case "/v5/market/tickers":
+			w.Write([]byte(`{"retCode":0,"retMsg":"OK","result":{"list":[{"fundingRate":"0.0003","nextFundingTime":"1690028800000","fundingIntervalHour":"8"}]}}`))
+		default: http.NotFound(w,r)
+		}
+	}))
+	defer bybit.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", "", "", "", "", binance.URL, bybit.URL)
+	adapter.SetTargetPerpExchange("binance,bybit")
+	markets, err := adapter.PerpetualMarkets(context.Background())
+	if err != nil { t.Fatalf("PerpetualMarkets: %v",err) }
+	if len(markets) != 2 { t.Fatalf("markets=%d, want 2",len(markets)) }
+	if markets[0].MarketType != "PERPETUAL" || markets[1].MarketType != "PERPETUAL" { t.Fatalf("non-perpetual market returned: %+v",markets) }
+
+	bb, err := adapter.PerpetualOrderBook(context.Background(), "binance:BTCUSDT")
+	if err != nil || len(bb.Bids)!=1 || bb.Bids[0].Quantity!=2 { t.Fatalf("Binance order book: %+v, %v",bb,err) }
+	bf, err := adapter.FundingRate(context.Background(), "binance:BTCUSDT")
+	if err != nil || bf.Rate!=0.0002 { t.Fatalf("Binance funding: %+v, %v",bf,err) }
+
+	yb, err := adapter.PerpetualOrderBook(context.Background(), "bybit:ETHUSDT")
+	if err != nil || len(yb.Bids)!=1 || yb.Bids[0].Quantity!=4 { t.Fatalf("Bybit order book: %+v, %v",yb,err) }
+	yf, err := adapter.FundingRate(context.Background(), "bybit:ETHUSDT")
+	if err != nil || yf.Rate!=0.0003 { t.Fatalf("Bybit funding: %+v, %v",yf,err) }
+
+	if _, err := adapter.PerpetualOrderBook(context.Background(), "BTCUSDT"); err == nil {
+		t.Fatal("unknown Futures symbol prefix must fail closed")
+	}
+	if _, err := adapter.FundingRate(context.Background(), "BTCUSDT"); err == nil {
+		t.Fatal("unknown funding symbol prefix must fail closed")
 	}
 }

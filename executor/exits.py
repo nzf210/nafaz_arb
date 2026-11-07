@@ -261,6 +261,7 @@ class ExitMixin:
             limit_sell_idr: float,
             tick_size: float,
             global_ask_usdt: float,
+            usdt_idr_rate: float,
         ) -> None:
             try:
                 order = await self.client.place_local_limit_sell(
@@ -268,6 +269,7 @@ class ExitMixin:
                     pos.qty,
                     limit_sell_idr,
                     client_order_id=build_client_order_id(pair_tag, "exit", self._next_order_seq()),
+                    usdt_idr_rate=usdt_idr_rate,
                 )
                 order_id = str(order.get("id", ""))
                 self.pending_exit_orders[pair_tag] = {
@@ -308,6 +310,11 @@ class ExitMixin:
                     if not helpers.snapshot_is_stale(live_snapshot):
                         local_best_bid = float(live_snapshot.get("local_best_bid", pos.entry_price_idr))
                         local_best_ask = float(live_snapshot.get("local_best_ask", 0.0))
+                        if str(getattr(pos, "quote_asset", "IDR")).upper() in ("USDT", "USDC"):
+                            # Scanner snapshots retain venue-native quote values;
+                            # convert to the engine's IDR basis for PnL and paper fills.
+                            local_best_bid *= usdt_idr_rate
+                            local_best_ask *= usdt_idr_rate
                     if hasattr(self.client, "update_market_price"):
                         self.client.update_market_price(pos.symbol, local_best_bid, local_best_ask)
                 except Exception:
@@ -355,7 +362,7 @@ class ExitMixin:
             )
             await self._cancel_existing_exit_order(pair_tag, pos.symbol)
             await self._place_dynamic_limit_sell(
-                pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt
+                pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt, usdt_idr_rate
             )
 
         async def _check_dynamic_exits(self):

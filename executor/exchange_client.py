@@ -25,41 +25,194 @@ class ExchangeClient:
     3. No transfer/deposit/withdraw features.
     """
 
-    def __init__(self, local_exchange: Any, global_exchange: Any):
+    LOCAL_VENUES = {"indodax", "tokocrypto"}
+    GLOBAL_VENUES = {"mexc", "okx", "binance", "bybit"}
+
+    def __init__(self, local_exchange: Any, global_exchange: Any,
+                 local_exchanges: Optional[Dict[str, Any]] = None,
+                 global_exchanges: Optional[Dict[str, Any]] = None,
+                 local_default_name: str = "indodax",
+                 global_default_name: str = "okx"):
         self.local = local_exchange
         self.global_fut = global_exchange
+        self.local_default_name = local_default_name.lower()
+        self.global_default_name = global_default_name.lower()
+        self.local_exchanges = dict(local_exchanges or {})
+        self.global_exchanges = dict(global_exchanges or {})
+        self.local_exchanges.setdefault(self.local_default_name, local_exchange)
+        self.global_exchanges.setdefault(self.global_default_name, global_exchange)
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    def _local_for(self, symbol: str, exchange_name: Optional[str] = None) -> Any:
+        if any(str(symbol).startswith(prefix) for prefix in ("mexc:", "mexc_spot:", "okx:", "binance:", "bybit:")):
+            raise ValueError("foreign Futures symbol cannot be routed to a local Spot client")
+        name = (exchange_name or ("tokocrypto" if str(symbol).startswith("toko:") else self.local_default_name)).lower()
+        if name not in self.LOCAL_VENUES:
+            raise ValueError(f"{name} is not an allowed local Spot venue")
+        client = self.local_exchanges.get(name)
+        if client is None:
+            raise RuntimeError(f"local Spot exchange {name} is not configured/enabled")
+        return client
+
+    def _global_for(self, symbol: str, exchange_name: Optional[str] = None) -> Any:
+        raw = str(symbol)
+        if raw.startswith("toko:"):
+            raise ValueError("local Spot symbol cannot be routed to a foreign Futures client")
+        inferred = next((name for name in ("mexc", "binance", "bybit", "okx") if raw.startswith(name + ":")), None)
+        if inferred is None and ":" in raw:
+            prefix = raw.split(":", 1)[0].lower()
+            # Preserve legacy CCXT unified symbols such as BTC/USDT:USDT, but
+            # never let a local/unknown exchange-prefixed symbol reach Futures.
+            if prefix in self.LOCAL_VENUES or ("/" not in prefix and prefix not in self.GLOBAL_VENUES):
+                raise ValueError(f"unknown or local symbol cannot be routed to foreign Futures: {raw!r}")
+        name = (exchange_name or inferred or self.global_default_name).lower()
+        if name not in self.GLOBAL_VENUES:
+            raise ValueError(f"{name} is not an allowed foreign Futures venue")
+        client = self.global_exchanges.get(name)
+        if client is None:
+            raise RuntimeError(f"foreign Futures exchange {name} is not configured/enabled")
+        return client
+
+    async def _resolve_symbol(self, client: Any, symbol: str) -> str:
+        raw = str(symbol)
+        for prefix in ("toko:", "mexc:", "binance:", "bybit:", "okx:"):
+            if raw.startswith(prefix):
+                raw = raw[len(prefix):]
+                break
+        loader = getattr(client, "load_markets", None)
+        if callable(loader):
+            await loader()
+            by_id = getattr(client, "markets_by_id", {}) or {}
+            market = by_id.get(raw) or by_id.get(raw.upper()) or by_id.get(raw.lower())
+            if market is None:
+                compact = raw.replace("/", "").replace("-", "").replace("_", "").upper()
+                for market_id, candidate in by_id.items():
+                    if str(market_id).replace("/", "").replace("-", "").replace("_", "").upper() == compact:
+                        market = candidate
+                        break
+            if isinstance(market, list):
+                market = market[0] if market else None
+            if isinstance(market, dict) and market.get("symbol"):
+                return str(market["symbol"])
+            markets = getattr(client, "markets", {}) or {}
+            if raw in markets:
+                return raw
+            raise ValueError(f"exchange {getattr(client, 'id', 'unknown')} has no CCXT market for exchange symbol {raw}")
+        return raw
+
+    def _contract_size(self, client: Any, market_symbol: str) -> float:
+        """Return CCXT contractSize; all engine quantities are expressed in base units."""
+        market = None
+        getter = getattr(client, "market", None)
+        if callable(getter):
+            try:
+                market = getter(market_symbol)
+            except Exception:
+                market = None
+        if not isinstance(market, dict):
+            market = (getattr(client, "markets", {}) or {}).get(market_symbol)
+        if not isinstance(market, dict):
+            raise ValueError(f"missing futures market metadata for {market_symbol}")
+        if market.get("contract") is False:
+            raise ValueError(f"market {market_symbol} is not a contract market")
+        size = float(market.get("contractSize") or 0.0)
+        if not math.isfinite(size) or size <= 0:
+            raise ValueError(f"invalid contractSize for {market_symbol}: {size}")
+        return size
+
+    async def _to_contract_amount(self, client: Any, market_symbol: str, base_amount: float) -> tuple[float, float]:
+        if not math.isfinite(float(base_amount)) or base_amount <= 0:
+            raise ValueError(f"invalid base quantity: {base_amount}")
+        contract_size = self._contract_size(client, market_symbol)
+        contracts = float(base_amount) / contract_size
+        precision = getattr(client, "amount_to_precision", None)
+        if callable(precision):
+            contracts = float(precision(market_symbol, contracts))
+        if not math.isfinite(contracts) or contracts <= 0:
+            raise ValueError(f"base quantity {base_amount} rounds below minimum contract quantity")
+        return contracts, contract_size
+
+    @staticmethod
+    def _normalize_contract_order(order: Dict[str, Any], contract_size: float) -> Dict[str, Any]:
+        """Expose CCXT contract fills to the engine in base-asset units."""
+        if not isinstance(order, dict):
+            raise ValueError("futures order response is not an object")
+        normalized = dict(order)
+        for field in ("amount", "filled", "remaining"):
+            value = normalized.get(field)
+            if value is not None:
+                normalized[field + "_contracts"] = value
+                normalized[field] = float(value or 0.0) * contract_size
+        normalized["contract_size"] = contract_size
+        return normalized
+
+    def _local_price_from_idr(self, client: Any, market_symbol: str, price_idr: float, usdt_idr_rate: float) -> float:
+        """Convert the engine's IDR-normalized price into the venue's quote currency."""
+        market = None
+        getter = getattr(client, "market", None)
+        if callable(getter):
+            try:
+                market = getter(market_symbol)
+            except Exception:
+                market = None
+        if not isinstance(market, dict):
+            market = (getattr(client, "markets", {}) or {}).get(market_symbol)
+        if not isinstance(market, dict):
+            raise ValueError(f"missing local market metadata for {market_symbol}")
+        quote = str(market.get("quote") or "").upper()
+        if quote in ("IDR", "BIDR"):
+            return float(price_idr)
+        if quote in ("USDT", "USDC"):
+            if not math.isfinite(float(usdt_idr_rate)) or usdt_idr_rate <= 0:
+                raise ValueError("live USDT/IDR rate is required to price a stablecoin-quoted local Spot order")
+            # USDC is valued at the USDT peg for conversion; scanner exposes this assumption.
+            return float(price_idr) / float(usdt_idr_rate)
+        raise ValueError(f"unsupported local Spot quote currency {quote!r} for {market_symbol}")
+
+    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None, usdt_idr_rate: float = 0.0) -> Dict[str, Any]:
         """Places a Maker Limit Buy on local spot exchange."""
         if amount <= 0 or price <= 0:
             raise ValueError(f"invalid buy params: amount={amount}, price={price}")
-        return await self.local.create_limit_buy_order(symbol, amount, price, *_client_order_params(client_order_id))
+        client = self._local_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        local_price = self._local_price_from_idr(client, market_symbol, price, usdt_idr_rate)
+        return await client.create_limit_buy_order(market_symbol, amount, local_price, *_client_order_params(client_order_id))
 
-    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None, usdt_idr_rate: float = 0.0) -> Dict[str, Any]:
         """Places a Maker Limit Sell on local spot exchange."""
         if amount <= 0 or price <= 0:
             raise ValueError(f"invalid sell params: amount={amount}, price={price}")
-        return await self.local.create_limit_sell_order(symbol, amount, price, *_client_order_params(client_order_id))
+        client = self._local_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        local_price = self._local_price_from_idr(client, market_symbol, price, usdt_idr_rate)
+        return await client.create_limit_sell_order(market_symbol, amount, local_price, *_client_order_params(client_order_id))
 
     async def cancel_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Cancels an existing order on local spot exchange."""
-        return await self.local.cancel_order(order_id, symbol)
+        client = self._local_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        return await client.cancel_order(order_id, market_symbol)
 
     async def place_local_market_sell(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """Taker market sell on local spot. Used only for emergency de-risking."""
         if amount <= 0:
             raise ValueError(f"invalid market sell amount: {amount}")
-        return await self.local.create_market_sell_order(symbol, amount, *_client_order_params(client_order_id))
+        client = self._local_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        return await client.create_market_sell_order(market_symbol, amount, *_client_order_params(client_order_id))
 
     async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Fetches status of an order on local spot exchange."""
-        return await self.local.fetch_order(order_id, symbol)
+        client = self._local_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        return await client.fetch_order(order_id, market_symbol)
 
     async def get_balances(
         self,
         local_quote_asset: str = "IDR",
         global_quote_asset: str = "USDT",
         usdt_idr_rate: float = 0.0,
+        local_exchange: Optional[str] = None,
+        global_exchange: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Fetches normalized available balances for entry sizing and risk checks.
@@ -76,8 +229,10 @@ class ExchangeClient:
                 f"unsupported balance quote conversion: local={local_quote}, global={global_quote}"
             )
 
-        spot_raw = await self.local.fetch_balance()
-        futures_raw = await self.global_fut.fetch_balance()
+        local_client = self._local_for("", local_exchange)
+        global_client = self._global_for("", global_exchange)
+        spot_raw = await local_client.fetch_balance()
+        futures_raw = await global_client.fetch_balance()
 
         def amount(balance: Dict[str, Any], asset: str, bucket: str) -> float:
             section = balance.get(bucket)
@@ -124,10 +279,14 @@ class ExchangeClient:
         A malformed position response must never be converted into an empty list:
         callers use an empty list as proof that the futures leg is flat.
         """
+        client = self._global_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
         try:
-            positions = await self.global_fut.fetch_positions([symbol])
+            positions = await client.fetch_positions([market_symbol])
         except (TypeError, AttributeError):
-            positions = await self.global_fut.fetch_positions()
+            # Some CCXT adapters do not accept a symbols argument. Fetch all,
+            # then filter below; routing and symbol resolution still must succeed.
+            positions = await client.fetch_positions()
 
         if positions is None or not isinstance(positions, (list, tuple)):
             raise ValueError("exchange returned an invalid futures positions payload")
@@ -140,7 +299,7 @@ class ExchangeClient:
             # BTC/USDT:USDT depending on venue/version.
             return value.split(":")[0].replace("/", "").replace("-", "").replace("_", "").upper()
 
-        target_symbol = normalize_symbol(symbol)
+        target_symbol = normalize_symbol(market_symbol)
         matched = []
         for position in positions:
             if not isinstance(position, dict):
@@ -154,15 +313,27 @@ class ExchangeClient:
                 matched.append(position)
         return matched
 
-    async def open_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def open_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None, price: Optional[float] = None) -> Dict[str, Any]:
         """
         Executes an instant Short 1x Market Hedge on Global Futures.
+        ``price`` is an optional reference quote supplied by the engine; the
+        order remains a market order and the venue-reported fill is authoritative.
         STRICT: Only executes Market SELL. Never buy/long to open.
         """
         if amount <= 0:
             raise ValueError(f"invalid short amount: {amount}")
-        # Market Sell on Futures opens a Short position
-        return await self.global_fut.create_market_sell_order(symbol, amount, *_client_order_params(client_order_id))
+        # Scanner and executor quantities are base-asset units; CCXT derivatives
+        # generally expect a number of contracts. Convert and normalize fills.
+        client = self._global_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        leverage_setter = getattr(client, "set_leverage", None)
+        if not callable(leverage_setter):
+            raise RuntimeError(f"{getattr(client, 'id', 'futures venue')} cannot set/verify 1x leverage")
+        # Keep the futures leg at 1x; if the exchange rejects this setting, do not open the hedge.
+        await leverage_setter(1, market_symbol)
+        contracts, contract_size = await self._to_contract_amount(client, market_symbol, amount)
+        order = await client.create_market_sell_order(market_symbol, contracts, *_client_order_params(client_order_id))
+        return self._normalize_contract_order(order, contract_size)
 
     async def close_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -174,38 +345,49 @@ class ExchangeClient:
         params = {"reduceOnly": True}
         if client_order_id:
             params["clientOrderId"] = client_order_id
-        return await self.global_fut.create_market_buy_order(symbol, amount, params)
+        client = self._global_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        contracts, contract_size = await self._to_contract_amount(client, market_symbol, amount)
+        order = await client.create_market_buy_order(market_symbol, contracts, params)
+        return self._normalize_contract_order(order, contract_size)
 
     async def fetch_funding_history(
         self, symbol: str, since: Optional[int] = None, limit: int = 100
     ) -> list:
         """Fetches actual settled funding payments for a perpetual contract."""
-        fetcher = getattr(self.global_fut, "fetch_funding_history", None)
+        client = self._global_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        fetcher = getattr(client, "fetch_funding_history", None)
         if fetcher is None:
             raise NotImplementedError(
                 f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_history"
             )
-        return await fetcher(symbol, since, limit)
+        return await fetcher(market_symbol, since, limit)
 
     async def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
         """Fetches current funding rate and the venue's next settlement timestamp."""
-        fetcher = getattr(self.global_fut, "fetch_funding_rate", None)
+        client = self._global_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        fetcher = getattr(client, "fetch_funding_rate", None)
         if fetcher is None:
             raise NotImplementedError(
                 f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_rate"
             )
-        return await fetcher(symbol)
+        return await fetcher(market_symbol)
 
     async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetches ticker from global futures exchange."""
-        return await self.global_fut.fetch_ticker(symbol)
+        client = self._global_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
+        return await client.fetch_ticker(market_symbol)
 
     async def close(self):
         """Closes exchange connections."""
-        if self.local and hasattr(self.local, "close"):
-            await self.local.close()
-        if self.global_fut and hasattr(self.global_fut, "close"):
-            await self.global_fut.close()
+        closed = set()
+        for client in list(self.local_exchanges.values()) + list(self.global_exchanges.values()):
+            if client is not None and id(client) not in closed and hasattr(client, "close"):
+                closed.add(id(client))
+                await client.close()
 
 
 class PaperTradingExchangeClient:
@@ -299,7 +481,7 @@ class PaperTradingExchangeClient:
             "updated_at": time.time(),
         }
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None, usdt_idr_rate: float = 0.0) -> Dict[str, Any]:
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
             if existing is not None:
@@ -324,7 +506,7 @@ class PaperTradingExchangeClient:
         self.orders[oid] = order
         return order
 
-    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None, usdt_idr_rate: float = 0.0) -> Dict[str, Any]:
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
             if existing is not None:
@@ -530,6 +712,7 @@ def create_exchange_client(config: Any) -> Any:
         global_name=config.global_exchange_name,
         local_creds=config.local_credentials,
         global_creds=config.global_credentials,
+        exchanges=getattr(config, "exchanges", {}),
     )
 
 
@@ -553,8 +736,55 @@ def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot
         instance.set_sandbox_mode(True)
     return instance
 
-def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds) -> ExchangeClient:
-    """Factory creating CCXT async instances."""
-    local_ex = init_ccxt_exchange(local_name, local_creds, default_type="spot")
-    global_ex = init_ccxt_exchange(global_name, global_creds, default_type="future")
-    return ExchangeClient(local_ex, global_ex)
+def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds, exchanges=None) -> ExchangeClient:
+    """Build role-separated CCXT clients; local venues can only be Spot and foreign venues only Perpetual."""
+    local_name = str(local_name or "indodax").lower()
+    global_name = str(global_name or "okx").lower()
+    local_roles = {"indodax", "tokocrypto"}
+    global_roles = {"mexc", "okx", "binance", "bybit"}
+    if local_name not in local_roles:
+        raise ValueError(f"{local_name} is not an allowed local Spot exchange")
+    if global_name not in global_roles:
+        raise ValueError(f"{global_name} is not an allowed foreign Futures exchange")
+
+    credentials = exchanges if isinstance(exchanges, dict) else {}
+    local_clients = {}
+    global_clients = {}
+
+    # Instantiate only additional venues with complete credentials. The selected
+    # defaults are always constructed so missing credentials fail at the venue,
+    # while symbols from an unconfigured secondary venue fail closed in routing.
+    for name, creds in credentials.items():
+        name = str(name).lower()
+        if name not in local_roles and name not in global_roles:
+            continue
+        if not getattr(creds, "api_key", "") or not getattr(creds, "api_secret", ""):
+            continue
+        if name in local_roles:
+            local_clients[name] = init_ccxt_exchange(name, creds, default_type="spot")
+        else:
+            market_type = "future" if name == "binance" else "swap"
+            global_clients[name] = init_ccxt_exchange(name, creds, default_type=market_type)
+
+    if local_name not in local_clients and getattr(local_creds, "api_key", "") and getattr(local_creds, "api_secret", ""):
+        local_clients[local_name] = init_ccxt_exchange(local_name, local_creds, default_type="spot")
+    if global_name not in global_clients and getattr(global_creds, "api_key", "") and getattr(global_creds, "api_secret", ""):
+        market_type = "future" if global_name == "binance" else "swap"
+        global_clients[global_name] = init_ccxt_exchange(global_name, global_creds, default_type=market_type)
+
+    if not local_clients:
+        raise RuntimeError("no enabled local Spot CEX credentials found; configure Indodax and/or Tokocrypto")
+    if not global_clients:
+        raise RuntimeError("no enabled foreign Futures CEX credentials found; configure MEXC, OKX, Binance, and/or Bybit")
+
+    # Prefer configured defaults, otherwise use the first explicitly credentialed venue.
+    local_default = local_name if local_name in local_clients else next(iter(local_clients))
+    global_default = global_name if global_name in global_clients else next(iter(global_clients))
+    return ExchangeClient(
+        local_clients[local_default],
+        global_clients[global_default],
+        local_exchanges=local_clients,
+        global_exchanges=global_clients,
+        local_default_name=local_default,
+        global_default_name=global_default,
+    )

@@ -22,7 +22,7 @@ The initial migration creates:
 - `balance_snapshots`: historical balance observations.
 - `risk_events` and `executor_events`: operational and audit event journals.
 - `executor_status_snapshots`: time-series snapshots for monitoring and incident review.
-- Automatic `updated_at` triggers for mutable records; the CI migration check validates RLS, grants, trigger behavior, migration idempotency, and the trade currency/FX columns.
+- Automatic `updated_at` triggers for mutable records. The follow-up role migration enforces Indodax/Tokocrypto as Spot-only and MEXC/OKX/Binance/Bybit as perpetual-only across accounts, market pairs, positions, orders, funding, and balance snapshots. CI validates RLS, grants, triggers, migration idempotency, role constraints, and trade currency/FX columns.
 
 All financial quantities are PostgreSQL `NUMERIC`, not floating point. Tables have
 RLS enabled and no grants for `anon` or `authenticated`; server components use
