@@ -96,8 +96,12 @@ func TestOperationalStatusReportsScanFailureAndStaleness(t *testing.T) {
 	if status.Status != "degraded" || status.LastError == "" {
 		t.Fatalf("failed scan should report degraded status and error: %+v", status)
 	}
-	if strings.Contains(status.LastError, "market API unavailable") {
-		t.Fatalf("internal scanner error leaked through status: %s", status.LastError)
+	statusRec := httptest.NewRecorder()
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/scanner/status", nil)
+	statusReq.Header.Set("Authorization", "Bearer "+cfg.APIAuthToken)
+	server.Handler().ServeHTTP(statusRec, statusReq)
+	if strings.Contains(statusRec.Body.String(), "market API unavailable") {
+		t.Fatalf("internal scanner error leaked through status API: %s", statusRec.Body.String())
 	}
 	latestRec := httptest.NewRecorder()
 	latestReq := httptest.NewRequest(http.MethodGet, "/api/v1/scanner/latest", nil)
