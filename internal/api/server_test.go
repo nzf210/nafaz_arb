@@ -78,6 +78,7 @@ func (failedMarketAdapter) SpotMarkets(context.Context) ([]domain.Market, error)
 func TestOperationalStatusReportsScanFailureAndStaleness(t *testing.T) {
 	cfg := config.Config{
 		Mode:                "LIVE",
+		APIAuthToken:        strings.Repeat("x", 32),
 		ScanIntervalSeconds: 30,
 		CapitalTotal:        1000,
 		AllocationPerPair:   0.5,
@@ -94,6 +95,20 @@ func TestOperationalStatusReportsScanFailureAndStaleness(t *testing.T) {
 	status := server.OperationalStatus()
 	if status.Status != "degraded" || status.LastError == "" {
 		t.Fatalf("failed scan should report degraded status and error: %+v", status)
+	}
+	statusRec := httptest.NewRecorder()
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/scanner/status", nil)
+	statusReq.Header.Set("Authorization", "Bearer "+cfg.APIAuthToken)
+	server.Handler().ServeHTTP(statusRec, statusReq)
+	if strings.Contains(statusRec.Body.String(), "market API unavailable") {
+		t.Fatalf("internal scanner error leaked through status API: %s", statusRec.Body.String())
+	}
+	latestRec := httptest.NewRecorder()
+	latestReq := httptest.NewRequest(http.MethodGet, "/api/v1/scanner/latest", nil)
+	latestReq.Header.Set("Authorization", "Bearer "+cfg.APIAuthToken)
+	server.Handler().ServeHTTP(latestRec, latestReq)
+	if strings.Contains(latestRec.Body.String(), "market API unavailable") {
+		t.Fatalf("internal scanner error leaked through latest result: %s", latestRec.Body.String())
 	}
 	if !status.Stale || status.LastSuccessfulAt != nil {
 		t.Fatalf("failed scan must not count as a fresh successful scan: %+v", status)
@@ -181,4 +196,67 @@ func TestRunScanRejectsOverlap(t *testing.T) {
 		}
 	}
 	<-done
+}
+
+
+func TestLiveAPIRequiresBearerTokenExceptHealth(t *testing.T) {
+    token := strings.Repeat("x", 32)
+    cfg := config.Config{Mode: "LIVE", APIAuthToken: token}
+    srv := New(nil, nil, cfg)
+    handler := srv.Handler()
+
+    health := httptest.NewRecorder()
+    handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+    if health.Code != http.StatusOK {
+        t.Fatalf("health code=%d, want 200", health.Code)
+    }
+
+    unauthorized := httptest.NewRecorder()
+    handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/executor/status", nil))
+    if unauthorized.Code != http.StatusUnauthorized {
+        t.Fatalf("unauthenticated API code=%d, want 401", unauthorized.Code)
+    }
+
+    authorizedReq := httptest.NewRequest(http.MethodGet, "/api/v1/executor/status", nil)
+    authorizedReq.Header.Set("Authorization", "Bearer "+token)
+    authorized := httptest.NewRecorder()
+    handler.ServeHTTP(authorized, authorizedReq)
+    if authorized.Code != http.StatusOK {
+        t.Fatalf("authenticated API code=%d, want 200", authorized.Code)
+    }
+}
+
+func TestLiveAPIWithoutTokenFailsClosed(t *testing.T) {
+    srv := New(nil, nil, config.Config{Mode: "LIVE"})
+    rec := httptest.NewRecorder()
+    srv.Handler().ServeHTTP(
+        rec, httptest.NewRequest(http.MethodGet, "/api/v1/executor/status", nil),
+    )
+    if rec.Code != http.StatusServiceUnavailable {
+        t.Fatalf("API code=%d, want 503 when live auth is not configured", rec.Code)
+    }
+}
+
+
+func TestExecutorStatusDoesNotExposeRedisErrors(t *testing.T) {
+    rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+    defer rdb.Close()
+    srv := New(nil, nil, config.Config{Mode: "MOCK"})
+    srv.SetExecutorClient(redishandler.NewWithClient(rdb))
+
+    rec := httptest.NewRecorder()
+    srv.Handler().ServeHTTP(
+        rec,
+        httptest.NewRequest(http.MethodGet, "/api/v1/executor/status", nil),
+    )
+    if rec.Code != http.StatusInternalServerError {
+        t.Fatalf("code=%d, want 500", rec.Code)
+    }
+    if strings.Contains(strings.ToLower(rec.Body.String()), "connection refused") ||
+        strings.Contains(rec.Body.String(), "127.0.0.1:1") {
+        t.Fatalf("internal Redis error leaked to client: %s", rec.Body.String())
+    }
+    if !strings.Contains(rec.Body.String(), "executor status unavailable") {
+        t.Fatalf("unexpected error response: %s", rec.Body.String())
+    }
 }

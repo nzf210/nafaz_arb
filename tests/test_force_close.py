@@ -212,3 +212,193 @@ async def test_p2_03_force_close_uses_backoff_helper(fake_redis, monkeypatch):
     await engine.handle_force_close(pair_tag)
 
     assert seen["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_force_close_requires_verified_flat_futures_position(fake_redis):
+    """A successful-looking close response is not enough while a short remains open."""
+    client = MockExchangeClient()
+
+    async def residual_short(symbol):
+        return [{"symbol": symbol, "contracts": 0.005, "side": "short"}]
+
+    client.fetch_positions = residual_short
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
+
+    assert len(client.global_close_buys) == 1
+    assert client.placed_sells == []
+    assert pair_tag in engine.active_positions
+    assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is not None
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_force_close_blocks_when_pending_order_cancel_is_not_confirmed(fake_redis):
+    """Force close must not trade against a resting local entry/exit order."""
+    client = MockExchangeClient()
+    client.orders["991"] = {
+        "id": "991", "symbol": "btc_idr", "status": "open", "filled": 0.0
+    }
+
+    async def cancel_without_effect(order_id, symbol):
+        return {"id": order_id, "status": "pending"}
+
+    client.cancel_local_order = cancel_without_effect
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.pending_exit_orders[pair_tag] = {
+        "order_id": "991", "symbol": "btc_idr", "closed_short_qty": 0.0
+    }
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
+
+    assert client.global_close_buys == []
+    assert client.placed_sells == []
+    assert pair_tag in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_force_close_still_sells_spot_when_futures_fill_price_is_missing(fake_redis):
+    """Flat futures exposure must not leave spot unhedged merely because PnL price is absent."""
+    client = MockExchangeClient()
+
+    async def close_without_price(symbol, amount, client_order_id=None):
+        return {
+            "id": "close-no-price",
+            "symbol": symbol,
+            "status": "closed",
+            "amount": amount,
+            "filled": amount,
+        }
+
+    client.close_global_short_market = close_without_price
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
+    )
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
+
+    assert len(client.global_close_buys) == 0  # custom close method used
+    assert len(client.placed_sells) == 1
+    assert pair_tag not in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_force_close_retry_skips_already_flat_futures_and_retries_spot(fake_redis):
+    """A prior partial close must allow a spot-only retry when futures are already flat."""
+    client = MockExchangeClient()
+    futures_close_calls = {"count": 0}
+
+    async def unexpected_futures_close(symbol, amount, client_order_id=None):
+        futures_close_calls["count"] += 1
+        raise AssertionError("must not submit a second futures close when already flat")
+
+    client.close_global_short_market = unexpected_futures_close
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True),
+        client=client,
+        redis_client=fake_redis,
+    )
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
+
+    assert futures_close_calls["count"] == 0
+    assert len(client.placed_sells) == 1
+    assert pair_tag not in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_force_close_retry_does_not_resubmit_when_short_remains_open(fake_redis):
+    """An unresolved previous futures close must not be blindly submitted again."""
+    client = MockExchangeClient()
+    close_calls = {"count": 0}
+
+    async def unexpected_futures_close(symbol, amount, client_order_id=None):
+        close_calls["count"] += 1
+        raise AssertionError("duplicate futures close must be blocked")
+
+    async def still_open_short(symbol):
+        return [{"symbol": symbol, "contracts": 0.005, "contractSize": 1.0, "side": "short"}]
+
+    client.close_global_short_market = unexpected_futures_close
+    client.fetch_positions = still_open_short
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True),
+        client=client,
+        redis_client=fake_redis,
+    )
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
+
+    assert close_calls["count"] == 0
+    assert client.placed_sells == []
+    assert pair_tag in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED

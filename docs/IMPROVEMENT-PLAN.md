@@ -616,3 +616,50 @@ Go (`internal/scanner/liquidity_test.go`, `internal/exchange/ws_book_test.go`,
 | `TestWSClientStopIsIdempotent` | `Stop()` dua kali aman |
 | `TestTopOfBookLiquidityConfig` | Default 0, override, dan validasi negatif |
 | `TestWebSocketFeedConfig` | Default off, max age 2s, override, validasi negatif |
+
+
+---
+
+## Post-refactor safety and Supabase work — 2026-11-07
+
+This section supersedes the older blanket "all phases complete" status for current
+release readiness. The new review found regressions/gaps after the executor refactor.
+
+### Implemented in branch `feat/executor-safety-supabase-persistence`
+
+- Entry TTL, adverse-selection, and emergency cancellation now verify terminal
+  exchange status before clearing pending state or releasing funds.
+- Cancellation races reconcile final cumulative spot fills before entry finalization.
+- Startup recovery retains Redis pending records for adopted open orders and processes
+  terminal partial fills before clearing them. Unknown order status blocks the pair.
+- Force-close cancellation verifies each pending order and reconciles fills; force
+  close aborts when a pending order cannot be proven terminal.
+- Futures force close requires a position query confirming zero residual exposure.
+- Spot force close requires the full requested quantity to be filled.
+- Entry hedge and normal exit paths verify exchange-reported fill quantities.
+- Unverified/partial exit hedge transitions to `RECONCILIATION_REQUIRED`, preventing
+  blind retries after the spot leg has already sold.
+- Funding PnL is taken from actual exchange funding history; no 8-hour assumption or
+  estimated funding credit is used.
+- Balance API failures halt new entries on both venues; existing positions remain
+  under the monitoring/force-close paths.
+- Added Supabase migration for durable scanner/executor data and documentation.
+- Added GitHub Actions jobs for Python and Go test suites.
+
+### Supabase runtime boundary
+
+The database schema is versioned under `supabase/migrations`. Runtime writes to
+Supabase are **not yet integrated**: Redis remains the live coordination store and
+scanner history remains file-backed. The next database integration must implement an
+idempotent persistence/outbox adapter and ensure database outages never block a
+required hedge, rollback, or force close.
+
+### Release gate
+
+- [ ] Python executor test suite passes.
+- [ ] Go tests and vet pass.
+- [ ] Supabase migration is reviewed and applied to a non-production project.
+- [ ] Paper-mode scenarios pass, including restart, partial fill, cancellation timeout,
+      partial futures hedge/close, funding settlement replay, and force close.
+- [ ] Live mode remains disabled until exchange-specific order/funding/position
+      payloads are verified against the actual target venues.
