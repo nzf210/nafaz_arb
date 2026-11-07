@@ -310,6 +310,11 @@ class ExitMixin:
                     if not helpers.snapshot_is_stale(live_snapshot):
                         local_best_bid = float(live_snapshot.get("local_best_bid", pos.entry_price_idr))
                         local_best_ask = float(live_snapshot.get("local_best_ask", 0.0))
+                        if str(getattr(pos, "quote_asset", "IDR")).upper() in ("USDT", "USDC"):
+                            # Scanner snapshots retain venue-native quote values;
+                            # convert to the engine's IDR basis for PnL and paper fills.
+                            local_best_bid *= usdt_idr_rate
+                            local_best_ask *= usdt_idr_rate
                     if hasattr(self.client, "update_market_price"):
                         self.client.update_market_price(pos.symbol, local_best_bid, local_best_ask)
                 except Exception:
