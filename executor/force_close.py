@@ -391,8 +391,18 @@ class ForceCloseMixin:
             )
 
             # Update exchange account balances with realized PnL & release locked funds
-            spot_cost = getattr(pos, "spot_cost_usdt", pos.qty * pos.entry_price_idr / usdt_rate)
-            fut_margin = getattr(pos, "futures_margin_usdt", pos.qty * pos.short_entry_usdt)
+            spot_cost = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)
+            if spot_cost <= 0 and usdt_rate > 0 and math.isfinite(usdt_rate):
+                spot_cost = pos.qty * pos.entry_price_idr / usdt_rate
+            if spot_cost <= 0:
+                logger.warning(
+                    f"[Force Close] {pair_key}: live FX unavailable and no stored "
+                    "USDT spot-cost basis; balance accounting is incomplete"
+                )
+            fut_margin = float(
+                getattr(pos, "futures_margin_usdt", 0.0)
+                or (pos.qty * pos.short_entry_usdt)
+            )
             if hasattr(self.client, "apply_realized_trade"):
                 self.client.apply_realized_trade(
                     spot_cost_usdt=spot_cost,
@@ -403,13 +413,14 @@ class ForceCloseMixin:
                     funding_usdt=pnl["funding_usdt"],
                     futures_fees_usdt=pnl["fees_usdt"],
                 )
-                bals = await self._get_balance_snapshot(
-                    pair_tag=pair_key,
-                    symbol=pos.symbol,
-                    usdt_idr_rate=usdt_rate,
-                )
-                if bals is not None:
-                    await self.redis.set(BALANCES_KEY, json.dumps(bals))
+                if usdt_rate > 0 and math.isfinite(usdt_rate):
+                    bals = await self._get_balance_snapshot(
+                        pair_tag=pair_key,
+                        symbol=pos.symbol,
+                        usdt_idr_rate=usdt_rate,
+                    )
+                    if bals is not None:
+                        await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
             pipe = self.redis.pipeline()
             pipe.hincrby("arb:stats", "total_closed", 1)
