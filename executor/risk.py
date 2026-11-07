@@ -7,6 +7,7 @@ state and helper methods stay on one object.
 import asyncio
 import inspect
 import logging
+import math
 from typing import Dict, Optional
 
 from executor.models import ExecutorPayload, PairInfo
@@ -115,6 +116,11 @@ class RiskMixin:
             or "futures_available" not in result
         ):
             raise ValueError("balance response missing spot_available/futures_available")
+        for field in ("spot_available", "futures_available"):
+            value = float(result[field])
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"balance response contains invalid {field}")
+            result[field] = value
         return result
 
     async def _check_balance_mismatch(
