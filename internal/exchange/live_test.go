@@ -321,7 +321,7 @@ func TestBinanceAndBybitPerpetualMarketsBooksAndFunding(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/fapi/v1/exchangeInfo":
-			w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT","filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"}]}]}`))
+			w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","contractType":"PERPETUAL","status":"TRADING","baseAsset":"BTC","quoteAsset":"USDT","marginAsset":"USDT","filters":[{"filterType":"PRICE_FILTER","tickSize":"0.1"},{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"}]}]}`))
 		case "/fapi/v1/depth":
 			w.Write([]byte(`{"bids":[["60000","2"]],"asks":[["60010","3"]],"E":1690000000000}`))
 		case "/fapi/v1/premiumIndex":
@@ -362,4 +362,11 @@ func TestBinanceAndBybitPerpetualMarketsBooksAndFunding(t *testing.T) {
 	if err != nil || len(yb.Bids)!=1 || yb.Bids[0].Quantity!=4 { t.Fatalf("Bybit order book: %+v, %v",yb,err) }
 	yf, err := adapter.FundingRate(context.Background(), "bybit:ETHUSDT")
 	if err != nil || yf.Rate!=0.0003 { t.Fatalf("Bybit funding: %+v, %v",yf,err) }
+
+	if _, err := adapter.PerpetualOrderBook(context.Background(), "BTCUSDT"); err == nil {
+		t.Fatal("unknown Futures symbol prefix must fail closed")
+	}
+	if _, err := adapter.FundingRate(context.Background(), "BTCUSDT"); err == nil {
+		t.Fatal("unknown funding symbol prefix must fail closed")
+	}
 }
