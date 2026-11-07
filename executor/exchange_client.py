@@ -58,8 +58,12 @@ class ExchangeClient:
         if raw.startswith("toko:"):
             raise ValueError("local Spot symbol cannot be routed to a foreign Futures client")
         inferred = next((name for name in ("mexc", "binance", "bybit", "okx") if raw.startswith(name + ":")), None)
-        if inferred is None and exchange_name is None:
-            raise ValueError(f"foreign Futures symbol must include an explicit venue prefix: {raw!r}")
+        if inferred is None and ":" in raw:
+            prefix = raw.split(":", 1)[0].lower()
+            # Preserve legacy CCXT unified symbols such as BTC/USDT:USDT, but
+            # never let a local/unknown exchange-prefixed symbol reach Futures.
+            if prefix in self.LOCAL_VENUES or ("/" not in prefix and prefix not in self.GLOBAL_VENUES):
+                raise ValueError(f"unknown or local symbol cannot be routed to foreign Futures: {raw!r}")
         name = (exchange_name or inferred or self.global_default_name).lower()
         if name not in self.GLOBAL_VENUES:
             raise ValueError(f"{name} is not an allowed foreign Futures venue")
