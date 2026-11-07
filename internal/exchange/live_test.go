@@ -61,8 +61,13 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpotMarkets: %v", err)
 	}
-	if len(markets) != 6 {
-		t.Fatalf("expected 6 spot markets (2 toko + 2 indodax + 2 mexc), got %d", len(markets))
+	if len(markets) != 4 {
+		t.Fatalf("expected 4 local spot markets (2 Tokocrypto + 2 Indodax), got %d", len(markets))
+	}
+	for _, market := range markets {
+		if market.Exchange != "indodax" && market.Exchange != "tokocrypto" {
+			t.Fatalf("foreign exchange %q leaked into local spot discovery", market.Exchange)
+		}
 	}
 }
 
@@ -177,7 +182,8 @@ func TestLiveAdapterPerpetualMarketsAndDepth(t *testing.T) {
 	adapter := NewLiveAdapter()
 	adapter.SetBaseURLs("", okxServer.URL, mexcServer.URL)
 
-	// Fetch instruments from both OKX and MEXC
+	// Fetch instruments from the selected OKX and MEXC perpetual venues.
+	adapter.SetTargetPerpExchange("okx,mexc")
 	perps, err := adapter.PerpetualMarkets(context.Background())
 	if err != nil {
 		t.Fatalf("PerpetualMarkets: %v", err)
@@ -287,13 +293,9 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 		t.Errorf("unexpected indodax bids: %+v", ibook.Bids)
 	}
 
-	// MEXC spot depth
-	mbook, err := adapter.SpotOrderBook(context.Background(), "mexc_spot:BTCUSDT")
-	if err != nil {
-		t.Fatalf("SpotOrderBook mexc: %v", err)
-	}
-	if len(mbook.Bids) != 1 || mbook.Bids[0].Price != 60050 || mbook.Bids[0].Quantity != 1.5 {
-		t.Errorf("unexpected mexc spot bids: %+v", mbook.Bids)
+	// Foreign CEX must never be routed through the spot order-book interface.
+	if _, err := adapter.SpotOrderBook(context.Background(), "mexc_spot:BTCUSDT"); err == nil {
+		t.Fatal("expected MEXC spot order book to be rejected")
 	}
 }
 
