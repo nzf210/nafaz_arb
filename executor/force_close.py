@@ -119,10 +119,15 @@ class ForceCloseMixin:
                     actual_short_qty += abs(signed_size) * (contract_size if contracts is not None else 1.0)
 
                 tolerance = max(1e-10, pos.qty * 1e-4)
-                if abs(actual_short_qty - pos.qty) > tolerance:
+                if actual_short_qty > tolerance:
+                    # The previous close attempt may still be pending or its
+                    # exchange outcome may be unknown. Do not submit another
+                    # futures close with a new client order id; manual order
+                    # reconciliation is required before retrying that leg.
                     logger.critical(
-                        f"[Force Close] retry exposure mismatch for {pair_key}: "
-                        f"expected={pos.qty}, exchange_short={actual_short_qty}"
+                        f"[Force Close] retry for {pair_key} found residual short "
+                        f"{actual_short_qty} (expected {pos.qty}); refusing duplicate "
+                        "futures close submission"
                     )
                     return False, 0.0
 
