@@ -30,16 +30,20 @@ class ExchangeClient:
 
     def __init__(self, local_exchange: Any, global_exchange: Any,
                  local_exchanges: Optional[Dict[str, Any]] = None,
-                 global_exchanges: Optional[Dict[str, Any]] = None):
+                 global_exchanges: Optional[Dict[str, Any]] = None,
+                 local_default_name: str = "indodax",
+                 global_default_name: str = "okx"):
         self.local = local_exchange
         self.global_fut = global_exchange
+        self.local_default_name = local_default_name.lower()
+        self.global_default_name = global_default_name.lower()
         self.local_exchanges = dict(local_exchanges or {})
         self.global_exchanges = dict(global_exchanges or {})
-        self.local_exchanges.setdefault(getattr(local_exchange, "id", ""), local_exchange)
-        self.global_exchanges.setdefault(getattr(global_exchange, "id", ""), global_exchange)
+        self.local_exchanges.setdefault(self.local_default_name, local_exchange)
+        self.global_exchanges.setdefault(self.global_default_name, global_exchange)
 
     def _local_for(self, symbol: str, exchange_name: Optional[str] = None) -> Any:
-        name = (exchange_name or ("tokocrypto" if str(symbol).startswith("toko:") else getattr(self.local, "id", "indodax"))).lower()
+        name = (exchange_name or ("tokocrypto" if str(symbol).startswith("toko:") else self.local_default_name)).lower()
         if name not in self.LOCAL_VENUES:
             raise ValueError(f"{name} is not an allowed local Spot venue")
         client = self.local_exchanges.get(name)
@@ -49,8 +53,8 @@ class ExchangeClient:
 
     def _global_for(self, symbol: str, exchange_name: Optional[str] = None) -> Any:
         raw = str(symbol)
-        inferred = next((name for name in ("mexc", "binance", "bybit") if raw.startswith(name + ":")), None)
-        name = (exchange_name or inferred or getattr(self.global_fut, "id", "okx")).lower()
+        inferred = next((name for name in ("mexc", "binance", "bybit", "okx") if raw.startswith(name + ":")), None)
+        name = (exchange_name or inferred or self.global_default_name).lower()
         if name not in self.GLOBAL_VENUES:
             raise ValueError(f"{name} is not an allowed foreign Futures venue")
         client = self.global_exchanges.get(name)
@@ -607,6 +611,7 @@ def create_exchange_client(config: Any) -> Any:
         global_name=config.global_exchange_name,
         local_creds=config.local_credentials,
         global_creds=config.global_credentials,
+        exchanges=getattr(config, "exchanges", {}),
     )
 
 
@@ -630,8 +635,47 @@ def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot
         instance.set_sandbox_mode(True)
     return instance
 
-def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds) -> ExchangeClient:
-    """Factory creating CCXT async instances."""
-    local_ex = init_ccxt_exchange(local_name, local_creds, default_type="spot")
-    global_ex = init_ccxt_exchange(global_name, global_creds, default_type="future")
-    return ExchangeClient(local_ex, global_ex)
+def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds, exchanges=None) -> ExchangeClient:
+    """Build role-separated CCXT clients; local venues can only be Spot and foreign venues only Perpetual."""
+    local_name = str(local_name or "indodax").lower()
+    global_name = str(global_name or "okx").lower()
+    local_roles = {"indodax", "tokocrypto"}
+    global_roles = {"mexc", "okx", "binance", "bybit"}
+    if local_name not in local_roles:
+        raise ValueError(f"{local_name} is not an allowed local Spot exchange")
+    if global_name not in global_roles:
+        raise ValueError(f"{global_name} is not an allowed foreign Futures exchange")
+
+    credentials = exchanges if isinstance(exchanges, dict) else {}
+    local_clients = {}
+    global_clients = {}
+
+    # Instantiate only additional venues with complete credentials. The selected
+    # defaults are always constructed so missing credentials fail at the venue,
+    # while symbols from an unconfigured secondary venue fail closed in routing.
+    for name, creds in credentials.items():
+        name = str(name).lower()
+        if name not in local_roles and name not in global_roles:
+            continue
+        if not getattr(creds, "api_key", "") or not getattr(creds, "api_secret", ""):
+            continue
+        if name in local_roles:
+            local_clients[name] = init_ccxt_exchange(name, creds, default_type="spot")
+        else:
+            market_type = "future" if name == "binance" else "swap"
+            global_clients[name] = init_ccxt_exchange(name, creds, default_type=market_type)
+
+    if local_name not in local_clients:
+        local_clients[local_name] = init_ccxt_exchange(local_name, local_creds, default_type="spot")
+    if global_name not in global_clients:
+        market_type = "future" if global_name == "binance" else "swap"
+        global_clients[global_name] = init_ccxt_exchange(global_name, global_creds, default_type=market_type)
+
+    return ExchangeClient(
+        local_clients[local_name],
+        global_clients[global_name],
+        local_exchanges=local_clients,
+        global_exchanges=global_clients,
+        local_default_name=local_name,
+        global_default_name=global_name,
+    )
