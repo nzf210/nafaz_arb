@@ -137,9 +137,9 @@ class ActivePosition:
     global_exchange: str
     symbol: str
     entry_price_idr: float
-    quote_asset: str = "IDR"
     short_entry_usdt: float
     qty: float
+    quote_asset: str = "IDR"
     accumulated_funding_usdt: float = 0.0
     last_funding_time_ms: int = 0
     next_funding_time_ms: int = 0
