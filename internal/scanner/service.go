@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -99,6 +100,19 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 	}
 	result.MatchedPairs = len(pairs)
 	result.MarketDiscoveryDurationMS = time.Since(marketDiscoveryStarted).Milliseconds()
+
+	// IDR/BIDR spot books can only be compared with USDT perpetual books
+	// after a live USDT/IDR quote has been verified. Fail the scan before
+	// evaluating any pair rather than mixing valid and invalid FX pricing.
+	if containsIDRSpotPair(pairs) {
+		fxRate, ok := s.getUSDTIDRRate(ctx)
+		if !ok {
+			return result, false, fmt.Errorf("FX preflight: USDT/IDR live ticker unavailable; scan aborted because IDR pairs require a live conversion rate")
+		}
+		if err := validateFXRateSanity(fxRate, s.cfg.SyntheticUSDTIDRRate, s.cfg.FXRateSanityPct); err != nil {
+			return result, false, fmt.Errorf("FX preflight: %w", err)
+		}
+	}
 
 	activePairs, frozenCount := s.filterActivePairs(pairs, started)
 	result.ActivePairs = len(activePairs)
@@ -327,7 +341,7 @@ func (s *Service) fetchMarketData(ctx context.Context, sm, pm domain.Market) (do
 func (s *Service) getUSDTIDRRate(ctx context.Context) (float64, bool) {
 	if rp, ok := s.adapter.(exchange.RateProvider); ok {
 		rate, err := rp.USDTIDRRate(ctx)
-		if err == nil && rate > 0 {
+		if err == nil && rate > 0 && !math.IsNaN(rate) && !math.IsInf(rate, 0) {
 			s.mu.Lock()
 			s.lastLiveFXRate = rate
 			s.mu.Unlock()
@@ -335,6 +349,16 @@ func (s *Service) getUSDTIDRRate(ctx context.Context) (float64, bool) {
 		}
 	}
 	return 0.0, false
+}
+
+func containsIDRSpotPair(pairs [][2]domain.Market) bool {
+	for _, pair := range pairs {
+		quote := strings.ToUpper(strings.TrimSpace(pair[0].QuoteAsset))
+		if quote == "IDR" || quote == "BIDR" {
+			return true
+		}
+	}
+	return false
 }
 
 // lastKnownFXRate returns the most recent live rate observed this process, or
