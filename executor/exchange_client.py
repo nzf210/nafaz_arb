@@ -43,6 +43,8 @@ class ExchangeClient:
         self.global_exchanges.setdefault(self.global_default_name, global_exchange)
 
     def _local_for(self, symbol: str, exchange_name: Optional[str] = None) -> Any:
+        if any(str(symbol).startswith(prefix) for prefix in ("mexc:", "okx:", "binance:", "bybit:")):
+            raise ValueError("foreign Futures symbol cannot be routed to a local Spot client")
         name = (exchange_name or ("tokocrypto" if str(symbol).startswith("toko:") else self.local_default_name)).lower()
         if name not in self.LOCAL_VENUES:
             raise ValueError(f"{name} is not an allowed local Spot venue")
@@ -53,6 +55,8 @@ class ExchangeClient:
 
     def _global_for(self, symbol: str, exchange_name: Optional[str] = None) -> Any:
         raw = str(symbol)
+        if raw.startswith("toko:"):
+            raise ValueError("local Spot symbol cannot be routed to a foreign Futures client")
         inferred = next((name for name in ("mexc", "binance", "bybit", "okx") if raw.startswith(name + ":")), None)
         name = (exchange_name or inferred or self.global_default_name).lower()
         if name not in self.GLOBAL_VENUES:
