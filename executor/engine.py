@@ -910,6 +910,47 @@ class ArbitrageEngine(
         }
         self._failure_reasons[pair_tag] = entry
         logger.critical(f"[{state.value}] {pair_tag}: {reason} - {message}")
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(
+                self._publish_execution_failure(
+                    pair_tag, reason, message, detail=detail, state=state
+                )
+            )
+        except RuntimeError:
+            # A synchronous caller without an active event loop still records
+            # the failure locally; the next status poll remains available.
+            pass
+
+    async def _publish_execution_failure(
+        self,
+        pair_tag: str,
+        reason: str,
+        message: str,
+        detail: Optional[Dict[str, Any]] = None,
+        state: Optional[PositionState] = None,
+    ) -> None:
+        """Publish actionable execution failures for the Telegram notifier."""
+        if self.redis is None:
+            return
+        pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
+        payload = {
+            "event": "EXECUTION_FAILURE",
+            "pair_tag": pair_tag,
+            "local_exchange": pair_info.local_exchange if pair_info else "",
+            "global_exchange": pair_info.global_exchange if pair_info else "",
+            "symbol": pair_info.local_symbol if pair_info else pair_tag,
+            "reason": reason,
+            "message": message,
+            "detail": detail or {},
+            "state": state.value if state else "",
+            "is_mock": bool(getattr(self.config, "mock_mode", False)),
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        try:
+            await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(payload, default=str))
+        except Exception:
+            logger.exception("failed to publish execution failure event for %s", pair_tag)
 
     @staticmethod
     def _utc_day() -> str:
