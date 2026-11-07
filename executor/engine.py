@@ -862,10 +862,11 @@ class ArbitrageEngine(
                 "futures_margin_usdt": actual_cost_usdt,
             }
             await self._persist_pending_entry(pair_tag, self.pending_entry_orders[pair_tag])
-        except Exception:
+        except Exception as exc:
             if hasattr(self.client, "unlock_funds"):
                 self.client.unlock_funds(actual_cost_usdt, actual_cost_usdt)
             self._record_order_failure(pair_info.local_exchange, "entry order placement failed")
+            await self._publish_risk_event("EXCHANGE_ERROR", pair_tag, pair_info, f"Spot entry order failed: {exc}")
             logger.exception(f"[State 1] failed to place limit buy for {pair_tag}")
     # -------------------------------------------------------------
     # Failure tracking & status reporting
