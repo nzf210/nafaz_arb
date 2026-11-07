@@ -7,17 +7,20 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
 
-// FundingRate retrieves current funding rate from OKX or MEXC.
+// FundingRate routes funding data to the exchange that owns the perpetual symbol.
 func (l *LiveAdapter) FundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {
-	if isMEXCSymbol(symbol) {
-		return l.fetchMEXCFundingRate(ctx, symbol)
+	switch {
+	case isMEXCSymbol(symbol): return l.fetchMEXCFundingRate(ctx, symbol)
+	case strings.HasPrefix(symbol, "binance:"): return l.fetchBinanceFundingRate(ctx, symbol)
+	case strings.HasPrefix(symbol, "bybit:"): return l.fetchBybitFundingRate(ctx, symbol)
+	default: return l.fetchOKXFundingRate(ctx, symbol)
 	}
-	return l.fetchOKXFundingRate(ctx, symbol)
 }
 
 func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {
