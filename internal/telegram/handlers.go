@@ -363,8 +363,11 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			ev.EntryPriceIDR,
 			ev.ShortEntryUSDT,
 		)
-	case "EXECUTION_FAILURE":
+	case "EXECUTION_FAILURE", "HEDGE_FAILED":
 		pairLabel := ev.PairTag
+		if pairLabel == "" {
+			pairLabel = ev.PairKey
+		}
 		if pairLabel == "" {
 			pairLabel = ev.Symbol
 		}
