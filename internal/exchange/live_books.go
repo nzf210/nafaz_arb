@@ -216,7 +216,7 @@ func (l *LiveAdapter) PerpetualOrderBook(ctx context.Context, symbol string) (do
 }
 
 func isMEXCSymbol(symbol string) bool {
-	return strings.HasPrefix(symbol, "mexc:") || strings.Contains(symbol, "_")
+	return strings.HasPrefix(symbol, "mexc:")
 }
 
 func cleanSymbol(symbol string) string {
