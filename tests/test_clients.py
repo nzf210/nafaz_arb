@@ -186,8 +186,9 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
     class FakeVenue:
         def __init__(self, venue_id, market_id, unified_symbol):
             self.id = venue_id
-            self.markets_by_id = {market_id: {"symbol": unified_symbol}}
-            self.markets = {unified_symbol: {"symbol": unified_symbol}}
+            quote = unified_symbol.split("/")[-1].split(":")[0]
+            self.markets_by_id = {market_id: {"symbol": unified_symbol, "quote": quote}}
+            self.markets = {unified_symbol: {"symbol": unified_symbol, "quote": quote}}
             self.calls = []
 
         async def load_markets(self):
@@ -233,10 +234,11 @@ async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
         global_default_name="okx",
     )
 
-    await client.place_local_limit_buy("toko:BTC_USDT", 0.01, 60000)
+    await client.place_local_limit_buy("toko:BTC_USDT", 0.01, 960_000_000, usdt_idr_rate=16_000)
     await client.open_global_short_market("binance:BTCUSDT", 0.01)
 
     assert tokocrypto.calls[0][0:2] == ("buy", "BTC/USDT")
+    assert tokocrypto.calls[0][3] == 60_000.0, "IDR-normalized order price must be converted to USDT quote"
     assert binance.calls[0][0:2] == ("market_sell", "BTC/USDT:USDT")
     assert binance.calls[0][2] == 10.0, "0.01 BTC must be converted to 10 contracts at 0.001 BTC/contract"
     positions = await client.fetch_positions("binance:BTCUSDT")
