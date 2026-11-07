@@ -93,6 +93,52 @@ class ExchangeClient:
             raise ValueError(f"exchange {getattr(client, 'id', 'unknown')} has no CCXT market for exchange symbol {raw}")
         return raw
 
+    def _contract_size(self, client: Any, market_symbol: str) -> float:
+        """Return CCXT contractSize; all engine quantities are expressed in base units."""
+        market = None
+        getter = getattr(client, "market", None)
+        if callable(getter):
+            try:
+                market = getter(market_symbol)
+            except Exception:
+                market = None
+        if not isinstance(market, dict):
+            market = (getattr(client, "markets", {}) or {}).get(market_symbol)
+        if not isinstance(market, dict):
+            raise ValueError(f"missing futures market metadata for {market_symbol}")
+        if market.get("contract") is False:
+            raise ValueError(f"market {market_symbol} is not a contract market")
+        size = float(market.get("contractSize") or 0.0)
+        if not math.isfinite(size) or size <= 0:
+            raise ValueError(f"invalid contractSize for {market_symbol}: {size}")
+        return size
+
+    async def _to_contract_amount(self, client: Any, market_symbol: str, base_amount: float) -> tuple[float, float]:
+        if not math.isfinite(float(base_amount)) or base_amount <= 0:
+            raise ValueError(f"invalid base quantity: {base_amount}")
+        contract_size = self._contract_size(client, market_symbol)
+        contracts = float(base_amount) / contract_size
+        precision = getattr(client, "amount_to_precision", None)
+        if callable(precision):
+            contracts = float(precision(market_symbol, contracts))
+        if not math.isfinite(contracts) or contracts <= 0:
+            raise ValueError(f"base quantity {base_amount} rounds below minimum contract quantity")
+        return contracts, contract_size
+
+    @staticmethod
+    def _normalize_contract_order(order: Dict[str, Any], contract_size: float) -> Dict[str, Any]:
+        """Expose CCXT contract fills to the engine in base-asset units."""
+        if not isinstance(order, dict):
+            raise ValueError("futures order response is not an object")
+        normalized = dict(order)
+        for field in ("amount", "filled", "remaining"):
+            value = normalized.get(field)
+            if value is not None:
+                normalized[field + "_contracts"] = value
+                normalized[field] = float(value or 0.0) * contract_size
+        normalized["contract_size"] = contract_size
+        return normalized
+
     async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """Places a Maker Limit Buy on local spot exchange."""
         if amount <= 0 or price <= 0:
@@ -243,10 +289,13 @@ class ExchangeClient:
         """
         if amount <= 0:
             raise ValueError(f"invalid short amount: {amount}")
-        # Market Sell on Futures opens a Short position
+        # Scanner and executor quantities are base-asset units; CCXT derivatives
+        # generally expect a number of contracts. Convert and normalize fills.
         client = self._global_for(symbol)
         market_symbol = await self._resolve_symbol(client, symbol)
-        return await client.create_market_sell_order(market_symbol, amount, *_client_order_params(client_order_id))
+        contracts, contract_size = await self._to_contract_amount(client, market_symbol, amount)
+        order = await client.create_market_sell_order(market_symbol, contracts, *_client_order_params(client_order_id))
+        return self._normalize_contract_order(order, contract_size)
 
     async def close_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -260,7 +309,9 @@ class ExchangeClient:
             params["clientOrderId"] = client_order_id
         client = self._global_for(symbol)
         market_symbol = await self._resolve_symbol(client, symbol)
-        return await client.create_market_buy_order(market_symbol, amount, params)
+        contracts, contract_size = await self._to_contract_amount(client, market_symbol, amount)
+        order = await client.create_market_buy_order(market_symbol, contracts, params)
+        return self._normalize_contract_order(order, contract_size)
 
     async def fetch_funding_history(
         self, symbol: str, since: Optional[int] = None, limit: int = 100
