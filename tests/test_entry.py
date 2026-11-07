@@ -13,7 +13,7 @@ import pytest
 from executor.config import ExecutorConfig
 from executor.engine import ArbitrageEngine
 
-from tests.conftest import MockExchangeClient, _entry_order_info, _revalidation_payload, engine, fake_redis, mock_client
+from tests.conftest import MockExchangeClient, _entry_order_info, _fresh_signal_payload, _revalidation_payload, engine, fake_redis, mock_client
 
 @pytest.mark.asyncio
 async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, mock_client):
@@ -484,3 +484,33 @@ async def test_entry_revalidation_config_floor_overrides_payload(engine, fake_re
     await engine.handle_signal_notification(pair_tag)
 
     assert len(mock_client.placed_buys) == 0
+
+
+@pytest.mark.asyncio
+async def test_idr_entry_rejects_missing_live_fx_rate(engine, fake_redis, mock_client):
+    """IDR spot entries must fail closed even when executor runs in mock mode."""
+    pair_tag = "indodax:btc_idr"
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    payload["pricing_snapshot"]["usdt_idr_rate"] = 0.0
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert mock_client.placed_buys == []
+    assert engine.states[pair_tag] == PositionState.FAILED
+
+
+@pytest.mark.asyncio
+async def test_filled_idr_order_without_persisted_fx_requires_reconciliation(engine, fake_redis, mock_client):
+    """Never invent a conversion rate when reconciling an already-filled IDR order."""
+    pair_tag = "indodax:btc_idr"
+    order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
+    order_info.pop("usdt_idr_rate", None)
+    await engine._handle_entry_fills(
+        pair_tag,
+        order_info,
+        {"status": "closed", "filled": 0.001},
+    )
+
+    assert mock_client.global_short_sells == []
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
