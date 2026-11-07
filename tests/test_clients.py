@@ -177,3 +177,69 @@ def test_p3_02_client_order_id_is_bounded():
     """Exchange limits are tight; an over-long pair must not blow past 36 chars."""
     oid = build_client_order_id("a" * 60 + ":" + "b" * 60, "force-close", 123456)
     assert len(oid) <= 36
+
+
+@pytest.mark.asyncio
+async def test_live_exchange_client_routes_each_symbol_to_its_role_venue():
+    from executor.exchange_client import ExchangeClient
+
+    class FakeVenue:
+        def __init__(self, venue_id, market_id, unified_symbol):
+            self.id = venue_id
+            self.markets_by_id = {market_id: {"symbol": unified_symbol}}
+            self.markets = {unified_symbol: {"symbol": unified_symbol}}
+            self.calls = []
+
+        async def load_markets(self):
+            return self.markets
+
+        async def create_limit_buy_order(self, symbol, amount, price, *params):
+            self.calls.append(("buy", symbol, amount, price))
+            return {"id": "spot-1"}
+
+        async def create_market_sell_order(self, symbol, amount, *params):
+            self.calls.append(("spot_sell", symbol, amount))
+            return {"id": "spot-sell-1"}
+
+        async def create_market_sell_order(self, symbol, amount, *params):
+            self.calls.append(("market_sell", symbol, amount))
+            return {"id": "short-1"}
+
+        async def create_market_buy_order(self, symbol, amount, params):
+            self.calls.append(("market_buy", symbol, amount, params))
+            return {"id": "close-1"}
+
+        async def fetch_balance(self):
+            return {"free": {"USDT": 120.0}, "total": {"USDT": 150.0}}
+
+    indodax = FakeVenue("indodax", "btcidr", "BTC/IDR")
+    tokocrypto = FakeVenue("tokocrypto", "BTC_USDT", "BTC/USDT")
+    okx = FakeVenue("okx", "BTC-USDT-SWAP", "BTC/USDT:USDT")
+    binance = FakeVenue("binance", "BTCUSDT", "BTC/USDT:USDT")
+    client = ExchangeClient(
+        indodax, okx,
+        local_exchanges={"indodax": indodax, "tokocrypto": tokocrypto},
+        global_exchanges={"okx": okx, "binance": binance},
+        local_default_name="indodax",
+        global_default_name="okx",
+    )
+
+    await client.place_local_limit_buy("toko:BTC_USDT", 0.01, 60000)
+    await client.open_global_short_market("binance:BTCUSDT", 0.01)
+
+    assert tokocrypto.calls[0][0:2] == ("buy", "BTC/USDT")
+    assert binance.calls[0][0:2] == ("market_sell", "BTC/USDT:USDT")
+
+    balances = await client.get_balances(
+        local_quote_asset="USDT",
+        global_quote_asset="USDT",
+        local_exchange="tokocrypto",
+        global_exchange="binance",
+    )
+    assert balances["spot_available"] == 120.0
+    assert balances["futures_available"] == 120.0
+
+    with pytest.raises(ValueError, match="foreign Futures symbol"):
+        client._local_for("binance:BTCUSDT")
+    with pytest.raises(ValueError, match="local Spot symbol"):
+        client._global_for("toko:BTC_USDT")
