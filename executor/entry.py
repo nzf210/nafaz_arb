@@ -455,6 +455,7 @@ class EntryMixin:
                     global_exchange=order_info["global_exchange"],
                     symbol=order_info["symbol"],
                     entry_price_idr=price_idr,
+                    quote_asset=str(order_info.get("quote_asset", "IDR") or "IDR").upper(),
                     short_entry_usdt=short_entry_usdt,
                     qty=qty,
                     accumulated_funding_usdt=0.0,
