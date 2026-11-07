@@ -61,6 +61,7 @@ type ClosedTradeRecord struct {
 type TradeEvent struct {
 	Event                  string                 `json:"event"`
 	PairTag                string                 `json:"pair_tag,omitempty"`
+	PairKey                string                 `json:"pair_key,omitempty"`
 	Reason                 string                 `json:"reason,omitempty"`
 	Message                string                 `json:"message,omitempty"`
 	State                  string                 `json:"state,omitempty"`
