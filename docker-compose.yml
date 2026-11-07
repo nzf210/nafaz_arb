@@ -51,7 +51,9 @@ services:
       - REDIS_URL=redis://redis:6380/0
       - LOCAL_EXCHANGE=indodax
       - GLOBAL_EXCHANGE=okx
-      - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-true}
+      # Executor mode follows config.json mode (MOCK/LIVE).
+      # Set EXECUTOR_MOCK_MODE=true only as an explicit emergency override.
+      - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-}
     depends_on:
       - redis
 

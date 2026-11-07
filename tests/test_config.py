@@ -127,3 +127,42 @@ def test_execution_directives_scanner_validated_defaults_false():
     """Old payloads without scanner_validated must not be trusted as validated."""
     d = ExecutionDirectives.from_dict({"action": "PLACE_MAKER_BUY"})
     assert d.scanner_validated is False
+
+
+def test_executor_mode_follows_root_scanner_mode_and_allows_explicit_override(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"mode": "LIVE"}), encoding="utf-8")
+
+    cfg = ExecutorConfig()
+    cfg._apply_file(str(config_path))
+    assert cfg.mock_mode is False
+
+    monkeypatch.setenv("EXECUTOR_MOCK_MODE", "true")
+    cfg._apply_env()
+    assert cfg.mock_mode is True
+
+    monkeypatch.setenv("EXECUTOR_MOCK_MODE", "false")
+    cfg._apply_env()
+    assert cfg.mock_mode is False
+
+
+def test_live_mode_rejects_missing_exchange_credentials():
+    cfg = ExecutorConfig(mock_mode=False)
+    cfg.local_exchange_name = "indodax"
+    cfg.global_exchange_name = "okx"
+
+    with pytest.raises(ValueError, match="credentials are incomplete"):
+        cfg.validate_live_credentials()
+
+
+def test_live_mode_accepts_complete_indodax_okx_credentials():
+    from executor.config import ExchangeCredentials
+
+    cfg = ExecutorConfig(mock_mode=False)
+    cfg.local_exchange_name = "indodax"
+    cfg.global_exchange_name = "okx"
+    cfg.local_credentials = ExchangeCredentials(api_key="local-key", api_secret="local-secret")
+    cfg.global_credentials = ExchangeCredentials(
+        api_key="global-key", api_secret="global-secret", passphrase="okx-passphrase"
+    )
+    cfg.validate_live_credentials()
