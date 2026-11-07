@@ -50,7 +50,7 @@ class MockExchangeClient:
     async def fetch_funding_rate(self, symbol: str):
         return dict(self.funding_rate_data)
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None):
+    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None, usdt_idr_rate: float = 0.0):
         self.order_counter += 1
         order_id = str(self.order_counter)
         order = {
