@@ -139,21 +139,46 @@ class ExchangeClient:
         normalized["contract_size"] = contract_size
         return normalized
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    def _local_price_from_idr(self, client: Any, market_symbol: str, price_idr: float, usdt_idr_rate: float) -> float:
+        """Convert the engine's IDR-normalized price into the venue's quote currency."""
+        market = None
+        getter = getattr(client, "market", None)
+        if callable(getter):
+            try:
+                market = getter(market_symbol)
+            except Exception:
+                market = None
+        if not isinstance(market, dict):
+            market = (getattr(client, "markets", {}) or {}).get(market_symbol)
+        if not isinstance(market, dict):
+            raise ValueError(f"missing local market metadata for {market_symbol}")
+        quote = str(market.get("quote") or "").upper()
+        if quote in ("IDR", "BIDR"):
+            return float(price_idr)
+        if quote in ("USDT", "USDC"):
+            if not math.isfinite(float(usdt_idr_rate)) or usdt_idr_rate <= 0:
+                raise ValueError("live USDT/IDR rate is required to price a stablecoin-quoted local Spot order")
+            # USDC is valued at the USDT peg for conversion; scanner exposes this assumption.
+            return float(price_idr) / float(usdt_idr_rate)
+        raise ValueError(f"unsupported local Spot quote currency {quote!r} for {market_symbol}")
+
+    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None, usdt_idr_rate: float = 0.0) -> Dict[str, Any]:
         """Places a Maker Limit Buy on local spot exchange."""
         if amount <= 0 or price <= 0:
             raise ValueError(f"invalid buy params: amount={amount}, price={price}")
         client = self._local_for(symbol)
         market_symbol = await self._resolve_symbol(client, symbol)
-        return await client.create_limit_buy_order(market_symbol, amount, price, *_client_order_params(client_order_id))
+        local_price = self._local_price_from_idr(client, market_symbol, price, usdt_idr_rate)
+        return await client.create_limit_buy_order(market_symbol, amount, local_price, *_client_order_params(client_order_id))
 
-    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None, usdt_idr_rate: float = 0.0) -> Dict[str, Any]:
         """Places a Maker Limit Sell on local spot exchange."""
         if amount <= 0 or price <= 0:
             raise ValueError(f"invalid sell params: amount={amount}, price={price}")
         client = self._local_for(symbol)
         market_symbol = await self._resolve_symbol(client, symbol)
-        return await client.create_limit_sell_order(market_symbol, amount, price, *_client_order_params(client_order_id))
+        local_price = self._local_price_from_idr(client, market_symbol, price, usdt_idr_rate)
+        return await client.create_limit_sell_order(market_symbol, amount, local_price, *_client_order_params(client_order_id))
 
     async def cancel_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Cancels an existing order on local spot exchange."""
