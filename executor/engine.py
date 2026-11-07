@@ -813,9 +813,9 @@ class ArbitrageEngine(
         # Lock funds in exchange client
         if hasattr(self.client, "lock_funds"):
             if not self.client.lock_funds(actual_cost_usdt, actual_cost_usdt):
-                logger.warning(
-                    f"[State 1 Balance Check] Failed to lock funds for {actual_cost_usdt:.2f} USDT on {pair_tag}"
-                )
+                reason = f"paper balance lock failed for required {actual_cost_usdt:.2f} USDT-equivalent on both legs"
+                logger.warning(f"[State 1 Balance Check] {reason} ({pair_tag})")
+                await self._publish_risk_event("INSUFFICIENT_BALANCE", pair_tag, pair_info, reason)
                 return
             # Sync balances to Redis
             bals = await self._get_balance_snapshot(
@@ -834,7 +834,9 @@ class ArbitrageEngine(
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
             order = await self.client.place_local_limit_buy(
-                pair_info.local_symbol, buy_qty, buy_price_idr, client_order_id=entry_coid
+                pair_info.local_symbol, buy_qty, buy_price_idr,
+                client_order_id=entry_coid,
+                usdt_idr_rate=snapshot.usdt_idr_rate,
             )
             order_id = str(order.get("id", ""))
             self._record_order_success(pair_info.local_exchange)
@@ -846,6 +848,7 @@ class ArbitrageEngine(
                 "global_symbol": pair_info.global_symbol,
                 "local_exchange": pair_info.local_exchange,
                 "global_exchange": pair_info.global_exchange,
+                "quote_asset": pair_info.quote_asset,
                 "price": buy_price_idr,
                 "qty": buy_qty,
                 "filled": 0.0,
