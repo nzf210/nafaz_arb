@@ -320,6 +320,11 @@ class ExchangeClient:
         # generally expect a number of contracts. Convert and normalize fills.
         client = self._global_for(symbol)
         market_symbol = await self._resolve_symbol(client, symbol)
+        leverage_setter = getattr(client, "set_leverage", None)
+        if not callable(leverage_setter):
+            raise RuntimeError(f"{getattr(client, 'id', 'futures venue')} cannot set/verify 1x leverage")
+        # Keep the futures leg at 1x; if the exchange rejects this setting, do not open the hedge.
+        await leverage_setter(1, market_symbol)
         contracts, contract_size = await self._to_contract_amount(client, market_symbol, amount)
         order = await client.create_market_sell_order(market_symbol, contracts, *_client_order_params(client_order_id))
         return self._normalize_contract_order(order, contract_size)
