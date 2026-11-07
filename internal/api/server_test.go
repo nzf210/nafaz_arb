@@ -220,3 +220,27 @@ func TestLiveAPIWithoutTokenFailsClosed(t *testing.T) {
         t.Fatalf("API code=%d, want 503 when live auth is not configured", rec.Code)
     }
 }
+
+
+func TestExecutorStatusDoesNotExposeRedisErrors(t *testing.T) {
+    rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})
+    defer rdb.Close()
+    srv := New(nil, nil, config.Config{Mode: "MOCK"})
+    srv.SetExecutorClient(redishandler.NewWithClient(rdb))
+
+    rec := httptest.NewRecorder()
+    srv.Handler().ServeHTTP(
+        rec,
+        httptest.NewRequest(http.MethodGet, "/api/v1/executor/status", nil),
+    )
+    if rec.Code != http.StatusInternalServerError {
+        t.Fatalf("code=%d, want 500", rec.Code)
+    }
+    if strings.Contains(strings.ToLower(rec.Body.String()), "connection refused") ||
+        strings.Contains(rec.Body.String(), "127.0.0.1:1") {
+        t.Fatalf("internal Redis error leaked to client: %s", rec.Body.String())
+    }
+    if !strings.Contains(rec.Body.String(), "executor status unavailable") {
+        t.Fatalf("unexpected error response: %s", rec.Body.String())
+    }
+}
