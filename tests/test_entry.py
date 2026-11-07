@@ -528,3 +528,17 @@ async def test_idr_entry_rejects_missing_fx_field_without_model_default(engine, 
 
     assert mock_client.placed_buys == []
     assert engine.states[pair_tag] == PositionState.FAILED
+
+@pytest.mark.asyncio
+async def test_signal_for_unconfigured_venue_is_rejected(engine, fake_redis, mock_client):
+    """A single-venue executor must never route a signal to a different exchange."""
+    pair_tag = "indodax:btc_idr"
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    payload["pair_info"]["local_exchange"] = "tokocrypto"
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert mock_client.placed_buys == []
+    assert engine.states[pair_tag] == PositionState.FAILED
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "EXECUTOR_VENUE_MISMATCH"
