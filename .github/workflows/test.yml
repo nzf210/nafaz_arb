@@ -43,7 +43,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: nafaz_test
         ports:
           - 5432:5432
@@ -55,28 +55,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Create Supabase roles
-        env:
-          PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
             -c "CREATE ROLE anon NOLOGIN;" \
             -c "CREATE ROLE authenticated NOLOGIN;" \
             -c "CREATE ROLE service_role NOLOGIN BYPASSRLS;"
       - name: Apply migration
-        env:
-          PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
             -f supabase/migrations/20261107000100_create_nafaz_core_schema.sql
       - name: Verify migration is idempotent
-        env:
-          PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
             -f supabase/migrations/20261107000100_create_nafaz_core_schema.sql
       - name: Verify RLS, grants and updated_at triggers
-        env:
-          PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
             -f supabase/tests/schema_smoke.sql
