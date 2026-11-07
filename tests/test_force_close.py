@@ -80,6 +80,7 @@ async def test_p0_05_force_close_liquidates_spot_leg(engine, fake_redis, mock_cl
                 "local_best_ask": 1_002_000_000.0,
                 "global_best_ask_usdt": 65_000.0,
                 "usdt_idr_rate": 16000.0,
+                "timestamp_ms": int(time.time() * 1000),
             }
         ),
     )
@@ -126,6 +127,16 @@ async def test_p0_05_force_close_records_failed_spot_liquidation(fake_redis):
     engine.active_positions[pair_tag] = pos
     engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
     await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+    await fake_redis.set(
+        f"arb:live_price:{pair_tag}",
+        json.dumps({
+            "local_best_bid": 1_000_000_000.0,
+            "local_best_ask": 1_001_000_000.0,
+            "global_best_ask_usdt": 65_000.0,
+            "usdt_idr_rate": 16000.0,
+            "timestamp_ms": int(time.time() * 1000),
+        }),
+    )
 
     await engine.handle_force_close(json.dumps({"pair_key": pair_tag}))
 
