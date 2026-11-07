@@ -385,22 +385,33 @@ begin
 end;
 $fn$;
 
-do $block$
-declare
-    tbl text;
-begin
-    foreach tbl in array array[
-        'exchange_accounts','strategy_configs','risk_limits','market_pairs',
-        'positions','orders','position_legs'
-    ] loop
-        execute format('drop trigger if exists trg_%I_updated_at on public.%I', tbl, tbl);
-        execute format(
-            'create trigger trg_%I_updated_at before update on public.%I '
-            'for each row execute function public.set_updated_at()',
-            tbl, tbl
-        );
-    end loop;
-end $block$;
+drop trigger if exists trg_exchange_accounts_updated_at on public.exchange_accounts;
+create trigger trg_exchange_accounts_updated_at before update on public.exchange_accounts
+    for each row execute function public.set_updated_at();
+
+drop trigger if exists trg_strategy_configs_updated_at on public.strategy_configs;
+create trigger trg_strategy_configs_updated_at before update on public.strategy_configs
+    for each row execute function public.set_updated_at();
+
+drop trigger if exists trg_risk_limits_updated_at on public.risk_limits;
+create trigger trg_risk_limits_updated_at before update on public.risk_limits
+    for each row execute function public.set_updated_at();
+
+drop trigger if exists trg_market_pairs_updated_at on public.market_pairs;
+create trigger trg_market_pairs_updated_at before update on public.market_pairs
+    for each row execute function public.set_updated_at();
+
+drop trigger if exists trg_positions_updated_at on public.positions;
+create trigger trg_positions_updated_at before update on public.positions
+    for each row execute function public.set_updated_at();
+
+drop trigger if exists trg_orders_updated_at on public.orders;
+create trigger trg_orders_updated_at before update on public.orders
+    for each row execute function public.set_updated_at();
+
+drop trigger if exists trg_position_legs_updated_at on public.position_legs;
+create trigger trg_position_legs_updated_at before update on public.position_legs
+    for each row execute function public.set_updated_at();
 
 comment on table public.orders is 'Exchange order lifecycle; idempotent client_order_id is recorded before/after exchange reconciliation.';
 comment on table public.order_fills is 'Append-only exchange fills, deduplicated by exchange fill id.';
