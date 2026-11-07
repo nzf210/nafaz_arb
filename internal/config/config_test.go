@@ -424,3 +424,25 @@ func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
         t.Fatalf("APIAuthToken=%q, want configured token", cfg.APIAuthToken)
     }
 }
+
+
+func TestExchangeRoleAllowlistDefaultsAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil { t.Fatal(err) }
+	cfg, err := Load(path)
+	if err != nil { t.Fatal(err) }
+	if cfg.GlobalFuturesExchange != "all" { t.Fatalf("global futures default=%q, want all", cfg.GlobalFuturesExchange) }
+	if len(cfg.EnabledSpotExchanges) != 2 || cfg.EnabledSpotExchanges[0] != "indodax" || cfg.EnabledSpotExchanges[1] != "tokocrypto" {
+		t.Fatalf("unexpected local spot defaults: %v", cfg.EnabledSpotExchanges)
+	}
+	invalid := Config{EnabledSpotExchanges: []string{"mexc"}}
+	if err := invalid.validate(); err == nil || !strings.Contains(err.Error(), "enabled_spot_exchanges") {
+		t.Fatalf("expected foreign Spot venue rejection, got %v", err)
+	}
+	invalid = Config{GlobalFuturesExchange: "tokocrypto"}
+	if err := invalid.validate(); err == nil || !strings.Contains(err.Error(), "global_futures_exchange") {
+		t.Fatalf("expected local Futures venue rejection, got %v", err)
+	}
+	valid := Config{GlobalFuturesExchange: "mexc,okx,binance,bybit", EnabledSpotExchanges: []string{"indodax", "tokocrypto"}}
+	if err := valid.validate(); err != nil { t.Fatalf("valid six-venue role configuration rejected: %v", err) }
+}
