@@ -99,7 +99,12 @@ class RollbackMixin:
         return False
 
     async def _release_unhedged_reserve(
-        self, unhedged_delta: float, price_idr: float, usdt_rate: float
+        self,
+        pair_tag: str,
+        order_info: dict,
+        unhedged_delta: float,
+        price_idr: float,
+        usdt_rate: float,
     ) -> None:
         """Releases the capital reserved for the spot leg that never got hedged."""
         if not hasattr(self.client, "unlock_funds"):
@@ -110,7 +115,7 @@ class RollbackMixin:
             balances = await self._get_balance_snapshot(
                 pair_tag=pair_tag,
                 symbol=order_info.get("symbol"),
-                usdt_idr_rate=float(order_info.get("usdt_idr_rate", 0.0) or 0.0),
+                usdt_idr_rate=usdt_rate,
             )
             if balances is not None:
                 await self.redis.set(BALANCES_KEY, json.dumps(balances))
@@ -189,7 +194,9 @@ class RollbackMixin:
                 exit_price_idr = price_idr
 
         # Release the reserved capital for the leg that never got hedged.
-        await self._release_unhedged_reserve(unhedged_delta, price_idr, usdt_rate)
+        await self._release_unhedged_reserve(
+            pair_tag, order_info, unhedged_delta, price_idr, usdt_rate
+        )
 
         event = {
             "event": "HEDGE_FAILED",
