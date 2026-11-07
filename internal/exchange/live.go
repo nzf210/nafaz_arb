@@ -120,6 +120,12 @@ func (l *LiveAdapter) SetBaseURLs(urls ...string) {
 	if len(urls) > 4 && urls[4] != "" {
 		l.tokocryptoBaseURL = urls[4]
 	}
+	if len(urls) > 5 && urls[5] != "" {
+		l.binanceBaseURL = urls[5]
+	}
+	if len(urls) > 6 && urls[6] != "" {
+		l.bybitBaseURL = urls[6]
+	}
 }
 
 // SetHealthPolicy configures exchange maintenance detection. A zero window or
