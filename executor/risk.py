@@ -11,7 +11,6 @@ import math
 from typing import Dict, Optional
 
 from executor.models import ExecutorPayload, PairInfo
-from executor import helpers
 
 logger = logging.getLogger("executor.engine")
 
