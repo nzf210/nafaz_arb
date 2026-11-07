@@ -17,11 +17,29 @@ go test ./...
 go run ./cmd/nafaz-scanner -config config.json
 ```
 
+### Container security
+
+The live executor reads spot/futures balances through CCXT. For IDR-quoted spot pairs,
+it converts the available IDR balance to a USDT-equivalent amount using the fresh
+USDT/IDR rate from the scanner signal; missing FX or balance data blocks new entries.
+USDT/USDC quote balances are treated at a 1:1 stablecoin assumption for sizing, so
+USDC depeg risk is not eliminated.
+
+Both images run as a non-root user. Set `APP_UID` and `APP_GID` in the deployment `.env`
+file to the owner IDs of the host `data/` directory (default: 1000/1000) so the
+scanner can write its persistent history bind mount without running as root. The executor image runs as a non-root user. Do not bake `config.json`, exchange API keys,
+or Supabase service-role credentials into images; mount the runtime config or inject
+secrets through the deployment environment. Redis is bound to host loopback in the
+provided Compose file because it has no authentication configured.
+
 ### Run with Podman (VPS)
 
 Untuk panduan lengkap deployment menggunakan Podman di VPS, lihat panduan di [PODMAN.md](./PODMAN.md).
 
 ```sh
+mkdir -p data
+sudo chown -R "$(id -u):$(id -g)" data
+# Set APP_UID/APP_GID in .env only if your host data owner is not 1000:1000.
 podman compose up -d --build
 # atau:
 # podman build -t nafaz-scanner . && podman run -d --name nafaz-scanner -p 8080:8080 -v $(pwd)/config.json:/app/config.json:ro,Z -v $(pwd)/data:/app/data:Z nafaz-scanner
@@ -31,10 +49,10 @@ Then call:
 
 ```sh
 curl http://localhost:8080/health
-curl -X POST http://localhost:8080/api/v1/scanner/scan
-curl http://localhost:8080/api/v1/scanner/latest
-curl 'http://localhost:8080/api/v1/scanner/opportunities/metrics'
-curl 'http://localhost:8080/api/v1/scanner/opportunities/history'
+curl -X POST -H "Authorization: Bearer $API_AUTH_TOKEN" http://localhost:8080/api/v1/scanner/scan
+curl -H "Authorization: Bearer $API_AUTH_TOKEN" http://localhost:8080/api/v1/scanner/latest
+curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/scanner/opportunities/metrics'
+curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/scanner/opportunities/history'
 ```
 
 The periodic scanner runs at `scan_interval_seconds`. `POST /api/v1/scanner/scan` also triggers a scan immediately. The mock account snapshot contains an untracked BTC perpetual exposure, so BTC/USDT is excluded with `RECONCILIATION_REQUIRED`; ETH is evaluated independently. If the required exposure read fails, candidates are marked `POSITION_STATUS_UNKNOWN` and fail closed. Opportunity history is stored in the configured JSON file using atomic replacement; replace `history.Store` with PostgreSQL (or another durable database) before multi-instance or production deployment.
@@ -93,7 +111,7 @@ Only `PROFITABLE_IN_RANGE` candidates that pass other filters are marked eligibl
 - Monetary and financial calculations in `scanner.Service` (quantity allocation, VWAP depth matching, slippage, spread, fees, and net ROI) use exact fixed-point arithmetic via `github.com/shopspring/decimal` to eliminate binary floating-point drift. Results are marshaled cleanly to output domain structures.
 - The recorded duration is the time the scanner observed an opportunity, not the exact time it existed in the market. Resolution is limited by scan interval.
 - API error scans do not count as successful misses and do not end an active opportunity.
-- All endpoints are unauthenticated local-development endpoints. Add authentication, authorization, rate limiting, and network restrictions before deployment.
+- MOCK mode keeps the local API unauthenticated for development. LIVE mode requires `api_auth_token` (or `API_AUTH_TOKEN`) and protects all API routes with Bearer authentication; `/health` remains public for liveness checks. Keep the token in server-side secrets only. Rate limiting and network restrictions are still recommended.
 
 ## Telegram Bot Interface
 
@@ -253,3 +271,26 @@ Order placement sends a deterministic `clientOrderId` (`{pair}-{leg}-{seq}`) on
 every leg so a retried submit is rejected by the venue instead of double-filling.
 The sequence is seeded from wall-clock time at startup, so ids never collide
 across process restarts.
+
+
+## Supabase Database
+
+The initial Supabase PostgreSQL schema and migration workflow are documented in
+[`supabase/README.md`](./supabase/README.md). The versioned migration creates
+operational tables for exchange accounts, strategy/risk configuration, market pairs,
+scanner opportunities, orders/fills, positions/legs, funding payments, closed trades,
+balances, risk events, and executor events/status snapshots.
+
+**Important:** the schema is created, but runtime persistence is not yet connected.
+Redis remains the live coordination layer and scanner opportunity history still uses
+the configured JSON file. Do not assume Supabase is receiving live orders or trades
+until the persistence adapter and its idempotent retry/outbox tests are merged.
+
+
+For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.
+
+The executor remains in paper mode by default (`EXECUTOR_MOCK_MODE=true`). Do not set
+`EXECUTOR_MOCK_MODE=false` until the scanner's `mode`, exchange credentials,
+quote assets, balance permissions, and venue-specific order/funding/position behavior
+have all been validated in paper mode. Scanner LIVE mode and executor LIVE mode are
+separate switches and must be configured deliberately.

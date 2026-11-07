@@ -1,0 +1,83 @@
+name: Test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, "feat/**", "fix/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install Python dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+      - name: Run executor tests
+        run: pytest -q
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run Go tests
+        run: go test ./...
+      - name: Run Go vet
+        run: go vet ./...
+
+  supabase-schema:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: nafaz_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nafaz_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Supabase roles
+        run: |
+          psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE anon NOLOGIN;" \
+            -c "CREATE ROLE authenticated NOLOGIN;" \
+            -c "CREATE ROLE service_role NOLOGIN BYPASSRLS;"
+      - name: Apply migration
+        run: |
+          psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
+            -f supabase/migrations/20261107000100_create_nafaz_core_schema.sql
+      - name: Verify migration is idempotent
+        run: |
+          psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
+            -f supabase/migrations/20261107000100_create_nafaz_core_schema.sql
+      - name: Verify RLS, grants and updated_at triggers
+        run: |
+          psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
+            -f supabase/tests/schema_smoke.sql
+
+  docker-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build scanner image
+        run: docker build -f Dockerfile -t nafaz-scanner:ci .
+      - name: Build executor image
+        run: docker build -f Dockerfile.executor -t nafaz-executor:ci .

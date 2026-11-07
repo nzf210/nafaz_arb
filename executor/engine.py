@@ -98,6 +98,9 @@ class ArbitrageEngine(
         # operator can query why a pair stopped instead of scraping logs.
         self._failure_reasons: Dict[str, Dict[str, Any]] = {}
         self._last_status_publish: float = 0.0
+        # Funding settlement reconciliation is rate-limited per pair so a delayed
+        # exchange history endpoint is not polled on every 50ms monitoring tick.
+        self._funding_reconcile_retry_after_ms: Dict[str, int] = {}
 
         # Daily loss circuit breaker (UTC day boundary).
         self._daily_realized_loss_usdt: float = 0.0
@@ -110,6 +113,9 @@ class ArbitrageEngine(
         self._consecutive_order_failures: Dict[str, int] = {}
         # Last observed available balances per venue leg, for mismatch detection.
         self._last_balances: Dict[str, float] = {}
+        # Balance snapshot fetched once per signal; reused by entry sizing so the
+        # venue is checked even when the signal is a duplicate and no order follows.
+        self._balance_snapshots: Dict[str, Dict[str, Any]] = {}
         # Venue names seen from recent payloads, for pair-tag -> exchange mapping.
         self._pair_infos: Dict[str, Any] = {}
 
@@ -125,6 +131,123 @@ class ArbitrageEngine(
             )
         await self._recover_active_positions()
         await self._recover_pending_entry_orders()
+        if not getattr(self.config, "mock_mode", False):
+            await self._verify_recovered_active_positions()
+
+    async def _verify_recovered_active_positions(self) -> None:
+        """
+        Verifies persisted live positions against the exchange after restart.
+        Any unknown or mismatched exposure is retained and blocked for manual
+        reconciliation; Redis snapshots alone are not proof of an open hedge.
+        """
+        if not self.active_positions:
+            return
+        if not hasattr(self.client, "fetch_positions"):
+            logger.critical(
+                "[Recovery] live client cannot fetch futures positions; "
+                "all restored positions require manual reconciliation"
+            )
+            groups = {}
+            for pair_tag, pos in self.active_positions.items():
+                groups.setdefault(self._resolve_global_symbol(pos.symbol), []).append((pair_tag, pos))
+            for symbol, items in groups.items():
+                for pair_tag, pos in items:
+                    pos.state = "RECONCILIATION_REQUIRED"
+                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                    await self.redis.set(
+                        f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+                    )
+                    self._mark_failed(
+                        pair_tag,
+                        "RECOVERY_POSITION_STATE_UNKNOWN",
+                        "Live futures position API is unavailable after restart.",
+                        detail={"global_symbol": symbol, "expected_qty": pos.qty},
+                        state=PositionState.RECONCILIATION_REQUIRED,
+                    )
+            return
+
+        groups = {}
+        for pair_tag, pos in self.active_positions.items():
+            global_symbol = self._resolve_global_symbol(pos.symbol)
+            groups.setdefault(global_symbol, []).append((pair_tag, pos))
+
+        for global_symbol, items in groups.items():
+            expected_qty = sum(pos.qty for _, pos in items)
+            try:
+                positions = await self.client.fetch_positions(global_symbol)
+                if positions is None:
+                    raise ValueError("fetch_positions returned None")
+                actual_short_qty = 0.0
+                for position in positions:
+                    if not isinstance(position, dict):
+                        raise ValueError("invalid position payload")
+                    info = position.get("info") or {}
+                    side = str(
+                        position.get("side")
+                        or position.get("positionSide")
+                        or info.get("posSide")
+                        or info.get("positionSide")
+                        or ""
+                    ).lower()
+                    raw_contracts = position.get("contracts")
+                    if raw_contracts is not None:
+                        size = abs(float(raw_contracts)) * abs(
+                            float(position.get("contractSize") or 1.0)
+                        )
+                        if size <= 1e-12:
+                            continue
+                        if side != "short":
+                            raise ValueError(
+                                f"unexpected non-short futures exposure (side={side or 'unknown'})"
+                            )
+                        actual_short_qty += size
+                        continue
+
+                    raw_amount = position.get("positionAmt", info.get("positionAmt"))
+                    if raw_amount is None:
+                        raise ValueError("position size unavailable")
+                    signed_amount = float(raw_amount)
+                    if abs(signed_amount) <= 1e-12:
+                        continue
+                    if signed_amount >= 0:
+                        raise ValueError("unexpected long or unsigned futures exposure")
+                    actual_short_qty += abs(signed_amount)
+            except Exception as exc:
+                actual_short_qty = None
+                reason = f"cannot verify futures position after restart: {exc}"
+            else:
+                tolerance = max(1e-10, expected_qty * 1e-4)
+                if abs(actual_short_qty - expected_qty) <= tolerance:
+                    logger.info(
+                        f"[Recovery] verified {global_symbol} short quantity "
+                        f"{actual_short_qty} against Redis snapshot {expected_qty}"
+                    )
+                    continue
+                reason = (
+                    f"futures quantity mismatch after restart: expected={expected_qty}, "
+                    f"exchange={actual_short_qty}"
+                )
+
+            logger.critical(
+                f"[Recovery] {global_symbol}: {reason}; restored positions blocked"
+            )
+            for pair_tag, pos in items:
+                pos.state = "RECONCILIATION_REQUIRED"
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                await self.redis.set(
+                    f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+                )
+                self._mark_failed(
+                    pair_tag,
+                    "RECOVERY_POSITION_MISMATCH",
+                    reason,
+                    detail={
+                        "global_symbol": global_symbol,
+                        "expected_qty": pos.qty,
+                        "exchange_total_short_qty": actual_short_qty,
+                    },
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
 
     async def _persist_pending_entry(self, pair_tag: str, order_info: dict) -> None:
         """Persists a pending entry order so a restart can adopt or cancel it."""
@@ -170,31 +293,96 @@ class ArbitrageEngine(
                 order_id = str(order_info.get("order_id", ""))
                 symbol = str(order_info.get("symbol", ""))
                 if not order_id or not symbol:
-                    await self.redis.delete(key)
+                    self.pending_entry_orders[pair_tag] = order_info
+                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                    self._mark_failed(
+                        pair_tag,
+                        "ENTRY_ORDER_RECORD_INVALID",
+                        "Persisted pending entry is missing order_id or symbol; record retained.",
+                        detail={"order_id": order_id, "symbol": symbol},
+                        state=PositionState.RECONCILIATION_REQUIRED,
+                    )
+                    logger.critical(
+                        f"[Recovery] malformed pending entry record for {pair_tag}; "
+                        "Redis record retained for manual reconciliation"
+                    )
                     continue
                 status, filled = await self._resolve_venue_order_state(order_id, symbol)
+                terminal_statuses = ("closed", "canceled", "cancelled", "rejected", "expired")
                 if status == "unknown":
-                    # Cannot confirm venue state: leave the record for the next
-                    # startup and refuse fresh entries for this pair.
+                    # Missing/ambiguous venue state is not proof that an order is gone.
+                    # Keep both durable and in-memory records so force-close cannot
+                    # silently skip an order whose venue state is unknown.
+                    self.pending_entry_orders[pair_tag] = order_info
+                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                    self._mark_failed(
+                        pair_tag,
+                        "ENTRY_ORDER_STATE_UNKNOWN",
+                        f"Cannot verify local order {order_id}; pending record retained.",
+                        detail={"order_id": order_id, "symbol": symbol},
+                        state=PositionState.RECONCILIATION_REQUIRED,
+                    )
                     logger.critical(
                         f"[Recovery] cannot verify venue state of order {order_id} "
                         f"({pair_tag}) - MANUAL CHECK REQUIRED"
                     )
                     continue
+
+                order_info["filled"] = float(filled or 0.0)
                 if status == "open":
-                    order_info["filled"] = float(filled or 0.0)
                     self.pending_entry_orders[pair_tag] = order_info
-                    self.states[pair_tag] = PositionState.ENTRY_PENDING
+                    self.states[pair_tag] = (
+                        PositionState.ENTRY_PARTIAL
+                        if order_info["filled"] > 0
+                        else PositionState.ENTRY_PENDING
+                    )
+                    # Keep the Redis key: in-memory adoption alone is not restart-safe.
+                    await self._persist_pending_entry(pair_tag, order_info)
                     logger.warning(
                         f"[Recovery] re-adopted pending entry order {order_id} "
                         f"for {pair_tag} (filled={filled})"
                     )
-                else:
-                    logger.warning(
-                        f"[Recovery] pending entry order {order_id} for {pair_tag} "
-                        f"is {status} on the venue - clearing record"
+                    continue
+
+                if status in terminal_statuses:
+                    # A terminal order can still contain fills that occurred before
+                    # cancellation or before the process crashed. Hedge that final
+                    # cumulative fill before releasing the unused reservation.
+                    self.pending_entry_orders[pair_tag] = order_info
+                    self.states[pair_tag] = PositionState.ENTRY_PENDING
+                    await self._handle_entry_fills(
+                        pair_tag,
+                        order_info,
+                        {"id": order_id, "status": status, "filled": order_info["filled"]},
                     )
-                await self.redis.delete(key)
+                    if self.states.get(pair_tag) in (
+                        PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+                    ):
+                        logger.critical(
+                            f"[Recovery] fill reconciliation failed for {pair_tag}; "
+                            "pending record retained"
+                        )
+                        continue
+                    await self._finalize_entry_order(pair_tag, status)
+                    logger.info(
+                        f"[Recovery] reconciled terminal order {order_id} for "
+                        f"{pair_tag} (status={status}, filled={filled})"
+                    )
+                    continue
+
+                self.pending_entry_orders[pair_tag] = order_info
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                self._mark_failed(
+                    pair_tag,
+                    "ENTRY_ORDER_STATE_UNSUPPORTED",
+                    f"Unsupported exchange order status '{status}' for {order_id}.",
+                    detail={"order_id": order_id, "symbol": symbol, "status": status},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                logger.critical(
+                    f"[Recovery] unsupported order status '{status}' for {order_id}; "
+                    "pending record retained"
+                )
             except Exception:
                 logger.exception(f"[Recovery] failed to restore pending entry from {key}")
 
@@ -206,9 +394,9 @@ class ArbitrageEngine(
             logger.warning(f"[Recovery] fetch order {order_id} failed: {exc}")
             return "unknown", None
         if not isinstance(order, dict) or not order.get("id") and order_id not in str(order):
-            # fetch_order on a missing order typically raises; a None-ish reply
-            # means the venue does not know the order.
-            return "not_found", 0.0
+            # A missing response is ambiguous (history retention, API lag, or
+            # wrong symbol); never interpret it as a safely canceled order.
+            return "unknown", None
         return str(order.get("status", "unknown")), float(order.get("filled", 0.0) or 0.0)
 
     async def _recover_active_positions(self) -> None:
@@ -228,17 +416,30 @@ class ArbitrageEngine(
             return
 
         for key in keys or []:
+            pair_tag = key.split("arb:active_pos:", 1)[-1]
             try:
                 raw = await self.redis.get(key)
                 if not raw:
                     continue
                 pos = ActivePosition.from_dict(json.loads(raw))
-                pair_tag = key.split("arb:active_pos:", 1)[-1]
                 if pos.qty <= 0:
-                    logger.warning(
-                        f"[Recovery] Dropping {pair_tag}: recovered qty is {pos.qty}"
+                    # A zero/invalid Redis quantity is not proof that the exchange
+                    # is flat. Retain the record and require explicit reconciliation.
+                    self.active_positions[pair_tag] = pos
+                    pos.state = "RECONCILIATION_REQUIRED"
+                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                    await self.redis.set(key, json.dumps(pos.to_dict()))
+                    self._mark_failed(
+                        pair_tag,
+                        "RECOVERED_POSITION_QTY_INVALID",
+                        f"Recovered position quantity is invalid ({pos.qty}); exchange exposure must be checked.",
+                        detail={"qty": pos.qty, "symbol": pos.symbol},
+                        state=PositionState.RECONCILIATION_REQUIRED,
                     )
-                    await self.redis.delete(key)
+                    logger.critical(
+                        f"[Recovery] retaining {pair_tag}: recovered qty is {pos.qty}; "
+                        "manual reconciliation required"
+                    )
                     continue
 
                 self.active_positions[pair_tag] = pos
@@ -263,8 +464,18 @@ class ArbitrageEngine(
                     f"entry_idr={pos.entry_price_idr}, short_entry_usdt={pos.short_entry_usdt}, "
                     f"state={self.states[pair_tag].value}"
                 )
-            except Exception:
-                logger.exception(f"[Recovery] failed to restore position from {key}")
+            except Exception as exc:
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                self._mark_failed(
+                    pair_tag,
+                    "ACTIVE_POSITION_RECORD_INVALID",
+                    f"Persisted active position cannot be parsed: {exc}",
+                    detail={"redis_key": key},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                logger.exception(
+                    f"[Recovery] invalid active position record {key}; Redis key retained"
+                )
 
         if recovered:
             logger.warning(
@@ -441,7 +652,17 @@ class ArbitrageEngine(
         """
         async with self._pair_lock(pair_tag):
             self._roll_loss_day_if_needed()
-            self._check_balance_mismatch()
+            payload = await self._load_signal_payload(pair_tag)
+            if payload is None:
+                return
+            self._pair_infos[pair_tag] = payload.pair_info
+            balances = await self._check_balance_mismatch(
+                payload.pair_info,
+                payload.pricing_snapshot.usdt_idr_rate,
+                pair_tag,
+            )
+            if balances is None and not getattr(self.config, "mock_mode", False):
+                return
             if self._trading_halted:
                 logger.warning(
                     f"[Circuit Breaker] rejecting entry for {pair_tag}: "
@@ -454,7 +675,7 @@ class ArbitrageEngine(
                     f"exchange halted ({venue_reason})"
                 )
                 return
-            await self._handle_signal_locked(pair_tag)
+            await self._handle_signal_locked(pair_tag, payload)
 
     def _next_order_seq(self) -> int:
         """Monotonic per-process sequence used to keep client order ids unique."""
@@ -547,8 +768,11 @@ class ArbitrageEngine(
             return False
         return True
 
-    async def _handle_signal_locked(self, pair_tag: str):
-        payload = await self._load_signal_payload(pair_tag)
+    async def _handle_signal_locked(
+        self, pair_tag: str, payload: Optional[ExecutorPayload] = None
+    ):
+        if payload is None:
+            payload = await self._load_signal_payload(pair_tag)
         if payload is None:
             return
 
@@ -594,8 +818,13 @@ class ArbitrageEngine(
                 )
                 return
             # Sync balances to Redis
-            bals = self.client.get_balances()
-            await self.redis.set(BALANCES_KEY, json.dumps(bals))
+            bals = await self._get_balance_snapshot(
+                pair_tag=pair_tag,
+                pair_info=pair_info,
+                usdt_idr_rate=snapshot.usdt_idr_rate,
+            )
+            if bals is not None:
+                await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
         try:
             logger.info(
@@ -789,14 +1018,14 @@ class ArbitrageEngine(
                 if not order_info:
                     continue
                 order_id = order_info["order_id"]
-                symbol = order_info["symbol"]
                 logger.warning(
                     f"[Emergency Cancel] Cancelling pending entry order {order_id} for {p_key} due to negative funding"
                 )
-                try:
-                    await self.client.cancel_local_order(order_id, symbol)
-                except Exception:
-                    logger.exception(f"emergency cancel failed for {order_id}")
-                del self.pending_entry_orders[p_key]
-                await self._clear_pending_entry(p_key)
-                self.states[p_key] = PositionState.IDLE
+                resolved = await self._cancel_entry_order_and_reconcile(
+                    p_key, order_info, "Emergency Cancel"
+                )
+                if not resolved:
+                    logger.critical(
+                        f"[Emergency Cancel] order {order_id} remains unresolved; "
+                        "pending state and reserved funds are retained"
+                    )

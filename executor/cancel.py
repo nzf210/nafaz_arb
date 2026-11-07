@@ -1,14 +1,11 @@
 """Pending-order cancellation before force close.
 
-Cancels the resting exit and entry orders tracked for a pair so a force close
-never races an in-flight fill. Extracted from executor/force_close.py; mixed
-into ArbitrageEngine so the self.* state stays on one object.
+Cancels resting orders and reconciles any fills that race the cancellation.
 """
 
-import json
 import logging
 
-from executor.helpers import BALANCES_KEY
+from executor.models import PositionState
 
 logger = logging.getLogger("executor.engine")
 
@@ -19,49 +16,94 @@ class CancelMixin:
     async def _cancel_pending_order_for_force_close(
         self, pair_key: str, orders: dict, order_label: str
     ) -> bool:
-        """Cancels a pending order (exit/entry) tracked in `orders`. Returns True ONLY if cancellation succeeded on the exchange."""
+        """
+        Cancels and then fetches the order from the venue. A cancel acknowledgement
+        is not proof that the order is terminal; fills racing cancellation are
+        reconciled before force close is allowed to continue.
+        """
         order_info = orders.get(pair_key)
         if not order_info:
+            return True
+        order_id = str(order_info.get("order_id", ""))
+        symbol = str(order_info.get("symbol", ""))
+        if not order_id or not symbol:
+            logger.critical(
+                f"[Force Close] cannot reconcile malformed {order_label} order "
+                f"record for {pair_key}; force close is blocked"
+            )
             return False
         try:
-            res = await self.client.cancel_local_order(order_info["order_id"], order_info["symbol"])
-            # If exchange client returns status, ensure it's not an explicit failure
-            if isinstance(res, dict) and res.get("status") in ("failed", "rejected"):
-                logger.error(
-                    f"[Force Close] Exchange rejected cancellation of {order_label} order {order_info['order_id']}: {res}"
-                )
-                return False
-            logger.info(
-                f"[Force Close] Canceled pending {order_label} order {order_info['order_id']}"
-            )
-            return True
+            await self.client.cancel_local_order(order_id, symbol)
         except Exception:
-            logger.exception(f"failed to cancel {order_label} order {order_info.get('order_id')} on force close")
+            logger.exception(
+                f"cancel request failed for {order_label} order {order_id}; "
+                "checking final venue state"
+            )
+
+        try:
+            order = await self.client.fetch_local_order(order_id, symbol)
+        except Exception:
+            logger.exception(
+                f"cannot verify {order_label} order {order_id}; force close is blocked"
+            )
             return False
 
-    async def _cancel_pending_exit_for_force_close(self, pair_key: str):
-        if await self._cancel_pending_order_for_force_close(
-            pair_key, self.pending_exit_orders, "exit"
-        ):
-            self.pending_exit_orders.pop(pair_key, None)
-
-    async def _cancel_pending_entry_for_force_close(self, pair_key: str):
-        order_info = self.pending_entry_orders.get(pair_key)
-        if not await self._cancel_pending_order_for_force_close(
-            pair_key, self.pending_entry_orders, "entry"
-        ):
-            return
-        if hasattr(self.client, "unlock_funds"):
-            self.client.unlock_funds(
-                float(order_info.get("spot_cost_usdt", 0.0)),
-                float(order_info.get("futures_margin_usdt", 0.0)),
+        if not isinstance(order, dict):
+            logger.critical(
+                f"invalid venue response while verifying {order_label} order {order_id}"
             )
-            bals = self.client.get_balances()
-            await self.redis.set(BALANCES_KEY, json.dumps(bals))
-        self.pending_entry_orders.pop(pair_key, None)
-        await self._clear_pending_entry(pair_key)
+            return False
 
-    async def _cancel_pending_orders_for_force_close(self, pair_key: str) -> None:
-        """Cancels pending exit and entry orders before closing position legs."""
-        await self._cancel_pending_exit_for_force_close(pair_key)
-        await self._cancel_pending_entry_for_force_close(pair_key)
+        status = str(order.get("status", "unknown")).lower()
+        if status not in ("closed", "canceled", "cancelled", "rejected", "expired"):
+            logger.critical(
+                f"{order_label} order {order_id} remains unconfirmed (status={status}); "
+                "force close is blocked"
+            )
+            return False
+
+        filled = float(order.get("filled", 0.0) or 0.0)
+        if order_label == "entry":
+            order_info["filled"] = filled
+            await self._handle_entry_fills(pair_key, order_info, order)
+            if self.states.get(pair_key) in (
+                PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+            ):
+                return False
+            await self._finalize_entry_order(pair_key, status)
+        elif order_label == "exit":
+            already_closed = float(order_info.get("closed_short_qty", 0.0) or 0.0)
+            if filled > already_closed:
+                await self._process_pending_exit(pair_key, force_reconcile=True)
+                reconciled = float(order_info.get("closed_short_qty", 0.0) or 0.0)
+                if reconciled + 1e-12 < filled:
+                    logger.critical(
+                        f"exit fill for {order_id} was not fully hedged during cancellation; "
+                        "force close is blocked"
+                    )
+                    return False
+            orders.pop(pair_key, None)
+
+        logger.info(
+            f"[Force Close] Verified terminal {order_label} order {order_id} "
+            f"(status={status}, filled={filled})"
+        )
+        return True
+
+    async def _cancel_pending_exit_for_force_close(self, pair_key: str) -> bool:
+        return await self._cancel_pending_order_for_force_close(
+            pair_key, self.pending_exit_orders, "exit"
+        )
+
+    async def _cancel_pending_entry_for_force_close(self, pair_key: str) -> bool:
+        return await self._cancel_pending_order_for_force_close(
+            pair_key, self.pending_entry_orders, "entry"
+        )
+
+    async def _cancel_pending_orders_for_force_close(self, pair_key: str) -> bool:
+        """Force close proceeds only after every resting order is terminal and reconciled."""
+        if not await self._cancel_pending_exit_for_force_close(pair_key):
+            return False
+        if not await self._cancel_pending_entry_for_force_close(pair_key):
+            return False
+        return True

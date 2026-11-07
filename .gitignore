@@ -20,6 +20,7 @@ coverage.html
 
 # Local configuration and secrets
 config.json
+config.*.json
 .env
 .env.*
 *.pem
