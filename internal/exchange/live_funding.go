@@ -15,6 +15,9 @@ import (
 
 // FundingRate routes funding data to the exchange that owns the perpetual symbol.
 func (l *LiveAdapter) FundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {
+	if strings.HasPrefix(symbol, "toko:") {
+		return domain.FundingRate{}, fmt.Errorf("local Spot symbol cannot be routed to a foreign perpetual funding endpoint")
+	}
 	switch {
 	case isMEXCSymbol(symbol): return l.fetchMEXCFundingRate(ctx, symbol)
 	case strings.HasPrefix(symbol, "binance:"): return l.fetchBinanceFundingRate(ctx, symbol)
