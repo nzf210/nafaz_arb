@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -108,6 +109,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/scanner/opportunities/history", s.opportunityHistory)
 	mux.HandleFunc("/api/v1/scanner/opportunities/metrics", s.opportunityMetrics)
 	mux.HandleFunc("/api/v1/executor/status", s.executorStatus)
+
+	// Keep local MOCK development frictionless, but require a constant-time
+	// bearer-token check for LIVE mode or whenever an API token is configured.
+	if strings.EqualFold(s.cfg.Mode, "LIVE") || strings.TrimSpace(s.cfg.APIAuthToken) != "" {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/health" {
+				mux.ServeHTTP(w, r)
+				return
+			}
+			expected := strings.TrimSpace(s.cfg.APIAuthToken)
+			if expected == "" {
+				http.Error(w, "API authentication is not configured", http.StatusServiceUnavailable)
+				return
+			}
+			const prefix = "Bearer "
+			header := r.Header.Get("Authorization")
+			if !strings.HasPrefix(header, prefix) ||
+				subtle.ConstantTimeCompare([]byte(strings.TrimSpace(strings.TrimPrefix(header, prefix))), []byte(expected)) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			mux.ServeHTTP(w, r)
+		})
+	}
 	return mux
 }
 func (s *Server) RunPeriodic(ctx context.Context) {

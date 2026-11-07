@@ -375,7 +375,14 @@ async def test_p0_04_missing_futures_price_aborts_and_rolls_back(fake_redis):
 
     class NoPriceShortClient(MockExchangeClient):
         async def open_global_short_market(self, symbol, amount, price=0.0, client_order_id=None):
-            record = {"symbol": symbol, "side": "sell", "amount": amount}
+            record = {
+                "id": "no-price-hedge",
+                "symbol": symbol,
+                "side": "sell",
+                "amount": amount,
+                "filled": amount,
+                "status": "closed",
+            }
             self.global_short_sells.append(record)
             return record
 

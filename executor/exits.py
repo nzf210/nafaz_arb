@@ -49,22 +49,118 @@ class ExitMixin:
         async def _handle_funding_rollover(
             self, pair_tag: str, pos: ActivePosition, global_ask_usdt: float, now_ms: int
         ) -> bool:
+            """
+            Applies only funding payments returned by the exchange settlement ledger.
+            The market's settlement interval is never assumed to be eight hours.
+            """
             if pos.next_funding_time_ms <= 0 or now_ms < pos.next_funding_time_ms:
                 return False
 
-            pos_val_usdt = pos.qty * global_ask_usdt
-            accumulated = pos_val_usdt * pos.current_funding_rate
-            pos.accumulated_funding_usdt += accumulated
-            pos.last_funding_time_ms = pos.next_funding_time_ms
-            pos.next_funding_time_ms += 8 * 3600 * 1000  # advance 8h
+            retry_after = getattr(self, "_funding_reconcile_retry_after_ms", {})
+            if now_ms < retry_after.get(pair_tag, 0):
+                return False
+            retry_after[pair_tag] = now_ms + 30_000
+            self._funding_reconcile_retry_after_ms = retry_after
+
+            symbol = self._resolve_global_symbol(pos.symbol)
+            since_ms = (
+                pos.last_funding_time_ms
+                if pos.last_funding_time_ms > 0
+                else max(0, pos.next_funding_time_ms - 1)
+            )
+            try:
+                payments = await self.client.fetch_funding_history(
+                    symbol, since=since_ms, limit=100
+                )
+            except Exception:
+                logger.exception(
+                    f"[Funding Reconciliation] cannot fetch actual settlement history "
+                    f"for {pair_tag}; estimated funding will not be credited"
+                )
+                return False
+
+            if not isinstance(payments, list):
+                logger.error(
+                    f"[Funding Reconciliation] invalid funding history response for {pair_tag}"
+                )
+                return False
+
+            settled = []
+            for payment in payments:
+                if not isinstance(payment, dict):
+                    continue
+                timestamp = int(payment.get("timestamp") or 0)
+                if timestamp <= pos.last_funding_time_ms or timestamp > now_ms:
+                    continue
+                asset = str(payment.get("code") or payment.get("currency") or "USDT").upper()
+                if asset != "USDT":
+                    logger.error(
+                        f"[Funding Reconciliation] unsupported settlement asset {asset} "
+                        f"for {pair_tag}; payment is not added to USDT PnL"
+                    )
+                    continue
+                try:
+                    amount = float(payment.get("amount"))
+                except (TypeError, ValueError):
+                    logger.error(
+                        f"[Funding Reconciliation] invalid payment amount for {pair_tag}: {payment}"
+                    )
+                    continue
+                settled.append((timestamp, amount, payment))
+
+            # Refresh the venue's actual next settlement schedule. Different
+            # contracts/venues can use 1h, 2h, 4h, 8h or custom intervals.
+            next_funding_ms = 0
+            current_rate = pos.current_funding_rate
+            try:
+                rate_data = await self.client.fetch_funding_rate(symbol)
+                if isinstance(rate_data, dict):
+                    next_funding_ms = int(
+                        rate_data.get("nextFundingTimestamp")
+                        or rate_data.get("nextFundingTime")
+                        or 0
+                    )
+                    if rate_data.get("fundingRate") is not None:
+                        current_rate = float(rate_data["fundingRate"])
+            except Exception:
+                logger.exception(
+                    f"[Funding Reconciliation] cannot refresh next settlement schedule "
+                    f"for {pair_tag}; automatic funding rollover is paused"
+                )
+
+            if not settled:
+                if next_funding_ms > now_ms:
+                    pos.next_funding_time_ms = next_funding_ms
+                    pos.current_funding_rate = current_rate
+                    pos.updated_at = now_ms
+                    await self.redis.set(
+                        f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+                    )
+                return False
+
+            settled.sort(key=lambda item: item[0])
+            actual_amount = sum(item[1] for item in settled)
+            pos.accumulated_funding_usdt += actual_amount
+            pos.last_funding_time_ms = settled[-1][0]
+            pos.current_funding_rate = current_rate
+            pos.next_funding_time_ms = (
+                next_funding_ms if next_funding_ms > pos.last_funding_time_ms else 0
+            )
             pos.updated_at = now_ms
 
-            active_key = f"arb:active_pos:{pair_tag}"
-            await self.redis.set(active_key, json.dumps(pos.to_dict()))
-            logger.info(
-                f"[State 3 Funding Rollover] Funding hour passed for {pair_tag}. "
-                f"Added ${accumulated:.4f} funding. Total: ${pos.accumulated_funding_usdt:.4f}"
+            await self.redis.set(
+                f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
             )
+            logger.info(
+                f"[Funding Reconciliation] {pair_tag}: applied {len(settled)} actual "
+                f"settlement(s), net {actual_amount:+.8f} USDT; "
+                f"cumulative={pos.accumulated_funding_usdt:+.8f} USDT"
+            )
+            if pos.next_funding_time_ms <= 0:
+                logger.critical(
+                    f"[Funding Reconciliation] next settlement time unavailable for "
+                    f"{pair_tag}; funding accrual paused pending a valid exchange schedule"
+                )
             return True
 
         def _should_repeg_exit(
@@ -292,9 +388,17 @@ class ExitMixin:
             for pair_tag in pair_tags:
                 await self._process_pending_exit(pair_tag)
 
-        async def _process_pending_exit(self, pair_tag: str) -> None:
-            """Fetch local exit order and trigger short closure on fills."""
-            if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+        async def _process_pending_exit(
+            self, pair_tag: str, force_reconcile: bool = False
+        ) -> None:
+            """Fetch local exit order and trigger short closure on fills.
+
+            ``force_reconcile`` is used only by force close while holding the pair lock.
+            """
+            if (
+                self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED
+                and not force_reconcile
+            ):
                 return
 
             order_info = self.pending_exit_orders.get(pair_tag)
@@ -310,13 +414,24 @@ class ExitMixin:
             if live_price_raw and hasattr(self.client, "update_market_price"):
                 try:
                     live_snapshot = json.loads(live_price_raw)
-                    self.client.update_market_price(
-                        symbol=local_symbol,
-                        best_bid=float(live_snapshot.get("local_best_bid", 0.0)),
-                        best_ask=float(live_snapshot.get("local_best_ask", 0.0)),
-                    )
+                    if not helpers.snapshot_is_stale(live_snapshot):
+                        self.client.update_market_price(
+                            symbol=local_symbol,
+                            best_bid=float(live_snapshot.get("local_best_bid", 0.0)),
+                            best_ask=float(live_snapshot.get("local_best_ask", 0.0)),
+                        )
+                        # Paper execution must use the same live futures quote that
+                        # triggered the local spot fill, not an unrelated/stale price.
+                        global_symbol = self._resolve_global_symbol(pos.symbol)
+                        self.client.update_market_price(
+                            symbol=global_symbol,
+                            best_bid=float(live_snapshot.get("global_best_bid_usdt", 0.0)),
+                            best_ask=float(live_snapshot.get("global_best_ask_usdt", 0.0)),
+                        )
                 except Exception:
-                    pass
+                    logger.exception(
+                        f"failed to synchronize market prices before exit hedge for {pair_tag}"
+                    )
 
             try:
                 order = await fetch_order_preferring_stream(
@@ -372,6 +487,31 @@ class ExitMixin:
                     unclosed_delta,
                     client_order_id=build_client_order_id(pair_tag, "unwind", self._next_order_seq()),
                 )
+                if not isinstance(close_order, dict):
+                    raise ValueError(
+                        "futures close returned no verifiable order payload after spot exit fill"
+                    )
+                close_status = str(close_order.get("status", "")).lower()
+                if close_status not in ("closed", "filled"):
+                    raise ValueError(
+                        f"futures close is not terminal after spot exit fill: {close_status}"
+                    )
+                try:
+                    actual_closed_qty = float(close_order.get("filled") or 0.0)
+                except (TypeError, ValueError):
+                    actual_closed_qty = 0.0
+                qty_tolerance = max(1e-12, unclosed_delta * 1e-8)
+                if actual_closed_qty + qty_tolerance < unclosed_delta:
+                    raise ValueError(
+                        f"futures close fill incomplete after spot sold: "
+                        f"requested={unclosed_delta}, filled={actual_closed_qty}"
+                    )
+                if actual_closed_qty > unclosed_delta + qty_tolerance:
+                    raise ValueError(
+                        f"futures close overfilled: requested={unclosed_delta}, "
+                        f"filled={actual_closed_qty}"
+                    )
+
                 # Snapshot qty before mutation so PnL fractions stay consistent.
                 total_qty_before = pos.qty
                 order_info["closed_short_qty"] += unclosed_delta
@@ -386,11 +526,12 @@ class ExitMixin:
                 # pegged quote: a market buy fills through the book and the gap is
                 # real money. Fall back to the live ask only when the venue returns
                 # no fill price at all.
-                short_exit_usdt = helpers.extract_fill_price(
-                    close_order or {}, live_global_ask
-                )
+                short_exit_usdt = helpers.extract_fill_price(close_order)
                 if short_exit_usdt <= 0:
-                    short_exit_usdt = live_global_ask
+                    raise ValueError(
+                        "futures close fill price unavailable after spot sell; "
+                        "PnL cannot be safely finalized"
+                    )
 
                 spot_pnl_idr = unclosed_delta * (exit_price_idr - entry_price_idr)
                 spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
@@ -460,8 +601,13 @@ class ExitMixin:
                         funding_usdt=funding_usdt,
                         futures_fees_usdt=fees_usdt,
                     )
-                    bals = self.client.get_balances()
-                    await self.redis.set(BALANCES_KEY, json.dumps(bals))
+                    bals = await self._get_balance_snapshot(
+                        pair_tag=pair_tag,
+                        symbol=pos.symbol,
+                        usdt_idr_rate=usdt_rate,
+                    )
+                    if bals is not None:
+                        await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
                 # Update stats in Redis
                 pipe = self.redis.pipeline()
@@ -483,9 +629,31 @@ class ExitMixin:
                 await self.publish_status()
                 await self._finalize_exit_position(pair_tag, pos)
             except Exception as ee:
-                logger.critical(
-                    f"[State 4 CRITICAL] Failed to execute close short market buy for {pair_tag}: {ee}"
+                # The local spot sell has already filled. Do not retry this exit
+                # automatically: the futures close may have failed, partially filled,
+                # or timed out after acceptance. Preserve state for manual reconciliation.
+                pos.state = "RECONCILIATION_REQUIRED"
+                pos.updated_at = int(time.time() * 1000)
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                await self.redis.set(
+                    f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
                 )
+                self._mark_failed(
+                    pair_tag,
+                    "EXIT_HEDGE_RECONCILIATION_REQUIRED",
+                    "Spot exit filled but futures close could not be verified; automatic exit retries blocked.",
+                    detail={
+                        "spot_order_id": order_info.get("order_id"),
+                        "spot_sold_qty": unclosed_delta,
+                        "futures_close_error": str(ee),
+                    },
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                logger.critical(
+                    f"[State 4 CRITICAL] Futures close not verified after spot exit fill "
+                    f"for {pair_tag}: {ee}. Manual reconciliation required."
+                )
+                await self.publish_status()
 
         def _resolve_global_symbol(self, symbol: str) -> str:
             """Convert local/pos symbol into global futures symbol format."""

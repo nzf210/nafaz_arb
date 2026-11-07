@@ -182,3 +182,41 @@ func TestRunScanRejectsOverlap(t *testing.T) {
 	}
 	<-done
 }
+
+
+func TestLiveAPIRequiresBearerTokenExceptHealth(t *testing.T) {
+    cfg := config.Config{Mode: "LIVE", APIAuthToken: "test-secret"}
+    srv := New(nil, nil, cfg)
+    handler := srv.Handler()
+
+    health := httptest.NewRecorder()
+    handler.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/health", nil))
+    if health.Code != http.StatusOK {
+        t.Fatalf("health code=%d, want 200", health.Code)
+    }
+
+    unauthorized := httptest.NewRecorder()
+    handler.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/executor/status", nil))
+    if unauthorized.Code != http.StatusUnauthorized {
+        t.Fatalf("unauthenticated API code=%d, want 401", unauthorized.Code)
+    }
+
+    authorizedReq := httptest.NewRequest(http.MethodGet, "/api/v1/executor/status", nil)
+    authorizedReq.Header.Set("Authorization", "Bearer test-secret")
+    authorized := httptest.NewRecorder()
+    handler.ServeHTTP(authorized, authorizedReq)
+    if authorized.Code != http.StatusOK {
+        t.Fatalf("authenticated API code=%d, want 200", authorized.Code)
+    }
+}
+
+func TestLiveAPIWithoutTokenFailsClosed(t *testing.T) {
+    srv := New(nil, nil, config.Config{Mode: "LIVE"})
+    rec := httptest.NewRecorder()
+    srv.Handler().ServeHTTP(
+        rec, httptest.NewRequest(http.MethodGet, "/api/v1/executor/status", nil),
+    )
+    if rec.Code != http.StatusServiceUnavailable {
+        t.Fatalf("API code=%d, want 503 when live auth is not configured", rec.Code)
+    }
+}
