@@ -73,6 +73,12 @@ class ExchangeClient:
             await loader()
             by_id = getattr(client, "markets_by_id", {}) or {}
             market = by_id.get(raw) or by_id.get(raw.upper()) or by_id.get(raw.lower())
+            if market is None:
+                compact = raw.replace("/", "").replace("-", "").replace("_", "").upper()
+                for market_id, candidate in by_id.items():
+                    if str(market_id).replace("/", "").replace("-", "").replace("_", "").upper() == compact:
+                        market = candidate
+                        break
             if isinstance(market, list):
                 market = market[0] if market else None
             if isinstance(market, dict) and market.get("symbol"):
