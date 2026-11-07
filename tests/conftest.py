@@ -176,6 +176,7 @@ def engine(fake_redis, mock_client):
         max_stale_latency_ms=500,
         min_partial_fill_usd=10.0,
         exit_price_move_threshold=0.0015,
+        global_exchange_name="binance",
     )
     return ArbitrageEngine(config=cfg, client=mock_client, redis_client=fake_redis)
 
