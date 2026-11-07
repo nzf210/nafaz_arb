@@ -364,6 +364,35 @@ begin
     end loop;
 end $$;
 
+-- Keep audit timestamps correct for every mutable operational row.
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+set search_path = pg_catalog, public
+as $
+begin
+    new.updated_at = now();
+    return new;
+end;
+$;
+
+do $
+declare
+    tbl text;
+begin
+    foreach tbl in array array[
+        'exchange_accounts','strategy_configs','risk_limits','market_pairs',
+        'positions','orders','position_legs'
+    ] loop
+        execute format('drop trigger if exists trg_%I_updated_at on public.%I', tbl, tbl);
+        execute format(
+            'create trigger trg_%I_updated_at before update on public.%I '
+            'for each row execute function public.set_updated_at()',
+            tbl, tbl
+        );
+    end loop;
+end $;
+
 comment on table public.orders is 'Exchange order lifecycle; idempotent client_order_id is recorded before/after exchange reconciliation.';
 comment on table public.order_fills is 'Append-only exchange fills, deduplicated by exchange fill id.';
 comment on table public.funding_payments is 'Actual funding settlements should be recorded as confirmed/reconciled; estimates must remain explicitly estimated.';
