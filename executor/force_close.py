@@ -38,9 +38,94 @@ class ForceCloseMixin:
             return None
 
 
-        async def _close_global_short_leg(self, pair_key: str, pos) -> Tuple[bool, float]:
-            """Closes the futures short; returns its actual fill price only after flat verification."""
+        async def _close_global_short_leg(
+            self, pair_key: str, pos, allow_already_flat: bool = False
+        ) -> Tuple[bool, float]:
+            """Closes the futures short; returns its actual fill price only after flat verification.
+
+            When retrying a previously reconciliation-required force close, first
+            inspect the exchange. If futures are already flat, skip a duplicate
+            reduce-only close and continue with the remaining spot liquidation.
+            """
             global_sym = self._resolve_global_symbol(pos.symbol)
+            if allow_already_flat:
+                if not hasattr(self.client, "fetch_positions"):
+                    logger.critical(
+                        f"[Force Close] cannot retry {pair_key}: futures position API unavailable"
+                    )
+                    return False, 0.0
+                try:
+                    current_positions = await self.client.fetch_positions(global_sym)
+                except Exception:
+                    logger.exception(
+                        f"[Force Close] cannot verify existing futures exposure for retry {pair_key}"
+                    )
+                    return False, 0.0
+                if current_positions is None:
+                    logger.critical(
+                        f"[Force Close] retry position lookup returned None for {pair_key}"
+                    )
+                    return False, 0.0
+                if not current_positions:
+                    logger.warning(
+                        f"[Force Close] futures leg for {pair_key} is already flat; "
+                        "skipping duplicate futures close and retrying spot liquidation"
+                    )
+                    return True, 0.0
+
+                actual_short_qty = 0.0
+                for position in current_positions:
+                    if not isinstance(position, dict):
+                        return False, 0.0
+                    info = position.get("info") or {}
+                    side = str(
+                        position.get("side")
+                        or position.get("positionSide")
+                        or info.get("posSide")
+                        or info.get("positionSide")
+                        or ""
+                    ).lower()
+                    contracts = position.get("contracts")
+                    raw_size = contracts
+                    if raw_size is None:
+                        raw_size = position.get("positionAmt", info.get("positionAmt"))
+                    if raw_size is None:
+                        logger.critical(
+                            f"[Force Close] retry position size unavailable for {pair_key}"
+                        )
+                        return False, 0.0
+                    try:
+                        signed_size = float(raw_size)
+                        contract_size = float(position.get("contractSize") or 1.0)
+                    except (TypeError, ValueError):
+                        return False, 0.0
+                    if not math.isfinite(signed_size) or not math.isfinite(contract_size) or contract_size <= 0:
+                        return False, 0.0
+                    if abs(signed_size) <= 1e-12:
+                        continue
+                    if side:
+                        if side != "short":
+                            logger.critical(
+                                f"[Force Close] refusing retry for {pair_key}: "
+                                f"unexpected futures side={side}"
+                            )
+                            return False, 0.0
+                    elif contracts is not None or signed_size >= 0:
+                        logger.critical(
+                            f"[Force Close] refusing retry for {pair_key}: "
+                            "position side cannot be verified"
+                        )
+                        return False, 0.0
+                    actual_short_qty += abs(signed_size) * (contract_size if contracts is not None else 1.0)
+
+                tolerance = max(1e-10, pos.qty * 1e-4)
+                if abs(actual_short_qty - pos.qty) > tolerance:
+                    logger.critical(
+                        f"[Force Close] retry exposure mismatch for {pair_key}: "
+                        f"expected={pos.qty}, exchange_short={actual_short_qty}"
+                    )
+                    return False, 0.0
+
             logger.warning(f"[Force Close] Closing global short {pos.qty} on {global_sym}...")
             # Keep paper-mode market fills tied to the latest observed futures book.
             if hasattr(self.client, "update_market_price"):
@@ -346,7 +431,9 @@ class ForceCloseMixin:
                 await self._force_close_locked(pair_key)
 
 
-        async def _execute_force_close_legs(self, pair_key: str, pos) -> Tuple[bool, bool, dict]:
+        async def _execute_force_close_legs(
+            self, pair_key: str, pos, allow_already_flat: bool = False
+        ) -> Tuple[bool, bool, dict]:
             """
             Executes short closure on futures and spot liquidation.
             Returns (futures_closed, spot_sell_failed, pnl).
@@ -361,7 +448,7 @@ class ForceCloseMixin:
                 return False, True, {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
 
             futures_closed, short_exit_price_usdt = await self._close_global_short_leg(
-                pair_key, pos
+                pair_key, pos, allow_already_flat=allow_already_flat
             )
             spot_sell_failed = True
             spot_exit_price_idr = 0.0
@@ -475,6 +562,12 @@ class ForceCloseMixin:
                 await self.publish_status()
                 return
 
+            # Remember whether this is a retry of an incomplete force close.
+            # The retry path checks actual futures exposure first so a previously
+            # closed futures leg is not submitted a second time.
+            allow_already_flat = (
+                self.states.get(pair_key) == PositionState.RECONCILIATION_REQUIRED
+            )
             # Guard concurrent exit-fill processing for this pair while force close runs.
             self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
             orders_reconciled = await self._cancel_pending_orders_for_force_close(pair_key)
@@ -486,7 +579,9 @@ class ForceCloseMixin:
                 await self.publish_status()
                 return
 
-            futures_closed, spot_sell_failed, pnl = await self._execute_force_close_legs(pair_key, pos)
+            futures_closed, spot_sell_failed, pnl = await self._execute_force_close_legs(
+                pair_key, pos, allow_already_flat=allow_already_flat
+            )
 
             if not futures_closed or spot_sell_failed:
                 await self._handle_force_close_failure(pair_key, pos, futures_closed, spot_sell_failed)
