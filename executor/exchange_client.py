@@ -43,7 +43,7 @@ class ExchangeClient:
         self.global_exchanges.setdefault(self.global_default_name, global_exchange)
 
     def _local_for(self, symbol: str, exchange_name: Optional[str] = None) -> Any:
-        if any(str(symbol).startswith(prefix) for prefix in ("mexc:", "okx:", "binance:", "bybit:")):
+        if any(str(symbol).startswith(prefix) for prefix in ("mexc:", "mexc_spot:", "okx:", "binance:", "bybit:")):
             raise ValueError("foreign Futures symbol cannot be routed to a local Spot client")
         name = (exchange_name or ("tokocrypto" if str(symbol).startswith("toko:") else self.local_default_name)).lower()
         if name not in self.LOCAL_VENUES:
@@ -202,11 +202,13 @@ class ExchangeClient:
         A malformed position response must never be converted into an empty list:
         callers use an empty list as proof that the futures leg is flat.
         """
+        client = self._global_for(symbol)
+        market_symbol = await self._resolve_symbol(client, symbol)
         try:
-            client = self._global_for(symbol)
-            market_symbol = await self._resolve_symbol(client, symbol)
             positions = await client.fetch_positions([market_symbol])
         except (TypeError, AttributeError):
+            # Some CCXT adapters do not accept a symbols argument. Fetch all,
+            # then filter below; routing and symbol resolution still must succeed.
             positions = await client.fetch_positions()
 
         if positions is None or not isinstance(positions, (list, tuple)):
