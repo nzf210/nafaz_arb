@@ -363,6 +363,45 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			ev.EntryPriceIDR,
 			ev.ShortEntryUSDT,
 		)
+	case "PARTIAL_FILL":
+		pairLabel := ev.PairTag
+		if pairLabel == "" {
+			pairLabel = ev.PairKey
+		}
+		if pairLabel == "" {
+			pairLabel = ev.Symbol
+		}
+		alertKey := "partial:" + pairLabel
+		b.mu.Lock()
+		lastAlert, alreadyAlerted := b.alertedKeys[alertKey]
+		if alreadyAlerted && time.Since(lastAlert) < 2*time.Minute {
+			b.mu.Unlock()
+			return
+		}
+		b.alertedKeys[alertKey] = time.Now()
+		b.mu.Unlock()
+
+		filledQty := ev.FilledQty
+		if filledQty <= 0 {
+			filledQty = ev.Qty
+		}
+		text = fmt.Sprintf(
+			"⚠️ <b>[%s] SPOT PARTIAL FILL</b>\n\n"+
+				"• Pair: <code>%s</code>\n"+
+				"• Exchange: <code>%s (Spot)</code> → <code>%s (Perpetual)</code>\n"+
+				"• Terisi: <code>%.8f / %.8f</code>\n"+
+				"• State: <code>%s</code>\n"+
+				"• Detail: %s\n\n"+
+				"<i>Jangan anggap posisi sudah delta-neutral sampai hedge Futures terkonfirmasi. Pantau /positions dan /status.</i>",
+			modeTag,
+			html.EscapeString(pairLabel),
+			html.EscapeString(ev.LocalExchange),
+			html.EscapeString(ev.GlobalExchange),
+			filledQty,
+			ev.TotalQty,
+			html.EscapeString(ev.State),
+			html.EscapeString(ev.Message),
+		)
 	case "EXECUTION_FAILURE", "HEDGE_FAILED":
 		pairLabel := ev.PairTag
 		if pairLabel == "" {
