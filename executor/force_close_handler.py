@@ -68,6 +68,8 @@ class ForceCloseHandlerMixin:
         current_ask, usdt_rate, current_spot_bid = await self._resolve_force_close_prices(
             pair_key, pos, spot_exit_price
         )
+        if futures_closed and short_exit_price > 0:
+            current_ask = short_exit_price
         pnl = self._resolve_force_close_pnl(
             pos, futures_closed, short_exit_price, current_ask,
             usdt_rate, current_spot_bid,
