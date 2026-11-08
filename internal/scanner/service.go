@@ -375,10 +375,12 @@ func normalizeOrderBookCurrency(b domain.OrderBook, fxRate float64) domain.Order
 		return b
 	}
 	out := domain.OrderBook{
-		Exchange:  b.Exchange,
-		Symbol:    b.Symbol,
-		Timestamp: b.Timestamp,
-		Bids:      make([]domain.PriceLevel, len(b.Bids)),
+		Exchange:   b.Exchange,
+		Symbol:     b.Symbol,
+		Timestamp:  b.Timestamp,
+		ReceivedAt: b.ReceivedAt,
+		Source:     b.Source,
+		Bids:       make([]domain.PriceLevel, len(b.Bids)),
 		Asks:      make([]domain.PriceLevel, len(b.Asks)),
 	}
 	for i, l := range b.Bids {
