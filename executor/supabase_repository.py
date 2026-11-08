@@ -6,19 +6,14 @@ callers catch persistence errors and continue managing exchange exposure.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-import logging
-import time
 from datetime import datetime, timezone
 from typing import Any, Optional
-from urllib.parse import quote
 import uuid
 
 import httpx
-
-logger = logging.getLogger("executor.supabase")
-
 
 class SupabasePersistenceError(RuntimeError):
     pass
@@ -108,7 +103,7 @@ class SupabaseRepository:
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_error = exc
             if attempt < self.retries:
-                await __import__("asyncio").sleep(0.1 * (2 ** attempt))
+                await asyncio.sleep(0.1 * (2 ** attempt))
         raise SupabasePersistenceError(
             f"Supabase persistence failed for {table}: {last_error}"
         ) from last_error
