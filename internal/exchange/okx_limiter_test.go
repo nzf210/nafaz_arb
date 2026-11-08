@@ -2,6 +2,7 @@ package exchange
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -327,4 +328,39 @@ func TestLimiterAcquireRespectsContext(t *testing.T) {
 		t.Fatal("second acquire must fail once ctx expires with the slot held")
 	}
 	l.release()
+}
+
+// Regression: instruments payload is ~600KB; a capped body buffer truncated it
+// and the caller's JSON decode then failed with "unexpected EOF", degrading
+// every scan even though the HTTP round trip itself succeeded.
+func TestInspectOKXResponseLargeBodyPreserved(t *testing.T) {
+	payload := `{"code":"0","data":[` + strings.Repeat(`{"instId":"BTC-USDT-SWAP"},`, 30000) + `{"instId":"ETH-USDT-SWAP"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(payload))
+	}))
+	defer server.Close()
+
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	limited, _ := inspectOKXResponse(resp)
+	if limited {
+		t.Fatal("large non-limited body must not be classified as rate limited")
+	}
+
+	var decoded struct {
+		Code string `json:"code"`
+		Data []struct {
+			InstID string `json:"instId"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode after inspect: %v", err)
+	}
+	if decoded.Code != "0" || len(decoded.Data) != 30001 {
+		t.Fatalf("truncated decode: code=%q data=%d", decoded.Code, len(decoded.Data))
+	}
+	resp.Body.Close()
 }

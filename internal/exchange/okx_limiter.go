@@ -368,9 +368,12 @@ func inspectOKXResponse(resp *http.Response) (bool, time.Duration) {
 	if resp.StatusCode != http.StatusOK {
 		return false, 0
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	// Read the full body: OKX instruments responses are ~600KB, and a capped
+	// buffer would truncate the payload and corrupt the caller's JSON decode.
+	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
+		resp.Body = nil
 		return false, 0
 	}
 	resp.Body = io.NopCloser(strings.NewReader(string(body)))
@@ -446,7 +449,9 @@ func parseRetryAfter(h string) time.Duration {
 }
 
 func closeBody(resp *http.Response) {
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	// Drain fully: a truncated drain can leave the connection unusable for
+	// keep-alive reuse and misreports body size to the transport.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 }
 
