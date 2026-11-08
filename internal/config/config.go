@@ -150,7 +150,7 @@ func (c *Config) setDefaults() {
 	c.SnipingWindowMinutes = defaultInt(c.SnipingWindowMinutes, 30)
 	c.FundingSubsidyFloorPct = defaultFloat(c.FundingSubsidyFloorPct, 0.08)
 	c.LocalPriceTick = defaultFloat(c.LocalPriceTick, 1.0)
-	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "binance")
+	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "okx")
 	c.Redis.Addr = defaultString(c.Redis.Addr, "localhost:6380")
 }
 
@@ -181,8 +181,18 @@ func (c *Config) AdaptiveSizingEnabled() bool {
 }
 
 func (c *Config) validate() error {
-	if strings.EqualFold(c.Mode, "LIVE") && len(strings.TrimSpace(c.APIAuthToken)) < 32 {
-		return fmt.Errorf("api_auth_token must contain at least 32 characters when mode=LIVE")
+	if strings.EqualFold(c.Mode, "LIVE") {
+		if len(strings.TrimSpace(c.APIAuthToken)) < 32 {
+			return fmt.Errorf("api_auth_token must contain at least 32 characters when mode=LIVE")
+		}
+		// Never allow LIVE scanning to bypass external positions or resting orders.
+		// The current live adapter fails closed until authenticated readers exist.
+		if !c.CheckOpenPositions {
+			return fmt.Errorf("check_open_positions must be true when mode=LIVE")
+		}
+		if !c.ExcludeOpenOrders {
+			return fmt.Errorf("exclude_open_orders must be true when mode=LIVE")
+		}
 	}
 	if c.ExecutionMode != "" && c.ExecutionMode != "TAKER_TAKER" && c.ExecutionMode != "MAKER_TAKER" {
 		return fmt.Errorf("execution_mode must be TAKER_TAKER or MAKER_TAKER")
