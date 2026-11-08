@@ -698,33 +698,25 @@ class ArbitrageEngine(
             payload = await self._load_signal_payload(pair_tag)
             if payload is None:
                 return
-            configured_local = str(self.config.local_exchange_name or "").strip().lower()
-            configured_global = str(self.config.global_exchange_name or "").strip().lower()
-            signal_local = str(payload.pair_info.local_exchange or "").strip().lower()
-            signal_global = str(payload.pair_info.global_exchange or "").strip().lower()
-            if (
-                not getattr(self.config, "mock_mode", False)
-                and (signal_local != configured_local or signal_global != configured_global)
-            ):
-                reason = "EXECUTOR_VENUE_MISMATCH"
-                message = (
-                    "Signal exchange pair does not match this executor instance; "
-                    "entry rejected to prevent orders on the wrong venue."
-                )
-                self._pair_infos[pair_tag] = payload.pair_info
-                self._mark_failed(
-                    pair_tag,
-                    reason,
-                    message,
-                    detail={
-                        "configured_local_exchange": configured_local,
-                        "configured_global_exchange": configured_global,
-                        "signal_local_exchange": signal_local,
-                        "signal_global_exchange": signal_global,
-                    },
-                )
-                await self.publish_status()
-                return
+            if hasattr(self.client, "set_route"):
+                try:
+                    self.client.set_route(
+                        payload.pair_info.local_exchange,
+                        payload.pair_info.global_exchange,
+                    )
+                except Exception as exc:
+                    self._pair_infos[pair_tag] = payload.pair_info
+                    self._mark_failed(
+                        pair_tag,
+                        "EXECUTOR_VENUE_NOT_CONFIGURED",
+                        f"Signal exchange route is not configured: {exc}",
+                        detail={
+                            "signal_local_exchange": payload.pair_info.local_exchange,
+                            "signal_global_exchange": payload.pair_info.global_exchange,
+                        },
+                    )
+                    await self.publish_status()
+                    return
             self._pair_infos[pair_tag] = payload.pair_info
             balances = await self._check_balance_mismatch(
                 payload.pair_info,

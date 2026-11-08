@@ -34,6 +34,9 @@ class RollbackMixin:
         and ``error`` then carries the last failure so the operator event can say
         what went wrong.
         """
+        if hasattr(self.client, "set_route"):
+            local_name, global_name = self._pair_venues(pair_tag)
+            self.client.set_route(local_name, global_name)
         max_retries = 4  # 5 total attempts
         # One id for the whole retry sequence: every attempt is the same logical
         # order, so the venue can reject duplicates rather than sell twice.
@@ -98,6 +101,9 @@ class RollbackMixin:
         if not global_symbol:
             return True
         try:
+            local_name, global_name = self._pair_venues(pair_tag)
+            if hasattr(self.client, "set_route"):
+                self.client.set_route(local_name, global_name)
             positions = await self.client.fetch_positions(global_symbol)
         except AttributeError:
             # Client without fetch_positions (e.g. some mocks): cannot confirm.

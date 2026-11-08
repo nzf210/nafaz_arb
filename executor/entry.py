@@ -61,6 +61,11 @@ class EntryMixin:
                 await self._process_pending_entry(pair_tag, order_info)
 
         async def _process_pending_entry(self, pair_tag: str, order_info: dict) -> None:
+            if hasattr(self.client, "set_route"):
+                self.client.set_route(
+                    order_info.get("local_exchange", ""),
+                    order_info.get("global_exchange", ""),
+                )
             """Process adverse selection check, fill tracking, and position creation for an entry order.
 
             Runs under the pair lock so the monitoring loop cannot mutate pending

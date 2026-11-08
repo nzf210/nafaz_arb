@@ -177,3 +177,53 @@ def test_p3_02_client_order_id_is_bounded():
     """Exchange limits are tight; an over-long pair must not blow past 36 chars."""
     oid = build_client_order_id("a" * 60 + ":" + "b" * 60, "force-close", 123456)
     assert len(oid) <= 36
+
+
+@pytest.mark.asyncio
+async def test_live_exchange_client_routes_are_isolated_by_async_context():
+    """Concurrent route contexts dispatch spot and futures orders to their named venues."""
+    from executor.exchange_client import ExchangeClient
+
+    class FakeVenue:
+        def __init__(self, name):
+            self.id = name
+            self.calls = []
+        async def create_limit_buy_order(self, *args):
+            self.calls.append(args)
+            return {"id": self.id}
+        async def create_market_sell_order(self, *args):
+            self.calls.append(args)
+            return {"id": self.id}
+        async def close(self):
+            pass
+
+    indodax, tokocrypto = FakeVenue("indodax"), FakeVenue("tokocrypto")
+    okx, mexc = FakeVenue("okx"), FakeVenue("mexc")
+    client = ExchangeClient(
+        spot_clients={"indodax": indodax, "tokocrypto": tokocrypto},
+        perpetual_clients={"okx": okx, "mexc": mexc},
+        default_spot="indodax",
+        default_perpetual="okx",
+    )
+
+    async def execute_route(spot, perp):
+        client.set_route(spot, perp)
+        spot_order = await client.place_local_limit_buy("BTC/IDR", 1, 100)
+        perp_order = await client.open_global_short_market("BTC/USDT:USDT", 1)
+        return spot_order["id"], perp_order["id"]
+
+    results = await asyncio.gather(
+        execute_route("indodax", "okx"),
+        execute_route("tokocrypto", "mexc"),
+    )
+    assert results == [("indodax", "okx"), ("tokocrypto", "mexc")]
+    assert len(indodax.calls) == len(tokocrypto.calls) == 1
+    assert len(okx.calls) == len(mexc.calls) == 1
+
+
+def test_live_exchange_client_fails_closed_for_unknown_route():
+    from executor.exchange_client import ExchangeClient
+
+    client = ExchangeClient(spot_clients={}, perpetual_clients={})
+    with pytest.raises(RuntimeError, match="spot exchange route is not configured"):
+        client.set_route("unknown-spot", "unknown-perp")

@@ -624,6 +624,8 @@ class ForceCloseMixin:
             self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
             orders_reconciled = await self._cancel_pending_orders_for_force_close(pair_key)
             pos = self.active_positions.get(pair_key)
+            if pos and hasattr(self.client, "set_route"):
+                self.client.set_route(pos.local_exchange, pos.global_exchange)
             if not orders_reconciled:
                 await self._handle_force_close_failure(
                     pair_key, pos, False, True

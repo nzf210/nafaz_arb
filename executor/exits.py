@@ -307,6 +307,8 @@ class ExitMixin:
             pos = self.active_positions.get(pair_tag)
             if not pos or pos.qty <= 0:
                 return
+            if hasattr(self.client, "set_route"):
+                self.client.set_route(pos.local_exchange, pos.global_exchange)
 
             price_data = await self._fetch_live_price(pair_tag, pos)
             if not price_data:

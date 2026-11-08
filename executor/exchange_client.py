@@ -1,6 +1,7 @@
 import asyncio
 import math
 import time
+from contextvars import ContextVar
 from typing import Optional, Dict, Any
 import ccxt.async_support as ccxt
 
@@ -27,9 +28,54 @@ class ExchangeClient:
     3. No transfer/deposit/withdraw features.
     """
 
-    def __init__(self, local_exchange: Any, global_exchange: Any):
-        self.local = local_exchange
-        self.global_fut = global_exchange
+    def __init__(
+        self,
+        local_exchange: Any = None,
+        global_exchange: Any = None,
+        spot_clients: Optional[Dict[str, Any]] = None,
+        perpetual_clients: Optional[Dict[str, Any]] = None,
+        default_spot: str = "indodax",
+        default_perpetual: str = "okx",
+    ):
+        # Context-local routing prevents concurrent signals from cross-wiring venues.
+        self.spot_clients = {str(k).lower(): v for k, v in (spot_clients or {}).items()}
+        self.perpetual_clients = {str(k).lower(): v for k, v in (perpetual_clients or {}).items()}
+        if local_exchange is not None:
+            self.spot_clients.setdefault(default_spot.lower(), local_exchange)
+        if global_exchange is not None:
+            self.perpetual_clients.setdefault(default_perpetual.lower(), global_exchange)
+        self._default_spot = default_spot.lower()
+        self._default_perpetual = default_perpetual.lower()
+        self._route = ContextVar(f"exchange_route_{id(self)}", default=None)
+
+    def set_route(self, spot_name: str, perpetual_name: str):
+        spot = str(spot_name or "").strip().lower()
+        perp = str(perpetual_name or "").strip().lower()
+        if spot not in self.spot_clients:
+            raise RuntimeError(f"spot exchange route is not configured: {spot or '<empty>'}")
+        if perp not in self.perpetual_clients:
+            raise RuntimeError(f"perpetual exchange route is not configured: {perp or '<empty>'}")
+        return self._route.set((spot, perp))
+
+    def reset_route(self, token) -> None:
+        self._route.reset(token)
+
+    def _route_names(self):
+        return self._route.get() or (self._default_spot, self._default_perpetual)
+
+    @property
+    def local(self):
+        name, _ = self._route_names()
+        if name not in self.spot_clients:
+            raise RuntimeError(f"spot exchange route is not configured: {name}")
+        return self.spot_clients[name]
+
+    @property
+    def global_fut(self):
+        _, name = self._route_names()
+        if name not in self.perpetual_clients:
+            raise RuntimeError(f"perpetual exchange route is not configured: {name}")
+        return self.perpetual_clients[name]
 
     async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """Places a Maker Limit Buy on local spot exchange."""
@@ -61,10 +107,12 @@ class ExchangeClient:
     async def fetch_balance_report(self) -> list:
         """Fetch complete free/used/total balances from both live venues."""
         reports = []
-        for name, market, exchange in (
-            (getattr(self.local, "id", "local"), "spot", self.local),
-            (getattr(self.global_fut, "id", "global"), "futures", self.global_fut),
-        ):
+        exchanges = [
+            (name, "spot", exchange) for name, exchange in self.spot_clients.items()
+        ] + [
+            (name, "futures", exchange) for name, exchange in self.perpetual_clients.items()
+        ]
+        for name, market, exchange in exchanges:
             try:
                 raw = await exchange.fetch_balance()
                 free_map, used_map, total_map = raw.get("free") or {}, raw.get("used") or {}, raw.get("total") or {}
@@ -238,10 +286,13 @@ class ExchangeClient:
 
     async def close(self):
         """Closes exchange connections."""
-        if self.local and hasattr(self.local, "close"):
-            await self.local.close()
-        if self.global_fut and hasattr(self.global_fut, "close"):
-            await self.global_fut.close()
+        seen = set()
+        for exchange in list(self.spot_clients.values()) + list(self.perpetual_clients.values()):
+            if id(exchange) in seen:
+                continue
+            seen.add(id(exchange))
+            if exchange and hasattr(exchange, "close"):
+                await exchange.close()
 
 
 class PaperTradingExchangeClient:
@@ -571,11 +622,32 @@ def create_exchange_client(config: Any) -> Any:
             global_name=config.global_exchange_name,
             initial_balance_usdt=getattr(config, "initial_exchange_balance_usdt", 100.0),
         )
-    return create_ccxt_client(
-        local_name=config.local_exchange_name,
-        global_name=config.global_exchange_name,
-        local_creds=config.local_credentials,
-        global_creds=config.global_credentials,
+    spot_names = list(getattr(config, "spot_exchanges", []) or [config.local_exchange_name])
+    perp_names = list(getattr(config, "perpetual_exchanges", []) or [config.global_exchange_name])
+    credentials = getattr(config, "exchanges", {}) or {}
+    spot_clients = {}
+    perpetual_clients = {}
+    for name in sorted(set(str(x).lower() for x in spot_names)):
+        creds = credentials.get(name)
+        if creds is None and name == str(config.local_exchange_name).lower():
+            creds = config.local_credentials
+        if creds is None or not creds.api_key or not creds.api_secret:
+            raise ValueError(f"LIVE spot route {name} has no complete API credentials")
+        spot_clients[name] = init_local_exchange(name, creds, default_type="spot")
+    for name in sorted(set(str(x).lower() for x in perp_names)):
+        creds = credentials.get(name)
+        if creds is None and name == str(config.global_exchange_name).lower():
+            creds = config.global_credentials
+        if creds is None or not creds.api_key or not creds.api_secret:
+            raise ValueError(f"LIVE perpetual route {name} has no complete API credentials")
+        if name == "okx" and not creds.passphrase:
+            raise ValueError("LIVE perpetual route okx requires API passphrase")
+        perpetual_clients[name] = init_ccxt_exchange(name, creds, default_type="future")
+    return ExchangeClient(
+        spot_clients=spot_clients,
+        perpetual_clients=perpetual_clients,
+        default_spot=config.local_exchange_name,
+        default_perpetual=config.global_exchange_name,
     )
 
 

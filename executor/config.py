@@ -62,6 +62,8 @@ class ExecutorConfig:
     private_stream_max_age_seconds: float = 5.0
     local_exchange_name: str = "indodax"
     global_exchange_name: str = "okx"
+    spot_exchanges: list = field(default_factory=list)
+    perpetual_exchanges: list = field(default_factory=list)
     exchanges: Dict[str, ExchangeCredentials] = field(default_factory=dict)
     local_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
     global_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
@@ -115,6 +117,9 @@ class ExecutorConfig:
             ):
                 if key in exec_cfg:
                     setattr(self, key, conv(exec_cfg[key]))
+            self.spot_exchanges = [str(x).strip().lower() for x in data.get("spot_exchanges", []) if str(x).strip()]
+            self.perpetual_exchanges = [str(x).strip().lower() for x in data.get("perpetual_exchanges", []) if str(x).strip()]
+
             # Load modular exchanges dictionary if provided in config
             if "exchanges" in data and isinstance(data["exchanges"], dict):
                 for ex_name, ex_data in data["exchanges"].items():
@@ -145,6 +150,10 @@ class ExecutorConfig:
 
         if global_ex := os.getenv("GLOBAL_EXCHANGE"):
             self.global_exchange_name = global_ex
+        if venues := os.getenv("SPOT_EXCHANGES"):
+            self.spot_exchanges = [x.strip().lower() for x in venues.split(",") if x.strip()]
+        if venues := os.getenv("PERPETUAL_EXCHANGES"):
+            self.perpetual_exchanges = [x.strip().lower() for x in venues.split(",") if x.strip()]
 
         if mock_env := os.getenv("EXECUTOR_MOCK_MODE"):
             self.mock_mode = mock_env.lower() in ("true", "1", "yes")
@@ -352,12 +361,19 @@ class ExecutorConfig:
         if self.mock_mode:
             return
         missing = []
-        if not self.local_credentials.api_key or not self.local_credentials.api_secret:
-            missing.append(f"{self.local_exchange_name} API key/secret")
-        if not self.global_credentials.api_key or not self.global_credentials.api_secret:
-            missing.append(f"{self.global_exchange_name} API key/secret")
-        if self.global_exchange_name.lower() == "okx" and not self.global_credentials.passphrase:
-            missing.append("okx API passphrase")
+        spot_names = self.spot_exchanges or [self.local_exchange_name]
+        perp_names = self.perpetual_exchanges or [self.global_exchange_name]
+        for name in sorted(set(x.lower() for x in spot_names + perp_names)):
+            creds = self.exchanges.get(name)
+            if creds is None and name == self.local_exchange_name.lower():
+                creds = self.local_credentials
+            if creds is None and name == self.global_exchange_name.lower():
+                creds = self.global_credentials
+            if creds is None or not creds.api_key or not creds.api_secret:
+                missing.append(f"{name} API key/secret")
+                continue
+            if name == "okx" and not creds.passphrase:
+                missing.append("okx API passphrase")
         if missing:
             raise ValueError(
                 "LIVE mode requested but exchange credentials are incomplete: "
