@@ -52,41 +52,42 @@ class ExitPricingMixin:
     async def _handle_funding_rollover(
         self, pair_tag: str, pos: ActivePosition, global_ask_usdt: float, now_ms: int
     ) -> bool:
-        """
-        Applies only funding payments returned by the exchange settlement ledger.
-        The market's settlement interval is never assumed to be eight hours.
-        """
         if pos.next_funding_time_ms <= 0 or now_ms < pos.next_funding_time_ms:
             return False
+        if not self._funding_retry_allowed(pair_tag, now_ms):
+            return False
+        symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
+        payments = await self._fetch_actual_funding_payments(pair_tag, symbol, pos, now_ms)
+        if payments is None:
+            return False
+        next_funding_ms, current_rate = await self._refresh_funding_schedule(
+            pair_tag, symbol, pos.current_funding_rate
+        )
+        return await self._apply_funding_settlements(
+            pair_tag, pos, payments, next_funding_ms, current_rate, now_ms
+        )
 
+    def _funding_retry_allowed(self, pair_tag: str, now_ms: int) -> bool:
         retry_after = getattr(self, "_funding_reconcile_retry_after_ms", {})
         if now_ms < retry_after.get(pair_tag, 0):
             return False
         retry_after[pair_tag] = now_ms + 30_000
         self._funding_reconcile_retry_after_ms = retry_after
+        return True
 
-        symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
-        since_ms = (
-            pos.last_funding_time_ms
-            if pos.last_funding_time_ms > 0
-            else max(0, pos.next_funding_time_ms - 1)
-        )
+    async def _fetch_actual_funding_payments(self, pair_tag: str, symbol: str, pos: ActivePosition, now_ms: int):
+        since_ms = pos.last_funding_time_ms if pos.last_funding_time_ms > 0 else max(0, pos.next_funding_time_ms - 1)
         try:
-            payments = await self.client.fetch_funding_history(
-                symbol, since=since_ms, limit=100
-            )
+            payments = await self.client.fetch_funding_history(symbol, since=since_ms, limit=100)
         except Exception:
             logger.exception(
-                f"[Funding Reconciliation] cannot fetch actual settlement history "
-                f"for {pair_tag}; estimated funding will not be credited"
+                "[Funding Reconciliation] cannot fetch actual settlement history for %s; estimated funding will not be credited",
+                pair_tag,
             )
-            return False
-
+            return None
         if not isinstance(payments, list):
-            logger.error(
-                f"[Funding Reconciliation] invalid funding history response for {pair_tag}"
-            )
-            return False
+            logger.error("[Funding Reconciliation] invalid funding history response for %s", pair_tag)
+            return None
 
         settled = []
         for payment in payments:
@@ -97,72 +98,58 @@ class ExitPricingMixin:
                 continue
             asset = str(payment.get("code") or payment.get("currency") or "USDT").upper()
             if asset != "USDT":
-                logger.error(
-                    f"[Funding Reconciliation] unsupported settlement asset {asset} "
-                    f"for {pair_tag}; payment is not added to USDT PnL"
-                )
+                logger.error("[Funding Reconciliation] unsupported settlement asset %s for %s", asset, pair_tag)
                 continue
             try:
                 amount = float(payment.get("amount"))
             except (TypeError, ValueError):
-                logger.error(
-                    f"[Funding Reconciliation] invalid payment amount for {pair_tag}: {payment}"
-                )
+                logger.error("[Funding Reconciliation] invalid payment amount for %s: %s", pair_tag, payment)
                 continue
             settled.append((timestamp, amount, payment))
+        return settled
 
-        # Refresh the venue's actual next settlement schedule. Different
-        # contracts/venues can use 1h, 2h, 4h, 8h or custom intervals.
+    async def _refresh_funding_schedule(self, pair_tag: str, symbol: str, current_rate: float) -> tuple[int, float]:
         next_funding_ms = 0
-        current_rate = pos.current_funding_rate
         try:
             rate_data = await self.client.fetch_funding_rate(symbol)
             if isinstance(rate_data, dict):
-                next_funding_ms = int(
-                    rate_data.get("nextFundingTimestamp")
-                    or rate_data.get("nextFundingTime")
-                    or 0
-                )
+                next_funding_ms = int(rate_data.get("nextFundingTimestamp") or rate_data.get("nextFundingTime") or 0)
                 if rate_data.get("fundingRate") is not None:
                     current_rate = float(rate_data["fundingRate"])
         except Exception:
             logger.exception(
-                f"[Funding Reconciliation] cannot refresh next settlement schedule "
-                f"for {pair_tag}; automatic funding rollover is paused"
+                "[Funding Reconciliation] cannot refresh next settlement schedule for %s; automatic funding rollover is paused",
+                pair_tag,
             )
+        return next_funding_ms, current_rate
 
+    async def _apply_funding_settlements(
+        self, pair_tag: str, pos: ActivePosition, settled: list,
+        next_funding_ms: int, current_rate: float, now_ms: int,
+    ) -> bool:
         if not settled:
             if next_funding_ms > now_ms:
                 pos.next_funding_time_ms = next_funding_ms
                 pos.current_funding_rate = current_rate
                 pos.updated_at = now_ms
-                await self.redis.set(
-                    f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
-                )
+                await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
             return False
-
         settled.sort(key=lambda item: item[0])
         actual_amount = sum(item[1] for item in settled)
         pos.accumulated_funding_usdt += actual_amount
         pos.last_funding_time_ms = settled[-1][0]
         pos.current_funding_rate = current_rate
-        pos.next_funding_time_ms = (
-            next_funding_ms if next_funding_ms > pos.last_funding_time_ms else 0
-        )
+        pos.next_funding_time_ms = next_funding_ms if next_funding_ms > pos.last_funding_time_ms else 0
         pos.updated_at = now_ms
-
-        await self.redis.set(
-            f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
-        )
+        await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
         logger.info(
-            f"[Funding Reconciliation] {pair_tag}: applied {len(settled)} actual "
-            f"settlement(s), net {actual_amount:+.8f} USDT; "
-            f"cumulative={pos.accumulated_funding_usdt:+.8f} USDT"
+            "[Funding Reconciliation] %s: applied %d actual settlement(s), net %+.8f USDT; cumulative=%+.8f USDT",
+            pair_tag, len(settled), actual_amount, pos.accumulated_funding_usdt,
         )
         if pos.next_funding_time_ms <= 0:
             logger.critical(
-                f"[Funding Reconciliation] next settlement time unavailable for "
-                f"{pair_tag}; funding accrual paused pending a valid exchange schedule"
+                "[Funding Reconciliation] next settlement time unavailable for %s; funding accrual paused pending a valid exchange schedule",
+                pair_tag,
             )
         return True
 
@@ -184,122 +171,96 @@ class ExitPricingMixin:
         )
 
     async def _calculate_dynamic_exit_slippage(self, pair_tag: str, snapshot: dict, now_ms: int) -> float:
-        """Adaptive reserve from distinct, timestamped market snapshots.
+        """Adaptive reserve from distinct, timestamped market snapshots."""
+        minimum, maximum, fallback = self._exit_slippage_limits()
+        parsed = self._parse_exit_slippage_snapshot(snapshot, now_ms)
+        if parsed is None:
+            return fallback
+        ask, bid, snapshot_ts = parsed
+        try:
+            samples = await self._load_exit_slippage_samples(pair_tag, snapshot_ts, ask, now_ms)
+        except Exception:
+            logger.warning("[Dynamic Exit Buffer] history unavailable for %s; using fallback", pair_tag)
+            return fallback
+        samples = sorted({ts: price for ts, price in samples}.items())
+        if not self._has_sufficient_exit_samples(samples):
+            return fallback
+        volatility = self._max_adverse_ask_move(samples)
+        spread = (ask - bid) / ((ask + bid) / 2.0)
+        adaptive = spread * float(getattr(self.config, "exit_spread_multiplier", 0.5))
+        adaptive += volatility * float(getattr(self.config, "exit_volatility_multiplier", 2.0))
+        result = min(maximum, max(minimum, adaptive))
+        self._log_dynamic_exit_buffer(pair_tag, samples, spread, volatility, result)
+        return result
 
-        Sampling is intentionally independent of order repricing. The market
-        timestamp, not the executor polling time, identifies an observation.
-        """
+    def _exit_slippage_limits(self) -> tuple[float, float, float]:
         base = float(getattr(self.config, "max_exit_slippage_pct", 0.003))
         minimum = float(getattr(self.config, "min_exit_slippage_pct", 0.001))
         maximum = float(getattr(self.config, "max_dynamic_exit_slippage_pct", 0.02))
-        fallback = min(maximum, max(minimum, base))
+        return minimum, maximum, min(maximum, max(minimum, base))
 
+    @staticmethod
+    def _parse_exit_slippage_snapshot(snapshot: dict, now_ms: int):
         try:
             ask = float(snapshot.get("global_best_ask_usdt", 0.0) or 0.0)
             bid = float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0)
             snapshot_ts = int(snapshot.get("timestamp_ms", 0) or 0)
         except (TypeError, ValueError):
-            return fallback
+            return None
+        valid_prices = math.isfinite(ask) and math.isfinite(bid) and ask > 0 and bid > 0 and bid <= ask
+        valid_time = snapshot_ts > 0 and snapshot_ts <= now_ms + 5_000
+        valid_age = now_ms - snapshot_ts <= helpers.LIVE_PRICE_STALE_MS
+        if not (valid_prices and valid_time and valid_age):
+            return None
+        return ask, bid, snapshot_ts
 
-        if not (
-            math.isfinite(ask) and math.isfinite(bid)
-            and ask > 0 and bid > 0 and bid <= ask
-            and snapshot_ts > 0
-            and snapshot_ts <= now_ms + 5_000
-            and now_ms - snapshot_ts <= helpers.LIVE_PRICE_STALE_MS
-        ):
-            return fallback
-
-        # Keep enough history for low-frequency scanner cycles (e.g. 180s),
-        # while requiring three real observations spanning at least 30s.
+    async def _load_exit_slippage_samples(self, pair_tag: str, snapshot_ts: int, ask: float, now_ms: int) -> list:
         window_ms = 900_000
-        min_samples = 3
-        min_span_ms = 30_000
         key = f"arb:exit_slippage_samples:v2:{pair_tag}"
-        try:
-            raw = await self.redis.lrange(key, 0, 19)
-            existing = []
-            for item_raw in raw or []:
-                try:
-                    item = json.loads(item_raw)
-                    ts, price = int(item["ts"]), float(item["ask"])
-                    if (
-                        0 < ts <= now_ms + 5_000
-                        and now_ms - ts <= window_ms
-                        and math.isfinite(price) and price > 0
-                    ):
-                        existing.append((ts, price))
-                except (TypeError, ValueError, KeyError, json.JSONDecodeError):
-                    continue
+        existing = self._parse_exit_slippage_samples(await self.redis.lrange(key, 0, 19), now_ms, window_ms)
+        newest_ts = max((ts for ts, _ in existing), default=0)
+        if snapshot_ts > newest_ts:
+            await self.redis.lpush(key, json.dumps({"ts": snapshot_ts, "ask": ask}))
+            await self.redis.ltrim(key, 0, 19)
+        await self.redis.expire(key, 1800)
+        raw = await self.redis.lrange(key, 0, 19)
+        return self._parse_exit_slippage_samples(raw, now_ms, window_ms)
 
-            # Repeated executor polls see the same scanner snapshot. Do not
-            # turn one unchanged quote into many artificial volatility samples.
-            known_timestamps = {ts for ts, _ in existing}
-            newest_ts = max(known_timestamps, default=0)
-            if snapshot_ts not in known_timestamps and snapshot_ts > newest_ts:
-                await self.redis.lpush(
-                    key, json.dumps({"ts": snapshot_ts, "ask": ask})
-                )
-                await self.redis.ltrim(key, 0, 19)
-            await self.redis.expire(key, 1800)
-            raw = await self.redis.lrange(key, 0, 19)
-            samples = []
-            for item_raw in raw or []:
-                try:
-                    item = json.loads(item_raw)
-                    ts, price = int(item["ts"]), float(item["ask"])
-                    if (
-                        0 < ts <= now_ms + 5_000
-                        and now_ms - ts <= window_ms
-                        and math.isfinite(price) and price > 0
-                    ):
-                        samples.append((ts, price))
-                except (TypeError, ValueError, KeyError, json.JSONDecodeError):
-                    continue
-        except Exception:
-            logger.warning(
-                "[Dynamic Exit Buffer] history unavailable for %s; using fallback",
-                pair_tag,
-            )
-            return fallback
+    @staticmethod
+    def _parse_exit_slippage_samples(raw_samples, now_ms: int, window_ms: int) -> list:
+        samples = []
+        for item_raw in raw_samples or []:
+            try:
+                item = json.loads(item_raw)
+                timestamp, price = int(item["ts"]), float(item["ask"])
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                continue
+            if timestamp <= 0 or timestamp > now_ms + 5_000:
+                continue
+            if now_ms - timestamp > window_ms or not math.isfinite(price) or price <= 0:
+                continue
+            samples.append((timestamp, price))
+        return samples
 
-        # One observation per market timestamp; sort chronologically.
-        samples = sorted({ts: price for ts, price in samples}.items())
-        if (
-            len(samples) < min_samples
-            or samples[-1][0] - samples[0][0] < min_span_ms
-        ):
-            return fallback
+    @staticmethod
+    def _has_sufficient_exit_samples(samples: list) -> bool:
+        return len(samples) >= 3 and samples[-1][0] - samples[0][0] >= 30_000
 
+    @staticmethod
+    def _max_adverse_ask_move(samples: list) -> float:
         prices = [price for _, price in samples]
-        # Conservative adverse-move proxy: largest positive consecutive ask
-        # return. Downward ask moves help the short buyback and are ignored.
-        volatility = max(
-            (
-                max(0.0, prices[i] / prices[i - 1] - 1.0)
-                for i in range(1, len(prices))
-            ),
+        return max(
+            (max(0.0, prices[i] / prices[i - 1] - 1.0) for i in range(1, len(prices))),
             default=0.0,
         )
-        spread = (ask - bid) / ((ask + bid) / 2.0)
-        adaptive = spread * float(
-            getattr(self.config, "exit_spread_multiplier", 0.5)
-        )
-        adaptive += volatility * float(
-            getattr(self.config, "exit_volatility_multiplier", 2.0)
-        )
-        result = min(maximum, max(minimum, adaptive))
+
+    @staticmethod
+    def _log_dynamic_exit_buffer(pair_tag: str, samples: list, spread: float, volatility: float, result: float) -> None:
         logger.info(
-            "[Dynamic Exit Buffer] %s samples=%d span=%.1fs spread=%.4f%% "
-            "adverse_move=%.4f%% buffer=%.4f%%",
-            pair_tag,
-            len(samples),
-            (samples[-1][0] - samples[0][0]) / 1000.0,
-            spread * 100,
-            volatility * 100,
-            result * 100,
+            "[Dynamic Exit Buffer] %s samples=%d span=%.1fs spread=%.4f%% adverse_move=%.4f%% buffer=%.4f%%",
+            pair_tag, len(samples), (samples[-1][0] - samples[0][0]) / 1000.0,
+            spread * 100, volatility * 100, result * 100,
         )
-        return result
 
     def _calculate_limit_sell_idr(
         self,
