@@ -18,6 +18,7 @@ func TestMockScanReturnsMatchedPairs(t *testing.T) {
 	cfg := config.Config{
 		Mode:                  "MOCK",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -93,6 +94,7 @@ func TestConcurrentScanSorting(t *testing.T) {
 	cfg := config.Config{
 		Mode:                  "MOCK",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -131,6 +133,7 @@ func TestEmptyBookFreezeCircuitBreaker(t *testing.T) {
 	cfg := config.Config{
 		Mode:                 "MOCK",
 		QuoteAssets:          []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:         1000,
 		AllocationPerPair:    0.5,
 		PerpLeverage:         1,
@@ -295,6 +298,7 @@ func TestHybridOpportunityCalculation(t *testing.T) {
 	cfg := config.Config{
 		Mode:                  "MOCK",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -353,6 +357,7 @@ func TestUnfavorableRegimeNegativeBasisAndFunding(t *testing.T) {
 	cfg := config.Config{
 		Mode:                  "MOCK",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -414,6 +419,7 @@ func TestMakerTakerOpportunityCalculation(t *testing.T) {
 		Mode:                  "MOCK",
 		ExecutionMode:         "MAKER_TAKER",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -527,6 +533,7 @@ func TestAdaptivePositionSizing(t *testing.T) {
 		Mode:                  "MOCK",
 		ExecutionMode:         "MAKER_TAKER",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -697,6 +704,7 @@ func TestEmptyBookFreezeMinutesCircuitBreaker(t *testing.T) {
 	cfg := config.Config{
 		Mode:                   "MOCK",
 		QuoteAssets:            []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:           1000,
 		AllocationPerPair:      0.5,
 		PerpLeverage:           1,
@@ -735,6 +743,7 @@ func TestFeeAssetSurcharge(t *testing.T) {
 		Mode:                  "MOCK",
 		ExecutionMode:         "TAKER_TAKER",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -915,6 +924,7 @@ func TestScanMarksEveryCandidateIneligibleWhenExposureStateIsUnknown(t *testing.
 	cfg := config.Config{
 		Mode: "MOCK",
 		QuoteAssets: []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal: 1000,
 		AllocationPerPair: 0.5,
 		PerpLeverage: 1,
@@ -960,6 +970,7 @@ func TestEvaluatePairDoesNotUseLastKnownFXForLocalSpotOrderPricing(t *testing.T)
 	cfg := config.Config{
 		Mode: "MOCK",
 		QuoteAssets: []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal: 1000,
 		AllocationPerPair: 0.5,
 		PerpLeverage: 1,
