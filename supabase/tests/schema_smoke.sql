@@ -117,3 +117,71 @@ begin
 end $$;
 
 delete from public.scanner_opportunities where scan_id = 'schema-smoke-idempotency';
+
+-- Runtime repository compatibility: normalized position, leg, trade, event and
+-- risk-event writes must satisfy the deployed baseline foreign keys/constraints.
+do $$
+declare
+    test_position_id uuid := '00000000-0000-0000-0000-000000000005';
+begin
+    insert into public.positions (
+        id, pair_key, local_exchange, global_exchange, local_symbol, global_symbol,
+        base_asset, quote_asset, futures_quote_asset, status, is_mock, qty,
+        initial_qty, opened_at, state_snapshot
+    ) values (
+        test_position_id, 'indodax:btc_idr', 'indodax', 'okx', 'btc_idr',
+        'BTC/USDT:USDT', 'BTC', 'IDR', 'USDT', 'HEDGED_ACTIVE', false,
+        0.01, 0.01, now(), '{"event":"POSITION_OPENED"}'::jsonb
+    )
+    on conflict (id) do update set qty = excluded.qty, status = excluded.status;
+
+    insert into public.position_legs (
+        position_id, leg, exchange_name, symbol, side, status, qty
+    ) values
+        (test_position_id, 'spot', 'indodax', 'btc_idr', 'long', 'OPEN', 0.01),
+        (test_position_id, 'perpetual', 'okx', 'BTC/USDT:USDT', 'short', 'OPEN', 0.01)
+    on conflict (position_id, leg) do update set qty = excluded.qty;
+
+    insert into public.closed_trades (
+        position_id, trade_key, pair_key, local_exchange, global_exchange, symbol,
+        qty, net_pnl, pnl_asset, closed_at
+    ) values (
+        test_position_id, 'schema-smoke-trade', 'indodax:btc_idr', 'indodax',
+        'okx', 'btc_idr', 0.001, 0.01, 'USDT', now()
+    )
+    on conflict (trade_key) do update set net_pnl = excluded.net_pnl;
+
+    insert into public.executor_events (
+        event_id, event_type, pair_key, position_id, is_mock, payload
+    ) values (
+        'schema-smoke-event', 'POSITION_OPENED', 'indodax:btc_idr',
+        test_position_id, false, '{"event":"POSITION_OPENED"}'::jsonb
+    )
+    on conflict (event_id) do nothing;
+
+    insert into public.risk_events (
+        event_key, severity, event_type, pair_key, message, is_mock, details
+    ) values (
+        'schema-smoke-risk', 'critical', 'HEDGE_STATE_UNKNOWN',
+        'indodax:btc_idr', 'schema smoke risk event', false, '{"test":true}'::jsonb
+    )
+    on conflict (event_key) do nothing;
+
+    if (select count(*) from public.position_legs where position_id = test_position_id) <> 2 then
+        raise exception 'runtime position leg upsert failed';
+    end if;
+    if not exists (select 1 from public.closed_trades where trade_key = 'schema-smoke-trade') then
+        raise exception 'runtime closed trade insert failed';
+    end if;
+    if not exists (select 1 from public.executor_events where event_id = 'schema-smoke-event') then
+        raise exception 'runtime executor event insert failed';
+    end if;
+    if not exists (select 1 from public.risk_events where event_key = 'schema-smoke-risk') then
+        raise exception 'runtime risk event insert failed';
+    end if;
+
+    delete from public.closed_trades where trade_key = 'schema-smoke-trade';
+    delete from public.executor_events where event_id = 'schema-smoke-event';
+    delete from public.risk_events where event_key = 'schema-smoke-risk';
+    delete from public.positions where id = test_position_id;
+end $$;
