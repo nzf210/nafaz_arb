@@ -579,3 +579,39 @@ async def test_signal_for_unconfigured_venue_is_rejected(engine, fake_redis, moc
     assert mock_client.placed_buys == []
     assert engine.states[pair_tag] == PositionState.FAILED
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "EXECUTOR_VENUE_MISMATCH"
+
+@pytest.mark.asyncio
+async def test_spot_order_rejection_emits_failure_event_and_keeps_no_pending_order(engine, fake_redis, mock_client):
+    """A rejected Spot submit must be visible to Telegram and must not create pending state."""
+    pair_tag = "indodax:btc_idr"
+
+    async def reject_spot_order(symbol, amount, price, client_order_id=None):
+        raise RuntimeError("exchange rejected order: invalid quantity")
+
+    mock_client.place_local_limit_buy = reject_spot_order
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}",
+        json.dumps(_fresh_signal_payload(int(time.time() * 1000))),
+    )
+
+    pubsub = fake_redis.pubsub()
+    await pubsub.subscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert pair_tag not in engine.pending_entry_orders
+    assert mock_client.placed_buys == []
+
+    event = None
+    for _ in range(10):
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+        if message and message.get("type") == "message":
+            event = json.loads(message["data"])
+            break
+    assert event is not None
+    assert event["event"] == "EXECUTION_FAILURE"
+    assert event["reason"] == "SPOT_ORDER_OPEN_FAILED"
+    assert event["pair_tag"] == pair_tag
+    await pubsub.unsubscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.aclose()
