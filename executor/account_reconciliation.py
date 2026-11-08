@@ -90,38 +90,42 @@ class AccountWideReconciliationMixin:
                 venue, expected_by_venue.get(venue, {}), actual, tags_by_venue_symbol
             )
 
-    def _parse_account_futures_positions(self, report):
-        actual: Dict[str, float] = {}
-        for position in report.get("positions") or []:
-            normalized, size, reason = self._parse_account_futures_position(position)
-            if reason:
-                return actual, reason
-            if size <= 1e-12:
-                continue
-            actual[normalized] = actual.get(normalized, 0.0) + size
-        return actual, ""
-
     def _parse_account_futures_position(self, position: dict):
-        if not isinstance(position, dict):
-            return "", 0.0, "malformed futures position row"
-        symbol = position.get("symbol")
-        if not symbol:
-            return "", 0.0, "futures position missing symbol"
-        info = position.get("info") or {}
-        if not isinstance(info, dict):
-            return "", 0.0, f"malformed position metadata for {symbol}"
+        metadata, reason = self._account_position_metadata(position)
+        if reason:
+            return "", 0.0, reason
+        symbol, info = metadata
         side = self._resolve_account_position_side(position, info)
         try:
             size, side = self._account_position_size(position, info, side)
         except (TypeError, ValueError):
             return "", 0.0, f"invalid position size for {symbol}"
-        if size is None:
-            return "", 0.0, f"position size unavailable for {symbol}"
-        if not isinstance(size, (int, float)) or not math.isfinite(size) or size < 0:
-            return "", 0.0, f"invalid position size for {symbol}"
-        if size > 1e-12 and side != "short":
-            return "", 0.0, f"unexpected {side or 'unknown-side'} futures exposure on {symbol}"
+        reason = self._account_position_validation_error(size, side, symbol)
+        if reason:
+            return "", 0.0, reason
         return normalize_exchange_symbol(symbol), size, ""
+
+    @staticmethod
+    def _account_position_metadata(position: dict):
+        if not isinstance(position, dict):
+            return None, "malformed futures position row"
+        symbol = position.get("symbol")
+        if not symbol:
+            return None, "futures position missing symbol"
+        info = position.get("info") or {}
+        if not isinstance(info, dict):
+            return None, f"malformed position metadata for {symbol}"
+        return (symbol, info), ""
+
+    @staticmethod
+    def _account_position_validation_error(size, side: str, symbol: str) -> str:
+        if size is None:
+            return f"position size unavailable for {symbol}"
+        if not isinstance(size, (int, float)) or not math.isfinite(size) or size < 0:
+            return f"invalid position size for {symbol}"
+        if size > 1e-12 and side != "short":
+            return f"unexpected {side or 'unknown-side'} futures exposure on {symbol}"
+        return ""
 
     @staticmethod
     def _resolve_account_position_side(position: dict, info: dict) -> str:

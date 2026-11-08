@@ -93,8 +93,8 @@ class ExitPricingMixin:
         for payment in payments:
             if not isinstance(payment, dict):
                 continue
-            timestamp = int(payment.get("timestamp") or 0)
-            if timestamp <= pos.last_funding_time_ms or timestamp > now_ms:
+            timestamp = self._parse_funding_payment_timestamp(payment)
+            if timestamp is None or not self._is_funding_timestamp_valid(timestamp, pos.last_funding_time_ms, now_ms):
                 continue
             if not self._is_supported_funding_asset(payment, pair_tag):
                 continue
@@ -103,6 +103,17 @@ class ExitPricingMixin:
                 continue
             settled.append((timestamp, amount, payment))
         return settled
+
+    @staticmethod
+    def _parse_funding_payment_timestamp(payment: dict):
+        try:
+            return int(payment.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_funding_timestamp_valid(timestamp: int, last_timestamp: int, now_ms: int) -> bool:
+        return timestamp > last_timestamp and timestamp <= now_ms
 
     @staticmethod
     def _is_supported_funding_asset(payment: dict, pair_tag: str) -> bool:
