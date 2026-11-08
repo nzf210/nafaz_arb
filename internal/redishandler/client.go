@@ -47,8 +47,6 @@ type ClosedTradeRecord struct {
 	GlobalExchange         string  `json:"global_exchange"`
 	Symbol                 string  `json:"symbol"`
 	Qty                    float64 `json:"qty"`
-	FilledQty              float64 `json:"filled_qty,omitempty"`
-	TotalQty               float64 `json:"total_qty,omitempty"`
 	EntryPriceIDR          float64 `json:"entry_price_idr"`
 	ExitPriceIDR           float64 `json:"exit_price_idr"`
 	ShortEntryUSDT         float64 `json:"short_entry_usdt"`
