@@ -50,6 +50,7 @@ func NewFromEnv() (*Client, error) {
 type opportunityRow struct {
 	ScanID string `json:"scan_id"`
 	PairKey string `json:"pair_key"`
+	IdempotencyKey string `json:"idempotency_key"`
 	LocalExchange string `json:"local_exchange"`
 	GlobalExchange string `json:"global_exchange"`
 	LocalSymbol string `json:"local_symbol"`
@@ -88,7 +89,7 @@ func buildRows(scanID string, opportunities []domain.Opportunity) []opportunityR
 			quote = op.QuoteAsset
 		}
 		rows = append(rows, opportunityRow{
-			ScanID: scanID, PairKey: pairKey,
+			ScanID: scanID, PairKey: pairKey, IdempotencyKey: scanID + ":" + pairKey,
 			LocalExchange: op.LocalExchange, GlobalExchange: op.GlobalExchange,
 			LocalSymbol: op.SpotSymbol, GlobalSymbol: op.PerpSymbol,
 			QuoteAsset: quote, ExecutionMode: op.ExecutionMode,
@@ -121,7 +122,7 @@ func (c *Client) SaveOpportunities(ctx context.Context, scanID string, opportuni
 	if err != nil {
 		return fmt.Errorf("encode scanner opportunities: %w", err)
 	}
-	endpoint := c.baseURL + "/rest/v1/scanner_opportunities?on_conflict=scan_id%2Cpair_key"
+	endpoint := c.baseURL + "/rest/v1/scanner_opportunities?on_conflict=idempotency_key"
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
