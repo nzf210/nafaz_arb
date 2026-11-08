@@ -94,10 +94,10 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 		return result, false, fmt.Errorf("perpetual market discovery: %w", err)
 	}
 	result.TotalMarkets = len(spot) + len(perp)
-	// The scanner universe is strictly limited to configured quote assets (USDT/USDC).
-	// Do not synthesize IDR spot markets into USDT perpetual pairs: that changes
-	// the agreed cross-exchange strategy and introduces an unnecessary FX dependency.
-	pairs := exchange.MatchMarkets(spot, perp, s.cfg.QuoteAssets)
+	// Match direct quote assets and, when enabled, synthesize IDR/BIDR spot
+	// markets against USDT perpetuals. IDR order books are normalized using
+	// the live USDT/IDR ticker inside evaluatePair before spread calculation.
+	pairs := exchange.MatchMarketsWithSynthetic(spot, perp, s.cfg.QuoteAssets, s.cfg.EnableSyntheticIDR)
 	if len(s.cfg.ExcludedSymbols) > 0 {
 		pairs = s.filterExcludedSymbols(pairs)
 	}
