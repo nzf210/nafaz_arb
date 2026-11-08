@@ -162,9 +162,11 @@ func nextSettlementTime(t time.Time, intervalHours int) time.Time {
 	return time.Date(year, month, day, nextSlot, 0, 0, 0, time.UTC)
 }
 
-// OpenExposures returns public scanner open exposure state. Read-only by design.
+// OpenExposures is deliberately fail-closed until authenticated per-venue
+// open-order and position readers are implemented. Returning an empty slice here
+// would falsely certify that a live account has no manual or external exposure.
 func (l *LiveAdapter) OpenExposures(ctx context.Context) ([]domain.OpenExposure, error) {
-	return []domain.OpenExposure{}, nil
+	return nil, fmt.Errorf("live open-order/position inspection is not implemented; refusing to report an empty exposure set")
 }
 
 // parseLevels decodes Indodax's depth payload. Levels arrive as
