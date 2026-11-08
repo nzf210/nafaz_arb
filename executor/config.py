@@ -239,36 +239,55 @@ class ExecutorConfig:
                 if testnet_val := os.getenv(f"{env_k[:-8]}_TESTNET"):
                     cred.testnet = testnet_val.lower() in ("true", "1", "yes")
 
-        # Sync local and global credentials from modular exchanges if available
-        if self.local_exchange_name.lower() in self.exchanges:
-            src = self.exchanges[self.local_exchange_name.lower()]
-            if src.api_key:
-                self.local_credentials.api_key = src.api_key
-            if src.api_secret:
-                self.local_credentials.api_secret = src.api_secret
-            if src.passphrase:
-                self.local_credentials.passphrase = src.passphrase
-            if src.testnet:
-                self.local_credentials.testnet = src.testnet
-            if src.options:
-                self.local_credentials.options.update(src.options)
+        # Merge legacy LOCAL_/GLOBAL_ environment credentials with modular
+        # exchange entries. Prefer a populated modular value, but fill missing
+        # fields from the legacy variables so a partial exchanges.<name> block
+        # cannot shadow valid legacy credentials and accidentally fail LIVE boot.
+        local_name = self.local_exchange_name.lower()
+        local_src = self.exchanges.setdefault(local_name, self.local_credentials)
+        if local_src.api_key:
+            self.local_credentials.api_key = local_src.api_key
+        elif self.local_credentials.api_key:
+            local_src.api_key = self.local_credentials.api_key
+        if local_src.api_secret:
+            self.local_credentials.api_secret = local_src.api_secret
+        elif self.local_credentials.api_secret:
+            local_src.api_secret = self.local_credentials.api_secret
+        if local_src.passphrase:
+            self.local_credentials.passphrase = local_src.passphrase
+        elif self.local_credentials.passphrase:
+            local_src.passphrase = self.local_credentials.passphrase
+        if local_src.testnet:
+            self.local_credentials.testnet = True
         else:
-            self.exchanges[self.local_exchange_name.lower()] = self.local_credentials
+            local_src.testnet = self.local_credentials.testnet
+        if local_src.options:
+            self.local_credentials.options.update(local_src.options)
+        elif self.local_credentials.options:
+            local_src.options.update(self.local_credentials.options)
 
-        if self.global_exchange_name.lower() in self.exchanges:
-            src = self.exchanges[self.global_exchange_name.lower()]
-            if src.api_key:
-                self.global_credentials.api_key = src.api_key
-            if src.api_secret:
-                self.global_credentials.api_secret = src.api_secret
-            if src.passphrase:
-                self.global_credentials.passphrase = src.passphrase
-            if src.testnet:
-                self.global_credentials.testnet = src.testnet
-            if src.options:
-                self.global_credentials.options.update(src.options)
+        global_name = self.global_exchange_name.lower()
+        global_src = self.exchanges.setdefault(global_name, self.global_credentials)
+        if global_src.api_key:
+            self.global_credentials.api_key = global_src.api_key
+        elif self.global_credentials.api_key:
+            global_src.api_key = self.global_credentials.api_key
+        if global_src.api_secret:
+            self.global_credentials.api_secret = global_src.api_secret
+        elif self.global_credentials.api_secret:
+            global_src.api_secret = self.global_credentials.api_secret
+        if global_src.passphrase:
+            self.global_credentials.passphrase = global_src.passphrase
+        elif self.global_credentials.passphrase:
+            global_src.passphrase = self.global_credentials.passphrase
+        if global_src.testnet:
+            self.global_credentials.testnet = True
         else:
-            self.exchanges[self.global_exchange_name.lower()] = self.global_credentials
+            global_src.testnet = self.global_credentials.testnet
+        if global_src.options:
+            self.global_credentials.options.update(global_src.options)
+        elif self.global_credentials.options:
+            global_src.options.update(self.global_credentials.options)
 
         if sup_url := os.getenv("SUPABASE_URL"):
             self.supabase.url = sup_url

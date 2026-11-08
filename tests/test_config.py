@@ -166,3 +166,28 @@ def test_live_mode_accepts_complete_indodax_okx_credentials():
         api_key="global-key", api_secret="global-secret", passphrase="okx-passphrase"
     )
     cfg.validate_live_credentials()
+
+
+def test_legacy_env_credentials_fill_missing_fields_in_modular_exchange_entries(monkeypatch, tmp_path):
+    """A partial exchanges.<name> block must not shadow LOCAL_/GLOBAL_ env keys."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "exchanges": {"indodax": {}, "okx": {}}
+    }), encoding="utf-8")
+
+    monkeypatch.setenv("LOCAL_API_KEY", "local-env-key")
+    monkeypatch.setenv("LOCAL_API_SECRET", "local-env-secret")
+    monkeypatch.setenv("GLOBAL_API_KEY", "global-env-key")
+    monkeypatch.setenv("GLOBAL_API_SECRET", "global-env-secret")
+    monkeypatch.setenv("GLOBAL_PASSPHRASE", "global-env-passphrase")
+
+    cfg = ExecutorConfig(mock_mode=False)
+    cfg._apply_file(str(config_path))
+    cfg._apply_env()
+    cfg.validate_live_credentials()
+
+    assert cfg.exchanges["indodax"].api_key == "local-env-key"
+    assert cfg.exchanges["indodax"].api_secret == "local-env-secret"
+    assert cfg.exchanges["okx"].api_key == "global-env-key"
+    assert cfg.exchanges["okx"].api_secret == "global-env-secret"
+    assert cfg.exchanges["okx"].passphrase == "global-env-passphrase"
