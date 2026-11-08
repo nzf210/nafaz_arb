@@ -199,13 +199,20 @@ class ExitMixin:
                 1.0 + (effective_exit_spread_pct / 100.0)
             )
 
-            # 2. Strict Mathematical Break-Even & Profit Floor Protection:
-            # We enforce: Realized Net Profit >= min_profit_target (> 0)
-            # Net Profit = Spot_PnL + Futures_PnL + Funding - Fees
-            # Futures PnL = Qty * (short_entry_usdt - global_ask_usdt)
-            # Fees = Qty * (short_entry_usdt + global_ask_usdt) * fee_rate (covers both legs)
-            fee_rate = 0.0010
-            est_fees_usdt = (pos.qty * (pos.short_entry_usdt + global_ask_usdt)) * fee_rate
+            # 2. Strict estimated-net profit floor. Use the same per-venue
+            # Spot maker/taker and Perp taker profile as the scanner.
+            spot_entry_notional = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)
+            if spot_entry_notional <= 0 and usdt_idr_rate > 0:
+                spot_entry_notional = pos.qty * pos.entry_price_idr / usdt_idr_rate
+            fee_breakdown = self.config.estimate_trade_fees_usdt(
+                pos.local_exchange,
+                pos.global_exchange,
+                spot_entry_notional,
+                pos.qty * global_ask_usdt,
+                pos.qty * pos.short_entry_usdt,
+                pos.qty * global_ask_usdt,
+            )
+            est_fees_usdt = float(fee_breakdown["fees_usdt"])
             futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - global_ask_usdt)
 
             # Buffer min ROI: at least +0.05% net ROI or 25% of base target exit spread
@@ -328,7 +335,19 @@ class ExitMixin:
                 spot_pnl_idr = pos.qty * (local_best_bid - pos.entry_price_idr)
                 spot_pnl_usdt = spot_pnl_idr / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
                 futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - global_ask_usdt)
-                est_fees_usdt = (pos.qty * (pos.short_entry_usdt + global_ask_usdt)) * 0.0005
+                spot_entry_notional = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)
+                if spot_entry_notional <= 0:
+                    spot_entry_notional = pos.qty * pos.entry_price_idr / usdt_idr_rate
+                spot_exit_notional = pos.qty * local_best_bid / usdt_idr_rate
+                fee_breakdown = self.config.estimate_trade_fees_usdt(
+                    pos.local_exchange,
+                    pos.global_exchange,
+                    spot_entry_notional,
+                    spot_exit_notional,
+                    pos.qty * pos.short_entry_usdt,
+                    pos.qty * global_ask_usdt,
+                )
+                est_fees_usdt = float(fee_breakdown["fees_usdt"])
                 net_unrealized_usdt = (
                     spot_pnl_usdt + futures_pnl_usdt + pos.accumulated_funding_usdt - est_fees_usdt
                 )
