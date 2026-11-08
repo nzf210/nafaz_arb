@@ -143,9 +143,10 @@ class ExchangeClient:
         global_ask_quote: float,
         local_exchange: Optional[str] = None,
         global_exchange: Optional[str] = None,
+        max_ticker_age_ms: int = 2000,
     ) -> tuple[float, float]:
         """Fail-closed preflight for active markets, min-notional, precision and contract size."""
-        values = (amount, price_idr, usdt_idr_rate, global_ask_quote)
+        values = (amount, price_idr, usdt_idr_rate)
         if any(not math.isfinite(float(value)) or float(value) <= 0 for value in values):
             raise ValueError("entry preflight received a non-positive or non-finite price, quantity, or FX value")
 
@@ -193,6 +194,30 @@ class ExchangeClient:
         if precise_spot_price > spot_price_quote + tolerance:
             raise ValueError("Spot buy price precision would round the limit upward")
 
+        async def fresh_ask(client: Any, symbol: str, venue_label: str) -> float:
+            fetcher = getattr(client, "fetch_ticker", None)
+            if not callable(fetcher):
+                raise ValueError(f"{venue_label} live ticker reader is unavailable for {symbol}")
+            ticker = await fetcher(symbol)
+            if not isinstance(ticker, dict):
+                raise ValueError(f"{venue_label} returned an invalid ticker for {symbol}")
+            try:
+                ask = float(ticker.get("ask") or 0.0)
+                timestamp_ms = int(ticker.get("timestamp") or 0)
+            except (TypeError, ValueError):
+                raise ValueError(f"{venue_label} ticker has invalid ask/timestamp for {symbol}")
+            if not math.isfinite(ask) or ask <= 0 or timestamp_ms <= 0:
+                raise ValueError(f"{venue_label} ticker is missing a valid ask/timestamp for {symbol}")
+            age_ms = int(time.time() * 1000) - timestamp_ms
+            if age_ms < -1000 or age_ms > max(1, int(max_ticker_age_ms)):
+                raise ValueError(f"{venue_label} ticker age {age_ms}ms is outside the allowed window")
+            return ask
+
+        local_live_ask = await fresh_ask(local_client, spot_symbol, "Spot")
+        global_live_ask = await fresh_ask(global_client, perp_symbol, "Futures")
+        if precise_spot_price >= local_live_ask:
+            raise ValueError("precision-adjusted Spot buy limit would take the live ask")
+
         spot_amount_precision = getattr(local_client, "amount_to_precision", None)
         if not callable(spot_amount_precision):
             raise ValueError(f"Spot lot-size precision is unavailable for {spot_symbol}")
@@ -225,7 +250,7 @@ class ExchangeClient:
             raise ValueError(f"Spot notional {spot_notional} is below min notional {spot_cost_min}")
         if contracts_final + tolerance < perp_contract_min:
             raise ValueError(f"Futures contracts {contracts_final} are below min amount {perp_contract_min}")
-        perp_notional = common_amount * global_ask_quote
+        perp_notional = common_amount * global_live_ask
         if perp_notional + tolerance < perp_cost_min:
             raise ValueError(f"Futures notional {perp_notional} is below min notional {perp_cost_min}")
 
