@@ -12,15 +12,9 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
 
-// USDTIDRRate retrieves the current live USDT/IDR exchange rate from Indodax ticker with caching.
+// USDTIDRRate retrieves a fresh live USDT/IDR quote from Indodax.
+// It deliberately does not return a cached last-known rate when the request fails.
 func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
-	l.mu.RLock()
-	if l.lastUSDTIDRRate > 0 && time.Since(l.lastUSDTIDRTime) < 60*time.Second {
-		rate := l.lastUSDTIDRRate
-		l.mu.RUnlock()
-		return rate, nil
-	}
-	l.mu.RUnlock()
 
 	endpoint := l.indodaxBaseURL + "/api/ticker/usdtidr"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -61,11 +55,6 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 	if last <= 0 {
 		return 0, fmt.Errorf("invalid indodax usdtidr rate: %s", raw.Ticker.Last)
 	}
-
-	l.mu.Lock()
-	l.lastUSDTIDRRate = last
-	l.lastUSDTIDRTime = time.Now().UTC()
-	l.mu.Unlock()
 
 	return last, nil
 }
