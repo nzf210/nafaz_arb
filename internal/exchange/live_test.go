@@ -364,3 +364,36 @@ func TestUSDTIDRRateDoesNotFallBackToCachedValue(t *testing.T) {
 		t.Fatalf("FX endpoint requests=%d, want 2 fresh requests", requests)
 	}
 }
+
+func TestUSDTIDRRateUsesCurrentBidAskInsteadOfLastTrade(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ticker":{"last":"15000","buy":"15990","sell":"16010"}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs(server.URL)
+	rate, err := adapter.USDTIDRRate(context.Background())
+	if err != nil {
+		t.Fatalf("live FX quote failed: %v", err)
+	}
+	if rate != 16000 {
+		t.Fatalf("USDT/IDR rate=%v, want current bid/ask midpoint 16000 rather than stale last 15000", rate)
+	}
+}
+
+func TestUSDTIDRRateRejectsMissingTwoSidedQuote(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ticker":{"last":"16000","buy":"15990","sell":""}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs(server.URL)
+	rate, err := adapter.USDTIDRRate(context.Background())
+	if err == nil || rate != 0 {
+		t.Fatalf("missing ask must fail closed: rate=%v err=%v", rate, err)
+	}
+}
