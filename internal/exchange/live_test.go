@@ -259,7 +259,9 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 	}))
 	defer tokoServer.Close()
 
+	mexcSpotRequests := 0
 	mexcSpotServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mexcSpotRequests++
 		if r.URL.Path == "/api/v3/depth" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{
@@ -293,13 +295,14 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 		t.Errorf("unexpected indodax bids: %+v", ibook.Bids)
 	}
 
-	// MEXC spot depth
-	mbook, err := adapter.SpotOrderBook(context.Background(), "mexc_spot:BTCUSDT")
-	if err != nil {
-		t.Fatalf("SpotOrderBook mexc: %v", err)
+	// MEXC Spot is explicitly disabled, even if a caller supplies a legacy symbol.
+	for _, symbol := range []string{"mexc_spot:BTCUSDT", "mexc:BTC_USDT"} {
+		if _, err := adapter.SpotOrderBook(context.Background(), symbol); err == nil || !strings.Contains(err.Error(), "MEXC Spot is disabled") {
+			t.Fatalf("SpotOrderBook(%q) error=%v, want MEXC Spot disabled", symbol, err)
+		}
 	}
-	if len(mbook.Bids) != 1 || mbook.Bids[0].Price != 60050 || mbook.Bids[0].Quantity != 1.5 {
-		t.Errorf("unexpected mexc spot bids: %+v", mbook.Bids)
+	if mexcSpotRequests != 0 {
+		t.Fatalf("MEXC Spot endpoint was called %d times, want 0", mexcSpotRequests)
 	}
 }
 
