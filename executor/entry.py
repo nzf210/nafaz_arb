@@ -350,18 +350,36 @@ class EntryMixin:
 
                 # Publish event to arb:trade_events for Telegram Bot
                 pos = self.active_positions[pair_tag]
+                pair_info = self._pair_infos.get(pair_tag)
+                global_symbol = str(order_info.get("global_symbol") or "")
                 open_msg = {
                     "event": "POSITION_OPENED",
+                    "pair_key": pair_tag,
+                    "position_id": pos.position_id,
                     "local_exchange": pos.local_exchange,
                     "global_exchange": pos.global_exchange,
                     "symbol": pos.symbol,
+                    "local_symbol": pair_info.local_symbol if pair_info else pos.symbol,
+                    "global_symbol": global_symbol,
+                    "base_asset": pair_info.base_asset if pair_info else pos.symbol.split("_")[0].split("/")[0],
+                    "quote_asset": pair_info.quote_asset if pair_info else ("IDR" if "IDR" in pos.symbol.upper() else "USDT"),
+                    "futures_quote_asset": "USDC" if "USDC" in global_symbol.upper() else "USDT",
+                    "execution_mode": order_info.get("execution_mode", "MAKER_TAKER"),
                     "qty": pos.qty,
+                    "remaining_qty": pos.qty,
+                    "initial_qty": pos.initial_qty or pos.qty,
                     "entry_price_idr": pos.entry_price_idr,
                     "short_entry_usdt": pos.short_entry_usdt,
+                    "entry_usdt_idr_rate": pos.entry_usdt_idr_rate,
+                    "spot_cost_quote": pos.qty * pos.entry_price_idr,
+                    "futures_margin_quote": pos.qty * pos.short_entry_usdt,
+                    "accumulated_funding_usdt": pos.accumulated_funding_usdt,
+                    "opened_at_ms": pos.opened_at_ms,
                     "is_mock": getattr(self.config, "mock_mode", False),
                     "timestamp_ms": int(time.time() * 1000),
                 }
                 await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(open_msg))
+                await self._persist_supabase_event(open_msg)
             except Exception as he:
                 logger.critical(
                     f"[State 2 CRITICAL] Failed to execute instant short hedge for {pair_tag}: {he}"
@@ -478,13 +496,24 @@ class EntryMixin:
                     base_target_exit_spread_pct=order_info["base_target_exit_spread_pct"],
                     current_funding_rate=order_info["current_funding_rate"],
                     local_price_tick=float(order_info.get("tick_size", 1.0)),
+                    initial_qty=qty,
+                    opened_at_ms=int(time.time() * 1000),
+                    entry_usdt_idr_rate=usdt_rate,
                     spot_cost_usdt=spot_cost,
                     futures_margin_usdt=fut_margin,
                 )
             else:
-                self.active_positions[pair_tag].qty += qty
-                self.active_positions[pair_tag].spot_cost_usdt += spot_cost
-                self.active_positions[pair_tag].futures_margin_usdt += fut_margin
+                pos = self.active_positions[pair_tag]
+                old_qty = pos.qty
+                new_qty = old_qty + qty
+                if usdt_rate > 0 and new_qty > 0:
+                    pos.entry_usdt_idr_rate = (
+                        pos.entry_usdt_idr_rate * old_qty + usdt_rate * qty
+                    ) / new_qty
+                pos.qty = new_qty
+                pos.initial_qty = (pos.initial_qty or old_qty) + qty
+                pos.spot_cost_usdt += spot_cost
+                pos.futures_margin_usdt += fut_margin
 
         async def _finalize_entry_order(self, pair_tag: str, status: str) -> None:
             """Remove finished entry order from pending list and transition state."""
