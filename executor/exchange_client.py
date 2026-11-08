@@ -227,18 +227,28 @@ class ExchangeClient:
         total_map = raw.get("total") or {}
         assets = []
         for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
-            free = float(free_map.get(asset) or 0.0)
-            total_raw = total_map.get(asset)
-            used_raw = used_map.get(asset)
-            total = float(total_raw) if total_raw is not None else 0.0
-            used = float(used_raw) if used_raw is not None else max(0.0, total - free)
-            if total_raw is None:
-                total = free + used
-            if not all(math.isfinite(value) and value >= 0 for value in (free, used, total)):
-                raise ValueError(f"invalid balance value for {asset}")
-            if free or used or total:
-                assets.append({"asset": str(asset), "free": free, "used": used, "total": total})
+            normalized = ExchangeClient._normalize_balance_asset(
+                asset, free_map, used_map, total_map
+            )
+            if normalized is not None:
+                assets.append(normalized)
         return assets
+
+    @staticmethod
+    def _normalize_balance_asset(asset: str, free_map: dict, used_map: dict, total_map: dict):
+        free = float(free_map.get(asset) or 0.0)
+        total_raw = total_map.get(asset)
+        used_raw = used_map.get(asset)
+        total = float(total_raw) if total_raw is not None else 0.0
+        used = float(used_raw) if used_raw is not None else max(0.0, total - free)
+        if total_raw is None:
+            total = free + used
+        values = (free, used, total)
+        if not all(math.isfinite(value) and value >= 0 for value in values):
+            raise ValueError(f"invalid balance value for {asset}")
+        if not any(values):
+            return None
+        return {"asset": str(asset), "free": free, "used": used, "total": total}
 
     @staticmethod
     def _balance_bucket_amount(balance: Dict[str, Any], asset: str, bucket: str) -> float:
