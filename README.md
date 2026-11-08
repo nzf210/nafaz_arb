@@ -294,3 +294,11 @@ The executor remains in paper mode by default (`EXECUTOR_MOCK_MODE=true`). Do no
 quote assets, balance permissions, and venue-specific order/funding/position behavior
 have all been validated in paper mode. Scanner LIVE mode and executor LIVE mode are
 separate switches and must be configured deliberately.
+
+### Telegram scan notifications
+
+- `telegram.alert_on_new` sends eligible opportunity alerts.
+- `telegram.alert_on_scan_summary` optionally sends a periodic scan summary (default `false` to avoid group spam).
+- Failed USDT/IDR FX preflight is sent as an immediate safety alert whenever Telegram is enabled and a target chat is configured, even if scan summaries are disabled.
+- Partial Spot fills are published to `arb:trade_events` and surfaced in Telegram. A partial-fill alert is not proof that the Futures hedge has completed; wait for the hedge/position confirmation.
+- Environment override: `TELEGRAM_ALERT_ON_SCAN_SUMMARY=true`.
