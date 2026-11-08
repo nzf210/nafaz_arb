@@ -177,11 +177,14 @@ class ArbitrageEngine(
         groups = {}
         for pair_tag, pos in self.active_positions.items():
             global_symbol = self._resolve_global_symbol(pos.symbol)
-            groups.setdefault(global_symbol, []).append((pair_tag, pos))
+            route_key = (pos.local_exchange, pos.global_exchange, global_symbol)
+            groups.setdefault(route_key, []).append((pair_tag, pos))
 
-        for global_symbol, items in groups.items():
+        for (local_exchange, global_exchange, global_symbol), items in groups.items():
             expected_qty = sum(pos.qty for _, pos in items)
             try:
+                if hasattr(self.client, "set_route"):
+                    self.client.set_route(local_exchange, global_exchange)
                 positions = await self.client.fetch_positions(global_symbol)
                 if positions is None:
                     raise ValueError("fetch_positions returned None")
@@ -298,6 +301,11 @@ class ArbitrageEngine(
                 if not raw:
                     continue
                 order_info = json.loads(raw)
+                if hasattr(self.client, "set_route"):
+                    self.client.set_route(
+                        order_info.get("local_exchange", ""),
+                        order_info.get("global_exchange", ""),
+                    )
                 order_id = str(order_info.get("order_id", ""))
                 symbol = str(order_info.get("symbol", ""))
                 if not order_id or not symbol:

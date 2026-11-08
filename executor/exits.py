@@ -423,6 +423,8 @@ class ExitMixin:
             pos = self.active_positions.get(pair_tag)
             if not order_info or not pos:
                 return
+            if hasattr(self.client, "set_route"):
+                self.client.set_route(pos.local_exchange, pos.global_exchange)
 
             order_id = order_info["order_id"]
             local_symbol = order_info["symbol"]
