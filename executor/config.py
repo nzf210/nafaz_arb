@@ -140,6 +140,7 @@ class ExecutorConfig:
                 ("max_daily_loss_usdt", float),
                 ("max_entry_slippage_pct", float),
                 ("entry_revalidation_min_spread_pct", float),
+                ("entry_revalidation_max_age_ms", int),
                 ("max_exposure_per_exchange_usdt", float),
                 ("balance_mismatch_fraction", float),
                 ("max_consecutive_order_failures", int),
