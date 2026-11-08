@@ -36,7 +36,18 @@ class MockExchangeClient:
         self.cancelled_orders = []
         self.global_short_sells = []
         self.global_close_buys = []
-        self.market_prices = {}
+        self.market_prices = {
+            "btc_idr": {
+                "bid": 1_038_000_000.0,
+                "ask": 1_040_000_000.0,
+                "timestamp": int(time.time() * 1000),
+            },
+            "btc_usdt": {
+                "bid": 65_000.0,
+                "ask": 65_010.0,
+                "timestamp": int(time.time() * 1000),
+            },
+        }
         self.client_order_ids = []
         self.funding_history = []
         self.funding_rate_data = {}
