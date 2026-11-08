@@ -212,7 +212,16 @@ class ArbitrageEngine(
                     malformed_reason = "futures position missing symbol"
                     break
                 info = position.get("info") or {}
-                side = str(position.get("side") or info.get("posSide") or info.get("positionSide") or "").lower()
+                if not isinstance(info, dict):
+                    malformed_reason = f"malformed position metadata for {symbol}"
+                    break
+                side = str(
+                    position.get("side")
+                    or position.get("positionSide")
+                    or info.get("posSide")
+                    or info.get("positionSide")
+                    or ""
+                ).lower()
                 try:
                     contracts = position.get("contracts")
                     if contracts is not None:
