@@ -89,6 +89,81 @@ class ExchangeClient:
             raise RuntimeError(f"perpetual exchange route is not configured: {name}")
         return self.perpetual_clients[name]
 
+    async def _perpetual_contract_amount(self, symbol: str, base_amount: float) -> tuple[float, float]:
+        """
+        Convert base-asset quantity into CCXT contract quantity.
+
+        Spot fills and the scanner use base units. CCXT derivative create_order
+        expects contracts for contract markets, so passing the spot quantity
+        directly can leave the hedge under-sized by contractSize (often 1/1000).
+        """
+        if not math.isfinite(float(base_amount)) or base_amount <= 0:
+            raise ValueError(f"invalid perpetual base amount: {base_amount}")
+
+        exchange = self.global_fut
+        market_fn = getattr(exchange, "market", None)
+        if not callable(market_fn):
+            # Lightweight adapters and legacy mocks already accept base units.
+            return float(base_amount), 1.0
+
+        markets = getattr(exchange, "markets", None)
+        if not markets:
+            loader = getattr(exchange, "load_markets", None)
+            if callable(loader):
+                await loader()
+
+        market = market_fn(symbol)
+        if not isinstance(market, dict):
+            raise ValueError(f"perpetual market metadata unavailable for {symbol}")
+        if not market.get("contract"):
+            raise ValueError(
+                f"{symbol} is not a CCXT contract market; refusing unverified hedge sizing"
+            )
+
+        try:
+            contract_size = float(market.get("contractSize") or 0.0)
+        except (TypeError, ValueError):
+            contract_size = 0.0
+        if not math.isfinite(contract_size) or contract_size <= 0:
+            raise ValueError(f"invalid contractSize for {symbol}: {market.get('contractSize')!r}")
+
+        contracts = float(base_amount) / contract_size
+        precision_fn = getattr(exchange, "amount_to_precision", None)
+        if callable(precision_fn):
+            contracts = float(precision_fn(symbol, contracts))
+        if not math.isfinite(contracts) or contracts <= 0:
+            raise ValueError(f"perpetual amount rounds to zero for {symbol}")
+
+        normalized_base = contracts * contract_size
+        tolerance = max(1e-12, abs(float(base_amount)) * 1e-8)
+        if abs(normalized_base - float(base_amount)) > tolerance:
+            raise ValueError(
+                f"spot quantity {base_amount} cannot be exactly hedged on {symbol}: "
+                f"{contracts} contracts x {contract_size} = {normalized_base} base units"
+            )
+        return contracts, contract_size
+
+    @staticmethod
+    def _normalize_perpetual_order(order: Dict[str, Any], contract_size: float) -> Dict[str, Any]:
+        """Expose CCXT contract fills to the engine in base-asset units."""
+        if contract_size == 1.0:
+            return order
+        normalized = dict(order)
+        normalized["_nafaz_contract_size"] = contract_size
+        for field in ("amount", "filled", "remaining"):
+            raw = normalized.get(field)
+            if raw is None:
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                raise ValueError(f"invalid CCXT {field} in perpetual order: {raw!r}")
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"invalid CCXT {field} in perpetual order: {raw!r}")
+            normalized[f"_nafaz_contract_{field}"] = value
+            normalized[field] = value * contract_size
+        return normalized
+
     async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """Places a Maker Limit Buy on local spot exchange."""
         if amount <= 0 or price <= 0:
@@ -257,8 +332,15 @@ class ExchangeClient:
         """
         if amount <= 0:
             raise ValueError(f"invalid short amount: {amount}")
-        # Market Sell on Futures opens a Short position
-        return await self.global_fut.create_market_sell_order(symbol, amount, *_client_order_params(client_order_id))
+        # Convert scanner/spot base quantity into venue contract units.
+        contracts, contract_size = await self._perpetual_contract_amount(symbol, amount)
+        # Market Sell on Futures opens a Short position.
+        order = await self.global_fut.create_market_sell_order(
+            symbol, contracts, *_client_order_params(client_order_id)
+        )
+        if not isinstance(order, dict):
+            raise ValueError("perpetual short returned an invalid order payload")
+        return self._normalize_perpetual_order(order, contract_size)
 
     async def close_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -267,10 +349,14 @@ class ExchangeClient:
         """
         if amount <= 0:
             raise ValueError(f"invalid close amount: {amount}")
+        contracts, contract_size = await self._perpetual_contract_amount(symbol, amount)
         params = {"reduceOnly": True}
         if client_order_id:
             params["clientOrderId"] = client_order_id
-        return await self.global_fut.create_market_buy_order(symbol, amount, params)
+        order = await self.global_fut.create_market_buy_order(symbol, contracts, params)
+        if not isinstance(order, dict):
+            raise ValueError("perpetual close returned an invalid order payload")
+        return self._normalize_perpetual_order(order, contract_size)
 
     async def fetch_funding_history(
         self, symbol: str, since: Optional[int] = None, limit: int = 100
