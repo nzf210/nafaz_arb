@@ -902,3 +902,48 @@ func TestApplyEvaluationResultsCountsFailedPairs(t *testing.T) {
 		t.Fatalf("failed_pairs=%d, want 1", result.FailedPairs)
 	}
 }
+
+type unavailableExposureAdapter struct {
+	exchange.MockAdapter
+}
+
+func (u *unavailableExposureAdapter) OpenExposures(context.Context) ([]domain.OpenExposure, error) {
+	return nil, fmt.Errorf("authenticated open-order/position inspection unavailable")
+}
+
+func TestScanMarksEveryCandidateIneligibleWhenExposureStateIsUnknown(t *testing.T) {
+	cfg := config.Config{
+		Mode: "MOCK",
+		QuoteAssets: []string{"USDT"},
+		CapitalTotal: 1000,
+		AllocationPerPair: 0.5,
+		PerpLeverage: 1,
+		EstimatedHoldingHours: 8,
+		MinNetROIPct: 0.1,
+		MaxNetROIPct: 10,
+		MaxSlippagePct: 5,
+		SpotTakerFeePct: 0.1,
+		PerpTakerFeePct: 0.05,
+		CheckOpenPositions: true,
+		ExcludeOpenOrders: true,
+	}
+	adapter := &unavailableExposureAdapter{MockAdapter: *exchange.NewMockAdapter()}
+	result, complete, err := New(cfg, adapter).Scan(context.Background())
+	if err != nil {
+		t.Fatalf("scan should return an inspectable incomplete result, got error: %v", err)
+	}
+	if complete || result.Complete {
+		t.Fatal("scan must be incomplete when live exposure state cannot be verified")
+	}
+	if len(result.Opportunities) == 0 {
+		t.Fatal("expected candidates to verify they are explicitly blocked")
+	}
+	for _, op := range result.Opportunities {
+		if op.TradingEligible {
+			t.Fatalf("%s became trading-eligible without exposure verification", op.PairKey)
+		}
+		if !hasReason(op.ExclusionReasons, "POSITION_STATUS_UNKNOWN") {
+			t.Fatalf("%s missing POSITION_STATUS_UNKNOWN: %v", op.PairKey, op.ExclusionReasons)
+		}
+	}
+}
