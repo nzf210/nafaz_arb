@@ -46,6 +46,14 @@ async def test_balance_constraint_and_realized_trade_updates(fake_redis):
 
     now_ms = int(time.time() * 1000)
 
+    # Seed fresh paper quotes because entry now revalidates both legs before Spot submit.
+    client.update_market_price("btc_idr", 1_000_000_000.0, 1_001_000_000.0)
+    client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
+    client.update_market_price("eth_idr", 49_900_000.0, 50_010_000.0)
+    client.update_market_price("ETHUSDT", 3_200.0, 3_210.0)
+    client.update_market_price("sol_idr", 20_000_000.0, 20_100_000.0)
+    client.update_market_price("SOLUSDT", 1_300.0, 1_301.0)
+
     # 1. Check initial balances
     bals = client.get_balances()
     assert bals["spot_total"] == 100.0
