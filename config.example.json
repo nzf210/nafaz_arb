@@ -47,6 +47,10 @@
     "max_order_book_age_seconds": 5,
     "max_cross_exchange_skew_seconds": 3,
     "max_order_ttl_seconds": 30,
+    "executor": {
+        "estimated_round_trip_fee_pct": 0.001,
+        "max_exit_slippage_pct": 0.003
+    },
     "min_top_of_book_quote_usdt": 0,
     "max_order_book_imbalance": 0.0,
     "spike_spread_pct": 0.0,
