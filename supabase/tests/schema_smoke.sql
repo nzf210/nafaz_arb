@@ -71,3 +71,50 @@ begin
         raise exception 'trade currency / FX audit columns are missing';
     end if;
 end $$;
+
+-- Runtime repository contract: PostgREST uses this unique key for retry-safe
+-- upserts when a scan response is retried after a transient network failure.
+do $$
+begin
+    if not exists (
+        select 1 from pg_indexes
+        where schemaname = 'public'
+          and indexname = 'uq_scanner_opportunities_scan_pair'
+          and indexdef ilike 'create unique index%'
+    ) then
+        raise exception 'scanner opportunity idempotency index is missing';
+    end if;
+end $$;
+
+insert into public.scanner_opportunities (
+    scan_id, pair_key, local_exchange, global_exchange, local_symbol,
+    global_symbol, quote_asset, eligibility_status, observed_at, payload
+) values (
+    'schema-smoke-idempotency', 'indodax:btc_idr', 'indodax', 'okx',
+    'btc_idr', 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":1}'::jsonb
+)
+on conflict (scan_id, pair_key) do update
+set eligibility_status = excluded.eligibility_status,
+    payload = excluded.payload;
+
+insert into public.scanner_opportunities (
+    scan_id, pair_key, local_exchange, global_exchange, local_symbol,
+    global_symbol, quote_asset, eligibility_status, observed_at, payload
+) values (
+    'schema-smoke-idempotency', 'indodax:btc_idr', 'indodax', 'okx',
+    'btc_idr', 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":2}'::jsonb
+)
+on conflict (scan_id, pair_key) do update
+set eligibility_status = excluded.eligibility_status,
+    payload = excluded.payload;
+
+do $$
+begin
+    if (select count(*) from public.scanner_opportunities
+        where scan_id = 'schema-smoke-idempotency'
+          and pair_key = 'indodax:btc_idr') <> 1 then
+        raise exception 'scanner opportunity retry created duplicate rows';
+    end if;
+end $$;
+
+delete from public.scanner_opportunities where scan_id = 'schema-smoke-idempotency';
