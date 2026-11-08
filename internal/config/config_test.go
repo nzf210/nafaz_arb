@@ -84,6 +84,9 @@ func TestExecutionModeDefaultsAndValidation(t *testing.T) {
 	if cfg.MaxOrderTTLSeconds != 30 {
 		t.Fatalf("max_order_ttl_seconds=%d, want default 30", cfg.MaxOrderTTLSeconds)
 	}
+	if cfg.GlobalFuturesExchange != "okx" {
+		t.Fatalf("global_futures_exchange=%s, want supported main default okx", cfg.GlobalFuturesExchange)
+	}
 
 	// Test valid MAKER_TAKER
 	if err := os.WriteFile(path, []byte(`{
@@ -473,5 +476,39 @@ func TestRejectsInvalidFeeProfile(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "fee_profiles.okx.perp_taker_fee_pct") {
 		t.Fatalf("expected fee profile validation error, got %v", err)
+	}
+}
+
+func TestLiveModeRequiresOpenExposureAndOrderChecks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	validToken := "0123456789abcdef0123456789abcdef"
+
+	cases := []struct {
+		name string
+		config string
+		want string
+	}{
+		{
+			name: "positions check disabled",
+			config: `{"mode":"LIVE","api_auth_token":"`+validToken+`","check_open_positions":false,"exclude_open_orders":true}`,
+			want: "check_open_positions must be true",
+		},
+		{
+			name: "open order check disabled",
+			config: `{"mode":"LIVE","api_auth_token":"`+validToken+`","check_open_positions":true,"exclude_open_orders":false}`,
+			want: "exclude_open_orders must be true",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load error=%v, want %q", err, tc.want)
+			}
+		})
 	}
 }
