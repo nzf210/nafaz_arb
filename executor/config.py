@@ -36,6 +36,8 @@ class ExecutorConfig:
     # Abort the hedge if the live futures ask is worse than the expected short
     # price by more than this fraction (0.003 = 0.3%). 0 disables the guard.
     max_entry_slippage_pct: float = 0.003
+    # Adverse futures-ask allowance used by the combined-PnL exit profit floor.
+    max_exit_slippage_pct: float = 0.003
     # Re-quote the global futures bid just before placing the maker buy and
     # reject the signal when the entry spread has collapsed below the scanner's
     # own minimum. 0 disables the guard (default: on at 0.0 = use payload floor).
@@ -106,6 +108,7 @@ class ExecutorConfig:
                 ("min_allocated_capital", float),
                 ("max_daily_loss_usdt", float),
                 ("max_entry_slippage_pct", float),
+                ("max_exit_slippage_pct", float),
                 ("entry_revalidation_min_spread_pct", float),
                 ("max_exposure_per_exchange_usdt", float),
                 ("balance_mismatch_fraction", float),
@@ -182,6 +185,12 @@ class ExecutorConfig:
         if slippage_env := os.getenv("MAX_ENTRY_SLIPPAGE_PCT"):
             try:
                 self.max_entry_slippage_pct = float(slippage_env)
+            except ValueError:
+                pass
+
+        if exit_slippage_env := os.getenv("MAX_EXIT_SLIPPAGE_PCT"):
+            try:
+                self.max_exit_slippage_pct = float(exit_slippage_env)
             except ValueError:
                 pass
 
@@ -310,6 +319,7 @@ class ExecutorConfig:
         "min_allocated_capital": (0.0, None, 10.0),
         "max_daily_loss_usdt": (0.0, None, 50.0),
         "max_entry_slippage_pct": (0.0, 1.0, 0.003),
+        "max_exit_slippage_pct": (0.0, 1.0, 0.003),
         "entry_revalidation_min_spread_pct": (0.0, 100.0, 0.0),
         "max_exposure_per_exchange_usdt": (0.0, None, 0.0),
         "balance_mismatch_fraction": (0.0, 1.0, 0.20),
@@ -358,6 +368,10 @@ class ExecutorConfig:
         if self.max_entry_slippage_pct == 0:
             warnings.append(
                 "max_entry_slippage_pct=0 disables the hedge slippage guard"
+            )
+        if self.max_exit_slippage_pct == 0:
+            warnings.append(
+                "max_exit_slippage_pct=0 disables the conservative exit profit-floor buffer"
             )
         if self.max_consecutive_order_failures == 0:
             warnings.append(
