@@ -86,6 +86,12 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatActiveOpportunities(), b.defaultKeyboard())
 	case "/positions":
 		b.handlePositionsCommand(ctx, msg.Chat.ID, msg.MessageID)
+	case "/balance":
+		userID := int64(0)
+		if msg.From != nil {
+			userID = msg.From.ID
+		}
+		b.handleBalanceCommand(ctx, msg.Chat.ID, msg.MessageID, userID)
 	case "/history":
 		b.handleHistoryCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/frozen":
@@ -157,6 +163,8 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatActiveOpportunities(), b.defaultKeyboard())
 	case "positions":
 		b.handlePositionsCommand(ctx, chatID, 0)
+	case "balance":
+		b.handleBalanceCommand(ctx, chatID, 0, cb.From.ID)
 	case "history":
 		b.handleHistoryCommand(ctx, chatID, 0)
 	case "frozen":
