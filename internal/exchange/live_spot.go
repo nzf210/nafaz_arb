@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -44,19 +45,21 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 		return 0, fmt.Errorf("decode indodax usdtidr: %w", err)
 	}
 
-	last, err := strconv.ParseFloat(raw.Ticker.Last, 64)
-	if err != nil || last <= 0 {
-		buy, _ := strconv.ParseFloat(raw.Ticker.Buy, 64)
-		sell, _ := strconv.ParseFloat(raw.Ticker.Sell, 64)
-		if buy > 0 && sell > 0 {
-			last = (buy + sell) / 2
-		}
+	buy, buyErr := strconv.ParseFloat(raw.Ticker.Buy, 64)
+	sell, sellErr := strconv.ParseFloat(raw.Ticker.Sell, 64)
+	if buyErr != nil || sellErr != nil || buy <= 0 || sell <= 0 || sell < buy {
+		return 0, fmt.Errorf(
+			"invalid live indodax usdtidr bid/ask: buy=%q sell=%q last=%q",
+			raw.Ticker.Buy, raw.Ticker.Sell, raw.Ticker.Last,
+		)
 	}
-	if last <= 0 {
-		return 0, fmt.Errorf("invalid indodax usdtidr rate: %s", raw.Ticker.Last)
+	// The last trade can be stale in a quiet market. Use the current two-sided
+	// quote midpoint; if either side is unavailable, fail the IDR scan closed.
+	rate := (buy + sell) / 2
+	if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
+		return 0, fmt.Errorf("invalid indodax usdtidr midpoint: buy=%q sell=%q", raw.Ticker.Buy, raw.Ticker.Sell)
 	}
-
-	return last, nil
+	return rate, nil
 }
 
 // SpotMarkets discovers active local Spot pairs on Tokocrypto and Indodax only.
