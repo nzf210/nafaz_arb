@@ -87,32 +87,28 @@ class ExchangeClient:
         return self.perpetual_clients[name]
 
     async def _perpetual_contract_amount(self, symbol: str, base_amount: float) -> tuple[float, float]:
-        """Convert base units to venue contract units and verify exact hedge coverage."""
-        base = self._validate_perpetual_base_amount(base_amount)
-        market, exchange = await self._load_perpetual_market(symbol)
-        if market is None:
-            return base, 1.0
-        contract_size = self._resolve_contract_size(symbol, market)
-        contracts = self._convert_contract_amount(symbol, base, contract_size, exchange)
-        self._validate_exact_contract_coverage(symbol, base, contracts, contract_size)
-        return contracts, contract_size
+        """
+        Convert base-asset quantity into CCXT contract quantity.
 
-    @staticmethod
-    def _validate_perpetual_base_amount(base_amount: float) -> float:
-        amount = float(base_amount)
-        if not math.isfinite(amount) or amount <= 0:
+        Spot fills and the scanner use base units. CCXT derivative create_order
+        expects contracts for contract markets, so passing the spot quantity
+        directly can leave the hedge under-sized by contractSize (often 1/1000).
+        """
+        if not math.isfinite(float(base_amount)) or base_amount <= 0:
             raise ValueError(f"invalid perpetual base amount: {base_amount}")
-        return amount
 
-    async def _load_perpetual_market(self, symbol: str):
         exchange = self.global_fut
         market_fn = getattr(exchange, "market", None)
         if not callable(market_fn):
-            return None, exchange
-        if not getattr(exchange, "markets", None):
+            # Lightweight adapters and legacy mocks already accept base units.
+            return float(base_amount), 1.0
+
+        markets = getattr(exchange, "markets", None)
+        if not markets:
             loader = getattr(exchange, "load_markets", None)
             if callable(loader):
                 await loader()
+
         market = market_fn(symbol)
         if not isinstance(market, dict):
             raise ValueError(f"perpetual market metadata unavailable for {symbol}")
@@ -120,37 +116,29 @@ class ExchangeClient:
             raise ValueError(
                 f"{symbol} is not a CCXT contract market; refusing unverified hedge sizing"
             )
-        return market, exchange
 
-    @staticmethod
-    def _resolve_contract_size(symbol: str, market: dict) -> float:
         try:
             contract_size = float(market.get("contractSize") or 0.0)
         except (TypeError, ValueError):
             contract_size = 0.0
         if not math.isfinite(contract_size) or contract_size <= 0:
             raise ValueError(f"invalid contractSize for {symbol}: {market.get('contractSize')!r}")
-        return contract_size
 
-    @staticmethod
-    def _convert_contract_amount(symbol: str, base_amount: float, contract_size: float, exchange) -> float:
-        contracts = base_amount / contract_size
+        contracts = float(base_amount) / contract_size
         precision_fn = getattr(exchange, "amount_to_precision", None)
         if callable(precision_fn):
             contracts = float(precision_fn(symbol, contracts))
         if not math.isfinite(contracts) or contracts <= 0:
             raise ValueError(f"perpetual amount rounds to zero for {symbol}")
-        return contracts
 
-    @staticmethod
-    def _validate_exact_contract_coverage(symbol: str, base_amount: float, contracts: float, contract_size: float) -> None:
         normalized_base = contracts * contract_size
-        tolerance = max(1e-12, abs(base_amount) * 1e-8)
-        if abs(normalized_base - base_amount) > tolerance:
+        tolerance = max(1e-12, abs(float(base_amount)) * 1e-8)
+        if abs(normalized_base - float(base_amount)) > tolerance:
             raise ValueError(
                 f"spot quantity {base_amount} cannot be exactly hedged on {symbol}: "
                 f"{contracts} contracts x {contract_size} = {normalized_base} base units"
             )
+        return contracts, contract_size
 
     @staticmethod
     def _normalize_perpetual_order(order: Dict[str, Any], contract_size: float) -> Dict[str, Any]:
@@ -201,44 +189,39 @@ class ExchangeClient:
 
 
     async def fetch_balance_report(self) -> list:
-        """Fetch complete free/used/total balances from every configured venue."""
+        """Fetch complete free/used/total balances from both live venues."""
         reports = []
-        for name, market, exchange in self._configured_balance_exchanges():
-            reports.append(await self._fetch_venue_balance_report(name, market, exchange))
+        exchanges = [
+            (name, "spot", exchange) for name, exchange in self.spot_clients.items()
+        ] + [
+            (name, "futures", exchange) for name, exchange in self.perpetual_clients.items()
+        ]
+        for name, market, exchange in exchanges:
+            try:
+                raw = await exchange.fetch_balance()
+                free_map, used_map, total_map = raw.get("free") or {}, raw.get("used") or {}, raw.get("total") or {}
+                assets = []
+                for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
+                    free_raw = free_map.get(asset)
+                    used_raw = used_map.get(asset)
+                    total_raw = total_map.get(asset)
+                    free = float(free_raw or 0.0)
+                    total = float(total_raw) if total_raw is not None else 0.0
+                    used = (
+                        float(used_raw)
+                        if used_raw is not None
+                        else max(0.0, total - free)
+                    )
+                    if total_raw is None:
+                        total = free + used
+                    if not all(math.isfinite(v) and v >= 0 for v in (free, used, total)):
+                        raise ValueError(f"invalid balance value for {asset}")
+                    if free or used or total:
+                        assets.append({"asset": str(asset), "free": free, "used": used, "total": total})
+                reports.append({"name": name, "market": market, "status": "ok", "assets": assets})
+            except Exception as exc:
+                reports.append({"name": name, "market": market, "status": "error", "error": str(exc), "assets": []})
         return reports
-
-    def _configured_balance_exchanges(self) -> list:
-        spot = [(name, "spot", exchange) for name, exchange in self.spot_clients.items()]
-        futures = [(name, "futures", exchange) for name, exchange in self.perpetual_clients.items()]
-        return spot + futures
-
-    async def _fetch_venue_balance_report(self, name: str, market: str, exchange) -> dict:
-        try:
-            raw = await exchange.fetch_balance()
-            assets = self._normalize_balance_assets(raw)
-            return {"name": name, "market": market, "status": "ok", "assets": assets}
-        except Exception as exc:
-            return {"name": name, "market": market, "status": "error", "error": str(exc), "assets": []}
-
-    @staticmethod
-    def _normalize_balance_assets(raw: dict) -> list:
-        free_map = raw.get("free") or {}
-        used_map = raw.get("used") or {}
-        total_map = raw.get("total") or {}
-        assets = []
-        for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
-            free = float(free_map.get(asset) or 0.0)
-            total_raw = total_map.get(asset)
-            used_raw = used_map.get(asset)
-            total = float(total_raw) if total_raw is not None else 0.0
-            used = float(used_raw) if used_raw is not None else max(0.0, total - free)
-            if total_raw is None:
-                total = free + used
-            if not all(math.isfinite(value) and value >= 0 for value in (free, used, total)):
-                raise ValueError(f"invalid balance value for {asset}")
-            if free or used or total:
-                assets.append({"asset": str(asset), "free": free, "used": used, "total": total})
-        return assets
 
     async def get_balances(
         self,
@@ -340,43 +323,40 @@ class ExchangeClient:
         return reports
 
     async def fetch_positions(self, symbol: str) -> list:
-        """Fetch positions and fail closed unless the response proves symbol state."""
+        """Fetches open futures positions for a symbol (global exchange).
+
+        A malformed position response must never be converted into an empty list:
+        callers use an empty list as proof that the futures leg is flat.
+        """
         try:
             positions = await self.global_fut.fetch_positions([symbol])
         except (TypeError, AttributeError):
             positions = await self.global_fut.fetch_positions()
-        self._validate_positions_payload(positions, symbol)
-        return self._filter_positions_for_symbol(positions, symbol)
 
-    @staticmethod
-    def _validate_positions_payload(positions, symbol: str) -> None:
         if positions is None or not isinstance(positions, (list, tuple)):
             raise ValueError("exchange returned an invalid futures positions payload")
+
         if not isinstance(symbol, str) or not symbol.strip():
             raise ValueError("requested futures symbol is missing; flat state cannot be verified")
 
-    def _filter_positions_for_symbol(self, positions, symbol: str) -> list:
-        target = self._normalize_position_symbol(symbol)
+        def normalize_symbol(value: str) -> str:
+            # CCXT may represent the same linear contract as BTCUSDT or
+            # BTC/USDT:USDT depending on venue/version.
+            return value.split(":")[0].replace("/", "").replace("-", "").replace("_", "").upper()
+
+        target_symbol = normalize_symbol(symbol)
         matched = []
         for position in positions:
-            normalized = self._position_symbol(position)
-            if normalized == target:
+            if not isinstance(position, dict):
+                raise ValueError("exchange returned a malformed futures position")
+            position_symbol = position.get("symbol")
+            if not isinstance(position_symbol, str) or not position_symbol:
+                raise ValueError(
+                    "exchange futures position is missing its symbol; flat state cannot be verified"
+                )
+            if normalize_symbol(position_symbol) == target_symbol:
                 matched.append(position)
         return matched
-
-    @staticmethod
-    def _normalize_position_symbol(value: str) -> str:
-        return value.split(":")[0].replace("/", "").replace("-", "").replace("_", "").upper()
-
-    def _position_symbol(self, position: dict) -> str:
-        if not isinstance(position, dict):
-            raise ValueError("exchange returned a malformed futures position")
-        symbol = position.get("symbol")
-        if not isinstance(symbol, str) or not symbol:
-            raise ValueError(
-                "exchange futures position is missing its symbol; flat state cannot be verified"
-            )
-        return self._normalize_position_symbol(symbol)
 
     async def open_global_short_market(
         self,
@@ -438,7 +418,33 @@ class ExchangeClient:
         fetcher = getattr(self.global_fut, "fetch_funding_rate", None)
         if fetcher is None:
             raise NotImplementedError(
-                f"{gedef create_exchange_client(config: Any) -> Any:
+                f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_rate"
+            )
+        return await fetcher(symbol)
+
+    async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
+        """Fetches ticker from global futures exchange."""
+        return await self.global_fut.fetch_ticker(symbol)
+
+    async def close(self):
+        """Closes exchange connections."""
+        seen = set()
+        for exchange in list(self.spot_clients.values()) + list(self.perpetual_clients.values()):
+            if id(exchange) in seen:
+                continue
+            seen.add(id(exchange))
+            if exchange and hasattr(exchange, "close"):
+                await exchange.close()
+
+# Backward-compatible exports; existing imports remain valid.
+from executor.paper_exchange_client import PaperTradingExchangeClient
+from executor.exchange_factory import (
+    create_ccxt_client,
+    init_ccxt_exchange,
+    init_local_exchange,
+)
+
+def create_exchange_client(config: Any) -> Any:
     """Compatibility wrapper retaining injectable exchange factories for tests."""
     from executor.exchange_client_factory import create_exchange_client as factory
     return factory(
