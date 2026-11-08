@@ -734,3 +734,64 @@ func TestBroadcastExecutionFailureCooldown(t *testing.T) {
 		t.Fatalf("expected cooldown to suppress duplicate alert, got %d messages", received)
 	}
 }
+
+func TestBroadcastPositionClosedUnverifiedPnL(t *testing.T) {
+	var received []SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SendMessageReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		received = append(received, req)
+		_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	bot.broadcastTradeEvent(context.Background(), redishandler.TradeEvent{
+		Event: "POSITION_CLOSED", PnlStatus: "unverified",
+		Symbol: "btc_idr", Qty: 0.001, ExitPriceIDR: 1_010_000_000,
+		ShortExitUSDT: 65_100, IsMock: false,
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("expected one close notification, got %d", len(received))
+	}
+	for _, want := range []string{"PNL BELUM TERVERIFIKASI", "FX USDT/IDR live tidak tersedia", "PnL tidak dimasukkan ke statistik"} {
+		if !strings.Contains(received[0].Text, want) {
+			t.Errorf("unverified close notification missing %q: %s", want, received[0].Text)
+		}
+	}
+	if strings.Contains(received[0].Text, "0.0000 USDT") {
+		t.Fatalf("unverified PnL must not be presented as zero profit: %s", received[0].Text)
+	}
+}
+
+func TestBroadcastPositionClosedShowsGrossFeesAndEstimatedNet(t *testing.T) {
+	var received []SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SendMessageReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		received = append(received, req)
+		_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	bot.broadcastTradeEvent(context.Background(), redishandler.TradeEvent{
+		Event: "POSITION_CLOSED", PnlStatus: "estimated",
+		Symbol: "btc_idr", Qty: 0.001, ExitPriceIDR: 1_010_000_000,
+		ShortExitUSDT: 65_100, GrossProfitUSDT: 2.0, EstimatedFeesUSDT: 0.4,
+		EstimatedNetProfitUSDT: 1.6, NetProfitUSDT: 1.6, NetProfitIDR: 25_600,
+		NetROIPct: 1.6, IsMock: false,
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("expected one close notification, got %d", len(received))
+	}
+	for _, want := range []string{"Gross PnL", "2.0000 USDT", "Estimasi Fee", "0.4000 USDT", "Net PnL (estimasi)", "1.6000 USDT", "Belum merupakan PnL terealisasi"} {
+		if !strings.Contains(received[0].Text, want) {
+			t.Errorf("estimated close notification missing %q: %s", want, received[0].Text)
+		}
+	}
+}
