@@ -87,7 +87,11 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 	case "/positions":
 		b.handlePositionsCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/balance":
-		b.handleBalanceCommand(ctx, msg.Chat.ID, msg.MessageID)
+		userID := int64(0)
+		if msg.From != nil {
+			userID = msg.From.ID
+		}
+		b.handleBalanceCommand(ctx, msg.Chat.ID, msg.MessageID, userID)
 	case "/history":
 		b.handleHistoryCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/frozen":
@@ -160,7 +164,7 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 	case "positions":
 		b.handlePositionsCommand(ctx, chatID, 0)
 	case "balance":
-		b.handleBalanceCommand(ctx, chatID, 0)
+		b.handleBalanceCommand(ctx, chatID, 0, cb.From.ID)
 	case "history":
 		b.handleHistoryCommand(ctx, chatID, 0)
 	case "frozen":
@@ -198,7 +202,11 @@ type balanceAsset struct { Asset string `json:"asset"`; Free float64 `json:"free
 type balanceExchange struct { Name string `json:"name"`; Market string `json:"market"`; Status string `json:"status"`; Error string `json:"error,omitempty"`; Assets []balanceAsset `json:"assets"` }
 type balanceReport struct { TimestampMS int64 `json:"timestamp_ms"`; MockMode bool `json:"mock_mode"`; Exchanges []balanceExchange `json:"exchanges"` }
 
-func (b *Bot) handleBalanceCommand(ctx context.Context, chatID, replyToID int64) {
+func (b *Bot) handleBalanceCommand(ctx context.Context, chatID, replyToID, userID int64) {
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⛔ <b>Akses ditolak:</b> User tidak diizinkan melihat saldo exchange.", b.defaultKeyboard())
+		return
+	}
 	b.mu.Lock(); rc := b.redisClient; b.mu.Unlock()
 	if rc == nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Balance tidak tersedia:</b> Redis belum terhubung.", b.defaultKeyboard()); return }
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⏳ <i>Mengambil saldo terbaru langsung dari exchange...</i>", nil)
