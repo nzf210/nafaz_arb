@@ -68,7 +68,7 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 		sb.WriteString(fmt.Sprintf("• Total Ditutup: <code>%d transaksi</code> (Menang: <code>%d</code>)\n",
 			stats.TotalClosed, stats.WinCount))
 		sb.WriteString(fmt.Sprintf("• Total Net PnL (fee estimasi): <b>%+.4f USDT</b> (Rp %+.2f)\n• PnL belum terverifikasi: <code>%d transaksi</code>\n\n",
-			stats.TotalPnLUSDT, stats.TotalPnLIDR))
+			stats.TotalPnLUSDT, stats.TotalPnLIDR, stats.PnlUnverifiedCount))
 	}
 
 	kbRows = append(kbRows, []InlineKeyboardButton{
@@ -228,8 +228,8 @@ func (b *Bot) handleHistoryCommand(ctx context.Context, chatID int64, replyToID 
 	if len(history) == 0 {
 		msg := "📜 <b>Riwayat Transaksi Berhasil Ditutup</b>\n\n<i>Belum ada posisi arbitrase yang selesai ditutup di database.</i>"
 		if stats.TotalClosed > 0 {
-			msg += fmt.Sprintf("\n\n📊 Total Ditutup: <code>%d</code> | Realized Profit: <b>%+.4f USDT</b>",
-				stats.TotalClosed, stats.TotalPnLUSDT)
+			msg += fmt.Sprintf("\n\n📊 Total Ditutup: <code>%d</code> | Net PnL estimasi: <b>%+.4f USDT</b> | Belum diverifikasi: <code>%d</code>",
+				stats.TotalClosed, stats.TotalPnLUSDT, stats.PnlUnverifiedCount)
 		}
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, msg, b.defaultKeyboard())
 		return
@@ -269,8 +269,8 @@ func (b *Bot) handleHistoryCommand(ctx context.Context, chatID int64, replyToID 
 
 	if stats.TotalClosed > 0 {
 		sb.WriteString(separatorLine)
-		sb.WriteString(fmt.Sprintf("📊 <b>Akumulasi Total (%d Transaksi):</b> <b>%+.4f USDT</b> (Rp %+.2f)\n",
-			stats.TotalClosed, stats.TotalPnLUSDT, stats.TotalPnLIDR))
+		sb.WriteString(fmt.Sprintf("📊 <b>Akumulasi Net PnL Estimasi (%d Transaksi):</b> <b>%+.4f USDT</b> (Rp %+.2f)\n• PnL belum terverifikasi: <code>%d transaksi</code>\n",
+			stats.TotalClosed, stats.TotalPnLUSDT, stats.TotalPnLIDR, stats.PnlUnverifiedCount))
 	}
 
 	kb := &InlineKeyboardMarkup{
