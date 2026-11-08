@@ -55,7 +55,7 @@ curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/sc
 curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/scanner/opportunities/history'
 ```
 
-The periodic scanner runs at `scan_interval_seconds`. `POST /api/v1/scanner/scan` also triggers a scan immediately. The mock account snapshot contains an untracked BTC perpetual exposure, so BTC/USDT is excluded with `RECONCILIATION_REQUIRED`; ETH is evaluated independently. If the required exposure read fails, candidates are marked `POSITION_STATUS_UNKNOWN` and fail closed. Opportunity history is stored in the configured JSON file using atomic replacement; replace `history.Store` with PostgreSQL (or another durable database) before multi-instance or production deployment.
+The periodic scanner runs at `scan_interval_seconds`. `POST /api/v1/scanner/scan` also triggers a scan immediately. The mock account snapshot contains an untracked BTC perpetual exposure, so BTC/USDT is excluded with `RECONCILIATION_REQUIRED`; ETH is evaluated independently. If the required exposure read fails, candidates are marked `POSITION_STATUS_UNKNOWN` and fail closed. The scanner still serves its API history from the configured JSON file using atomic replacement, and additionally writes evaluated opportunities to Supabase when runtime persistence is enabled. Replace history.Store before multi-instance API deployments.
 
 `GET /api/v1/scanner/status` reports the latest scan duration, last successful scan, data age, stale state, and most recent error. Scan results also include total and per-phase timings plus per-exchange order-book/funding request counts, errors, and accumulated request time (microseconds). A successful result becomes stale after two configured scan intervals without another successful scan. The `/health` endpoint remains a process-liveness check.
 
@@ -281,10 +281,16 @@ operational tables for exchange accounts, strategy/risk configuration, market pa
 scanner opportunities, orders/fills, positions/legs, funding payments, closed trades,
 balances, risk events, and executor events/status snapshots.
 
-**Important:** the schema is created, but runtime persistence is not yet connected.
-Redis remains the live coordination layer and scanner opportunity history still uses
-the configured JSON file. Do not assume Supabase is receiving live orders or trades
-until the persistence adapter and its idempotent retry/outbox tests are merged.
+**Runtime integration status:** the Go scanner writes evaluated opportunities to
+Supabase, while the Python executor persists position/leg lifecycle, verified closed
+trades, executor events and risk events. Redis remains authoritative for real-time
+signals, locks, balances and active-position recovery. Writes use bounded retries and
+idempotent keys; they are queued off the executor order-management path.
+
+This is not yet a complete exchange ledger: orders, individual fills, funding
+settlements, balance snapshots and executor status snapshots remain schema-only.
+There is also no durable outbox after all retries fail, so a prolonged Supabase outage
+can leave audit-history gaps. See supabase/README.md before enabling runtime writes.
 
 
 For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.
