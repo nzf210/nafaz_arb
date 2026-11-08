@@ -5,6 +5,7 @@ import sys
 from executor.config import ExecutorConfig
 from executor.exchange_client import create_exchange_client, create_ccxt_client
 from executor.engine import ArbitrageEngine
+from executor.supabase_repository import SupabaseRepository
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +25,13 @@ async def main():
 
     client = create_exchange_client(config)
     engine = ArbitrageEngine(config, client)
+    if config.supabase.enabled:
+        try:
+            engine.supabase_repository = SupabaseRepository.from_config(config.supabase)
+            logger.info("Supabase operational persistence enabled")
+        except Exception as exc:
+            # Database persistence is not allowed to block hedge, rollback or close.
+            logger.warning("Supabase persistence unavailable; Redis remains active: %s", exc)
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
