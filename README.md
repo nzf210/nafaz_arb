@@ -95,10 +95,10 @@ The scanner includes advanced optimization mechanisms to discover and capture ma
    - In traditional scanners, if a pair's order book depth is smaller than the target capital allocation (e.g., book only has $150 depth for a $500 target trade), the pair is discarded immediately with an "insufficient depth" error.
    - With Adaptive Sizing, the engine automatically scales the trade quantity down to the maximum executable capacity supported across all order books (provided the resulting capital meets `min_allocated_capital`, default $10).
    - Reports `capacity_pct` indicating book utilization (e.g., 30.0% of target allocation).
-2. **Synthetic IDR $\leftrightarrow$ USDT Matching (`enable_synthetic_idr: true`, `synthetic_usdt_idr_rate: 16000.0`):**
-   - Indonesian local exchanges (Indodax, Tokocrypto) have their deepest liquidity on IDR/BIDR spot markets. Global perpetual exchanges (OKX, MEXC) operate in USDT.
-   - When enabled, the scanner pairs spot IDR/BIDR markets against USDT perpetual contracts, automatically converting and normalizing order book prices using the live/configured `USDT/IDR` exchange rate.
-   - Emits `is_synthetic: true`, `synthetic_fx_rate`, and `original_spot_quote: "IDR"`.
+2. **Strict quote-asset matching (USDT/USDC):**
+   - The scanner only matches spot and perpetual markets whose quote assets are explicitly listed in `quote_assets` (normally `USDT` and `USDC`).
+   - IDR/BIDR spot markets are intentionally excluded from this scanner universe; enabling the legacy `enable_synthetic_idr` setting does not override the quote-asset allowlist.
+   - This keeps the Indodax/OKX strategy from depending on an unrelated USDT/IDR FX ticker.
 3. **Tunable Empty Book Circuit Breaker (`empty_book_freeze_minutes: 15`):**
    - Replaces rigid 6-hour lockouts with a configurable freeze window in minutes (default: 15 minutes) when a pair experiences 3 consecutive empty book scans, preventing prolonged omission of pairs during temporary liquidity gaps.
 
