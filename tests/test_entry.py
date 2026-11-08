@@ -237,6 +237,42 @@ async def test_p2_01_partial_fill_below_threshold_sets_entry_partial(engine, fak
     assert pair_tag in engine.pending_entry_orders
 
 @pytest.mark.asyncio
+async def test_partial_fill_publishes_telegram_event_once(engine, fake_redis):
+    """A partial Spot fill must produce one actionable Telegram trade event."""
+    pair_tag = "indodax:btc_idr"
+    order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
+    order_info["qty"] = 0.1
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
+    pubsub = fake_redis.pubsub()
+    await pubsub.subscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
+    partial_order = {"status": "open", "filled": 0.000048}
+    await engine._handle_entry_fills(pair_tag, order_info, partial_order)
+    await engine._handle_entry_fills(pair_tag, order_info, partial_order)
+
+    event = None
+    for _ in range(10):
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+        if message and message.get("type") == "message":
+            event = json.loads(message["data"])
+            break
+
+    assert event is not None
+    assert event["event"] == "PARTIAL_FILL"
+    assert event["pair_tag"] == pair_tag
+    assert event["filled_qty"] == pytest.approx(0.000048)
+    assert event["total_qty"] == pytest.approx(0.1)
+    assert event["state"] == PositionState.ENTRY_PARTIAL.value
+    assert order_info["partial_fill_alerted"] is True
+    assert engine.states[pair_tag] == PositionState.ENTRY_PARTIAL
+    await pubsub.unsubscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.aclose()
+
+
+@pytest.mark.asyncio
 async def test_p2_01_partial_fill_above_threshold_hedges_and_activates(engine, fake_redis, mock_client):
     """Over-threshold fills hedge immediately and never linger in ENTRY_PARTIAL."""
     pair_tag = "indodax:btc_idr"
