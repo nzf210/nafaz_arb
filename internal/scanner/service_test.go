@@ -861,6 +861,71 @@ func TestFXPreflightRejectsNonFiniteRate(t *testing.T) {
 	}
 }
 
+type mixedFXAdapter struct {
+	failingFXAdapter
+}
+
+func (m *mixedFXAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
+	return []domain.Market{
+		{Exchange: "indodax", Symbol: "solbidr", BaseAsset: "SOL", QuoteAsset: "BIDR", MarketType: "SPOT", Active: true},
+		{Exchange: "tokocrypto", Symbol: "btcusdt", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "SPOT", Active: true},
+	}, nil
+}
+
+func (m *mixedFXAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, error) {
+	return []domain.Market{
+		{Exchange: "okx", Symbol: "SOL-USDT-SWAP", BaseAsset: "SOL", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+		{Exchange: "okx", Symbol: "BTC-USDT-SWAP", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+	}, nil
+}
+
+func (m *mixedFXAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	if symbol == "btcusdt" {
+		return domain.OrderBook{
+			Exchange: "tokocrypto", Symbol: symbol, Timestamp: time.Now().UTC(),
+			Bids: []domain.PriceLevel{{Price: 100, Quantity: 10}},
+			Asks: []domain.PriceLevel{{Price: 101, Quantity: 10}},
+		}, nil
+	}
+	return m.failingFXAdapter.SpotOrderBook(ctx, symbol)
+}
+
+func (m *mixedFXAdapter) PerpetualOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	if symbol == "BTC-USDT-SWAP" {
+		return domain.OrderBook{
+			Exchange: "okx", Symbol: symbol, Timestamp: time.Now().UTC(),
+			Bids: []domain.PriceLevel{{Price: 105, Quantity: 10}},
+			Asks: []domain.PriceLevel{{Price: 106, Quantity: 10}},
+		}, nil
+	}
+	return m.failingFXAdapter.PerpetualOrderBook(ctx, symbol)
+}
+
+func TestIDRFXFailureDoesNotBlockDirectUSDTMarkets(t *testing.T) {
+	cfg := config.Config{
+		Mode: "MOCK", ExecutionMode: "TAKER_TAKER",
+		QuoteAssets: []string{"USDT", "USDC"}, EnableSyntheticIDR: true,
+		SyntheticUSDTIDRRate: 16000, CapitalTotal: 1000,
+		AllocationPerPair: 0.5, PerpLeverage: 1,
+		EstimatedHoldingHours: 8, MinNetROIPct: 0.1, MaxNetROIPct: 20,
+		CheckOpenPositions: false,
+	}
+	s := New(cfg, &mixedFXAdapter{})
+	r, complete, err := s.Scan(context.Background())
+	if err != nil || !complete {
+		t.Fatalf("IDR FX failure must not abort direct-quote scan, err=%v complete=%v", err, complete)
+	}
+	if r.MatchedPairs != 2 {
+		t.Fatalf("matched pairs=%d, want 2 (one synthetic IDR and one direct USDT)", r.MatchedPairs)
+	}
+	if r.FailedPairs != 1 || len(r.Errors) != 1 || !strings.Contains(r.Errors[0], "USDT/IDR live ticker unavailable") {
+		t.Fatalf("expected only IDR pair to fail visibly, failed=%d errors=%v", r.FailedPairs, r.Errors)
+	}
+	if len(r.Opportunities) != 1 || r.Opportunities[0].SpotSymbol != "btcusdt" {
+		t.Fatalf("direct USDT pair should still be evaluated, opportunities=%+v", r.Opportunities)
+	}
+}
+
 func TestApplyEvaluationResultsCountsFailedPairs(t *testing.T) {
 	result := domain.ScanResult{}
 	complete := applyEvaluationResults([]evalResult{
