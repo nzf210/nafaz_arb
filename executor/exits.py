@@ -482,14 +482,17 @@ class ExitMixin:
             entry_price_idr = float(pos.entry_price_idr)
             short_entry_usdt = float(pos.short_entry_usdt)
 
-            # Fetch FX rate and latest global ask
-            usdt_rate = helpers.FALLBACK_USDT_IDR_RATE
+            # Use only the live FX snapshot. A missing rate must never be
+            # replaced with the historical 16,000 IDR fallback for PnL.
+            usdt_rate = 0.0
             live_global_ask = float(self.last_pegged_global_ask.get(pair_tag, short_entry_usdt))
             live_price_raw = await self.redis.get(f"arb:live_price:{pair_tag}")
             if live_price_raw:
                 try:
                     live_snapshot = json.loads(live_price_raw)
-                    usdt_rate = float(live_snapshot.get("usdt_idr_rate", helpers.FALLBACK_USDT_IDR_RATE))
+                    candidate_rate = float(live_snapshot.get("usdt_idr_rate", 0.0) or 0.0)
+                    if math.isfinite(candidate_rate) and candidate_rate > 0 and not helpers.snapshot_is_stale(live_snapshot):
+                        usdt_rate = candidate_rate
                     g_ask = float(live_snapshot.get("global_best_ask_usdt", 0.0))
                     if g_ask > 0:
                         live_global_ask = g_ask
