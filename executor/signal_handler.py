@@ -26,146 +26,131 @@ class EntryOrderPlan:
 
 class SignalHandlerMixin:
     async def handle_signal_notification(self, pair_tag: str):
-        """
-        Serialize balance checks, exposure reservations and order placement per venue.
-
-        The lock is acquired in sorted venue order to avoid deadlocks. A Redis
-        distributed lock is mandatory in LIVE mode; local asyncio locks alone
-        cannot protect capital when multiple executor replicas are running.
-        """
         payload = await self._load_signal_payload(pair_tag)
         if payload is None:
             return
-        venues = sorted({
-            str(payload.pair_info.local_exchange or "").strip().lower(),
-            str(payload.pair_info.global_exchange or "").strip().lower(),
-        } - {""})
+        venues = self._signal_venues(payload)
         local_locks = []
         distributed_locks = []
         try:
-            for venue in venues:
-                lock = self._venue_locks.setdefault(venue, asyncio.Lock())
-                await lock.acquire()
-                local_locks.append(lock)
-
+            await self._acquire_local_venue_locks(venues, local_locks)
             if not getattr(self.config, "mock_mode", False):
-                lock_factory = getattr(self.redis, "lock", None)
-                if not callable(lock_factory):
-                    raise RuntimeError(
-                        "LIVE entry requires Redis distributed locks; refusing unsafe multi-worker entry"
-                    )
-                for venue in venues:
-                    lock = lock_factory(
-                        f"arb:executor:entry_lock:{venue}",
-                        timeout=300,
-                        blocking_timeout=15,
-                    )
-                    acquired = await lock.acquire()
-                    if not acquired:
-                        raise RuntimeError(
-                            f"could not acquire distributed entry lock for {venue}"
-                        )
-                    distributed_locks.append(lock)
-
+                await self._acquire_distributed_venue_locks(venues, distributed_locks)
             await self._refresh_shared_entry_reservations()
             await self._handle_signal_notification_with_venue_locks(
                 pair_tag, expected_venues=tuple(venues)
             )
         except Exception as exc:
-            logger.exception("[Risk Control] venue entry lock/preflight failed")
-            self._mark_failed(
-                pair_tag,
-                "VENUE_ENTRY_LOCK_FAILED",
-                "Entry dihentikan karena penguncian saldo lintas exchange gagal.",
-                detail={"venues": venues, "error": str(exc)},
-            )
-            await self.publish_status()
+            await self._handle_venue_lock_failure(pair_tag, venues, exc)
         finally:
-            for lock in reversed(distributed_locks):
-                try:
-                    await lock.release()
-                except Exception:
-                    logger.exception(
-                        "[Risk Control] failed to release Redis venue entry lock"
-                    )
-            for lock in reversed(local_locks):
-                lock.release()
+            await self._release_venue_locks(distributed_locks, local_locks)
+
+    @staticmethod
+    def _signal_venues(payload: ExecutorPayload) -> list[str]:
+        return sorted({
+            str(payload.pair_info.local_exchange or "").strip().lower(),
+            str(payload.pair_info.global_exchange or "").strip().lower(),
+        } - {""})
+
+    async def _acquire_local_venue_locks(self, venues: list[str], acquired: list) -> None:
+        for venue in venues:
+            lock = self._venue_locks.setdefault(venue, asyncio.Lock())
+            await lock.acquire()
+            acquired.append(lock)
+
+    async def _acquire_distributed_venue_locks(self, venues: list[str], acquired: list) -> None:
+        lock_factory = getattr(self.redis, "lock", None)
+        if not callable(lock_factory):
+            raise RuntimeError("LIVE entry requires Redis distributed locks; refusing unsafe multi-worker entry")
+        for venue in venues:
+            lock = lock_factory(
+                f"arb:executor:entry_lock:{venue}", timeout=300, blocking_timeout=15
+            )
+            if not await lock.acquire():
+                raise RuntimeError(f"could not acquire distributed entry lock for {venue}")
+            acquired.append(lock)
+
+    async def _release_venue_locks(self, distributed_locks: list, local_locks: list) -> None:
+        for lock in reversed(distributed_locks):
+            try:
+                await lock.release()
+            except Exception:
+                logger.exception("[Risk Control] failed to release Redis venue entry lock")
+        for lock in reversed(local_locks):
+            lock.release()
+
+    async def _handle_venue_lock_failure(self, pair_tag: str, venues: list[str], error: Exception) -> None:
+        logger.exception("[Risk Control] venue entry lock/preflight failed")
+        self._mark_failed(
+            pair_tag, "VENUE_ENTRY_LOCK_FAILED",
+            "Entry dihentikan karena penguncian saldo lintas exchange gagal.",
+            detail={"venues": venues, "error": str(error)},
+        )
+        await self.publish_status()
 
     async def _handle_signal_notification_with_venue_locks(
         self, pair_tag: str, expected_venues: tuple[str, ...]
     ):
-        """
-        State 1 (Entry Order Pegging):
-        1. GET arb:signal:{local_ex}:{symbol}
-        2. Validate timestamp freshness (<= 500ms).
-        3. If no active position, place Maker Limit Buy at recommended_limit_buy_idr.
-        """
         async with self._pair_lock(pair_tag):
             self._roll_loss_day_if_needed()
             payload = await self._load_signal_payload(pair_tag)
             if payload is None:
                 return
-            signal_local = str(payload.pair_info.local_exchange or "").strip().lower()
-            signal_global = str(payload.pair_info.global_exchange or "").strip().lower()
-            if tuple(sorted({signal_local, signal_global} - {""})) != expected_venues:
-                logger.warning(
-                    "[Risk Control] signal route changed while waiting for venue locks; "
-                    "discarding stale preflight"
-                )
+            if not self._signal_route_matches(payload, expected_venues):
+                logger.warning("[Risk Control] signal route changed while waiting for venue locks; discarding stale preflight")
                 return
-            if hasattr(self.client, "set_route"):
-                try:
-                    self.client.set_route(signal_local, signal_global)
-                except Exception as exc:
-                    self._pair_infos[pair_tag] = payload.pair_info
-                    self._mark_failed(
-                        pair_tag,
-                        "EXECUTOR_VENUE_NOT_CONFIGURED",
-                        f"Signal exchange route is not configured: {exc}",
-                        detail={
-                            "signal_local_exchange": signal_local,
-                            "signal_global_exchange": signal_global,
-                        },
-                    )
-                    await self.publish_status()
-                    return
-            elif (
-                not getattr(self.config, "mock_mode", False)
-                and (
-                    signal_local != str(self.config.local_exchange_name or "").strip().lower()
-                    or signal_global != str(self.config.global_exchange_name or "").strip().lower()
-                )
-            ):
-                self._pair_infos[pair_tag] = payload.pair_info
-                self._mark_failed(
-                    pair_tag,
-                    "EXECUTOR_VENUE_MISMATCH",
-                    "Signal exchange pair does not match this single-route executor client.",
-                    detail={"signal_local_exchange": signal_local, "signal_global_exchange": signal_global},
-                )
-                await self.publish_status()
+            if not await self._configure_signal_route(pair_tag, payload):
                 return
             self._pair_infos[pair_tag] = payload.pair_info
-            balances = await self._check_balance_mismatch(
-                payload.pair_info,
-                payload.pricing_snapshot.usdt_idr_rate,
-                pair_tag,
-            )
-            if balances is None and not getattr(self.config, "mock_mode", False):
+            if not await self._preflight_signal_balance(pair_tag, payload):
                 return
             if self._trading_halted:
-                logger.warning(
-                    f"[Circuit Breaker] rejecting entry for {pair_tag}: "
-                    f"trading halted ({self._halt_reason})"
-                )
+                logger.warning("[Circuit Breaker] rejecting entry for %s: trading halted (%s)", pair_tag, self._halt_reason)
                 return
             if venue_reason := self._venue_halted_reason(pair_tag):
-                logger.warning(
-                    f"[Risk Control] rejecting entry for {pair_tag}: "
-                    f"exchange halted ({venue_reason})"
-                )
+                logger.warning("[Risk Control] rejecting entry for %s: exchange halted (%s)", pair_tag, venue_reason)
                 return
             await self._handle_signal_locked(pair_tag, payload)
+
+    def _signal_route_matches(self, payload: ExecutorPayload, expected_venues: tuple[str, ...]) -> bool:
+        return tuple(sorted(set(self._signal_venues(payload)))) == expected_venues
+
+    async def _configure_signal_route(self, pair_tag: str, payload: ExecutorPayload) -> bool:
+        local = str(payload.pair_info.local_exchange or "").strip().lower()
+        global_venue = str(payload.pair_info.global_exchange or "").strip().lower()
+        if hasattr(self.client, "set_route"):
+            try:
+                self.client.set_route(local, global_venue)
+                return True
+            except Exception as exc:
+                self._pair_infos[pair_tag] = payload.pair_info
+                self._mark_failed(
+                    pair_tag, "EXECUTOR_VENUE_NOT_CONFIGURED",
+                    f"Signal exchange route is not configured: {exc}",
+                    detail={"signal_local_exchange": local, "signal_global_exchange": global_venue},
+                )
+                await self.publish_status()
+                return False
+        if getattr(self.config, "mock_mode", False):
+            return True
+        expected_local = str(self.config.local_exchange_name or "").strip().lower()
+        expected_global = str(self.config.global_exchange_name or "").strip().lower()
+        if local == expected_local and global_venue == expected_global:
+            return True
+        self._pair_infos[pair_tag] = payload.pair_info
+        self._mark_failed(
+            pair_tag, "EXECUTOR_VENUE_MISMATCH",
+            "Signal exchange pair does not match this single-route executor client.",
+            detail={"signal_local_exchange": local, "signal_global_exchange": global_venue},
+        )
+        await self.publish_status()
+        return False
+
+    async def _preflight_signal_balance(self, pair_tag: str, payload: ExecutorPayload) -> bool:
+        balances = await self._check_balance_mismatch(
+            payload.pair_info, payload.pricing_snapshot.usdt_idr_rate, pair_tag
+        )
+        return balances is not None or getattr(self.config, "mock_mode", False)
 
     def _next_order_seq(self) -> int:
         """Monotonic per-process sequence used to keep client order ids unique."""
