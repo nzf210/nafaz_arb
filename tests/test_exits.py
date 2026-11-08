@@ -255,7 +255,7 @@ async def test_dynamic_exit_buffer_deduplicates_repeated_market_timestamp(engine
 
     assert first == pytest.approx(engine.config.max_exit_slippage_pct)
     assert repeated == pytest.approx(engine.config.max_exit_slippage_pct)
-    samples = await fake_redis.lrange(f"arb:exit_slippage_samples:{pair}", 0, -1)
+    samples = await fake_redis.lrange(f"arb:exit_slippage_samples:v2:{pair}", 0, -1)
     assert len(samples) == 1
 
 
@@ -270,7 +270,7 @@ async def test_dynamic_exit_buffer_ignores_out_of_order_and_stale_samples(engine
     }
     result = await engine._calculate_dynamic_exit_slippage(pair, stale, now)
     assert result == pytest.approx(engine.config.max_exit_slippage_pct)
-    samples = await fake_redis.lrange(f"arb:exit_slippage_samples:{pair}", 0, -1)
+    samples = await fake_redis.lrange(f"arb:exit_slippage_samples:v2:{pair}", 0, -1)
     assert len(samples) == 0
 
 
