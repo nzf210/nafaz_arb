@@ -23,6 +23,12 @@ func (m *MockAdapter) SetFundingRate(rate float64) {
 	m.fundingRate = rate
 }
 
+// USDTIDRRate returns a deterministic conversion rate for MOCK scans only.
+// LIVE mode uses LiveAdapter and never falls back to this simulated value.
+func (m *MockAdapter) USDTIDRRate(context.Context) (float64, error) {
+	return 16000.0, nil
+}
+
 func (m *MockAdapter) SpotMarkets(context.Context) ([]domain.Market, error) {
 	return []domain.Market{
 		{Exchange: "indodax", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "SPOT", Active: true},
