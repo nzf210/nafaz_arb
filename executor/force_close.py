@@ -370,10 +370,19 @@ class ForceCloseMixin:
             """Persists the closed trade, settles balances, and updates stats/events."""
             closed_trade = {
                 "trade_id": f"force-{int(time.time()*1000)}",
+                "pair_key": pair_key,
+                "position_id": pos.position_id,
                 "local_exchange": pos.local_exchange,
                 "global_exchange": pos.global_exchange,
+                "global_symbol": self._resolve_global_symbol(pos.symbol),
                 "symbol": pos.symbol,
                 "qty": pos.qty,
+                "remaining_qty": pos.qty if spot_sell_failed else 0.0,
+                "opened_at_ms": pos.opened_at_ms,
+                "entry_usdt_idr_rate": pos.entry_usdt_idr_rate,
+                "exit_usdt_idr_rate": usdt_rate,
+                "total_fees_usdt": pnl["fees_usdt"],
+                "pnl_unverified": pnl.get("pnl_unverified", False),
                 "entry_price_idr": pos.entry_price_idr,
                 "exit_price_idr": current_spot_bid,
                 "short_entry_usdt": pos.short_entry_usdt,
@@ -438,6 +447,7 @@ class ForceCloseMixin:
             }
             pipe.publish(self.ARB_TRADE_EVENTS, json.dumps(event_msg))
             await pipe.execute()
+            await self._persist_supabase_event(event_msg)
 
         async def handle_force_close(self, message_data: str):
             """
