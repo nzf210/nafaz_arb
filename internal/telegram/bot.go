@@ -166,6 +166,7 @@ func (b *Bot) Start(ctx context.Context) error {
 	commands := []BotCommand{
 		{Command: "menu", Description: "📱 Buka menu tombol interaktif"},
 		{Command: "positions", Description: "💼 Status posisi terbuka & opsi tutup paksa"},
+		{Command: "balance", Description: "💰 Cek saldo LIVE seluruh exchange aktif"},
 		{Command: "history", Description: "📜 Riwayat transaksi yang berhasil ditutup"},
 		{Command: "scan", Description: "🔍 Jalankan scan pasar & cari peluang baru"},
 		{Command: "latest", Description: "📋 Lihat hasil scan & peluang ROI tertinggi"},
@@ -330,6 +331,7 @@ func (b *Bot) defaultKeyboard() *InlineKeyboardMarkup {
 			},
 			{
 				{Text: "💼 Posisi Aktif", CallbackData: "positions"},
+				{Text: "💰 Live Balance", CallbackData: "balance"},
 				{Text: HistoryText, CallbackData: "history"},
 			},
 			{
