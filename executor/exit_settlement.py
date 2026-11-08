@@ -34,33 +34,45 @@ class ExitSettlement:
 class ExitSettlementMixin:
     def _resolve_spot_exit_fill_price(self, order_info: dict, spot_order: dict | None, qty: float) -> tuple[float, float | None]:
         exit_price = float(order_info.get("price", 0.0))
-        cumulative_cost = None
         if not isinstance(spot_order, dict):
-            return self._validate_spot_exit_price(exit_price), cumulative_cost
-
+            return self._validate_spot_exit_price(exit_price), None
         prior_cost = float(order_info.get("closed_spot_cost_idr", 0.0) or 0.0)
+        cumulative_cost = self._extract_cumulative_spot_cost(spot_order)
+        if cumulative_cost is not None:
+            exit_price = self._incremental_spot_fill_price(exit_price, cumulative_cost, prior_cost, qty)
+        else:
+            exit_price = self._fallback_spot_fill_price(exit_price, spot_order)
+        return self._validate_spot_exit_price(exit_price), cumulative_cost
+
+    @staticmethod
+    def _extract_cumulative_spot_cost(spot_order: dict) -> float | None:
         cumulative = spot_order.get("cost")
         if cumulative is None and spot_order.get("average") is not None:
             try:
                 cumulative = float(spot_order["average"]) * float(spot_order.get("filled") or 0.0)
             except (TypeError, ValueError):
-                cumulative = None
-        if cumulative is not None:
-            try:
-                cumulative_cost = float(cumulative)
-                incremental = cumulative_cost - prior_cost
-                if incremental > 0 and qty > 0:
-                    exit_price = incremental / qty
-            except (TypeError, ValueError):
-                cumulative_cost = None
-        elif spot_order.get("price") is not None:
-            try:
-                candidate = float(spot_order["price"])
-                if candidate > 0 and math.isfinite(candidate):
-                    exit_price = candidate
-            except (TypeError, ValueError):
-                pass
-        return self._validate_spot_exit_price(exit_price), cumulative_cost
+                return None
+        if cumulative is None:
+            return None
+        try:
+            return float(cumulative)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _incremental_spot_fill_price(fallback: float, cumulative_cost: float, prior_cost: float, qty: float) -> float:
+        incremental_cost = cumulative_cost - prior_cost
+        if incremental_cost > 0 and qty > 0:
+            return incremental_cost / qty
+        return fallback
+
+    @staticmethod
+    def _fallback_spot_fill_price(fallback: float, spot_order: dict) -> float:
+        try:
+            candidate = float(spot_order.get("price") or 0.0)
+        except (TypeError, ValueError):
+            return fallback
+        return candidate if candidate > 0 and math.isfinite(candidate) else fallback
 
     @staticmethod
     def _validate_spot_exit_price(price: float) -> float:
