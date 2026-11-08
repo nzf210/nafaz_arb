@@ -182,43 +182,121 @@ class ExitMixin:
             )
 
         async def _calculate_dynamic_exit_slippage(self, pair_tag: str, snapshot: dict, now_ms: int) -> float:
-            """Adaptive reserve from rolling futures ask volatility and current bid/ask spread."""
+            """Adaptive reserve from distinct, timestamped market snapshots.
+
+            Sampling is intentionally independent of order repricing. The market
+            timestamp, not the executor polling time, identifies an observation.
+            """
             base = float(getattr(self.config, "max_exit_slippage_pct", 0.003))
             minimum = float(getattr(self.config, "min_exit_slippage_pct", 0.001))
             maximum = float(getattr(self.config, "max_dynamic_exit_slippage_pct", 0.02))
-            ask = float(snapshot.get("global_best_ask_usdt", 0.0) or 0.0)
-            bid = float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0)
             fallback = min(maximum, max(minimum, base))
-            if not (math.isfinite(ask) and math.isfinite(bid) and ask > 0 and bid > 0 and bid <= ask):
+
+            try:
+                ask = float(snapshot.get("global_best_ask_usdt", 0.0) or 0.0)
+                bid = float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0)
+                snapshot_ts = int(snapshot.get("timestamp_ms", 0) or 0)
+            except (TypeError, ValueError):
                 return fallback
+
+            if not (
+                math.isfinite(ask) and math.isfinite(bid)
+                and ask > 0 and bid > 0 and bid <= ask
+                and snapshot_ts > 0
+                and snapshot_ts <= now_ms + 5_000
+                and now_ms - snapshot_ts <= helpers.LIVE_PRICE_STALE_MS
+            ):
+                return fallback
+
+            # Keep enough history for low-frequency scanner cycles (e.g. 180s),
+            # while requiring three real observations spanning at least 30s.
+            window_ms = 900_000
+            min_samples = 3
+            min_span_ms = 30_000
             key = f"arb:exit_slippage_samples:{pair_tag}"
             try:
-                await self.redis.lpush(key, json.dumps({"ts": now_ms, "ask": ask}))
-                await self.redis.ltrim(key, 0, 19)
-                await self.redis.expire(key, 600)
+                raw = await self.redis.lrange(key, 0, 19)
+                existing = []
+                for item_raw in raw or []:
+                    try:
+                        item = json.loads(item_raw)
+                        ts, price = int(item["ts"]), float(item["ask"])
+                        if (
+                            0 < ts <= now_ms + 5_000
+                            and now_ms - ts <= window_ms
+                            and math.isfinite(price) and price > 0
+                        ):
+                            existing.append((ts, price))
+                    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                        continue
+
+                # Repeated executor polls see the same scanner snapshot. Do not
+                # turn one unchanged quote into many artificial volatility samples.
+                known_timestamps = {ts for ts, _ in existing}
+                newest_ts = max(known_timestamps, default=0)
+                if snapshot_ts not in known_timestamps and snapshot_ts > newest_ts:
+                    await self.redis.lpush(
+                        key, json.dumps({"ts": snapshot_ts, "ask": ask})
+                    )
+                    await self.redis.ltrim(key, 0, 19)
+                await self.redis.expire(key, 1800)
                 raw = await self.redis.lrange(key, 0, 19)
                 samples = []
                 for item_raw in raw or []:
                     try:
                         item = json.loads(item_raw)
                         ts, price = int(item["ts"]), float(item["ask"])
-                        if 0 <= now_ms - ts <= 300000 and math.isfinite(price) and price > 0:
+                        if (
+                            0 < ts <= now_ms + 5_000
+                            and now_ms - ts <= window_ms
+                            and math.isfinite(price) and price > 0
+                        ):
                             samples.append((ts, price))
                     except (TypeError, ValueError, KeyError, json.JSONDecodeError):
                         continue
             except Exception:
-                logger.warning("[Dynamic Exit Buffer] history unavailable for %s; using fallback", pair_tag)
+                logger.warning(
+                    "[Dynamic Exit Buffer] history unavailable for %s; using fallback",
+                    pair_tag,
+                )
                 return fallback
+
+            # One observation per market timestamp; sort chronologically.
             samples = sorted({ts: price for ts, price in samples}.items())
-            if len(samples) < 2:
+            if (
+                len(samples) < min_samples
+                or samples[-1][0] - samples[0][0] < min_span_ms
+            ):
                 return fallback
+
             prices = [price for _, price in samples]
-            volatility = max((max(0.0, prices[i] / prices[i - 1] - 1.0) for i in range(1, len(prices))), default=0.0)
+            # Conservative adverse-move proxy: largest positive consecutive ask
+            # return. Downward ask moves help the short buyback and are ignored.
+            volatility = max(
+                (
+                    max(0.0, prices[i] / prices[i - 1] - 1.0)
+                    for i in range(1, len(prices))
+                ),
+                default=0.0,
+            )
             spread = (ask - bid) / ((ask + bid) / 2.0)
-            adaptive = spread * float(getattr(self.config, "exit_spread_multiplier", 0.5))
-            adaptive += volatility * float(getattr(self.config, "exit_volatility_multiplier", 2.0))
+            adaptive = spread * float(
+                getattr(self.config, "exit_spread_multiplier", 0.5)
+            )
+            adaptive += volatility * float(
+                getattr(self.config, "exit_volatility_multiplier", 2.0)
+            )
             result = min(maximum, max(minimum, adaptive))
-            logger.info("[Dynamic Exit Buffer] %s spread=%.4f%% volatility=%.4f%% buffer=%.4f%%", pair_tag, spread * 100, volatility * 100, result * 100)
+            logger.info(
+                "[Dynamic Exit Buffer] %s samples=%d span=%.1fs spread=%.4f%% "
+                "adverse_move=%.4f%% buffer=%.4f%%",
+                pair_tag,
+                len(samples),
+                (samples[-1][0] - samples[0][0]) / 1000.0,
+                spread * 100,
+                volatility * 100,
+                result * 100,
+            )
             return result
 
         def _calculate_limit_sell_idr(
@@ -413,10 +491,16 @@ class ExitMixin:
                 # Persist updated floating PnL to Redis for live position tracking
                 await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
 
+            # Observe every fresh market snapshot, even when the resting spot
+            # order does not need repricing. Snapshot timestamps deduplicate polls.
+            dynamic_slippage_pct = await self._calculate_dynamic_exit_slippage(
+                pair_tag,
+                live_snapshot if live_snapshot and not stale else {},
+                now_ms,
+            )
             if not self._should_repeg_exit(pair_tag, global_ask_usdt, funding_passed):
                 return
 
-            dynamic_slippage_pct = await self._calculate_dynamic_exit_slippage(pair_tag, (live_snapshot if live_snapshot and not stale else {}), now_ms)
             limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
                 pair_tag, pos, global_ask_usdt, usdt_idr_rate,
                 exit_slippage_pct=dynamic_slippage_pct,
