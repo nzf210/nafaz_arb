@@ -317,7 +317,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		GlobalBestBidUSDT: pb.Bids[0].Price,
 		GlobalBestAskUSDT: pb.Asks[0].Price,
 		USDTIDRRate:       fxRate,
-		TimestampMS:       time.Now().UnixMilli(),
+		TimestampMS:       pb.Timestamp.UnixMilli(),
 	}
 
 	if rc != nil {
