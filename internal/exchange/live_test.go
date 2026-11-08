@@ -335,3 +335,32 @@ func TestLiveAdapterOpenExposuresFailsClosed(t *testing.T) {
 		t.Fatalf("unavailable exposure inspection must not return partial data: %+v", exposures)
 	}
 }
+
+func TestUSDTIDRRateDoesNotFallBackToCachedValue(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"ticker":{"last":"16000","buy":"15990","sell":"16010"}}`))
+			return
+		}
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs(server.URL)
+
+	rate, err := adapter.USDTIDRRate(context.Background())
+	if err != nil || rate != 16000 {
+		t.Fatalf("first live FX request = %v, %v; want 16000, nil", rate, err)
+	}
+	rate, err = adapter.USDTIDRRate(context.Background())
+	if err == nil || rate != 0 {
+		t.Fatalf("failed live FX request reused cached rate: rate=%v err=%v", rate, err)
+	}
+	if requests != 2 {
+		t.Fatalf("FX endpoint requests=%d, want 2 fresh requests", requests)
+	}
+}
