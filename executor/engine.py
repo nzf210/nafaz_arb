@@ -173,7 +173,7 @@ class ArbitrageEngine(
         tags_by_venue_symbol: Dict[tuple, list] = {}
         for pair_tag, pos in self.active_positions.items():
             venue = str(pos.global_exchange or "").lower()
-            symbol = self._resolve_global_symbol(pos.symbol)
+            symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
             key = (venue, norm_symbol(symbol))
             expected_by_venue.setdefault(venue, {})[norm_symbol(symbol)] = (
                 expected_by_venue.setdefault(venue, {}).get(norm_symbol(symbol), 0.0)
@@ -302,7 +302,7 @@ class ArbitrageEngine(
             )
             groups = {}
             for pair_tag, pos in self.active_positions.items():
-                groups.setdefault(self._resolve_global_symbol(pos.symbol), []).append((pair_tag, pos))
+                groups.setdefault(pos.global_symbol or self._resolve_global_symbol(pos.symbol), []).append((pair_tag, pos))
             for symbol, items in groups.items():
                 for pair_tag, pos in items:
                     pos.state = "RECONCILIATION_REQUIRED"
@@ -321,7 +321,7 @@ class ArbitrageEngine(
 
         groups = {}
         for pair_tag, pos in self.active_positions.items():
-            global_symbol = self._resolve_global_symbol(pos.symbol)
+            global_symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
             route_key = (pos.local_exchange, pos.global_exchange, global_symbol)
             groups.setdefault(route_key, []).append((pair_tag, pos))
 

@@ -522,6 +522,7 @@ class EntryMixin:
                     local_exchange=order_info["local_exchange"],
                     global_exchange=order_info["global_exchange"],
                     symbol=order_info["symbol"],
+                    global_symbol=order_info.get("global_symbol", ""),
                     entry_price_idr=price_idr,
                     short_entry_usdt=short_entry_usdt,
                     qty=qty,
@@ -534,6 +535,8 @@ class EntryMixin:
                     futures_margin_usdt=fut_margin,
                 )
             else:
+                if not self.active_positions[pair_tag].global_symbol:
+                    self.active_positions[pair_tag].global_symbol = order_info.get("global_symbol", "")
                 self.active_positions[pair_tag].qty += qty
                 self.active_positions[pair_tag].spot_cost_usdt += spot_cost
                 self.active_positions[pair_tag].futures_margin_usdt += fut_margin

@@ -63,7 +63,7 @@ class ExitMixin:
             retry_after[pair_tag] = now_ms + 30_000
             self._funding_reconcile_retry_after_ms = retry_after
 
-            symbol = self._resolve_global_symbol(pos.symbol)
+            symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
             since_ms = (
                 pos.last_funding_time_ms
                 if pos.last_funding_time_ms > 0
@@ -442,7 +442,7 @@ class ExitMixin:
                         )
                         # Paper execution must use the same live futures quote that
                         # triggered the local spot fill, not an unrelated/stale price.
-                        global_symbol = self._resolve_global_symbol(pos.symbol)
+                        global_symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
                         self.client.update_market_price(
                             symbol=global_symbol,
                             best_bid=float(live_snapshot.get("global_best_bid_usdt", 0.0)),
@@ -513,7 +513,7 @@ class ExitMixin:
                 f"on {pair_tag}. Immediately closing Short via Market Buy (reduceOnly=True)!"
             )
             try:
-                global_sym = self._resolve_global_symbol(pos.symbol)
+                global_sym = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
                 unwind_coid = build_client_order_id(
                     pair_tag, "unwind", self._next_order_seq()
                 )

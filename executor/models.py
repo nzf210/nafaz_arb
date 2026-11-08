@@ -139,6 +139,7 @@ class ActivePosition:
     entry_price_idr: float
     short_entry_usdt: float
     qty: float
+    global_symbol: str = ""
     accumulated_funding_usdt: float = 0.0
     last_funding_time_ms: int = 0
     next_funding_time_ms: int = 0
@@ -164,6 +165,7 @@ class ActivePosition:
             "local_exchange": self.local_exchange,
             "global_exchange": self.global_exchange,
             "symbol": self.symbol,
+            "global_symbol": self.global_symbol,
             "entry_price_idr": self.entry_price_idr,
             "short_entry_usdt": self.short_entry_usdt,
             "qty": self.qty,
@@ -194,6 +196,7 @@ class ActivePosition:
             local_exchange=d.get("local_exchange", ""),
             global_exchange=d.get("global_exchange", ""),
             symbol=d.get("symbol", ""),
+            global_symbol=d.get("global_symbol", ""),
             entry_price_idr=float(d.get("entry_price_idr", 0.0)),
             short_entry_usdt=float(d.get("short_entry_usdt", 0.0)),
             qty=float(d.get("qty", 0.0)),

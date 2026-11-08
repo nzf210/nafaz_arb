@@ -48,7 +48,7 @@ class ForceCloseMixin:
             inspect the exchange. If futures are already flat, skip a duplicate
             reduce-only close and continue with the remaining spot liquidation.
             """
-            global_sym = self._resolve_global_symbol(pos.symbol)
+            global_sym = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
             if allow_already_flat:
                 if not hasattr(self.client, "fetch_positions"):
                     logger.critical(

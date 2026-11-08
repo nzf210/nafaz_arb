@@ -96,3 +96,30 @@ async def test_account_wide_reconciliation_halts_when_reader_unavailable(fake_re
 
     assert "okx" in engine._exchange_halted
     assert "indodax" in engine._exchange_halted
+
+@pytest.mark.asyncio
+async def test_account_wide_reconciliation_uses_persisted_usdc_contract_symbol(fake_redis):
+    client = AccountStateClient(
+        positions=[{
+            "symbol": "ETH/USDC:USDC",
+            "contracts": 3,
+            "contractSize": 0.01,
+            "side": "short",
+        }]
+    )
+    engine = _engine(fake_redis, client)
+    engine.active_positions["tokocrypto:eth_idr"] = ActivePosition(
+        local_exchange="tokocrypto",
+        global_exchange="okx",
+        symbol="eth_idr",
+        global_symbol="ETH/USDC:USDC",
+        entry_price_idr=50_000_000,
+        short_entry_usdt=3_000,
+        qty=0.03,
+        spot_cost_usdt=50,
+        futures_margin_usdt=50,
+    )
+
+    await engine._verify_account_wide_exchange_state()
+
+    assert "okx" not in engine._exchange_halted
