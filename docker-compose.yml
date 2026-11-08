@@ -23,6 +23,9 @@ services:
       - ./data:/app/data:Z
     environment:
       - TZ=Asia/Jakarta
+      - SUPABASE_ENABLED=${SUPABASE_ENABLED:-false}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
       - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}
       - REDIS_ENABLED=true
       - REDIS_ADDR=redis:6380
@@ -48,6 +51,9 @@ services:
       - ./executor:/app/executor:ro
     environment:
       - TZ=Asia/Jakarta
+      - SUPABASE_ENABLED=${SUPABASE_ENABLED:-false}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
       - REDIS_URL=redis://redis:6380/0
       - LOCAL_EXCHANGE=indodax
       - GLOBAL_EXCHANGE=okx
