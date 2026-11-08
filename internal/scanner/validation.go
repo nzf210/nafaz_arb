@@ -12,12 +12,10 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// validateOrderBookAge rejects books whose exchange-side timestamp is older than
-// maxAgeSeconds. A cache-serving exchange happily returns a 200 with hours-old
-// depth; pricing an opportunity off that produces a signal that loses money the
-// moment the executor fills it. maxAgeSeconds <= 0 disables the check: the live
-// adapters currently stamp books with local receive time, so a caller must opt
-// in once the venue timestamps are plumbed through.
+// validateOrderBookAge rejects books whose source timestamp (or local receive
+// time for venues without a reliable source timestamp) is older than maxAgeSeconds.
+// A cache-serving exchange can return a 200 with old depth; pricing from that book
+// can produce an unexecutable signal. maxAgeSeconds <= 0 disables the check.
 func validateOrderBookAge(sb, pb domain.OrderBook, now time.Time, maxAgeSeconds int) error {
 	if maxAgeSeconds <= 0 {
 		return nil
