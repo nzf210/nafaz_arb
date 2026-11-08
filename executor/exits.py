@@ -638,9 +638,16 @@ class ExitMixin:
                     "spot_pnl_idr": spot_pnl_idr,
                     "futures_pnl_usdt": futures_pnl_usdt,
                     "accumulated_funding_usdt": funding_usdt,
+                    "gross_profit_usdt": gross_profit_usdt,
+                    "estimated_fees_usdt": fees_usdt,
+                    "spot_fees_usdt": spot_fees_usdt,
+                    "futures_fees_usdt": futures_fees_usdt,
+                    "estimated_net_profit_usdt": net_profit_usdt,
                     "net_profit_usdt": net_profit_usdt,
                     "net_profit_idr": net_profit_idr,
                     "net_roi_pct": roi_pct,
+                    "pnl_status": pnl_status,
+                    "pnl_verified": fx_verified,
                     "is_mock": is_mock,
                     "closed_at_ms": int(time.time() * 1000),
                 }
@@ -649,17 +656,22 @@ class ExitMixin:
                 await self.redis.ltrim(ARB_TRADE_HISTORY_KEY, 0, ARB_TRADE_HISTORY_MAX_LEN)
 
                 # Release only the pro-rata share of locked capital for this fill.
-                spot_cost = getattr(pos, "spot_cost_usdt", unclosed_delta * entry_price_idr / usdt_rate) * fill_ratio
-                fut_margin = getattr(pos, "futures_margin_usdt", unclosed_delta * short_entry_usdt) * fill_ratio
-                if hasattr(self.client, "apply_realized_trade"):
+                spot_cost = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0) * fill_ratio
+                if spot_cost <= 0 and fx_verified:
+                    spot_cost = unclosed_delta * entry_price_idr / usdt_rate
+                fut_margin = float(getattr(pos, "futures_margin_usdt", 0.0) or 0.0) * fill_ratio
+                if fut_margin <= 0:
+                    fut_margin = unclosed_delta * short_entry_usdt
+
+                if pnl_status == "estimated" and hasattr(self.client, "apply_realized_trade"):
                     self.client.apply_realized_trade(
                         spot_cost_usdt=spot_cost,
                         spot_pnl_usdt=spot_pnl_usdt,
-                        spot_fees_usdt=0.0,
+                        spot_fees_usdt=spot_fees_usdt,
                         futures_margin_usdt=fut_margin,
                         futures_pnl_usdt=futures_pnl_usdt,
                         funding_usdt=funding_usdt,
-                        futures_fees_usdt=fees_usdt,
+                        futures_fees_usdt=futures_fees_usdt,
                     )
                     bals = await self._get_balance_snapshot(
                         pair_tag=pair_tag,
@@ -668,14 +680,22 @@ class ExitMixin:
                     )
                     if bals is not None:
                         await self.redis.set(BALANCES_KEY, json.dumps(bals))
+                elif hasattr(self.client, "unlock_funds"):
+                    # A closed position with unverified PnL must still release
+                    # paper reservations, but must not credit fabricated profit.
+                    self.client.unlock_funds(spot_cost, fut_margin)
 
-                # Update stats in Redis
+                # Update stats in Redis. Unverified closes are counted separately
+                # and excluded from win/loss and aggregate PnL totals.
                 pipe = self.redis.pipeline()
                 pipe.hincrby("arb:stats", "total_closed", 1)
-                if net_profit_usdt > 0:
-                    pipe.hincrby("arb:stats", "win_count", 1)
-                pipe.hincrbyfloat("arb:stats", "total_pnl_usdt", net_profit_usdt)
-                pipe.hincrbyfloat("arb:stats", "total_pnl_idr", net_profit_idr)
+                if pnl_status == "estimated":
+                    if net_profit_usdt > 0:
+                        pipe.hincrby("arb:stats", "win_count", 1)
+                    pipe.hincrbyfloat("arb:stats", "total_pnl_usdt", net_profit_usdt)
+                    pipe.hincrbyfloat("arb:stats", "total_pnl_idr", net_profit_idr)
+                else:
+                    pipe.hincrby("arb:stats", "pnl_unverified_count", 1)
 
                 # Publish event to arb:trade_events for Telegram Bot
                 event_msg = {
@@ -685,7 +705,16 @@ class ExitMixin:
                 pipe.publish(self.ARB_TRADE_EVENTS, json.dumps(event_msg))
                 await pipe.execute()
 
-                self.record_realized_pnl(net_profit_usdt)
+                if pnl_status == "estimated":
+                    self.record_realized_pnl(net_profit_usdt)
+                else:
+                    await self._publish_execution_failure(
+                        pair_tag,
+                        "EXIT_PNL_FX_UNVERIFIED",
+                        "Kedua leg sudah ditutup, tetapi PnL gabungan belum dapat diverifikasi karena FX USDT/IDR live tidak tersedia.",
+                        detail={"spot_pnl_idr": spot_pnl_idr, "futures_pnl_usdt": futures_pnl_usdt},
+                        state=PositionState.CLOSED,
+                    )
                 await self.publish_status()
                 await self._finalize_exit_position(pair_tag, pos)
             except Exception as ee:
