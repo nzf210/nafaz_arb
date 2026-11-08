@@ -37,7 +37,11 @@ class ExecutorConfig:
     # price by more than this fraction (0.003 = 0.3%). 0 disables the guard.
     max_entry_slippage_pct: float = 0.003
     # Adverse futures-ask allowance used by the combined-PnL exit profit floor.
-    max_exit_slippage_pct: float = 0.003
+    max_exit_slippage_pct: float = 0.003  # Fallback until enough samples exist.
+    min_exit_slippage_pct: float = 0.001
+    max_dynamic_exit_slippage_pct: float = 0.02
+    exit_volatility_multiplier: float = 2.0
+    exit_spread_multiplier: float = 0.5
     # Re-quote the global futures bid just before placing the maker buy and
     # reject the signal when the entry spread has collapsed below the scanner's
     # own minimum. 0 disables the guard (default: on at 0.0 = use payload floor).
@@ -109,6 +113,10 @@ class ExecutorConfig:
                 ("max_daily_loss_usdt", float),
                 ("max_entry_slippage_pct", float),
                 ("max_exit_slippage_pct", float),
+                ("min_exit_slippage_pct", float),
+                ("max_dynamic_exit_slippage_pct", float),
+                ("exit_volatility_multiplier", float),
+                ("exit_spread_multiplier", float),
                 ("entry_revalidation_min_spread_pct", float),
                 ("max_exposure_per_exchange_usdt", float),
                 ("balance_mismatch_fraction", float),
@@ -188,11 +196,19 @@ class ExecutorConfig:
             except ValueError:
                 pass
 
-        if exit_slippage_env := os.getenv("MAX_EXIT_SLIPPAGE_PCT"):
-            try:
-                self.max_exit_slippage_pct = float(exit_slippage_env)
-            except ValueError:
-                pass
+        for env_name, attr in (
+            ("MAX_EXIT_SLIPPAGE_PCT", "max_exit_slippage_pct"),
+            ("MIN_EXIT_SLIPPAGE_PCT", "min_exit_slippage_pct"),
+            ("MAX_DYNAMIC_EXIT_SLIPPAGE_PCT", "max_dynamic_exit_slippage_pct"),
+            ("EXIT_VOLATILITY_MULTIPLIER", "exit_volatility_multiplier"),
+            ("EXIT_SPREAD_MULTIPLIER", "exit_spread_multiplier"),
+        ):
+            raw = os.getenv(env_name)
+            if raw is not None:
+                try:
+                    setattr(self, attr, float(raw))
+                except ValueError:
+                    pass
 
         if rev_env := os.getenv("ENTRY_REVALIDATION_MIN_SPREAD_PCT"):
             try:
@@ -320,6 +336,10 @@ class ExecutorConfig:
         "max_daily_loss_usdt": (0.0, None, 50.0),
         "max_entry_slippage_pct": (0.0, 1.0, 0.003),
         "max_exit_slippage_pct": (0.0, 1.0, 0.003),
+        "min_exit_slippage_pct": (0.0, 1.0, 0.001),
+        "max_dynamic_exit_slippage_pct": (0.001, 1.0, 0.02),
+        "exit_volatility_multiplier": (0.0, 10.0, 2.0),
+        "exit_spread_multiplier": (0.0, 10.0, 0.5),
         "entry_revalidation_min_spread_pct": (0.0, 100.0, 0.0),
         "max_exposure_per_exchange_usdt": (0.0, None, 0.0),
         "balance_mismatch_fraction": (0.0, 1.0, 0.20),
