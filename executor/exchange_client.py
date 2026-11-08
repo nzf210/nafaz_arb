@@ -68,8 +68,18 @@ class ExchangeClient:
                 free_map, used_map, total_map = raw.get("free") or {}, raw.get("used") or {}, raw.get("total") or {}
                 assets = []
                 for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
-                    free, used = float(free_map.get(asset) or 0.0), float(used_map.get(asset) or 0.0)
-                    total = float(total_map.get(asset) or (free + used))
+                    free_raw = free_map.get(asset)
+                    used_raw = used_map.get(asset)
+                    total_raw = total_map.get(asset)
+                    free = float(free_raw or 0.0)
+                    total = float(total_raw) if total_raw is not None else 0.0
+                    used = (
+                        float(used_raw)
+                        if used_raw is not None
+                        else max(0.0, total - free)
+                    )
+                    if total_raw is None:
+                        total = free + used
                     if not all(math.isfinite(v) and v >= 0 for v in (free, used, total)):
                         raise ValueError(f"invalid balance value for {asset}")
                     if free or used or total:
