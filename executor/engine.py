@@ -907,7 +907,61 @@ class ArbitrageEngine(
         if buy_qty <= 0:
             return
 
+        live_preflight = not getattr(self.config, "mock_mode", False)
+        if live_preflight:
+            validator = getattr(self.client, "validate_entry_order", None)
+            if not callable(validator):
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "ORDER_CONSTRAINT_PREFLIGHT_UNAVAILABLE",
+                    "LIVE entry diblokir: adapter tidak menyediakan validasi market aktif, minimum order, precision, dan contract multiplier.",
+                    detail={"local_symbol": pair_info.local_symbol, "global_symbol": pair_info.global_symbol},
+                )
+                return
+            try:
+                buy_qty, buy_price_idr = await validator(
+                    local_symbol=pair_info.local_symbol,
+                    global_symbol=pair_info.global_symbol,
+                    amount=buy_qty,
+                    price_idr=buy_price_idr,
+                    usdt_idr_rate=snapshot.usdt_idr_rate,
+                    global_ask_quote=snapshot.global_best_ask_usdt,
+                    local_exchange=pair_info.local_exchange,
+                    global_exchange=pair_info.global_exchange,
+                )
+            except Exception as preflight_error:
+                logger.warning(
+                    f"[Order Constraint Preflight] rejecting {pair_tag}: {preflight_error}"
+                )
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "ORDER_CONSTRAINT_PREFLIGHT_FAILED",
+                    "LIVE entry dibatalkan karena market/precision/minimum order/contract multiplier tidak dapat diverifikasi.",
+                    detail={
+                        "local_symbol": pair_info.local_symbol,
+                        "global_symbol": pair_info.global_symbol,
+                        "error": str(preflight_error),
+                    },
+                )
+                return
+            if not math.isfinite(float(buy_qty)) or not math.isfinite(float(buy_price_idr)) or buy_qty <= 0 or buy_price_idr <= 0:
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "ORDER_CONSTRAINT_PREFLIGHT_INVALID_RESULT",
+                    "LIVE entry dibatalkan karena hasil validasi ukuran/harga tidak valid.",
+                    detail={"amount": buy_qty, "price_idr": buy_price_idr},
+                )
+                return
+
         actual_cost_usdt = (buy_qty * buy_price_idr) / snapshot.usdt_idr_rate
+        if actual_cost_usdt + 1e-9 < float(getattr(self.config, "min_allocated_capital", 0.0) or 0.0):
+            await self._publish_execution_failure(
+                pair_tag,
+                "ORDER_CONSTRAINT_SIZE_BELOW_MIN_CAPITAL",
+                "Ukuran setelah pembulatan lot/contract lebih kecil dari minimum modal; entry dibatalkan.",
+                detail={"actual_cost_usdt": actual_cost_usdt},
+            )
+            return
 
         # Lock funds in exchange client
         if hasattr(self.client, "lock_funds"):
@@ -938,8 +992,11 @@ class ArbitrageEngine(
             )
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
+            place_kwargs = {"client_order_id": entry_coid}
+            if live_preflight:
+                place_kwargs["usdt_idr_rate"] = snapshot.usdt_idr_rate
             order = await self.client.place_local_limit_buy(
-                pair_info.local_symbol, buy_qty, buy_price_idr, client_order_id=entry_coid
+                pair_info.local_symbol, buy_qty, buy_price_idr, **place_kwargs
             )
             order_id = str(order.get("id", ""))
             self._record_order_success(pair_info.local_exchange)
