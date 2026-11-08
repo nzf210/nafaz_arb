@@ -236,7 +236,10 @@ func (b *Bot) handleBalanceCommand(ctx context.Context, chatID, replyToID, userI
 	if len(report.Exchanges) == 0 { out.WriteString("❌ Executor tidak melaporkan exchange aktif.\n") }
 	out.WriteString("<i>Hanya membaca saldo; tidak mengubah order atau posisi.</i>")
 	message := out.String()
-	if len(message) > 3800 { message = message[:3700] + "\n<i>Daftar dipotong karena batas panjang pesan Telegram.</i>" }
+	if len([]rune(message)) > 3800 {
+		runes := []rune(message)
+		message = string(runes[:3700]) + "\n<i>Daftar dipotong karena batas panjang pesan Telegram.</i>"
+	}
 	b.sendReplyWithMarkup(ctx, chatID, 0, message, b.defaultKeyboard())
 }
 
