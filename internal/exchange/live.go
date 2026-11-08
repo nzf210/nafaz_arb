@@ -219,7 +219,6 @@ func (l *LiveAdapter) EnableWebSocketFeed(ctx context.Context, maxAge time.Durat
 	client := NewWSClient(l.wsCache, nil,
 		indodaxDepthStream(l.indodaxBaseURL),
 		okxBookStream(l.okxBaseURL),
-		mexcSpotDepthStream(l.mexcSpotBaseURL),
 	)
 	l.mu.Lock()
 	l.wsClient = client
