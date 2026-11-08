@@ -690,4 +690,9 @@ def create_ccxt_client(local_name: str, global_name: str, local_creds, global_cr
     """Factory creating CCXT async instances."""
     local_ex = init_local_exchange(local_name, local_creds, default_type="spot")
     global_ex = init_ccxt_exchange(global_name, global_creds, default_type="future")
-    return ExchangeClient(local_ex, global_ex)
+    return ExchangeClient(
+        local_ex,
+        global_ex,
+        default_spot=local_name,
+        default_perpetual=global_name,
+    )
