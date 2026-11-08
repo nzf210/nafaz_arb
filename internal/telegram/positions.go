@@ -67,7 +67,7 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 		sb.WriteString("📊 <b>Rekap Posisi Berhasil Ditutup:</b>\n")
 		sb.WriteString(fmt.Sprintf("• Total Ditutup: <code>%d transaksi</code> (Menang: <code>%d</code>)\n",
 			stats.TotalClosed, stats.WinCount))
-		sb.WriteString(fmt.Sprintf("• Total Realized Profit: <b>%+.4f USDT</b> (Rp %+.2f)\n\n",
+		sb.WriteString(fmt.Sprintf("• Total Net PnL (fee estimasi): <b>%+.4f USDT</b> (Rp %+.2f)\n\n",
 			stats.TotalPnLUSDT, stats.TotalPnLIDR))
 	}
 
@@ -252,7 +252,7 @@ func (b *Bot) handleHistoryCommand(ctx context.Context, chatID int64, replyToID 
 		sb.WriteString(fmt.Sprintf("• Short: <code>$%.4f</code> | Tutup: <code>$%.4f USDT</code>\n",
 			t.ShortEntryUSDT, t.ShortExitUSDT))
 		sb.WriteString(fmt.Sprintf("• Funding Diterima: <code>+$%.4f USDT</code>\n", t.AccumulatedFundingUSDT))
-		sb.WriteString(fmt.Sprintf("💰 <b>Net Profit:</b> <b>%+.4f USDT</b> (Rp %+.2f)\n",
+		sb.WriteString(fmt.Sprintf("💰 <b>Net PnL (fee estimasi):</b> <b>%+.4f USDT</b> (Rp %+.2f)\n",
 			t.NetProfitUSDT, t.NetProfitIDR))
 		sb.WriteString(fmt.Sprintf("📈 <b>Net ROI:</b> <b>%+.3f%%</b>\n\n", t.NetROIPct))
 	}
