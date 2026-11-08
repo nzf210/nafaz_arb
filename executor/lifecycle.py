@@ -139,13 +139,15 @@ class LifecycleMixin:
             await pubsub.close()
 
     async def handle_kill_switch(self, message_data: str) -> None:
-        """
-        Handles the operator kill switch on arb:kill_switch.
+        """Apply the operator-controlled global entry halt."""
+        action, reason = self._parse_kill_switch_message(message_data)
+        if action == "off":
+            await self._resume_kill_switch(reason)
+            return
+        await self._activate_kill_switch(reason)
 
-        ON halts every new entry globally until an explicit OFF is received.
-        Unlike the daily-loss breaker the kill switch does NOT auto-reset on a
-        UTC rollover - only an operator OFF clears it.
-        """
+    @staticmethod
+    def _parse_kill_switch_message(message_data: str) -> tuple[str, str]:
         action = "on"
         reason = "OPERATOR"
         try:
@@ -153,26 +155,28 @@ class LifecycleMixin:
             if isinstance(parsed, dict):
                 action = str(parsed.get("action", action)).strip().lower()
                 reason = str(parsed.get("reason", reason)) or reason
+            return action, reason
         except Exception:
             text = (message_data or "").strip().lower()
             if text in ("off", "resume", "clear"):
-                action = "off"
-            elif text:
-                reason = message_data.strip()
+                return "off", reason
+            return action, message_data.strip() or reason
 
-        if action == "off":
-            if self._trading_halted and self._halt_reason == "KILL_SWITCH":
-                self._trading_halted = False
-                self._halt_reason = ""
-                logger.warning(f"[Kill Switch] Trading resumed ({reason})")
-                await self.publish_status()
+    async def _resume_kill_switch(self, reason: str) -> None:
+        if not self._trading_halted or self._halt_reason != "KILL_SWITCH":
             return
+        self._trading_halted = False
+        self._halt_reason = ""
+        logger.warning("[Kill Switch] Trading resumed (%s)", reason)
+        await self.publish_status()
 
-        if not self._trading_halted:
-            self._trading_halted = True
-            self._halt_reason = "KILL_SWITCH"
-            logger.critical(f"[Kill Switch] ALL new entries halted ({reason})")
-            await self.publish_status()
+    async def _activate_kill_switch(self, reason: str) -> None:
+        if self._trading_halted:
+            return
+        self._trading_halted = True
+        self._halt_reason = "KILL_SWITCH"
+        logger.critical("[Kill Switch] ALL new entries halted (%s)", reason)
+        await self.publish_status()
 
     # -------------------------------------------------------------
     # State 1: Entry Order Pegging
