@@ -76,7 +76,7 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	if err != nil {
 		return domain.Opportunity{}, err
 	}
-	op := buildOpportunity(input, sizing, pnl)
+	op := s.buildOpportunity(input, sizing, pnl)
 	s.evaluateOpportunity(&op, input.positionReason, sizing.perpBid.InexactFloat64(), sizing.spotEntryRef.InexactFloat64(), input.funding.Rate)
 	return op, nil
 }
@@ -283,20 +283,62 @@ func calculateCapacityPct(capital, targetBudget decimal.Decimal) float64 {
 	return pct
 }
 
-func buildOpportunity(input calculationInput, sizing sizingResult, pnl pnlResult) domain.Opportunity {
+func (s *Service) buildOpportunity(input calculationInput, sizing sizingResult, pnl pnlResult) domain.Opportunity {
 	status := "PROFITABLE_IN_RANGE"
-	switch {
-	case pnl.net.LessThanOrEqual(decimal.Zero):
-		status = "NOT_PROFITABLE"
-	case pnl.roi.LessThan(decimal.NewFromFloat(0)): // placeholder replaced below
-		status = "BELOW_MIN_TARGET"
-	}
 	roiFloat := pnl.roi.InexactFloat64()
 	switch {
 	case pnl.net.LessThanOrEqual(decimal.Zero):
 		status = "NOT_PROFITABLE"
-	case roiFloat < 0: // replaced by caller-configured thresholds below
+	case roiFloat < s.cfg.MinNetROIPct:
 		status = "BELOW_MIN_TARGET"
+	case roiFloat > s.cfg.MaxNetROIPct:
+		status = "ABOVE_MAX_TARGET"
 	}
-	return domain.Opportunity{}
+
+	executionMode := s.cfg.ExecutionMode
+	if executionMode == "" {
+		executionMode = "TAKER_TAKER"
+	}
+	orderTTL := s.cfg.MaxOrderTTLSeconds
+	if orderTTL <= 0 {
+		orderTTL = 30
+	}
+	targetQuote := input.perp.QuoteAsset
+	if !input.isSynthetic {
+		targetQuote = input.spot.QuoteAsset
+	}
+
+	prices := sizing.prices
+	return domain.Opportunity{
+		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s:%s:%s", input.spot.BaseAsset, targetQuote, strings.ToLower(input.spot.Exchange), input.spot.Symbol, strings.ToLower(input.perp.Exchange), input.perp.Symbol),
+		SpotExchange:           input.spot.Exchange,
+		PerpExchange:           input.perp.Exchange,
+		BaseAsset:              input.spot.BaseAsset,
+		QuoteAsset:             targetQuote,
+		SpotSymbol:              input.spot.Symbol,
+		PerpSymbol:              input.perp.Symbol,
+		ExecutionMode:           executionMode,
+		SpotEntryPrice:          prices.spotEntry.InexactFloat64(),
+		SpotExitPrice:           prices.spotExit.InexactFloat64(),
+		PerpEntryPrice:          prices.perpEntry.InexactFloat64(),
+		PerpExitPrice:           prices.perpExit.InexactFloat64(),
+		Quantity:                sizing.qty.InexactFloat64(),
+		SpreadPnL:               pnl.spread.InexactFloat64(),
+		FundingPnL:              pnl.funding.InexactFloat64(),
+		TradingFees:             pnl.fees.InexactFloat64(),
+		Slippage:                pnl.slippage.InexactFloat64(),
+		NetProfit:               pnl.net.InexactFloat64(),
+		AllocatedCapital:        pnl.capital.InexactFloat64(),
+		NetROIPct:               roiFloat,
+		ProfitabilityStatus:     status,
+		LastScannedAt:           input.now,
+		SpotTargetLimitPrice:    prices.spotEntry.InexactFloat64(),
+		MinAcceptablePerpPrice:  pnl.minAcceptablePerpPrice.InexactFloat64(),
+		SpotQueueDepth:          input.spotBook.Bids[0].Quantity,
+		MaxOrderTTLSeconds:      orderTTL,
+		IsSynthetic:             input.isSynthetic,
+		SyntheticFXRate:         input.fxRate,
+		OriginalSpotQuote:       input.spot.QuoteAsset,
+		CapacityPct:             pnl.capacityPct,
+	}
 }
