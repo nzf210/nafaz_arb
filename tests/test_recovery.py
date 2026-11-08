@@ -747,9 +747,9 @@ async def test_fetch_balance_report_returns_all_assets_and_isolates_venue_errors
 
         async def fetch_balance(self):
             return {
-                "free": {"IDR": 1_200_000.0, "BTC": 0.01},
+                "free": {"IDR": 1_200_000.0, "BTC": 0.01, "XRP": 5.0},
                 "used": {"IDR": 300_000.0, "BTC": 0.002},
-                "total": {"IDR": 1_500_000.0, "BTC": 0.012},
+                "total": {"IDR": 1_500_000.0, "BTC": 0.012, "XRP": 8.0},
             }
 
     class GlobalFutures:
@@ -762,9 +762,11 @@ async def test_fetch_balance_report_returns_all_assets_and_isolates_venue_errors
 
     assert reports[0]["name"] == "indodax"
     assert reports[0]["status"] == "ok"
-    assert {item["asset"] for item in reports[0]["assets"]} == {"IDR", "BTC"}
+    assert {item["asset"] for item in reports[0]["assets"]} == {"IDR", "BTC", "XRP"}
     btc = next(item for item in reports[0]["assets"] if item["asset"] == "BTC")
     assert btc == {"asset": "BTC", "free": 0.01, "used": 0.002, "total": 0.012}
+    xrp = next(item for item in reports[0]["assets"] if item["asset"] == "XRP")
+    assert xrp == {"asset": "XRP", "free": 5.0, "used": 3.0, "total": 8.0}
     assert reports[1]["name"] == "okx"
     assert reports[1]["status"] == "error"
     assert "private API unavailable" in reports[1]["error"]
