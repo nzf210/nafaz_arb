@@ -196,6 +196,12 @@ class ExchangeClient:
             )
         return await fetcher(symbol)
 
+    async def fetch_local_ticker(self, symbol: str) -> Dict[str, Any]:
+        """Fetches the current Spot ticker used for the final pre-entry price check."""
+        if self.local is None:
+            raise RuntimeError("local Spot client is unavailable")
+        return await self.local.fetch_ticker(symbol)
+
     async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetches ticker from global futures exchange."""
         return await self.global_fut.fetch_ticker(symbol)
@@ -503,14 +509,26 @@ class PaperTradingExchangeClient:
         """Paper mode does not fabricate a future settlement schedule."""
         return {}
 
-    async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
-        """Mirrors the live client: returns the last known ask for this symbol."""
+    async def fetch_local_ticker(self, symbol: str) -> Dict[str, Any]:
+        """Returns the latest paper Spot ticker with a receive timestamp."""
         clean_sym = symbol.lower().strip().replace("/", "_").replace("-", "_")
         price = self.market_prices.get(clean_sym) or {}
         return {
             "symbol": symbol,
             "bid": float(price.get("bid", 0.0)),
             "ask": float(price.get("ask", 0.0)),
+            "timestamp": int(float(price.get("updated_at", time.time())) * 1000),
+        }
+
+    async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
+        """Mirrors the live client: returns the last known Futures ticker."""
+        clean_sym = symbol.lower().strip().replace("/", "_").replace("-", "_")
+        price = self.market_prices.get(clean_sym) or {}
+        return {
+            "symbol": symbol,
+            "bid": float(price.get("bid", 0.0)),
+            "ask": float(price.get("ask", 0.0)),
+            "timestamp": int(float(price.get("updated_at", time.time())) * 1000),
         }
 
     async def close(self):
