@@ -325,10 +325,21 @@ class ExchangeClient:
                 matched.append(position)
         return matched
 
-    async def open_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def open_global_short_market(
+        self,
+        symbol: str,
+        amount: float,
+        client_order_id: Optional[str] = None,
+        *,
+        price: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """
         Executes an instant Short 1x Market Hedge on Global Futures.
         STRICT: Only executes Market SELL. Never buy/long to open.
+
+        price is accepted for compatibility with the engine's slippage
+        preflight/audit context. The order remains MARKET; this value is never
+        passed as a limit price to the exchange.
         """
         if amount <= 0:
             raise ValueError(f"invalid short amount: {amount}")

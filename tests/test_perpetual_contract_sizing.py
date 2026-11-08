@@ -47,7 +47,7 @@ async def test_perpetual_orders_convert_base_quantity_to_contracts_and_back():
     )
     client.set_route("indodax", "okx")
 
-    opened = await client.open_global_short_market("BTC/USDT:USDT", 0.01)
+    opened = await client.open_global_short_market("BTC/USDT:USDT", 0.01, price=65000.0)
     assert venue.orders[-1][0:3] == ("sell", "BTC/USDT:USDT", 10.0)
     assert opened["amount"] == pytest.approx(0.01)
     assert opened["filled"] == pytest.approx(0.01)
