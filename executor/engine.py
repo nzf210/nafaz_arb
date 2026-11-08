@@ -69,6 +69,7 @@ class ArbitrageEngine(
         self.config = config
         self.client = client
         self.redis = redis_client
+        self.supabase_repository = None
         self._running = False
         self.ARB_TRADE_EVENTS = "arb:trade_events"
         # Seeded from wall-clock so client order ids stay unique across restarts;
@@ -507,6 +508,11 @@ class ArbitrageEngine(
                 await self.redis.aclose()
             else:
                 await self.redis.close()
+        if self.supabase_repository:
+            try:
+                await self.supabase_repository.close()
+            except Exception:
+                logger.exception("failed to close Supabase repository")
         logger.info("Hybrid Arbitrage Engine stopped")
 
     # -------------------------------------------------------------
@@ -962,6 +968,19 @@ class ArbitrageEngine(
                 # the failure locally; the next status poll remains available.
                 pass
 
+    async def _persist_supabase_event(self, payload: Dict[str, Any]) -> None:
+        """Best-effort durable audit write; never gate exchange risk management."""
+        repository = getattr(self, "supabase_repository", None)
+        if repository is None:
+            return
+        try:
+            await repository.persist_event(payload)
+        except Exception:
+            logger.exception(
+                "Supabase operational persistence failed for event %s",
+                payload.get("event", "UNKNOWN"),
+            )
+
     async def _publish_execution_failure(
         self,
         pair_tag: str,
@@ -971,8 +990,6 @@ class ArbitrageEngine(
         state: Optional[PositionState] = None,
     ) -> None:
         """Publish actionable execution failures for the Telegram notifier."""
-        if self.redis is None:
-            return
         pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
         payload = {
             "event": "EXECUTION_FAILURE",
@@ -987,10 +1004,12 @@ class ArbitrageEngine(
             "is_mock": bool(getattr(self.config, "mock_mode", False)),
             "timestamp_ms": int(time.time() * 1000),
         }
-        try:
-            await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(payload, default=str))
-        except Exception:
-            logger.exception("failed to publish execution failure event for %s", pair_tag)
+        if self.redis is not None:
+            try:
+                await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(payload, default=str))
+            except Exception:
+                logger.exception("failed to publish execution failure event for %s", pair_tag)
+        await self._persist_supabase_event(payload)
 
     @staticmethod
     def _utc_day() -> str:
