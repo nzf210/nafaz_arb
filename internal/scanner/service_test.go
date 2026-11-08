@@ -327,6 +327,12 @@ func TestHybridOpportunityCalculation(t *testing.T) {
 	if op.FundingPnL <= 0 {
 		t.Errorf("expected positive FundingPnL, got %f", op.FundingPnL)
 	}
+	if wantGross := op.SpreadPnL + op.FundingPnL; math.Abs(op.GrossProfit-wantGross) > 1e-9 {
+		t.Errorf("GrossProfit=%f, want SpreadPnL+FundingPnL=%f", op.GrossProfit, wantGross)
+	}
+	if wantNet := op.GrossProfit - op.TradingFees - op.Slippage; math.Abs(op.NetProfit-wantNet) > 1e-9 {
+		t.Errorf("NetProfit=%f, want GrossProfit-Fees-Slippage=%f", op.NetProfit, wantNet)
+	}
 	if op.NetProfit <= 0 {
 		t.Errorf("expected positive NetProfit, got %f", op.NetProfit)
 	}
