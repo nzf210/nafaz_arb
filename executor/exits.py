@@ -556,14 +556,14 @@ class ExitMixin:
 
                 if net_profit_usdt < 0:
                     logger.warning(
-                        f"[State 4 Realized Loss] Local Limit Sell fill resulted in net negative PnL: "
+                        f"[State 4 Closed PnL Estimate - Loss] Local Limit Sell fill resulted in net negative PnL: "
                         f"{net_profit_usdt:.4f} USDT (ROI: {roi_pct:.3f}%). Spot PnL: {spot_pnl_usdt:+.4f} USDT, "
                         f"Futures Short PnL: {futures_pnl_usdt:+.4f} USDT, Funding: +{funding_usdt:.4f} USDT, Fees: -{fees_usdt:.4f} USDT. "
                         f"Closing Short to maintain delta-neutral position integrity."
                     )
                 else:
                     logger.info(
-                        f"[State 4 Realized Profit] Trade closed with profit: +{net_profit_usdt:.4f} USDT (ROI: +{roi_pct:.3f}%). "
+                        f"[State 4 Closed PnL Estimate] Trade closed with profit: +{net_profit_usdt:.4f} USDT (ROI: +{roi_pct:.3f}%). "
                         f"Spot PnL: {spot_pnl_usdt:+.4f} USDT, Futures Short PnL: {futures_pnl_usdt:+.4f} USDT."
                     )
                 closed_trade = {
