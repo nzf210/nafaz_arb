@@ -16,6 +16,9 @@ import uuid
 
 import httpx
 
+logger = logging.getLogger("executor.supabase")
+
+
 class SupabasePersistenceError(RuntimeError):
     pass
 
