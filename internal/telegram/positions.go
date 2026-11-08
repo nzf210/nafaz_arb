@@ -67,7 +67,7 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 		sb.WriteString("📊 <b>Rekap Posisi Berhasil Ditutup:</b>\n")
 		sb.WriteString(fmt.Sprintf("• Total Ditutup: <code>%d transaksi</code> (Menang: <code>%d</code>)\n",
 			stats.TotalClosed, stats.WinCount))
-		sb.WriteString(fmt.Sprintf("• Total Net PnL (fee estimasi): <b>%+.4f USDT</b> (Rp %+.2f)\n\n",
+		sb.WriteString(fmt.Sprintf("• Total Net PnL (fee estimasi): <b>%+.4f USDT</b> (Rp %+.2f)\n• PnL belum terverifikasi: <code>%d transaksi</code>\n\n",
 			stats.TotalPnLUSDT, stats.TotalPnLIDR))
 	}
 
@@ -98,10 +98,10 @@ func (b *Bot) sendEmptyPositionsReply(ctx context.Context, chatID int64, replyTo
 	}
 
 	if stats.TotalClosed > 0 {
-		noPos.WriteString("📊 <b>Statistik Realisasi Arbitrase:</b>\n")
+		noPos.WriteString("📊 <b>Statistik Net PnL Estimasi Arbitrase:</b>\n")
 		noPos.WriteString(fmt.Sprintf("• Berhasil Ditutup: <code>%d transaksi</code> (Menang: <code>%d</code>)\n",
 			stats.TotalClosed, stats.WinCount))
-		noPos.WriteString(fmt.Sprintf("• Total Realized Profit: <b>%+.4f USDT</b> (Rp %+.2f)\n",
+		noPos.WriteString(fmt.Sprintf("• Total Net PnL (fee estimasi): <b>%+.4f USDT</b> (Rp %+.2f)\n• PnL belum terverifikasi: <code>%d transaksi</code>\n",
 			stats.TotalPnLUSDT, stats.TotalPnLIDR))
 	}
 
@@ -252,9 +252,19 @@ func (b *Bot) handleHistoryCommand(ctx context.Context, chatID int64, replyToID 
 		sb.WriteString(fmt.Sprintf("• Short: <code>$%.4f</code> | Tutup: <code>$%.4f USDT</code>\n",
 			t.ShortEntryUSDT, t.ShortExitUSDT))
 		sb.WriteString(fmt.Sprintf("• Funding Diterima: <code>+$%.4f USDT</code>\n", t.AccumulatedFundingUSDT))
-		sb.WriteString(fmt.Sprintf("💰 <b>Net PnL (fee estimasi):</b> <b>%+.4f USDT</b> (Rp %+.2f)\n",
-			t.NetProfitUSDT, t.NetProfitIDR))
-		sb.WriteString(fmt.Sprintf("📈 <b>Net ROI:</b> <b>%+.3f%%</b>\n\n", t.NetROIPct))
+		if strings.EqualFold(t.PnlStatus, "unverified") {
+			sb.WriteString("⚠️ <b>PnL belum terverifikasi</b> — periksa FX dan fee aktual di exchange.\n\n")
+		} else {
+			estimatedNet := t.EstimatedNetProfitUSDT
+			if estimatedNet == 0 {
+				estimatedNet = t.NetProfitUSDT
+			}
+			sb.WriteString(fmt.Sprintf("• Gross PnL: <code>%+.4f USDT</code> | Estimasi fee: <code>%.4f USDT</code>\n",
+				t.GrossProfitUSDT, t.EstimatedFeesUSDT))
+			sb.WriteString(fmt.Sprintf("💰 <b>Net PnL (estimasi):</b> <b>%+.4f USDT</b> (Rp %+.2f)\n",
+				estimatedNet, t.NetProfitIDR))
+			sb.WriteString(fmt.Sprintf("📈 <b>Net ROI (estimasi):</b> <b>%+.3f%%</b>\n\n", t.NetROIPct))
+		}
 	}
 
 	if stats.TotalClosed > 0 {
