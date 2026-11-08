@@ -1,7 +1,8 @@
 """Account-wide exchange reconciliation and venue halt decisions."""
 
 import logging
-from typing import Any, Dict
+import math
+from typing import Dict
 
 from executor.models import PositionState
 
@@ -35,13 +36,13 @@ class AccountWideReconciliationMixin:
         if callable(positions_reader) and callable(orders_reader):
             return positions_reader, orders_reader
         reason = "account-wide positions/open-orders readers are unavailable"
-        venues = set(getattr(self.client, "perpetual_clients", {}) or {})
-        venues.update(getattr(self.client, "spot_clients", {}) or {})
-        if not venues:
-            venues.update({
-                str(getattr(self.config, "global_exchange_name", "") or "").lower(),
-                str(getattr(self.config, "local_exchange_name", "") or "").lower(),
-            })
+        perpetual_venues = set(getattr(self.client, "perpetual_clients", {}) or {})
+        spot_venues = set(getattr(self.client, "spot_clients", {}) or {})
+        if not perpetual_venues:
+            perpetual_venues.add(str(getattr(self.config, "global_exchange_name", "") or "").lower())
+        if not spot_venues:
+            spot_venues.add(str(getattr(self.config, "local_exchange_name", "") or "").lower())
+        venues = perpetual_venues | spot_venues
         self._halt_venues(venues, reason)
         logger.critical("[Reconciliation] %s; all live entries blocked", reason)
         return None
@@ -110,7 +111,7 @@ class AccountWideReconciliationMixin:
                 return actual, f"invalid position size for {symbol}"
             if size is None:
                 return actual, f"position size unavailable for {symbol}"
-            if not isinstance(size, (int, float)) or size < 0:
+            if not isinstance(size, (int, float)) or not math.isfinite(size) or size < 0:
                 return actual, f"invalid position size for {symbol}"
             if size <= 1e-12:
                 continue
