@@ -66,6 +66,7 @@
         "chat_id": 0,
         "allowed_chat_ids": [],
         "alert_on_new": true,
+        "alert_on_scan_summary": false,
         "alert_cooldown_minutes": 15,
         "alert_min_net_roi_pct": 0,
         "alert_min_net_profit_quote": 0
