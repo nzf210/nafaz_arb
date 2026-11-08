@@ -158,6 +158,55 @@ func TestIDRFXFailureDoesNotBlockDirectUSDTMarkets(t *testing.T) {
 	}
 }
 
+
+type directUSDTFailingFXAdapter struct {
+	failingFXAdapter
+}
+
+func (a *directUSDTFailingFXAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
+	return []domain.Market{{Exchange: "mexc", Symbol: "btcusdt", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "SPOT", Active: true}}, nil
+}
+
+func (a *directUSDTFailingFXAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, error) {
+	return []domain.Market{{Exchange: "okx", Symbol: "BTC-USDT-SWAP", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true}}, nil
+}
+
+func (a *directUSDTFailingFXAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	return domain.OrderBook{
+		Exchange: "mexc", Symbol: symbol, Timestamp: time.Now().UTC(),
+		Bids: []domain.PriceLevel{{Price: 100, Quantity: 10}},
+		Asks: []domain.PriceLevel{{Price: 101, Quantity: 10}},
+	}, nil
+}
+
+func (a *directUSDTFailingFXAdapter) PerpetualOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	return domain.OrderBook{
+		Exchange: "okx", Symbol: symbol, Timestamp: time.Now().UTC(),
+		Bids: []domain.PriceLevel{{Price: 105, Quantity: 10}},
+		Asks: []domain.PriceLevel{{Price: 106, Quantity: 10}},
+	}, nil
+}
+
+func TestDirectUSDTExecutorSignalRequiresFreshFX(t *testing.T) {
+	cfg := config.Config{
+		Mode: "LIVE", ExecutionMode: "MAKER_TAKER", QuoteAssets: []string{"USDT"},
+		EnableExecutorSignals: true, CapitalTotal: 1000, AllocationPerPair: 0.5,
+		PerpLeverage: 1, CheckOpenPositions: false,
+	}
+	s := New(cfg, &directUSDTFailingFXAdapter{})
+	s.lastLiveFXRate = 16000 // A previous rate must not be reused for a live signal.
+	result, complete, err := s.Scan(context.Background())
+	if err != nil || !complete {
+		t.Fatalf("missing FX should fail only the pair, err=%v complete=%v", err, complete)
+	}
+	if result.FailedPairs != 1 || len(result.Errors) != 1 || !strings.Contains(result.Errors[0], "live USDT/IDR FX rate required") {
+		t.Fatalf("expected direct USDT route to be rejected for missing fresh FX, failed=%d errors=%v", result.FailedPairs, result.Errors)
+	}
+	if len(result.Opportunities) != 0 {
+		t.Fatalf("invalid FX route must not create an opportunity, got %+v", result.Opportunities)
+	}
+}
+
 func TestApplyEvaluationResultsCountsFailedPairs(t *testing.T) {
 	result := domain.ScanResult{}
 	complete := applyEvaluationResults([]evalResult{

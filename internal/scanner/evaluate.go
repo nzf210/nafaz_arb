@@ -122,8 +122,26 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 		if isSynthetic {
 			sb = normalizeOrderBookCurrency(rawSB, fxRate)
 		}
+	} else if s.cfg.EnableExecutorSignals {
+		// Executor sizing and order prices are normalized to IDR even for
+		// direct USDT/USDC spot markets. Never publish a signal using stale FX.
+		fxRate, fxLive = s.getUSDTIDRRate(ctx)
+		if !fxLive {
+			return evalResult{
+				err: fmt.Errorf("%s/%s (%s vs %s): live USDT/IDR FX rate required for executor price normalization",
+					sm.BaseAsset, sm.QuoteAsset, sm.Exchange, pm.Exchange),
+				exchangeMetrics: exchangeMetrics,
+			}
+		}
+		if err := validateFXRateSanity(fxRate, s.cfg.SyntheticUSDTIDRRate, s.cfg.FXRateSanityPct); err != nil {
+			return evalResult{
+				err: fmt.Errorf("%s/%s (%s vs %s): %w", sm.BaseAsset, sm.QuoteAsset, sm.Exchange, pm.Exchange, err),
+				exchangeMetrics: exchangeMetrics,
+			}
+		}
 	} else {
-		// Direct USDT/USDC pairs do not depend on the IDR FX endpoint.
+		// Display-only direct quote opportunities may still be evaluated
+		// without FX; executor signals are gated above.
 		fxRate = s.lastKnownFXRate()
 	}
 	requiredNotional := s.requiredNotionalUsdt()
