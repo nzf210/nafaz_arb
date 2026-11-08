@@ -70,7 +70,7 @@ func (b *Bot) formatStatus() string {
 
 • <b>Kondisi:</b> %s
 • <b>Mode:</b> <code>%s</code>
-• <b>Bursa Spot:</b> Tokocrypto, Indodax, MEXC
+• <b>Bursa Spot:</b> Indodax, Tokocrypto
 • <b>Bursa Perp:</b> OKX SWAP, MEXC Contract
 • <b>Scan Interval:</b> %ds
 • <b>Scan Terakhir:</b> %s
