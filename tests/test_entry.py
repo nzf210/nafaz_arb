@@ -467,8 +467,8 @@ async def test_entry_revalidation_passes_healthy_spread(engine, fake_redis, mock
     assert engine.states[pair_tag] == PositionState.ENTRY_PENDING
 
 @pytest.mark.asyncio
-async def test_entry_revalidation_fails_open_on_ticker_error(engine, fake_redis, mock_client):
-    """A ticker read failure must not block the entry the scanner already validated."""
+async def test_entry_revalidation_fails_closed_on_ticker_error(engine, fake_redis, mock_client):
+    """A failed fresh quote must block Spot entry and publish an actionable alert."""
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
     payload = _revalidation_payload(now_ms)
@@ -477,11 +477,28 @@ async def test_entry_revalidation_fails_open_on_ticker_error(engine, fake_redis,
         raise RuntimeError("ticker down")
 
     mock_client.fetch_global_ticker = boom
-
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    pubsub = fake_redis.pubsub()
+    await pubsub.subscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
     await engine.handle_signal_notification(pair_tag)
 
-    assert len(mock_client.placed_buys) == 1
+    assert len(mock_client.placed_buys) == 0
+    assert pair_tag not in engine.pending_entry_orders
+
+    event = None
+    for _ in range(10):
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+        if message and message.get("type") == "message":
+            event = json.loads(message["data"])
+            break
+    assert event is not None
+    assert event["event"] == "EXECUTION_FAILURE"
+    assert event["reason"] == "ENTRY_REVALIDATION_UNAVAILABLE"
+    await pubsub.unsubscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.aclose()
 
 @pytest.mark.asyncio
 async def test_entry_revalidation_disabled_by_zero_floor(engine, fake_redis, mock_client):
