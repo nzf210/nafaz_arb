@@ -674,3 +674,35 @@ async def test_entry_revalidation_rejects_limit_that_crosses_local_ask(engine, f
 
     assert len(mock_client.placed_buys) == 0
     assert pair_tag not in engine.pending_entry_orders
+
+@pytest.mark.asyncio
+async def test_live_entry_blocks_before_spot_submit_when_order_preflight_fails(fake_redis):
+    """LIVE mode must not submit Spot if market constraints cannot be verified."""
+    from executor.exchange_client import PaperTradingExchangeClient
+
+    pair_tag = "indodax:btc_idr"
+    client = PaperTradingExchangeClient(initial_balance_usdt=100.0)
+    client.update_market_price("btc_idr", 1_038_000_000.0, 1_040_000_000.0)
+    client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
+
+    async def fail_preflight(**kwargs):
+        raise ValueError("missing verified min notional metadata")
+
+    client.validate_entry_order = fail_preflight
+    cfg = ExecutorConfig(
+        mock_mode=False,
+        initial_exchange_balance_usdt=100.0,
+        min_allocated_capital=10.0,
+        max_entry_slippage_pct=0.0,
+    )
+    live_guard_engine = ArbitrageEngine(config=cfg, client=client, redis_client=fake_redis)
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}",
+        json.dumps(_fresh_signal_payload(int(time.time() * 1000))),
+    )
+
+    await live_guard_engine.handle_signal_notification(pair_tag)
+
+    assert client.orders == {}, "no Spot order may be sent when live market constraints are unknown"
+    assert pair_tag not in live_guard_engine.pending_entry_orders
+    assert live_guard_engine.status_snapshot()["failures"][pair_tag]["reason"] == "ORDER_CONSTRAINT_PREFLIGHT_FAILED"
