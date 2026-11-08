@@ -102,7 +102,7 @@ func (b *Bot) sendEmptyPositionsReply(ctx context.Context, chatID int64, replyTo
 		noPos.WriteString(fmt.Sprintf("• Berhasil Ditutup: <code>%d transaksi</code> (Menang: <code>%d</code>)\n",
 			stats.TotalClosed, stats.WinCount))
 		noPos.WriteString(fmt.Sprintf("• Total Net PnL (fee estimasi): <b>%+.4f USDT</b> (Rp %+.2f)\n• PnL belum terverifikasi: <code>%d transaksi</code>\n",
-			stats.TotalPnLUSDT, stats.TotalPnLIDR))
+			stats.TotalPnLUSDT, stats.TotalPnLIDR, stats.PnlUnverifiedCount))
 	}
 
 	kb := &InlineKeyboardMarkup{
