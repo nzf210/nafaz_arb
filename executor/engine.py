@@ -1014,7 +1014,7 @@ class ArbitrageEngine(
 
     def record_realized_pnl(self, net_profit_usdt: float) -> None:
         """
-        Feeds a closed trade's net PnL into the daily loss breaker.
+        Feeds a closed trade's recorded net PnL estimate into the daily loss breaker; fees are not exchange-confirmed.
 
         Losses beyond max_daily_loss_usdt halt *new entries* only: open positions
         keep being managed, because abandoning them unhedged would be worse than
