@@ -557,7 +557,8 @@ class ExitMixin:
                     )
 
                 spot_pnl_idr = unclosed_delta * (exit_price_idr - entry_price_idr)
-                spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
+                fx_verified = math.isfinite(usdt_rate) and usdt_rate > 0
+                spot_pnl_usdt = spot_pnl_idr / usdt_rate if fx_verified else 0.0
                 futures_pnl_usdt = unclosed_delta * (short_entry_usdt - short_exit_usdt)
 
                 # Allocate only the pro-rata share of accumulated funding for this
@@ -567,26 +568,62 @@ class ExitMixin:
                 funding_usdt = float(pos.accumulated_funding_usdt) * fill_ratio
                 pos.accumulated_funding_usdt -= funding_usdt
 
-                fees_usdt = (unclosed_delta * (short_entry_usdt + short_exit_usdt)) * 0.0005
-                net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
-                net_profit_idr = net_profit_usdt * usdt_rate
+                spot_entry_notional = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0) * fill_ratio
+                if spot_entry_notional <= 0 and fx_verified:
+                    spot_entry_notional = unclosed_delta * entry_price_idr / usdt_rate
+                spot_exit_notional = (unclosed_delta * exit_price_idr / usdt_rate) if fx_verified else 0.0
+                perp_entry_notional = unclosed_delta * short_entry_usdt
+                perp_exit_notional = unclosed_delta * short_exit_usdt
 
-                capital_usdt = unclosed_delta * short_entry_usdt
-                roi_pct = (net_profit_usdt / capital_usdt * 100.0) if capital_usdt > 0 else 0.0
+                if fx_verified:
+                    fee_breakdown = self.config.estimate_trade_fees_usdt(
+                        pos.local_exchange,
+                        pos.global_exchange,
+                        spot_entry_notional,
+                        spot_exit_notional,
+                        perp_entry_notional,
+                        perp_exit_notional,
+                    )
+                    spot_fees_usdt = float(fee_breakdown["spot_fees_usdt"])
+                    futures_fees_usdt = float(fee_breakdown["futures_fees_usdt"])
+                    fees_usdt = float(fee_breakdown["fees_usdt"])
+                    gross_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt
+                    net_profit_usdt = gross_profit_usdt - fees_usdt
+                    net_profit_idr = net_profit_usdt * usdt_rate
+                    capital_usdt = unclosed_delta * short_entry_usdt
+                    roi_pct = (net_profit_usdt / capital_usdt * 100.0) if capital_usdt > 0 else 0.0
+                    pnl_status = "estimated"
+                else:
+                    # The Spot fill and Futures hedge are complete, but without a
+                    # live FX quote their combined USDT PnL cannot be established.
+                    # Keep the close record explicitly unverified and out of PnL stats.
+                    spot_fees_usdt = None
+                    futures_fees_usdt = None
+                    fees_usdt = None
+                    gross_profit_usdt = None
+                    net_profit_usdt = None
+                    net_profit_idr = None
+                    roi_pct = None
+                    pnl_status = "unverified"
 
                 is_mock = getattr(self.config, "mock_mode", False)
 
-                if net_profit_usdt < 0:
+                if pnl_status == "unverified":
+                    logger.error(
+                        f"[State 4 Closed PnL UNVERIFIED] Both legs closed for {pair_tag}, "
+                        "but live USDT/IDR FX was unavailable. PnL is excluded from totals pending reconciliation."
+                    )
+                elif net_profit_usdt < 0:
                     logger.warning(
-                        f"[State 4 Closed PnL Estimate - Loss] Local Limit Sell fill resulted in net negative PnL: "
-                        f"{net_profit_usdt:.4f} USDT (ROI: {roi_pct:.3f}%). Spot PnL: {spot_pnl_usdt:+.4f} USDT, "
-                        f"Futures Short PnL: {futures_pnl_usdt:+.4f} USDT, Funding: +{funding_usdt:.4f} USDT, Fees: -{fees_usdt:.4f} USDT. "
-                        f"Closing Short to maintain delta-neutral position integrity."
+                        f"[State 4 Estimated Net Loss] {net_profit_usdt:.4f} USDT "
+                        f"(ROI: {roi_pct:.3f}%). Gross: {gross_profit_usdt:+.4f} USDT, "
+                        f"estimated fees: {fees_usdt:.4f} USDT."
                     )
                 else:
                     logger.info(
-                        f"[State 4 Closed PnL Estimate] Trade closed with profit: +{net_profit_usdt:.4f} USDT (ROI: +{roi_pct:.3f}%). "
-                        f"Spot PnL: {spot_pnl_usdt:+.4f} USDT, Futures Short PnL: {futures_pnl_usdt:+.4f} USDT."
+                        f"[State 4 Estimated Net PnL] {net_profit_usdt:+.4f} USDT "
+                        f"(ROI: {roi_pct:+.3f}%). Gross: {gross_profit_usdt:+.4f} USDT, "
+                        f"estimated fees: {fees_usdt:.4f} USDT."
                     )
                 closed_trade = {
                     "trade_id": f"trade-{int(time.time()*1000)}",
