@@ -6,7 +6,7 @@ from executor.paper_exchange_client import PaperTradingExchangeClient
 from executor.exchange_factory import init_ccxt_exchange, init_local_exchange
 
 
-def create_exchange_client(config: Any) -> Any:
+def create_exchange_client(config: Any, local_factory=None, perpetual_factory=None) -> Any:
     """Factory creating a multi-venue live client or paper trading client."""
     if getattr(config, "mock_mode", False):
         return PaperTradingExchangeClient(
@@ -14,8 +14,8 @@ def create_exchange_client(config: Any) -> Any:
             global_name=config.global_exchange_name,
             initial_balance_usdt=getattr(config, "initial_exchange_balance_usdt", 100.0),
         )
-    spot_clients = _create_spot_clients(config)
-    perpetual_clients = _create_perpetual_clients(config)
+    spot_clients = _create_spot_clients(config, local_factory or init_local_exchange)
+    perpetual_clients = _create_perpetual_clients(config, perpetual_factory or init_ccxt_exchange)
     from executor.exchange_client import ExchangeClient
     return ExchangeClient(
         spot_clients=spot_clients,
@@ -26,7 +26,7 @@ def create_exchange_client(config: Any) -> Any:
     )
 
 
-def _create_spot_clients(config: Any) -> dict:
+def _create_spot_clients(config: Any, factory) -> dict:
     names = _configured_exchange_names(
         getattr(config, "spot_exchanges", []), config.local_exchange_name
     )
@@ -35,11 +35,11 @@ def _create_spot_clients(config: Any) -> dict:
         credentials = _route_credentials(config, name, "spot")
         if not credentials:
             raise ValueError(f"LIVE spot route {name} has no complete API credentials")
-        clients[name] = init_local_exchange(name, credentials, default_type="spot")
+        clients[name] = factory(name, credentials, default_type="spot")
     return clients
 
 
-def _create_perpetual_clients(config: Any) -> dict:
+def _create_perpetual_clients(config: Any, factory) -> dict:
     names = _configured_exchange_names(
         getattr(config, "perpetual_exchanges", []), config.global_exchange_name
     )
@@ -51,7 +51,7 @@ def _create_perpetual_clients(config: Any) -> dict:
         if name == "okx" and not credentials.passphrase:
             raise ValueError("LIVE perpetual route okx requires API passphrase")
         default_type = "future" if name == "binance" else "swap"
-        clients[name] = init_ccxt_exchange(name, credentials, default_type=default_type)
+        clients[name] = factory(name, credentials, default_type=default_type)
     return clients
 
 

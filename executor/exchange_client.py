@@ -445,4 +445,11 @@ from executor.exchange_factory import (
     init_ccxt_exchange,
     init_local_exchange,
 )
-from executor.exchange_client_factory import create_exchange_client
+def create_exchange_client(config: Any) -> Any:
+    """Compatibility wrapper retaining injectable exchange factories for tests."""
+    from executor.exchange_client_factory import create_exchange_client as factory
+    return factory(
+        config,
+        local_factory=init_local_exchange,
+        perpetual_factory=init_ccxt_exchange,
+    )
