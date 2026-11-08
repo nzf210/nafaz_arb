@@ -1,8 +1,8 @@
 # NAFAZ Spot–Perpetual Scanner Boilerplate
 
-Starter Go project for the **read-only** Scanner described in the PRD: discover/match spot and perpetual markets, estimate a buy-spot/short-perpetual opportunity, apply a configurable net-ROI range, and record opportunity counts and observed duration.
+Go scanner + Python executor for a buy-Spot / short-Perpetual strategy. The scanner discovers and ranks opportunities; the executor owns order placement, hedging, rollback, reconciliation and force-close.
 
-> This is a development scaffold, not production trading software. It does not place, cancel, or close orders. Supports both `MOCK` mode and `LIVE` mode (Spot: Tokocrypto, Indodax, MEXC; Perpetual: OKX, MEXC read-only market data). Do not grant trading or withdrawal permissions.
+> This repository is not production-certified. On the current `main` line, live market discovery covers Local Spot Indodax/Tokocrypto and Global Perpetual OKX/MEXC. Binance and Bybit Perpetual adapters are in open PR #6 and are not part of `main` until that PR is rebased, verified and merged. MEXC Spot is deliberately not enabled. LIVE execution requires trade permissions only; withdrawals must remain disabled.
 
 ## Requirements
 
@@ -55,13 +55,13 @@ curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/sc
 curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/scanner/opportunities/history'
 ```
 
-The periodic scanner runs at `scan_interval_seconds`. `POST /api/v1/scanner/scan` also triggers a scan immediately. The mock account snapshot contains an untracked BTC perpetual exposure, so BTC/USDT is excluded with `RECONCILIATION_REQUIRED`; ETH is evaluated independently. If the required exposure read fails, candidates are marked `POSITION_STATUS_UNKNOWN` and fail closed. Opportunity history is stored in the configured JSON file using atomic replacement; replace `history.Store` with PostgreSQL (or another durable database) before multi-instance or production deployment.
+The periodic scanner runs at `scan_interval_seconds`. `POST /api/v1/scanner/scan` also triggers a scan immediately. The mock account snapshot contains an untracked BTC perpetual exposure, so BTC/USDT is excluded with `RECONCILIATION_REQUIRED`; ETH is evaluated independently. The current live adapter does not yet have authenticated per-venue open-order and position readers; it now returns an explicit error instead of a false empty exposure list. With `check_open_positions: true`, LIVE candidates therefore fail closed until those readers are implemented. Opportunity history is stored in the configured JSON file using atomic replacement; replace `history.Store` with PostgreSQL (or another durable database) before multi-instance or production deployment.
 
 `GET /api/v1/scanner/status` reports the latest scan duration, last successful scan, data age, stale state, and most recent error. Scan results also include total and per-phase timings plus per-exchange order-book/funding request counts, errors, and accumulated request time (microseconds). A successful result becomes stale after two configured scan intervals without another successful scan. The `/health` endpoint remains a process-liveness check.
 
 ## Profit filter
 
-`min_net_roi_pct` and `max_net_roi_pct` are inclusive percentage values: `0.50` means 0.50%, not 0.005. The sample 0.50–2.00 range is illustrative and configurable. Net ROI is calculated over `TOTAL_DEPLOYED_CAPITAL` (spot notional plus perpetual notional divided by configured leverage). The calculator reports the quote currency of the matched pair; it does not convert USDT and USDC.
+`min_net_roi_pct` and `max_net_roi_pct` are inclusive percentage values: `0.50` means 0.50%, not 0.005. The sample 0.50–2.00 range is illustrative and configurable. Net ROI is calculated over `TOTAL_DEPLOYED_CAPITAL` (spot notional plus perpetual notional divided by configured leverage). The scanner calculator reports the quote currency of the matched pair; it does not convert USDT and USDC. The executor assumes USDC is 1:1 with USDT for sizing and FX normalization; depeg risk remains.
 
 - `PROFITABLE_IN_RANGE`: positive net profit and ROI within the configured range.
 - `NOT_PROFITABLE`: net profit is zero or negative.
@@ -97,7 +97,7 @@ The scanner includes advanced optimization mechanisms to discover and capture ma
    - Reports `capacity_pct` indicating book utilization (e.g., 30.0% of target allocation).
 2. **Synthetic IDR $\leftrightarrow$ USDT Matching (`enable_synthetic_idr: true`, `synthetic_usdt_idr_rate: 16000.0`):**
    - Indonesian local exchanges (Indodax, Tokocrypto) have their deepest liquidity on IDR/BIDR spot markets. Global perpetual exchanges (OKX, MEXC) operate in USDT.
-   - When enabled, the scanner pairs spot IDR/BIDR markets against USDT perpetual contracts, automatically converting and normalizing order book prices using the live/configured `USDT/IDR` exchange rate.
+   - When enabled, the scanner pairs spot IDR/BIDR markets against USDT perpetual contracts, automatically converting and normalizing order book prices using a live `USDT/IDR` ticker. `synthetic_usdt_idr_rate` is only a sanity-check reference; it is never a live fallback. The executor also requires a fresh live FX value for USDT/USDC local Spot quotes because order prices are normalized to IDR.
    - Emits `is_synthetic: true`, `synthetic_fx_rate`, and `original_spot_quote: "IDR"`.
 3. **Tunable Empty Book Circuit Breaker (`empty_book_freeze_minutes: 15`):**
    - Replaces rigid 6-hour lockouts with a configurable freeze window in minutes (default: 15 minutes) when a pair experiences 3 consecutive empty book scans, preventing prolonged omission of pairs during temporary liquidity gaps.
@@ -179,7 +179,7 @@ tests/                   Python Executor unit & integration test suite
 
 ### Core Rules (Strict Constraints)
 1. **Local CEX (Indodax, Tokocrypto):** ONLY Spot one-way transactions (`Buy Spot` for Entry, `Sell Spot` for Exit).
-2. **Global CEX Futures (Binance, Bybit, OKX, MEXC):** ONLY Short 1x transactions (`Market Sell` when local Limit Buy fills, `Market Buy reduceOnly=True` when local Limit Sell fills). Never open Long Futures.
+2. **Global CEX Futures (target: MEXC, OKX, Binance, Bybit):** ONLY Short 1x transactions (`Market Sell` when local Limit Buy fills, `Market Buy reduceOnly=True` when local Limit Sell fills). Never open Long Futures.
 3. **No coin transfers / withdrawals** between exchanges.
 
 ### Scanner Golang (2-Layer Opportunity Filter)
@@ -204,13 +204,15 @@ tests/                   Python Executor unit & integration test suite
 - Channel `arb:signal_notify`: Published by Golang with `{local_ex}:{symbol}`. Python consumes and verifies `latency <= 500ms`.
 - Channel `arb:emergency_cancel`: Instant cancellation broadcast on negative funding rates.
 
-Scanner/Executor fail-closed behavior: if the executor position check fails, the
-pair is excluded (`POSITION_STATE_UNKNOWN`); if a signal cannot be published to
-Redis, the scan is marked incomplete; a USDT/IDR ticker failure skips the IDR
-pair entirely (there is no fallback: the rate is only ever taken live from the
-CEX that trades IDR, never hardcoded or synthetic — a stale rate would destroy
-spread accuracy and profit); and the scanner refuses to start in LIVE mode when
-Redis is enabled but unreachable. Before an emergency spot rollback after a
+Scanner/Executor fail-closed behavior: if the required scanner exposure check
+fails, candidates are excluded (`POSITION_STATUS_UNKNOWN`). The live adapter
+currently cannot query authenticated open orders/positions and therefore reports
+that limitation as an error rather than pretending the account is flat. A signal
+cannot be published to Redis if the scan is incomplete. IDR Spot pairs require a
+live USDT/IDR ticker; non-IDR local Spot pairs also require live FX because the
+executor receives IDR-normalized order prices. No static or last-known FX fallback
+is allowed. The scanner refuses to start in LIVE mode when Redis is enabled but
+unreachable. Before an emergency spot rollback after a
 hedge error, the
 executor checks the actual futures position via `fetch_positions`: an open (or
 unverifiable) short blocks the rollback and marks the pair
