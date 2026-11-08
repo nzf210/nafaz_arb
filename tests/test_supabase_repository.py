@@ -192,26 +192,39 @@ async def test_execution_failure_is_written_to_risk_and_event_ledgers():
 
 
 @pytest.mark.asyncio
-async def test_transient_server_error_retries_but_schema_error_does_not():
+async def test_transient_server_error_retries_with_same_idempotent_position_id():
     attempts = {"count": 0}
+    bodies = []
 
     def transient_handler(request):
         attempts["count"] += 1
+        bodies.append(request.content)
         if attempts["count"] == 1:
             return httpx.Response(503, text="temporary database failover")
         return httpx.Response(201)
 
     repo, client = _repository(transient_handler, retries=2)
-    event = {"event": "EXECUTION_FAILURE", "reason": "TEST", "timestamp_ms": 1794101000000}
+    event = {
+        "event": "POSITION_OPENED",
+        "position_id": str(uuid.uuid4()),
+        "pair_key": "indodax:btc_idr",
+        "local_exchange": "indodax",
+        "global_exchange": "okx",
+        "symbol": "btc_idr",
+        "qty": 0.01,
+        "is_mock": True,
+    }
     try:
         await repo.persist_event(event)
     finally:
         await client.aclose()
-    assert attempts["count"] == 1  # event POST succeeds only after risk write; no risk table for event? see below
+    assert attempts["count"] == 4
+    assert bodies[0] == bodies[1]
+    assert json.loads(bodies[1])["id"] == event["position_id"]
 
 
 @pytest.mark.asyncio
-async def test_non_retryable_http_error_is_reported():
+async def test_non_retryable_http_error_is_reported_without_retry():
     attempts = {"count": 0}
 
     def handler(request):
@@ -219,9 +232,19 @@ async def test_non_retryable_http_error_is_reported():
         return httpx.Response(400, text="column does not exist")
 
     repo, client = _repository(handler, retries=3)
+    event = {
+        "event": "POSITION_OPENED",
+        "position_id": str(uuid.uuid4()),
+        "pair_key": "indodax:btc_idr",
+        "local_exchange": "indodax",
+        "global_exchange": "okx",
+        "symbol": "btc_idr",
+        "qty": 0.01,
+        "is_mock": True,
+    }
     try:
         with pytest.raises(SupabasePersistenceError, match="HTTP 400"):
-            await repo.persist_event({"event": "POSITION_OPENED", "position_id": "not-a-uuid"})
+            await repo.persist_event(event)
     finally:
         await client.aclose()
-    assert attempts["count"] == 0  # UUID validation fails before HTTP
+    assert attempts["count"] == 1
