@@ -89,3 +89,37 @@ func MatchMarketsWithSynthetic(spot, perp []domain.Market, quotes []string, enab
 }
 
 var ErrLiveAdapterNotConfigured = errors.New("live exchange adapters are not configured in this boilerplate; use MOCK mode")
+
+
+// MatchMarketsForExchanges dynamically creates every valid spot-to-perpetual route
+// for the discovered markets. Exchange allowlists are optional; an empty list
+// means all discovered venues. Matching remains strict on base asset and quote
+// asset, except IDR/BIDR spot markets which may be normalized to USDT perps
+// when synthetic IDR conversion is explicitly enabled.
+func MatchMarketsForExchanges(spot, perp []domain.Market, quotes, spotExchanges, perpExchanges []string, enableSyntheticIDR bool) [][2]domain.Market {
+	filter := func(markets []domain.Market, allowlist []string) []domain.Market {
+		if len(allowlist) == 0 {
+			return markets
+		}
+		allowed := make(map[string]struct{}, len(allowlist))
+		for _, name := range allowlist {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name != "" {
+				allowed[name] = struct{}{}
+			}
+		}
+		filtered := make([]domain.Market, 0, len(markets))
+		for _, market := range markets {
+			if _, ok := allowed[strings.ToLower(strings.TrimSpace(market.Exchange))]; ok {
+				filtered = append(filtered, market)
+			}
+		}
+		return filtered
+	}
+	return MatchMarketsWithSynthetic(
+		filter(spot, spotExchanges),
+		filter(perp, perpExchanges),
+		quotes,
+		enableSyntheticIDR,
+	)
+}

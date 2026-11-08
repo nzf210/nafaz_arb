@@ -97,7 +97,7 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 	// Match direct quote assets and, when enabled, synthesize IDR/BIDR spot
 	// markets against USDT perpetuals. IDR order books are normalized using
 	// the live USDT/IDR ticker inside evaluatePair before spread calculation.
-	pairs := exchange.MatchMarketsWithSynthetic(spot, perp, s.cfg.QuoteAssets, s.cfg.EnableSyntheticIDR)
+	pairs := exchange.MatchMarketsForExchanges(spot, perp, s.cfg.QuoteAssets, s.cfg.SpotExchanges, s.cfg.PerpetualExchanges, s.cfg.EnableSyntheticIDR)
 	if len(s.cfg.ExcludedSymbols) > 0 {
 		pairs = s.filterExcludedSymbols(pairs)
 	}

@@ -95,6 +95,8 @@ type Config struct {
 	FundingSubsidyFloorPct        float64        `json:"funding_subsidy_floor_pct"`
 	LocalPriceTick                float64        `json:"local_price_tick"`
 	GlobalFuturesExchange         string         `json:"global_futures_exchange"`
+	SpotExchanges                 []string       `json:"spot_exchanges,omitempty"`
+	PerpetualExchanges            []string       `json:"perpetual_exchanges,omitempty"`
 	EnableExecutorSignals         bool           `json:"enable_executor_signals"`
 	Telegram                      TelegramConfig `json:"telegram"`
 }
@@ -149,7 +151,8 @@ func (c *Config) setDefaults() {
 	c.SnipingWindowMinutes = defaultInt(c.SnipingWindowMinutes, 30)
 	c.FundingSubsidyFloorPct = defaultFloat(c.FundingSubsidyFloorPct, 0.08)
 	c.LocalPriceTick = defaultFloat(c.LocalPriceTick, 1.0)
-	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "binance")
+	// Empty means discover every enabled perpetual venue. Explicit values preserve legacy single-venue routing.
+	c.GlobalFuturesExchange = strings.ToLower(strings.TrimSpace(c.GlobalFuturesExchange))
 	c.Redis.Addr = defaultString(c.Redis.Addr, "localhost:6380")
 }
 
@@ -346,6 +349,8 @@ func (c *Config) applyEnvOverrides() {
 	setEnvBool(&c.EnableWebSocketFeed, "ENABLE_WEBSOCKET_FEED")
 	setEnvInt(&c.WebSocketBookMaxAgeSeconds, "WEBSOCKET_BOOK_MAX_AGE_SECONDS")
 	setEnvString(&c.GlobalFuturesExchange, "GLOBAL_FUTURES_EXCHANGE")
+	setEnvSlice(&c.SpotExchanges, "SPOT_EXCHANGES")
+	setEnvSlice(&c.PerpetualExchanges, "PERPETUAL_EXCHANGES")
 	setEnvBool(&c.EnableExecutorSignals, "ENABLE_EXECUTOR_SIGNALS")
 	setEnvSlice(&c.ExcludedSymbols, "EXCLUDED_SYMBOLS")
 }

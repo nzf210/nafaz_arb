@@ -10,7 +10,9 @@
     "sniping_window_minutes": 30,
     "funding_subsidy_floor_pct": 0.08,
     "local_price_tick": 1.0,
-    "global_futures_exchange": "okx",
+    "global_futures_exchange": "",
+    "spot_exchanges": ["indodax", "tokocrypto"],
+    "perpetual_exchanges": ["okx", "mexc"],
     "redis": {
         "enabled": false,
         "addr": "localhost:6380",
