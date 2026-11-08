@@ -501,25 +501,33 @@ async def test_entry_revalidation_fails_closed_on_ticker_error(engine, fake_redi
     await pubsub.aclose()
 
 @pytest.mark.asyncio
-async def test_entry_revalidation_disabled_by_zero_floor(engine, fake_redis, mock_client):
-    """Floor 0 in config AND payload: guard off, no ticker re-quote consulted."""
+async def test_entry_revalidation_zero_floor_still_requires_fresh_tickers(engine, fake_redis, mock_client):
+    """A zero profitability floor never disables fresh Spot/Futures quote validation."""
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
     payload = _revalidation_payload(now_ms, min_spread_pct=0.0)
 
-    called = []
-    original = mock_client.fetch_global_ticker
+    global_called = []
+    local_called = []
+    original_global = mock_client.fetch_global_ticker
+    original_local = mock_client.fetch_local_ticker
 
-    async def spy(symbol):
-        called.append(symbol)
-        return await original(symbol)
+    async def global_spy(symbol):
+        global_called.append(symbol)
+        return await original_global(symbol)
 
-    mock_client.fetch_global_ticker = spy
+    async def local_spy(symbol):
+        local_called.append(symbol)
+        return await original_local(symbol)
+
+    mock_client.fetch_global_ticker = global_spy
+    mock_client.fetch_local_ticker = local_spy
 
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
     await engine.handle_signal_notification(pair_tag)
 
-    assert called == []
+    assert global_called == ["BTC_USDT"]
+    assert local_called == ["btc_idr"]
     assert len(mock_client.placed_buys) == 1
 
 @pytest.mark.asyncio
@@ -632,3 +640,34 @@ async def test_spot_order_rejection_emits_failure_event_and_keeps_no_pending_ord
     assert event["pair_tag"] == pair_tag
     await pubsub.unsubscribe(engine.ARB_TRADE_EVENTS)
     await pubsub.aclose()
+
+@pytest.mark.asyncio
+async def test_entry_revalidation_rejects_stale_local_ticker(engine, fake_redis, mock_client):
+    """A fresh Futures quote cannot compensate for stale local Spot pricing."""
+    pair_tag = "indodax:btc_idr"
+    payload = _revalidation_payload(int(time.time() * 1000))
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    async def stale_local(symbol):
+        return {"symbol": symbol, "bid": 1_038_000_000.0, "ask": 1_040_000_000.0,
+                "timestamp": int(time.time() * 1000) - 10_000}
+
+    mock_client.fetch_local_ticker = stale_local
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(mock_client.placed_buys) == 0
+    assert pair_tag not in engine.pending_entry_orders
+
+
+@pytest.mark.asyncio
+async def test_entry_revalidation_rejects_limit_that_crosses_local_ask(engine, fake_redis, mock_client):
+    """A limit price at/above the live Spot ask would take liquidity and is rejected."""
+    pair_tag = "indodax:btc_idr"
+    payload = _revalidation_payload(int(time.time() * 1000))
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+    mock_client.update_market_price("btc_idr", 1_038_500_000.0, 1_038_950_000.0)
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(mock_client.placed_buys) == 0
+    assert pair_tag not in engine.pending_entry_orders
