@@ -70,7 +70,7 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 	return last, nil
 }
 
-// SpotMarkets discovers active spot pairs on Tokocrypto and Indodax (and MEXC Spot if target is mexc/all).
+// SpotMarkets discovers active local Spot pairs on Tokocrypto and Indodax only.
 func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
 	var allMarkets []domain.Market
 	var errs []string
