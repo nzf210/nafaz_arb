@@ -179,3 +179,158 @@ def test_p3_02_client_order_id_is_bounded():
     """Exchange limits are tight; an over-long pair must not blow past 36 chars."""
     oid = build_client_order_id("a" * 60 + ":" + "b" * 60, "force-close", 123456)
     assert len(oid) <= 36
+
+@pytest.mark.asyncio
+async def test_live_ccxt_preflight_resolves_symbols_and_aligns_contract_quantity():
+    from executor.exchange_client import ExchangeClient
+
+    class FakeCCXT:
+        def __init__(self, venue_id, market_id, unified_symbol, market, contract=False):
+            self.id = venue_id
+            self.markets_by_id = {market_id: {"symbol": unified_symbol, **market}}
+            self.markets = {unified_symbol: {"symbol": unified_symbol, **market}}
+            self.contract_precision = contract
+            self.calls = []
+            self.load_calls = []
+            self.leverage_calls = []
+
+        async def load_markets(self, reload=False):
+            self.load_calls.append(reload)
+            return self.markets
+
+        def market(self, symbol):
+            return self.markets[symbol]
+
+        def amount_to_precision(self, symbol, amount):
+            if self.contract_precision:
+                return str(int(float(amount)))
+            return f"{int(float(amount) * 1000) / 1000:.3f}"
+
+        def price_to_precision(self, symbol, price):
+            if self.id == "indodax":
+                return str(int(float(price) / 100) * 100)
+            return f"{float(price):.1f}"
+
+        async def create_limit_buy_order(self, symbol, amount, price, *params):
+            self.calls.append(("spot_buy", symbol, amount, price, params))
+            return {"id": "spot-entry", "status": "open", "amount": amount, "filled": 0.0}
+
+        async def create_market_sell_order(self, symbol, amount, *params):
+            self.calls.append(("perp_open", symbol, amount, params))
+            return {"id": "short", "status": "closed", "amount": amount, "filled": amount, "average": 65_000.0}
+
+        async def create_market_buy_order(self, symbol, amount, params):
+            self.calls.append(("perp_close", symbol, amount, params))
+            return {"id": "close", "status": "closed", "amount": amount, "filled": amount, "average": 64_900.0}
+
+        async def set_leverage(self, leverage, symbol):
+            self.leverage_calls.append((leverage, symbol))
+
+        async def fetch_positions(self, symbols=None):
+            self.calls.append(("fetch_positions", symbols))
+            return [{"symbol": "BTC/USDT:USDT", "contracts": 2.0, "side": "short"}]
+
+        async def fetch_ticker(self, symbol):
+            self.calls.append(("ticker", symbol))
+            return {"symbol": symbol, "bid": 64_990.0, "ask": 65_000.0}
+
+    spot_market = {
+        "active": True, "spot": True, "type": "spot", "quote": "IDR",
+        "limits": {"amount": {"min": 0.001}, "cost": {"min": 10_000.0}},
+    }
+    perp_market = {
+        "active": True, "contract": True, "linear": True, "swap": True,
+        "quote": "USDT", "settle": "USDT", "contractSize": 0.01,
+        "limits": {"amount": {"min": 1.0}, "cost": {"min": 10.0}},
+    }
+    spot = FakeCCXT("indodax", "btcidr", "BTC/IDR", spot_market)
+    perp = FakeCCXT("okx", "BTC-USDT-SWAP", "BTC/USDT:USDT", perp_market, contract=True)
+    client = ExchangeClient(
+        spot, perp,
+        local_default_name="indodax",
+        global_default_name="okx",
+    )
+
+    amount, price_idr = await client.validate_entry_order(
+        local_symbol="btcidr",
+        global_symbol="BTC-USDT-SWAP",
+        amount=0.023,
+        price_idr=1_000_050.0,
+        usdt_idr_rate=16_000.0,
+        global_ask_quote=65_000.0,
+        local_exchange="indodax",
+        global_exchange="okx",
+    )
+    assert amount == pytest.approx(0.02), "Spot size must be reduced to an exact Futures contract multiple"
+    assert price_idr == pytest.approx(1_000_000.0), "buy limit precision must round down"
+    assert spot.load_calls[0] is True and perp.load_calls[0] is True, "preflight must refresh both market catalogs"
+
+    spot_order = await client.place_local_limit_buy(
+        "btcidr", amount, price_idr, client_order_id="entry-1", usdt_idr_rate=16_000.0
+    )
+    assert spot_order["id"] == "spot-entry"
+    assert spot.calls[-1][1:4] == ("BTC/IDR", 0.02, 1_000_000.0)
+
+    short = await client.open_global_short_market(
+        "BTC-USDT-SWAP", amount, price=65_000.0, client_order_id="hedge-1"
+    )
+    assert short["filled"] == pytest.approx(0.02)
+    assert short["filled_contracts"] == pytest.approx(2.0)
+    assert perp.calls[-1][0:3] == ("perp_open", "BTC/USDT:USDT", 2.0)
+    assert perp.leverage_calls == [(1, "BTC/USDT:USDT")]
+
+    closed = await client.close_global_short_market("BTC-USDT-SWAP", amount, client_order_id="close-1")
+    assert closed["filled"] == pytest.approx(0.02)
+    assert perp.calls[-1][0:3] == ("perp_close", "BTC/USDT:USDT", 2.0)
+    assert perp.calls[-1][3]["reduceOnly"] is True
+
+    positions = await client.fetch_positions("BTC-USDT-SWAP")
+    assert positions[0]["contracts_contracts"] == pytest.approx(2.0)
+    assert positions[0]["contracts"] == pytest.approx(0.02), "position quantities exposed to engine must be base units"
+
+
+@pytest.mark.asyncio
+async def test_live_ccxt_preflight_fails_closed_when_market_or_minimum_is_unknown():
+    from executor.exchange_client import ExchangeClient
+
+    class MinimalVenue:
+        def __init__(self, venue_id, market_id, symbol, market, contract=False):
+            self.id = venue_id
+            self.markets_by_id = {market_id: {"symbol": symbol, **market}}
+            self.markets = {symbol: {"symbol": symbol, **market}}
+            self.contract = contract
+
+        async def load_markets(self, reload=False):
+            return self.markets
+
+        def market(self, symbol):
+            return self.markets[symbol]
+
+        def amount_to_precision(self, symbol, amount):
+            return str(int(amount)) if self.contract else str(amount)
+
+        def price_to_precision(self, symbol, price):
+            return str(price)
+
+    spot_market = {
+        "active": False, "spot": True, "type": "spot", "quote": "IDR",
+        "limits": {"amount": {"min": 0.001}, "cost": {"min": 10_000.0}},
+    }
+    perp_market = {
+        "active": True, "contract": True, "linear": True, "swap": True,
+        "quote": "USDT", "settle": "USDT", "contractSize": 0.01,
+        "limits": {"amount": {"min": 1.0}, "cost": {"min": 10.0}},
+    }
+    spot = MinimalVenue("indodax", "btcidr", "BTC/IDR", spot_market)
+    perp = MinimalVenue("okx", "BTC-USDT-SWAP", "BTC/USDT:USDT", perp_market, contract=True)
+    client = ExchangeClient(spot, perp, local_default_name="indodax", global_default_name="okx")
+
+    with pytest.raises(ValueError, match="not confirmed active"):
+        await client.validate_entry_order("btcidr", "BTC-USDT-SWAP", 0.02, 1_000_000.0, 16_000.0, 65_000.0)
+
+    spot.markets["BTC/IDR"]["active"] = True
+    spot.markets_by_id["btcidr"]["active"] = True
+    spot.markets["BTC/IDR"]["limits"]["cost"]["min"] = None
+    spot.markets_by_id["btcidr"]["limits"]["cost"]["min"] = None
+    with pytest.raises(ValueError, match="no verified cost.min"):
+        await client.validate_entry_order("btcidr", "BTC-USDT-SWAP", 0.02, 1_000_000.0, 16_000.0, 65_000.0)
