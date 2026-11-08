@@ -44,3 +44,4 @@ graphify-out/
 
 # Operating System files
 .DS_Store
+session-files/
