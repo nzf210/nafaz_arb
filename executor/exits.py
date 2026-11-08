@@ -199,21 +199,25 @@ class ExitMixin:
                 1.0 + (effective_exit_spread_pct / 100.0)
             )
 
-            # 2. Strict Mathematical Break-Even & Profit Floor Protection:
-            # We enforce: Realized Net Profit >= min_profit_target (> 0)
-            # Net Profit = Spot_PnL + Futures_PnL + Funding - Fees
-            # Futures PnL = Qty * (short_entry_usdt - global_ask_usdt)
-            # Fees = Qty * (short_entry_usdt + global_ask_usdt) * fee_rate (covers both legs)
-            fee_rate = 0.0010
-            est_fees_usdt = (pos.qty * (pos.short_entry_usdt + global_ask_usdt)) * fee_rate
-            futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - global_ask_usdt)
+            # 2. Combined two-leg profit floor. Use one fee convention everywhere:
+            # estimated_round_trip_fee_pct is the fee reserve for both legs and
+            # the complete round trip, expressed as a fraction of position notional.
+            capital_usdt = pos.qty * pos.short_entry_usdt
+            fee_pct = float(getattr(self.config, "estimated_round_trip_fee_pct", 0.001) or 0.0)
+            est_fees_usdt = capital_usdt * fee_pct
+
+            # Closing the short is a market BUY at the futures ask. Add an adverse
+            # movement allowance so the spot limit is not priced against a perfect
+            # top-of-book fill.
+            exit_slippage_pct = float(getattr(self.config, "max_exit_slippage_pct", 0.003) or 0.0)
+            risk_adjusted_global_ask = global_ask_usdt * (1.0 + exit_slippage_pct)
+            futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - risk_adjusted_global_ask)
 
             # Buffer min ROI: at least +0.05% net ROI or 25% of base target exit spread
             min_roi_pct = max(0.05, pos.base_target_exit_spread_pct * 0.25)
-            capital_usdt = pos.qty * pos.short_entry_usdt
             min_profit_target_usdt = capital_usdt * (min_roi_pct / 100.0)
 
-            # Required Spot PnL in USDT to guarantee positive closed PnL
+            # Required spot PnL covers the conservative futures buyback, fees and funding.
             required_spot_pnl_usdt = (
                 min_profit_target_usdt
                 + est_fees_usdt
@@ -345,7 +349,9 @@ class ExitMixin:
                 spot_pnl_idr = pos.qty * (local_best_bid - pos.entry_price_idr)
                 spot_pnl_usdt = spot_pnl_idr / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
                 futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - global_ask_usdt)
-                est_fees_usdt = (pos.qty * (pos.short_entry_usdt + global_ask_usdt)) * 0.0005
+                capital_usdt = pos.qty * pos.short_entry_usdt
+                fee_pct = float(getattr(self.config, "estimated_round_trip_fee_pct", 0.001) or 0.0)
+                est_fees_usdt = capital_usdt * fee_pct
                 net_unrealized_usdt = (
                     spot_pnl_usdt + futures_pnl_usdt + pos.accumulated_funding_usdt - est_fees_usdt
                 )
@@ -480,7 +486,7 @@ class ExitMixin:
                 )
 
             if unclosed_delta > 0:
-                await self._execute_exit_fill(pair_tag, order_info, pos, unclosed_delta)
+                await self._execute_exit_fill(pair_tag, order_info, pos, unclosed_delta, order)
 
         async def _execute_exit_fill(
             self,
@@ -488,9 +494,38 @@ class ExitMixin:
             order_info: dict,
             pos: ActivePosition,
             unclosed_delta: float,
+            spot_order: Optional[dict] = None,
         ) -> None:
-            """Close global short via market buy and update position state."""
+            """Close global short via market buy and update position state.
+
+            Prefer exchange cumulative fill cost/average over the submitted limit
+            price. The limit is a conservative fallback when metadata is absent.
+            """
             exit_price_idr = float(order_info.get("price", 0.0))
+            if isinstance(spot_order, dict):
+                prior_cost = float(order_info.get("closed_spot_cost_idr", 0.0) or 0.0)
+                cumulative_cost = spot_order.get("cost")
+                if cumulative_cost is None and spot_order.get("average") is not None:
+                    try:
+                        cumulative_cost = float(spot_order["average"]) * float(spot_order.get("filled") or 0.0)
+                    except (TypeError, ValueError):
+                        cumulative_cost = None
+                if cumulative_cost is not None:
+                    try:
+                        incremental_cost = float(cumulative_cost) - prior_cost
+                        if incremental_cost > 0 and unclosed_delta > 0:
+                            exit_price_idr = incremental_cost / unclosed_delta
+                    except (TypeError, ValueError):
+                        pass
+                elif spot_order.get("price") is not None:
+                    try:
+                        candidate = float(spot_order["price"])
+                        if candidate > 0 and math.isfinite(candidate):
+                            exit_price_idr = candidate
+                    except (TypeError, ValueError):
+                        pass
+            if exit_price_idr <= 0 or not math.isfinite(exit_price_idr):
+                raise ValueError("spot exit fill price unavailable; refusing to report fabricated PnL")
             entry_price_idr = float(pos.entry_price_idr)
             short_entry_usdt = float(pos.short_entry_usdt)
 
@@ -591,8 +626,18 @@ class ExitMixin:
                 funding_usdt = float(pos.accumulated_funding_usdt) * fill_ratio
                 pos.accumulated_funding_usdt -= funding_usdt
 
-                fees_usdt = (unclosed_delta * (short_entry_usdt + short_exit_usdt)) * 0.0005
+                # Entry commissions are not persisted per fill. Apply the same
+                # conservative round-trip reserve used by the profit-floor calculation.
+                fee_pct = float(getattr(self.config, "estimated_round_trip_fee_pct", 0.001) or 0.0)
+                capital_usdt = unclosed_delta * short_entry_usdt
+                fees_usdt = capital_usdt * fee_pct
                 net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
+                if isinstance(spot_order, dict):
+                    cumulative_cost = spot_order.get("cost")
+                    if cumulative_cost is None and spot_order.get("average") is not None:
+                        cumulative_cost = float(spot_order["average"]) * float(spot_order.get("filled") or 0.0)
+                    if cumulative_cost is not None:
+                        order_info["closed_spot_cost_idr"] = float(cumulative_cost)
                 net_profit_idr = net_profit_usdt * usdt_rate
 
                 capital_usdt = unclosed_delta * short_entry_usdt
