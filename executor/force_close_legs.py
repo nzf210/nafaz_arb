@@ -120,12 +120,13 @@ class ForceCloseLegsMixin:
         if raw_size is None:
             logger.critical("[Force Close] retry position size unavailable for %s", pair_key)
             return False, 0.0
-        size = self._parse_retry_position_size(raw_size, contract_size)
-        if size is None:
+        signed_size = self._parse_retry_position_size(raw_size, contract_size)
+        if signed_size is None:
             return False, 0.0
+        size = abs(signed_size)
         if size <= 1e-12:
             return True, 0.0
-        if not self._is_verified_short_side(side, uses_contracts, size, pair_key):
+        if not self._is_verified_short_side(side, uses_contracts, signed_size, pair_key):
             return False, 0.0
         multiplier = contract_size if uses_contracts else 1.0
         return True, size * multiplier
@@ -141,24 +142,27 @@ class ForceCloseLegsMixin:
         ).lower()
         contracts = position.get("contracts")
         raw_size = contracts if contracts is not None else position.get("positionAmt", info.get("positionAmt"))
-        contract_size = float(position.get("contractSize") or 1.0)
+        try:
+            contract_size = float(position.get("contractSize") or 1.0)
+        except (TypeError, ValueError):
+            return None
         return side, raw_size, contracts is not None, contract_size
 
     @staticmethod
     def _parse_retry_position_size(raw_size, contract_size: float):
         try:
-            size = abs(float(raw_size))
+            size = float(raw_size)
         except (TypeError, ValueError):
             return None
         if not math.isfinite(size) or not math.isfinite(contract_size) or contract_size <= 0:
             return None
         return size
 
-    def _is_verified_short_side(self, side: str, uses_contracts: bool, size: float, pair_key: str) -> bool:
+    def _is_verified_short_side(self, side: str, uses_contracts: bool, signed_size: float, pair_key: str) -> bool:
         if side and side != "short":
             logger.critical("[Force Close] refusing retry for %s: unexpected futures side=%s", pair_key, side)
             return False
-        if not side and (uses_contracts or size >= 0):
+        if not side and (uses_contracts or signed_size >= 0):
             logger.critical("[Force Close] refusing retry for %s: position side cannot be verified", pair_key)
             return False
         return True
