@@ -318,10 +318,10 @@ func (l *LiveAdapter) okxDo(ctx context.Context, path string, build func() (*htt
 		rctx, cancel := context.WithTimeout(ctx, okxRequestTimeout)
 		resp, err := l.client.Do(req.WithContext(rctx))
 		latency := time.Since(started)
-		cancel()
 		l.okxLimiter.release()
 
 		if err != nil {
+			cancel()
 			outcome := "failed"
 			if isTimeout(err) {
 				outcome = "timeout"
@@ -337,7 +337,25 @@ func (l *LiveAdapter) okxDo(ctx context.Context, path string, build func() (*htt
 			continue
 		}
 
-		if rateLimited, retryAfter := inspectOKXResponse(resp); rateLimited {
+		// Buffer the body BEFORE cancel: cancelling the request context kills
+		// the response body's underlying connection, so reading after cancel
+		// fails with "read on closed response body". The returned response
+		// therefore carries a fully buffered body, safe to outlive rctx.
+		limited, retryAfter, bodyErr := inspectOKXResponse(resp)
+		cancel()
+		if bodyErr != nil {
+			l.okxLimiter.metrics.record(class, "failed", latency)
+			lastErr = bodyErr
+			if ctx.Err() != nil || !retryableTransportErr(bodyErr) {
+				return nil, bodyErr
+			}
+			if !l.sleepBackoff(ctx, attempt, 0) {
+				return nil, lastErr
+			}
+			continue
+		}
+
+		if limited {
 			l.okxLimiter.metrics.record(class, "rate_limited", latency)
 			lastErr = &okxRateLimitError{retryAfter: retryAfter}
 			if !l.sleepBackoff(ctx, attempt, retryAfter) {
@@ -356,32 +374,33 @@ func (l *LiveAdapter) okxDo(ctx context.Context, path string, build func() (*htt
 	return nil, lastErr
 }
 
-// inspectOKXResponse classifies a response as rate-limited. On a 429 it drains
-// and closes the body; when the body is kept it is buffered so the caller's
-// decoder still sees the full payload.
-func inspectOKXResponse(resp *http.Response) (bool, time.Duration) {
+// inspectOKXResponse classifies a response as rate-limited. It must run while
+// the request context is still alive: it drains the body on 429 and otherwise
+// buffers the full body (OKX instruments responses are ~600KB; a truncated
+// buffer corrupts the caller's JSON decode) so the returned response stays
+// readable after the caller's context is cancelled. Returns a body error when
+// the payload could not be read.
+func inspectOKXResponse(resp *http.Response) (bool, time.Duration, error) {
 	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
 	if resp.StatusCode == http.StatusTooManyRequests {
 		closeBody(resp)
-		return true, retryAfter
+		return true, retryAfter, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return false, 0
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return false, 0, nil
 	}
-	// Read the full body: OKX instruments responses are ~600KB, and a capped
-	// buffer would truncate the payload and corrupt the caller's JSON decode.
-	// On read failure keep the original body so the caller's deferred Close
-	// still works; the caller will surface the decode error.
-	body, readErr := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if readErr != nil {
-		return false, 0
+	if err != nil {
+		return false, 0, err
 	}
 	resp.Body = io.NopCloser(strings.NewReader(string(body)))
 	if strings.Contains(string(body), `"`+okxErrorRateLimitCode+`"`) {
-		return true, retryAfter
+		return true, retryAfter, nil
 	}
-	return false, 0
+	return false, 0, nil
 }
 
 // sleepBackoff waits before the next attempt and reports whether to continue.

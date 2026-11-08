@@ -345,7 +345,10 @@ func TestInspectOKXResponseLargeBodyPreserved(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 
-	limited, _ := inspectOKXResponse(resp)
+	limited, _, err := inspectOKXResponse(resp)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
 	if limited {
 		t.Fatal("large non-limited body must not be classified as rate limited")
 	}
@@ -363,4 +366,39 @@ func TestInspectOKXResponseLargeBodyPreserved(t *testing.T) {
 		t.Fatalf("truncated decode: code=%q data=%d", decoded.Code, len(decoded.Data))
 	}
 	resp.Body.Close()
+}
+
+// Regression: the request context was cancelled before the body was buffered,
+// killing the connection under the response body. Large payloads (~600KB
+// instruments list) then failed with "read on closed response body" or decoded
+// as truncated JSON, degrading every scan.
+func TestOKXDoBodyReadableAfterContextCancel(t *testing.T) {
+	payload := `{"code":"0","data":[` + strings.Repeat(`{"instId":"BTC-USDT-SWAP"},`, 30000) + `{"instId":"ETH-USDT-SWAP"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(payload))
+	}))
+	defer server.Close()
+
+	l := newLimiterTestAdapter(server.URL, OKXLimiterConfig{DefaultRatePer2s: 100, MaxConcurrent: 3})
+
+	resp, err := l.okxDo(context.Background(), "/api/v5/public/instruments", func() (*http.Request, error) {
+		return l.newOKXRequest(context.Background(), "/api/v5/public/instruments")
+	})
+	if err != nil {
+		t.Fatalf("okxDo: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var decoded struct {
+		Code string `json:"code"`
+		Data []struct {
+			InstID string `json:"instId"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode after okxDo returned: %v", err)
+	}
+	if decoded.Code != "0" || len(decoded.Data) != 30001 {
+		t.Fatalf("truncated payload: code=%q data=%d", decoded.Code, len(decoded.Data))
+	}
 }
