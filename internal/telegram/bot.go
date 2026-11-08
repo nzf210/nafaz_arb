@@ -183,8 +183,9 @@ func (b *Bot) Start(ctx context.Context) error {
 		log.Printf("warning: telegram setMyCommands: %v", err)
 	}
 
-	// Register scanner notification hook for group alerts
-	if b.cfg.Telegram.AlertOnNew && b.cfg.Telegram.ChatID != 0 {
+	// Register for scan results and failures. FX preflight failures are safety
+	// alerts even when opportunity or periodic summary alerts are disabled.
+	if len(b.notificationChatIDs()) > 0 {
 		b.server.RegisterScanHook(func(r domain.ScanResult) {
 			b.onScanCompleted(ctx, r)
 		})
@@ -432,30 +433,83 @@ func (b *Bot) sendReplyWithMarkup(ctx context.Context, chatID int64, replyToID i
 	}
 }
 
-func (b *Bot) onScanCompleted(_ context.Context, r domain.ScanResult) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+func (b *Bot) notificationChatIDs() []int64 {
+	if b.cfg.Telegram.ChatID != 0 {
+		return []int64{b.cfg.Telegram.ChatID}
+	}
+	return append([]int64(nil), b.cfg.Telegram.AllowedChatIDs...)
+}
 
-	now := time.Now().UTC()
-	if !b.mutedUntil.IsZero() && now.Before(b.mutedUntil) {
+func isFXScanFailure(r domain.ScanResult) bool {
+	for _, scanError := range r.Errors {
+		message := strings.ToLower(scanError)
+		if strings.Contains(message, "fx preflight") ||
+			strings.Contains(message, "usdt/idr live ticker unavailable") ||
+			strings.Contains(message, "fx rate sanity") {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Bot) onScanCompleted(_ context.Context, r domain.ScanResult) {
+	chatIDs := b.notificationChatIDs()
+	if len(chatIDs) == 0 {
 		return
 	}
+
+	now := time.Now().UTC()
+	var messages []string
+	b.mu.Lock()
+	if !b.mutedUntil.IsZero() && now.Before(b.mutedUntil) {
+		b.mu.Unlock()
+		return
+	}
+
 	cooldown := time.Duration(b.cfg.Telegram.AlertCooldownMinutes) * time.Minute
 	if cooldown <= 0 {
 		cooldown = 15 * time.Minute
 	}
-	for _, op := range r.Opportunities {
-		if !op.TradingEligible ||
-			op.NetROIPct < b.cfg.Telegram.AlertMinNetROIPct ||
-			op.NetProfit < b.cfg.Telegram.AlertMinNetProfitQuote {
-			continue
-		}
 
-		lastAlert, exists := b.alertedKeys[op.OpportunityKey]
+	if isFXScanFailure(r) {
+		// FX failures are immediate safety alerts, independent of the optional
+		// periodic scan-summary setting.
+		key := "scan-failure:fx"
+		lastAlert, exists := b.alertedKeys[key]
+		if !exists || now.Sub(lastAlert) >= 2*time.Minute {
+			b.alertedKeys[key] = now
+			messages = append(messages, b.formatScanSummary(r))
+		}
+	} else if b.cfg.Telegram.AlertOnScanSummary {
+		key := "scan-summary"
+		lastAlert, exists := b.alertedKeys[key]
 		if !exists || now.Sub(lastAlert) >= cooldown {
-			b.alertedKeys[op.OpportunityKey] = now
-			alertMsg := b.formatOpportunityAlert(op)
-			go b.sendReplyWithMarkup(context.Background(), b.cfg.Telegram.ChatID, 0, alertMsg, b.alertKeyboard(op.BaseAsset))
+			b.alertedKeys[key] = now
+			messages = append(messages, b.formatScanSummary(r))
+		}
+	}
+
+	// Never alert on opportunities from a failed or incomplete scan.
+	if r.Complete && b.cfg.Telegram.AlertOnNew {
+		for _, op := range r.Opportunities {
+			if !op.TradingEligible ||
+				op.NetROIPct < b.cfg.Telegram.AlertMinNetROIPct ||
+				op.NetProfit < b.cfg.Telegram.AlertMinNetProfitQuote {
+				continue
+			}
+
+			lastAlert, exists := b.alertedKeys[op.OpportunityKey]
+			if !exists || now.Sub(lastAlert) >= cooldown {
+				b.alertedKeys[op.OpportunityKey] = now
+				messages = append(messages, b.formatOpportunityAlert(op))
+			}
+		}
+	}
+	b.mu.Unlock()
+
+	for _, message := range messages {
+		for _, chatID := range chatIDs {
+			go b.sendReplyWithMarkup(context.Background(), chatID, 0, message, b.defaultKeyboard())
 		}
 	}
 }
