@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -581,12 +582,10 @@ func TestAdaptivePositionSizing(t *testing.T) {
 
 type syntheticMockAdapter struct {
 	exchange.MockAdapter
-	idrRate   float64
-	rateCalls int
+	idrRate float64
 }
 
 func (s *syntheticMockAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
-	s.rateCalls++
 	return s.idrRate, nil
 }
 
@@ -632,27 +631,59 @@ func (s *syntheticMockAdapter) OpenExposures(ctx context.Context) ([]domain.Open
 	return nil, nil
 }
 
-func TestIDRMarketsNeverEnterConfiguredQuoteUniverse(t *testing.T) {
+func TestSyntheticIDRArbitrage(t *testing.T) {
 	adapter := &syntheticMockAdapter{idrRate: 16000.0}
+
 	cfg := config.Config{
-		Mode:                 "LIVE",
-		QuoteAssets:          []string{"USDT", "USDC"},
-		EnableSyntheticIDR:   true, // legacy config must not override the quote allowlist
-		SyntheticUSDTIDRRate: 16000.0,
-		CapitalTotal:         1000,
-		AllocationPerPair:    0.5,
-		PerpLeverage:         1,
+		Mode:                  "MOCK",
+		ExecutionMode:         "MAKER_TAKER",
+		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR:    true,
+		SyntheticUSDTIDRRate:  16000.0,
+		CapitalTotal:          1000,
+		AllocationPerPair:     0.5,
+		PerpLeverage:          1,
+		EstimatedHoldingHours: 8,
+		MinNetROIPct:          0.1,
+		MaxNetROIPct:          20.0,
+		MaxSlippagePct:        5.0,
+		CheckOpenPositions:    false,
 	}
+
 	s := New(cfg, adapter)
 	r, complete, err := s.Scan(context.Background())
 	if err != nil || !complete {
-		t.Fatalf("USDT/USDC-only scan must complete without IDR FX, err=%v complete=%v", err, complete)
+		t.Fatalf("scan error: %v, complete=%v", err, complete)
 	}
-	if r.MatchedPairs != 0 || len(r.Opportunities) != 0 {
-		t.Fatalf("IDR spot market must not be synthesized into the scan universe: matched=%d opportunities=%d", r.MatchedPairs, len(r.Opportunities))
+	if len(r.Opportunities) != 1 {
+		t.Fatalf("expected 1 synthetic opportunity, got %d", len(r.Opportunities))
 	}
-	if adapter.rateCalls != 0 {
-		t.Fatalf("IDR FX ticker must not be requested for a USDT/USDC-only scan, calls=%d", adapter.rateCalls)
+
+	op := r.Opportunities[0]
+	if !op.IsSynthetic {
+		t.Errorf("expected IsSynthetic=true")
+	}
+	if op.SyntheticFXRate != 16000.0 {
+		t.Errorf("SyntheticFXRate = %f, want 16000.0", op.SyntheticFXRate)
+	}
+	if op.OriginalSpotQuote != "IDR" {
+		t.Errorf("OriginalSpotQuote = %s, want IDR", op.OriginalSpotQuote)
+	}
+	if op.QuoteAsset != "USDT" {
+		t.Errorf("QuoteAsset = %s, want USDT", op.QuoteAsset)
+	}
+	// In Maker-Taker mode, Spot target price is (2,400,000 + 1 tick) / 16,000 = ~150.0000625
+	if op.SpotEntryPrice < 150.0 || op.SpotEntryPrice > 150.01 {
+		t.Errorf("SpotEntryPrice = %f, want ~150.00006", op.SpotEntryPrice)
+	}
+	if op.TargetLimitBuyIDR != 2400001.0 {
+		t.Errorf("TargetLimitBuyIDR = %f, want 2400001.0", op.TargetLimitBuyIDR)
+	}
+	if op.PerpEntryPrice != 160.0 {
+		t.Errorf("PerpEntryPrice = %f, want 160.0", op.PerpEntryPrice)
+	}
+	if op.SpreadPnL <= 0 {
+		t.Errorf("expected positive SpreadPnL, got %f", op.SpreadPnL)
 	}
 }
 
@@ -794,49 +825,39 @@ func (f *failingFXAdapter) FundingRate(ctx context.Context, symbol string) (doma
 	return domain.FundingRate{Rate: 0.0002, IntervalHours: 8, Timestamp: time.Now().UTC()}, nil
 }
 
-// TestFXFailureCannotAbortUSDTUSDCScan verifies that legacy IDR markets are
-// excluded by the configured quote allowlist before any FX preflight is considered.
-func TestFXFailureCannotAbortUSDTUSDCScan(t *testing.T) {
+// TestFXFallbackExcludesPair verifies that a pair priced from a fallback FX rate
+// is never published for trading: IDR pairs must be skipped entirely when the
+// live USDT/IDR ticker is unavailable, since no hardcoded or synthetic rate is
+// ever acceptable for IDR spread math.
+func TestFXFallbackExcludesPair(t *testing.T) {
 	cfg := config.Config{
-		Mode:                 "LIVE",
-		QuoteAssets:          []string{"USDT", "USDC"},
-		EnableSyntheticIDR:   true,
-		SyntheticUSDTIDRRate: 16000.0,
-		CapitalTotal:         1000,
-		AllocationPerPair:    0.5,
-		PerpLeverage:         1,
+		Mode: "MOCK", ExecutionMode: "MAKER_TAKER", QuoteAssets: []string{"USDT"},
+		EnableSyntheticIDR: true, SyntheticUSDTIDRRate: 16000.0,
+		CapitalTotal: 1000, AllocationPerPair: 0.5, PerpLeverage: 1,
 	}
 	s := New(cfg, &failingFXAdapter{})
 	r, complete, err := s.Scan(context.Background())
 	if err != nil || !complete {
-		t.Fatalf("scan must complete when only an excluded IDR market is present, err=%v complete=%v", err, complete)
+		t.Fatalf("FX failure for an IDR pair must not abort the scan, err=%v complete=%v", err, complete)
 	}
-	if r.MatchedPairs != 0 || len(r.Opportunities) != 0 {
-		t.Fatalf("IDR/BIDR pair unexpectedly entered scan universe: matched=%d opportunities=%d", r.MatchedPairs, len(r.Opportunities))
-	}
-	if len(r.Errors) != 0 {
-		t.Fatalf("excluded IDR market must not create scan errors: %v", r.Errors)
+	if r.FailedPairs != 1 || len(r.Errors) == 0 || !strings.Contains(r.Errors[0], "USDT/IDR live ticker unavailable") {
+		t.Fatalf("expected visible pair-level FX error, failed=%d errors=%v", r.FailedPairs, r.Errors)
 	}
 }
 
-func TestInvalidIDRFXCannotAffectUSDTUSDCScan(t *testing.T) {
+func TestFXPreflightRejectsNonFiniteRate(t *testing.T) {
 	cfg := config.Config{
-		Mode:                 "LIVE",
-		QuoteAssets:          []string{"USDT", "USDC"},
-		EnableSyntheticIDR:   true,
-		SyntheticUSDTIDRRate: 16000,
-		CapitalTotal:         1000,
-		AllocationPerPair:    0.5,
-		PerpLeverage:         1,
+		Mode: "MOCK", QuoteAssets: []string{"USDT"}, EnableSyntheticIDR: true,
+		SyntheticUSDTIDRRate: 16000, CapitalTotal: 1000, AllocationPerPair: 0.5, PerpLeverage: 1,
 	}
 	adapter := &syntheticMockAdapter{idrRate: math.NaN()}
 	s := New(cfg, adapter)
 	r, complete, err := s.Scan(context.Background())
 	if err != nil || !complete {
-		t.Fatalf("non-finite IDR FX must not abort USDT/USDC scan, err=%v complete=%v", err, complete)
+		t.Fatalf("invalid FX must skip only the IDR pair, err=%v complete=%v", err, complete)
 	}
-	if adapter.rateCalls != 0 || r.MatchedPairs != 0 {
-		t.Fatalf("IDR FX should be unused and IDR market excluded: rate_calls=%d matched=%d", adapter.rateCalls, r.MatchedPairs)
+	if r.FailedPairs != 1 || len(r.Errors) == 0 || !strings.Contains(r.Errors[0], "USDT/IDR live ticker unavailable") {
+		t.Fatalf("expected visible pair-level invalid-FX error, failed=%d errors=%v", r.FailedPairs, r.Errors)
 	}
 }
 
