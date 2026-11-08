@@ -127,7 +127,11 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 		fxRate = s.lastKnownFXRate()
 	}
 	requiredNotional := s.requiredNotionalUsdt()
-	op, err := s.calculate(sm, pm, sb, pb, fr, started, positionReason, isSynthetic, fxRate, requiredNotional)
+	// Books were fetched seconds into the scan; age and settlement math must
+	// be measured against the moment the data was observed, not the scan
+	// start, or slow scans fail every pair with a bogus future timestamp.
+	observedAt := time.Now().UTC()
+	op, err := s.calculate(sm, pm, sb, pb, fr, observedAt, positionReason, isSynthetic, fxRate, requiredNotional)
 	if err != nil {
 		if strings.Contains(err.Error(), "empty order book") {
 			s.recordEmptyBook(pairKey, started)
