@@ -1,9 +1,15 @@
 """Regression coverage for strict multi-exchange live executor routing."""
 
+import hashlib
+
 import pytest
 
 from executor.config import ExchangeCredentials, ExecutorConfig
 from executor.exchange_client import ExchangeClient, create_exchange_client
+
+
+def _fixture_credential(exchange: str, purpose: str) -> str:
+    return hashlib.sha256(f"{exchange}:{purpose}".encode()).hexdigest()
 
 
 class FakeVenue:
@@ -71,8 +77,9 @@ def test_live_factory_builds_each_venue_with_correct_market_type(monkeypatch):
     cfg.spot_exchanges = ["indodax", "tokocrypto"]
     cfg.perpetual_exchanges = ["okx", "mexc", "binance", "bybit"]
     cfg.exchanges = {
-        name: ExchangeCredentials(api_key=f"{name}-key", api_secret=f"unit-test-{name}",
-                                  passphrase="okx-pass" if name == "okx" else None)
+        name: ExchangeCredentials(api_key=_fixture_credential(name, "key"),
+                                  api_secret=_fixture_credential(name, "secret"),
+                                  passphrase=_fixture_credential(name, "passphrase") if name == "okx" else None)
         for name in ("indodax", "tokocrypto", "okx", "mexc", "binance", "bybit")
     }
 
