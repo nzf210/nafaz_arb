@@ -71,3 +71,38 @@ begin
         raise exception 'trade currency / FX audit columns are missing';
     end if;
 end $$;
+
+do $$
+begin
+    if not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'closed_trades'
+          and column_name = 'gross_pnl'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'closed_trades'
+          and column_name = 'estimated_fees'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'closed_trades'
+          and column_name = 'estimated_net_pnl'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'closed_trades'
+          and column_name = 'realized_pnl'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'closed_trades'
+          and column_name = 'pnl_status'
+    ) then
+        raise exception 'explicit gross/estimated/reconciled PnL columns are missing';
+    end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conname = 'closed_trades_pnl_status_check'
+          and conrelid = 'public.closed_trades'::regclass
+    ) then
+        raise exception 'closed_trades PnL status constraint is missing';
+    end if;
+end $$;
