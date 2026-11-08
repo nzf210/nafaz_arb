@@ -663,3 +663,11 @@ required hedge, rollback, or force close.
       partial futures hedge/close, funding settlement replay, and force close.
 - [ ] Live mode remains disabled until exchange-specific order/funding/position
       payloads are verified against the actual target venues.
+
+---
+
+## Comprehensive Phase 1 gap audit — 2026-11-08
+
+The previous phase checklists describe historical implementation work and are not a live-readiness certification. The current repository/PR review, evidence matrix, changes made, and remaining blockers are documented in [PHASE1-GAP-AUDIT.md](./PHASE1-GAP-AUDIT.md).
+
+**Current release status: NOT READY FOR LIVE TRADING.** In particular, authenticated open-order/position inspection and exchange-specific order-constraint preflight remain incomplete; PR #6 for Binance/Bybit is not yet integrated into `main`.
