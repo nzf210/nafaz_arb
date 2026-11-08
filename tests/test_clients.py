@@ -232,7 +232,9 @@ async def test_live_ccxt_preflight_resolves_symbols_and_aligns_contract_quantity
 
         async def fetch_ticker(self, symbol):
             self.calls.append(("ticker", symbol))
-            return {"symbol": symbol, "bid": 64_990.0, "ask": 65_000.0}
+            if self.id == "indodax":
+                return {"symbol": symbol, "bid": 1_039_000.0, "ask": 1_040_000.0, "timestamp": int(time.time() * 1000)}
+            return {"symbol": symbol, "bid": 64_990.0, "ask": 65_000.0, "timestamp": int(time.time() * 1000)}
 
     spot_market = {
         "active": True, "spot": True, "type": "spot", "quote": "IDR",
