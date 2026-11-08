@@ -355,17 +355,23 @@ class ForceCloseLegsMixin:
         }
 
     async def _record_force_close_trade(
-        self,
-        pair_key: str,
-        pos,
-        pnl: dict,
-        current_ask: float,
-        current_spot_bid: float,
-        spot_sell_failed: bool,
-        usdt_rate: float,
+        self, pair_key: str, pos, pnl: dict, current_ask: float,
+        current_spot_bid: float, spot_sell_failed: bool, usdt_rate: float,
     ):
-        """Persists the closed trade, settles balances, and updates stats/events."""
-        closed_trade = {
+        closed_trade = self._build_force_close_trade_record(
+            pos, pnl, current_ask, current_spot_bid, spot_sell_failed
+        )
+        await self.redis.lpush(ARB_TRADE_HISTORY_KEY, json.dumps(closed_trade))
+        await self.redis.ltrim(ARB_TRADE_HISTORY_KEY, 0, ARB_TRADE_HISTORY_MAX_LEN)
+        self.supabase.trade_closed(pair_key, closed_trade, pos)
+        await self._settle_force_close_balances(pair_key, pos, pnl, usdt_rate)
+        await self._publish_force_close_stats(closed_trade, pnl)
+
+    def _build_force_close_trade_record(
+        self, pos, pnl: dict, current_ask: float,
+        current_spot_bid: float, spot_sell_failed: bool,
+    ) -> dict:
+        return {
             "trade_id": f"force-{int(time.time()*1000)}",
             "local_exchange": pos.local_exchange,
             "global_exchange": pos.global_exchange,
@@ -386,53 +392,45 @@ class ForceCloseLegsMixin:
             "spot_liquidation_failed": spot_sell_failed,
             "closed_at_ms": int(time.time() * 1000),
         }
-        await self.redis.lpush(ARB_TRADE_HISTORY_KEY, json.dumps(closed_trade))
-        await self.redis.ltrim(
-            ARB_TRADE_HISTORY_KEY, 0, ARB_TRADE_HISTORY_MAX_LEN
-        )
-        self.supabase.trade_closed(pair_key, closed_trade, pos)
 
-        # Update exchange account balances with realized PnL & release locked funds
+    async def _settle_force_close_balances(self, pair_key: str, pos, pnl: dict, usdt_rate: float) -> None:
         spot_cost = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)
         if spot_cost <= 0 and usdt_rate > 0 and math.isfinite(usdt_rate):
             spot_cost = pos.qty * pos.entry_price_idr / usdt_rate
         if spot_cost <= 0:
             logger.warning(
-                f"[Force Close] {pair_key}: live FX unavailable and no stored "
-                "USDT spot-cost basis; balance accounting is incomplete"
+                "[Force Close] %s: live FX unavailable and no stored USDT spot-cost basis; "
+                "balance accounting is incomplete",
+                pair_key,
             )
-        fut_margin = float(
-            getattr(pos, "futures_margin_usdt", 0.0)
-            or (pos.qty * pos.short_entry_usdt)
+        futures_margin = float(
+            getattr(pos, "futures_margin_usdt", 0.0) or (pos.qty * pos.short_entry_usdt)
         )
-        if hasattr(self.client, "apply_realized_trade"):
-            self.client.apply_realized_trade(
-                spot_cost_usdt=spot_cost,
-                spot_pnl_usdt=pnl["spot_pnl_usdt"],
-                spot_fees_usdt=0.0,
-                futures_margin_usdt=fut_margin,
-                futures_pnl_usdt=pnl["futures_pnl_usdt"],
-                funding_usdt=pnl["funding_usdt"],
-                futures_fees_usdt=pnl["fees_usdt"],
-            )
-            if usdt_rate > 0 and math.isfinite(usdt_rate):
-                bals = await self._get_balance_snapshot(
-                    pair_tag=pair_key,
-                    symbol=pos.symbol,
-                    usdt_idr_rate=usdt_rate,
-                )
-                if bals is not None:
-                    await self.redis.set(BALANCES_KEY, json.dumps(bals))
+        if not hasattr(self.client, "apply_realized_trade"):
+            return
+        self.client.apply_realized_trade(
+            spot_cost_usdt=spot_cost,
+            spot_pnl_usdt=pnl["spot_pnl_usdt"],
+            spot_fees_usdt=0.0,
+            futures_margin_usdt=futures_margin,
+            futures_pnl_usdt=pnl["futures_pnl_usdt"],
+            funding_usdt=pnl["funding_usdt"],
+            futures_fees_usdt=pnl["fees_usdt"],
+        )
+        if usdt_rate <= 0 or not math.isfinite(usdt_rate):
+            return
+        balances = await self._get_balance_snapshot(
+            pair_tag=pair_key, symbol=pos.symbol, usdt_idr_rate=usdt_rate
+        )
+        if balances is not None:
+            await self.redis.set(BALANCES_KEY, json.dumps(balances))
 
+    async def _publish_force_close_stats(self, closed_trade: dict, pnl: dict) -> None:
         pipe = self.redis.pipeline()
         pipe.hincrby("arb:stats", "total_closed", 1)
         if pnl["net_profit_usdt"] > 0:
             pipe.hincrby("arb:stats", "win_count", 1)
         pipe.hincrbyfloat("arb:stats", "total_pnl_usdt", pnl["net_profit_usdt"])
         pipe.hincrbyfloat("arb:stats", "total_pnl_idr", pnl["net_profit_idr"])
-        event_msg = {
-            "event": "POSITION_CLOSED",
-            **closed_trade,
-        }
-        pipe.publish(self.ARB_TRADE_EVENTS, json.dumps(event_msg))
+        pipe.publish(self.ARB_TRADE_EVENTS, json.dumps({"event": "POSITION_CLOSED", **closed_trade}))
         await pipe.execute()
