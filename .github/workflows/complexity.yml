@@ -23,9 +23,22 @@ jobs:
       - name: Enforce Python cyclomatic complexity <= 10
         shell: bash
         run: |
-          radon cc -s -n C executor tests > /tmp/python-complexity.txt
-          cat /tmp/python-complexity.txt
-          test ! -s /tmp/python-complexity.txt
+          radon cc -j executor > /tmp/python-complexity.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          report = json.loads(Path("/tmp/python-complexity.json").read_text())
+          violations = []
+          for filename, blocks in report.items():
+              for block in blocks:
+                  if block.get("type") in {"function", "method"} and block.get("complexity", 0) > 10:
+                      violations.append((filename, block.get("lineno"), block.get("name"), block.get("complexity")))
+          for filename, line, name, score in violations:
+              print(f"{filename}:{line} {name}: cyclomatic complexity {score} (maximum 10)")
+          if violations:
+              raise SystemExit(1)
+          print("All production Python functions and methods have cyclomatic complexity <= 10.")
+          PY
 
   go-complexity:
     runs-on: ubuntu-latest
