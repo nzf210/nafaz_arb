@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -123,5 +122,4 @@ func TestNewFromEnvRequiresBothCredentialsAndHonorsDisable(t *testing.T) {
 	if err != nil || client == nil {
 		t.Fatalf("expected configured client, got %#v, %v", client, err)
 	}
-	_ = os.Unsetenv("SUPABASE_ENABLED")
 }
