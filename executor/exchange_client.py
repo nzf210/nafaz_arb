@@ -350,8 +350,11 @@ class ExchangeClient:
         precision = getattr(client, "price_to_precision", None)
         if not callable(precision):
             raise ValueError(f"Spot price precision is unavailable for {market_symbol}")
-        local_price = float(precision(market_symbol, local_price))
-        return await client.create_limit_buy_order(market_symbol, local_amount, local_price, *_client_order_params(client_order_id))
+        precise_price = float(precision(market_symbol, local_price))
+        tolerance = max(1e-12, abs(local_price) * 1e-10)
+        if not math.isfinite(precise_price) or precise_price <= 0 or precise_price > local_price + tolerance:
+            raise ValueError("Spot buy price precision is invalid or would round the limit upward")
+        return await client.create_limit_buy_order(market_symbol, local_amount, precise_price, *_client_order_params(client_order_id))
 
     async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None, usdt_idr_rate: float = 0.0) -> Dict[str, Any]:
         """Places a Maker Limit Sell on local spot exchange."""
