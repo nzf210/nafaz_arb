@@ -947,3 +947,42 @@ func TestScanMarksEveryCandidateIneligibleWhenExposureStateIsUnknown(t *testing.
 		}
 	}
 }
+
+type unavailableFXAdapter struct {
+	exchange.MockAdapter
+}
+
+func (a *unavailableFXAdapter) USDTIDRRate(context.Context) (float64, error) {
+	return 0, fmt.Errorf("live FX endpoint unavailable")
+}
+
+func TestEvaluatePairDoesNotUseLastKnownFXForLocalSpotOrderPricing(t *testing.T) {
+	cfg := config.Config{
+		Mode: "MOCK",
+		QuoteAssets: []string{"USDT"},
+		CapitalTotal: 1000,
+		AllocationPerPair: 0.5,
+		PerpLeverage: 1,
+		EstimatedHoldingHours: 8,
+		MinNetROIPct: 0.1,
+		MaxNetROIPct: 10,
+		MaxSlippagePct: 5,
+		CheckOpenPositions: false,
+	}
+	adapter := &unavailableFXAdapter{MockAdapter: *exchange.NewMockAdapter()}
+	svc := New(cfg, adapter)
+	// Simulate a previous scan's rate: it must not be reused for a new order.
+	svc.lastLiveFXRate = 16_000.0
+	pair := [2]domain.Market{
+		{Exchange: "tokocrypto", Symbol: "toko:BTC_USDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "SPOT", Active: true},
+		{Exchange: "okx", Symbol: "BTC-USDT-SWAP", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+	}
+
+	result := svc.evaluatePair(context.Background(), pair, nil, true, time.Now().UTC())
+	if result.err == nil || !strings.Contains(result.err.Error(), "live USDT/IDR FX unavailable") {
+		t.Fatalf("expected stale FX to be rejected for USDT-quoted local Spot, got %+v", result)
+	}
+	if result.opportunity.TradingEligible {
+		t.Fatal("pair must not be trading-eligible when live FX is unavailable")
+	}
+}
