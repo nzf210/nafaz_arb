@@ -668,6 +668,8 @@ class ExitMixin:
                     "spot_pnl_idr": spot_pnl_idr,
                     "futures_pnl_usdt": futures_pnl_usdt,
                     "accumulated_funding_usdt": funding_usdt,
+                    "estimated_fees_usdt": fees_usdt,
+                    "fees_estimated": True,
                     "net_profit_usdt": net_profit_usdt,
                     "net_profit_idr": net_profit_idr,
                     "net_roi_pct": roi_pct,
@@ -686,11 +688,14 @@ class ExitMixin:
                     self.client.apply_realized_trade(
                         spot_cost_usdt=spot_cost,
                         spot_pnl_usdt=spot_pnl_usdt,
-                        spot_fees_usdt=0.0,
+                        # Fee reserve is a combined two-leg estimate; split it
+                        # evenly for paper balance accounting while keeping the
+                        # authoritative trade PnL deducted exactly once above.
+                        spot_fees_usdt=fees_usdt / 2.0,
                         futures_margin_usdt=fut_margin,
                         futures_pnl_usdt=futures_pnl_usdt,
                         funding_usdt=funding_usdt,
-                        futures_fees_usdt=fees_usdt,
+                        futures_fees_usdt=fees_usdt / 2.0,
                     )
                     bals = await self._get_balance_snapshot(
                         pair_tag=pair_tag,
