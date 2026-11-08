@@ -263,6 +263,7 @@ func TestAlertOnScan(t *testing.T) {
 
 	res := domain.ScanResult{
 		ScanID: "test-scan",
+		Complete: true,
 		Opportunities: []domain.Opportunity{
 			{
 				OpportunityKey:      "ETH/USDT",
@@ -372,7 +373,7 @@ func TestAlertThresholdsAndCooldown(t *testing.T) {
 	bot.cfg.Telegram.AlertCooldownMinutes = 15
 	bot.cfg.Telegram.AlertMinNetROIPct = 1.5
 	bot.cfg.Telegram.AlertMinNetProfitQuote = 10
-	result := domain.ScanResult{Opportunities: []domain.Opportunity{{
+	result := domain.ScanResult{Complete: true, Opportunities: []domain.Opportunity{{
 		OpportunityKey:  "ETH/USDT",
 		BaseAsset:       "ETH",
 		QuoteAsset:      "USDT",
@@ -428,7 +429,7 @@ func TestMuteSuppressesAlerts(t *testing.T) {
 	bot, _, ts := setupTestBot(t, tsHandler)
 	defer ts.Close()
 
-	result := domain.ScanResult{Opportunities: []domain.Opportunity{{
+	result := domain.ScanResult{Complete: true, Opportunities: []domain.Opportunity{{
 		OpportunityKey:      "ETH/USDT",
 		BaseAsset:           "ETH",
 		QuoteAsset:          "USDT",
