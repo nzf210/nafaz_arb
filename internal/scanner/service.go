@@ -135,7 +135,7 @@ func (s *Service) filterActivePairs(pairs [][2]domain.Market, now time.Time) ([]
 	var activePairs [][2]domain.Market
 	frozenCount := 0
 	for _, pair := range pairs {
-		pairKey := pair[0].Symbol + ":" + pair[1].Symbol
+		pairKey := strings.ToLower(pair[0].Exchange) + ":" + pair[0].Symbol + "->" + strings.ToLower(pair[1].Exchange) + ":" + pair[1].Symbol
 		rec, exists := s.emptyTrackers[pairKey]
 		if exists && rec.frozenUntil.After(now) {
 			frozenCount++
@@ -620,7 +620,9 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	}
 
 	op := domain.Opportunity{
-		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
+		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s:%s:%s", sm.BaseAsset, targetQuote, strings.ToLower(sm.Exchange), sm.Symbol, strings.ToLower(pm.Exchange), pm.Symbol),
+		SpotExchange:           sm.Exchange,
+		PerpExchange:           pm.Exchange,
 		BaseAsset:              sm.BaseAsset,
 		QuoteAsset:             targetQuote,
 		SpotSymbol:             sm.Symbol,
