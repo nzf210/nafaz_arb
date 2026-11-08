@@ -132,6 +132,8 @@ async def test_p3_02_hedge_carries_client_order_id(fake_redis):
     from executor.exchange_client import PaperTradingExchangeClient
 
     client = PaperTradingExchangeClient(initial_balance_usdt=100.0)
+    client.update_market_price("btc_idr", 1_037_000_000.0, 1_038_000_000.0)
+    client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
     cfg = ExecutorConfig(
         min_allocated_capital=10.0,
         initial_exchange_balance_usdt=100.0,
