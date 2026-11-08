@@ -152,12 +152,31 @@ class MockExchangeClient:
 
     def update_market_price(self, symbol: str, best_bid: float, best_ask: float, last_price: float = 0.0):
         clean = symbol.lower().replace("/", "_").replace("-", "_")
-        self.market_prices[clean] = {"bid": float(best_bid), "ask": float(best_ask)}
+        self.market_prices[clean] = {
+            "bid": float(best_bid),
+            "ask": float(best_ask),
+            "timestamp": int(time.time() * 1000),
+        }
+
+    async def fetch_local_ticker(self, symbol: str):
+        clean = symbol.lower().replace("/", "_").replace("-", "_")
+        price = self.market_prices.get(clean) or {}
+        return {
+            "symbol": symbol,
+            "bid": float(price.get("bid", 0.0)),
+            "ask": float(price.get("ask", 0.0)),
+            "timestamp": int(price.get("timestamp", 0)),
+        }
 
     async def fetch_global_ticker(self, symbol: str):
         clean = symbol.lower().replace("/", "_").replace("-", "_")
         price = self.market_prices.get(clean) or {}
-        return {"symbol": symbol, "bid": price.get("bid", 0.0), "ask": price.get("ask", 0.0)}
+        return {
+            "symbol": symbol,
+            "bid": float(price.get("bid", 0.0)),
+            "ask": float(price.get("ask", 0.0)),
+            "timestamp": int(price.get("timestamp", 0)),
+        }
 
     async def close(self):
         pass
