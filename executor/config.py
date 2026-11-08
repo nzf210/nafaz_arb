@@ -132,7 +132,8 @@ class ExecutorConfig:
                 sup_data = data["supabase"]
                 self.supabase.enabled = bool(sup_data.get("enabled", False))
                 self.supabase.url = str(sup_data.get("url", ""))
-                self.supabase.key = str(sup_data.get("key", ""))
+                # Service-role credentials are environment-only; never load them from
+                # config.json or commit them with deployment examples.
         except Exception as e:
             print(f"warning: error loading config file: {e}")
 
@@ -263,9 +264,15 @@ class ExecutorConfig:
 
         if sup_url := os.getenv("SUPABASE_URL"):
             self.supabase.url = sup_url
-            self.supabase.enabled = True
-        if sup_key := os.getenv("SUPABASE_KEY"):
+        # Prefer the explicit server-only variable. Keep SUPABASE_KEY as a
+        # backward-compatible deployment alias, but never read either from JSON.
+        sup_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
+        if sup_key:
             self.supabase.key = sup_key
+        enabled_env = os.getenv("SUPABASE_ENABLED")
+        if enabled_env is not None:
+            self.supabase.enabled = enabled_env.strip().lower() in ("true", "1", "yes")
+        elif self.supabase.url and self.supabase.key:
             self.supabase.enabled = True
 
     # Bounds applied by sanitize(): (field, minimum, maximum, default when invalid).
