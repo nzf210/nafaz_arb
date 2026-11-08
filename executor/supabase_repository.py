@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import json
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -199,6 +200,7 @@ class SupabaseRepository:
             ),
             "funding_asset": "USDT",
             "opened_at": _iso_from_ms(event.get("opened_at_ms")) or occurred_at,
+            "closed_at": occurred_at if status == "CLOSED" else None,
             "state_snapshot": event,
         }
         await self._upsert("positions", row, "id")
@@ -216,7 +218,8 @@ class SupabaseRepository:
             {
                 "position_id": position_id, "leg": "perpetual",
                 "exchange_name": row["global_exchange"], "symbol": global_symbol,
-                "side": "short", "status": perp_status, "qty": remaining,
+                "side": "short", "status": perp_status,
+                "qty": 0.0 if event.get("spot_liquidation_failed") else remaining,
                 "average_entry_price": event.get("short_entry_usdt"),
             },
         ]
