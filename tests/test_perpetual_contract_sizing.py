@@ -55,7 +55,7 @@ async def test_perpetual_orders_convert_base_quantity_to_contracts_and_back():
 
     closed = await client.close_global_short_market("BTC/USDT:USDT", 0.01)
     assert venue.orders[-1][0:3] == ("buy", "BTC/USDT:USDT", 10.0)
-    assert venue.orders[-1][3][0]["reduceOnly"] is True
+    assert venue.orders[-1][3]["reduceOnly"] is True
     assert closed["filled"] == pytest.approx(0.01)
 
 
