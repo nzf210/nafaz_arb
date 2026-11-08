@@ -102,6 +102,9 @@
             "testnet": false
         }
     },
+    "executor": {
+        "entry_revalidation_max_age_ms": 2000
+    },
     "supabase": {
         "enabled": false,
         "url": "",
