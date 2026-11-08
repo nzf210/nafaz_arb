@@ -31,7 +31,29 @@ const (
 	KeyTradeStats          = "arb:stats"
 	KeyBalances            = "arb:balances"
 	KeyExecutorStatus      = "arb:executor:status"
+	KeyExchangeBalances    = "arb:exchange_balances"
 )
+
+type ExchangeBalanceSnapshot struct {
+	Mode        string                 `json:"mode"`
+	TimestampMS int64                  `json:"timestamp_ms"`
+	Exchanges   []ExchangeBalanceVenue `json:"exchanges"`
+}
+
+type ExchangeBalanceVenue struct {
+	Name   string                 `json:"name"`
+	Role   string                 `json:"role"`
+	Status string                 `json:"status"`
+	Error  string                 `json:"error,omitempty"`
+	Assets []ExchangeAssetBalance `json:"assets"`
+}
+
+type ExchangeAssetBalance struct {
+	Asset string  `json:"asset"`
+	Total float64 `json:"total"`
+	Free  float64 `json:"free"`
+	Used  float64 `json:"used"`
+}
 
 type TradeStats struct {
 	TotalClosed  int     `json:"total_closed"`
@@ -428,6 +450,22 @@ func (c *Client) GetBalances(ctx context.Context) (*domain.BalancesRecord, error
 		return nil, err
 	}
 	return &b, nil
+}
+
+// GetExchangeBalanceSnapshot retrieves the executor's per-exchange LIVE balance snapshot.
+func (c *Client) GetExchangeBalanceSnapshot(ctx context.Context) (*ExchangeBalanceSnapshot, error) {
+	if c == nil || c.rdb == nil {
+		return nil, fmt.Errorf("redis client is not configured")
+	}
+	raw, err := c.rdb.Get(ctx, KeyExchangeBalances).Result()
+	if err != nil {
+		return nil, err
+	}
+	var snapshot ExchangeBalanceSnapshot
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		return nil, fmt.Errorf("decode live exchange balances: %w", err)
+	}
+	return &snapshot, nil
 }
 
 // SubscribeTradeEvents subscribes to the arb:trade_events channel.
