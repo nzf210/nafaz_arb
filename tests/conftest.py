@@ -38,13 +38,13 @@ class MockExchangeClient:
         self.global_close_buys = []
         self.market_prices = {
             "btc_idr": {
-                "bid": 1_038_000_000.0,
-                "ask": 1_040_000_000.0,
+                "bid": 1_037_000_000.0,
+                "ask": 1_038_000_000.0,
                 "timestamp": int(time.time() * 1000),
             },
             "btc_usdt": {
-                "bid": 65_100.0,
-                "ask": 65_110.0,
+                "bid": 65_000.0,
+                "ask": 65_010.0,
                 "timestamp": int(time.time() * 1000),
             },
             "btcusdt": {
