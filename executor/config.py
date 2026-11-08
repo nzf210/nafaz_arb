@@ -1,5 +1,6 @@
 import os
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 
@@ -55,6 +56,15 @@ class ExecutorConfig:
     # Round-trip taker/maker fees charged on both legs, used to shrink the
     # position size so the exit can still net a profit. 0 disables the buffer.
     estimated_round_trip_fee_pct: float = 0.001
+    # Fee inputs mirror scanner config and are percentages (0.30 means 0.30%).
+    # Per-venue profiles override the root defaults; all PnL remains estimated
+    # until exchange-reported fill commissions are reconciled.
+    spot_maker_fee_pct: float = 0.0
+    spot_taker_fee_pct: float = 0.0
+    perp_maker_fee_pct: float = 0.0
+    perp_taker_fee_pct: float = 0.0
+    fee_asset_surcharge_pct: float = 0.0
+    fee_profiles: Dict[str, Dict[str, float]] = field(default_factory=dict)
     # Use a private order/balance feed instead of polling REST for every check.
     # Off by default: the feed is an optimisation, and REST polling is the
     # proven path. When on, stale or missing entries still fall back to REST.
@@ -92,6 +102,31 @@ class ExecutorConfig:
                 self.allocation_per_pair = float(data["allocation_per_pair"])
             if "min_allocated_capital" in data:
                 self.min_allocated_capital = float(data["min_allocated_capital"])
+            for key in (
+                "spot_maker_fee_pct",
+                "spot_taker_fee_pct",
+                "perp_maker_fee_pct",
+                "perp_taker_fee_pct",
+                "fee_asset_surcharge_pct",
+            ):
+                if key in data:
+                    setattr(self, key, float(data[key]))
+            raw_fee_profiles = data.get("fee_profiles", {})
+            if isinstance(raw_fee_profiles, dict):
+                self.fee_profiles = {
+                    str(exchange).strip().lower(): {
+                        str(key): float(value)
+                        for key, value in profile.items()
+                        if key in {
+                            "spot_maker_fee_pct",
+                            "spot_taker_fee_pct",
+                            "perp_maker_fee_pct",
+                            "perp_taker_fee_pct",
+                        }
+                    }
+                    for exchange, profile in raw_fee_profiles.items()
+                    if str(exchange).strip() and isinstance(profile, dict)
+                }
 
             exec_cfg = data.get("executor", {})
             for key, conv in (
@@ -206,6 +241,19 @@ class ExecutorConfig:
             except ValueError:
                 pass
 
+        for key, env_name in (
+            ("spot_maker_fee_pct", "SPOT_MAKER_FEE_PCT"),
+            ("spot_taker_fee_pct", "SPOT_TAKER_FEE_PCT"),
+            ("perp_maker_fee_pct", "PERP_MAKER_FEE_PCT"),
+            ("perp_taker_fee_pct", "PERP_TAKER_FEE_PCT"),
+            ("fee_asset_surcharge_pct", "FEE_ASSET_SURCHARGE_PCT"),
+        ):
+            if env_value := os.getenv(env_name):
+                try:
+                    setattr(self, key, float(env_value))
+                except ValueError:
+                    pass
+
         self.local_credentials.api_key = os.getenv("LOCAL_API_KEY", self.local_credentials.api_key)
         self.local_credentials.api_secret = os.getenv("LOCAL_API_SECRET", self.local_credentials.api_secret)
 
@@ -287,8 +335,75 @@ class ExecutorConfig:
         "balance_mismatch_fraction": (0.0, 1.0, 0.20),
         "max_consecutive_order_failures": (0, 100, 3),
         "estimated_round_trip_fee_pct": (0.0, 1.0, 0.001),
+        "spot_maker_fee_pct": (0.0, 10.0, 0.0),
+        "spot_taker_fee_pct": (0.0, 10.0, 0.0),
+        "perp_maker_fee_pct": (0.0, 10.0, 0.0),
+        "perp_taker_fee_pct": (0.0, 10.0, 0.0),
+        "fee_asset_surcharge_pct": (0.0, 10.0, 0.0),
         "private_stream_max_age_seconds": (0.5, 60.0, 5.0),
     }
+
+    def _fee_pct(self, exchange_name: str, field_name: str) -> float:
+        """Return a validated per-venue fee as a decimal fraction."""
+        fallback = float(getattr(self, field_name, 0.0) or 0.0)
+        profile = self.fee_profiles.get(str(exchange_name or "").strip().lower(), {})
+        raw = profile.get(field_name, fallback) if isinstance(profile, dict) else fallback
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = fallback
+        if not math.isfinite(value) or value < 0 or value > 10:
+            value = fallback
+        return value / 100.0
+
+    def trade_fee_rates(self, local_exchange: str, global_exchange: str) -> Dict[str, float]:
+        """Return scanner-aligned fee rates for the Spot maker/taker and Perp taker legs."""
+        return {
+            "spot_maker": self._fee_pct(local_exchange, "spot_maker_fee_pct"),
+            "spot_taker": self._fee_pct(local_exchange, "spot_taker_fee_pct"),
+            "perp_maker": self._fee_pct(global_exchange, "perp_maker_fee_pct"),
+            "perp_taker": self._fee_pct(global_exchange, "perp_taker_fee_pct"),
+            "surcharge": max(0.0, float(self.fee_asset_surcharge_pct or 0.0)) / 100.0,
+        }
+
+    def estimate_round_trip_fee_fraction(self, local_exchange: str, global_exchange: str) -> float:
+        """Conservative four-fill fee fraction: Spot maker+taker and Perp taker twice."""
+        rates = self.trade_fee_rates(local_exchange, global_exchange)
+        return (
+            rates["spot_maker"]
+            + rates["spot_taker"]
+            + (2.0 * rates["perp_taker"])
+            + (4.0 * rates["surcharge"])
+        )
+
+    def estimate_trade_fees_usdt(
+        self,
+        local_exchange: str,
+        global_exchange: str,
+        spot_entry_notional_usdt: float,
+        spot_exit_notional_usdt: float,
+        perp_entry_notional_usdt: float,
+        perp_exit_notional_usdt: float,
+    ) -> Dict[str, float]:
+        """Estimate each leg's commission from configured venue profiles; not exchange-confirmed."""
+        rates = self.trade_fee_rates(local_exchange, global_exchange)
+        spot_notional = max(0.0, float(spot_entry_notional_usdt)) + max(0.0, float(spot_exit_notional_usdt))
+        perp_notional = max(0.0, float(perp_entry_notional_usdt)) + max(0.0, float(perp_exit_notional_usdt))
+        spot_fees = (
+            max(0.0, float(spot_entry_notional_usdt)) * rates["spot_maker"]
+            + max(0.0, float(spot_exit_notional_usdt)) * rates["spot_taker"]
+            + spot_notional * rates["surcharge"]
+        )
+        futures_fees = (
+            max(0.0, float(perp_entry_notional_usdt)) * rates["perp_taker"]
+            + max(0.0, float(perp_exit_notional_usdt)) * rates["perp_taker"]
+            + perp_notional * rates["surcharge"]
+        )
+        return {
+            "spot_fees_usdt": spot_fees,
+            "futures_fees_usdt": futures_fees,
+            "fees_usdt": spot_fees + futures_fees,
+        }
 
     def sanitize(self) -> list:
         """
