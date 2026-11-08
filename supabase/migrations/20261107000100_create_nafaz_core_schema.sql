@@ -94,10 +94,6 @@ create index if not exists idx_scanner_opportunities_pair_time
     on public.scanner_opportunities (pair_key, observed_at desc);
 create index if not exists idx_scanner_opportunities_eligible_time
     on public.scanner_opportunities (eligibility_status, observed_at desc);
--- One pair may be evaluated only once per scan. This is the natural
--- idempotency key for PostgREST upserts from the read-only scanner.
-create unique index if not exists uq_scanner_opportunities_scan_pair
-    on public.scanner_opportunities (scan_id, pair_key);
 
 create table if not exists public.positions (
     id uuid primary key default gen_random_uuid(),
