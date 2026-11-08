@@ -759,31 +759,55 @@ class ArbitrageEngine(
         global_symbol = payload.pair_info.global_symbol
         try:
             ticker = await self.client.fetch_global_ticker(global_symbol)
-        except Exception as exc:  # nosec BLE001 - fail open, see docstring
+        except Exception as exc:  # nosec BLE001 - no fresh quote, reject before Spot order
             logger.warning(
                 f"[Entry Revalidation] could not read {global_symbol} ticker for {pair_tag}: "
-                f"{exc}. Proceeding with the entry."
+                f"{exc}. Rejecting the entry."
             )
-            return True
+            await self._publish_execution_failure(
+                pair_tag,
+                "ENTRY_REVALIDATION_UNAVAILABLE",
+                "Ticker Futures live tidak dapat diverifikasi; order Spot dibatalkan.",
+                detail={"global_symbol": global_symbol},
+            )
+            return False
 
         try:
             live_bid = float((ticker or {}).get("bid") or 0.0)
         except (TypeError, ValueError):
             live_bid = 0.0
         if live_bid <= 0:
-            logger.info(
-                f"[Entry Revalidation] no live bid for {global_symbol}; "
-                f"skipping spread check on {pair_tag}"
+            logger.warning(
+                f"[Entry Revalidation] no live bid for {global_symbol}; rejecting {pair_tag}"
             )
-            return True
+            await self._publish_execution_failure(
+                pair_tag,
+                "ENTRY_REVALIDATION_NO_LIVE_BID",
+                "Bid Futures live kosong atau tidak valid; order Spot dibatalkan.",
+                detail={"global_symbol": global_symbol},
+            )
+            return False
 
         snapshot = payload.pricing_snapshot
         if snapshot.global_best_bid_usdt <= 0 or snapshot.usdt_idr_rate <= 0:
-            return True
+            await self._publish_execution_failure(
+                pair_tag,
+                "ENTRY_REVALIDATION_SNAPSHOT_INVALID",
+                "Snapshot harga/FX dari scanner tidak valid; order Spot dibatalkan.",
+                detail={"global_best_bid_usdt": snapshot.global_best_bid_usdt,
+                        "usdt_idr_rate": snapshot.usdt_idr_rate},
+            )
+            return False
         live_bid_idr = live_bid * snapshot.usdt_idr_rate
         buy_price_idr = payload.execution_directives.recommended_limit_buy_idr
         if buy_price_idr <= 0 or live_bid_idr <= 0:
-            return True
+            await self._publish_execution_failure(
+                pair_tag,
+                "ENTRY_REVALIDATION_PRICE_INVALID",
+                "Harga Spot atau konversi bid Futures tidak valid; order Spot dibatalkan.",
+                detail={"buy_price_idr": buy_price_idr, "live_bid_idr": live_bid_idr},
+            )
+            return False
 
         live_spread_pct = ((live_bid_idr - buy_price_idr) / live_bid_idr) * 100.0
         if live_spread_pct < min_spread:
