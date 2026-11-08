@@ -36,6 +36,7 @@ class ExchangeClient:
         perpetual_clients: Optional[Dict[str, Any]] = None,
         default_spot: str = "indodax",
         default_perpetual: str = "okx",
+        strict_routing: bool = False,
     ):
         # Context-local routing prevents concurrent signals from cross-wiring venues.
         self.spot_clients = {str(k).lower(): v for k, v in (spot_clients or {}).items()}
@@ -46,6 +47,10 @@ class ExchangeClient:
             self.perpetual_clients.setdefault(default_perpetual.lower(), global_exchange)
         self._default_spot = default_spot.lower()
         self._default_perpetual = default_perpetual.lower()
+        # Live factory clients require every trading coroutine to select its
+        # signal/position route explicitly. Legacy single-client constructions
+        # keep their historical defaults for backwards compatibility.
+        self._strict_routing = bool(strict_routing)
         self._route = ContextVar(f"exchange_route_{id(self)}", default=None)
 
     def set_route(self, spot_name: str, perpetual_name: str):
@@ -61,7 +66,14 @@ class ExchangeClient:
         self._route.reset(token)
 
     def _route_names(self):
-        return self._route.get() or (self._default_spot, self._default_perpetual)
+        route = self._route.get()
+        if route is None:
+            if self._strict_routing:
+                raise RuntimeError(
+                    "exchange route must be selected before a live trading operation"
+                )
+            return self._default_spot, self._default_perpetual
+        return route
 
     @property
     def local(self):
@@ -642,12 +654,16 @@ def create_exchange_client(config: Any) -> Any:
             raise ValueError(f"LIVE perpetual route {name} has no complete API credentials")
         if name == "okx" and not creds.passphrase:
             raise ValueError("LIVE perpetual route okx requires API passphrase")
-        perpetual_clients[name] = init_ccxt_exchange(name, creds, default_type="future")
+        # CCXT exposes perpetual markets under different default types:
+        # Binance USD-M uses "future"; OKX, MEXC and Bybit use "swap".
+        default_type = "future" if name == "binance" else "swap"
+        perpetual_clients[name] = init_ccxt_exchange(name, creds, default_type=default_type)
     return ExchangeClient(
         spot_clients=spot_clients,
         perpetual_clients=perpetual_clients,
         default_spot=config.local_exchange_name,
         default_perpetual=config.global_exchange_name,
+        strict_routing=True,
     )
 
 
