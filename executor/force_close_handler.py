@@ -49,75 +49,72 @@ class ForceCloseHandlerMixin:
     async def _execute_force_close_legs(
         self, pair_key: str, pos, allow_already_flat: bool = False
     ) -> Tuple[bool, bool, dict]:
-        """
-        Executes short closure on futures and spot liquidation.
-        Returns (futures_closed, spot_sell_failed, pnl).
-        """
+        """Close both legs and return verified execution and realized PnL state."""
         if not pos:
             return True, False, {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
         if pos.qty <= 0:
             logger.critical(
-                f"[Force Close] refusing to clear {pair_key}: persisted position qty "
-                f"is invalid ({pos.qty}); manual reconciliation required"
+                "[Force Close] refusing to clear %s: persisted position qty is invalid (%s); manual reconciliation required",
+                pair_key, pos.qty,
             )
             return False, True, {"net_profit_usdt": 0.0, "net_profit_idr": 0.0}
 
-        futures_closed, short_exit_price_usdt = await self._close_global_short_leg(
+        futures_closed, short_exit_price = await self._close_global_short_leg(
             pair_key, pos, allow_already_flat=allow_already_flat
         )
-        spot_sell_failed = True
-        spot_exit_price_idr = 0.0
-
-        # Even when the futures close fill price is unavailable, a verified-flat
-        # futures leg must not leave the spot leg exposed. Liquidate spot, but
-        # mark the realized PnL as unverified instead of substituting a quote.
-        if futures_closed:
-            spot_exit_price_idr = await self._liquidate_spot_leg(pair_key, pos)
-            spot_sell_failed = spot_exit_price_idr <= 0
-
-        current_ask, usdt_rate, current_spot_bid = await self._resolve_force_close_prices(
-            pair_key, pos, spot_exit_price_idr if futures_closed else 0.0
+        spot_exit_price, spot_sell_failed = await self._liquidate_after_futures_close(
+            pair_key, pos, futures_closed
         )
-        if futures_closed and short_exit_price_usdt > 0:
-            current_ask = short_exit_price_usdt
-            pnl = self._compute_force_close_pnl(
-                pos, current_ask, usdt_rate, current_spot_bid
+        current_ask, usdt_rate, current_spot_bid = await self._resolve_force_close_prices(
+            pair_key, pos, spot_exit_price
+        )
+        pnl = self._resolve_force_close_pnl(
+            pos, futures_closed, short_exit_price, current_ask,
+            usdt_rate, current_spot_bid,
+        )
+        if self._should_record_force_close_trade(futures_closed, pnl):
+            await self._record_force_close_if_needed(
+                pair_key, pos, pnl, current_ask, current_spot_bid,
+                spot_sell_failed, usdt_rate,
             )
-        else:
-            pnl = {
+        return futures_closed, spot_sell_failed, pnl
+
+    async def _liquidate_after_futures_close(self, pair_key: str, pos, futures_closed: bool) -> tuple[float, bool]:
+        if not futures_closed:
+            return 0.0, True
+        exit_price = await self._liquidate_spot_leg(pair_key, pos)
+        return exit_price, exit_price <= 0
+
+    def _resolve_force_close_pnl(
+        self, pos, futures_closed: bool, short_exit_price: float,
+        current_ask: float, usdt_rate: float, current_spot_bid: float,
+    ) -> dict:
+        if not futures_closed or short_exit_price <= 0:
+            return {
                 "net_profit_usdt": 0.0,
                 "net_profit_idr": 0.0,
                 "pnl_unverified": True,
             }
+        return self._compute_force_close_pnl(
+            pos, short_exit_price, usdt_rate, current_spot_bid
+        )
 
-        if futures_closed and not spot_sell_failed and not pnl.get("pnl_unverified"):
-            await self._record_force_close_trade(
-                pair_key,
-                pos,
-                pnl,
-                current_ask,
-                current_spot_bid,
-                spot_sell_failed,
-                usdt_rate,
-            )
-        elif futures_closed and spot_sell_failed and not pnl.get("pnl_unverified"):
-            # Futures leg closed but spot liquidation failed — record partial close so
-            # the futures PnL is not lost from history, and flag it clearly.
+    @staticmethod
+    def _should_record_force_close_trade(futures_closed: bool, pnl: dict) -> bool:
+        return futures_closed and not pnl.get("pnl_unverified")
+
+    async def _record_force_close_if_needed(
+        self, pair_key: str, pos, pnl: dict, current_ask: float,
+        current_spot_bid: float, spot_sell_failed: bool, usdt_rate: float,
+    ) -> None:
+        if spot_sell_failed:
             logger.error(
-                f"[Force Close] Recording partial force-close for {pair_key}: "
-                f"futures closed, spot liquidation FAILED. Manual spot sale required."
-            )
-            await self._record_force_close_trade(
+                "[Force Close] Recording partial force-close for %s: futures closed, spot liquidation FAILED. Manual spot sale required.",
                 pair_key,
-                pos,
-                pnl,
-                current_ask,
-                current_spot_bid,
-                spot_sell_failed,
-                usdt_rate,
             )
-
-        return futures_closed, spot_sell_failed, pnl
+        await self._record_force_close_trade(
+            pair_key, pos, pnl, current_ask, current_spot_bid, spot_sell_failed, usdt_rate
+        )
 
     async def _handle_force_close_failure(
         self, pair_key: str, pos, futures_closed: bool, spot_sell_failed: bool
