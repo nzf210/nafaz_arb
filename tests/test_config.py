@@ -113,7 +113,12 @@ async def test_modular_exchanges_config_and_env():
             cfg_sup._apply_file(f2_path)
             assert cfg_sup.supabase.enabled is True
             assert cfg_sup.supabase.url == "https://xyz.supabase.co"
-            assert cfg_sup.supabase.key == "secret_key_123"
+            assert cfg_sup.supabase.key == ""  # service-role secrets are never loaded from JSON
+            os.environ["SUPABASE_SERVICE_ROLE_KEY"] = "secret_key_from_env"
+            cfg_sup._apply_env()
+            assert cfg_sup.supabase.key == "secret_key_from_env"
+            assert cfg_sup.supabase.enabled is True
+            os.environ.pop("SUPABASE_SERVICE_ROLE_KEY", None)
         finally:
             if os.path.exists(f2_path):
                 os.remove(f2_path)
