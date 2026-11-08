@@ -65,6 +65,7 @@ type Opportunity struct {
 	Quantity               float64   `json:"quantity"`
 	SpreadPnL              float64   `json:"spread_pnl"`
 	FundingPnL             float64   `json:"funding_pnl"`
+	GrossProfit            float64   `json:"gross_profit"`
 	TradingFees            float64   `json:"trading_fees"`
 	Slippage               float64   `json:"slippage"`
 	NetProfit              float64   `json:"net_profit"`
