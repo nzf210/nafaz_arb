@@ -334,7 +334,7 @@ class ForceCloseMixin:
 
         @staticmethod
         def _compute_force_close_pnl(pos, current_ask: float, usdt_rate: float, current_spot_bid: float) -> dict:
-            """Computes realized PnL components for a force-closed position."""
+            """Computes closed-trade PnL components; fees remain estimated, not exchange-confirmed."""
             spot_pnl_idr = pos.qty * (current_spot_bid - pos.entry_price_idr)
             spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
             futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - current_ask)
