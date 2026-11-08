@@ -34,10 +34,11 @@ const (
 )
 
 type TradeStats struct {
-	TotalClosed  int     `json:"total_closed"`
-	WinCount     int     `json:"win_count"`
-	TotalPnLUSDT float64 `json:"total_pnl_usdt"`
-	TotalPnLIDR  float64 `json:"total_pnl_idr"`
+	TotalClosed        int     `json:"total_closed"`
+	WinCount           int     `json:"win_count"`
+	PnlUnverifiedCount int     `json:"pnl_unverified_count"`
+	TotalPnLUSDT       float64 `json:"total_pnl_usdt"`
+	TotalPnLIDR        float64 `json:"total_pnl_idr"`
 }
 
 type ClosedTradeRecord struct {
@@ -52,6 +53,10 @@ type ClosedTradeRecord struct {
 	ExitPriceIDR           float64 `json:"exit_price_idr"`
 	ShortEntryUSDT         float64 `json:"short_entry_usdt"`
 	ShortExitUSDT          float64 `json:"short_exit_usdt"`
+	GrossProfitUSDT        float64 `json:"gross_profit_usdt,omitempty"`
+	EstimatedFeesUSDT     float64 `json:"estimated_fees_usdt,omitempty"`
+	EstimatedNetProfitUSDT float64 `json:"estimated_net_profit_usdt,omitempty"`
+	PnlStatus              string  `json:"pnl_status,omitempty"`
 	NetProfitUSDT          float64 `json:"net_profit_usdt"`
 	NetProfitIDR           float64 `json:"net_profit_idr"`
 	NetROIPct              float64 `json:"net_roi_pct"`
@@ -76,6 +81,10 @@ type TradeEvent struct {
 	ExitPriceIDR           float64 `json:"exit_price_idr,omitempty"`
 	ShortEntryUSDT         float64 `json:"short_entry_usdt"`
 	ShortExitUSDT          float64 `json:"short_exit_usdt,omitempty"`
+	GrossProfitUSDT        float64 `json:"gross_profit_usdt,omitempty"`
+	EstimatedFeesUSDT     float64 `json:"estimated_fees_usdt,omitempty"`
+	EstimatedNetProfitUSDT float64 `json:"estimated_net_profit_usdt,omitempty"`
+	PnlStatus              string  `json:"pnl_status,omitempty"`
 	NetProfitUSDT          float64 `json:"net_profit_usdt,omitempty"`
 	NetProfitIDR           float64 `json:"net_profit_idr,omitempty"`
 	NetROIPct              float64 `json:"net_roi_pct,omitempty"`
@@ -381,6 +390,9 @@ func (c *Client) GetTradeStats(ctx context.Context) (TradeStats, error) {
 	}
 	if wc, ok := vals["win_count"]; ok {
 		fmt.Sscanf(wc, "%d", &stats.WinCount)
+	}
+	if uc, ok := vals["pnl_unverified_count"]; ok {
+		fmt.Sscanf(uc, "%d", &stats.PnlUnverifiedCount)
 	}
 	if pu, ok := vals["total_pnl_usdt"]; ok {
 		fmt.Sscanf(pu, "%f", &stats.TotalPnLUSDT)
