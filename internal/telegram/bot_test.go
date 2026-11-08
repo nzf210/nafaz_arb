@@ -8,13 +8,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
 	"github.com/nafaz/spot-perp-scanner/internal/api"
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
 	"github.com/nafaz/spot-perp-scanner/internal/history"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
-
-
 )
 
 func setupTestBot(t *testing.T, handler http.HandlerFunc) (*Bot, *api.Server, *httptest.Server) {

@@ -1,7 +1,7 @@
 package exchange
 
 import (
-	"json"
+	"encoding/json"
 	"testing"
 	"time"
 )
