@@ -60,14 +60,18 @@ jobs:
             -c "CREATE ROLE anon NOLOGIN;" \
             -c "CREATE ROLE authenticated NOLOGIN;" \
             -c "CREATE ROLE service_role NOLOGIN BYPASSRLS;"
-      - name: Apply migration
+      - name: Apply all versioned migrations in order
         run: |
-          psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
-            -f supabase/migrations/20261107000100_create_nafaz_core_schema.sql
-      - name: Verify migration is idempotent
+          for migration in supabase/migrations/*.sql; do
+            echo "Applying $migration"
+            psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 -f "$migration"
+          done
+      - name: Verify all migrations are idempotent
         run: |
-          psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
-            -f supabase/migrations/20261107000100_create_nafaz_core_schema.sql
+          for migration in supabase/migrations/*.sql; do
+            echo "Replaying $migration"
+            psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 -f "$migration"
+          done
       - name: Verify RLS, grants and updated_at triggers
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
