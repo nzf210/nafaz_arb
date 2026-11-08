@@ -16,78 +16,107 @@ class CancelMixin:
     async def _cancel_pending_order_for_force_close(
         self, pair_key: str, orders: dict, order_label: str
     ) -> bool:
-        """
-        Cancels and then fetches the order from the venue. A cancel acknowledgement
-        is not proof that the order is terminal; fills racing cancellation are
-        reconciled before force close is allowed to continue.
-        """
+        """Cancel, verify terminal state, and reconcile any fill racing cancellation."""
         order_info = orders.get(pair_key)
         if not order_info:
             return True
+        identity = self._force_close_order_identity(pair_key, order_info, order_label)
+        if identity is None:
+            return False
+        order_id, symbol = identity
+        await self._request_force_close_order_cancel(order_id, symbol, order_label)
+        order = await self._fetch_force_close_terminal_order(order_id, symbol, order_label)
+        if order is None:
+            return False
+        status = str(order.get("status", "unknown")).lower()
+        if not self._is_terminal_force_close_order(status, order_id, order_label):
+            return False
+        filled = float(order.get("filled", 0.0) or 0.0)
+        if order_label == "entry":
+            if not await self._reconcile_cancelled_entry(pair_key, order_info, order, status, filled):
+                return False
+        elif order_label == "exit":
+            if not await self._reconcile_cancelled_exit(pair_key, orders, order_info, order_id, symbol, filled):
+                return False
+        logger.info(
+            "[Force Close] Verified terminal %s order %s (status=%s, filled=%s)",
+            order_label, order_id, status, filled,
+        )
+        return True
+
+    def _force_close_order_identity(self, pair_key: str, order_info: dict, order_label: str):
         order_id = str(order_info.get("order_id", ""))
         symbol = str(order_info.get("symbol", ""))
-        if not order_id or not symbol:
-            logger.critical(
-                f"[Force Close] cannot reconcile malformed {order_label} order "
-                f"record for {pair_key}; force close is blocked"
-            )
-            return False
+        if order_id and symbol:
+            return order_id, symbol
+        logger.critical(
+            "[Force Close] cannot reconcile malformed %s order record for %s; force close is blocked",
+            order_label, pair_key,
+        )
+        return None
+
+    async def _request_force_close_order_cancel(self, order_id: str, symbol: str, order_label: str) -> None:
         try:
             await self.client.cancel_local_order(order_id, symbol)
         except Exception:
             logger.exception(
-                f"cancel request failed for {order_label} order {order_id}; "
-                "checking final venue state"
+                "cancel request failed for %s order %s; checking final venue state",
+                order_label, order_id,
             )
 
+    async def _fetch_force_close_terminal_order(self, order_id: str, symbol: str, order_label: str):
         try:
             order = await self.client.fetch_local_order(order_id, symbol)
         except Exception:
             logger.exception(
-                f"cannot verify {order_label} order {order_id}; force close is blocked"
+                "cannot verify %s order %s; force close is blocked", order_label, order_id
             )
-            return False
-
-        if not isinstance(order, dict):
-            logger.critical(
-                f"invalid venue response while verifying {order_label} order {order_id}"
-            )
-            return False
-
-        status = str(order.get("status", "unknown")).lower()
-        if status not in ("closed", "canceled", "cancelled", "rejected", "expired"):
-            logger.critical(
-                f"{order_label} order {order_id} remains unconfirmed (status={status}); "
-                "force close is blocked"
-            )
-            return False
-
-        filled = float(order.get("filled", 0.0) or 0.0)
-        if order_label == "entry":
-            order_info["filled"] = filled
-            await self._handle_entry_fills(pair_key, order_info, order)
-            if self.states.get(pair_key) in (
-                PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
-            ):
-                return False
-            await self._finalize_entry_order(pair_key, status)
-        elif order_label == "exit":
-            already_closed = float(order_info.get("closed_short_qty", 0.0) or 0.0)
-            if filled > already_closed:
-                await self._process_pending_exit(pair_key, force_reconcile=True)
-                reconciled = float(order_info.get("closed_short_qty", 0.0) or 0.0)
-                if reconciled + 1e-12 < filled:
-                    logger.critical(
-                        f"exit fill for {order_id} was not fully hedged during cancellation; "
-                        "force close is blocked"
-                    )
-                    return False
-            orders.pop(pair_key, None)
-
-        logger.info(
-            f"[Force Close] Verified terminal {order_label} order {order_id} "
-            f"(status={status}, filled={filled})"
+            return None
+        if isinstance(order, dict):
+            return order
+        logger.critical(
+            "invalid venue response while verifying %s order %s", order_label, order_id
         )
+        return None
+
+    @staticmethod
+    def _is_terminal_force_close_order(status: str, order_id: str, order_label: str) -> bool:
+        terminal = ("closed", "canceled", "cancelled", "rejected", "expired")
+        if status in terminal:
+            return True
+        logger.critical(
+            "%s order %s remains unconfirmed (status=%s); force close is blocked",
+            order_label, order_id, status,
+        )
+        return False
+
+    async def _reconcile_cancelled_entry(
+        self, pair_key: str, order_info: dict, order: dict, status: str, filled: float
+    ) -> bool:
+        order_info["filled"] = filled
+        await self._handle_entry_fills(pair_key, order_info, order)
+        if self.states.get(pair_key) in (
+            PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+        ):
+            return False
+        await self._finalize_entry_order(pair_key, status)
+        return True
+
+    async def _reconcile_cancelled_exit(
+        self, pair_key: str, orders: dict, order_info: dict,
+        order_id: str, symbol: str, filled: float,
+    ) -> bool:
+        already_closed = float(order_info.get("closed_short_qty", 0.0) or 0.0)
+        if filled > already_closed:
+            await self._process_pending_exit(pair_key, force_reconcile=True)
+            reconciled = float(order_info.get("closed_short_qty", 0.0) or 0.0)
+            if reconciled + 1e-12 < filled:
+                logger.critical(
+                    "exit fill for %s was not fully hedged during cancellation; force close is blocked",
+                    order_id,
+                )
+                return False
+        orders.pop(pair_key, None)
         return True
 
     async def _cancel_pending_exit_for_force_close(self, pair_key: str) -> bool:

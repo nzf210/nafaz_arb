@@ -95,6 +95,8 @@ type Config struct {
 	FundingSubsidyFloorPct        float64        `json:"funding_subsidy_floor_pct"`
 	LocalPriceTick                float64        `json:"local_price_tick"`
 	GlobalFuturesExchange         string         `json:"global_futures_exchange"`
+	SpotExchanges                 []string       `json:"spot_exchanges,omitempty"`
+	PerpetualExchanges            []string       `json:"perpetual_exchanges,omitempty"`
 	EnableExecutorSignals         bool           `json:"enable_executor_signals"`
 	Telegram                      TelegramConfig `json:"telegram"`
 }
@@ -149,7 +151,8 @@ func (c *Config) setDefaults() {
 	c.SnipingWindowMinutes = defaultInt(c.SnipingWindowMinutes, 30)
 	c.FundingSubsidyFloorPct = defaultFloat(c.FundingSubsidyFloorPct, 0.08)
 	c.LocalPriceTick = defaultFloat(c.LocalPriceTick, 1.0)
-	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "binance")
+	// Empty means discover every enabled perpetual venue. Explicit values preserve legacy single-venue routing.
+	c.GlobalFuturesExchange = strings.ToLower(strings.TrimSpace(c.GlobalFuturesExchange))
 	c.Redis.Addr = defaultString(c.Redis.Addr, "localhost:6380")
 }
 
@@ -177,103 +180,6 @@ func defaultFloat(val, fallback float64) float64 {
 // AdaptiveSizingEnabled returns whether adaptive position sizing is enabled.
 func (c *Config) AdaptiveSizingEnabled() bool {
 	return c.EnableAdaptiveSizing == nil || *c.EnableAdaptiveSizing
-}
-
-func (c *Config) validate() error {
-	if strings.EqualFold(c.Mode, "LIVE") && len(strings.TrimSpace(c.APIAuthToken)) < 32 {
-		return fmt.Errorf("api_auth_token must contain at least 32 characters when mode=LIVE")
-	}
-	if c.ExecutionMode != "" && c.ExecutionMode != "TAKER_TAKER" && c.ExecutionMode != "MAKER_TAKER" {
-		return fmt.Errorf("execution_mode must be TAKER_TAKER or MAKER_TAKER")
-	}
-	for exchange, profile := range c.FeeProfiles {
-		for name, value := range map[string]*float64{
-			"spot_maker_fee_pct": profile.SpotMakerFeePct,
-			"spot_taker_fee_pct": profile.SpotTakerFeePct,
-			"perp_maker_fee_pct": profile.PerpMakerFeePct,
-			"perp_taker_fee_pct": profile.PerpTakerFeePct,
-		} {
-			if value != nil && (*value < 0 || *value > 100) {
-				return fmt.Errorf("fee_profiles.%s.%s must be in [0,100]", exchange, name)
-			}
-		}
-	}
-	if c.SpotMakerFeePct < 0 {
-		return fmt.Errorf("spot_maker_fee_pct cannot be negative")
-	}
-	if c.FeeAssetSurchargePct < 0 || c.FeeAssetSurchargePct > 100 {
-		return fmt.Errorf("fee_asset_surcharge_pct must be in [0,100]")
-	}
-	if c.MaxOrderTTLSeconds < 0 {
-		return fmt.Errorf("max_order_ttl_seconds cannot be negative")
-	}
-	if c.MaxOrderBookAgeSeconds < 0 {
-		return fmt.Errorf("max_order_book_age_seconds cannot be negative")
-	}
-	if c.WebSocketBookMaxAgeSeconds < 0 {
-		return fmt.Errorf("websocket_book_max_age_seconds cannot be negative")
-	}
-	if c.MaxCrossExchangeSkewSeconds < 0 {
-		return fmt.Errorf("max_cross_exchange_skew_seconds cannot be negative")
-	}
-	if c.MinTopOfBookQuoteUSDT < 0 {
-		return fmt.Errorf("min_top_of_book_quote_usdt cannot be negative")
-	}
-	if c.MaxOrderBookImbalance < 0 || c.MaxOrderBookImbalance > 1 {
-		return fmt.Errorf("max_order_book_imbalance must be in [0,1]")
-	}
-	if c.SpikeSpreadPct < 0 {
-		return fmt.Errorf("spike_spread_pct cannot be negative")
-	}
-	if c.MinSpikeScans < 0 {
-		return fmt.Errorf("min_spike_scans cannot be negative")
-	}
-	if c.MaxLastTradeAgeSeconds < 0 {
-		return fmt.Errorf("max_last_trade_age_seconds cannot be negative")
-	}
-	if c.FXRateSanityPct < 0 || c.FXRateSanityPct > 100 {
-		return fmt.Errorf("fx_rate_sanity_pct must be in [0,100]")
-	}
-	if c.ExchangeErrorWindowSeconds < 0 {
-		return fmt.Errorf("exchange_error_window_seconds cannot be negative")
-	}
-	if c.ExchangeErrorRateThreshold < 0 || c.ExchangeErrorRateThreshold > 1 {
-		return fmt.Errorf("exchange_error_rate_threshold must be in [0,1]")
-	}
-	if c.ExchangeErrorMinRequests < 0 {
-		return fmt.Errorf("exchange_error_min_requests cannot be negative")
-	}
-	if c.EmptyBookFreezeMinutes < 0 {
-		return fmt.Errorf("empty_book_freeze_minutes cannot be negative")
-	}
-	if c.MinAllocatedCapital < 0 {
-		return fmt.Errorf("min_allocated_capital cannot be negative")
-	}
-	if c.SyntheticUSDTIDRRate < 0 {
-		return fmt.Errorf("synthetic_usdt_idr_rate cannot be negative")
-	}
-	if c.AllocationPerPair <= 0 || c.AllocationPerPair > 1 {
-		return fmt.Errorf("allocation_per_pair must be in (0,1]")
-	}
-	if c.CapitalTotal <= 0 {
-		return fmt.Errorf("capital_total must be positive")
-	}
-	if c.MinNetROIPct > c.MaxNetROIPct {
-		return fmt.Errorf("min_net_roi_pct must not exceed max_net_roi_pct")
-	}
-	if c.EstimatedHoldingHours < 0 {
-		return fmt.Errorf("estimated_holding_hours cannot be negative")
-	}
-	if c.MinFundingRate < 0 {
-		return fmt.Errorf("min_funding_rate cannot be negative")
-	}
-	if c.Telegram.AlertMinNetROIPct < 0 {
-		return fmt.Errorf("telegram.alert_min_net_roi_pct cannot be negative")
-	}
-	if c.Telegram.AlertMinNetProfitQuote < 0 {
-		return fmt.Errorf("telegram.alert_min_net_profit_quote cannot be negative")
-	}
-	return nil
 }
 
 func setEnvString(target *string, key string) {
@@ -346,6 +252,8 @@ func (c *Config) applyEnvOverrides() {
 	setEnvBool(&c.EnableWebSocketFeed, "ENABLE_WEBSOCKET_FEED")
 	setEnvInt(&c.WebSocketBookMaxAgeSeconds, "WEBSOCKET_BOOK_MAX_AGE_SECONDS")
 	setEnvString(&c.GlobalFuturesExchange, "GLOBAL_FUTURES_EXCHANGE")
+	setEnvSlice(&c.SpotExchanges, "SPOT_EXCHANGES")
+	setEnvSlice(&c.PerpetualExchanges, "PERPETUAL_EXCHANGES")
 	setEnvBool(&c.EnableExecutorSignals, "ENABLE_EXECUTOR_SIGNALS")
 	setEnvSlice(&c.ExcludedSymbols, "EXCLUDED_SYMBOLS")
 }

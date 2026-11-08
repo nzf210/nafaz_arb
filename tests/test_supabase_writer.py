@@ -123,6 +123,14 @@ class TestPositions:
         writer.position_opened("p", _pos(), None, is_mock=False)
         assert _drain(writer)[0][2]["is_mock"] is False
 
+    def test_persisted_global_symbol_prefers_exact_position_contract(self):
+        writer = _writer()
+        pos = _pos(global_symbol="ETH/USDC:USDC")
+        writer.position_opened("p", pos, None, is_mock=False)
+        row = _drain(writer)[0][2]
+        assert row["global_symbol"] == "ETH/USDC:USDC"
+        assert row["state_snapshot"]["global_symbol"] == "ETH/USDC:USDC"
+
 
 class TestOrdersAndFills:
     def test_order_upsert_uses_client_order_id_key(self):

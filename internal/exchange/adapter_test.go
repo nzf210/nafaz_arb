@@ -54,3 +54,47 @@ func TestMatchMarketsWithSynthetic(t *testing.T) {
 		t.Fatal("expected toko:SOLBIDR to pair with SOL_USDT")
 	}
 }
+
+
+func TestMatchMarketsForExchangesBuildsIndependentRoutes(t *testing.T) {
+	spot := []domain.Market{
+		{Exchange: "indodax", Symbol: "btcidr", BaseAsset: "BTC", QuoteAsset: "IDR", MarketType: "SPOT", Active: true},
+		{Exchange: "tokocrypto", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "SPOT", Active: true},
+		{Exchange: "mexc", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "SPOT", Active: true},
+	}
+	perp := []domain.Market{
+		{Exchange: "okx", Symbol: "BTC-USDT-SWAP", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+		{Exchange: "mexc", Symbol: "BTC_USDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+		{Exchange: "binance", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+	}
+
+	routes := MatchMarketsForExchanges(
+		spot, perp, []string{"USDT", "USDC"},
+		[]string{"indodax", "tokocrypto"},
+		[]string{"okx", "mexc", "binance"},
+		true,
+	)
+	if len(routes) != 6 {
+		t.Fatalf("expected 2 approved spot venues x 3 perp venues = 6 routes, got %d", len(routes))
+	}
+	for _, route := range routes {
+		if route[0].Exchange != "indodax" && route[0].Exchange != "tokocrypto" {
+			t.Errorf("unapproved spot venue entered route: %s", route[0].Exchange)
+		}
+		if route[1].Exchange == "mexc" && route[0].Exchange == "mexc" {
+			t.Error("foreign spot venue must not enter the configured spot universe")
+		}
+	}
+}
+
+func TestMatchMarketsForExchangesEmptyAllowlistMeansAllDiscovered(t *testing.T) {
+	spot := []domain.Market{{Exchange: "indodax", Symbol: "btcidr", BaseAsset: "BTC", QuoteAsset: "IDR", MarketType: "SPOT", Active: true}}
+	perp := []domain.Market{
+		{Exchange: "okx", Symbol: "BTC-USDT-SWAP", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+		{Exchange: "mexc", Symbol: "BTC_USDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+	}
+	routes := MatchMarketsForExchanges(spot, perp, []string{"USDT"}, nil, nil, true)
+	if len(routes) != 2 {
+		t.Fatalf("empty allowlists should retain all discovered perp routes, got %d", len(routes))
+	}
+}

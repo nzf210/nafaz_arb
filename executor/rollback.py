@@ -34,6 +34,9 @@ class RollbackMixin:
         and ``error`` then carries the last failure so the operator event can say
         what went wrong.
         """
+        if hasattr(self.client, "set_route"):
+            local_name, global_name = self._pair_venues(pair_tag)
+            self.client.set_route(local_name, global_name)
         max_retries = 4  # 5 total attempts
         # One id for the whole retry sequence: every attempt is the same logical
         # order, so the venue can reject duplicates rather than sell twice.
@@ -87,86 +90,100 @@ class RollbackMixin:
     async def _hedge_may_be_open(
         self, pair_tag: str, global_symbol: str, error: Exception
     ) -> bool:
-        """
-        Returns True when a futures short MIGHT be open after a hedge error.
-
-        Only a venue-confirmed zero position is safe to roll back against. Any
-        query failure or unexpected payload blocks the rollback (fail-safe):
-        a wrongly-cancelled rollback leaves unhedged spot (recoverable by an
-        operator), whereas a wrong rollback on an open short inverts exposure.
-        """
+        """Return True unless the venue confirms there is no futures exposure."""
         if not global_symbol:
             return True
-        try:
-            positions = await self.client.fetch_positions(global_symbol)
-        except AttributeError:
-            # Client without fetch_positions (e.g. some mocks): cannot confirm.
-            logger.warning(
-                f"[Hedge Ambiguity] {pair_tag}: client lacks fetch_positions; treating hedge state as unknown"
-            )
-            return True
-        except Exception as exc:
-            logger.warning(
-                f"[Hedge Ambiguity] {pair_tag}: position query failed ({exc}); treating hedge state as unknown"
-            )
+        positions = await self._fetch_hedge_positions(pair_tag, global_symbol)
+        if positions is None:
             return True
         if not positions:
             return False
-        total = 0.0
+        total_exposure = 0.0
         for position in positions:
-            if not isinstance(position, dict):
-                logger.critical(
-                    f"[Hedge Ambiguity] {pair_tag}: malformed futures position; "
-                    "spot rollback blocked"
-                )
+            exposure = self._parse_hedge_position_exposure(pair_tag, position)
+            if exposure is None:
                 return True
-            info = position.get("info") or {}
-            raw_contracts = position.get("contracts")
-            if raw_contracts is not None:
-                try:
-                    qty = abs(float(raw_contracts)) * abs(
-                        float(position.get("contractSize") or 1.0)
-                    )
-                except (TypeError, ValueError):
-                    return True
-                if not math.isfinite(qty):
-                    return True
-                if qty <= 1e-12:
-                    continue
-                side = str(
-                    position.get("side")
-                    or position.get("positionSide")
-                    or info.get("posSide")
-                    or info.get("positionSide")
-                    or ""
-                ).lower()
-                if side == "short":
-                    total += qty
-                elif side == "long":
-                    total -= qty
-                else:
-                    return True
-                continue
-
-            raw_amount = position.get("positionAmt", info.get("positionAmt"))
-            if raw_amount is None:
-                return True
-            try:
-                signed_amount = float(raw_amount)
-            except (TypeError, ValueError):
-                return True
-            if not math.isfinite(signed_amount):
-                return True
-            # Binance-style positionAmt is signed: negative is short, positive long.
-            total -= signed_amount
-        if abs(total) > 1e-12:
+            total_exposure += exposure
+        if abs(total_exposure) > 1e-12:
             logger.critical(
-                f"[Hedge Ambiguity] {pair_tag}: venue reports non-flat futures exposure "
-                f"(net short {total}) on {global_symbol} despite hedge error "
-                f"({error}) - spot NOT rolled back"
+                "[Hedge Ambiguity] %s: venue reports non-flat futures exposure "
+                "(net short %s) on %s despite hedge error (%s) - spot NOT rolled back",
+                pair_tag, total_exposure, global_symbol, error,
             )
             return True
         return False
+
+    async def _fetch_hedge_positions(self, pair_tag: str, global_symbol: str):
+        try:
+            local_name, global_name = self._pair_venues(pair_tag)
+            if hasattr(self.client, "set_route"):
+                self.client.set_route(local_name, global_name)
+            return await self.client.fetch_positions(global_symbol)
+        except AttributeError:
+            logger.warning(
+                "[Hedge Ambiguity] %s: client lacks fetch_positions; treating hedge state as unknown",
+                pair_tag,
+            )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "[Hedge Ambiguity] %s: position query failed (%s); treating hedge state as unknown",
+                pair_tag, exc,
+            )
+            return None
+
+    def _parse_hedge_position_exposure(self, pair_tag: str, position: dict) -> Optional[float]:
+        if not isinstance(position, dict):
+            logger.critical(
+                "[Hedge Ambiguity] %s: malformed futures position; spot rollback blocked",
+                pair_tag,
+            )
+            return None
+        info = position.get("info") or {}
+        contracts = position.get("contracts")
+        if contracts is not None:
+            return self._parse_contract_exposure(pair_tag, position, info, contracts)
+        return self._parse_signed_position_exposure(position, info)
+
+    def _parse_contract_exposure(self, pair_tag: str, position: dict, info: dict, contracts) -> Optional[float]:
+        try:
+            quantity = abs(float(contracts)) * abs(float(position.get("contractSize") or 1.0))
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(quantity):
+            return None
+        if quantity <= 1e-12:
+            return 0.0
+        side = self._resolve_position_side(position, info)
+        if side == "short":
+            return quantity
+        if side == "long":
+            return -quantity
+        logger.critical(
+            "[Hedge Ambiguity] %s: futures position side cannot be verified; spot rollback blocked",
+            pair_tag,
+        )
+        return None
+
+    @staticmethod
+    def _resolve_position_side(position: dict, info: dict) -> str:
+        return str(
+            position.get("side") or position.get("positionSide")
+            or info.get("posSide") or info.get("positionSide") or ""
+        ).lower()
+
+    @staticmethod
+    def _parse_signed_position_exposure(position: dict, info: dict) -> Optional[float]:
+        raw_amount = position.get("positionAmt", info.get("positionAmt"))
+        if raw_amount is None:
+            return None
+        try:
+            signed_amount = float(raw_amount)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(signed_amount):
+            return None
+        return -signed_amount
 
     async def _release_unhedged_reserve(
         self,
