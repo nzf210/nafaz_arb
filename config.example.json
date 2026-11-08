@@ -103,7 +103,6 @@
     },
     "supabase": {
         "enabled": false,
-        "url": "",
-        "key": ""
+        "url": ""
     }
 }
