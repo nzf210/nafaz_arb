@@ -1,0 +1,68 @@
+name: Complexity and modularity gate
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "refactor/**"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  python-complexity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Radon
+        run: python -m pip install radon
+      - name: Enforce Python cyclomatic complexity <= 10
+        shell: bash
+        run: |
+          radon cc -s -n C executor tests > /tmp/python-complexity.txt
+          cat /tmp/python-complexity.txt
+          test ! -s /tmp/python-complexity.txt
+
+  go-complexity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install gocyclo
+        run: go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+      - name: Enforce Go cyclomatic complexity <= 10
+        shell: bash
+        run: |
+          "$(go env GOPATH)/bin/gocyclo" -over 10 ./... > /tmp/go-complexity.txt
+          cat /tmp/go-complexity.txt
+          test ! -s /tmp/go-complexity.txt
+
+  file-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce maximum 500 lines per source and test file
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          roots = (Path("executor"), Path("internal"), Path("tests"))
+          violations = []
+          for root in roots:
+              for path in root.rglob("*"):
+                  if path.suffix not in {".py", ".go"} or not path.is_file():
+                      continue
+                  count = len(path.read_text(encoding="utf-8").splitlines())
+                  if count > 500:
+                      violations.append((count, str(path)))
+          for count, path in sorted(violations, reverse=True):
+              print(f"{path}: {count} lines (maximum 500)")
+          if violations:
+              raise SystemExit(1)
+          print("All Python and Go source/test files are at most 500 lines.")
+          PY
