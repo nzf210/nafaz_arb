@@ -94,25 +94,15 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 		return result, false, fmt.Errorf("perpetual market discovery: %w", err)
 	}
 	result.TotalMarkets = len(spot) + len(perp)
+	// Match direct quote assets and, when enabled, synthesize IDR/BIDR spot
+	// markets against USDT perpetuals. IDR order books are normalized using
+	// the live USDT/IDR ticker inside evaluatePair before spread calculation.
 	pairs := exchange.MatchMarketsWithSynthetic(spot, perp, s.cfg.QuoteAssets, s.cfg.EnableSyntheticIDR)
 	if len(s.cfg.ExcludedSymbols) > 0 {
 		pairs = s.filterExcludedSymbols(pairs)
 	}
 	result.MatchedPairs = len(pairs)
 	result.MarketDiscoveryDurationMS = time.Since(marketDiscoveryStarted).Milliseconds()
-
-	// IDR/BIDR spot books can only be compared with USDT perpetual books
-	// after a live USDT/IDR quote has been verified. Fail the scan before
-	// evaluating any pair rather than mixing valid and invalid FX pricing.
-	if containsIDRSpotPair(pairs) {
-		fxRate, ok := s.getUSDTIDRRate(ctx)
-		if !ok {
-			return result, false, fmt.Errorf("FX preflight: USDT/IDR live ticker unavailable; scan aborted because IDR pairs require a live conversion rate")
-		}
-		if err := validateFXRateSanity(fxRate, s.cfg.SyntheticUSDTIDRRate, s.cfg.FXRateSanityPct); err != nil {
-			return result, false, fmt.Errorf("FX preflight: %w", err)
-		}
-	}
 
 	activePairs, frozenCount := s.filterActivePairs(pairs, started)
 	result.ActivePairs = len(activePairs)

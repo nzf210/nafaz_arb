@@ -831,56 +831,98 @@ func (f *failingFXAdapter) FundingRate(ctx context.Context, symbol string) (doma
 // ever acceptable for IDR spread math.
 func TestFXFallbackExcludesPair(t *testing.T) {
 	cfg := config.Config{
-		Mode:                 "MOCK",
-		ExecutionMode:        "MAKER_TAKER",
-		QuoteAssets:          []string{"USDT"},
-		EnableSyntheticIDR:   true,
-		SyntheticUSDTIDRRate: 16000.0,
-		CapitalTotal:         1000,
-		AllocationPerPair:    0.5,
-		PerpLeverage:         1,
+		Mode: "MOCK", ExecutionMode: "MAKER_TAKER", QuoteAssets: []string{"USDT"},
+		EnableSyntheticIDR: true, SyntheticUSDTIDRRate: 16000.0,
+		CapitalTotal: 1000, AllocationPerPair: 0.5, PerpLeverage: 1,
 	}
 	s := New(cfg, &failingFXAdapter{})
 	r, complete, err := s.Scan(context.Background())
-	if err == nil || complete {
-		t.Fatalf("expected FX preflight to abort scan, err=%v complete=%v", err, complete)
+	if err != nil || !complete {
+		t.Fatalf("FX failure for an IDR pair must not abort the scan, err=%v complete=%v", err, complete)
 	}
-	if r.Complete {
-		t.Fatal("scan result must be marked incomplete when FX preflight fails")
-	}
-	if !strings.Contains(err.Error(), "USDT/IDR live ticker unavailable") {
-		t.Fatalf("unexpected FX preflight error: %v", err)
-	}
-	// IDR pairs must be absent from the result entirely (skipped, not just excluded).
-	for _, op := range r.Opportunities {
-		if strings.EqualFold(op.QuoteAsset, "IDR") || strings.EqualFold(op.QuoteAsset, "BIDR") {
-			t.Fatalf("IDR pair must be skipped when live FX ticker fails, got opportunity %+v", op)
-		}
-	}
-	// The failed preflight must be visible in the result payload too.
-	if len(r.Errors) == 0 || !strings.Contains(r.Errors[len(r.Errors)-1], "USDT/IDR live ticker unavailable") {
-		t.Fatalf("expected FX-unavailable error in scan errors, got %v", r.Errors)
+	if r.FailedPairs != 1 || len(r.Errors) == 0 || !strings.Contains(r.Errors[0], "USDT/IDR live ticker unavailable") {
+		t.Fatalf("expected visible pair-level FX error, failed=%d errors=%v", r.FailedPairs, r.Errors)
 	}
 }
 
 func TestFXPreflightRejectsNonFiniteRate(t *testing.T) {
 	cfg := config.Config{
-		Mode:                 "MOCK",
-		QuoteAssets:          []string{"USDT"},
-		EnableSyntheticIDR:   true,
-		SyntheticUSDTIDRRate: 16000,
-		CapitalTotal:         1000,
-		AllocationPerPair:    0.5,
-		PerpLeverage:         1,
+		Mode: "MOCK", QuoteAssets: []string{"USDT"}, EnableSyntheticIDR: true,
+		SyntheticUSDTIDRRate: 16000, CapitalTotal: 1000, AllocationPerPair: 0.5, PerpLeverage: 1,
 	}
 	adapter := &syntheticMockAdapter{idrRate: math.NaN()}
 	s := New(cfg, adapter)
-	_, complete, err := s.Scan(context.Background())
-	if err == nil || complete {
-		t.Fatalf("expected non-finite FX rate to abort scan, err=%v complete=%v", err, complete)
+	r, complete, err := s.Scan(context.Background())
+	if err != nil || !complete {
+		t.Fatalf("invalid FX must skip only the IDR pair, err=%v complete=%v", err, complete)
 	}
-	if !strings.Contains(err.Error(), "USDT/IDR live ticker unavailable") {
-		t.Fatalf("unexpected error for non-finite FX rate: %v", err)
+	if r.FailedPairs != 1 || len(r.Errors) == 0 || !strings.Contains(r.Errors[0], "USDT/IDR live ticker unavailable") {
+		t.Fatalf("expected visible pair-level invalid-FX error, failed=%d errors=%v", r.FailedPairs, r.Errors)
+	}
+}
+
+type mixedFXAdapter struct {
+	failingFXAdapter
+}
+
+func (m *mixedFXAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
+	return []domain.Market{
+		{Exchange: "indodax", Symbol: "solbidr", BaseAsset: "SOL", QuoteAsset: "BIDR", MarketType: "SPOT", Active: true},
+		{Exchange: "tokocrypto", Symbol: "btcusdt", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "SPOT", Active: true},
+	}, nil
+}
+
+func (m *mixedFXAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, error) {
+	return []domain.Market{
+		{Exchange: "okx", Symbol: "SOL-USDT-SWAP", BaseAsset: "SOL", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+		{Exchange: "okx", Symbol: "BTC-USDT-SWAP", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+	}, nil
+}
+
+func (m *mixedFXAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	if symbol == "btcusdt" {
+		return domain.OrderBook{
+			Exchange: "tokocrypto", Symbol: symbol, Timestamp: time.Now().UTC(),
+			Bids: []domain.PriceLevel{{Price: 100, Quantity: 10}},
+			Asks: []domain.PriceLevel{{Price: 101, Quantity: 10}},
+		}, nil
+	}
+	return m.failingFXAdapter.SpotOrderBook(ctx, symbol)
+}
+
+func (m *mixedFXAdapter) PerpetualOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	if symbol == "BTC-USDT-SWAP" {
+		return domain.OrderBook{
+			Exchange: "okx", Symbol: symbol, Timestamp: time.Now().UTC(),
+			Bids: []domain.PriceLevel{{Price: 105, Quantity: 10}},
+			Asks: []domain.PriceLevel{{Price: 106, Quantity: 10}},
+		}, nil
+	}
+	return m.failingFXAdapter.PerpetualOrderBook(ctx, symbol)
+}
+
+func TestIDRFXFailureDoesNotBlockDirectUSDTMarkets(t *testing.T) {
+	cfg := config.Config{
+		Mode: "MOCK", ExecutionMode: "TAKER_TAKER",
+		QuoteAssets: []string{"USDT", "USDC"}, EnableSyntheticIDR: true,
+		SyntheticUSDTIDRRate: 16000, CapitalTotal: 1000,
+		AllocationPerPair: 0.5, PerpLeverage: 1,
+		EstimatedHoldingHours: 8, MinNetROIPct: 0.1, MaxNetROIPct: 20,
+		CheckOpenPositions: false,
+	}
+	s := New(cfg, &mixedFXAdapter{})
+	r, complete, err := s.Scan(context.Background())
+	if err != nil || !complete {
+		t.Fatalf("IDR FX failure must not abort direct-quote scan, err=%v complete=%v", err, complete)
+	}
+	if r.MatchedPairs != 2 {
+		t.Fatalf("matched pairs=%d, want 2 (one synthetic IDR and one direct USDT)", r.MatchedPairs)
+	}
+	if r.FailedPairs != 1 || len(r.Errors) != 1 || !strings.Contains(r.Errors[0], "USDT/IDR live ticker unavailable") {
+		t.Fatalf("expected only IDR pair to fail visibly, failed=%d errors=%v", r.FailedPairs, r.Errors)
+	}
+	if len(r.Opportunities) != 1 || r.Opportunities[0].SpotSymbol != "btcusdt" {
+		t.Fatalf("direct USDT pair should still be evaluated, opportunities=%+v", r.Opportunities)
 	}
 }
 
