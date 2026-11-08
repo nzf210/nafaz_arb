@@ -71,7 +71,7 @@ def test_live_factory_builds_each_venue_with_correct_market_type(monkeypatch):
     cfg.spot_exchanges = ["indodax", "tokocrypto"]
     cfg.perpetual_exchanges = ["okx", "mexc", "binance", "bybit"]
     cfg.exchanges = {
-        name: ExchangeCredentials(api_key=f"{name}-key", api_secret=f"fixture-{name}-value",
+        name: ExchangeCredentials(api_key=f"{name}-key", api_secret=f"unit-test-{name}",
                                   passphrase="okx-pass" if name == "okx" else None)
         for name in ("indodax", "tokocrypto", "okx", "mexc", "binance", "bybit")
     }
