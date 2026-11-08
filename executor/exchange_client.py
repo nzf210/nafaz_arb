@@ -289,6 +289,42 @@ class ExchangeClient:
             "stablecoin_peg_assumed": local_quote == "USDC" or global_quote == "USDC",
         }
 
+    async def fetch_account_positions_report(self) -> list:
+        """Fetch every configured perpetual account's non-zero position snapshot."""
+        reports = []
+        for name, exchange in self.perpetual_clients.items():
+            try:
+                fetcher = getattr(exchange, "fetch_positions", None)
+                if not callable(fetcher):
+                    raise NotImplementedError("fetch_positions is unavailable")
+                positions = await fetcher()
+                if not isinstance(positions, (list, tuple)):
+                    raise ValueError("invalid account positions payload")
+                reports.append({"name": name, "status": "ok", "positions": list(positions)})
+            except Exception as exc:
+                reports.append({"name": name, "status": "error", "error": str(exc), "positions": []})
+        return reports
+
+    async def fetch_account_open_orders_report(self) -> list:
+        """Fetch every configured spot/perpetual venue's open orders."""
+        reports = []
+        exchanges = [(name, "spot", ex) for name, ex in self.spot_clients.items()]
+        exchanges += [(name, "perpetual", ex) for name, ex in self.perpetual_clients.items()]
+        for name, market, exchange in exchanges:
+            try:
+                fetcher = getattr(exchange, "fetch_open_orders", None)
+                if not callable(fetcher):
+                    raise NotImplementedError("fetch_open_orders is unavailable")
+                orders = await fetcher()
+                if not isinstance(orders, (list, tuple)):
+                    raise ValueError("invalid open orders payload")
+                if any(not isinstance(order, dict) or not order.get("id") for order in orders):
+                    raise ValueError("open orders contain malformed order identity")
+                reports.append({"name": name, "market": market, "status": "ok", "orders": list(orders)})
+            except Exception as exc:
+                reports.append({"name": name, "market": market, "status": "error", "error": str(exc), "orders": []})
+        return reports
+
     async def fetch_positions(self, symbol: str) -> list:
         """Fetches open futures positions for a symbol (global exchange).
 

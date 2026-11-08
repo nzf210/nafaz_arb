@@ -145,6 +145,147 @@ class ArbitrageEngine(
         await self._recover_pending_entry_orders()
         if not getattr(self.config, "mock_mode", False):
             await self._verify_recovered_active_positions()
+            await self._verify_account_wide_exchange_state()
+
+    async def _verify_account_wide_exchange_state(self) -> None:
+        """
+        Fail closed on untracked futures exposure or unknown resting orders.
+
+        Per-symbol recovery checks prove only the positions already present in
+        Redis. This account-wide pass also discovers manual/foreign positions
+        and orders that the executor does not own.
+        """
+        positions_reader = getattr(self.client, "fetch_account_positions_report", None)
+        orders_reader = getattr(self.client, "fetch_account_open_orders_report", None)
+        if not callable(positions_reader) or not callable(orders_reader):
+            reason = "account-wide positions/open-orders readers are unavailable"
+            for venue in getattr(self.client, "perpetual_clients", {}):
+                self._exchange_halted[venue] = reason
+            for venue in getattr(self.client, "spot_clients", {}):
+                self._exchange_halted[venue] = reason
+            logger.critical(f"[Reconciliation] {reason}; all live entries blocked")
+            return
+
+        def norm_symbol(value: str) -> str:
+            return str(value or "").split(":")[0].replace("/", "").replace("-", "").replace("_", "").upper()
+
+        expected_by_venue: Dict[str, Dict[str, float]] = {}
+        tags_by_venue_symbol: Dict[tuple, list] = {}
+        for pair_tag, pos in self.active_positions.items():
+            venue = str(pos.global_exchange or "").lower()
+            symbol = self._resolve_global_symbol(pos.symbol)
+            key = (venue, norm_symbol(symbol))
+            expected_by_venue.setdefault(venue, {})[norm_symbol(symbol)] = (
+                expected_by_venue.setdefault(venue, {}).get(norm_symbol(symbol), 0.0)
+                + float(pos.qty)
+            )
+            tags_by_venue_symbol.setdefault(key, []).append(pair_tag)
+
+        try:
+            position_reports = await positions_reader()
+            order_reports = await orders_reader()
+        except Exception as exc:
+            reason = f"account-wide exchange state query failed: {exc}"
+            for venue in set(getattr(self.client, "perpetual_clients", {})) | set(getattr(self.client, "spot_clients", {})):
+                self._exchange_halted[venue] = reason
+            logger.exception("[Reconciliation] account-wide exchange state unavailable")
+            return
+
+        for report in position_reports or []:
+            venue = str(report.get("name") or "").lower()
+            if report.get("status") != "ok":
+                self._exchange_halted[venue] = f"cannot read account positions: {report.get('error', 'unknown error')}"
+                continue
+            actual: Dict[str, float] = {}
+            malformed_reason = ""
+            for position in report.get("positions") or []:
+                if not isinstance(position, dict):
+                    malformed_reason = "malformed futures position row"
+                    break
+                symbol = position.get("symbol")
+                if not symbol:
+                    malformed_reason = "futures position missing symbol"
+                    break
+                info = position.get("info") or {}
+                side = str(position.get("side") or info.get("posSide") or info.get("positionSide") or "").lower()
+                try:
+                    contracts = position.get("contracts")
+                    if contracts is not None:
+                        size = abs(float(contracts)) * abs(float(position.get("contractSize") or 1.0))
+                    else:
+                        raw_amount = position.get("positionAmt", info.get("positionAmt"))
+                        if raw_amount is None:
+                            malformed_reason = f"position size unavailable for {symbol}"
+                            break
+                        signed_amount = float(raw_amount)
+                        size = abs(signed_amount)
+                        if not side:
+                            side = "short" if signed_amount < 0 else "long"
+                    if not math.isfinite(size) or size < 0:
+                        malformed_reason = f"invalid position size for {symbol}"
+                        break
+                except (TypeError, ValueError):
+                    malformed_reason = f"invalid position size for {symbol}"
+                    break
+                if size <= 1e-12:
+                    continue
+                if side != "short":
+                    malformed_reason = f"unexpected {side or 'unknown-side'} futures exposure on {symbol}"
+                    break
+                normalized = norm_symbol(symbol)
+                actual[normalized] = actual.get(normalized, 0.0) + size
+
+            if malformed_reason:
+                self._exchange_halted[venue] = malformed_reason
+                logger.critical(f"[Reconciliation] {venue}: {malformed_reason}")
+                continue
+
+            expected = expected_by_venue.get(venue, {})
+            for symbol in set(expected) | set(actual):
+                expected_qty = expected.get(symbol, 0.0)
+                actual_qty = actual.get(symbol, 0.0)
+                tolerance = max(1e-10, expected_qty * 1e-4)
+                if abs(expected_qty - actual_qty) <= tolerance:
+                    continue
+                reason = (
+                    f"account-wide futures mismatch for {symbol}: "
+                    f"recorded={expected_qty}, exchange={actual_qty}"
+                )
+                self._exchange_halted[venue] = reason
+                logger.critical(f"[Reconciliation] {venue}: {reason}")
+                for pair_tag in tags_by_venue_symbol.get((venue, symbol), []):
+                    pos = self.active_positions[pair_tag]
+                    pos.state = "RECONCILIATION_REQUIRED"
+                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                    self._mark_failed(
+                        pair_tag,
+                        "ACCOUNT_POSITION_MISMATCH",
+                        reason,
+                        detail={"exchange": venue, "symbol": symbol, "recorded_qty": expected_qty, "actual_qty": actual_qty},
+                        state=PositionState.RECONCILIATION_REQUIRED,
+                    )
+
+        known_spot_order_ids = {
+            str(info.get("order_id"))
+            for info in list(self.pending_entry_orders.values()) + list(self.pending_exit_orders.values())
+            if info.get("order_id")
+        }
+        for report in order_reports or []:
+            venue = str(report.get("name") or "").lower()
+            market = str(report.get("market") or "")
+            if report.get("status") != "ok":
+                self._exchange_halted[venue] = f"cannot read {market} open orders: {report.get('error', 'unknown error')}"
+                continue
+            for order in report.get("orders") or []:
+                order_id = str(order.get("id") or "")
+                # The executor only intentionally leaves spot entry/exit orders
+                # resting. Futures orders are market-only and must be terminal.
+                known = market == "spot" and order_id in known_spot_order_ids
+                if known:
+                    continue
+                reason = f"untracked {market} open order {order_id} on {venue}"
+                self._exchange_halted[venue] = reason
+                logger.critical(f"[Reconciliation] {reason}; new entries blocked")
 
     async def _verify_recovered_active_positions(self) -> None:
         """
