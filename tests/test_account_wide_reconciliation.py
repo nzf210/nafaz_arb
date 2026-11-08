@@ -8,10 +8,14 @@ from executor.models import ActivePosition
 
 
 class AccountStateClient:
-    def __init__(self, positions=None, orders=None, tokocrypto_orders=None):
+    def __init__(self, positions=None, orders=None, tokocrypto_orders=None, balances=None):
         self.positions = positions or []
         self.orders = orders or []
         self.tokocrypto_orders = tokocrypto_orders or []
+        self.balances = balances or []
+
+    async def fetch_balance_report(self):
+        return self.balances
 
     async def fetch_account_positions_report(self):
         return [{"name": "okx", "status": "ok", "positions": self.positions}]
@@ -144,3 +148,30 @@ async def test_open_order_id_from_one_spot_venue_does_not_whitelist_another(fake
 
     assert "indodax" not in engine._exchange_halted
     assert "tokocrypto" in engine._exchange_halted
+
+
+@pytest.mark.asyncio
+async def test_account_wide_reconciliation_halts_when_spot_inventory_is_short(fake_redis):
+    client = AccountStateClient(balances=[{
+        "name": "indodax",
+        "market": "spot",
+        "status": "ok",
+        "assets": [{"asset": "BTC", "free": 0.001, "used": 0.001, "total": 0.002}],
+    }])
+    engine = _engine(fake_redis, client)
+    engine.active_positions["indodax:btc_idr"] = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        global_symbol="BTC/USDT:USDT",
+        entry_price_idr=1_000_000_000,
+        short_entry_usdt=65_000,
+        qty=0.005,
+        spot_cost_usdt=50,
+        futures_margin_usdt=50,
+    )
+
+    await engine._verify_account_wide_exchange_state()
+
+    assert "indodax" in engine._exchange_halted
+    assert "spot inventory shortfall" in engine._exchange_halted["indodax"]

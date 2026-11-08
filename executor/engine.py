@@ -305,6 +305,74 @@ class ArbitrageEngine(
                 self._exchange_halted[venue] = reason
                 logger.critical(f"[Reconciliation] {reason}; new entries blocked")
 
+        # Confirm that every recorded spot leg is still backed by the venue's
+        # actual base-asset inventory. Extra inventory is not assumed to be bot
+        # exposure, but a shortfall means the paired position is no longer backed.
+        expected_spot: Dict[str, Dict[str, float]] = {}
+        tags_by_spot_asset: Dict[tuple, list] = {}
+        for pair_tag, pos in self.active_positions.items():
+            venue = str(pos.local_exchange or "").lower()
+            local_symbol = str(pos.symbol or "").upper()
+            base_asset = local_symbol.split(":")[0].replace("/", "_").replace("-", "_").split("_")[0]
+            if not venue or not base_asset:
+                continue
+            expected_spot.setdefault(venue, {})[base_asset] = (
+                expected_spot.setdefault(venue, {}).get(base_asset, 0.0) + float(pos.qty)
+            )
+            tags_by_spot_asset.setdefault((venue, base_asset), []).append(pair_tag)
+
+        if expected_spot:
+            balance_reader = getattr(self.client, "fetch_balance_report", None)
+            if not callable(balance_reader):
+                for venue in expected_spot:
+                    self._exchange_halted[venue] = "spot balance reader unavailable for active-position reconciliation"
+            else:
+                try:
+                    balance_reports = await balance_reader()
+                except Exception as exc:
+                    balance_reports = []
+                    for venue in expected_spot:
+                        self._exchange_halted[venue] = f"cannot read spot balances: {exc}"
+                by_venue = {
+                    str(report.get("name") or "").lower(): report
+                    for report in balance_reports or []
+                    if report.get("market") == "spot"
+                }
+                for venue, assets in expected_spot.items():
+                    report = by_venue.get(venue)
+                    if not report or report.get("status") != "ok":
+                        self._exchange_halted[venue] = (
+                            f"cannot verify spot inventory: "
+                            f"{(report or {}).get('error', 'balance report missing')}"
+                        )
+                        continue
+                    totals = {
+                        str(asset.get("asset") or "").upper(): float(asset.get("total") or 0.0)
+                        for asset in report.get("assets") or []
+                    }
+                    for asset, expected_qty in assets.items():
+                        actual_qty = totals.get(asset, 0.0)
+                        tolerance = max(1e-10, expected_qty * 1e-4)
+                        if actual_qty + tolerance >= expected_qty:
+                            continue
+                        reason = (
+                            f"spot inventory shortfall for {asset}: "
+                            f"recorded={expected_qty}, exchange_total={actual_qty}"
+                        )
+                        self._exchange_halted[venue] = reason
+                        logger.critical(f"[Reconciliation] {venue}: {reason}")
+                        for pair_tag in tags_by_spot_asset.get((venue, asset), []):
+                            pos = self.active_positions[pair_tag]
+                            pos.state = "RECONCILIATION_REQUIRED"
+                            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                            self._mark_failed(
+                                pair_tag,
+                                "SPOT_INVENTORY_MISMATCH",
+                                reason,
+                                detail={"exchange": venue, "asset": asset, "recorded_qty": expected_qty, "actual_qty": actual_qty},
+                                state=PositionState.RECONCILIATION_REQUIRED,
+                            )
+
     async def _verify_recovered_active_positions(self) -> None:
         """
         Verifies persisted live positions against the exchange after restart.
