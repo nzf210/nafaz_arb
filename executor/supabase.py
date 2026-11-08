@@ -23,51 +23,6 @@ _QUEUE_MAX = 512
 _MAX_ATTEMPTS = 3
 _BATCH_MAX = 50
 _TIMEOUT = aiohttp.ClientTimeout(total=8, connect=3)
-_SIDE_BY_LEG = {
-    "spot_entry": "buy",
-    "spot_exit": "sell",
-    "futures_entry": "sell",
-    "futures_exit": "buy",
-    "rollback": "sell",
-    "force_close": "sell",
-}
-# Positions are keyed deterministically by pair so a restart reuses the same row.
-# The schema allows only one active position per (pair_key, is_mock); a random id
-# per process would collide with the previous process's row instead of updating it.
-_POSITION_NS = uuid.UUID("6f9619ff-8b86-d011-b42d-00c04fc964ff")
-
-
-def _position_uuid(pair_key: str, opened_at_ms: Any = 0) -> str:
-    """Deterministic position id, stable across retries and restarts.
-
-    Including the open timestamp keeps consecutive trades on the same pair as
-    separate rows instead of overwriting each other.
-    """
-    try:
-        stamp = int(opened_at_ms or 0)
-    except (TypeError, ValueError):
-        stamp = 0
-    return str(uuid.uuid5(_POSITION_NS, f"{pair_key}:{stamp}"))
-
-
-def _ms_to_iso(value: Any) -> Optional[str]:
-    try:
-        ms = int(value)
-    except (TypeError, ValueError):
-        return None
-    if ms <= 0:
-        return None
-    return datetime.fromtimestamp(ms / 1000.0, timezone.utc).isoformat()
-
-
-def _num(value: Any, default: float = 0.0) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return default
-    return result if result == result else default  # drop NaN
-
-
 class SupabaseWriter(SupabasePositionMixin, SupabaseOrderMixin):
     """Queued, non-blocking writer for the nafaz core schema.
 
