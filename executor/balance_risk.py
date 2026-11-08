@@ -186,7 +186,9 @@ class BalanceRiskMixin:
     @staticmethod
     def _resolve_global_quote_asset(pair_info, quote_asset: str) -> str:
         global_symbol = pair_info.global_symbol.upper() if pair_info else ""
-        if "USDC" in global_symbol or quote_asset == "USDC":
+        if "USDC" in global_symbol:
+            return "USDC"
+        if not global_symbol and quote_asset == "USDC":
             return "USDC"
         return "USDT"
 
