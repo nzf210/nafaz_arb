@@ -911,12 +911,13 @@ class ArbitrageEngine(
         if live_preflight:
             validator = getattr(self.client, "validate_entry_order", None)
             if not callable(validator):
-                await self._publish_execution_failure(
+                self._mark_failed(
                     pair_tag,
                     "ORDER_CONSTRAINT_PREFLIGHT_UNAVAILABLE",
                     "LIVE entry diblokir: adapter tidak menyediakan validasi market aktif, minimum order, precision, dan contract multiplier.",
                     detail={"local_symbol": pair_info.local_symbol, "global_symbol": pair_info.global_symbol},
                 )
+                await self.publish_status()
                 return
             try:
                 buy_qty, buy_price_idr = await validator(
@@ -935,7 +936,7 @@ class ArbitrageEngine(
                 logger.warning(
                     f"[Order Constraint Preflight] rejecting {pair_tag}: {preflight_error}"
                 )
-                await self._publish_execution_failure(
+                self._mark_failed(
                     pair_tag,
                     "ORDER_CONSTRAINT_PREFLIGHT_FAILED",
                     "LIVE entry dibatalkan karena market/precision/minimum order/contract multiplier tidak dapat diverifikasi.",
@@ -945,24 +946,27 @@ class ArbitrageEngine(
                         "error": str(preflight_error),
                     },
                 )
+                await self.publish_status()
                 return
             if not math.isfinite(float(buy_qty)) or not math.isfinite(float(buy_price_idr)) or buy_qty <= 0 or buy_price_idr <= 0:
-                await self._publish_execution_failure(
+                self._mark_failed(
                     pair_tag,
                     "ORDER_CONSTRAINT_PREFLIGHT_INVALID_RESULT",
                     "LIVE entry dibatalkan karena hasil validasi ukuran/harga tidak valid.",
                     detail={"amount": buy_qty, "price_idr": buy_price_idr},
                 )
+                await self.publish_status()
                 return
 
         actual_cost_usdt = (buy_qty * buy_price_idr) / snapshot.usdt_idr_rate
         if actual_cost_usdt + 1e-9 < float(getattr(self.config, "min_allocated_capital", 0.0) or 0.0):
-            await self._publish_execution_failure(
+            self._mark_failed(
                 pair_tag,
                 "ORDER_CONSTRAINT_SIZE_BELOW_MIN_CAPITAL",
                 "Ukuran setelah pembulatan lot/contract lebih kecil dari minimum modal; entry dibatalkan.",
                 detail={"actual_cost_usdt": actual_cost_usdt},
             )
+            await self.publish_status()
             return
 
         # Lock funds in exchange client
@@ -971,12 +975,13 @@ class ArbitrageEngine(
                 logger.warning(
                     f"[State 1 Balance Check] Failed to lock funds for {actual_cost_usdt:.2f} USDT on {pair_tag}"
                 )
-                await self._publish_execution_failure(
+                self._mark_failed(
                     pair_tag,
                     "BALANCE_LOCK_FAILED",
                     "Exchange client gagal mengunci saldo untuk entry.",
                     detail={"required_usdt_per_leg": actual_cost_usdt},
                 )
+                await self.publish_status()
                 return
             # Sync balances to Redis
             bals = await self._get_balance_snapshot(
