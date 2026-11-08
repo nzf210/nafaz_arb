@@ -509,7 +509,7 @@ func (b *Bot) onScanCompleted(_ context.Context, r domain.ScanResult) {
 
 	for _, message := range messages {
 		for _, chatID := range chatIDs {
-			go b.sendReplyWithMarkup(context.Background(), chatID, 0, message, b.defaultKeyboard())
+			go b.sendReplyWithMarkup(context.Background(), chatID, 0, message, nil)
 		}
 	}
 }
