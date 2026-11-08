@@ -280,6 +280,21 @@ def _half_budget_signal(local_symbol: str, global_symbol: str, now_ms: int) -> d
     sig["pair_info"]["global_symbol"] = global_symbol
     sig["execution_directives"] = dict(sig["execution_directives"])
     sig["execution_directives"]["max_position_usdt"] = 50.0
+
+    if local_symbol.lower() == "eth_idr":
+        sig["pair_info"]["base_asset"] = "ETH"
+        sig["pricing_snapshot"].update({
+            "local_best_bid": 49_800_000.0, "local_best_ask": 49_900_000.0,
+            "global_best_bid_usdt": 3_200.0, "global_best_ask_usdt": 3_201.0,
+        })
+        sig["execution_directives"]["recommended_limit_buy_idr"] = 49_850_000.0
+    elif local_symbol.lower() == "sol_idr":
+        sig["pair_info"]["base_asset"] = "SOL"
+        sig["pricing_snapshot"].update({
+            "local_best_bid": 20_000_000.0, "local_best_ask": 20_100_000.0,
+            "global_best_bid_usdt": 1_300.0, "global_best_ask_usdt": 1_301.0,
+        })
+        sig["execution_directives"]["recommended_limit_buy_idr"] = 20_050_000.0
     return sig
 
 def _exposure_engine(fake_redis, cap: float):
@@ -288,6 +303,12 @@ def _exposure_engine(fake_redis, cap: float):
     client = PaperTradingExchangeClient(
         local_name="indodax", global_name="okx", initial_balance_usdt=100.0
     )
+    client.update_market_price("btc_idr", 1_037_000_000.0, 1_038_000_000.0)
+    client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
+    client.update_market_price("eth_idr", 49_800_000.0, 49_900_000.0)
+    client.update_market_price("ETHUSDT", 3_200.0, 3_201.0)
+    client.update_market_price("sol_idr", 20_000_000.0, 20_100_000.0)
+    client.update_market_price("SOLUSDT", 1_300.0, 1_301.0)
     cfg = ExecutorConfig(
         min_partial_fill_usd=10.0,
         initial_exchange_balance_usdt=100.0,
@@ -341,6 +362,12 @@ def _fee_buffer_engine(fake_redis, fee_pct: float):
     client = PaperTradingExchangeClient(
         local_name="indodax", global_name="okx", initial_balance_usdt=100.0
     )
+    client.update_market_price("btc_idr", 1_037_000_000.0, 1_038_000_000.0)
+    client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
+    client.update_market_price("eth_idr", 49_800_000.0, 49_900_000.0)
+    client.update_market_price("ETHUSDT", 3_200.0, 3_201.0)
+    client.update_market_price("sol_idr", 20_000_000.0, 20_100_000.0)
+    client.update_market_price("SOLUSDT", 1_300.0, 1_301.0)
     cfg = ExecutorConfig(
         min_partial_fill_usd=10.0,
         initial_exchange_balance_usdt=100.0,
