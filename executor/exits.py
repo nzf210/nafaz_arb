@@ -181,12 +181,53 @@ class ExitMixin:
                 or funding_passed
             )
 
+        async def _calculate_dynamic_exit_slippage(self, pair_tag: str, snapshot: dict, now_ms: int) -> float:
+            """Adaptive reserve from rolling futures ask volatility and current bid/ask spread."""
+            base = float(getattr(self.config, "max_exit_slippage_pct", 0.003))
+            minimum = float(getattr(self.config, "min_exit_slippage_pct", 0.001))
+            maximum = float(getattr(self.config, "max_dynamic_exit_slippage_pct", 0.02))
+            ask = float(snapshot.get("global_best_ask_usdt", 0.0) or 0.0)
+            bid = float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0)
+            fallback = min(maximum, max(minimum, base))
+            if not (math.isfinite(ask) and math.isfinite(bid) and ask > 0 and bid > 0 and bid <= ask):
+                return fallback
+            key = f"arb:exit_slippage_samples:{pair_tag}"
+            try:
+                await self.redis.lpush(key, json.dumps({"ts": now_ms, "ask": ask}))
+                await self.redis.ltrim(key, 0, 19)
+                await self.redis.expire(key, 600)
+                raw = await self.redis.lrange(key, 0, 19)
+                samples = []
+                for item_raw in raw or []:
+                    try:
+                        item = json.loads(item_raw)
+                        ts, price = int(item["ts"]), float(item["ask"])
+                        if 0 <= now_ms - ts <= 300000 and math.isfinite(price) and price > 0:
+                            samples.append((ts, price))
+                    except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                        continue
+            except Exception:
+                logger.warning("[Dynamic Exit Buffer] history unavailable for %s; using fallback", pair_tag)
+                return fallback
+            samples = sorted({ts: price for ts, price in samples}.items())
+            if len(samples) < 2:
+                return fallback
+            prices = [price for _, price in samples]
+            volatility = max((abs(prices[i] / prices[i - 1] - 1.0) for i in range(1, len(prices))), default=0.0)
+            spread = (ask - bid) / ((ask + bid) / 2.0)
+            adaptive = spread * float(getattr(self.config, "exit_spread_multiplier", 0.5))
+            adaptive += volatility * float(getattr(self.config, "exit_volatility_multiplier", 2.0))
+            result = min(maximum, max(minimum, adaptive))
+            logger.info("[Dynamic Exit Buffer] %s spread=%.4f%% volatility=%.4f%% buffer=%.4f%%", pair_tag, spread * 100, volatility * 100, result * 100)
+            return result
+
         def _calculate_limit_sell_idr(
             self,
             pair_tag: str,
             pos: ActivePosition,
             global_ask_usdt: float,
             usdt_idr_rate: float,
+            exit_slippage_pct: Optional[float] = None,
         ) -> tuple[float, float]:
             # 1. Base pegged exit price using spread & funding decay
             pos_value_usdt = pos.qty * global_ask_usdt
@@ -209,7 +250,8 @@ class ExitMixin:
             # Closing the short is a market BUY at the futures ask. Add an adverse
             # movement allowance so the spot limit is not priced against a perfect
             # top-of-book fill.
-            exit_slippage_pct = float(getattr(self.config, "max_exit_slippage_pct", 0.003) or 0.0)
+            if exit_slippage_pct is None:
+                exit_slippage_pct = float(getattr(self.config, "max_exit_slippage_pct", 0.003) or 0.0)
             risk_adjusted_global_ask = global_ask_usdt * (1.0 + exit_slippage_pct)
             futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - risk_adjusted_global_ask)
 
@@ -374,8 +416,10 @@ class ExitMixin:
             if not self._should_repeg_exit(pair_tag, global_ask_usdt, funding_passed):
                 return
 
+            dynamic_slippage_pct = await self._calculate_dynamic_exit_slippage(pair_tag, live_snapshot or {}, now_ms)
             limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
-                pair_tag, pos, global_ask_usdt, usdt_idr_rate
+                pair_tag, pos, global_ask_usdt, usdt_idr_rate,
+                exit_slippage_pct=dynamic_slippage_pct,
             )
             await self._cancel_existing_exit_order(pair_tag, pos.symbol)
             await self._place_dynamic_limit_sell(
