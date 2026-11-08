@@ -31,7 +31,7 @@ func TestBuildRowsUsesMigrationColumnsAndStablePairKey(t *testing.T) {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}
 	row := rows[0]
-	if row.PairKey != "indodax:btc_idr" || row.EligibilityStatus != "ELIGIBLE" {
+	if row.PairKey != "indodax:btc_idr" || row.IdempotencyKey != "scan-123:indodax:btc_idr" || row.EligibilityStatus != "ELIGIBLE" {
 		t.Fatalf("unexpected key/status: %#v", row)
 	}
 	if row.QuoteAsset != "IDR" || row.LocalExchange != "indodax" || row.GlobalExchange != "okx" {
@@ -48,7 +48,7 @@ func TestSaveOpportunitiesUpsertsIdempotentlyAndRetriesTransientFailure(t *testi
 		if r.Method != http.MethodPost || r.URL.Path != "/rest/v1/scanner_opportunities" {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
 		}
-		if r.URL.Query().Get("on_conflict") != "scan_id,pair_key" {
+		if r.URL.Query().Get("on_conflict") != "idempotency_key" {
 			t.Errorf("missing idempotency conflict target: %s", r.URL.RawQuery)
 		}
 		if r.Header.Get("apikey") != "service-role-test" || r.Header.Get("Authorization") != "Bearer service-role-test" {
