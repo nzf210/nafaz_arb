@@ -98,13 +98,13 @@ set eligibility_status = excluded.eligibility_status,
     payload = excluded.payload;
 
 insert into public.scanner_opportunities (
-    scan_id, pair_key, local_exchange, global_exchange, local_symbol,
+    scan_id, pair_key, idempotency_key, local_exchange, global_exchange, local_symbol,
     global_symbol, quote_asset, eligibility_status, observed_at, payload
 ) values (
-    'schema-smoke-idempotency', 'indodax:btc_idr', 'indodax', 'okx',
+    'schema-smoke-idempotency', 'indodax:btc_idr', 'schema-smoke-idempotency:indodax:btc_idr', 'indodax', 'okx',
     'btc_idr', 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":2}'::jsonb
 )
-on conflict (scan_id, pair_key) do update
+on conflict (idempotency_key) do update
 set eligibility_status = excluded.eligibility_status,
     payload = excluded.payload;
 
