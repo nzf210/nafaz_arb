@@ -202,30 +202,92 @@ async def test_state4_records_negative_pnl_realistically(engine, fake_redis, moc
     assert float(stats.get("total_pnl_usdt", 0.0)) < 0
 
 @pytest.mark.asyncio
-async def test_dynamic_exit_buffer_expands_with_market_volatility(engine, fake_redis):
+async def test_dynamic_exit_buffer_requires_three_distinct_timestamped_samples(engine, fake_redis):
     pair = "indodax:btc_idr"
     now = int(time.time() * 1000)
     quiet = {"global_best_bid_usdt": 64999.0, "global_best_ask_usdt": 65001.0}
-    first = await engine._calculate_dynamic_exit_slippage(pair, quiet, now)
+
+    first = await engine._calculate_dynamic_exit_slippage(
+        pair, {**quiet, "timestamp_ms": now}, now
+    )
     assert first == pytest.approx(engine.config.max_exit_slippage_pct)
-    volatile = {"global_best_bid_usdt": 65100.0, "global_best_ask_usdt": 65200.0}
-    second = await engine._calculate_dynamic_exit_slippage(pair, volatile, now + 1000)
-    assert second > first
-    assert second <= engine.config.max_dynamic_exit_slippage_pct
-    other = await engine._calculate_dynamic_exit_slippage("indodax:eth_idr", quiet, now + 1000)
+
+    # Two observations are deliberately insufficient, even after a large move.
+    second_snapshot = {
+        "global_best_bid_usdt": 65100.0,
+        "global_best_ask_usdt": 65200.0,
+        "timestamp_ms": now + 15_000,
+    }
+    second = await engine._calculate_dynamic_exit_slippage(
+        pair, second_snapshot, now + 15_000
+    )
+    assert second == pytest.approx(engine.config.max_exit_slippage_pct)
+
+    third_snapshot = {
+        "global_best_bid_usdt": 65500.0,
+        "global_best_ask_usdt": 65600.0,
+        "timestamp_ms": now + 30_000,
+    }
+    third = await engine._calculate_dynamic_exit_slippage(
+        pair, third_snapshot, now + 30_000
+    )
+    assert third > second
+    assert third <= engine.config.max_dynamic_exit_slippage_pct
+
+    other = await engine._calculate_dynamic_exit_slippage(
+        "indodax:eth_idr", {**quiet, "timestamp_ms": now + 30_000}, now + 30_000
+    )
     assert other == pytest.approx(engine.config.max_exit_slippage_pct)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_exit_buffer_deduplicates_repeated_market_timestamp(engine, fake_redis):
+    pair = "indodax:duplicate_idr"
+    now = int(time.time() * 1000)
+    snapshot = {
+        "global_best_bid_usdt": 99.9,
+        "global_best_ask_usdt": 100.1,
+        "timestamp_ms": now,
+    }
+
+    first = await engine._calculate_dynamic_exit_slippage(pair, snapshot, now)
+    repeated = await engine._calculate_dynamic_exit_slippage(pair, snapshot, now + 1_000)
+
+    assert first == pytest.approx(engine.config.max_exit_slippage_pct)
+    assert repeated == pytest.approx(engine.config.max_exit_slippage_pct)
+    samples = await fake_redis.lrange(f"arb:exit_slippage_samples:{pair}", 0, -1)
+    assert len(samples) == 1
+
+
+@pytest.mark.asyncio
+async def test_dynamic_exit_buffer_ignores_out_of_order_and_stale_samples(engine, fake_redis):
+    pair = "indodax:stale_idr"
+    now = int(time.time() * 1000)
+    stale = {
+        "global_best_bid_usdt": 99.0,
+        "global_best_ask_usdt": 100.0,
+        "timestamp_ms": now - 300_000,
+    }
+    result = await engine._calculate_dynamic_exit_slippage(pair, stale, now)
+    assert result == pytest.approx(engine.config.max_exit_slippage_pct)
+    samples = await fake_redis.lrange(f"arb:exit_slippage_samples:{pair}", 0, -1)
+    assert len(samples) == 0
 
 
 @pytest.mark.asyncio
 async def test_dynamic_exit_buffer_is_capped(engine, fake_redis):
     pair = "indodax:volatile_idr"
     now = int(time.time() * 1000)
-    await engine._calculate_dynamic_exit_slippage(
-        pair, {"global_best_bid_usdt": 99.9, "global_best_ask_usdt": 100.1}, now
-    )
-    result = await engine._calculate_dynamic_exit_slippage(
-        pair, {"global_best_bid_usdt": 109.0, "global_best_ask_usdt": 111.0}, now + 1000
-    )
+    snapshots = [
+        {"global_best_bid_usdt": 99.9, "global_best_ask_usdt": 100.1, "timestamp_ms": now},
+        {"global_best_bid_usdt": 104.9, "global_best_ask_usdt": 105.1, "timestamp_ms": now + 30_000},
+        {"global_best_bid_usdt": 109.0, "global_best_ask_usdt": 111.0, "timestamp_ms": now + 60_000},
+    ]
+    result = engine.config.max_exit_slippage_pct
+    for offset, snapshot in zip((0, 30_000, 60_000), snapshots):
+        result = await engine._calculate_dynamic_exit_slippage(
+            pair, snapshot, now + offset
+        )
     assert result == pytest.approx(engine.config.max_dynamic_exit_slippage_pct)
 
 
