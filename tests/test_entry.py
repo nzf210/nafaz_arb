@@ -146,6 +146,7 @@ async def test_state2_partial_fill_and_instant_short_hedge(engine, fake_redis, m
         "hedged_short_qty": 0.0,
         "cancel_threshold_usdt": 60000.0,
         "usdt_idr_rate": 16000.0,
+        "global_ask_usdt": 65100.0,
         "next_funding_time_ms": now_ms + 3600000,
         "base_target_exit_spread_pct": 0.3,
         "current_funding_rate": 0.0003,
@@ -460,6 +461,7 @@ async def test_entry_revalidation_passes_healthy_spread(engine, fake_redis, mock
 
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
     mock_client.update_market_price("BTC/USDT", 65100.0, 65110.0)
+    mock_client.update_market_price("btc_idr", 1_038_000_000.0, 1_040_000_000.0)
 
     await engine.handle_signal_notification(pair_tag)
 
@@ -523,6 +525,7 @@ async def test_entry_revalidation_zero_floor_still_requires_fresh_tickers(engine
     mock_client.fetch_global_ticker = global_spy
     mock_client.fetch_local_ticker = local_spy
 
+    mock_client.update_market_price("btc_idr", 1_038_000_000.0, 1_040_000_000.0)
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
     await engine.handle_signal_notification(pair_tag)
 
