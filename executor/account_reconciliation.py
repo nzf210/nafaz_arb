@@ -93,33 +93,42 @@ class AccountWideReconciliationMixin:
     def _parse_account_futures_positions(self, report):
         actual: Dict[str, float] = {}
         for position in report.get("positions") or []:
-            if not isinstance(position, dict):
-                return actual, "malformed futures position row"
-            symbol = position.get("symbol")
-            if not symbol:
-                return actual, "futures position missing symbol"
-            info = position.get("info") or {}
-            if not isinstance(info, dict):
-                return actual, f"malformed position metadata for {symbol}"
-            side = str(
-                position.get("side") or position.get("positionSide")
-                or info.get("posSide") or info.get("positionSide") or ""
-            ).lower()
-            try:
-                size, side = self._account_position_size(position, info, side)
-            except (TypeError, ValueError):
-                return actual, f"invalid position size for {symbol}"
-            if size is None:
-                return actual, f"position size unavailable for {symbol}"
-            if not isinstance(size, (int, float)) or not math.isfinite(size) or size < 0:
-                return actual, f"invalid position size for {symbol}"
+            normalized, size, reason = self._parse_account_futures_position(position)
+            if reason:
+                return actual, reason
             if size <= 1e-12:
                 continue
-            if side != "short":
-                return actual, f"unexpected {side or 'unknown-side'} futures exposure on {symbol}"
-            normalized = normalize_exchange_symbol(symbol)
             actual[normalized] = actual.get(normalized, 0.0) + size
         return actual, ""
+
+    def _parse_account_futures_position(self, position: dict):
+        if not isinstance(position, dict):
+            return "", 0.0, "malformed futures position row"
+        symbol = position.get("symbol")
+        if not symbol:
+            return "", 0.0, "futures position missing symbol"
+        info = position.get("info") or {}
+        if not isinstance(info, dict):
+            return "", 0.0, f"malformed position metadata for {symbol}"
+        side = self._resolve_account_position_side(position, info)
+        try:
+            size, side = self._account_position_size(position, info, side)
+        except (TypeError, ValueError):
+            return "", 0.0, f"invalid position size for {symbol}"
+        if size is None:
+            return "", 0.0, f"position size unavailable for {symbol}"
+        if not isinstance(size, (int, float)) or not math.isfinite(size) or size < 0:
+            return "", 0.0, f"invalid position size for {symbol}"
+        if size > 1e-12 and side != "short":
+            return "", 0.0, f"unexpected {side or 'unknown-side'} futures exposure on {symbol}"
+        return normalize_exchange_symbol(symbol), size, ""
+
+    @staticmethod
+    def _resolve_account_position_side(position: dict, info: dict) -> str:
+        return str(
+            position.get("side") or position.get("positionSide")
+            or info.get("posSide") or info.get("positionSide") or ""
+        ).lower()
 
     @staticmethod
     def _account_position_size(position: dict, info: dict, side: str):
