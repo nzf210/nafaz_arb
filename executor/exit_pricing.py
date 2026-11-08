@@ -219,12 +219,23 @@ class ExitPricingMixin:
             snapshot_ts = int(snapshot.get("timestamp_ms", 0) or 0)
         except (TypeError, ValueError):
             return None
-        valid_prices = math.isfinite(ask) and math.isfinite(bid) and ask > 0 and bid > 0 and bid <= ask
-        valid_time = snapshot_ts > 0 and snapshot_ts <= now_ms + 5_000
-        valid_age = now_ms - snapshot_ts <= helpers.LIVE_PRICE_STALE_MS
-        if not (valid_prices and valid_time and valid_age):
+        if not ExitPricingMixin._valid_exit_book(ask, bid):
+            return None
+        if not ExitPricingMixin._valid_exit_snapshot_time(snapshot_ts, now_ms):
             return None
         return ask, bid, snapshot_ts
+
+    @staticmethod
+    def _valid_exit_book(ask: float, bid: float) -> bool:
+        return math.isfinite(ask) and math.isfinite(bid) and ask > 0 and bid > 0 and bid <= ask
+
+    @staticmethod
+    def _valid_exit_snapshot_time(snapshot_ts: int, now_ms: int) -> bool:
+        return (
+            snapshot_ts > 0
+            and snapshot_ts <= now_ms + 5_000
+            and now_ms - snapshot_ts <= helpers.LIVE_PRICE_STALE_MS
+        )
 
     async def _load_exit_slippage_samples(self, pair_tag: str, snapshot_ts: int, ask: float, now_ms: int) -> list:
         window_ms = 900_000
