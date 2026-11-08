@@ -492,3 +492,59 @@ async def test_exit_price_snapshot_without_live_fx_is_rejected(engine, fake_redi
     await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
 
     assert await engine._fetch_live_price(pair_tag) is None
+
+
+def test_profit_floor_includes_exit_slippage_and_configured_round_trip_fees(engine):
+    """The spot floor covers adverse futures buyback movement, fees and target ROI."""
+    engine.config.estimated_round_trip_fee_pct = 0.001
+    engine.config.max_exit_slippage_pct = 0.01
+    pos = ActivePosition(
+        local_exchange="tokocrypto", global_exchange="okx", symbol="ATH/USDT",
+        entry_price_idr=80.0, short_entry_usdt=0.005, qty=10000.0,
+        base_target_exit_spread_pct=0.30, local_price_tick=0.01,
+    )
+    ask, fx = 0.0051, 16000.0
+    limit_price, _ = engine._calculate_limit_sell_idr("toko:ath_usdt", pos, ask, fx)
+    conservative_buyback = ask * (1.0 + engine.config.max_exit_slippage_pct)
+    spot_pnl = pos.qty * (limit_price - pos.entry_price_idr) / fx
+    futures_pnl = pos.qty * (pos.short_entry_usdt - conservative_buyback)
+    fee_reserve = pos.qty * pos.short_entry_usdt * engine.config.estimated_round_trip_fee_pct
+    min_target = pos.qty * pos.short_entry_usdt * 0.00075
+    assert spot_pnl + futures_pnl - fee_reserve >= min_target
+
+
+@pytest.mark.asyncio
+async def test_realized_combined_pnl_uses_actual_spot_average_and_shared_fee_reserve(fake_redis):
+    """Realized two-leg PnL uses actual spot average, futures fill and shared fee reserve."""
+    client = MockExchangeClient()
+    cfg = ExecutorConfig(mock_mode=True, estimated_round_trip_fee_pct=0.001)
+    engine = ArbitrageEngine(config=cfg, client=client, redis_client=fake_redis)
+    pair_tag = "toko:coin_idr"
+    pos = ActivePosition(
+        local_exchange="tokocrypto", global_exchange="okx", symbol="COIN/IDR",
+        global_symbol="COIN/USDT:USDT", entry_price_idr=100.0,
+        short_entry_usdt=1.0, qty=1.0,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.EXIT_PENDING
+    engine.pending_exit_orders[pair_tag] = {
+        "order_id": "spot-avg", "symbol": "COIN/IDR", "price": 105.0,
+        "qty": 1.0, "closed_short_qty": 0.0,
+    }
+    client.orders["spot-avg"] = {
+        "id": "spot-avg", "symbol": "COIN/IDR", "status": "closed",
+        "filled": 1.0, "average": 110.0, "cost": 110.0,
+    }
+    async def close_short(symbol, amount, client_order_id=None):
+        return {"id": "perp-close", "symbol": symbol, "status": "closed", "filled": amount, "average": 0.9}
+    client.close_global_short_market = close_short
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps({
+        "global_best_ask_usdt": 0.9, "usdt_idr_rate": 100.0,
+        "timestamp_ms": int(time.time() * 1000),
+    }))
+    await engine._check_exit_orders()
+    trade = json.loads((await fake_redis.lrange("arb:trade_history", 0, 0))[0])
+    assert trade["exit_price_idr"] == pytest.approx(110.0)
+    assert trade["spot_pnl_idr"] == pytest.approx(10.0)
+    assert trade["futures_pnl_usdt"] == pytest.approx(0.1)
+    assert trade["net_profit_usdt"] == pytest.approx(0.199)
