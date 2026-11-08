@@ -940,10 +940,10 @@ func TestScanMarksEveryCandidateIneligibleWhenExposureStateIsUnknown(t *testing.
 	}
 	for _, op := range result.Opportunities {
 		if op.TradingEligible {
-			t.Fatalf("%s became trading-eligible without exposure verification", op.PairKey)
+			t.Fatalf("%s became trading-eligible without exposure verification", op.OpportunityKey)
 		}
 		if !hasReason(op.ExclusionReasons, "POSITION_STATUS_UNKNOWN") {
-			t.Fatalf("%s missing POSITION_STATUS_UNKNOWN: %v", op.PairKey, op.ExclusionReasons)
+			t.Fatalf("%s missing POSITION_STATUS_UNKNOWN: %v", op.OpportunityKey, op.ExclusionReasons)
 		}
 	}
 }
@@ -982,7 +982,7 @@ func TestEvaluatePairDoesNotUseLastKnownFXForLocalSpotOrderPricing(t *testing.T)
 	if result.err == nil || !strings.Contains(result.err.Error(), "live USDT/IDR FX unavailable") {
 		t.Fatalf("expected stale FX to be rejected for USDT-quoted local Spot, got %+v", result)
 	}
-	if result.opportunity.TradingEligible {
+	if result.op.TradingEligible {
 		t.Fatal("pair must not be trading-eligible when live FX is unavailable")
 	}
 }
