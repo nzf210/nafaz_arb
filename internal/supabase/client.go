@@ -104,7 +104,7 @@ func buildRows(scanID string, opportunities []domain.Opportunity) []opportunityR
 	return rows
 }
 
-// SaveOpportunities performs an idempotent upsert keyed by (scan_id, pair_key).
+// SaveOpportunities upserts by a deterministic idempotency_key derived from scanID and pairKey.
 // It retries transient transport/server failures but never affects scan eligibility
 // or the Redis signal path.
 func (c *Client) SaveOpportunities(ctx context.Context, scanID string, opportunities []domain.Opportunity) error {
