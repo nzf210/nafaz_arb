@@ -986,3 +986,33 @@ func TestEvaluatePairDoesNotUseLastKnownFXForLocalSpotOrderPricing(t *testing.T)
 		t.Fatal("pair must not be trading-eligible when live FX is unavailable")
 	}
 }
+
+func TestIDRSpotPairsRequireSyntheticNormalization(t *testing.T) {
+	adapter := &syntheticMockAdapter{idrRate: 16000.0}
+	cfg := config.Config{
+		Mode:                  "MOCK",
+		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR:    false,
+		SyntheticUSDTIDRRate:  16000.0,
+		CapitalTotal:          1000,
+		AllocationPerPair:     0.5,
+		PerpLeverage:          1,
+		EstimatedHoldingHours: 8,
+		MinNetROIPct:          0.1,
+		MaxNetROIPct:          20.0,
+		MaxSlippagePct:        5.0,
+		CheckOpenPositions:    false,
+	}
+
+	s := New(cfg, adapter)
+	result, complete, err := s.Scan(context.Background())
+	if err == nil || complete {
+		t.Fatalf("IDR markets without normalization must abort the scan; err=%v complete=%v", err, complete)
+	}
+	if !strings.Contains(err.Error(), "enable_synthetic_idr=false") {
+		t.Fatalf("unexpected scan error: %v", err)
+	}
+	if len(result.Opportunities) != 0 {
+		t.Fatalf("unsafe mixed-currency opportunities must not be emitted: %+v", result.Opportunities)
+	}
+}
