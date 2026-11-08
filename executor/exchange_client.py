@@ -438,14 +438,7 @@ class ExchangeClient:
         fetcher = getattr(self.global_fut, "fetch_funding_rate", None)
         if fetcher is None:
             raise NotImplementedError(
-                f"{g# Backward-compatible exports; existing imports remain valid.
-from executor.paper_exchange_client import PaperTradingExchangeClient
-from executor.exchange_factory import (
-    create_ccxt_client,
-    init_ccxt_exchange,
-    init_local_exchange,
-)
-def create_exchange_client(config: Any) -> Any:
+                f"{gedef create_exchange_client(config: Any) -> Any:
     """Compatibility wrapper retaining injectable exchange factories for tests."""
     from executor.exchange_client_factory import create_exchange_client as factory
     return factory(
