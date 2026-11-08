@@ -257,6 +257,40 @@ class EntryMixin:
                 return
             delta_val_usd = (unhedged_delta * price_idr) / usdt_rate
 
+            total_qty = float(order_info.get("qty", 0.0) or 0.0)
+            is_partial_fill = 0 < current_filled < total_qty
+            if is_partial_fill and self.states.get(pair_tag) != PositionState.ENTRY_PARTIAL:
+                self.states[pair_tag] = PositionState.ENTRY_PARTIAL
+                await self._maybe_publish_status()
+
+            if is_partial_fill and not order_info.get("partial_fill_alerted"):
+                partial_event = {
+                    "event": "PARTIAL_FILL",
+                    "pair_tag": pair_tag,
+                    "pair_key": pair_tag,
+                    "local_exchange": str(order_info.get("local_exchange", "")),
+                    "global_exchange": str(order_info.get("global_exchange", "")),
+                    "symbol": str(order_info.get("symbol", "")),
+                    "qty": current_filled,
+                    "filled_qty": current_filled,
+                    "total_qty": total_qty,
+                    "reason": "SPOT_PARTIAL_FILL",
+                    "message": (
+                        "Order Spot terisi sebagian. Executor sedang mengamankan kuantitas "
+                        "yang terisi; jangan anggap posisi sudah netral sebelum hedge terkonfirmasi."
+                    ),
+                    "state": PositionState.ENTRY_PARTIAL.value,
+                    "is_mock": bool(getattr(self.config, "mock_mode", False)),
+                    "timestamp_ms": int(time.time() * 1000),
+                }
+                try:
+                    await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(partial_event))
+                    order_info["partial_fill_alerted"] = True
+                except Exception:
+                    logger.exception(
+                        f"[State 1 Partial Fill] unable to publish Telegram event for {pair_tag}"
+                    )
+
             is_complete = status in ("closed", "canceled", "cancelled", "rejected", "expired")
             if delta_val_usd >= self.config.min_partial_fill_usd or is_complete:
                 logger.info(

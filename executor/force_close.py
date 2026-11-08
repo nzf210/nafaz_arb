@@ -333,25 +333,72 @@ class ForceCloseMixin:
             return current_ask, usdt_rate, current_spot_bid
 
         @staticmethod
-        def _compute_force_close_pnl(pos, current_ask: float, usdt_rate: float, current_spot_bid: float) -> dict:
-            """Computes realized PnL components for a force-closed position."""
+        def _compute_force_close_pnl(
+            pos, current_ask: float, usdt_rate: float, current_spot_bid: float, config=None
+        ) -> dict:
+            """Computes gross and estimated net PnL; exchange-confirmed fees are not yet reconciled."""
+            fx_verified = math.isfinite(usdt_rate) and usdt_rate > 0
             spot_pnl_idr = pos.qty * (current_spot_bid - pos.entry_price_idr)
-            spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
             futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - current_ask)
             funding_usdt = float(pos.accumulated_funding_usdt)
-            fees_usdt = (pos.qty * (pos.short_entry_usdt + current_ask)) * 0.0005
-            net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
+            if not fx_verified:
+                return {
+                    "pnl_complete": False,
+                    "pnl_unverified": True,
+                    "pnl_status": "unverified",
+                    "spot_pnl_idr": spot_pnl_idr,
+                    "spot_pnl_usdt": 0.0,
+                    "futures_pnl_usdt": futures_pnl_usdt,
+                    "funding_usdt": funding_usdt,
+                    "spot_fees_usdt": None,
+                    "futures_fees_usdt": None,
+                    "fees_usdt": None,
+                    "gross_profit_usdt": None,
+                    "estimated_fees_usdt": None,
+                    "estimated_net_profit_usdt": None,
+                    "net_profit_usdt": None,
+                    "net_profit_idr": None,
+                    "roi_pct": None,
+                }
+
+            spot_pnl_usdt = spot_pnl_idr / usdt_rate
+            spot_entry_notional = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)
+            if spot_entry_notional <= 0:
+                spot_entry_notional = pos.qty * pos.entry_price_idr / usdt_rate
+            spot_exit_notional = pos.qty * current_spot_bid / usdt_rate
+            perp_entry_notional = pos.qty * pos.short_entry_usdt
+            perp_exit_notional = pos.qty * current_ask
+            if config is not None and callable(getattr(config, "estimate_trade_fees_usdt", None)):
+                fee_breakdown = config.estimate_trade_fees_usdt(
+                    pos.local_exchange,
+                    pos.global_exchange,
+                    spot_entry_notional,
+                    spot_exit_notional,
+                    perp_entry_notional,
+                    perp_exit_notional,
+                )
+            else:
+                fee_breakdown = {"spot_fees_usdt": 0.0, "futures_fees_usdt": 0.0, "fees_usdt": 0.0}
+            spot_fees_usdt = float(fee_breakdown["spot_fees_usdt"])
+            futures_fees_usdt = float(fee_breakdown["futures_fees_usdt"])
+            fees_usdt = float(fee_breakdown["fees_usdt"])
+            gross_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt
+            net_profit_usdt = gross_profit_usdt - fees_usdt
             capital_usdt = pos.qty * pos.short_entry_usdt
             return {
-                "pnl_complete": usdt_rate > 0 and math.isfinite(usdt_rate),
-                # A force close can flatten both legs while FX is unavailable.
-                # Do not publish or persist partial USDT PnL as fully realized.
-                "pnl_unverified": not (usdt_rate > 0 and math.isfinite(usdt_rate)),
+                "pnl_complete": True,
+                "pnl_unverified": False,
+                "pnl_status": "estimated",
                 "spot_pnl_idr": spot_pnl_idr,
                 "spot_pnl_usdt": spot_pnl_usdt,
                 "futures_pnl_usdt": futures_pnl_usdt,
                 "funding_usdt": funding_usdt,
+                "spot_fees_usdt": spot_fees_usdt,
+                "futures_fees_usdt": futures_fees_usdt,
                 "fees_usdt": fees_usdt,
+                "gross_profit_usdt": gross_profit_usdt,
+                "estimated_fees_usdt": fees_usdt,
+                "estimated_net_profit_usdt": net_profit_usdt,
                 "net_profit_usdt": net_profit_usdt,
                 "net_profit_idr": net_profit_usdt * usdt_rate,
                 "roi_pct": (net_profit_usdt / capital_usdt * 100.0) if capital_usdt > 0 else 0.0,
@@ -379,9 +426,15 @@ class ForceCloseMixin:
                 "short_entry_usdt": pos.short_entry_usdt,
                 "short_exit_usdt": current_ask,
                 "pnl_complete": pnl.get("pnl_complete", True),
+                "pnl_status": pnl.get("pnl_status", "estimated"),
                 "spot_pnl_idr": pnl["spot_pnl_idr"],
                 "futures_pnl_usdt": pnl["futures_pnl_usdt"],
                 "accumulated_funding_usdt": pnl["funding_usdt"],
+                "gross_profit_usdt": pnl["gross_profit_usdt"],
+                "estimated_fees_usdt": pnl["estimated_fees_usdt"],
+                "spot_fees_usdt": pnl["spot_fees_usdt"],
+                "futures_fees_usdt": pnl["futures_fees_usdt"],
+                "estimated_net_profit_usdt": pnl["net_profit_usdt"],
                 "net_profit_usdt": pnl["net_profit_usdt"],
                 "net_profit_idr": pnl["net_profit_idr"],
                 "net_roi_pct": pnl["roi_pct"],
@@ -411,11 +464,11 @@ class ForceCloseMixin:
                 self.client.apply_realized_trade(
                     spot_cost_usdt=spot_cost,
                     spot_pnl_usdt=pnl["spot_pnl_usdt"],
-                    spot_fees_usdt=0.0,
+                    spot_fees_usdt=pnl["spot_fees_usdt"],
                     futures_margin_usdt=fut_margin,
                     futures_pnl_usdt=pnl["futures_pnl_usdt"],
                     funding_usdt=pnl["funding_usdt"],
-                    futures_fees_usdt=pnl["fees_usdt"],
+                    futures_fees_usdt=pnl["futures_fees_usdt"],
                 )
                 if usdt_rate > 0 and math.isfinite(usdt_rate):
                     bals = await self._get_balance_snapshot(
@@ -494,7 +547,7 @@ class ForceCloseMixin:
             if futures_closed and short_exit_price_usdt > 0:
                 current_ask = short_exit_price_usdt
                 pnl = self._compute_force_close_pnl(
-                    pos, current_ask, usdt_rate, current_spot_bid
+                    pos, current_ask, usdt_rate, current_spot_bid, config=self.config
                 )
             else:
                 pnl = {
@@ -572,8 +625,15 @@ class ForceCloseMixin:
             self.states[pair_key] = PositionState.CLOSED
             if pnl.get("pnl_unverified"):
                 logger.critical(
-                    f"[Force Close Complete] Exposure for {pair_key} is flat, but realized "
-                    "PnL could not be verified from exchange fills; review manually."
+                    f"[Force Close Complete] Exposure for {pair_key} is flat, but combined PnL "
+                    "could not be verified because live USDT/IDR FX was unavailable."
+                )
+                await self._publish_execution_failure(
+                    pair_key,
+                    "FORCE_CLOSE_PNL_FX_UNVERIFIED",
+                    "Force close berhasil meratakan kedua leg, tetapi PnL gabungan belum dapat diverifikasi karena FX USDT/IDR live tidak tersedia.",
+                    detail={"spot_pnl_idr": pnl.get("spot_pnl_idr"), "futures_pnl_usdt": pnl.get("futures_pnl_usdt")},
+                    state=PositionState.CLOSED,
                 )
             else:
                 logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")

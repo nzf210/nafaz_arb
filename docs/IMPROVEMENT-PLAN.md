@@ -1,7 +1,7 @@
 # Rencana Perbaikan: Scanner & Executor
 **Dibuat:** 2026-11-03  
 **Berdasarkan:** [AUDIT-FINDINGS.md](./AUDIT-FINDINGS.md)  
-**Status Keseluruhan:** 🟢 Fase 0 (P0), Fase 1 (P1), Fase 2 (P2) & Fase 3 (P3) selesai
+**Status historis:** Fase 0 (P0), Fase 1 (P1), Fase 2 (P2) & Fase 3 (P3) telah dikerjakan pada audit 2026-11-03. **Status terkini: NOT READY FOR LIVE TRADING**; audit ulang Tahap 1 pada 2026-11-08 menemukan blocker baru/pasca-refactor. Lihat [PHASE1-GAP-AUDIT.md](./PHASE1-GAP-AUDIT.md) untuk status aktual.
 
 ---
 
@@ -663,3 +663,11 @@ required hedge, rollback, or force close.
       partial futures hedge/close, funding settlement replay, and force close.
 - [ ] Live mode remains disabled until exchange-specific order/funding/position
       payloads are verified against the actual target venues.
+
+---
+
+## Comprehensive Phase 1 gap audit — 2026-11-08
+
+The previous phase checklists describe historical implementation work and are not a live-readiness certification. The current repository/PR review, evidence matrix, changes made, and remaining blockers are documented in [PHASE1-GAP-AUDIT.md](./PHASE1-GAP-AUDIT.md).
+
+**Current release status: NOT READY FOR LIVE TRADING.** In particular, authenticated open-order/position inspection and exchange-specific order-constraint preflight remain incomplete; PR #6 for Binance/Bybit is not yet integrated into `main`.

@@ -432,3 +432,31 @@ def test_force_close_pnl_is_unverified_without_live_fx():
 
     assert pnl["pnl_complete"] is False
     assert pnl["pnl_unverified"] is True
+
+def test_force_close_pnl_uses_per_venue_fee_profiles():
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_600_000.0,
+        short_entry_usdt=100.0,
+        qty=1.0,
+        spot_cost_usdt=100.0,
+        accumulated_funding_usdt=0.2,
+    )
+    cfg = ExecutorConfig(
+        spot_maker_fee_pct=0.10,
+        spot_taker_fee_pct=0.20,
+        perp_taker_fee_pct=0.05,
+    )
+
+    pnl = ArbitrageEngine._compute_force_close_pnl(
+        pos, current_ask=99.5, usdt_rate=16_000.0, current_spot_bid=1_616_000.0, config=cfg
+    )
+
+    assert pnl["pnl_status"] == "estimated"
+    assert pnl["gross_profit_usdt"] == pytest.approx(1.7)
+    assert pnl["spot_fees_usdt"] == pytest.approx(0.302)
+    assert pnl["futures_fees_usdt"] == pytest.approx(0.09975)
+    assert pnl["estimated_fees_usdt"] == pytest.approx(0.40175)
+    assert pnl["estimated_net_profit_usdt"] == pytest.approx(1.29825)

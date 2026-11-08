@@ -735,62 +735,115 @@ class ArbitrageEngine(
         if await self.redis.exists(f"arb:active_pos:{pair_tag}"):
             return True
         return pair_tag in self.active_positions or pair_tag in self.pending_entry_orders
-
     async def _validate_entry_spread(self, pair_tag: str, payload: ExecutorPayload) -> bool:
         """
-        Pre-entry re-validation: re-quotes the global futures book and rejects
-        the signal when the entry spread has collapsed below the floor the
-        scanner itself used. Guards the sub-second window between the scanner's
-        snapshot and the executor's order placement.
-
-        Floor resolution: explicit config ``entry_revalidation_min_spread_pct``
-        overrides; otherwise the payload's ``min_entry_spread_pct``. A ticker
-        that cannot be read fails open — the scanner already validated the
-        quote one scan ago, and refusing every entry on a ticker blip is worse.
+        Revalidate both local Spot and global Perpetual tickers immediately before
+        placing the Spot order. A zero spread floor disables only the profitability
+        threshold; it never disables the fresh-price, FX, or maker-price checks.
         """
         min_spread = float(
             getattr(self.config, "entry_revalidation_min_spread_pct", 0.0) or 0.0
         )
         if min_spread <= 0:
             min_spread = float(payload.execution_directives.min_entry_spread_pct or 0.0)
-        if min_spread <= 0:
-            return True
 
+        local_symbol = payload.pair_info.local_symbol
         global_symbol = payload.pair_info.global_symbol
-        try:
-            ticker = await self.client.fetch_global_ticker(global_symbol)
-        except Exception as exc:  # nosec BLE001 - fail open, see docstring
-            logger.warning(
-                f"[Entry Revalidation] could not read {global_symbol} ticker for {pair_tag}: "
-                f"{exc}. Proceeding with the entry."
+        local_fetcher = getattr(self.client, "fetch_local_ticker", None)
+        if not callable(local_fetcher):
+            await self._publish_execution_failure(
+                pair_tag,
+                "ENTRY_REVALIDATION_UNAVAILABLE",
+                "Ticker Spot live tidak didukung; order dibatalkan sebelum membuka posisi.",
+                detail={"local_symbol": local_symbol, "global_symbol": global_symbol},
             )
-            return True
+            return False
 
         try:
-            live_bid = float((ticker or {}).get("bid") or 0.0)
-        except (TypeError, ValueError):
-            live_bid = 0.0
-        if live_bid <= 0:
-            logger.info(
-                f"[Entry Revalidation] no live bid for {global_symbol}; "
-                f"skipping spread check on {pair_tag}"
+            local_ticker, global_ticker = await asyncio.gather(
+                local_fetcher(local_symbol),
+                self.client.fetch_global_ticker(global_symbol),
             )
-            return True
+        except Exception as exc:  # nosec BLE001 - both legs must be re-quoted
+            logger.warning(
+                f"[Entry Revalidation] ticker read failed for {pair_tag}: {exc}. Rejecting entry."
+            )
+            await self._publish_execution_failure(
+                pair_tag,
+                "ENTRY_REVALIDATION_UNAVAILABLE",
+                "Ticker Spot/Futures live tidak dapat diverifikasi; order Spot dibatalkan.",
+                detail={"local_symbol": local_symbol, "global_symbol": global_symbol, "error": str(exc)},
+            )
+            return False
+
+        now_ms = int(time.time() * 1000)
+        max_age_ms = int(getattr(self.config, "entry_revalidation_max_age_ms", 2000) or 2000)
+        for label, ticker, symbol in (
+            ("Spot", local_ticker, local_symbol),
+            ("Futures", global_ticker, global_symbol),
+        ):
+            try:
+                ticker_ts = int((ticker or {}).get("timestamp") or 0)
+            except (TypeError, ValueError):
+                ticker_ts = 0
+            age_ms = now_ms - ticker_ts
+            if ticker_ts <= 0 or age_ms < -1000 or age_ms > max_age_ms:
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "ENTRY_REVALIDATION_STALE_TICKER",
+                    f"Ticker {label} tidak memiliki timestamp valid atau sudah basi; order Spot dibatalkan.",
+                    detail={"symbol": symbol, "timestamp_ms": ticker_ts, "age_ms": age_ms, "max_age_ms": max_age_ms},
+                )
+                return False
+
+        try:
+            local_bid = float((local_ticker or {}).get("bid") or 0.0)
+            local_ask = float((local_ticker or {}).get("ask") or 0.0)
+            live_bid = float((global_ticker or {}).get("bid") or 0.0)
+            live_ask = float((global_ticker or {}).get("ask") or 0.0)
+        except (TypeError, ValueError):
+            local_bid = local_ask = live_bid = live_ask = 0.0
 
         snapshot = payload.pricing_snapshot
-        if snapshot.global_best_bid_usdt <= 0 or snapshot.usdt_idr_rate <= 0:
-            return True
-        live_bid_idr = live_bid * snapshot.usdt_idr_rate
-        buy_price_idr = payload.execution_directives.recommended_limit_buy_idr
-        if buy_price_idr <= 0 or live_bid_idr <= 0:
-            return True
+        buy_price_idr = float(payload.execution_directives.recommended_limit_buy_idr or 0.0)
+        fx_rate = float(snapshot.usdt_idr_rate or 0.0)
+        values = (local_bid, local_ask, live_bid, live_ask, buy_price_idr, fx_rate)
+        if any(not math.isfinite(value) or value <= 0 for value in values):
+            await self._publish_execution_failure(
+                pair_tag,
+                "ENTRY_REVALIDATION_PRICE_INVALID",
+                "Bid/ask Spot atau Futures, harga order, maupun FX tidak valid; order Spot dibatalkan.",
+                detail={
+                    "local_bid": local_bid, "local_ask": local_ask,
+                    "global_bid": live_bid, "global_ask": live_ask,
+                    "buy_price_idr": buy_price_idr, "usdt_idr_rate": fx_rate,
+                },
+            )
+            return False
+
+        quote_asset = str(payload.pair_info.quote_asset or "").upper()
+        local_ask_idr = local_ask * fx_rate if quote_asset in ("USDT", "USDC") else local_ask
+        live_bid_idr = live_bid * fx_rate
+        if buy_price_idr >= local_ask_idr:
+            await self._publish_execution_failure(
+                pair_tag,
+                "ENTRY_REVALIDATION_LIMIT_WOULD_TAKE",
+                "Harga limit Buy Spot akan menyentuh/menyeberangi Ask; order dibatalkan agar tidak berubah menjadi taker.",
+                detail={"buy_price_idr": buy_price_idr, "live_local_ask_idr": local_ask_idr},
+            )
+            return False
 
         live_spread_pct = ((live_bid_idr - buy_price_idr) / live_bid_idr) * 100.0
-        if live_spread_pct < min_spread:
+        if min_spread > 0 and live_spread_pct + 1e-9 < min_spread:
             logger.info(
                 f"[Entry Revalidation] rejecting {pair_tag}: live spread "
-                f"{live_spread_pct:.3f}% < floor {min_spread:.3f}% "
-                f"(live bid {live_bid}, snapshot bid {snapshot.global_best_bid_usdt})"
+                f"{live_spread_pct:.3f}% < floor {min_spread:.3f}%"
+            )
+            await self._publish_execution_failure(
+                pair_tag,
+                "ENTRY_REVALIDATION_SPREAD_COLLAPSED",
+                "Spread live turun di bawah ambang minimum; order Spot dibatalkan.",
+                detail={"live_spread_pct": live_spread_pct, "min_spread_pct": min_spread},
             )
             return False
         return True
@@ -854,7 +907,67 @@ class ArbitrageEngine(
         if buy_qty <= 0:
             return
 
+        live_preflight = not getattr(self.config, "mock_mode", False)
+        if live_preflight:
+            validator = getattr(self.client, "validate_entry_order", None)
+            if not callable(validator):
+                self._mark_failed(
+                    pair_tag,
+                    "ORDER_CONSTRAINT_PREFLIGHT_UNAVAILABLE",
+                    "LIVE entry diblokir: adapter tidak menyediakan validasi market aktif, minimum order, precision, dan contract multiplier.",
+                    detail={"local_symbol": pair_info.local_symbol, "global_symbol": pair_info.global_symbol},
+                )
+                await self.publish_status()
+                return
+            try:
+                buy_qty, buy_price_idr = await validator(
+                    local_symbol=pair_info.local_symbol,
+                    global_symbol=pair_info.global_symbol,
+                    amount=buy_qty,
+                    price_idr=buy_price_idr,
+                    usdt_idr_rate=snapshot.usdt_idr_rate,
+                    global_ask_quote=snapshot.global_best_ask_usdt,
+                    local_exchange=pair_info.local_exchange,
+                    global_exchange=pair_info.global_exchange,
+                    max_ticker_age_ms=int(getattr(self.config, "entry_revalidation_max_age_ms", 2000) or 2000),
+                    max_price_deviation_pct=float(getattr(self.config, "max_entry_slippage_pct", 0.003) or 0.0),
+                )
+            except Exception as preflight_error:
+                logger.warning(
+                    f"[Order Constraint Preflight] rejecting {pair_tag}: {preflight_error}"
+                )
+                self._mark_failed(
+                    pair_tag,
+                    "ORDER_CONSTRAINT_PREFLIGHT_FAILED",
+                    "LIVE entry dibatalkan karena market/precision/minimum order/contract multiplier tidak dapat diverifikasi.",
+                    detail={
+                        "local_symbol": pair_info.local_symbol,
+                        "global_symbol": pair_info.global_symbol,
+                        "error": str(preflight_error),
+                    },
+                )
+                await self.publish_status()
+                return
+            if not math.isfinite(float(buy_qty)) or not math.isfinite(float(buy_price_idr)) or buy_qty <= 0 or buy_price_idr <= 0:
+                self._mark_failed(
+                    pair_tag,
+                    "ORDER_CONSTRAINT_PREFLIGHT_INVALID_RESULT",
+                    "LIVE entry dibatalkan karena hasil validasi ukuran/harga tidak valid.",
+                    detail={"amount": buy_qty, "price_idr": buy_price_idr},
+                )
+                await self.publish_status()
+                return
+
         actual_cost_usdt = (buy_qty * buy_price_idr) / snapshot.usdt_idr_rate
+        if actual_cost_usdt + 1e-9 < float(getattr(self.config, "min_allocated_capital", 0.0) or 0.0):
+            self._mark_failed(
+                pair_tag,
+                "ORDER_CONSTRAINT_SIZE_BELOW_MIN_CAPITAL",
+                "Ukuran setelah pembulatan lot/contract lebih kecil dari minimum modal; entry dibatalkan.",
+                detail={"actual_cost_usdt": actual_cost_usdt},
+            )
+            await self.publish_status()
+            return
 
         # Lock funds in exchange client
         if hasattr(self.client, "lock_funds"):
@@ -862,12 +975,13 @@ class ArbitrageEngine(
                 logger.warning(
                     f"[State 1 Balance Check] Failed to lock funds for {actual_cost_usdt:.2f} USDT on {pair_tag}"
                 )
-                await self._publish_execution_failure(
+                self._mark_failed(
                     pair_tag,
                     "BALANCE_LOCK_FAILED",
                     "Exchange client gagal mengunci saldo untuk entry.",
                     detail={"required_usdt_per_leg": actual_cost_usdt},
                 )
+                await self.publish_status()
                 return
             # Sync balances to Redis
             bals = await self._get_balance_snapshot(
@@ -885,8 +999,11 @@ class ArbitrageEngine(
             )
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
+            place_kwargs = {"client_order_id": entry_coid}
+            if live_preflight:
+                place_kwargs["usdt_idr_rate"] = snapshot.usdt_idr_rate
             order = await self.client.place_local_limit_buy(
-                pair_info.local_symbol, buy_qty, buy_price_idr, client_order_id=entry_coid
+                pair_info.local_symbol, buy_qty, buy_price_idr, **place_kwargs
             )
             order_id = str(order.get("id", ""))
             self._record_order_success(pair_info.local_exchange)
@@ -1014,7 +1131,7 @@ class ArbitrageEngine(
 
     def record_realized_pnl(self, net_profit_usdt: float) -> None:
         """
-        Feeds a closed trade's net PnL into the daily loss breaker.
+        Feeds a closed trade's recorded net PnL estimate into the daily loss breaker; fees are not exchange-confirmed.
 
         Losses beyond max_daily_loss_usdt halt *new entries* only: open positions
         keep being managed, because abandoning them unhedged would be worse than

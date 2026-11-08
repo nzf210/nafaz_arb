@@ -259,7 +259,9 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 	}))
 	defer tokoServer.Close()
 
+	mexcSpotRequests := 0
 	mexcSpotServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mexcSpotRequests++
 		if r.URL.Path == "/api/v3/depth" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{
@@ -293,13 +295,14 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 		t.Errorf("unexpected indodax bids: %+v", ibook.Bids)
 	}
 
-	// MEXC spot depth
-	mbook, err := adapter.SpotOrderBook(context.Background(), "mexc_spot:BTCUSDT")
-	if err != nil {
-		t.Fatalf("SpotOrderBook mexc: %v", err)
+	// MEXC Spot is explicitly disabled, even if a caller supplies a legacy symbol.
+	for _, symbol := range []string{"mexc_spot:BTCUSDT", "mexc:BTC_USDT"} {
+		if _, err := adapter.SpotOrderBook(context.Background(), symbol); err == nil || !strings.Contains(err.Error(), "MEXC Spot is disabled") {
+			t.Fatalf("SpotOrderBook(%q) error=%v, want MEXC Spot disabled", symbol, err)
+		}
 	}
-	if len(mbook.Bids) != 1 || mbook.Bids[0].Price != 60050 || mbook.Bids[0].Quantity != 1.5 {
-		t.Errorf("unexpected mexc spot bids: %+v", mbook.Bids)
+	if mexcSpotRequests != 0 {
+		t.Fatalf("MEXC Spot endpoint was called %d times, want 0", mexcSpotRequests)
 	}
 }
 
@@ -316,5 +319,81 @@ func TestMatchMarketsMultiplePerpExchanges(t *testing.T) {
 	pairs := MatchMarkets(spot, perp, []string{"USDT"})
 	if len(pairs) != 4 {
 		t.Fatalf("expected 4 matched pairs (2 spot * 2 perp), got %d", len(pairs))
+	}
+}
+
+func TestLiveAdapterOpenExposuresFailsClosed(t *testing.T) {
+	adapter := NewLiveAdapter()
+	exposures, err := adapter.OpenExposures(context.Background())
+	if err == nil {
+		t.Fatal("live exposure inspection must not claim an empty account while authenticated readers are unavailable")
+	}
+	if !strings.Contains(err.Error(), "open-order/position inspection is not implemented") {
+		t.Fatalf("unexpected exposure inspection error: %v", err)
+	}
+	if len(exposures) != 0 {
+		t.Fatalf("unavailable exposure inspection must not return partial data: %+v", exposures)
+	}
+}
+
+func TestUSDTIDRRateDoesNotFallBackToCachedValue(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"ticker":{"last":"16000","buy":"15990","sell":"16010"}}`))
+			return
+		}
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs(server.URL)
+
+	rate, err := adapter.USDTIDRRate(context.Background())
+	if err != nil || rate != 16000 {
+		t.Fatalf("first live FX request = %v, %v; want 16000, nil", rate, err)
+	}
+	rate, err = adapter.USDTIDRRate(context.Background())
+	if err == nil || rate != 0 {
+		t.Fatalf("failed live FX request reused cached rate: rate=%v err=%v", rate, err)
+	}
+	if requests != 2 {
+		t.Fatalf("FX endpoint requests=%d, want 2 fresh requests", requests)
+	}
+}
+
+func TestUSDTIDRRateUsesCurrentBidAskInsteadOfLastTrade(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ticker":{"last":"15000","buy":"15990","sell":"16010"}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs(server.URL)
+	rate, err := adapter.USDTIDRRate(context.Background())
+	if err != nil {
+		t.Fatalf("live FX quote failed: %v", err)
+	}
+	if rate != 16000 {
+		t.Fatalf("USDT/IDR rate=%v, want current bid/ask midpoint 16000 rather than stale last 15000", rate)
+	}
+}
+
+func TestUSDTIDRRateRejectsMissingTwoSidedQuote(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ticker":{"last":"16000","buy":"15990","sell":""}}`))
+	}))
+	defer server.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs(server.URL)
+	rate, err := adapter.USDTIDRRate(context.Background())
+	if err == nil || rate != 0 {
+		t.Fatalf("missing ask must fail closed: rate=%v err=%v", rate, err)
 	}
 }

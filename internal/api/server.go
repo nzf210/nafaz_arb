@@ -171,25 +171,32 @@ func (s *Server) runScan(ctx context.Context) (domain.ScanResult, error) {
 	r, complete, err := s.scanner.Scan(ctx)
 	if err != nil {
 		s.finishScan(r, false, err)
+		s.notifyScanHooks(r)
 		return r, err
 	}
 	if e := s.history.Observe(r.CompletedAt, r.Opportunities, complete, s.cfg.MaxMissedSuccessfulScans); e != nil {
 		r.Complete = false
 		r.Errors = append(r.Errors, "persist opportunity history: "+e.Error())
 		s.finishScan(r, false, e)
+		s.notifyScanHooks(r)
 		return r, e
 	}
 	s.finishScan(r, complete, nil)
-	s.mu.Lock()
+	s.notifyScanHooks(r)
+	return r, nil
+}
+
+func (s *Server) notifyScanHooks(r domain.ScanResult) {
+	s.mu.RLock()
 	hooks := make([]func(domain.ScanResult), len(s.scanHooks))
 	copy(hooks, s.scanHooks)
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
 	for _, h := range hooks {
 		h(r)
 	}
-	return r, nil
 }
+
 func (s *Server) finishScan(r domain.ScanResult, complete bool, scanErr error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

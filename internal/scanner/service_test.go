@@ -18,6 +18,7 @@ func TestMockScanReturnsMatchedPairs(t *testing.T) {
 	cfg := config.Config{
 		Mode:                  "MOCK",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -93,6 +94,7 @@ func TestConcurrentScanSorting(t *testing.T) {
 	cfg := config.Config{
 		Mode:                  "MOCK",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -131,6 +133,7 @@ func TestEmptyBookFreezeCircuitBreaker(t *testing.T) {
 	cfg := config.Config{
 		Mode:                 "MOCK",
 		QuoteAssets:          []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:         1000,
 		AllocationPerPair:    0.5,
 		PerpLeverage:         1,
@@ -295,6 +298,7 @@ func TestHybridOpportunityCalculation(t *testing.T) {
 	cfg := config.Config{
 		Mode:                  "MOCK",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -327,6 +331,12 @@ func TestHybridOpportunityCalculation(t *testing.T) {
 	if op.FundingPnL <= 0 {
 		t.Errorf("expected positive FundingPnL, got %f", op.FundingPnL)
 	}
+	if wantGross := op.SpreadPnL + op.FundingPnL; math.Abs(op.GrossProfit-wantGross) > 1e-9 {
+		t.Errorf("GrossProfit=%f, want SpreadPnL+FundingPnL=%f", op.GrossProfit, wantGross)
+	}
+	if wantNet := op.GrossProfit - op.TradingFees - op.Slippage; math.Abs(op.NetProfit-wantNet) > 1e-9 {
+		t.Errorf("NetProfit=%f, want GrossProfit-Fees-Slippage=%f", op.NetProfit, wantNet)
+	}
 	if op.NetProfit <= 0 {
 		t.Errorf("expected positive NetProfit, got %f", op.NetProfit)
 	}
@@ -347,6 +357,7 @@ func TestUnfavorableRegimeNegativeBasisAndFunding(t *testing.T) {
 	cfg := config.Config{
 		Mode:                  "MOCK",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -408,6 +419,7 @@ func TestMakerTakerOpportunityCalculation(t *testing.T) {
 		Mode:                  "MOCK",
 		ExecutionMode:         "MAKER_TAKER",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -521,6 +533,7 @@ func TestAdaptivePositionSizing(t *testing.T) {
 		Mode:                  "MOCK",
 		ExecutionMode:         "MAKER_TAKER",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -691,6 +704,7 @@ func TestEmptyBookFreezeMinutesCircuitBreaker(t *testing.T) {
 	cfg := config.Config{
 		Mode:                   "MOCK",
 		QuoteAssets:            []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:           1000,
 		AllocationPerPair:      0.5,
 		PerpLeverage:           1,
@@ -729,6 +743,7 @@ func TestFeeAssetSurcharge(t *testing.T) {
 		Mode:                  "MOCK",
 		ExecutionMode:         "TAKER_TAKER",
 		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR: true,
 		CapitalTotal:          1000,
 		AllocationPerPair:     0.5,
 		PerpLeverage:          1,
@@ -894,5 +909,121 @@ func TestApplyEvaluationResultsCountsFailedPairs(t *testing.T) {
 	}
 	if result.FailedPairs != 1 {
 		t.Fatalf("failed_pairs=%d, want 1", result.FailedPairs)
+	}
+}
+
+type unavailableExposureAdapter struct {
+	exchange.MockAdapter
+}
+
+func (u *unavailableExposureAdapter) OpenExposures(context.Context) ([]domain.OpenExposure, error) {
+	return nil, fmt.Errorf("authenticated open-order/position inspection unavailable")
+}
+
+func TestScanMarksEveryCandidateIneligibleWhenExposureStateIsUnknown(t *testing.T) {
+	cfg := config.Config{
+		Mode: "MOCK",
+		QuoteAssets: []string{"USDT"},
+		EnableSyntheticIDR: true,
+		CapitalTotal: 1000,
+		AllocationPerPair: 0.5,
+		PerpLeverage: 1,
+		EstimatedHoldingHours: 8,
+		MinNetROIPct: 0.1,
+		MaxNetROIPct: 10,
+		MaxSlippagePct: 5,
+		SpotTakerFeePct: 0.1,
+		PerpTakerFeePct: 0.05,
+		CheckOpenPositions: true,
+		ExcludeOpenOrders: true,
+	}
+	adapter := &unavailableExposureAdapter{MockAdapter: *exchange.NewMockAdapter()}
+	result, complete, err := New(cfg, adapter).Scan(context.Background())
+	if err != nil {
+		t.Fatalf("scan should return an inspectable incomplete result, got error: %v", err)
+	}
+	if complete || result.Complete {
+		t.Fatal("scan must be incomplete when live exposure state cannot be verified")
+	}
+	if len(result.Opportunities) == 0 {
+		t.Fatal("expected candidates to verify they are explicitly blocked")
+	}
+	for _, op := range result.Opportunities {
+		if op.TradingEligible {
+			t.Fatalf("%s became trading-eligible without exposure verification", op.OpportunityKey)
+		}
+		if !hasReason(op.ExclusionReasons, "POSITION_STATUS_UNKNOWN") {
+			t.Fatalf("%s missing POSITION_STATUS_UNKNOWN: %v", op.OpportunityKey, op.ExclusionReasons)
+		}
+	}
+}
+
+type unavailableFXAdapter struct {
+	exchange.MockAdapter
+}
+
+func (a *unavailableFXAdapter) USDTIDRRate(context.Context) (float64, error) {
+	return 0, fmt.Errorf("live FX endpoint unavailable")
+}
+
+func TestEvaluatePairDoesNotUseLastKnownFXForLocalSpotOrderPricing(t *testing.T) {
+	cfg := config.Config{
+		Mode: "MOCK",
+		QuoteAssets: []string{"USDT"},
+		EnableSyntheticIDR: true,
+		CapitalTotal: 1000,
+		AllocationPerPair: 0.5,
+		PerpLeverage: 1,
+		EstimatedHoldingHours: 8,
+		MinNetROIPct: 0.1,
+		MaxNetROIPct: 10,
+		MaxSlippagePct: 5,
+		CheckOpenPositions: false,
+	}
+	adapter := &unavailableFXAdapter{MockAdapter: *exchange.NewMockAdapter()}
+	svc := New(cfg, adapter)
+	// Simulate a previous scan's rate: it must not be reused for a new order.
+	svc.lastLiveFXRate = 16_000.0
+	pair := [2]domain.Market{
+		{Exchange: "tokocrypto", Symbol: "toko:BTC_USDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "SPOT", Active: true},
+		{Exchange: "okx", Symbol: "BTC-USDT-SWAP", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true},
+	}
+
+	result := svc.evaluatePair(context.Background(), pair, nil, true, time.Now().UTC())
+	if result.err == nil || !strings.Contains(result.err.Error(), "live USDT/IDR FX unavailable") {
+		t.Fatalf("expected stale FX to be rejected for USDT-quoted local Spot, got %+v", result)
+	}
+	if result.op.TradingEligible {
+		t.Fatal("pair must not be trading-eligible when live FX is unavailable")
+	}
+}
+
+func TestIDRSpotPairsRequireSyntheticNormalization(t *testing.T) {
+	adapter := &syntheticMockAdapter{idrRate: 16000.0}
+	cfg := config.Config{
+		Mode:                  "MOCK",
+		QuoteAssets:           []string{"USDT"},
+		EnableSyntheticIDR:    false,
+		SyntheticUSDTIDRRate:  16000.0,
+		CapitalTotal:          1000,
+		AllocationPerPair:     0.5,
+		PerpLeverage:          1,
+		EstimatedHoldingHours: 8,
+		MinNetROIPct:          0.1,
+		MaxNetROIPct:          20.0,
+		MaxSlippagePct:        5.0,
+		CheckOpenPositions:    false,
+	}
+
+	s := New(cfg, adapter)
+	result, complete, err := s.Scan(context.Background())
+	if err == nil || complete {
+		t.Fatalf("IDR markets without normalization must abort the scan; err=%v complete=%v", err, complete)
+	}
+	if !strings.Contains(err.Error(), "enable_synthetic_idr=false") {
+		t.Fatalf("unexpected scan error: %v", err)
+	}
+	if len(result.Opportunities) != 0 {
+		t.Fatalf("unsafe mixed-currency opportunities must not be emitted: %+v", result.Opportunities)
 	}
 }

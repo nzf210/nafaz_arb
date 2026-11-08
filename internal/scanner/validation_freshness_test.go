@@ -69,3 +69,27 @@ func TestValidateCrossExchangeTimestampAlignmentUsesReceiveTimes(t *testing.T) {
 		t.Fatal("receive-time skew above limit must be rejected")
 	}
 }
+
+func TestNormalizeOrderBookCurrencyPreservesReceiveMetadata(t *testing.T) {
+	now := time.Now().UTC()
+	book := domain.OrderBook{
+		Exchange: "indodax",
+		Symbol: "btcusdt",
+		Timestamp: now.Add(-time.Hour),
+		ReceivedAt: now,
+		Source: "receive_time",
+		Bids: []domain.PriceLevel{{Price: 64_000.0, Quantity: 1.0}},
+		Asks: []domain.PriceLevel{{Price: 64_010.0, Quantity: 2.0}},
+	}
+
+	normalized := normalizeOrderBookCurrency(book, 16_000.0)
+	if !normalized.ReceivedAt.Equal(now) {
+		t.Fatalf("receive time lost during FX normalization: got %s want %s", normalized.ReceivedAt, now)
+	}
+	if normalized.Source != "receive_time" {
+		t.Fatalf("source lost during FX normalization: got %q", normalized.Source)
+	}
+	if normalized.Timestamp != book.Timestamp {
+		t.Fatalf("source timestamp changed during FX normalization: got %s want %s", normalized.Timestamp, book.Timestamp)
+	}
+}

@@ -36,7 +36,23 @@ class MockExchangeClient:
         self.cancelled_orders = []
         self.global_short_sells = []
         self.global_close_buys = []
-        self.market_prices = {}
+        self.market_prices = {
+            "btc_idr": {
+                "bid": 1_037_000_000.0,
+                "ask": 1_038_000_000.0,
+                "timestamp": int(time.time() * 1000),
+            },
+            "btc_usdt": {
+                "bid": 65_000.0,
+                "ask": 65_010.0,
+                "timestamp": int(time.time() * 1000),
+            },
+            "btcusdt": {
+                "bid": 65_100.0,
+                "ask": 65_110.0,
+                "timestamp": int(time.time() * 1000),
+            },
+        }
         self.client_order_ids = []
         self.funding_history = []
         self.funding_rate_data = {}
@@ -152,12 +168,31 @@ class MockExchangeClient:
 
     def update_market_price(self, symbol: str, best_bid: float, best_ask: float, last_price: float = 0.0):
         clean = symbol.lower().replace("/", "_").replace("-", "_")
-        self.market_prices[clean] = {"bid": float(best_bid), "ask": float(best_ask)}
+        self.market_prices[clean] = {
+            "bid": float(best_bid),
+            "ask": float(best_ask),
+            "timestamp": int(time.time() * 1000),
+        }
+
+    async def fetch_local_ticker(self, symbol: str):
+        clean = symbol.lower().replace("/", "_").replace("-", "_")
+        price = self.market_prices.get(clean) or {}
+        return {
+            "symbol": symbol,
+            "bid": float(price.get("bid", 0.0)),
+            "ask": float(price.get("ask", 0.0)),
+            "timestamp": int(price.get("timestamp", 0)),
+        }
 
     async def fetch_global_ticker(self, symbol: str):
         clean = symbol.lower().replace("/", "_").replace("-", "_")
         price = self.market_prices.get(clean) or {}
-        return {"symbol": symbol, "bid": price.get("bid", 0.0), "ask": price.get("ask", 0.0)}
+        return {
+            "symbol": symbol,
+            "bid": float(price.get("bid", 0.0)),
+            "ask": float(price.get("ask", 0.0)),
+            "timestamp": int(price.get("timestamp", 0)),
+        }
 
     async def close(self):
         pass
@@ -245,6 +280,21 @@ def _half_budget_signal(local_symbol: str, global_symbol: str, now_ms: int) -> d
     sig["pair_info"]["global_symbol"] = global_symbol
     sig["execution_directives"] = dict(sig["execution_directives"])
     sig["execution_directives"]["max_position_usdt"] = 50.0
+
+    if local_symbol.lower() == "eth_idr":
+        sig["pair_info"]["base_asset"] = "ETH"
+        sig["pricing_snapshot"].update({
+            "local_best_bid": 49_800_000.0, "local_best_ask": 49_900_000.0,
+            "global_best_bid_usdt": 3_200.0, "global_best_ask_usdt": 3_201.0,
+        })
+        sig["execution_directives"]["recommended_limit_buy_idr"] = 49_850_000.0
+    elif local_symbol.lower() == "sol_idr":
+        sig["pair_info"]["base_asset"] = "SOL"
+        sig["pricing_snapshot"].update({
+            "local_best_bid": 20_000_000.0, "local_best_ask": 20_100_000.0,
+            "global_best_bid_usdt": 1_300.0, "global_best_ask_usdt": 1_301.0,
+        })
+        sig["execution_directives"]["recommended_limit_buy_idr"] = 20_050_000.0
     return sig
 
 def _exposure_engine(fake_redis, cap: float):
@@ -253,6 +303,12 @@ def _exposure_engine(fake_redis, cap: float):
     client = PaperTradingExchangeClient(
         local_name="indodax", global_name="okx", initial_balance_usdt=100.0
     )
+    client.update_market_price("btc_idr", 1_037_000_000.0, 1_038_000_000.0)
+    client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
+    client.update_market_price("eth_idr", 49_800_000.0, 49_900_000.0)
+    client.update_market_price("ETHUSDT", 3_200.0, 3_201.0)
+    client.update_market_price("sol_idr", 20_000_000.0, 20_100_000.0)
+    client.update_market_price("SOLUSDT", 1_300.0, 1_301.0)
     cfg = ExecutorConfig(
         min_partial_fill_usd=10.0,
         initial_exchange_balance_usdt=100.0,
@@ -275,8 +331,8 @@ def _revalidation_payload(now_ms: int, *, min_spread_pct: float = 0.10) -> dict:
             "local_price_tick": 1000.0,
         },
         "pricing_snapshot": {
-            "local_best_bid": 1000000000.0,
-            "local_best_ask": 1002000000.0,
+            "local_best_bid": 1038000000.0,
+            "local_best_ask": 1040000000.0,
             "global_best_bid_usdt": base_bid_usdt,
             "global_best_ask_usdt": 65010.0,
             "usdt_idr_rate": 16000.0,
@@ -306,6 +362,12 @@ def _fee_buffer_engine(fake_redis, fee_pct: float):
     client = PaperTradingExchangeClient(
         local_name="indodax", global_name="okx", initial_balance_usdt=100.0
     )
+    client.update_market_price("btc_idr", 1_037_000_000.0, 1_038_000_000.0)
+    client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
+    client.update_market_price("eth_idr", 49_800_000.0, 49_900_000.0)
+    client.update_market_price("ETHUSDT", 3_200.0, 3_201.0)
+    client.update_market_price("sol_idr", 20_000_000.0, 20_100_000.0)
+    client.update_market_price("SOLUSDT", 1_300.0, 1_301.0)
     cfg = ExecutorConfig(
         min_partial_fill_usd=10.0,
         initial_exchange_balance_usdt=100.0,

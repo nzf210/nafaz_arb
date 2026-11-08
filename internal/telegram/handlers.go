@@ -363,6 +363,45 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			ev.EntryPriceIDR,
 			ev.ShortEntryUSDT,
 		)
+	case "PARTIAL_FILL":
+		pairLabel := ev.PairTag
+		if pairLabel == "" {
+			pairLabel = ev.PairKey
+		}
+		if pairLabel == "" {
+			pairLabel = ev.Symbol
+		}
+		alertKey := "partial:" + pairLabel
+		b.mu.Lock()
+		lastAlert, alreadyAlerted := b.alertedKeys[alertKey]
+		if alreadyAlerted && time.Since(lastAlert) < 2*time.Minute {
+			b.mu.Unlock()
+			return
+		}
+		b.alertedKeys[alertKey] = time.Now()
+		b.mu.Unlock()
+
+		filledQty := ev.FilledQty
+		if filledQty <= 0 {
+			filledQty = ev.Qty
+		}
+		text = fmt.Sprintf(
+			"⚠️ <b>[%s] SPOT PARTIAL FILL</b>\n\n"+
+				"• Pair: <code>%s</code>\n"+
+				"• Exchange: <code>%s (Spot)</code> → <code>%s (Perpetual)</code>\n"+
+				"• Terisi: <code>%.8f / %.8f</code>\n"+
+				"• State: <code>%s</code>\n"+
+				"• Detail: %s\n\n"+
+				"<i>Jangan anggap posisi sudah delta-neutral sampai hedge Futures terkonfirmasi. Pantau /positions dan /status.</i>",
+			modeTag,
+			html.EscapeString(pairLabel),
+			html.EscapeString(ev.LocalExchange),
+			html.EscapeString(ev.GlobalExchange),
+			filledQty,
+			ev.TotalQty,
+			html.EscapeString(ev.State),
+			html.EscapeString(ev.Message),
+		)
 	case "EXECUTION_FAILURE", "HEDGE_FAILED":
 		pairLabel := ev.PairTag
 		if pairLabel == "" {
@@ -408,30 +447,56 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			html.EscapeString(ev.State),
 		)
 	case "POSITION_CLOSED":
+		if strings.EqualFold(ev.PnlStatus, "unverified") {
+			text = fmt.Sprintf(
+				"⚠️ <b>[%s] POSISI DITUTUP — PNL BELUM TERVERIFIKASI</b>\n\n"+
+					"• Pasangan: <b>%s</b>\n"+
+					"• Kuantitas: <code>%.6f koin</code>\n"+
+					"• Jual Spot: <code>Rp %.2f</code>\n"+
+					"• Tutup Short: <code>$%.4f USDT</code>\n"+
+					"• Alasan: FX USDT/IDR live tidak tersedia saat rekonsiliasi.\n"+
+					"• PnL tidak dimasukkan ke statistik sampai diverifikasi manual.\n\n"+
+					"<i>Periksa riwayat order dan fee di kedua exchange.</i>",
+				modeTag,
+				html.EscapeString(strings.ToUpper(ev.Symbol)),
+				ev.Qty,
+				ev.ExitPriceIDR,
+				ev.ShortExitUSDT,
+			)
+			break
+		}
 		emoji := "🎉"
-		statusWord := "PROFIT"
-		if ev.NetProfitUSDT < 0 {
+		statusWord := "ESTIMATED NET PROFIT"
+		estimatedNet := ev.EstimatedNetProfitUSDT
+		if estimatedNet == 0 {
+			estimatedNet = ev.NetProfitUSDT
+		}
+		if estimatedNet < 0 {
 			emoji = "⚠️"
-			statusWord = "LOSS"
+			statusWord = "ESTIMATED NET LOSS"
 		}
 		text = fmt.Sprintf(
 			"%s <b>[%s] POSISI BERHASIL DITUTUP (%s)!</b>\n\n"+
 				"• Pasangan: <b>%s</b>\n"+
 				"• Kuantitas: <code>%.6f koin</code>\n"+
-				"• Jual Spot (Maker): <code>Rp %.2f</code>\n"+
-				"• Tutup Short (1x): <code>$%.4f USDT</code>\n"+
+				"• Jual Spot: <code>Rp %.2f</code>\n"+
+				"• Tutup Short: <code>$%.4f USDT</code>\n"+
 				"• Akumulasi Funding: <code>+$%.4f USDT</code>\n"+
 				separatorLine+
-				"💰 <b>Net Realized Profit:</b> <b>%+.4f USDT (Rp %+.2f)</b>\n"+
-				"📈 <b>Net ROI:</b> <b>%+.3f%%</b>\n\n"+
-				"<i>Ketik /history untuk melihat rekap riwayat transaksi yang telah selesai.</i>",
+				"• Gross PnL: <code>%+.4f USDT</code>\n"+
+				"• Estimasi Fee: <code>%.4f USDT</code>\n"+
+				"💰 <b>Net PnL (estimasi):</b> <b>%+.4f USDT (Rp %+.2f)</b>\n"+
+				"📈 <b>Net ROI (estimasi):</b> <b>%+.3f%%</b>\n\n"+
+				"<i>Belum merupakan PnL terealisasi yang dikonfirmasi oleh fee fill exchange.</i>",
 			emoji, modeTag, statusWord,
 			html.EscapeString(strings.ToUpper(ev.Symbol)),
 			ev.Qty,
 			ev.ExitPriceIDR,
 			ev.ShortExitUSDT,
 			ev.AccumulatedFundingUSDT,
-			ev.NetProfitUSDT,
+			ev.GrossProfitUSDT,
+			ev.EstimatedFeesUSDT,
+			estimatedNet,
 			ev.NetProfitIDR,
 			ev.NetROIPct,
 		)

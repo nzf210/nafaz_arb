@@ -122,10 +122,15 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 		}
 	}
 	if !fxLive {
-		// Non-IDR pairs do not depend on the rate for spread math, but zero
-		// would corrupt metadata; keep the previous scan's behavior of not
-		// gating on FX here while refusing to fabricate a number.
-		fxRate = s.lastKnownFXRate()
+		// Executor order prices are IDR-normalized even for USDT/USDC local
+		// Spot markets. A last-known FX value is not safe for converting an
+		// order price, so do not publish an executable opportunity without a
+		// live rate for any local quote asset.
+		return evalResult{
+			err: fmt.Errorf("%s/%s (%s vs %s): live USDT/IDR FX unavailable; refusing stale FX conversion for Spot order pricing",
+				sm.BaseAsset, sm.QuoteAsset, sm.Exchange, pm.Exchange),
+			exchangeMetrics: exchangeMetrics,
+		}
 	}
 	if err := validateFXRateSanity(fxRate, s.cfg.SyntheticUSDTIDRRate, s.cfg.FXRateSanityPct); err != nil {
 		return evalResult{

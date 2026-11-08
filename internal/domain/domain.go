@@ -65,6 +65,8 @@ type Opportunity struct {
 	Quantity               float64   `json:"quantity"`
 	SpreadPnL              float64   `json:"spread_pnl"`
 	FundingPnL             float64   `json:"funding_pnl"`
+	GrossProfit            float64   `json:"gross_profit"` // Spread + expected funding, before fees and slippage.
+	// NetProfit is the scanner estimate after configured fees, slippage and expected funding; it is not realized PnL.
 	TradingFees            float64   `json:"trading_fees"`
 	Slippage               float64   `json:"slippage"`
 	NetProfit              float64   `json:"net_profit"`

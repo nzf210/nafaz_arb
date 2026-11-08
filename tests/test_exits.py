@@ -492,3 +492,54 @@ async def test_exit_price_snapshot_without_live_fx_is_rejected(engine, fake_redi
     await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
 
     assert await engine._fetch_live_price(pair_tag) is None
+
+@pytest.mark.asyncio
+async def test_exit_fill_without_live_fx_closes_hedge_but_excludes_unverified_pnl(engine, fake_redis, mock_client):
+    """A filled Spot exit must still close Futures, but must not invent USDT PnL from static FX."""
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="BTC/IDR",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.001,
+        spot_cost_usdt=62.5,
+        futures_margin_usdt=65.0,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.EXIT_PENDING
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+    engine.pending_exit_orders[pair_tag] = {
+        "order_id": "fx-missing-exit",
+        "symbol": "BTC/IDR",
+        "price": 1_010_000_000.0,
+        "qty": 0.001,
+        "filled": 0.0,
+        "closed_short_qty": 0.0,
+    }
+    mock_client.orders["fx-missing-exit"] = {
+        "id": "fx-missing-exit", "symbol": "BTC/IDR", "status": "closed", "filled": 0.001,
+    }
+    await fake_redis.set(
+        f"arb:live_price:{pair_tag}",
+        json.dumps({
+            "global_best_ask_usdt": 65_100.0,
+            "timestamp_ms": int(time.time() * 1000),
+        }),
+    )
+
+    await engine._check_exit_orders()
+
+    assert len(mock_client.global_close_buys) == 1
+    assert pair_tag not in engine.active_positions
+    history = await fake_redis.lrange("arb:trade_history", 0, -1)
+    assert len(history) == 1
+    trade = json.loads(history[0])
+    assert trade["pnl_status"] == "unverified"
+    assert trade["pnl_verified"] is False
+    assert trade["net_profit_usdt"] is None
+    stats = await fake_redis.hgetall("arb:stats")
+    assert stats.get("pnl_unverified_count") == "1"
+    assert stats.get("total_pnl_usdt") is None
+    assert stats.get("win_count") is None

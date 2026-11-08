@@ -382,6 +382,12 @@ class RiskMixin:
                 return None
 
             fee_pct = float(getattr(self.config, "estimated_round_trip_fee_pct", 0.0) or 0.0)
+            fee_estimator = getattr(self.config, "estimate_round_trip_fee_fraction", None)
+            if callable(fee_estimator):
+                fee_pct = max(
+                    fee_pct,
+                    float(fee_estimator(pair_info.local_exchange, pair_info.global_exchange)),
+                )
             if fee_pct > 0:
                 fee_buffer_usdt = max_pos_usdt * fee_pct
                 max_pos_usdt -= fee_buffer_usdt

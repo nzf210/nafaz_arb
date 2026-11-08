@@ -15,6 +15,7 @@ type TelegramConfig struct {
 	AllowedChatIDs         []int64 `json:"allowed_chat_ids"`
 	AllowedUserIDs         []int64 `json:"allowed_user_ids"`
 	AlertOnNew             bool    `json:"alert_on_new"`
+	AlertOnScanSummary     bool    `json:"alert_on_scan_summary"`
 	AlertCooldownMinutes   int     `json:"alert_cooldown_minutes"`
 	AlertMinNetROIPct      float64 `json:"alert_min_net_roi_pct"`
 	AlertMinNetProfitQuote float64 `json:"alert_min_net_profit_quote"`
@@ -149,7 +150,7 @@ func (c *Config) setDefaults() {
 	c.SnipingWindowMinutes = defaultInt(c.SnipingWindowMinutes, 30)
 	c.FundingSubsidyFloorPct = defaultFloat(c.FundingSubsidyFloorPct, 0.08)
 	c.LocalPriceTick = defaultFloat(c.LocalPriceTick, 1.0)
-	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "binance")
+	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "okx")
 	c.Redis.Addr = defaultString(c.Redis.Addr, "localhost:6380")
 }
 
@@ -180,8 +181,18 @@ func (c *Config) AdaptiveSizingEnabled() bool {
 }
 
 func (c *Config) validate() error {
-	if strings.EqualFold(c.Mode, "LIVE") && len(strings.TrimSpace(c.APIAuthToken)) < 32 {
-		return fmt.Errorf("api_auth_token must contain at least 32 characters when mode=LIVE")
+	if strings.EqualFold(c.Mode, "LIVE") {
+		if len(strings.TrimSpace(c.APIAuthToken)) < 32 {
+			return fmt.Errorf("api_auth_token must contain at least 32 characters when mode=LIVE")
+		}
+		// Never allow LIVE scanning to bypass external positions or resting orders.
+		// The current live adapter fails closed until authenticated readers exist.
+		if !c.CheckOpenPositions {
+			return fmt.Errorf("check_open_positions must be true when mode=LIVE")
+		}
+		if !c.ExcludeOpenOrders {
+			return fmt.Errorf("exclude_open_orders must be true when mode=LIVE")
+		}
 	}
 	if c.ExecutionMode != "" && c.ExecutionMode != "TAKER_TAKER" && c.ExecutionMode != "MAKER_TAKER" {
 		return fmt.Errorf("execution_mode must be TAKER_TAKER or MAKER_TAKER")
@@ -329,6 +340,7 @@ func (c *Config) applyEnvOverrides() {
 	}
 	setEnvInt64(&c.Telegram.ChatID, "TELEGRAM_CHAT_ID")
 	setEnvBool(&c.Telegram.Enabled, "TELEGRAM_ENABLED")
+	setEnvBool(&c.Telegram.AlertOnScanSummary, "TELEGRAM_ALERT_ON_SCAN_SUMMARY")
 	setEnvBool(&c.Redis.Enabled, "REDIS_ENABLED")
 	setEnvString(&c.Redis.Addr, "REDIS_ADDR")
 	setEnvString(&c.Redis.Password, "REDIS_PASSWORD")

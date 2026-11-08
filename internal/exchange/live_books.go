@@ -51,16 +51,15 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 	return book, err
 }
 
-// SpotOrderBook fetches live order book depth from Tokocrypto, Indodax, or MEXC Spot.
+// SpotOrderBook fetches live order book depth from the two allowed local Spot venues.
+// MEXC is perpetual-only in this strategy; reject any accidental Spot route.
 func (l *LiveAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	if strings.HasPrefix(symbol, MEXC_SPOT) || strings.HasPrefix(symbol, "mexc:") {
+		return domain.OrderBook{}, fmt.Errorf("MEXC Spot is disabled; only Indodax and Tokocrypto Spot are allowed")
+	}
 	if strings.HasPrefix(symbol, "toko:") {
 		return l.trackedBookForSymbol("tokocrypto", symbol, func() (domain.OrderBook, error) {
 			return l.fetchTokocryptoSpotOrderBook(ctx, symbol)
-		})
-	}
-	if strings.HasPrefix(symbol, MEXC_SPOT) || strings.HasPrefix(symbol, "mexc:") {
-		return l.trackedBookForSymbol("mexc", symbol, func() (domain.OrderBook, error) {
-			return l.fetchMEXCSpotOrderBook(ctx, symbol)
 		})
 	}
 	return l.trackedBookForSymbol("indodax", symbol, func() (domain.OrderBook, error) {

@@ -146,6 +146,7 @@ async def test_state2_partial_fill_and_instant_short_hedge(engine, fake_redis, m
         "hedged_short_qty": 0.0,
         "cancel_threshold_usdt": 60000.0,
         "usdt_idr_rate": 16000.0,
+        "global_ask_usdt": 65100.0,
         "next_funding_time_ms": now_ms + 3600000,
         "base_target_exit_spread_pct": 0.3,
         "current_funding_rate": 0.0003,
@@ -235,6 +236,42 @@ async def test_p2_01_partial_fill_below_threshold_sets_entry_partial(engine, fak
     assert pair_tag not in engine.active_positions
     assert mock_client.global_short_sells == []
     assert pair_tag in engine.pending_entry_orders
+
+@pytest.mark.asyncio
+async def test_partial_fill_publishes_telegram_event_once(engine, fake_redis):
+    """A partial Spot fill must produce one actionable Telegram trade event."""
+    pair_tag = "indodax:btc_idr"
+    order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
+    order_info["qty"] = 0.1
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
+    pubsub = fake_redis.pubsub()
+    await pubsub.subscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
+    partial_order = {"status": "open", "filled": 0.000048}
+    await engine._handle_entry_fills(pair_tag, order_info, partial_order)
+    await engine._handle_entry_fills(pair_tag, order_info, partial_order)
+
+    event = None
+    for _ in range(10):
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+        if message and message.get("type") == "message":
+            event = json.loads(message["data"])
+            break
+
+    assert event is not None
+    assert event["event"] == "PARTIAL_FILL"
+    assert event["pair_tag"] == pair_tag
+    assert event["filled_qty"] == pytest.approx(0.000048)
+    assert event["total_qty"] == pytest.approx(0.1)
+    assert event["state"] == PositionState.ENTRY_PARTIAL.value
+    assert order_info["partial_fill_alerted"] is True
+    assert engine.states[pair_tag] == PositionState.ENTRY_PARTIAL
+    await pubsub.unsubscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.aclose()
+
 
 @pytest.mark.asyncio
 async def test_p2_01_partial_fill_above_threshold_hedges_and_activates(engine, fake_redis, mock_client):
@@ -423,7 +460,8 @@ async def test_entry_revalidation_passes_healthy_spread(engine, fake_redis, mock
     payload = _revalidation_payload(now_ms)
 
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
-    mock_client.update_market_price("BTC/USDT", 65000.0, 65010.0)
+    mock_client.update_market_price("BTC/USDT", 65100.0, 65110.0)
+    mock_client.update_market_price("btc_idr", 1_038_000_000.0, 1_040_000_000.0)
 
     await engine.handle_signal_notification(pair_tag)
 
@@ -431,8 +469,8 @@ async def test_entry_revalidation_passes_healthy_spread(engine, fake_redis, mock
     assert engine.states[pair_tag] == PositionState.ENTRY_PENDING
 
 @pytest.mark.asyncio
-async def test_entry_revalidation_fails_open_on_ticker_error(engine, fake_redis, mock_client):
-    """A ticker read failure must not block the entry the scanner already validated."""
+async def test_entry_revalidation_fails_closed_on_ticker_error(engine, fake_redis, mock_client):
+    """A failed fresh quote must block Spot entry and publish an actionable alert."""
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
     payload = _revalidation_payload(now_ms)
@@ -441,32 +479,58 @@ async def test_entry_revalidation_fails_open_on_ticker_error(engine, fake_redis,
         raise RuntimeError("ticker down")
 
     mock_client.fetch_global_ticker = boom
-
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    pubsub = fake_redis.pubsub()
+    await pubsub.subscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
     await engine.handle_signal_notification(pair_tag)
 
-    assert len(mock_client.placed_buys) == 1
+    assert len(mock_client.placed_buys) == 0
+    assert pair_tag not in engine.pending_entry_orders
+
+    event = None
+    for _ in range(10):
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+        if message and message.get("type") == "message":
+            event = json.loads(message["data"])
+            break
+    assert event is not None
+    assert event["event"] == "EXECUTION_FAILURE"
+    assert event["reason"] == "ENTRY_REVALIDATION_UNAVAILABLE"
+    await pubsub.unsubscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.aclose()
 
 @pytest.mark.asyncio
-async def test_entry_revalidation_disabled_by_zero_floor(engine, fake_redis, mock_client):
-    """Floor 0 in config AND payload: guard off, no ticker re-quote consulted."""
+async def test_entry_revalidation_zero_floor_still_requires_fresh_tickers(engine, fake_redis, mock_client):
+    """A zero profitability floor never disables fresh Spot/Futures quote validation."""
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
     payload = _revalidation_payload(now_ms, min_spread_pct=0.0)
 
-    called = []
-    original = mock_client.fetch_global_ticker
+    global_called = []
+    local_called = []
+    original_global = mock_client.fetch_global_ticker
+    original_local = mock_client.fetch_local_ticker
 
-    async def spy(symbol):
-        called.append(symbol)
-        return await original(symbol)
+    async def global_spy(symbol):
+        global_called.append(symbol)
+        return await original_global(symbol)
 
-    mock_client.fetch_global_ticker = spy
+    async def local_spy(symbol):
+        local_called.append(symbol)
+        return await original_local(symbol)
 
+    mock_client.fetch_global_ticker = global_spy
+    mock_client.fetch_local_ticker = local_spy
+
+    mock_client.update_market_price("btc_idr", 1_038_000_000.0, 1_040_000_000.0)
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
     await engine.handle_signal_notification(pair_tag)
 
-    assert called == []
+    assert global_called == ["BTC_USDT"]
+    assert local_called == ["btc_idr"]
     assert len(mock_client.placed_buys) == 1
 
 @pytest.mark.asyncio
@@ -543,3 +607,106 @@ async def test_signal_for_unconfigured_venue_is_rejected(engine, fake_redis, moc
     assert mock_client.placed_buys == []
     assert engine.states[pair_tag] == PositionState.FAILED
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "EXECUTOR_VENUE_MISMATCH"
+
+@pytest.mark.asyncio
+async def test_spot_order_rejection_emits_failure_event_and_keeps_no_pending_order(engine, fake_redis, mock_client):
+    """A rejected Spot submit must be visible to Telegram and must not create pending state."""
+    pair_tag = "indodax:btc_idr"
+
+    async def reject_spot_order(symbol, amount, price, client_order_id=None):
+        raise RuntimeError("exchange rejected order: invalid quantity")
+
+    mock_client.place_local_limit_buy = reject_spot_order
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}",
+        json.dumps(_fresh_signal_payload(int(time.time() * 1000))),
+    )
+
+    pubsub = fake_redis.pubsub()
+    await pubsub.subscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert pair_tag not in engine.pending_entry_orders
+    assert mock_client.placed_buys == []
+
+    event = None
+    for _ in range(10):
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+        if message and message.get("type") == "message":
+            event = json.loads(message["data"])
+            break
+    assert event is not None
+    assert event["event"] == "EXECUTION_FAILURE"
+    assert event["reason"] == "SPOT_ORDER_OPEN_FAILED"
+    assert event["pair_tag"] == pair_tag
+    await pubsub.unsubscribe(engine.ARB_TRADE_EVENTS)
+    await pubsub.aclose()
+
+@pytest.mark.asyncio
+async def test_entry_revalidation_rejects_stale_local_ticker(engine, fake_redis, mock_client):
+    """A fresh Futures quote cannot compensate for stale local Spot pricing."""
+    pair_tag = "indodax:btc_idr"
+    payload = _revalidation_payload(int(time.time() * 1000))
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    async def stale_local(symbol):
+        return {"symbol": symbol, "bid": 1_038_000_000.0, "ask": 1_040_000_000.0,
+                "timestamp": int(time.time() * 1000) - 10_000}
+
+    mock_client.fetch_local_ticker = stale_local
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(mock_client.placed_buys) == 0
+    assert pair_tag not in engine.pending_entry_orders
+
+
+@pytest.mark.asyncio
+async def test_entry_revalidation_rejects_limit_that_crosses_local_ask(engine, fake_redis, mock_client):
+    """A limit price at/above the live Spot ask would take liquidity and is rejected."""
+    pair_tag = "indodax:btc_idr"
+    payload = _revalidation_payload(int(time.time() * 1000))
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+    mock_client.update_market_price("btc_idr", 1_038_500_000.0, 1_038_950_000.0)
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(mock_client.placed_buys) == 0
+    assert pair_tag not in engine.pending_entry_orders
+
+@pytest.mark.asyncio
+async def test_live_entry_blocks_before_spot_submit_when_order_preflight_fails(fake_redis):
+    """LIVE mode must not submit Spot if market constraints cannot be verified."""
+    from executor.exchange_client import PaperTradingExchangeClient
+
+    pair_tag = "indodax:btc_idr"
+    client = PaperTradingExchangeClient(
+        local_name="indodax", global_name="binance", initial_balance_usdt=100.0
+    )
+    client.update_market_price("btc_idr", 1_038_000_000.0, 1_040_000_000.0)
+    client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
+
+    async def fail_preflight(**kwargs):
+        raise ValueError("missing verified min notional metadata")
+
+    client.validate_entry_order = fail_preflight
+    cfg = ExecutorConfig(
+        mock_mode=False,
+        local_exchange_name="indodax",
+        global_exchange_name="binance",
+        initial_exchange_balance_usdt=100.0,
+        min_allocated_capital=10.0,
+        max_entry_slippage_pct=0.0,
+    )
+    live_guard_engine = ArbitrageEngine(config=cfg, client=client, redis_client=fake_redis)
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}",
+        json.dumps(_fresh_signal_payload(int(time.time() * 1000))),
+    )
+
+    await live_guard_engine.handle_signal_notification(pair_tag)
+
+    assert client.orders == {}, "no Spot order may be sent when live market constraints are unknown"
+    assert pair_tag not in live_guard_engine.pending_entry_orders
+    assert live_guard_engine.status_snapshot()["failures"][pair_tag]["reason"] == "ORDER_CONSTRAINT_PREFLIGHT_FAILED"

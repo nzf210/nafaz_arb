@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,15 +13,9 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
 
-// USDTIDRRate retrieves the current live USDT/IDR exchange rate from Indodax ticker with caching.
+// USDTIDRRate retrieves a fresh live USDT/IDR quote from Indodax.
+// It deliberately does not return a cached last-known rate when the request fails.
 func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
-	l.mu.RLock()
-	if l.lastUSDTIDRRate > 0 && time.Since(l.lastUSDTIDRTime) < 60*time.Second {
-		rate := l.lastUSDTIDRRate
-		l.mu.RUnlock()
-		return rate, nil
-	}
-	l.mu.RUnlock()
 
 	endpoint := l.indodaxBaseURL + "/api/ticker/usdtidr"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -50,27 +45,24 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 		return 0, fmt.Errorf("decode indodax usdtidr: %w", err)
 	}
 
-	last, err := strconv.ParseFloat(raw.Ticker.Last, 64)
-	if err != nil || last <= 0 {
-		buy, _ := strconv.ParseFloat(raw.Ticker.Buy, 64)
-		sell, _ := strconv.ParseFloat(raw.Ticker.Sell, 64)
-		if buy > 0 && sell > 0 {
-			last = (buy + sell) / 2
-		}
+	buy, buyErr := strconv.ParseFloat(raw.Ticker.Buy, 64)
+	sell, sellErr := strconv.ParseFloat(raw.Ticker.Sell, 64)
+	if buyErr != nil || sellErr != nil || buy <= 0 || sell <= 0 || sell < buy {
+		return 0, fmt.Errorf(
+			"invalid live indodax usdtidr bid/ask: buy=%q sell=%q last=%q",
+			raw.Ticker.Buy, raw.Ticker.Sell, raw.Ticker.Last,
+		)
 	}
-	if last <= 0 {
-		return 0, fmt.Errorf("invalid indodax usdtidr rate: %s", raw.Ticker.Last)
+	// The last trade can be stale in a quiet market. Use the current two-sided
+	// quote midpoint; if either side is unavailable, fail the IDR scan closed.
+	rate := (buy + sell) / 2
+	if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
+		return 0, fmt.Errorf("invalid indodax usdtidr midpoint: buy=%q sell=%q", raw.Ticker.Buy, raw.Ticker.Sell)
 	}
-
-	l.mu.Lock()
-	l.lastUSDTIDRRate = last
-	l.lastUSDTIDRTime = time.Now().UTC()
-	l.mu.Unlock()
-
-	return last, nil
+	return rate, nil
 }
 
-// SpotMarkets discovers active spot pairs on Tokocrypto and Indodax (and MEXC Spot if target is mexc/all).
+// SpotMarkets discovers active local Spot pairs on Tokocrypto and Indodax only.
 func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
 	var allMarkets []domain.Market
 	var errs []string

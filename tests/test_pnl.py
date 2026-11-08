@@ -46,6 +46,14 @@ async def test_balance_constraint_and_realized_trade_updates(fake_redis):
 
     now_ms = int(time.time() * 1000)
 
+    # Seed fresh paper quotes because entry now revalidates both legs before Spot submit.
+    client.update_market_price("btc_idr", 1_000_000_000.0, 1_001_000_000.0)
+    client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
+    client.update_market_price("eth_idr", 49_900_000.0, 50_010_000.0)
+    client.update_market_price("ETHUSDT", 3_200.0, 3_210.0)
+    client.update_market_price("sol_idr", 20_000_000.0, 20_100_000.0)
+    client.update_market_price("SOLUSDT", 1_300.0, 1_301.0)
+
     # 1. Check initial balances
     bals = client.get_balances()
     assert bals["spot_total"] == 100.0
@@ -181,3 +189,49 @@ async def test_balance_constraint_and_realized_trade_updates(fake_redis):
     assert redis_bals_raw is not None
     redis_bals = json.loads(redis_bals_raw)
     assert redis_bals["total_equity"] > 200.0
+
+def test_executor_fee_profiles_override_root_defaults_and_split_both_legs():
+    cfg = ExecutorConfig(
+        spot_maker_fee_pct=0.10,
+        spot_taker_fee_pct=0.20,
+        perp_taker_fee_pct=0.05,
+        fee_asset_surcharge_pct=0.01,
+        fee_profiles={
+            "tokocrypto": {"spot_maker_fee_pct": 0.15},
+            "binance": {"perp_taker_fee_pct": 0.04},
+        },
+    )
+
+    fees = cfg.estimate_trade_fees_usdt(
+        "tokocrypto", "binance",
+        spot_entry_notional_usdt=100.0,
+        spot_exit_notional_usdt=110.0,
+        perp_entry_notional_usdt=100.0,
+        perp_exit_notional_usdt=120.0,
+    )
+
+    assert fees["spot_fees_usdt"] == pytest.approx(0.391)
+    assert fees["futures_fees_usdt"] == pytest.approx(0.110)
+    assert fees["fees_usdt"] == pytest.approx(0.501)
+    assert cfg.estimate_round_trip_fee_fraction("tokocrypto", "binance") == pytest.approx(0.0047)
+
+
+def test_executor_config_loads_scanner_fee_profiles(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "spot_maker_fee_pct": 0.10,
+        "spot_taker_fee_pct": 0.30,
+        "perp_taker_fee_pct": 0.06,
+        "fee_asset_surcharge_pct": 0.02,
+        "fee_profiles": {
+            "indodax": {"spot_taker_fee_pct": 0.25},
+            "okx": {"perp_taker_fee_pct": 0.05},
+        },
+    }))
+
+    cfg = ExecutorConfig()
+    cfg._apply_file(str(config_path))
+
+    assert cfg.spot_maker_fee_pct == pytest.approx(0.10)
+    assert cfg.trade_fee_rates("indodax", "okx")["spot_taker"] == pytest.approx(0.0025)
+    assert cfg.trade_fee_rates("indodax", "okx")["perp_taker"] == pytest.approx(0.0005)

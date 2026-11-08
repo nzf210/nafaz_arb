@@ -115,6 +115,37 @@ func TestOperationalStatusReportsScanFailureAndStaleness(t *testing.T) {
 	}
 }
 
+func TestScanHookReceivesFailedScan(t *testing.T) {
+	cfg := config.Config{
+		Mode:                "MOCK",
+		ScanIntervalSeconds: 30,
+		CapitalTotal:        1000,
+		AllocationPerPair:   0.5,
+	}
+	store, err := history.New(t.TempDir() + "/history.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(scanner.New(cfg, &failedMarketAdapter{}), store, cfg)
+
+	called := 0
+	var observed domain.ScanResult
+	server.RegisterScanHook(func(result domain.ScanResult) {
+		called++
+		observed = result
+	})
+
+	if _, err := server.TriggerScan(context.Background()); err == nil {
+		t.Fatal("expected scan failure")
+	}
+	if called != 1 {
+		t.Fatalf("scan hook called %d times, want 1 for failed scan", called)
+	}
+	if observed.Complete || len(observed.Errors) == 0 {
+		t.Fatalf("failed scan hook must receive incomplete result with errors: %+v", observed)
+	}
+}
+
 func TestExecutorStatusEndpoint(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {

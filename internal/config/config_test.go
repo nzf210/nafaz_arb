@@ -21,6 +21,9 @@ func TestLoadTelegramAlertDefaultsAndThresholds(t *testing.T) {
 	if cfg.Telegram.AlertCooldownMinutes != 15 {
 		t.Fatalf("alert cooldown=%d, want default 15", cfg.Telegram.AlertCooldownMinutes)
 	}
+	if cfg.Telegram.AlertOnScanSummary {
+		t.Fatal("scan summaries should default to opt-in")
+	}
 	if cfg.Telegram.AlertMinNetROIPct != 0 || cfg.Telegram.AlertMinNetProfitQuote != 0 {
 		t.Fatalf("alert thresholds should default to disabled: %+v", cfg.Telegram)
 	}
@@ -29,6 +32,7 @@ func TestLoadTelegramAlertDefaultsAndThresholds(t *testing.T) {
 		"capital_total":100,
 		"allocation_per_pair":0.5,
 		"telegram":{
+			"alert_on_scan_summary":true,
 			"alert_cooldown_minutes":7,
 			"alert_min_net_roi_pct":1.25,
 			"alert_min_net_profit_quote":3
@@ -40,7 +44,8 @@ func TestLoadTelegramAlertDefaultsAndThresholds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Telegram.AlertCooldownMinutes != 7 ||
+	if !cfg.Telegram.AlertOnScanSummary ||
+		cfg.Telegram.AlertCooldownMinutes != 7 ||
 		cfg.Telegram.AlertMinNetROIPct != 1.25 ||
 		cfg.Telegram.AlertMinNetProfitQuote != 3 {
 		t.Fatalf("unexpected Telegram alert settings: %+v", cfg.Telegram)
@@ -78,6 +83,9 @@ func TestExecutionModeDefaultsAndValidation(t *testing.T) {
 	}
 	if cfg.MaxOrderTTLSeconds != 30 {
 		t.Fatalf("max_order_ttl_seconds=%d, want default 30", cfg.MaxOrderTTLSeconds)
+	}
+	if cfg.GlobalFuturesExchange != "okx" {
+		t.Fatalf("global_futures_exchange=%s, want supported main default okx", cfg.GlobalFuturesExchange)
 	}
 
 	// Test valid MAKER_TAKER
@@ -410,6 +418,8 @@ func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
     validConfig := fmt.Sprintf(`{
         "mode":"LIVE",
         "api_auth_token":%q,
+        "check_open_positions":true,
+        "exclude_open_orders":true,
         "capital_total":100,
         "allocation_per_pair":0.5
     }`, token)
@@ -468,5 +478,39 @@ func TestRejectsInvalidFeeProfile(t *testing.T) {
 	}
 	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "fee_profiles.okx.perp_taker_fee_pct") {
 		t.Fatalf("expected fee profile validation error, got %v", err)
+	}
+}
+
+func TestLiveModeRequiresOpenExposureAndOrderChecks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	validToken := "0123456789abcdef0123456789abcdef"
+
+	cases := []struct {
+		name string
+		config string
+		want string
+	}{
+		{
+			name: "positions check disabled",
+			config: `{"mode":"LIVE","api_auth_token":"`+validToken+`","check_open_positions":false,"exclude_open_orders":true}`,
+			want: "check_open_positions must be true",
+		},
+		{
+			name: "open order check disabled",
+			config: `{"mode":"LIVE","api_auth_token":"`+validToken+`","check_open_positions":true,"exclude_open_orders":false}`,
+			want: "exclude_open_orders must be true",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load error=%v, want %q", err, tc.want)
+			}
+		})
 	}
 }

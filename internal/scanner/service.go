@@ -94,6 +94,10 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 		return result, false, fmt.Errorf("perpetual market discovery: %w", err)
 	}
 	result.TotalMarkets = len(spot) + len(perp)
+	allPairs := exchange.MatchMarketsWithSynthetic(spot, perp, s.cfg.QuoteAssets, true)
+	if !s.cfg.EnableSyntheticIDR && containsIDRSpotPair(allPairs) {
+		return result, false, fmt.Errorf("IDR Spot markets discovered but enable_synthetic_idr=false; refusing mixed IDR/USDT price calculation")
+	}
 	pairs := exchange.MatchMarketsWithSynthetic(spot, perp, s.cfg.QuoteAssets, s.cfg.EnableSyntheticIDR)
 	if len(s.cfg.ExcludedSymbols) > 0 {
 		pairs = s.filterExcludedSymbols(pairs)
@@ -375,10 +379,12 @@ func normalizeOrderBookCurrency(b domain.OrderBook, fxRate float64) domain.Order
 		return b
 	}
 	out := domain.OrderBook{
-		Exchange:  b.Exchange,
-		Symbol:    b.Symbol,
-		Timestamp: b.Timestamp,
-		Bids:      make([]domain.PriceLevel, len(b.Bids)),
+		Exchange:   b.Exchange,
+		Symbol:     b.Symbol,
+		Timestamp:  b.Timestamp,
+		ReceivedAt: b.ReceivedAt,
+		Source:     b.Source,
+		Bids:       make([]domain.PriceLevel, len(b.Bids)),
 		Asks:      make([]domain.PriceLevel, len(b.Asks)),
 	}
 	for i, l := range b.Bids {
@@ -574,7 +580,8 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	settlementsDec := decimal.NewFromInt(int64(settlements))
 	funding := prices.perpEntry.Mul(qty).Mul(frRate).Mul(settlementsDec) // positive rate: short receives
 
-	net := spread.Add(funding).Sub(fees).Sub(slippage)
+	gross := spread.Add(funding)
+	net := gross.Sub(fees).Sub(slippage)
 	capital := prices.spotEntry.Mul(qty).Add(prices.perpEntry.Mul(qty).Div(perpLev))
 	if capital.LessThanOrEqual(decimal.Zero) {
 		return domain.Opportunity{}, fmt.Errorf("invalid allocated capital")
@@ -643,6 +650,7 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 		Quantity:               qty.InexactFloat64(),
 		SpreadPnL:              spread.InexactFloat64(),
 		FundingPnL:             funding.InexactFloat64(),
+		GrossProfit:            gross.InexactFloat64(),
 		TradingFees:            fees.InexactFloat64(),
 		Slippage:               slippage.InexactFloat64(),
 		NetProfit:              netFloat,

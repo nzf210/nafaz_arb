@@ -81,3 +81,11 @@ been executed in this environment; CI must pass before the branch is approved.
 
 
 | R-10 | Scanner HTTP API was unauthenticated | API | Go API now requires a Bearer token in LIVE mode; health remains public |
+
+---
+
+## Current Phase 1 status — 2026-11-08
+
+The older statement that all original findings were closed is historical only. A fresh plan-vs-code audit found remaining live blockers and implemented fail-closed protections. See [PHASE1-GAP-AUDIT.md](./PHASE1-GAP-AUDIT.md) for the full matrix, file/test evidence, branch/PR state, and manual prerequisites.
+
+**Current status: NOT READY FOR LIVE TRADING.** Authenticated open-order/position readers, exchange-specific market/order constraints, complete six-venue integration, and exchange-reconciled actual fees/PnL are still not proven.
