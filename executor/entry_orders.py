@@ -260,51 +260,59 @@ class EntryOrderMixin:
         current_filled = float(order.get("filled", 0.0))
         hedged_qty = float(order_info.get("hedged_short_qty", 0.0))
         unhedged_delta = current_filled - hedged_qty
-
         if unhedged_delta <= 0:
             return
-
-        try:
-            usdt_rate = float(order_info.get("usdt_idr_rate", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            usdt_rate = 0.0
-        price_idr = float(order_info.get("price", 0.0) or 0.0)
-        if not math.isfinite(usdt_rate) or usdt_rate <= 0:
-            # A filled IDR order without its persisted live FX snapshot is
-            # an unreconciled exposure. Do not fabricate USD value from a
-            # hardcoded fallback or record a position on a guessed basis.
-            self._mark_failed(
-                pair_tag,
-                "FILLED_ORDER_FX_RATE_MISSING",
-                "Filled IDR order has no valid persisted live USDT/IDR rate; manual reconciliation required.",
-                detail={"order_id": order_info.get("order_id"), "unhedged_qty": unhedged_delta},
-                state=PositionState.RECONCILIATION_REQUIRED,
-            )
-            await self.publish_status()
+        usdt_rate = await self._validated_entry_fill_fx(pair_tag, order_info, unhedged_delta)
+        if usdt_rate is None:
             return
-        delta_val_usd = (unhedged_delta * price_idr) / usdt_rate
-
+        price_idr = float(order_info.get("price", 0.0) or 0.0)
+        delta_value_usdt = (unhedged_delta * price_idr) / usdt_rate
         is_complete = status in ("closed", "canceled", "cancelled", "rejected", "expired")
-        if delta_val_usd >= self.config.min_partial_fill_usd or is_complete:
-            logger.info(
-                f"[State 2 Instant Short Hedge] Fill detected: delta_qty={unhedged_delta} "
-                f"(${delta_val_usd:.2f}) on {pair_tag}. Opening Market Short on Global Futures!"
-            )
-            await self._execute_entry_hedge(
-                pair_tag, order_info, unhedged_delta, price_idr, usdt_rate
-            )
-            # Only clear the partial marker once the hedge actually went through.
-            if self.states.get(pair_tag) == PositionState.ENTRY_PARTIAL:
-                self.states[pair_tag] = PositionState.HEDGED_ACTIVE
-        elif 0 < current_filled < float(order_info.get("qty", 0.0)):
-            # Below the hedge threshold with the maker order still resting: the spot
-            # leg is partially filled and unhedged. Surface that explicitly rather
-            # than leaving the pair looking like a plain pending entry.
-            if self.states.get(pair_tag) != PositionState.ENTRY_PARTIAL:
-                logger.info(
-                    f"[State 1 Partial Fill] {pair_tag} filled {current_filled}"
-                    f"/{order_info.get('qty')} below hedge threshold (${delta_val_usd:.2f}); "
-                    f"marking ENTRY_PARTIAL"
-                )
-                self.states[pair_tag] = PositionState.ENTRY_PARTIAL
-                await self._maybe_publish_status()
+        if delta_value_usdt >= self.config.min_partial_fill_usd or is_complete:
+            await self._hedge_entry_fill(pair_tag, order_info, unhedged_delta, price_idr, usdt_rate, delta_value_usdt)
+            return
+        await self._mark_entry_partial(pair_tag, order_info, current_filled, delta_value_usdt)
+
+    async def _validated_entry_fill_fx(self, pair_tag: str, order_info: dict, unhedged_delta: float):
+        try:
+            rate = float(order_info.get("usdt_idr_rate", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            rate = 0.0
+        if math.isfinite(rate) and rate > 0:
+            return rate
+        self._mark_failed(
+            pair_tag,
+            "FILLED_ORDER_FX_RATE_MISSING",
+            "Filled IDR order has no valid persisted live USDT/IDR rate; manual reconciliation required.",
+            detail={"order_id": order_info.get("order_id"), "unhedged_qty": unhedged_delta},
+            state=PositionState.RECONCILIATION_REQUIRED,
+        )
+        await self.publish_status()
+        return None
+
+    async def _hedge_entry_fill(
+        self, pair_tag: str, order_info: dict, qty: float,
+        price_idr: float, usdt_rate: float, delta_value_usdt: float,
+    ) -> None:
+        logger.info(
+            "[State 2 Instant Short Hedge] Fill detected: delta_qty=%s ($%.2f) on %s. "
+            "Opening Market Short on Global Futures!",
+            qty, delta_value_usdt, pair_tag,
+        )
+        await self._execute_entry_hedge(pair_tag, order_info, qty, price_idr, usdt_rate)
+        if self.states.get(pair_tag) == PositionState.ENTRY_PARTIAL:
+            self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+
+    async def _mark_entry_partial(
+        self, pair_tag: str, order_info: dict, current_filled: float, delta_value_usdt: float
+    ) -> None:
+        if current_filled <= 0 or current_filled >= float(order_info.get("qty", 0.0)):
+            return
+        if self.states.get(pair_tag) == PositionState.ENTRY_PARTIAL:
+            return
+        logger.info(
+            "[State 1 Partial Fill] %s filled %s/%s below hedge threshold ($%.2f); marking ENTRY_PARTIAL",
+            pair_tag, current_filled, order_info.get("qty"), delta_value_usdt,
+        )
+        self.states[pair_tag] = PositionState.ENTRY_PARTIAL
+        await self._maybe_publish_status()
