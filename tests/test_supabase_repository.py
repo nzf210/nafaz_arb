@@ -116,15 +116,15 @@ async def test_closed_trade_is_idempotent_and_updates_remaining_position():
         await client.aclose()
 
     trade_posts = [r for r in requests if r.url.path.endswith("/closed_trades")]
-    position_patches = [r for r in requests if r.url.path.endswith("/positions") and r.method == "PATCH"]
+    position_upserts = [r for r in requests if r.url.path.endswith("/positions") and r.method == "POST"]
     assert len(trade_posts) == 2
-    assert len(position_patches) == 2
+    assert len(position_upserts) == 2
     trade = json.loads(trade_posts[0].content)
     assert trade["trade_key"] == "trade-abc-123"
     assert trade["fees"] == 0.02
-    patch = json.loads(position_patches[0].content)
-    assert patch["status"] == "HEDGED_ACTIVE"
-    assert patch["qty"] == 0.006
+    position = json.loads(position_upserts[0].content)
+    assert position["status"] == "HEDGED_ACTIVE"
+    assert position["qty"] == 0.006
 
 
 @pytest.mark.asyncio
@@ -157,7 +157,9 @@ async def test_incomplete_force_close_pnl_is_not_written_as_realized_trade():
 
     assert not any(r.url.path.endswith("/closed_trades") for r in requests)
     assert any(r.url.path.endswith("/executor_events") for r in requests)
-    assert any(r.url.path.endswith("/positions") and r.method == "PATCH" for r in requests)
+    position_upserts = [r for r in requests if r.url.path.endswith("/positions") and r.method == "POST"]
+    assert len(position_upserts) == 1
+    assert json.loads(position_upserts[0].content)["status"] == "CLOSED"
 
 
 @pytest.mark.asyncio
