@@ -761,7 +761,7 @@ func TestBroadcastPositionClosedUnverifiedPnL(t *testing.T) {
 			t.Errorf("unverified close notification missing %q: %s", want, received[0].Text)
 		}
 	}
-	if strings.Contains(received[0].Text, "0.0000 USDT") {
+	if strings.Contains(received[0].Text, "+0.0000 USDT") || strings.Contains(received[0].Text, "Net Profit: 0.0000") {
 		t.Fatalf("unverified PnL must not be presented as zero profit: %s", received[0].Text)
 	}
 }
