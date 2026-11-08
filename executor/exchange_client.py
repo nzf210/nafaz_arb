@@ -496,7 +496,9 @@ class ExchangeClient:
                 )
             if normalize_symbol(position_symbol) == target_symbol:
                 matched.append(position)
-        contract_size = self._contract_size(client, market_symbol)
+        if not matched:
+            return []
+
         normalized = []
         for position in matched:
             item = dict(position)
@@ -506,6 +508,12 @@ class ExchangeClient:
                 raise ValueError("exchange futures position is missing a valid contracts quantity")
             if not math.isfinite(raw_contracts) or raw_contracts < 0:
                 raise ValueError("exchange futures position contains invalid contracts quantity")
+            try:
+                contract_size = float(item.get("contractSize") or self._contract_size(client, market_symbol))
+            except (TypeError, ValueError):
+                raise ValueError("exchange futures position has no valid contractSize")
+            if not math.isfinite(contract_size) or contract_size <= 0:
+                raise ValueError("exchange futures position has invalid contractSize")
             item["contracts_contracts"] = raw_contracts
             item["contracts"] = raw_contracts * contract_size
             item["contractSize"] = contract_size
