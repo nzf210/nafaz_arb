@@ -370,10 +370,11 @@ func inspectOKXResponse(resp *http.Response) (bool, time.Duration) {
 	}
 	// Read the full body: OKX instruments responses are ~600KB, and a capped
 	// buffer would truncate the payload and corrupt the caller's JSON decode.
-	body, err := io.ReadAll(resp.Body)
+	// On read failure keep the original body so the caller's deferred Close
+	// still works; the caller will surface the decode error.
+	body, readErr := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if err != nil {
-		resp.Body = nil
+	if readErr != nil {
 		return false, 0
 	}
 	resp.Body = io.NopCloser(strings.NewReader(string(body)))
