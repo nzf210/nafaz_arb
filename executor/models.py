@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Dict, Any
 import time
+import uuid
 
 
 class PositionState(Enum):
@@ -158,6 +159,8 @@ class ActivePosition:
     spot_cost_usdt: float = 0.0
     futures_margin_usdt: float = 0.0
     state: str = "HEDGED_ACTIVE"
+    position_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    entry_usdt_idr_rate: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -186,6 +189,8 @@ class ActivePosition:
             "spot_cost_usdt": self.spot_cost_usdt,
             "futures_margin_usdt": self.futures_margin_usdt,
             "state": self.state,
+            "position_id": self.position_id,
+            "entry_usdt_idr_rate": self.entry_usdt_idr_rate,
         }
 
     @classmethod
@@ -216,6 +221,8 @@ class ActivePosition:
             spot_cost_usdt=float(d.get("spot_cost_usdt", 0.0)),
             futures_margin_usdt=float(d.get("futures_margin_usdt", 0.0)),
             state=d.get("state", "HEDGED_ACTIVE"),
+            position_id=str(d.get("position_id") or uuid.uuid4()),
+            entry_usdt_idr_rate=float(d.get("entry_usdt_idr_rate", 0.0)),
         )
 
 
