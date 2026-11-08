@@ -11,8 +11,8 @@ The versioned migrations create:
 
 - exchange_accounts: metadata and encrypted credential slots (ciphertext only).
 - strategy_configs, risk_limits, and market_pairs: strategy and market configuration.
-- scanner_opportunities: evaluated scanner snapshots, uniquely keyed by
-  (scan_id, pair_key) for retry-safe upserts.
+- scanner_opportunities: evaluated scanner snapshots, with a nullable unique idempotency_key derived from
+  (scan_id, pair_key) so legacy rows are preserved and new writes are retry-safe.
 - positions and position_legs: current position lifecycle and spot/perpetual legs.
 - orders and order_fills: order lifecycle and immutable fills.
 - funding_payments: estimated/confirmed funding settlement ledger.
@@ -33,7 +33,7 @@ Supabase service-role key; never expose it to Vue, Telegram, or any client.
 
 - Go scanner: writes evaluated records to scanner_opportunities through the
   Supabase PostgREST endpoint. Retries transient HTTP/network errors and upserts by
-  scan_id,pair_key.
+  the deterministic idempotency_key.
 - Python executor: writes executor_events, risk_events, positions,
   position_legs, and verified closed_trades. Position rows use a stable UUID
   carried in the Redis active-position snapshot. Closed trades are upserted by
