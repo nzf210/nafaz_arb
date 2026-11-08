@@ -336,3 +336,49 @@ async def test_live_ccxt_preflight_fails_closed_when_market_or_minimum_is_unknow
     spot.markets_by_id["btcidr"]["limits"]["cost"]["min"] = None
     with pytest.raises(ValueError, match="no verified cost.min"):
         await client.validate_entry_order("btcidr", "BTC-USDT-SWAP", 0.02, 1_000_000.0, 16_000.0, 65_000.0)
+
+@pytest.mark.asyncio
+async def test_live_ccxt_preflight_rejects_futures_ask_moved_from_scan_snapshot():
+    from executor.exchange_client import ExchangeClient
+
+    class MovingVenue:
+        def __init__(self, venue_id, market_id, symbol, market, contract=False):
+            self.id = venue_id
+            self.markets_by_id = {market_id: {"symbol": symbol, **market}}
+            self.markets = {symbol: {"symbol": symbol, **market}}
+            self.contract = contract
+
+        async def load_markets(self, reload=False):
+            return self.markets
+
+        def market(self, symbol):
+            return self.markets[symbol]
+
+        def amount_to_precision(self, symbol, amount):
+            return str(int(amount)) if self.contract else f"{float(amount):.3f}"
+
+        def price_to_precision(self, symbol, price):
+            return str(price)
+
+        async def fetch_ticker(self, symbol):
+            ask = 65_300.0 if self.contract else 1_040_000.0
+            return {"symbol": symbol, "bid": ask * 0.999, "ask": ask, "timestamp": int(time.time() * 1000)}
+
+    spot_market = {
+        "active": True, "spot": True, "type": "spot", "quote": "IDR",
+        "limits": {"amount": {"min": 0.001}, "cost": {"min": 10_000.0}},
+    }
+    perp_market = {
+        "active": True, "contract": True, "linear": True, "swap": True,
+        "quote": "USDT", "settle": "USDT", "contractSize": 0.01,
+        "limits": {"amount": {"min": 1.0}, "cost": {"min": 10.0}},
+    }
+    spot = MovingVenue("indodax", "btcidr", "BTC/IDR", spot_market)
+    perp = MovingVenue("okx", "BTC-USDT-SWAP", "BTC/USDT:USDT", perp_market, contract=True)
+    client = ExchangeClient(spot, perp, local_default_name="indodax", global_default_name="okx")
+
+    with pytest.raises(ValueError, match="moved"):
+        await client.validate_entry_order(
+            "btcidr", "BTC-USDT-SWAP", 0.02, 1_000_000.0, 16_000.0, 65_000.0,
+            max_price_deviation_pct=0.003,
+        )
