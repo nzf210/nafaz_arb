@@ -294,8 +294,8 @@ def _revalidation_payload(now_ms: int, *, min_spread_pct: float = 0.10) -> dict:
             "local_price_tick": 1000.0,
         },
         "pricing_snapshot": {
-            "local_best_bid": 1000000000.0,
-            "local_best_ask": 1002000000.0,
+            "local_best_bid": 1038000000.0,
+            "local_best_ask": 1040000000.0,
             "global_best_bid_usdt": base_bid_usdt,
             "global_best_ask_usdt": 65010.0,
             "usdt_idr_rate": 16000.0,
