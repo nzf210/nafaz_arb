@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 
 from executor import helpers
+from executor.models import PositionState
 from executor.helpers import (
     ARB_TRADE_HISTORY_KEY,
     ARB_TRADE_HISTORY_MAX_LEN,
