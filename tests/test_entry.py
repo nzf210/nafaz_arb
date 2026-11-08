@@ -459,7 +459,7 @@ async def test_entry_revalidation_passes_healthy_spread(engine, fake_redis, mock
     payload = _revalidation_payload(now_ms)
 
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
-    mock_client.update_market_price("BTC/USDT", 65000.0, 65010.0)
+    mock_client.update_market_price("BTC/USDT", 65100.0, 65110.0)
 
     await engine.handle_signal_notification(pair_tag)
 
