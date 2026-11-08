@@ -8,9 +8,10 @@ from executor.models import ActivePosition
 
 
 class AccountStateClient:
-    def __init__(self, positions=None, orders=None):
+    def __init__(self, positions=None, orders=None, tokocrypto_orders=None):
         self.positions = positions or []
         self.orders = orders or []
+        self.tokocrypto_orders = tokocrypto_orders or []
 
     async def fetch_account_positions_report(self):
         return [{"name": "okx", "status": "ok", "positions": self.positions}]
@@ -18,6 +19,7 @@ class AccountStateClient:
     async def fetch_account_open_orders_report(self):
         return [
             {"name": "indodax", "market": "spot", "status": "ok", "orders": self.orders},
+            {"name": "tokocrypto", "market": "spot", "status": "ok", "orders": self.tokocrypto_orders},
             {"name": "okx", "market": "perpetual", "status": "ok", "orders": []},
         ]
 
@@ -123,3 +125,22 @@ async def test_account_wide_reconciliation_uses_persisted_usdc_contract_symbol(f
     await engine._verify_account_wide_exchange_state()
 
     assert "okx" not in engine._exchange_halted
+
+
+@pytest.mark.asyncio
+async def test_open_order_id_from_one_spot_venue_does_not_whitelist_another(fake_redis):
+    client = AccountStateClient(
+        orders=[{"id": "12345", "symbol": "BTC/IDR", "side": "buy"}],
+        tokocrypto_orders=[{"id": "12345", "symbol": "ETH/IDR", "side": "buy"}],
+    )
+    engine = _engine(fake_redis, client)
+    engine.pending_entry_orders["indodax:btc_idr"] = {
+        "order_id": "12345",
+        "local_exchange": "indodax",
+        "global_exchange": "okx",
+    }
+
+    await engine._verify_account_wide_exchange_state()
+
+    assert "indodax" not in engine._exchange_halted
+    assert "tokocrypto" in engine._exchange_halted
