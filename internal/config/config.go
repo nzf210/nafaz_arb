@@ -77,7 +77,6 @@ type Config struct {
 	ExchangeErrorWindowSeconds    int            `json:"exchange_error_window_seconds"`
 	ExchangeErrorRateThreshold    float64        `json:"exchange_error_rate_threshold"`
 	ExchangeErrorMinRequests      int            `json:"exchange_error_min_requests"`
-	HistoryPath                   string         `json:"history_path"`
 	HistoryRetentionDays          int            `json:"history_retention_days"`
 	MaxMissedSuccessfulScans      int            `json:"max_missed_successful_scans"`
 	EmptyBookFreezeHours          int            `json:"empty_book_freeze_hours"`
@@ -132,7 +131,6 @@ func (c *Config) setDefaults() {
 	// Require recent order books and tight cross-venue alignment by default.
 	c.MaxOrderBookAgeSeconds = defaultInt(c.MaxOrderBookAgeSeconds, 5)
 	c.MaxCrossExchangeSkewSeconds = defaultInt(c.MaxCrossExchangeSkewSeconds, 3)
-	c.HistoryPath = defaultString(c.HistoryPath, "./data/opportunities.json")
 	c.MaxMissedSuccessfulScans = defaultInt(c.MaxMissedSuccessfulScans, 2)
 	c.EmptyBookFreezeHours = defaultInt(c.EmptyBookFreezeHours, 6)
 	if c.EmptyBookFreezeMinutes <= 0 && c.EmptyBookFreezeHours == 6 {

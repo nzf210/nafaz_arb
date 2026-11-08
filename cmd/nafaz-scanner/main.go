@@ -77,7 +77,7 @@ func main(){
 	svc.SetFundingWorker(fw)
 	defer fw.Stop()
 
-	store,err:=history.New(cfg.HistoryPath);if err!=nil{log.Fatal(err)}
+	store,err:=history.New("")
 	server:=api.New(svc,store,cfg)
 
 	// Best-effort audit persistence. A nil writer (Supabase unset) makes every

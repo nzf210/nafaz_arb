@@ -30,9 +30,6 @@ WORKDIR /app
 # Copy compiled binary from builder stage
 COPY --from=builder /build/nafaz-scanner /app/nafaz-scanner
 
-# Ensure data directory exists for opportunity history persistence
-RUN mkdir -p /app/data && chown -R appuser:appgroup /app
-
 USER appuser
 
 # Expose default HTTP API port

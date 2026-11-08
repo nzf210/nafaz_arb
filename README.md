@@ -33,8 +33,7 @@ request query string). Create or rotate INDODAX keys on the Trade API page — k
 generated on the legacy API page will not authenticate.
 
 Both images run as a non-root user. Set `APP_UID` and `APP_GID` in the deployment `.env`
-file to the owner IDs of the host `data/` directory (default: 1000/1000) so the
-scanner can write its persistent history bind mount without running as root. The executor image runs as a non-root user. Do not bake `config.json`, exchange API keys,
+file to match the file owner IDs (default: 1000/1000). The executor image runs as a non-root user. Do not bake `config.json`, exchange API keys,
 or Supabase service-role credentials into images; mount the runtime config or inject
 secrets through the deployment environment. Redis is bound to host loopback in the
 provided Compose file because it has no authentication configured.
@@ -49,7 +48,7 @@ sudo chown -R "$(id -u):$(id -g)" data
 # Set APP_UID/APP_GID in .env only if your host data owner is not 1000:1000.
 podman compose up -d --build
 # atau:
-# podman build -t nafaz-scanner . && podman run -d --name nafaz-scanner -p 8080:8080 -v $(pwd)/config.json:/app/config.json:ro,Z -v $(pwd)/data:/app/data:Z nafaz-scanner
+# podman build -t nafaz-scanner . && podman run -d --name nafaz-scanner -p 8080:8080 -v $(pwd)/config.json:/app/config.json:ro,Z nafaz-scanner
 ```
 
 Then call:
@@ -307,6 +306,9 @@ ones). Writes are upserts on client-generated ids, so retries are idempotent, an
 fill rows derive from cumulative filled quantity so a replayed write cannot
 duplicate a fill. `exchange_accounts`, `strategy_configs`, `risk_limits`,
 `market_pairs`, and the write-side config tables remain operator-managed.
+Opportunity lifecycle episodes (Telegram `/metrics` and `/active`, API history
+endpoints) are kept in memory only — the local `data/opportunities.json` file was
+removed in favor of the durable `scanner_opportunities` table in Supabase.
 
 
 For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.

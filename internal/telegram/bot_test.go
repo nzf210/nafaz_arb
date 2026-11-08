@@ -31,7 +31,6 @@ func setupTestBot(t *testing.T, handler http.HandlerFunc) (*Bot, *api.Server, *h
 		PerpLeverage:             1,
 		MinNetROIPct:             0.5,
 		MaxNetROIPct:             2.0,
-		HistoryPath:              t.TempDir() + "/test-history.json",
 		MaxMissedSuccessfulScans: 2,
 		QuoteAssets:              []string{"USDT"},
 		Telegram: config.TelegramConfig{
@@ -44,7 +43,7 @@ func setupTestBot(t *testing.T, handler http.HandlerFunc) (*Bot, *api.Server, *h
 	}
 	adapter := exchange.NewMockAdapter()
 	svc := scanner.New(cfg, adapter)
-	store, err := history.New(cfg.HistoryPath)
+	store, err := history.New("")
 	if err != nil {
 		t.Fatalf("history new: %v", err)
 	}

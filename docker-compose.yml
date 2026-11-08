@@ -20,7 +20,6 @@ services:
       - "8080:8080"
     volumes:
       - ./config.json:/app/config.json:ro
-      - ./data:/app/data:Z
     environment:
       - TZ=Asia/Jakarta
       - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}

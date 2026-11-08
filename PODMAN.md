@@ -121,7 +121,6 @@ podman run -d \
   --restart always \
   -p 8080:8080 \
   -v $(pwd)/config.json:/app/config.json:ro,Z \
-  -v $(pwd)/data:/app/data:Z \
   -e TZ=Asia/Jakarta \
   nafaz-scanner:latest
 ```
@@ -132,7 +131,6 @@ podman run -d \
 * `--restart always`: Otomatis menyalakan ulang container jika proses crash.
 * `-p 8080:8080`: Meneruskan port 8080 VPS ke port 8080 di dalam container.
 * `-v $(pwd)/config.json:/app/config.json:ro,Z`: Mount file konfigurasi secara read-only.
-* `-v $(pwd)/data:/app/data:Z`: Mount folder data agar histori `opportunities.json` tersimpan permanen di host VPS.
 * `:Z` (SELinux flag): **Wajib di Linux bertipe RHEL/Fedora/CentOS/AlmaLinux** agar container memiliki izin akses label SELinux ke volume host.
 * `-e TZ=Asia/Jakarta`: Menyamakan zona waktu container dengan waktu lokal.
 
@@ -244,7 +242,7 @@ podman compose up -d --build
 podman stop nafaz-scanner
 podman rm nafaz-scanner
 podman build -t nafaz-scanner:latest .
-podman run -d --name nafaz-scanner --restart always -p 8080:8080 -v $(pwd)/config.json:/app/config.json:ro,Z -v $(pwd)/data:/app/data:Z nafaz-scanner:latest
+podman run -d --name nafaz-scanner --restart always -p 8080:8080 -v $(pwd)/config.json:/app/config.json:ro,Z nafaz-scanner:latest
 ```
 
 ---
@@ -253,7 +251,6 @@ podman run -d --name nafaz-scanner --restart always -p 8080:8080 -v $(pwd)/confi
 
 | Masalah | Kemungkinan Penyebab | Solusi |
 |---|---|---|
-| **Permission denied: ./data/opportunities.json** | SELinux membatasi akses mount volume di VPS. | Tambahkan flag `:Z` pada volume mount (`-v $(pwd)/data:/app/data:Z`). Pastikan folder `data` memiliki izin tulis (`chmod 775 data`). |
 | **Container langsung exit / stopped** | Format `config.json` tidak valid atau file hilang. | Jalankan `podman logs nafaz-scanner` untuk membaca pesan error Go. Pastikan file `config.json` valid JSON. |
 | **Telegram Bot tidak merespon** | Token salah, bot dinonaktifkan di config, atau chat ID belum di-whitelist. | Pastikan `telegram.enabled: true` di `config.json`, masukkan bot token yang valid, dan tambahkan chat ID Anda ke `allowed_chat_ids`. |
 | **Port 8080 sudah digunakan** | Ada aplikasi lain di VPS yang memakai port 8080. | Ubah port host di docker-compose atau flag run: `-p 8888:8080` (akses via `http://localhost:8888`). |
