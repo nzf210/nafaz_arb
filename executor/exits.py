@@ -213,7 +213,7 @@ class ExitMixin:
             if len(samples) < 2:
                 return fallback
             prices = [price for _, price in samples]
-            volatility = max((abs(prices[i] / prices[i - 1] - 1.0) for i in range(1, len(prices))), default=0.0)
+            volatility = max((max(0.0, prices[i] / prices[i - 1] - 1.0) for i in range(1, len(prices))), default=0.0)
             spread = (ask - bid) / ((ask + bid) / 2.0)
             adaptive = spread * float(getattr(self.config, "exit_spread_multiplier", 0.5))
             adaptive += volatility * float(getattr(self.config, "exit_volatility_multiplier", 2.0))
@@ -416,7 +416,7 @@ class ExitMixin:
             if not self._should_repeg_exit(pair_tag, global_ask_usdt, funding_passed):
                 return
 
-            dynamic_slippage_pct = await self._calculate_dynamic_exit_slippage(pair_tag, live_snapshot or {}, now_ms)
+            dynamic_slippage_pct = await self._calculate_dynamic_exit_slippage(pair_tag, (live_snapshot if live_snapshot and not stale else {}), now_ms)
             limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
                 pair_tag, pos, global_ask_usdt, usdt_idr_rate,
                 exit_slippage_pct=dynamic_slippage_pct,
