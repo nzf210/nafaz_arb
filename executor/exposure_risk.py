@@ -140,7 +140,7 @@ class ExposureRiskMixin:
         if balances is None:
             return max_position, minimum_capital
         return await self._size_entry_from_balances(
-            pair_tag, payload, balances, max_position, minimum_capital
+            pair_tag, payload.pair_info, balances, max_position, minimum_capital
         )
 
     def _entry_sizing_limits(self, payload: ExecutorPayload) -> tuple[float, float]:
