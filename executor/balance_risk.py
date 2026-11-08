@@ -170,15 +170,25 @@ class BalanceRiskMixin:
         if pair_info is None and pair_tag:
             pair_info = self._pair_infos.get(pair_tag)
         local_symbol = (pair_info.local_symbol if pair_info else symbol) or symbol or ""
-        quote_asset = (pair_info.quote_asset if pair_info else "").upper()
-        if not quote_asset and local_symbol:
-            normalized = local_symbol.upper().split(":")[0].replace("/", "_").replace("-", "_")
-            quote_asset = normalized.split("_")[-1] if "_" in normalized else "IDR"
-        global_symbol = pair_info.global_symbol.upper() if pair_info else ""
-        global_quote = "USDC" if "USDC" in global_symbol else "USDT"
-        if not global_symbol and quote_asset == "USDC":
-            global_quote = "USDC"
+        quote_asset = self._resolve_local_quote_asset(pair_info, local_symbol)
+        global_quote = self._resolve_global_quote_asset(pair_info, quote_asset)
         return {"quote_asset": quote_asset, "global_quote_asset": global_quote}
+
+    @staticmethod
+    def _resolve_local_quote_asset(pair_info, local_symbol: str) -> str:
+        if pair_info and pair_info.quote_asset:
+            return pair_info.quote_asset.upper()
+        if not local_symbol:
+            return ""
+        normalized = local_symbol.upper().split(":")[0].replace("/", "_").replace("-", "_")
+        return normalized.split("_")[-1] if "_" in normalized else "IDR"
+
+    @staticmethod
+    def _resolve_global_quote_asset(pair_info, quote_asset: str) -> str:
+        global_symbol = pair_info.global_symbol.upper() if pair_info else ""
+        if "USDC" in global_symbol or quote_asset == "USDC":
+            return "USDC"
+        return "USDT"
 
     async def _invoke_balance_getter(self, getter, kwargs: dict):
         try:
@@ -225,17 +235,24 @@ class BalanceRiskMixin:
             return None
         if pair_tag:
             self._balance_snapshots[pair_tag] = balances
+        await self._check_balance_thresholds(balances, local_name, global_name, pair_tag)
+        return balances
+
+    async def _check_balance_thresholds(
+        self, balances: dict, local_name: str, global_name: str, pair_tag: Optional[str]
+    ) -> None:
         fraction = float(getattr(self.config, "balance_mismatch_fraction", 0.0) or 0.0)
         if fraction <= 0:
-            return balances
+            return
         available = {
             local_name: float(balances.get("spot_available", 0.0) or 0.0),
             global_name: float(balances.get("futures_available", 0.0) or 0.0),
         }
         committed = self._committed_entry_exposure(local_name, global_name)
         for venue, amount in available.items():
-            await self._check_venue_balance_drop(venue, amount, committed.get(venue, 0.0), fraction, pair_tag)
-        return balances
+            await self._check_venue_balance_drop(
+                venue, amount, committed.get(venue, 0.0), fraction, pair_tag
+            )
 
     async def _read_balance_snapshot_or_halt(self, pair_info, fx_rate, pair_tag, local_name, global_name):
         try:

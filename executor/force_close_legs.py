@@ -394,20 +394,12 @@ class ForceCloseLegsMixin:
         }
 
     async def _settle_force_close_balances(self, pair_key: str, pos, pnl: dict, usdt_rate: float) -> None:
-        spot_cost = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)
-        if spot_cost <= 0 and usdt_rate > 0 and math.isfinite(usdt_rate):
-            spot_cost = pos.qty * pos.entry_price_idr / usdt_rate
-        if spot_cost <= 0:
-            logger.warning(
-                "[Force Close] %s: live FX unavailable and no stored USDT spot-cost basis; "
-                "balance accounting is incomplete",
-                pair_key,
-            )
+        spot_cost = self._force_close_spot_cost(pair_key, pos, usdt_rate)
+        if not hasattr(self.client, "apply_realized_trade"):
+            return
         futures_margin = float(
             getattr(pos, "futures_margin_usdt", 0.0) or (pos.qty * pos.short_entry_usdt)
         )
-        if not hasattr(self.client, "apply_realized_trade"):
-            return
         self.client.apply_realized_trade(
             spot_cost_usdt=spot_cost,
             spot_pnl_usdt=pnl["spot_pnl_usdt"],
@@ -417,6 +409,22 @@ class ForceCloseLegsMixin:
             funding_usdt=pnl["funding_usdt"],
             futures_fees_usdt=pnl["fees_usdt"],
         )
+        await self._refresh_force_close_balances(pair_key, pos, usdt_rate)
+
+    def _force_close_spot_cost(self, pair_key: str, pos, usdt_rate: float) -> float:
+        spot_cost = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)
+        if spot_cost > 0:
+            return spot_cost
+        if usdt_rate > 0 and math.isfinite(usdt_rate):
+            return pos.qty * pos.entry_price_idr / usdt_rate
+        logger.warning(
+            "[Force Close] %s: live FX unavailable and no stored USDT spot-cost basis; "
+            "balance accounting is incomplete",
+            pair_key,
+        )
+        return 0.0
+
+    async def _refresh_force_close_balances(self, pair_key: str, pos, usdt_rate: float) -> None:
         if usdt_rate <= 0 or not math.isfinite(usdt_rate):
             return
         balances = await self._get_balance_snapshot(
