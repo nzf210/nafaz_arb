@@ -418,6 +418,8 @@ func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
     validConfig := fmt.Sprintf(`{
         "mode":"LIVE",
         "api_auth_token":%q,
+        "check_open_positions":true,
+        "exclude_open_orders":true,
         "capital_total":100,
         "allocation_per_pair":0.5
     }`, token)
