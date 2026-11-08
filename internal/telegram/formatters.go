@@ -21,6 +21,7 @@ func (b *Bot) formatHelp() string {
 <b>Perintah Keyboard:</b>
 /menu - <i>Buka menu tombol interaktif</i>
 /positions - <i>Lihat posisi aktif Executor & opsi tutup paksa</i>
+/balance - <i>Cek saldo live seluruh aset Spot & Futures</i>
 /scan - <i>Jalankan scan pasar on-demand</i>
 /latest - <i>Lihat hasil scan & peluang ROI tertinggi</i>
 /pair [simbol] - <i>Cek rincian koin tertentu (misal: /pair BTC)</i>
