@@ -290,6 +290,71 @@ func TestAlertOnScan(t *testing.T) {
 	}
 }
 
+func TestAlertOnScanSummary(t *testing.T) {
+	alerts := make(chan SendMessageReq, 2)
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var req SendMessageReq
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+				alerts <- req
+			}
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.cfg.Telegram.AlertOnScanSummary = true
+
+	bot.onScanCompleted(context.Background(), domain.ScanResult{
+		ScanID: "scan-summary-test", Mode: "LIVE", Complete: true,
+		DurationMS: 123, TotalMarkets: 20, MatchedPairs: 5,
+		ActivePairs: 5, EligiblePairs: 2, ExcludedPairs: 3,
+	})
+
+	select {
+	case msg := <-alerts:
+		for _, want := range []string{"Ringkasan Scan NAFAZ", "SELESAI", "LIVE", "20", "2 / 3 / 0"} {
+			if !strings.Contains(msg.Text, want) {
+				t.Errorf("scan summary missing %q: %s", want, msg.Text)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected Telegram scan summary")
+	}
+}
+
+func TestFXPreflightFailureAlertsEvenWhenScanSummaryDisabled(t *testing.T) {
+	alerts := make(chan SendMessageReq, 2)
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var req SendMessageReq
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+				alerts <- req
+			}
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.cfg.Telegram.AlertOnScanSummary = false
+
+	bot.onScanCompleted(context.Background(), domain.ScanResult{
+		ScanID: "fx-failed", Mode: "LIVE", Complete: false,
+		Errors: []string{"FX preflight: USDT/IDR live ticker unavailable"},
+	})
+
+	select {
+	case msg := <-alerts:
+		for _, want := range []string{"FX USDT/IDR TIDAK VALID", "Scan IDR dihentikan", "USDT/IDR"} {
+			if !strings.Contains(msg.Text, want) {
+				t.Errorf("FX failure alert missing %q: %s", want, msg.Text)
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected immediate FX preflight alert")
+	}
+}
+
 func TestAlertThresholdsAndCooldown(t *testing.T) {
 	alerts := make(chan SendMessageReq, 4)
 	tsHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -612,6 +677,36 @@ func TestBroadcastExecutionFailure(t *testing.T) {
 	for _, want := range []string{"ENTRY / EXECUTION GAGAL", "INSUFFICIENT_OR_UNBALANCED_BALANCE", "Saldo Spot/Futures"} {
 		if !strings.Contains(received[0].Text, want) {
 			t.Errorf("Telegram failure notification missing %q: %s", want, received[0].Text)
+		}
+	}
+}
+
+func TestBroadcastPartialFill(t *testing.T) {
+	var received []SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var req SendMessageReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		received = append(received, req)
+		_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	bot.broadcastTradeEvent(context.Background(), redishandler.TradeEvent{
+		Event: "PARTIAL_FILL", PairTag: "indodax:btc_idr",
+		LocalExchange: "indodax", GlobalExchange: "okx",
+		Symbol: "btc_idr", FilledQty: 0.001, TotalQty: 0.01,
+		Qty: 0.001, State: "ENTRY_PARTIAL",
+		Message: "Spot terisi sebagian; hedge sedang diproses.",
+	})
+
+	if len(received) != 1 {
+		t.Fatalf("expected one partial-fill notification, got %d", len(received))
+	}
+	for _, want := range []string{"SPOT PARTIAL FILL", "0.00100000 / 0.01000000", "delta-neutral"} {
+		if !strings.Contains(received[0].Text, want) {
+			t.Errorf("partial-fill notification missing %q: %s", want, received[0].Text)
 		}
 	}
 }
