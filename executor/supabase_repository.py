@@ -139,8 +139,13 @@ class SupabaseRepository:
         if event_type == "POSITION_OPENED":
             await self._upsert_position(event, status="HEDGED_ACTIVE", occurred_at=occurred_at)
         elif event_type == "POSITION_CLOSED":
+            remaining = float(event.get("remaining_qty", 0.0) or 0.0)
+            partial_force = bool(event.get("spot_liquidation_failed", False))
+            status = "RECONCILIATION_REQUIRED" if partial_force else ("CLOSED" if remaining <= 1e-8 else "HEDGED_ACTIVE")
+            # Upsert the parent position first so the closed_trades/executor_events
+            # foreign keys remain valid even when the original open write was missed.
+            await self._upsert_position(event, status=status, occurred_at=occurred_at)
             await self._persist_closed_trade(event, pair_key, is_mock, occurred_at)
-            await self._update_position_after_close(event, pair_key, is_mock, occurred_at)
         elif event_type == "EXECUTION_FAILURE":
             await self._persist_risk_event(event, event_id, pair_key, is_mock, occurred_at)
             if str(event.get("state") or "") == "RECONCILIATION_REQUIRED":
@@ -193,7 +198,10 @@ class SupabaseRepository:
             "futures_short_entry_avg_price": event.get("short_entry_usdt"),
             "spot_cost_quote": event.get("spot_cost_quote"),
             "futures_margin_quote": event.get("futures_margin_quote"),
-            "accumulated_funding": event.get("accumulated_funding_usdt", 0.0),
+            "accumulated_funding": event.get(
+                "position_accumulated_funding_usdt",
+                event.get("accumulated_funding_usdt", 0.0),
+            ),
             "funding_asset": "USDT",
             "opened_at": _iso_from_ms(event.get("opened_at_ms")) or occurred_at,
             "state_snapshot": event,
@@ -202,7 +210,7 @@ class SupabaseRepository:
 
         remaining = max(0.0, qty)
         spot_status = "OPEN" if remaining > 0 else "CLOSED"
-        perp_status = "OPEN" if remaining > 0 else "CLOSED"
+        perp_status = "CLOSED" if event.get("spot_liquidation_failed") else ("OPEN" if remaining > 0 else "CLOSED")
         legs = [
             {
                 "position_id": position_id, "leg": "spot",
@@ -253,7 +261,10 @@ class SupabaseRepository:
             "exit_usdt_idr_rate": event.get("exit_usdt_idr_rate"),
             "net_roi_pct": event.get("net_roi_pct"),
             "is_mock": is_mock,
-            "close_reason": "FORCE_CLOSE" if str(trade_id).startswith("force-") else "EXIT",
+            "close_reason": (
+                "FORCE_CLOSE_PARTIAL" if event.get("spot_liquidation_failed")
+                else ("FORCE_CLOSE" if str(trade_id).startswith("force-") else "EXIT")
+            ),
             "opened_at": _iso_from_ms(event.get("opened_at_ms")),
             "closed_at": _iso_from_ms(event.get("closed_at_ms")) or occurred_at,
             "metadata": event,
