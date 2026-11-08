@@ -47,6 +47,11 @@ class MockExchangeClient:
                 "ask": 65_010.0,
                 "timestamp": int(time.time() * 1000),
             },
+            "btcusdt": {
+                "bid": 65_000.0,
+                "ask": 65_010.0,
+                "timestamp": int(time.time() * 1000),
+            },
         }
         self.client_order_ids = []
         self.funding_history = []
