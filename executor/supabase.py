@@ -176,7 +176,7 @@ class SupabaseWriter:
             "local_exchange": getattr(pos, "local_exchange", "") or "",
             "global_exchange": getattr(pos, "global_exchange", "") or "",
             "local_symbol": getattr(pair_info, "local_symbol", "") or getattr(pos, "symbol", ""),
-            "global_symbol": getattr(pair_info, "global_symbol", "") or getattr(pos, "symbol", ""),
+            "global_symbol": getattr(pos, "global_symbol", "") or getattr(pair_info, "global_symbol", "") or getattr(pos, "symbol", ""),
             "base_asset": getattr(pair_info, "base_asset", "") or "",
             "quote_asset": getattr(pair_info, "quote_asset", "") or "",
             "status": getattr(pos, "state", "HEDGED_ACTIVE") or "HEDGED_ACTIVE",
