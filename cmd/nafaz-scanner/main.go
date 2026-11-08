@@ -15,6 +15,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/history"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
+	"github.com/nafaz/spot-perp-scanner/internal/supabase"
 	"github.com/nafaz/spot-perp-scanner/internal/telegram"
 )
 func main(){
@@ -78,6 +79,11 @@ func main(){
 
 	store,err:=history.New(cfg.HistoryPath);if err!=nil{log.Fatal(err)}
 	server:=api.New(svc,store,cfg)
+
+	// Best-effort audit persistence. A nil writer (Supabase unset) makes every
+	// call a no-op, so scanning never depends on the database being reachable.
+	pg:=supabase.New(supabase.Config{URL:cfg.SupabaseURL,Key:cfg.SupabaseKey})
+	if pg!=nil{defer pg.Close();server.RegisterScanHook(pg.RecordScan)}
 	if redisClient != nil {
 		server.SetExecutorClient(redisClient)
 	}

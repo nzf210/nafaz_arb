@@ -152,6 +152,27 @@ class ExitMixin:
             await self.redis.set(
                 f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
             )
+            for timestamp, amount, payment in settled:
+                self.supabase.funding_payment(
+                    pair_tag,
+                    pos.global_exchange or self.config.global_exchange_name,
+                    symbol,
+                    {**payment, "amount": amount},
+                    timestamp,
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
+            self.supabase.position_status(pair_tag, pos.state or "HEDGED_ACTIVE", pos)
+            self.supabase.event(
+                "FUNDING_SETTLED",
+                pair_key=pair_tag,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+                occurred_at_ms=settled[-1][0],
+                payload={
+                    "payments": len(settled),
+                    "net_amount_usdt": actual_amount,
+                    "cumulative_funding_usdt": pos.accumulated_funding_usdt,
+                },
+            )
             logger.info(
                 f"[Funding Reconciliation] {pair_tag}: applied {len(settled)} actual "
                 f"settlement(s), net {actual_amount:+.8f} USDT; "

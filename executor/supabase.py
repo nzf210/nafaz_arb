@@ -197,6 +197,47 @@ class SupabaseWriter:
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
 
+        now = datetime.now(timezone.utc).isoformat()
+        self._position_legs(position_id, row, now)
+
+    def _position_legs(
+        self, position_id: str, row: Dict[str, Any], now: str
+    ) -> None:
+        """Upserts the spot-long and perpetual-short legs of a position."""
+        leg_id = str(uuid.uuid5(_POSITION_NS, f"leg:{position_id}:spot"))
+        self._emit(
+            "position_legs",
+            {
+                "id": leg_id,
+                "position_id": position_id,
+                "leg": "spot",
+                "exchange_name": row.get("local_exchange") or "",
+                "symbol": row.get("local_symbol") or "",
+                "side": "long",
+                "status": row.get("status") or "HEDGED_ACTIVE",
+                "qty": row.get("qty") or 0.0,
+                "average_entry_price": row.get("spot_entry_avg_price"),
+                "updated_at": now,
+            },
+            on_conflict="id",
+        )
+        self._emit(
+            "position_legs",
+            {
+                "id": str(uuid.uuid5(_POSITION_NS, f"leg:{position_id}:perpetual")),
+                "position_id": position_id,
+                "leg": "perpetual",
+                "exchange_name": row.get("global_exchange") or "",
+                "symbol": row.get("global_symbol") or "",
+                "side": "short",
+                "status": row.get("status") or "HEDGED_ACTIVE",
+                "qty": row.get("qty") or 0.0,
+                "average_entry_price": row.get("futures_short_entry_avg_price"),
+                "updated_at": now,
+            },
+            on_conflict="id",
+        )
+
     def position_status(self, pair_key: str, status: str, pos: Any = None) -> None:
         position_id = self._position_ids.get(pair_key)
         if position_id is None:
@@ -214,6 +255,9 @@ class SupabaseWriter:
                 row["closed_at"] = datetime.now(timezone.utc).isoformat()
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
+
+        now = row["updated_at"]
+        self._position_legs(position_id, row, now)
 
     # ------------------------------------------------------------------ orders
 
@@ -346,6 +390,157 @@ class SupabaseWriter:
             is_mock=bool(trade.get("is_mock", True)),
             occurred_at_ms=trade.get("closed_at_ms"),
             payload=trade,
+        )
+
+    # ------------------------------------------------------- funding & balances
+
+    def funding_payment(
+        self,
+        pair_key: str,
+        exchange: str,
+        symbol: str,
+        payment: Dict[str, Any],
+        settled_at_ms: Any,
+        *,
+        payment_status: str = "confirmed",
+        is_mock: bool = True,
+    ) -> None:
+        """Records one exchange funding settlement.
+
+        The schema dedupes funding on an expression index, which ON CONFLICT
+        cannot target, so the primary key is derived from the exchange payment
+        id instead.
+        """
+        if not isinstance(payment, dict):
+            return
+        payment_id = str(
+            payment.get("id")
+            or payment.get("paymentId")
+            or payment.get("txId")
+            or f"{symbol}:{settled_at_ms}"
+        )
+        self._emit(
+            "funding_payments",
+            {
+                "id": str(uuid.uuid5(_POSITION_NS, f"funding:{exchange}:{payment_id}")),
+                "position_id": self._position_ids.get(pair_key),
+                "exchange_name": exchange,
+                "symbol": symbol,
+                "exchange_payment_id": payment_id,
+                "funding_rate": _num(payment.get("fundingRate"), None),
+                "position_qty": _num(payment.get("positionQty"), None),
+                "mark_price": _num(payment.get("markPrice"), None),
+                "amount": _num(payment.get("amount")),
+                "asset": str(payment.get("code") or payment.get("currency") or "USDT").upper(),
+                "payment_status": payment_status,
+                "settled_at": _ms_to_iso(settled_at_ms) or datetime.now(timezone.utc).isoformat(),
+                "raw_payload": payment,
+            },
+            on_conflict="id",
+        )
+
+    def balance_snapshot(self, reports: Any, *, is_mock: bool = True) -> None:
+        """Records per-asset balances from `fetch_balance_report()` output."""
+        if not isinstance(reports, list):
+            return
+        observed_at = datetime.now(timezone.utc)
+        for report in reports:
+            if not isinstance(report, dict):
+                continue
+            exchange = str(report.get("name") or "")
+            market = str(report.get("market") or "").lower()
+            if not exchange or market not in ("spot", "perpetual"):
+                continue
+            for entry in report.get("assets") or []:
+                if not isinstance(entry, dict) or not entry.get("asset"):
+                    continue
+                asset = str(entry["asset"]).upper()
+                total = _num(entry.get("total"))
+                free = _num(entry.get("free"))
+                used = _num(entry.get("used"))
+                stamp = int(observed_at.timestamp() * 1000)
+                self._emit(
+                    "balance_snapshots",
+                    {
+                        # No natural unique key: derive one from the identity of
+                        # the observation so a retried batch cannot duplicate it.
+                        "id": str(
+                            uuid.uuid5(
+                                _POSITION_NS,
+                                f"balance:{exchange}:{market}:{asset}:{stamp}",
+                            )
+                        ),
+                        "exchange_name": exchange,
+                        "market_type": market,
+                        "asset": asset,
+                        "total": total,
+                        "free": free,
+                        "used": used,
+                        "is_mock": bool(is_mock),
+                        "observed_at": observed_at.isoformat(),
+                        "raw_payload": entry,
+                    },
+                    on_conflict="id",
+                )
+
+    # ----------------------------------------------------- status & risk events
+
+    def status_snapshot(self, instance_id: str, snapshot: Dict[str, Any], *, is_mock: bool = True) -> None:
+        """Appends a point-in-time executor status row."""
+        if not isinstance(snapshot, dict):
+            return
+        observed_at = datetime.now(timezone.utc)
+        self._emit(
+            "executor_status_snapshots",
+            {
+                "id": str(
+                    uuid.uuid5(
+                        _POSITION_NS,
+                        f"status:{instance_id}:{int(observed_at.timestamp()*1000)}",
+                    )
+                ),
+                "instance_id": instance_id,
+                "status": str(snapshot.get("status") or "UNKNOWN"),
+                "mode": "MOCK" if is_mock else "LIVE",
+                "is_mock": bool(is_mock),
+                "snapshot": snapshot,
+                "observed_at": observed_at.isoformat(),
+            },
+            on_conflict="id",
+        )
+
+    def risk_event(
+        self,
+        event_key: str,
+        severity: str,
+        event_type: str,
+        message: str,
+        *,
+        pair_key: Optional[str] = None,
+        exchange_name: Optional[str] = None,
+        action_taken: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        is_mock: bool = True,
+        occurred_at_ms: Any = None,
+    ) -> None:
+        """Appends a risk/audit event. `event_key` makes the write idempotent."""
+        if severity not in ("info", "warning", "error", "critical"):
+            severity = "error"
+        self._emit(
+            "risk_events",
+            {
+                "event_key": str(event_key),
+                "severity": severity,
+                "event_type": str(event_type),
+                "pair_key": pair_key,
+                "exchange_name": exchange_name,
+                "message": str(message),
+                "action_taken": action_taken,
+                "is_mock": bool(is_mock),
+                "details": details or {},
+                "occurred_at": _ms_to_iso(occurred_at_ms) or datetime.now(timezone.utc).isoformat(),
+            },
+            on_conflict="event_key",
         )
 
     # ------------------------------------------------------------------- flush

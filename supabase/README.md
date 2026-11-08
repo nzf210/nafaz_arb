@@ -54,5 +54,12 @@ The intended runtime split is:
 - Supabase: durable order/fill ledger, position lifecycle, funding settlement ledger,
   closed trades, risk/audit events, scanner opportunity history and status snapshots.
 
+Wiring status: the executor queues writes for `positions`, `position_legs`,
+`orders`, `order_fills`, `funding_payments`, `closed_trades`, `executor_events`,
+`balance_snapshots`, `risk_events`, and `executor_status_snapshots`; the scanner
+queues `scanner_opportunities`. All writes are idempotent upserts on
+client-generated ids. Not yet written: `exchange_accounts`, `strategy_configs`,
+`risk_limits`, and `market_pairs` (operator-managed configuration).
+
 The executor must continue protecting/closing live exposure if Supabase is unavailable.
 A Supabase outage must never prevent a required hedge, rollback, or emergency close.

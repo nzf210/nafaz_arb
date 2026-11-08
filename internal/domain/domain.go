@@ -57,6 +57,8 @@ type Opportunity struct {
 	QuoteAsset             string    `json:"quote_asset"`
 	SpotSymbol             string    `json:"spot_symbol"`
 	PerpSymbol             string    `json:"perp_symbol"`
+	LocalExchange          string    `json:"local_exchange,omitempty"`
+	GlobalExchange         string    `json:"global_exchange,omitempty"`
 	ExecutionMode          string    `json:"execution_mode,omitempty"`
 	SpotEntryPrice         float64   `json:"spot_entry_price"`
 	SpotExitPrice          float64   `json:"spot_exit_price"`

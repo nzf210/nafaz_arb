@@ -625,6 +625,8 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 		QuoteAsset:             targetQuote,
 		SpotSymbol:             sm.Symbol,
 		PerpSymbol:             pm.Symbol,
+		LocalExchange:          sm.Exchange,
+		GlobalExchange:         pm.Exchange,
 		ExecutionMode:          execMode,
 		SpotEntryPrice:         prices.spotEntry.InexactFloat64(),
 		SpotExitPrice:          prices.spotExit.InexactFloat64(),

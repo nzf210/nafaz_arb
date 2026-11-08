@@ -96,6 +96,8 @@ type Config struct {
 	LocalPriceTick                float64        `json:"local_price_tick"`
 	GlobalFuturesExchange         string         `json:"global_futures_exchange"`
 	EnableExecutorSignals         bool           `json:"enable_executor_signals"`
+	SupabaseURL                   string         `json:"supabase_url,omitempty"`
+	SupabaseKey                   string         `json:"supabase_key,omitempty"`
 	Telegram                      TelegramConfig `json:"telegram"`
 }
 
@@ -347,6 +349,8 @@ func (c *Config) applyEnvOverrides() {
 	setEnvInt(&c.WebSocketBookMaxAgeSeconds, "WEBSOCKET_BOOK_MAX_AGE_SECONDS")
 	setEnvString(&c.GlobalFuturesExchange, "GLOBAL_FUTURES_EXCHANGE")
 	setEnvBool(&c.EnableExecutorSignals, "ENABLE_EXECUTOR_SIGNALS")
+	setEnvString(&c.SupabaseURL, "SUPABASE_URL")
+	setEnvString(&c.SupabaseKey, "SUPABASE_KEY")
 	setEnvSlice(&c.ExcludedSymbols, "EXCLUDED_SYMBOLS")
 }
 

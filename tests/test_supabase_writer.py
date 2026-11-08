@@ -101,7 +101,7 @@ class TestPositions:
         pos = _pos()
         writer.position_opened("indodax:usdt_idr", pos, None)
         writer.position_opened("indodax:usdt_idr", pos, None)
-        rows = _drain(writer)
+        rows = [r for r in _drain(writer) if r[0] == "positions"]
         assert rows[0][2]["id"] == rows[1][2]["id"]
         assert rows[0][1] == "id"
 
@@ -114,7 +114,7 @@ class TestPositions:
         writer = _writer()
         writer.position_opened("p", _pos(), None)
         writer.position_status("p", "CLOSED", _pos(qty=0.0))
-        row = _drain(writer)[1][2]
+        row = [r for r in _drain(writer) if r[0] == "positions"][-1][2]
         assert row["status"] == "CLOSED"
         assert row["closed_at"]
 
@@ -224,7 +224,7 @@ class TestClosedTrades:
         _drain(writer)
         writer.trade_closed("p", self.TRADE, _pos(qty=0.0))
         rows = _drain(writer)
-        tables = [t for t, _, _ in rows]
+        tables = [t for t, _, _ in rows if t != "position_legs"]
         assert tables == ["closed_trades", "positions", "executor_events"]
         assert rows[0][1] == "trade_key"
 
@@ -232,3 +232,104 @@ class TestClosedTrades:
         writer = _writer()
         writer.trade_closed("p", {"net_profit_usdt": 1.0}, None)
         assert _drain(writer) == []
+
+class TestPositionLegs:
+    def test_open_emits_both_legs(self):
+        writer = _writer()
+        writer.position_opened("indodax:usdt_idr", _pos(), None)
+        legs = [r[2] for r in _drain(writer) if r[0] == "position_legs"]
+        assert {leg["leg"] for leg in legs} == {"spot", "perpetual"}
+        sides = {leg["leg"]: leg["side"] for leg in legs}
+        assert sides == {"spot": "long", "perpetual": "short"}
+
+    def test_leg_ids_are_stable_across_updates(self):
+        writer = _writer()
+        writer.position_opened("p", _pos(), None)
+        first = {r[2]["leg"]: r[2]["id"] for r in _drain(writer) if r[0] == "position_legs"}
+        writer.position_status("p", "EXIT_PENDING", _pos(qty=4.0))
+        second = {r[2]["leg"]: r[2]["id"] for r in _drain(writer) if r[0] == "position_legs"}
+        assert first == second
+
+    def test_status_propagates_to_legs(self):
+        writer = _writer()
+        writer.position_opened("p", _pos(), None)
+        _drain(writer)
+        writer.position_status("p", "CLOSED", _pos(qty=0.0))
+        legs = [r[2] for r in _drain(writer) if r[0] == "position_legs"]
+        assert all(leg["status"] == "CLOSED" for leg in legs)
+
+
+class TestFundingPayments:
+    def test_payment_id_is_deterministic(self):
+        writer = _writer()
+        payment = {"id": "pay-1", "amount": 0.5, "fundingRate": 0.0001}
+        writer.funding_payment("p", "okx", "BTC-USDT-SWAP", payment, 1_700_000_000_000)
+        writer.funding_payment("p", "okx", "BTC-USDT-SWAP", payment, 1_700_000_000_000)
+        rows = _drain(writer)
+        assert rows[0][2]["id"] == rows[1][2]["id"]
+        assert rows[0][1] == "id"
+
+    def test_missing_payment_id_falls_back_to_settle_time(self):
+        writer = _writer()
+        writer.funding_payment(
+            "p", "okx", "BTC-USDT-SWAP", {"amount": 1.0}, 1_700_000_000_000
+        )
+        row = _drain(writer)[0][2]
+        assert row["exchange_payment_id"] == "BTC-USDT-SWAP:1700000000000"
+        assert row["payment_status"] == "confirmed"
+
+    def test_non_dict_payment_ignored(self):
+        writer = _writer()
+        writer.funding_payment("p", "okx", "s", None, 1)
+        assert _drain(writer) == []
+
+
+class TestBalanceSnapshots:
+    REPORTS = [
+        {"name": "indodax", "market": "spot", "assets": [
+            {"asset": "usdt", "free": 1.0, "used": 2.0, "total": 3.0}]},
+        {"name": "okx", "market": "futures", "assets": [
+            {"asset": "USDT", "free": 4.0, "used": 0.0, "total": 4.0}]},
+    ]
+
+    def test_non_perpetual_market_is_skipped(self):
+        writer = _writer()
+        writer.balance_snapshot(self.REPORTS)
+        rows = _drain(writer)
+        assert len(rows) == 1
+        assert rows[0][2]["exchange_name"] == "indodax"
+        assert rows[0][2]["asset"] == "USDT"
+
+    def test_invalid_report_ignored(self):
+        writer = _writer()
+        writer.balance_snapshot(None)
+        writer.balance_snapshot({"not": "a list"})
+        assert _drain(writer) == []
+
+
+class TestStatusSnapshots:
+    def test_snapshot_row_shape(self):
+        writer = _writer()
+        writer.status_snapshot("exec-1", {"status": "RUNNING"}, is_mock=False)
+        row = _drain(writer)[0][2]
+        assert row["instance_id"] == "exec-1"
+        assert row["status"] == "RUNNING"
+        assert row["mode"] == "LIVE"
+        assert row["is_mock"] is False
+        assert row["snapshot"] == {"status": "RUNNING"}
+
+
+class TestRiskEvents:
+    def test_event_key_conflict_target(self):
+        writer = _writer()
+        writer.risk_event("k1", "critical", "HEDGE_FAILED", "boom", pair_key="p")
+        table, on_conflict, row = _drain(writer)[0]
+        assert table == "risk_events"
+        assert on_conflict == "event_key"
+        assert row["severity"] == "critical"
+        assert row["message"] == "boom"
+
+    def test_unknown_severity_becomes_error(self):
+        writer = _writer()
+        writer.risk_event("k2", "bogus", "T", "m")
+        assert _drain(writer)[0][2]["severity"] == "error"

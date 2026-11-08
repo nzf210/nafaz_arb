@@ -299,11 +299,14 @@ environment to enable it. With either unset the writer is inert, and every write
 is queued and flushed by a background task, so an unreachable database can never
 delay a hedge, rollback, or force close.
 
-Persisted by the executor: `positions`, `orders`, `order_fills`, `closed_trades`,
-`executor_events`. Writes are upserts on client-generated ids, so retries are
-idempotent, and fill rows derive from cumulative filled quantity so a replayed
-write cannot duplicate a fill. `scanner_opportunities`, `balance_snapshots`,
-`funding_payments`, and `executor_status_snapshots` are not yet written.
+The executor persists `positions`, `position_legs`, `orders`, `order_fills`,
+`funding_payments`, `closed_trades`, `executor_events`, `balance_snapshots`,
+`risk_events`, and 1-minute `executor_status_snapshots`. The Go scanner persists
+`scanner_opportunities` (one row per opportunity per scan, including excluded
+ones). Writes are upserts on client-generated ids, so retries are idempotent, and
+fill rows derive from cumulative filled quantity so a replayed write cannot
+duplicate a fill. `exchange_accounts`, `strategy_configs`, `risk_limits`,
+`market_pairs`, and the write-side config tables remain operator-managed.
 
 
 For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.

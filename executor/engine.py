@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import math
+import socket
 import time
 from typing import Optional, Dict, Any
 
@@ -60,6 +61,9 @@ class ArbitrageEngine(
     # self.<NAME> call sites keep working.
     FALLBACK_USDT_IDR_RATE = helpers.FALLBACK_USDT_IDR_RATE
     LIVE_PRICE_STALE_MS = helpers.LIVE_PRICE_STALE_MS
+    # Status is published every second; the durable history is sampled at this
+    # interval so a year of uptime does not mean 30M rows.
+    STATUS_SNAPSHOT_INTERVAL_SECONDS = 60.0
 
     def __init__(
         self,
@@ -122,6 +126,12 @@ class ArbitrageEngine(
 
         # Tasks
         self._tasks = []
+
+        # Identity used to correlate durable status snapshots across restarts.
+        self.instance_id = str(
+            getattr(config, "instance_id", "") or f"executor-{socket.gethostname()}"
+        )
+        self._last_status_snapshot: float = 0.0
 
         # Best-effort audit persistence. Writes are queued and flushed by a
         # background task, so an unreachable database can never delay a hedge.
@@ -598,6 +608,10 @@ class ArbitrageEngine(
                         if not request_id or len(request_id) > 64 or not request_id.isalnum():
                             continue
                         reports = await self.client.fetch_balance_report()
+                        self.supabase.balance_snapshot(
+                            reports,
+                            is_mock=bool(getattr(self.config, "mock_mode", False)),
+                        )
                         payload = {"request_id": request_id, "timestamp_ms": int(time.time()*1000),
                                    "mock_mode": bool(getattr(self.config, "mock_mode", False)), "exchanges": reports}
                         await self.redis.set(f"arb:balance_reply:{request_id}", json.dumps(payload, allow_nan=False), ex=30)
@@ -1002,6 +1016,18 @@ class ArbitrageEngine(
         }
         self._failure_reasons[pair_tag] = entry
         logger.critical(f"[{state.value}] {pair_tag}: {reason} - {message}")
+        self.supabase.risk_event(
+            f"{reason}:{pair_tag}:{entry['timestamp_ms']}",
+            "critical" if state == PositionState.FAILED else "error",
+            reason,
+            message,
+            pair_key=pair_tag,
+            exchange_name=(getattr(self._pair_infos.get(pair_tag), "local_exchange", None)),
+            action_taken=state.value,
+            details=detail or {},
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+            occurred_at_ms=entry["timestamp_ms"],
+        )
         if reason != "HEDGE_FAILED":
             try:
                 loop = asyncio.get_running_loop()
@@ -1140,11 +1166,21 @@ class ArbitrageEngine(
         """Makes the latest status readable by the Go API and operators."""
         if self.redis is None:
             return
-        payload = json.dumps(self.status_snapshot())
+        snapshot = self.status_snapshot()
+        payload = json.dumps(snapshot)
         try:
             await self.redis.set("arb:executor:status", payload, ex=30)
         except Exception:
             logger.exception("failed to publish executor status")
+        # The loop publishes every second, so the durable history is sampled.
+        now = time.time()
+        if now - self._last_status_snapshot >= self.STATUS_SNAPSHOT_INTERVAL_SECONDS:
+            self._last_status_snapshot = now
+            self.supabase.status_snapshot(
+                self.instance_id,
+                snapshot,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+            )
 
     # -------------------------------------------------------------
     # Emergency Cancel Handling
