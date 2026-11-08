@@ -681,7 +681,9 @@ async def test_live_entry_blocks_before_spot_submit_when_order_preflight_fails(f
     from executor.exchange_client import PaperTradingExchangeClient
 
     pair_tag = "indodax:btc_idr"
-    client = PaperTradingExchangeClient(initial_balance_usdt=100.0)
+    client = PaperTradingExchangeClient(
+        local_name="indodax", global_name="binance", initial_balance_usdt=100.0
+    )
     client.update_market_price("btc_idr", 1_038_000_000.0, 1_040_000_000.0)
     client.update_market_price("BTCUSDT", 65_000.0, 65_010.0)
 
@@ -691,6 +693,8 @@ async def test_live_entry_blocks_before_spot_submit_when_order_preflight_fails(f
     client.validate_entry_order = fail_preflight
     cfg = ExecutorConfig(
         mock_mode=False,
+        local_exchange_name="indodax",
+        global_exchange_name="binance",
         initial_exchange_balance_usdt=100.0,
         min_allocated_capital=10.0,
         max_entry_slippage_pct=0.0,
