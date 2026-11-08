@@ -144,6 +144,7 @@ class ExchangeClient:
         local_exchange: Optional[str] = None,
         global_exchange: Optional[str] = None,
         max_ticker_age_ms: int = 2000,
+        max_price_deviation_pct: float = 0.003,
     ) -> tuple[float, float]:
         """Fail-closed preflight for active markets, min-notional, precision and contract size."""
         values = (amount, price_idr, usdt_idr_rate)
@@ -215,6 +216,13 @@ class ExchangeClient:
 
         local_live_ask = await fresh_ask(local_client, spot_symbol, "Spot")
         global_live_ask = await fresh_ask(global_client, perp_symbol, "Futures")
+        if global_ask_quote > 0 and max_price_deviation_pct > 0:
+            deviation = abs(global_live_ask - global_ask_quote) / global_ask_quote
+            if deviation > max_price_deviation_pct:
+                raise ValueError(
+                    f"live Futures ask moved {deviation:.3%} from scan snapshot "
+                    f"(max {max_price_deviation_pct:.3%})"
+                )
         if precise_spot_price >= local_live_ask:
             raise ValueError("precision-adjusted Spot buy limit would take the live ask")
 
