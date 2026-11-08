@@ -70,6 +70,7 @@ class ArbitrageEngine(
         self.client = client
         self.redis = redis_client
         self.supabase_repository = None
+        self._supabase_queue = asyncio.Queue(maxsize=1000)
         self._running = False
         self.ARB_TRADE_EVENTS = "arb:trade_events"
         # Seeded from wall-clock so client order ids stay unique across restarts;
@@ -493,10 +494,17 @@ class ArbitrageEngine(
         self._tasks.append(asyncio.create_task(self._listen_force_close()))
         self._tasks.append(asyncio.create_task(self._listen_kill_switch()))
         self._tasks.append(asyncio.create_task(self._monitoring_loop()))
+        if self.supabase_repository is not None:
+            self._tasks.append(asyncio.create_task(self._supabase_persistence_loop()))
         logger.info("Hybrid Arbitrage Engine started")
 
     async def stop(self):
         """Stops all running tasks and connections."""
+        if self.supabase_repository is not None:
+            try:
+                await asyncio.wait_for(self._supabase_queue.join(), timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Supabase persistence queue did not drain before shutdown")
         self._running = False
         for task in self._tasks:
             task.cancel()
@@ -968,16 +976,30 @@ class ArbitrageEngine(
                 # the failure locally; the next status poll remains available.
                 pass
 
+    async def _supabase_persistence_loop(self) -> None:
+        """Drain durable writes off the exchange-order/position-management path."""
+        while self._running:
+            payload = await self._supabase_queue.get()
+            try:
+                if self.supabase_repository is not None:
+                    await self.supabase_repository.persist_event(payload)
+            except Exception:
+                logger.exception(
+                    "Supabase operational persistence failed for event %s",
+                    payload.get("event", "UNKNOWN"),
+                )
+            finally:
+                self._supabase_queue.task_done()
+
     async def _persist_supabase_event(self, payload: Dict[str, Any]) -> None:
-        """Best-effort durable audit write; never gate exchange risk management."""
-        repository = getattr(self, "supabase_repository", None)
-        if repository is None:
+        """Queue a durable audit write without waiting on network/database latency."""
+        if getattr(self, "supabase_repository", None) is None:
             return
         try:
-            await repository.persist_event(payload)
-        except Exception:
-            logger.exception(
-                "Supabase operational persistence failed for event %s",
+            self._supabase_queue.put_nowait(dict(payload))
+        except asyncio.QueueFull:
+            logger.critical(
+                "Supabase persistence queue is full; dropping audit event %s",
                 payload.get("event", "UNKNOWN"),
             )
 
