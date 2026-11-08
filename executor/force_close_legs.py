@@ -237,11 +237,11 @@ class ForceCloseLegsMixin:
     async def _liquidate_spot_leg(self, pair_key: str, pos) -> float:
         logger.warning("[Force Close] Selling %s %s spot leg...", pos.qty, pos.symbol)
         try:
-            order = await self._submit_spot_liquidation(pair_key, pos)
+            order, client_order_id = await self._submit_spot_liquidation(pair_key, pos)
             if not isinstance(order, dict):
                 self._log_spot_liquidation_failure(pair_key, pos, order, 0.0)
                 return 0.0
-            self._record_spot_liquidation_order(pair_key, pos, order)
+            self._record_spot_liquidation_order(pair_key, pos, order, client_order_id)
             filled, exit_price = await self._verify_spot_liquidation_fill(pair_key, pos, order)
             if self._spot_liquidation_complete(pos.qty, filled, exit_price):
                 logger.info(
@@ -257,7 +257,7 @@ class ForceCloseLegsMixin:
     async def _submit_spot_liquidation(self, pair_key: str, pos):
         sequence = self._next_order_seq()
         client_order_id = build_client_order_id(pair_key, "force-liq", sequence)
-        return await helpers.retry_with_backoff(
+        order = await helpers.retry_with_backoff(
             lambda: self.client.place_local_market_sell(
                 pos.symbol, pos.qty, client_order_id=client_order_id
             ),
@@ -265,12 +265,13 @@ class ForceCloseLegsMixin:
             base_delay=0.5,
             label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
         )
+        return order, client_order_id
 
-    def _record_spot_liquidation_order(self, pair_key: str, pos, order: dict) -> None:
+    def _record_spot_liquidation_order(self, pair_key: str, pos, order: dict, client_order_id: str) -> None:
         self.supabase.order(
             pair_key, "force_close", pos.local_exchange, "spot",
             pos.symbol, order,
-            client_order_id=order.get("clientOrderId"),
+            client_order_id=client_order_id,
             is_mock=bool(getattr(self.config, "mock_mode", False)),
         )
 
