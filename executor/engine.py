@@ -482,6 +482,65 @@ class ArbitrageEngine(
                 f"[Recovery] {recovered} active position(s) restored - resuming management"
             )
 
+    async def _exchange_balance_snapshot_loop(self) -> None:
+        """Publish fresh, per-venue LIVE balances for the Telegram /balance command."""
+        key = "arb:exchange_balances"
+        while self._running:
+            snapshot = {
+                "mode": "LIVE",
+                "timestamp_ms": int(time.time() * 1000),
+                "exchanges": [],
+            }
+            for role, venue in (
+                ("spot", self.client.local),
+                ("futures", self.client.global_fut),
+            ):
+                name = str(getattr(venue, "id", "") or role).lower()
+                try:
+                    raw = await venue.fetch_balance()
+                    if not isinstance(raw, dict):
+                        raise ValueError("exchange returned an invalid balance payload")
+                    total = raw.get("total") if isinstance(raw.get("total"), dict) else {}
+                    free = raw.get("free") if isinstance(raw.get("free"), dict) else {}
+                    used = raw.get("used") if isinstance(raw.get("used"), dict) else {}
+                    assets = []
+                    for asset in sorted(set(total) | set(free) | set(used)):
+                        try:
+                            total_value = float(total.get(asset) or 0.0)
+                            free_value = float(free.get(asset) or 0.0)
+                            used_value = float(used.get(asset) if used.get(asset) is not None else max(0.0, total_value - free_value))
+                            if not all(math.isfinite(v) and v >= 0 for v in (total_value, free_value, used_value)):
+                                raise ValueError(f"invalid {asset} balance returned by exchange")
+                        except (TypeError, ValueError) as exc:
+                            raise ValueError(f"invalid {asset} balance: {exc}") from exc
+                        if total_value > 0 or free_value > 0 or used_value > 0:
+                            assets.append({
+                                "asset": str(asset).upper(),
+                                "total": total_value,
+                                "free": free_value,
+                                "used": used_value,
+                            })
+                    snapshot["exchanges"].append({
+                        "name": name,
+                        "role": role,
+                        "status": "OK",
+                        "assets": assets,
+                    })
+                except Exception as exc:
+                    logger.warning("live balance refresh failed for %s: %s", name, exc)
+                    snapshot["exchanges"].append({
+                        "name": name,
+                        "role": role,
+                        "status": "ERROR",
+                        "error": str(exc)[:240],
+                        "assets": [],
+                    })
+            try:
+                await self.redis.set(key, json.dumps(snapshot), ex=120)
+            except Exception:
+                logger.exception("failed to publish live exchange balance snapshot")
+            await asyncio.sleep(30)
+
     async def start(self):
         """Starts listeners and monitoring loops."""
         await self.initialize()
@@ -492,6 +551,8 @@ class ArbitrageEngine(
         self._tasks.append(asyncio.create_task(self._listen_force_close()))
         self._tasks.append(asyncio.create_task(self._listen_kill_switch()))
         self._tasks.append(asyncio.create_task(self._monitoring_loop()))
+        if not getattr(self.config, "mock_mode", False):
+            self._tasks.append(asyncio.create_task(self._exchange_balance_snapshot_loop()))
         logger.info("Hybrid Arbitrage Engine started")
 
     async def stop(self):
