@@ -29,10 +29,17 @@ jobs:
           from pathlib import Path
           report = json.loads(Path("/tmp/python-complexity.json").read_text())
           violations = []
-          for filename, blocks in report.items():
-              for block in blocks:
-                  if block.get("type") in {"function", "method"} and block.get("complexity", 0) > 10:
-                      violations.append((filename, block.get("lineno"), block.get("name"), block.get("complexity")))
+          def inspect(node, filename):
+              if isinstance(node, dict):
+                  if node.get("type") in {"function", "method"} and node.get("complexity", 0) > 10:
+                      violations.append((filename, node.get("lineno"), node.get("name"), node.get("complexity")))
+                  for child in node.values():
+                      inspect(child, filename)
+              elif isinstance(node, list):
+                  for child in node:
+                      inspect(child, filename)
+          for filename, result in report.items():
+              inspect(result, filename)
           for filename, line, name, score in violations:
               print(f"{filename}:{line} {name}: cyclomatic complexity {score} (maximum 10)")
           if violations:
