@@ -461,7 +461,7 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 				"• Tutup Short (1x): <code>$%.4f USDT</code>\n"+
 				"• Akumulasi Funding: <code>+$%.4f USDT</code>\n"+
 				separatorLine+
-				"💰 <b>Net Realized Profit:</b> <b>%+.4f USDT (Rp %+.2f)</b>\n"+
+				"💰 <b>Net PnL (fee estimasi):</b> <b>%+.4f USDT (Rp %+.2f)</b>\n"+
 				"📈 <b>Net ROI:</b> <b>%+.3f%%</b>\n\n"+
 				"<i>Ketik /history untuk melihat rekap riwayat transaksi yang telah selesai.</i>",
 			emoji, modeTag, statusWord,
