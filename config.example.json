@@ -49,7 +49,11 @@
     "max_order_ttl_seconds": 30,
     "executor": {
         "estimated_round_trip_fee_pct": 0.001,
-        "max_exit_slippage_pct": 0.003
+        "max_exit_slippage_pct": 0.003,
+    "min_exit_slippage_pct": 0.001,
+    "max_dynamic_exit_slippage_pct": 0.02,
+    "exit_volatility_multiplier": 2.0,
+    "exit_spread_multiplier": 0.5
     },
     "min_top_of_book_quote_usdt": 0,
     "max_order_book_imbalance": 0.0,
