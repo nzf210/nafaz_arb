@@ -96,17 +96,29 @@ class ExitPricingMixin:
             timestamp = int(payment.get("timestamp") or 0)
             if timestamp <= pos.last_funding_time_ms or timestamp > now_ms:
                 continue
-            asset = str(payment.get("code") or payment.get("currency") or "USDT").upper()
-            if asset != "USDT":
-                logger.error("[Funding Reconciliation] unsupported settlement asset %s for %s", asset, pair_tag)
+            if not self._is_supported_funding_asset(payment, pair_tag):
                 continue
-            try:
-                amount = float(payment.get("amount"))
-            except (TypeError, ValueError):
-                logger.error("[Funding Reconciliation] invalid payment amount for %s: %s", pair_tag, payment)
+            amount = self._parse_funding_payment_amount(payment, pair_tag)
+            if amount is None:
                 continue
             settled.append((timestamp, amount, payment))
         return settled
+
+    @staticmethod
+    def _is_supported_funding_asset(payment: dict, pair_tag: str) -> bool:
+        asset = str(payment.get("code") or payment.get("currency") or "USDT").upper()
+        if asset == "USDT":
+            return True
+        logger.error("[Funding Reconciliation] unsupported settlement asset %s for %s", asset, pair_tag)
+        return False
+
+    @staticmethod
+    def _parse_funding_payment_amount(payment: dict, pair_tag: str):
+        try:
+            return float(payment.get("amount"))
+        except (TypeError, ValueError):
+            logger.error("[Funding Reconciliation] invalid payment amount for %s: %s", pair_tag, payment)
+            return None
 
     async def _refresh_funding_schedule(self, pair_tag: str, symbol: str, current_rate: float) -> tuple[int, float]:
         next_funding_ms = 0
