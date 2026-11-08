@@ -260,4 +260,21 @@ podman run -d --name nafaz-scanner --restart always -p 8080:8080 -v $(pwd)/confi
 | **failed to connect to the docker API at unix:///run/user/1000/podman/podman.sock** | Provider docker-compose membutuhkan Podman API Socket yang belum aktif. | Jalankan `systemctl --user enable --now podman.socket` atau gunakan binary native `podman-compose up -d --build`. |
 | **error creating systemd unit `crun-buildah-....scope`: got `failed`** | Rootless Podman di VPS tidak memiliki delegasi cgroup systemd. | Atur cgroup manager ke `cgroupfs` dengan menjalankan perintah:<br>`mkdir -p ~/.config/containers && echo -e '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"' > ~/.config/containers/containers.conf` |
 
+## Supabase runtime persistence
 
+The scanner and executor can write durable operational history to Supabase while
+Redis continues to handle real-time signals, active-position recovery and locks.
+See [supabase/README.md](supabase/README.md) for schema coverage, migration order and
+the current delivery limitations.
+
+Inject these variables into the Podman Compose process environment before recreating
+the services:
+
+- SUPABASE_ENABLED=true
+- SUPABASE_URL=https://<project-ref>.supabase.co
+- SUPABASE_SERVICE_ROLE_KEY=<load from your host secret manager>
+
+Then rebuild/recreate both application services so the environment is applied.
+Do not commit the service-role key, put it in config.json, or bake it into an image.
+Keep SUPABASE_ENABLED=false until the remote migration history has been reviewed and
+the new migrations have been applied to the intended Supabase project.
