@@ -111,46 +111,49 @@ class IndodaxTAPIv2:
         params: Optional[Dict[str, Any]] = None,
         signed: bool = True,
     ) -> Any:
-        params = dict(params or {})
-        query = ""
-        if signed:
-            params.setdefault("timestamp", int(time.time() * 1000))
-            params.setdefault("recvWindow", self.recv_window)
-            query = urlencode(
-                {k: v for k, v in params.items() if v is not None}
-            )
-        elif params:
-            query = urlencode(params)
+        query = self._encode_request_params(params, signed)
+        url, body = self._request_target(method, path, query)
+        headers = self._request_headers(signed, method, query)
+        session = await self._get_session()
+        async with session.request(method, url, data=body, headers=headers) as response:
+            text = await response.text()
+            return self._parse_response(text, response.status)
 
-        headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
+    def _encode_request_params(self, params: Optional[Dict[str, Any]], signed: bool) -> str:
+        values = dict(params or {})
+        if signed:
+            values.setdefault("timestamp", int(time.time() * 1000))
+            values.setdefault("recvWindow", self.recv_window)
+        return urlencode({key: value for key, value in values.items() if value is not None})
+
+    def _request_target(self, method: str, path: str, query: str) -> tuple[str, Optional[str]]:
         url = f"{self.base_url}{path}"
         body = None
+        if method in ("POST", "PUT"):
+            body = query
+        elif query:
+            url = f"{url}?{query}"
+        return url, body
+
+    def _request_headers(self, signed: bool, method: str, query: str) -> dict:
+        headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
         if signed:
             headers["X-APIKEY"] = self.api_key
             headers["Sign"] = self.sign(query)
-
         if method in ("POST", "PUT"):
             headers["Content-Type"] = "application/x-www-form-urlencoded"
-            body = query
-        elif query:
-            # GET and DELETE carry their parameters in the query string; the
-            # signature covers exactly that string.
-            url = f"{url}?{query}"
+        return headers
 
-        session = await self._get_session()
-        async with session.request(method, url, data=body, headers=headers) as resp:
-            text = await resp.text()
-            try:
-                payload = json.loads(text)
-            except ValueError:
-                raise IndodaxAPIError(
-                    f"http_{resp.status}", f"non-JSON response: {text[:200]}"
-                )
-            if isinstance(payload, dict) and payload.get("code") not in (None, 0):
-                raise IndodaxAPIError(payload.get("code"), str(payload.get("msg") or payload))
-            if resp.status >= 400:
-                raise IndodaxAPIError(f"http_{resp.status}", text[:200])
-            return payload
+    def _parse_response(self, text: str, status: int) -> Any:
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            raise IndodaxAPIError(f"http_{status}", f"non-JSON response: {text[:200]}")
+        if isinstance(payload, dict) and payload.get("code") not in (None, 0):
+            raise IndodaxAPIError(payload.get("code"), str(payload.get("msg") or payload))
+        if status >= 400:
+            raise IndodaxAPIError(f"http_{status}", text[:200])
+        return payload
 
     # --------------------------------------------------------------- mapping
 
