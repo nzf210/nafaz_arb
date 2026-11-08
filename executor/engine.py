@@ -1194,6 +1194,11 @@ class ArbitrageEngine(
                 order_info = self.pending_entry_orders.get(p_key)
                 if not order_info:
                     continue
+                if hasattr(self.client, "set_route"):
+                    self.client.set_route(
+                        order_info.get("local_exchange", ""),
+                        order_info.get("global_exchange", ""),
+                    )
                 order_id = order_info["order_id"]
                 logger.warning(
                     f"[Emergency Cancel] Cancelling pending entry order {order_id} for {p_key} due to negative funding"

@@ -614,6 +614,18 @@ class ForceCloseMixin:
                 await self.publish_status()
                 return
 
+            # Select the position's original venues BEFORE cancelling any pending
+            # orders; otherwise a retry could cancel an order on the default venue.
+            pos = self.active_positions.get(pair_key)
+            pending = self.pending_entry_orders.get(pair_key) or self.pending_exit_orders.get(pair_key) or {}
+            if hasattr(self.client, "set_route"):
+                if pos:
+                    self.client.set_route(pos.local_exchange, pos.global_exchange)
+                elif pending:
+                    self.client.set_route(
+                        pending.get("local_exchange", ""),
+                        pending.get("global_exchange", ""),
+                    )
             # Remember whether this is a retry of an incomplete force close.
             # The retry path checks actual futures exposure first so a previously
             # closed futures leg is not submitted a second time.
@@ -623,9 +635,6 @@ class ForceCloseMixin:
             # Guard concurrent exit-fill processing for this pair while force close runs.
             self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
             orders_reconciled = await self._cancel_pending_orders_for_force_close(pair_key)
-            pos = self.active_positions.get(pair_key)
-            if pos and hasattr(self.client, "set_route"):
-                self.client.set_route(pos.local_exchange, pos.global_exchange)
             if not orders_reconciled:
                 await self._handle_force_close_failure(
                     pair_key, pos, False, True
