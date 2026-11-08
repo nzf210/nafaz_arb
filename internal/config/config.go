@@ -15,6 +15,7 @@ type TelegramConfig struct {
 	AllowedChatIDs         []int64 `json:"allowed_chat_ids"`
 	AllowedUserIDs         []int64 `json:"allowed_user_ids"`
 	AlertOnNew             bool    `json:"alert_on_new"`
+	AlertOnScanSummary     bool    `json:"alert_on_scan_summary"`
 	AlertCooldownMinutes   int     `json:"alert_cooldown_minutes"`
 	AlertMinNetROIPct      float64 `json:"alert_min_net_roi_pct"`
 	AlertMinNetProfitQuote float64 `json:"alert_min_net_profit_quote"`
@@ -329,6 +330,7 @@ func (c *Config) applyEnvOverrides() {
 	}
 	setEnvInt64(&c.Telegram.ChatID, "TELEGRAM_CHAT_ID")
 	setEnvBool(&c.Telegram.Enabled, "TELEGRAM_ENABLED")
+	setEnvBool(&c.Telegram.AlertOnScanSummary, "TELEGRAM_ALERT_ON_SCAN_SUMMARY")
 	setEnvBool(&c.Redis.Enabled, "REDIS_ENABLED")
 	setEnvString(&c.Redis.Addr, "REDIS_ADDR")
 	setEnvString(&c.Redis.Password, "REDIS_PASSWORD")
