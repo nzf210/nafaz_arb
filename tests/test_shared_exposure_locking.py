@@ -62,11 +62,10 @@ async def test_concurrent_different_pairs_share_venue_entry_lock(fake_redis):
 @pytest.mark.asyncio
 async def test_live_entry_fails_closed_without_redis_distributed_lock(fake_redis):
     class RedisWithoutLocks:
-        async def get(self, key):
-            return await fake_redis.get(key)
+        lock = None
 
-        async def keys(self, pattern):
-            return await fake_redis.keys(pattern)
+        def __getattr__(self, name):
+            return getattr(fake_redis, name)
 
     from executor.config import ExecutorConfig
     from executor.engine import ArbitrageEngine
