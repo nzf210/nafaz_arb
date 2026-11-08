@@ -706,12 +706,11 @@ class ArbitrageEngine(
             payload = await self._load_signal_payload(pair_tag)
             if payload is None:
                 return
+            signal_local = str(payload.pair_info.local_exchange or "").strip().lower()
+            signal_global = str(payload.pair_info.global_exchange or "").strip().lower()
             if hasattr(self.client, "set_route"):
                 try:
-                    self.client.set_route(
-                        payload.pair_info.local_exchange,
-                        payload.pair_info.global_exchange,
-                    )
+                    self.client.set_route(signal_local, signal_global)
                 except Exception as exc:
                     self._pair_infos[pair_tag] = payload.pair_info
                     self._mark_failed(
@@ -719,12 +718,28 @@ class ArbitrageEngine(
                         "EXECUTOR_VENUE_NOT_CONFIGURED",
                         f"Signal exchange route is not configured: {exc}",
                         detail={
-                            "signal_local_exchange": payload.pair_info.local_exchange,
-                            "signal_global_exchange": payload.pair_info.global_exchange,
+                            "signal_local_exchange": signal_local,
+                            "signal_global_exchange": signal_global,
                         },
                     )
                     await self.publish_status()
                     return
+            elif (
+                not getattr(self.config, "mock_mode", False)
+                and (
+                    signal_local != str(self.config.local_exchange_name or "").strip().lower()
+                    or signal_global != str(self.config.global_exchange_name or "").strip().lower()
+                )
+            ):
+                self._pair_infos[pair_tag] = payload.pair_info
+                self._mark_failed(
+                    pair_tag,
+                    "EXECUTOR_VENUE_MISMATCH",
+                    "Signal exchange pair does not match this single-route executor client.",
+                    detail={"signal_local_exchange": signal_local, "signal_global_exchange": signal_global},
+                )
+                await self.publish_status()
+                return
             self._pair_infos[pair_tag] = payload.pair_info
             balances = await self._check_balance_mismatch(
                 payload.pair_info,
