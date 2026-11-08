@@ -126,32 +126,6 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 		// Direct USDT/USDC pairs do not depend on the IDR FX endpoint.
 		fxRate = s.lastKnownFXRate()
 	}
-	if !fxLive && isIDRQuote {
-		// IDR pairs must never trade on a stale, synthetic, or hardcoded rate:
-		// the USDT/IDR rate is too dynamic for spread math to survive any
-		// fallback. Skip the pair entirely until the venue's live ticker
-		// (Indodax, the CEX that trades IDR) responds again.
-		log.Printf("warning: skipping %s/%s - USDT/IDR live ticker unavailable, no dynamic FX rate",
-			sm.BaseAsset, sm.QuoteAsset)
-		return evalResult{
-			err: fmt.Errorf("%s/%s (%s vs %s): USDT/IDR live ticker unavailable - IDR pair not tradable without dynamic FX rate",
-				sm.BaseAsset, sm.QuoteAsset, sm.Exchange, pm.Exchange),
-			exchangeMetrics: exchangeMetrics,
-		}
-	}
-	if !fxLive {
-		// Non-IDR pairs do not depend on the rate for spread math, but zero
-		// would corrupt metadata; keep the previous scan's behavior of not
-		// gating on FX here while refusing to fabricate a number.
-		fxRate = s.lastKnownFXRate()
-	}
-	if err := validateFXRateSanity(fxRate, s.cfg.SyntheticUSDTIDRRate, s.cfg.FXRateSanityPct); err != nil {
-		return evalResult{
-			err:             fmt.Errorf("%s/%s (%s vs %s): %w", sm.BaseAsset, sm.QuoteAsset, sm.Exchange, pm.Exchange, err),
-			exchangeMetrics: exchangeMetrics,
-		}
-	}
-
 	requiredNotional := s.requiredNotionalUsdt()
 	op, err := s.calculate(sm, pm, sb, pb, fr, started, positionReason, isSynthetic, fxRate, requiredNotional)
 	if err != nil {
