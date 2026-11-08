@@ -11,6 +11,7 @@ from executor.models import (
     ExecutorPayload,
     ActivePosition,
 )
+from executor.helpers import PENDING_ENTRY_KEY_PREFIX
 from executor.exchange_client import ExchangeClient
 from executor.config import ExecutorConfig
 from executor.private_stream import PrivateStreamCache
@@ -94,6 +95,9 @@ class ArbitrageEngine(
         # together both pass the "no active position" check between the Redis
         # read and the order placement, producing a doubled spot position.
         self._pair_locks: Dict[str, asyncio.Lock] = {}
+        # Serialize entry preflight + order placement across every signal sharing
+        # either venue. Redis locks extend this protection across executor replicas.
+        self._venue_locks: Dict[str, asyncio.Lock] = {}
 
         # Last failure per pair, surfaced through arb:executor:status so an
         # operator can query why a pair stopped instead of scraping logs.
@@ -696,6 +700,74 @@ class ArbitrageEngine(
 
     async def handle_signal_notification(self, pair_tag: str):
         """
+        Serialize balance checks, exposure reservations and order placement per venue.
+
+        The lock is acquired in sorted venue order to avoid deadlocks. A Redis
+        distributed lock is mandatory in LIVE mode; local asyncio locks alone
+        cannot protect capital when multiple executor replicas are running.
+        """
+        payload = await self._load_signal_payload(pair_tag)
+        if payload is None:
+            return
+        venues = sorted({
+            str(payload.pair_info.local_exchange or "").strip().lower(),
+            str(payload.pair_info.global_exchange or "").strip().lower(),
+        } - {""})
+        local_locks = []
+        distributed_locks = []
+        try:
+            for venue in venues:
+                lock = self._venue_locks.setdefault(venue, asyncio.Lock())
+                await lock.acquire()
+                local_locks.append(lock)
+
+            if not getattr(self.config, "mock_mode", False):
+                lock_factory = getattr(self.redis, "lock", None)
+                if not callable(lock_factory):
+                    raise RuntimeError(
+                        "LIVE entry requires Redis distributed locks; refusing unsafe multi-worker entry"
+                    )
+                for venue in venues:
+                    lock = lock_factory(
+                        f"arb:executor:entry_lock:{venue}",
+                        timeout=300,
+                        blocking_timeout=15,
+                    )
+                    acquired = await lock.acquire()
+                    if not acquired:
+                        raise RuntimeError(
+                            f"could not acquire distributed entry lock for {venue}"
+                        )
+                    distributed_locks.append(lock)
+
+            await self._refresh_shared_entry_reservations()
+            await self._handle_signal_notification_with_venue_locks(
+                pair_tag, expected_venues=tuple(venues)
+            )
+        except Exception as exc:
+            logger.exception("[Risk Control] venue entry lock/preflight failed")
+            self._mark_failed(
+                pair_tag,
+                "VENUE_ENTRY_LOCK_FAILED",
+                "Entry dihentikan karena penguncian saldo lintas exchange gagal.",
+                detail={"venues": venues, "error": str(exc)},
+            )
+            await self.publish_status()
+        finally:
+            for lock in reversed(distributed_locks):
+                try:
+                    await lock.release()
+                except Exception:
+                    logger.exception(
+                        "[Risk Control] failed to release Redis venue entry lock"
+                    )
+            for lock in reversed(local_locks):
+                lock.release()
+
+    async def _handle_signal_notification_with_venue_locks(
+        self, pair_tag: str, expected_venues: tuple[str, ...]
+    ):
+        """
         State 1 (Entry Order Pegging):
         1. GET arb:signal:{local_ex}:{symbol}
         2. Validate timestamp freshness (<= 500ms).
@@ -708,6 +780,12 @@ class ArbitrageEngine(
                 return
             signal_local = str(payload.pair_info.local_exchange or "").strip().lower()
             signal_global = str(payload.pair_info.global_exchange or "").strip().lower()
+            if tuple(sorted({signal_local, signal_global} - {""})) != expected_venues:
+                logger.warning(
+                    "[Risk Control] signal route changed while waiting for venue locks; "
+                    "discarding stale preflight"
+                )
+                return
             if hasattr(self.client, "set_route"):
                 try:
                     self.client.set_route(signal_local, signal_global)
