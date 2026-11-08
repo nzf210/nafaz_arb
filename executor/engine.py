@@ -928,6 +928,7 @@ class ArbitrageEngine(
                     global_ask_quote=snapshot.global_best_ask_usdt,
                     local_exchange=pair_info.local_exchange,
                     global_exchange=pair_info.global_exchange,
+                    max_ticker_age_ms=int(getattr(self.config, "entry_revalidation_max_age_ms", 2000) or 2000),
                 )
             except Exception as preflight_error:
                 logger.warning(
