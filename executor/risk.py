@@ -11,13 +11,72 @@ import logging
 import math
 from typing import Dict, Optional
 
-from executor.models import ExecutorPayload, PairInfo
+from executor.models import ActivePosition, ExecutorPayload, PairInfo
+from executor.helpers import PENDING_ENTRY_KEY_PREFIX
 
 logger = logging.getLogger("executor.engine")
 
 
 class RiskMixin:
     """Exposure caps, per-venue halts and balance-drift detection."""
+
+    async def _refresh_shared_entry_reservations(self) -> None:
+        """Refresh Redis pending orders and active positions while venue locks are held."""
+        if not self.redis:
+            if not getattr(self.config, "mock_mode", False):
+                raise RuntimeError("Redis is required for live exposure reconciliation")
+            return
+        try:
+            pending_keys = await self.redis.keys(PENDING_ENTRY_KEY_PREFIX + "*")
+            active_keys = await self.redis.keys("arb:active_pos:*")
+        except Exception as exc:
+            raise RuntimeError(f"cannot enumerate shared exposure reservations: {exc}") from exc
+        for key in pending_keys or []:
+            pair_tag = str(key).split(PENDING_ENTRY_KEY_PREFIX, 1)[-1]
+            raw = await self.redis.get(key)
+            if not raw:
+                continue
+            try:
+                info = json.loads(raw)
+                local_exchange = str(info.get("local_exchange") or "").lower()
+                global_exchange = str(info.get("global_exchange") or "").lower()
+                order_id = str(info.get("order_id") or "")
+                symbol = str(info.get("symbol") or "")
+                qty = float(info.get("qty") or 0.0)
+                if not all((local_exchange, global_exchange, order_id, symbol)):
+                    raise ValueError("pending order record is missing route/order identity")
+                if not math.isfinite(qty) or qty <= 0:
+                    raise ValueError("pending order record has invalid quantity")
+                existing = self.pending_entry_orders.get(pair_tag)
+                if existing is None:
+                    self.pending_entry_orders[pair_tag] = info
+                    self.states.setdefault(pair_tag, PositionState.RECONCILIATION_REQUIRED)
+                elif (existing.get("order_id") != order_id or
+                      str(existing.get("local_exchange", "")).lower() != local_exchange or
+                      str(existing.get("global_exchange", "")).lower() != global_exchange):
+                    raise ValueError("in-memory and Redis pending entry identities disagree")
+            except Exception as exc:
+                logger.critical(f"[Risk Control] invalid shared pending entry {key}: {exc}")
+                raise RuntimeError(f"unsafe pending entry reservation {key}: {exc}") from exc
+        for key in active_keys or []:
+            pair_tag = str(key).split("arb:active_pos:", 1)[-1]
+            raw = await self.redis.get(key)
+            if not raw:
+                continue
+            try:
+                restored = ActivePosition.from_dict(json.loads(raw))
+                if restored.qty <= 0 or not math.isfinite(float(restored.qty)):
+                    raise ValueError("active position has invalid quantity")
+                current = self.active_positions.get(pair_tag)
+                if current is None:
+                    self.active_positions[pair_tag] = restored
+                elif (current.local_exchange != restored.local_exchange or
+                      current.global_exchange != restored.global_exchange or
+                      not math.isclose(float(current.qty), float(restored.qty), rel_tol=1e-8, abs_tol=1e-12)):
+                    raise ValueError("in-memory and Redis active position snapshots disagree")
+            except Exception as exc:
+                logger.critical(f"[Risk Control] invalid shared active position {key}: {exc}")
+                raise RuntimeError(f"unsafe active position reservation {key}: {exc}") from exc
 
     def _record_order_success(self, exchange: str) -> None:
         """Clears the consecutive-failure counter for an exchange after a clean order."""
