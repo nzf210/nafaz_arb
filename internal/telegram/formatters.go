@@ -156,6 +156,43 @@ func (b *Bot) formatMetrics() string {
 	)
 }
 
+func (b *Bot) formatScanSummary(r domain.ScanResult) string {
+	status := "SELESAI"
+	icon := "✅"
+	note := ""
+	if !r.Complete {
+		status = "TIDAK LENGKAP"
+		icon = "⚠️"
+		note = "Sebagian data scan tidak dapat diverifikasi; peluang dari scan ini tidak dikirim sebagai alert entry."
+	}
+	if isFXScanFailure(r) {
+		status = "FX USDT/IDR TIDAK VALID"
+		icon = "🚨"
+		note = "Scan IDR dihentikan. Tidak ada hardcoded atau stale FX fallback yang digunakan."
+	}
+
+	return fmt.Sprintf(
+		"%s <b>Ringkasan Scan NAFAZ — %s</b>\n\n"+
+			"• Mode: <code>%s</code>\n"+
+			"• Scan ID: <code>%s</code>\n"+
+			"• Durasi: <code>%d ms</code>\n"+
+			"• Total pasar: <b>%d</b>\n"+
+			"• Pair cocok / aktif: <b>%d / %d</b>\n"+
+			"• Eligible / excluded / failed: <b>%d / %d / %d</b>\n"+
+			"• Opportunity tercatat: <b>%d</b>\n\n"+
+			"%s",
+		icon, status,
+		html.EscapeString(r.Mode),
+		html.EscapeString(r.ScanID),
+		r.DurationMS,
+		r.TotalMarkets,
+		r.MatchedPairs, r.ActivePairs,
+		r.EligiblePairs, r.ExcludedPairs, r.FailedPairs,
+		len(r.Opportunities),
+		html.EscapeString(note),
+	)
+}
+
 func (b *Bot) formatScanResult(r domain.ScanResult, title string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📋 <b>%s</b>\n", html.EscapeString(title)))
