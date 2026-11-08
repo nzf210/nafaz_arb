@@ -235,79 +235,75 @@ class ForceCloseLegsMixin:
         return True
 
     async def _liquidate_spot_leg(self, pair_key: str, pos) -> float:
-        """
-        Liquidates the local spot leg. Returns the realized exit price in IDR
-        only if the order actually filled. Never falls back to entry price.
-        """
-        logger.warning(f"[Force Close] Selling {pos.qty} {pos.symbol} spot leg...")
+        logger.warning("[Force Close] Selling %s %s spot leg...", pos.qty, pos.symbol)
         try:
-            seq = self._next_order_seq()
-            spot_order = await helpers.retry_with_backoff(
-                lambda: self.client.place_local_market_sell(
-                    pos.symbol,
-                    pos.qty,
-                    client_order_id=build_client_order_id(pair_key, "force-liq", seq),
-                ),
-                max_retries=4,  # 5 total attempts
-                base_delay=0.5,
-                label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
-            )
-            # Require the full requested quantity to be filled. A partial
-            # market sell leaves residual spot exposure and must not be reported
-            # as a successful force close.
-            if isinstance(spot_order, dict):
-                self.supabase.order(
-                    pair_key,
-                    "force_close",
-                    pos.local_exchange,
-                    "spot",
-                    pos.symbol,
-                    spot_order,
-                    client_order_id=build_client_order_id(pair_key, "force-liq", seq),
-                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+            order = await self._submit_spot_liquidation(pair_key, pos)
+            if not isinstance(order, dict):
+                self._log_spot_liquidation_failure(pair_key, pos, order, 0.0)
+                return 0.0
+            self._record_spot_liquidation_order(pair_key, pos, order)
+            filled, exit_price = await self._verify_spot_liquidation_fill(pair_key, pos, order)
+            if self._spot_liquidation_complete(pos.qty, filled, exit_price):
+                logger.info(
+                    "[Force Close] Spot leg fully liquidated: %s %s @ %s (filled=%s)",
+                    pos.qty, pos.symbol, exit_price, filled,
                 )
-                filled_qty = float(spot_order.get("filled", 0.0) or 0.0)
-                spot_exit_price_idr = helpers.extract_fill_price(spot_order)
-                if filled_qty + max(1e-12, pos.qty * 1e-8) < pos.qty:
-                    order_id = str(spot_order.get("id", "") or "")
-                    if order_id:
-                        try:
-                            verified = await self.client.fetch_local_order(
-                                order_id, pos.symbol
-                            )
-                            if isinstance(verified, dict):
-                                filled_qty = float(verified.get("filled", 0.0) or 0.0)
-                                spot_exit_price_idr = (
-                                    helpers.extract_fill_price(verified)
-                                    or spot_exit_price_idr
-                                )
-                        except Exception:
-                            logger.exception(
-                                f"[Force Close] cannot verify spot sell {order_id} for {pair_key}"
-                            )
-                if (
-                    filled_qty + max(1e-12, pos.qty * 1e-8) >= pos.qty
-                    and spot_exit_price_idr > 0
-                ):
-                    logger.info(
-                        f"[Force Close] Spot leg fully liquidated: {pos.qty} {pos.symbol} "
-                        f"@ {spot_exit_price_idr} (filled={filled_qty})"
-                    )
-                    return spot_exit_price_idr
-                logger.critical(
-                    f"[Force Close] partial/unverified spot liquidation for {pair_key}: "
-                    f"requested={pos.qty}, filled={filled_qty}; manual reconciliation required"
-                )
-
-            logger.critical(
-                f"[Force Close] FAILED to liquidate spot leg for {pair_key}. "
-                f"MANUAL INTERVENTION REQUIRED: {pos.qty} {pos.symbol} is UNHEDGED. Response: {spot_order}"
-            )
+                return exit_price
+            self._log_spot_liquidation_failure(pair_key, pos, order, filled)
         except RetryExhausted:
-            logger.exception(
-                f"[Force Close] spot liquidation exhausted retries for {pair_key}"
-            )
+            logger.exception("[Force Close] spot liquidation exhausted retries for %s", pair_key)
         return 0.0
+
+    async def _submit_spot_liquidation(self, pair_key: str, pos):
+        sequence = self._next_order_seq()
+        client_order_id = build_client_order_id(pair_key, "force-liq", sequence)
+        return await helpers.retry_with_backoff(
+            lambda: self.client.place_local_market_sell(
+                pos.symbol, pos.qty, client_order_id=client_order_id
+            ),
+            max_retries=4,
+            base_delay=0.5,
+            label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
+        )
+
+    def _record_spot_liquidation_order(self, pair_key: str, pos, order: dict) -> None:
+        self.supabase.order(
+            pair_key, "force_close", pos.local_exchange, "spot",
+            pos.symbol, order,
+            client_order_id=order.get("clientOrderId"),
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
+
+    async def _verify_spot_liquidation_fill(self, pair_key: str, pos, order: dict) -> tuple[float, float]:
+        filled = float(order.get("filled", 0.0) or 0.0)
+        exit_price = helpers.extract_fill_price(order)
+        if self._spot_liquidation_complete(pos.qty, filled, exit_price):
+            return filled, exit_price
+        order_id = str(order.get("id", "") or "")
+        if not order_id:
+            return filled, exit_price
+        try:
+            verified = await self.client.fetch_local_order(order_id, pos.symbol)
+        except Exception:
+            logger.exception("[Force Close] cannot verify spot sell %s for %s", order_id, pair_key)
+            return filled, exit_price
+        if not isinstance(verified, dict):
+            return filled, exit_price
+        filled = float(verified.get("filled", 0.0) or 0.0)
+        exit_price = helpers.extract_fill_price(verified) or exit_price
+        return filled, exit_price
+
+    @staticmethod
+    def _spot_liquidation_complete(requested: float, filled: float, exit_price: float) -> bool:
+        tolerance = max(1e-12, requested * 1e-8)
+        return filled + tolerance >= requested and exit_price > 0
+
+    def _log_spot_liquidation_failure(self, pair_key: str, pos, order, filled: float) -> None:
+        logger.critical(
+            "[Force Close] partial/unverified spot liquidation for %s: requested=%s filled=%s; "
+            "manual reconciliation required. Response: %r",
+            pair_key, pos.qty, filled, order,
+        )
 
     async def _resolve_force_close_prices(self, pair_key: str, pos, spot_exit_price_idr: float):
         """Returns (current_ask_usdt, usdt_rate, current_spot_bid_idr) for PnL accounting."""
