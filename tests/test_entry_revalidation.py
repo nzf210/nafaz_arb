@@ -1,3 +1,20 @@
+"""Entry signal freshness, spread revalidation, and IDR FX guards."""
+
+import asyncio
+import json
+import re
+import time
+
+from executor.models import PositionState
+
+import fakeredis.aioredis as fake_aioredis
+import pytest
+
+from executor.config import ExecutorConfig
+from executor.engine import ArbitrageEngine
+
+from tests.conftest import MockExchangeClient, _entry_order_info, _fresh_signal_payload, _revalidation_payload, engine, fake_redis, mock_client
+
 @pytest.mark.asyncio
 async def test_entry_revalidation_rejects_collapsed_spread(engine, fake_redis, mock_client):
     """Global bid drops after snapshot: live spread < floor, entry must be rejected."""
