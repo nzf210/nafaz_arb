@@ -502,6 +502,7 @@ class ExitMixin:
             price. The limit is a conservative fallback when metadata is absent.
             """
             exit_price_idr = float(order_info.get("price", 0.0))
+            cumulative_spot_cost = None
             if isinstance(spot_order, dict):
                 prior_cost = float(order_info.get("closed_spot_cost_idr", 0.0) or 0.0)
                 cumulative_cost = spot_order.get("cost")
@@ -512,11 +513,12 @@ class ExitMixin:
                         cumulative_cost = None
                 if cumulative_cost is not None:
                     try:
-                        incremental_cost = float(cumulative_cost) - prior_cost
+                        cumulative_spot_cost = float(cumulative_cost)
+                        incremental_cost = cumulative_spot_cost - prior_cost
                         if incremental_cost > 0 and unclosed_delta > 0:
                             exit_price_idr = incremental_cost / unclosed_delta
                     except (TypeError, ValueError):
-                        pass
+                        cumulative_spot_cost = None
                 elif spot_order.get("price") is not None:
                     try:
                         candidate = float(spot_order["price"])
@@ -632,12 +634,8 @@ class ExitMixin:
                 capital_usdt = unclosed_delta * short_entry_usdt
                 fees_usdt = capital_usdt * fee_pct
                 net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
-                if isinstance(spot_order, dict):
-                    cumulative_cost = spot_order.get("cost")
-                    if cumulative_cost is None and spot_order.get("average") is not None:
-                        cumulative_cost = float(spot_order["average"]) * float(spot_order.get("filled") or 0.0)
-                    if cumulative_cost is not None:
-                        order_info["closed_spot_cost_idr"] = float(cumulative_cost)
+                if cumulative_spot_cost is not None:
+                    order_info["closed_spot_cost_idr"] = cumulative_spot_cost
                 net_profit_idr = net_profit_usdt * usdt_rate
 
                 capital_usdt = unclosed_delta * short_entry_usdt
