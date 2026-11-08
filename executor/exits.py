@@ -213,7 +213,7 @@ class ExitMixin:
             window_ms = 900_000
             min_samples = 3
             min_span_ms = 30_000
-            key = f"arb:exit_slippage_samples:{pair_tag}"
+            key = f"arb:exit_slippage_samples:v2:{pair_tag}"
             try:
                 raw = await self.redis.lrange(key, 0, 19)
                 existing = []
