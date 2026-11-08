@@ -79,19 +79,32 @@ class RecoveredPositionMixin:
         if not isinstance(position, dict):
             raise ValueError("invalid position payload")
         info = position.get("info") or {}
-        side = str(
+        side = RecoveredPositionMixin._position_side(position, info)
+        contracts = position.get("contracts")
+        if contracts is not None:
+            return RecoveredPositionMixin._parse_contract_position(position, contracts, side)
+        return RecoveredPositionMixin._parse_signed_position(position, info, side)
+
+    @staticmethod
+    def _position_side(position: dict, info: dict) -> str:
+        return str(
             position.get("side") or position.get("positionSide")
             or info.get("posSide") or info.get("positionSide") or ""
         ).lower()
-        contracts = position.get("contracts")
-        if contracts is not None:
-            size = abs(float(contracts)) * abs(float(position.get("contractSize") or 1.0))
-            return size, side
+
+    @staticmethod
+    def _parse_contract_position(position: dict, contracts, side: str) -> tuple[float, str]:
+        size = abs(float(contracts)) * abs(float(position.get("contractSize") or 1.0))
+        return size, side
+
+    @staticmethod
+    def _parse_signed_position(position: dict, info: dict, side: str) -> tuple[float, str]:
         raw_amount = position.get("positionAmt", info.get("positionAmt"))
         if raw_amount is None:
             raise ValueError("position size unavailable")
         signed = float(raw_amount)
-        return abs(signed), side or ("short" if signed < 0 else "long")
+        resolved_side = side or ("short" if signed < 0 else "long")
+        return abs(signed), resolved_side
 
     async def _mark_recovered_positions_required(
         self, items, global_symbol: str, actual_qty, reason: str,
