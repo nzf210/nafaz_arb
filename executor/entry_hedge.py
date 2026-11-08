@@ -38,119 +38,117 @@ class EntryHedgeMixin:
         """Execute market short on global exchange and persist position state."""
         global_symbol = order_info["global_symbol"]
         try:
-            # Use the live futures ask as the expected short fill, never the spot price.
-            expected_short_price = float(order_info.get("global_ask_usdt", 0.0) or 0.0)
-            if expected_short_price <= 0 and usdt_rate > 0:
-                expected_short_price = price_idr / usdt_rate
-
+            expected_price = self._expected_short_entry_price(order_info, price_idr, usdt_rate)
             await self._assert_hedge_slippage_within_limit(
-                pair_tag, order_info, unhedged_delta, expected_short_price
+                pair_tag, order_info, unhedged_delta, expected_price
             )
-
-            # CORE RULE 2: ONLY Short 1x Futures (Market Sell)
-            hedge_coid = build_client_order_id(
-                pair_tag, "hedge", self._next_order_seq()
+            hedge_coid = build_client_order_id(pair_tag, "hedge", self._next_order_seq())
+            short_order, actual_qty = await self._place_and_validate_short_hedge(
+                global_symbol, unhedged_delta, expected_price, hedge_coid
             )
-            short_order = await self.client.open_global_short_market(
-                global_symbol,
-                unhedged_delta,
-                price=expected_short_price,
-                client_order_id=hedge_coid,
+            await self._persist_hedged_position(
+                pair_tag, order_info, actual_qty, short_order, price_idr, usdt_rate, hedge_coid
             )
-            if not isinstance(short_order, dict):
-                raise ValueError(
-                    "futures hedge returned no verifiable order payload; "
-                    "reconciliation required"
-                )
-            hedge_status = str(short_order.get("status", "")).lower()
-            if hedge_status not in ("closed", "filled"):
-                raise ValueError(
-                    f"futures hedge is not terminal (status={hedge_status})"
-                )
-            try:
-                actual_hedged_qty = float(short_order.get("filled") or 0.0)
-            except (TypeError, ValueError):
-                actual_hedged_qty = 0.0
-            qty_tolerance = max(1e-12, unhedged_delta * 1e-8)
-            if actual_hedged_qty + qty_tolerance < unhedged_delta:
-                raise ValueError(
-                    f"futures hedge fill incomplete: requested={unhedged_delta}, "
-                    f"filled={actual_hedged_qty}; spot rollback will be guarded by "
-                    "an authoritative futures-position check"
-                )
-            if actual_hedged_qty > unhedged_delta + qty_tolerance:
-                raise ValueError(
-                    f"futures hedge overfilled: requested={unhedged_delta}, "
-                    f"filled={actual_hedged_qty}; manual reconciliation required"
-                )
-
-            order_info["hedged_short_qty"] += actual_hedged_qty
-            self._record_hedged_position(
-                pair_tag, order_info, actual_hedged_qty, short_order, price_idr, usdt_rate
-            )
-            self.supabase.order(
-                pair_tag,
-                "futures_entry",
-                order_info.get("global_exchange", ""),
-                "perpetual",
-                global_symbol,
-                short_order,
-                client_order_id=hedge_coid,
-                reduce_only=False,
-                is_mock=bool(getattr(self.config, "mock_mode", False)),
-            )
-            self.supabase.position_opened(
-                pair_tag,
-                self.active_positions[pair_tag],
-                getattr(self, "_pair_infos", {}).get(pair_tag),
-                is_mock=bool(getattr(self.config, "mock_mode", False)),
-            )
-
-            active_key = f"arb:active_pos:{pair_tag}"
-            await self.redis.set(
-                active_key,
-                json.dumps(self.active_positions[pair_tag].to_dict()),
-            )
-            self.states[pair_tag] = PositionState.HEDGED_ACTIVE
-
-            # Publish event to arb:trade_events for Telegram Bot
-            pos = self.active_positions[pair_tag]
-            open_msg = {
-                "event": "POSITION_OPENED",
-                "local_exchange": pos.local_exchange,
-                "global_exchange": pos.global_exchange,
-                "symbol": pos.symbol,
-                "qty": pos.qty,
-                "entry_price_idr": pos.entry_price_idr,
-                "short_entry_usdt": pos.short_entry_usdt,
-                "is_mock": getattr(self.config, "mock_mode", False),
-                "timestamp_ms": int(time.time() * 1000),
-            }
-            await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(open_msg))
-            self.supabase.event(
-                "POSITION_OPENED",
-                pair_key=pair_tag,
-                is_mock=open_msg["is_mock"],
-                occurred_at_ms=open_msg["timestamp_ms"],
-                payload=open_msg,
-            )
-        except Exception as he:
-            logger.critical(
-                f"[State 2 CRITICAL] Failed to execute instant short hedge for {pair_tag}: {he}"
-            )
-            global_exchange = str(order_info.get("global_exchange", ""))
-            if global_exchange:
-                self._record_order_failure(
-                    global_exchange, "hedge order placement failed"
-                )
-            # The spot leg is already filled but unhedged: roll it back immediately.
-            await self._rollback_hedge_failure(
-                pair_tag, order_info, unhedged_delta, price_idr, usdt_rate, he
+            await self._publish_position_opened_event(pair_tag)
+        except Exception as error:
+            await self._handle_entry_hedge_failure(
+                pair_tag, order_info, unhedged_delta, price_idr, usdt_rate, error
             )
         else:
             global_exchange = str(order_info.get("global_exchange", ""))
             if global_exchange:
                 self._record_order_success(global_exchange)
+
+    @staticmethod
+    def _expected_short_entry_price(order_info: dict, price_idr: float, usdt_rate: float) -> float:
+        expected = float(order_info.get("global_ask_usdt", 0.0) or 0.0)
+        if expected <= 0 and usdt_rate > 0:
+            expected = price_idr / usdt_rate
+        return expected
+
+    async def _place_and_validate_short_hedge(
+        self, symbol: str, quantity: float, expected_price: float, client_order_id: str
+    ) -> tuple[dict, float]:
+        order = await self.client.open_global_short_market(
+            symbol, quantity, price=expected_price, client_order_id=client_order_id
+        )
+        if not isinstance(order, dict):
+            raise ValueError("futures hedge returned no verifiable order payload; reconciliation required")
+        status = str(order.get("status", "")).lower()
+        if status not in ("closed", "filled"):
+            raise ValueError(f"futures hedge is not terminal (status={status})")
+        try:
+            filled = float(order.get("filled") or 0.0)
+        except (TypeError, ValueError):
+            filled = 0.0
+        tolerance = max(1e-12, quantity * 1e-8)
+        if filled + tolerance < quantity:
+            raise ValueError(
+                f"futures hedge fill incomplete: requested={quantity}, filled={filled}; "
+                "spot rollback will be guarded by an authoritative futures-position check"
+            )
+        if filled > quantity + tolerance:
+            raise ValueError(
+                f"futures hedge overfilled: requested={quantity}, filled={filled}; manual reconciliation required"
+            )
+        return order, filled
+
+    async def _persist_hedged_position(
+        self, pair_tag: str, order_info: dict, actual_qty: float,
+        short_order: dict, price_idr: float, usdt_rate: float, hedge_coid: str,
+    ) -> None:
+        order_info["hedged_short_qty"] += actual_qty
+        self._record_hedged_position(
+            pair_tag, order_info, actual_qty, short_order, price_idr, usdt_rate
+        )
+        global_symbol = order_info["global_symbol"]
+        self.supabase.order(
+            pair_tag, "futures_entry", order_info.get("global_exchange", ""),
+            "perpetual", global_symbol, short_order,
+            client_order_id=hedge_coid, reduce_only=False,
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
+        self.supabase.position_opened(
+            pair_tag, self.active_positions[pair_tag],
+            getattr(self, "_pair_infos", {}).get(pair_tag),
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
+        await self.redis.set(
+            f"arb:active_pos:{pair_tag}",
+            json.dumps(self.active_positions[pair_tag].to_dict()),
+        )
+        self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+
+    async def _publish_position_opened_event(self, pair_tag: str) -> None:
+        pos = self.active_positions[pair_tag]
+        message = {
+            "event": "POSITION_OPENED",
+            "local_exchange": pos.local_exchange,
+            "global_exchange": pos.global_exchange,
+            "symbol": pos.symbol,
+            "qty": pos.qty,
+            "entry_price_idr": pos.entry_price_idr,
+            "short_entry_usdt": pos.short_entry_usdt,
+            "is_mock": getattr(self.config, "mock_mode", False),
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(message))
+        self.supabase.event(
+            "POSITION_OPENED", pair_key=pair_tag, is_mock=message["is_mock"],
+            occurred_at_ms=message["timestamp_ms"], payload=message,
+        )
+
+    async def _handle_entry_hedge_failure(
+        self, pair_tag: str, order_info: dict, quantity: float,
+        price_idr: float, usdt_rate: float, error: Exception,
+    ) -> None:
+        logger.critical("[State 2 CRITICAL] Failed to execute instant short hedge for %s: %s", pair_tag, error)
+        global_exchange = str(order_info.get("global_exchange", ""))
+        if global_exchange:
+            self._record_order_failure(global_exchange, "hedge order placement failed")
+        await self._rollback_hedge_failure(
+            pair_tag, order_info, quantity, price_idr, usdt_rate, error
+        )
 
     @staticmethod
     def _resolve_short_entry_usdt(short_order: Dict[str, Any]) -> float:
