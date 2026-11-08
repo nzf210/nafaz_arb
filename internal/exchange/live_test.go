@@ -321,3 +321,17 @@ func TestMatchMarketsMultiplePerpExchanges(t *testing.T) {
 		t.Fatalf("expected 4 matched pairs (2 spot * 2 perp), got %d", len(pairs))
 	}
 }
+
+func TestLiveAdapterOpenExposuresFailsClosed(t *testing.T) {
+	adapter := NewLiveAdapter()
+	exposures, err := adapter.OpenExposures(context.Background())
+	if err == nil {
+		t.Fatal("live exposure inspection must not claim an empty account while authenticated readers are unavailable")
+	}
+	if !strings.Contains(err.Error(), "open-order/position inspection is not implemented") {
+		t.Fatalf("unexpected exposure inspection error: %v", err)
+	}
+	if len(exposures) != 0 {
+		t.Fatalf("unavailable exposure inspection must not return partial data: %+v", exposures)
+	}
+}
