@@ -94,6 +94,10 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 		return result, false, fmt.Errorf("perpetual market discovery: %w", err)
 	}
 	result.TotalMarkets = len(spot) + len(perp)
+	allPairs := exchange.MatchMarketsWithSynthetic(spot, perp, s.cfg.QuoteAssets, true)
+	if !s.cfg.EnableSyntheticIDR && containsIDRSpotPair(allPairs) {
+		return result, false, fmt.Errorf("IDR Spot markets discovered but enable_synthetic_idr=false; refusing mixed IDR/USDT price calculation")
+	}
 	pairs := exchange.MatchMarketsWithSynthetic(spot, perp, s.cfg.QuoteAssets, s.cfg.EnableSyntheticIDR)
 	if len(s.cfg.ExcludedSymbols) > 0 {
 		pairs = s.filterExcludedSymbols(pairs)
@@ -104,10 +108,6 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 	// IDR/BIDR spot books can only be compared with USDT perpetual books
 	// after a live USDT/IDR quote has been verified. Fail the scan before
 	// evaluating any pair rather than mixing valid and invalid FX pricing.
-	if containsIDRSpotPair(pairs) && !s.cfg.EnableSyntheticIDR {
-		return result, false, fmt.Errorf("IDR Spot markets discovered but enable_synthetic_idr=false; refusing mixed IDR/USDT price calculation")
-	}
-
 	if containsIDRSpotPair(pairs) {
 		fxRate, ok := s.getUSDTIDRRate(ctx)
 		if !ok {
