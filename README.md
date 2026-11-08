@@ -247,6 +247,11 @@ existing deployment keeps working unchanged unless it opts in.
 | `exchange_error_window_seconds` | — | `300` | Maintenance-detection window (P2-05). |
 | `exchange_error_rate_threshold` | — | `0.5` | Error ratio that marks a venue unavailable for the rest of the window. |
 | `exchange_error_min_requests` | — | `5` | Minimum observations before the ratio is trusted. |
+| `okx_rate_limit.rate_per_2s` | `OKX_RATE_PER_2S` | `15` | Shared OKX public-REST budget (requests per 2s) for endpoints without a specific cap. All OKX calls go through one process-wide limiter. |
+| `okx_rate_limit.books_per_2s` | `OKX_BOOKS_PER_2S` | `15` | Per-endpoint budget for `/api/v5/market/books` (order books). |
+| `okx_rate_limit.instruments_per_2s` | `OKX_INSTRUMENTS_PER_2S` | `5` | Per-endpoint budget for `/api/v5/public/instruments`. |
+| `okx_rate_limit.funding_per_2s` | `OKX_FUNDING_PER_2S` | `10` | Per-endpoint budget for `/api/v5/public/funding-rate`. |
+| `okx_rate_limit.max_concurrent` | `OKX_MAX_CONCURRENT` | `3` | Hard cap on simultaneous OKX requests, regardless of worker count. 429/OKX `50011` responses are retried up to 3 times with exponential backoff + jitter, honouring `Retry-After`. Live counters are exposed at `GET /api/v1/scanner/okx/rate-limit`. |
 
 **Websocket caveat:** only the OKX public `books5` channel is fully covered today.
 Indodax and MEXC spot need per-symbol subscriptions that the scanner does not yet

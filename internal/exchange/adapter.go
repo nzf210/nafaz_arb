@@ -23,6 +23,12 @@ type RateProvider interface {
 	USDTIDRRate(context.Context) (float64, error)
 }
 
+// OKXMetricsProvider is an optional interface adapters implement to expose
+// their OKX rate-limiter observability. Adapters without it report nothing.
+type OKXMetricsProvider interface {
+	OKXMetrics() OKXMetricsSnapshot
+}
+
 func isEligibleMarket(m domain.Market, marketType string, allowedQuotes map[string]bool) bool {
 	return m.Active && strings.EqualFold(m.MarketType, marketType) && allowedQuotes[strings.ToUpper(m.QuoteAsset)]
 }

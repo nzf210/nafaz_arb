@@ -49,6 +49,13 @@ type LiveAdapter struct {
 	wsMaxAge      time.Duration
 	wsClient      *WSClient
 	wsStopCleanup func()
+
+	// okxLimiter is the process-wide gate for OKX public REST. It is created
+	// lazily on the first OKX request (okxLimiterOnce) so adapters that never
+	// touch OKX pay nothing.
+	okxLimiter     *okxLimiter
+	okxLimiterOnce sync.Once
+	okxLimiterCfg  OKXLimiterConfig
 }
 
 func NewLiveAdapter() *LiveAdapter {
@@ -94,6 +101,22 @@ func NewLiveAdapter() *LiveAdapter {
 		mexcSpotBaseURL:   "https://api.mexc.com",
 		contractSizes:     make(map[string]float64),
 	}
+}
+
+// SetOKXLimiterConfig installs shared-limiter settings. Call before the first
+// OKX request; settings after the limiter has been created have no effect.
+func (l *LiveAdapter) SetOKXLimiterConfig(cfg OKXLimiterConfig) {
+	l.okxLimiterCfg = cfg
+}
+
+// OKXMetrics returns the OKX rate-limiter counters for observability. It
+// returns an empty snapshot when no OKX request has been made yet, so callers
+// never see a nil map.
+func (l *LiveAdapter) OKXMetrics() OKXMetricsSnapshot {
+	l.okxLimiterOnce.Do(func() {
+		l.okxLimiter = newOKXLimiter(l.okxLimiterCfg)
+	})
+	return l.okxLimiter.metrics.snapshot()
 }
 
 // SetBaseURLs allows overriding API base URLs for testing.

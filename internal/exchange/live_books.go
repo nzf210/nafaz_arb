@@ -228,14 +228,11 @@ func cleanSymbol(symbol string) string {
 
 func (l *LiveAdapter) fetchOKXOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
 	rawSymbol := cleanSymbol(symbol)
-	endpoint := fmt.Sprintf("%s/api/v5/market/books?instId=%s&sz=20", l.okxBaseURL, url.QueryEscape(rawSymbol))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("okx depth req: %w", err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
+	path := fmt.Sprintf("/api/v5/market/books?instId=%s&sz=20", url.QueryEscape(rawSymbol))
 
-	resp, err := l.client.Do(req)
+	resp, err := l.okxDo(ctx, path, func() (*http.Request, error) {
+		return l.newOKXRequest(ctx, path)
+	})
 	if err != nil {
 		return domain.OrderBook{}, fmt.Errorf("okx depth request: %w", err)
 	}

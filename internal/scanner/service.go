@@ -56,6 +56,11 @@ func New(cfg config.Config, adapter exchange.ReadOnlyAdapter) *Service {
 	}
 }
 
+// Adapter exposes the underlying exchange adapter (for observability hooks).
+func (s *Service) Adapter() exchange.ReadOnlyAdapter {
+	return s.adapter
+}
+
 // SetFundingWorker sets the background funding rate worker.
 func (s *Service) SetFundingWorker(w *exchange.FundingWorker) {
 	s.mu.Lock()

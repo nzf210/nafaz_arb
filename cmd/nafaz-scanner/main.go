@@ -36,6 +36,13 @@ func main(){
 		if cfg.EnableWebSocketFeed {
 			live.EnableWebSocketFeed(context.Background(), time.Duration(cfg.WebSocketBookMaxAgeSeconds)*time.Second)
 		}
+		live.SetOKXLimiterConfig(exchange.OKXLimiterConfig{
+			DefaultRatePer2s:     cfg.OKXRateLimit.RatePer2s,
+			BooksRatePer2s:       cfg.OKXRateLimit.BooksPer2s,
+			InstrumentsRatePer2s: cfg.OKXRateLimit.InstrPer2s,
+			FundingRatePer2s:     cfg.OKXRateLimit.FundingPer2s,
+			MaxConcurrent:        cfg.OKXRateLimit.MaxConcurrent,
+		})
 		adapter = live
 	case "MOCK":
 		adapter = exchange.NewMockAdapter()

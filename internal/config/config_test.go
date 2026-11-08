@@ -470,3 +470,45 @@ func TestRejectsInvalidFeeProfile(t *testing.T) {
 		t.Fatalf("expected fee profile validation error, got %v", err)
 	}
 }
+
+func TestOKXRateLimitDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"capital_total":100,
+		"allocation_per_pair":0.5
+	}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OKXRateLimit.RatePer2s != 15 {
+		t.Fatalf("okx_rate_limit.rate_per_2s default = %v, want 15", cfg.OKXRateLimit.RatePer2s)
+	}
+	if cfg.OKXRateLimit.MaxConcurrent != 3 {
+		t.Fatalf("okx_rate_limit.max_concurrent default = %d, want 3", cfg.OKXRateLimit.MaxConcurrent)
+	}
+}
+
+func TestOKXRateLimitEnvOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"capital_total":100,
+		"allocation_per_pair":0.5
+	}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OKX_RATE_PER_2S", "7")
+	t.Setenv("OKX_MAX_CONCURRENT", "2")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OKXRateLimit.RatePer2s != 7 {
+		t.Fatalf("OKX_RATE_PER_2S override = %v, want 7", cfg.OKXRateLimit.RatePer2s)
+	}
+	if cfg.OKXRateLimit.MaxConcurrent != 2 {
+		t.Fatalf("OKX_MAX_CONCURRENT override = %d, want 2", cfg.OKXRateLimit.MaxConcurrent)
+	}
+}

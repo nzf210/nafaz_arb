@@ -14,6 +14,7 @@ import (
 
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange"
 	"github.com/nafaz/spot-perp-scanner/internal/history"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
@@ -108,6 +109,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/scanner/latest", s.latestScan)
 	mux.HandleFunc("/api/v1/scanner/opportunities/history", s.opportunityHistory)
 	mux.HandleFunc("/api/v1/scanner/opportunities/metrics", s.opportunityMetrics)
+	mux.HandleFunc("/api/v1/scanner/okx/rate-limit", s.okxRateLimitMetrics)
 	mux.HandleFunc("/api/v1/executor/status", s.executorStatus)
 
 	// Keep local MOCK development frictionless, but require a constant-time
@@ -273,6 +275,17 @@ func (s *Server) OperationalStatus() OperationalStatus {
 		status.Status = "scanning"
 	}
 	return status
+}
+
+// okxRateLimitMetrics serves the shared OKX limiter's per-endpoint counters.
+func (s *Server) okxRateLimitMetrics(w http.ResponseWriter, r *http.Request) {
+	adapter := s.scanner.Adapter()
+	provider, ok := adapter.(exchange.OKXMetricsProvider)
+	if !ok {
+		write(w, exchange.OKXMetricsSnapshot{Endpoints: map[string]exchange.OKXEndpointMetrics{}})
+		return
+	}
+	write(w, provider.OKXMetrics())
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

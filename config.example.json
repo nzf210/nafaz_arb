@@ -11,6 +11,13 @@
     "funding_subsidy_floor_pct": 0.08,
     "local_price_tick": 1.0,
     "global_futures_exchange": "okx",
+    "okx_rate_limit": {
+        "rate_per_2s": 15,
+        "books_per_2s": 15,
+        "instruments_per_2s": 5,
+        "funding_per_2s": 10,
+        "max_concurrent": 3
+    },
     "redis": {
         "enabled": false,
         "addr": "localhost:6380",

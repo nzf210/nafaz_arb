@@ -37,6 +37,16 @@ type ExchangeFeeProfile struct {
 	PerpTakerFeePct *float64 `json:"perp_taker_fee_pct,omitempty"`
 }
 
+// OKXRateLimitConfig tunes the shared OKX public-REST limiter. Zero values
+// fall back to the conservative built-in defaults.
+type OKXRateLimitConfig struct {
+	RatePer2s     float64 `json:"rate_per_2s"`
+	BooksPer2s    float64 `json:"books_per_2s"`
+	InstrPer2s    float64 `json:"instruments_per_2s"`
+	FundingPer2s  float64 `json:"funding_per_2s"`
+	MaxConcurrent int     `json:"max_concurrent"`
+}
+
 type Config struct {
 	Mode                          string         `json:"mode"`
 	ExecutionMode                 string         `json:"execution_mode"`
@@ -95,6 +105,7 @@ type Config struct {
 	LocalPriceTick                float64        `json:"local_price_tick"`
 	GlobalFuturesExchange         string         `json:"global_futures_exchange"`
 	EnableExecutorSignals         bool           `json:"enable_executor_signals"`
+	OKXRateLimit                  OKXRateLimitConfig `json:"okx_rate_limit"`
 	SupabaseURL                   string         `json:"supabase_url,omitempty"`
 	SupabaseKey                   string         `json:"supabase_key,omitempty"`
 	Telegram                      TelegramConfig `json:"telegram"`
@@ -151,6 +162,12 @@ func (c *Config) setDefaults() {
 	c.LocalPriceTick = defaultFloat(c.LocalPriceTick, 1.0)
 	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "binance")
 	c.Redis.Addr = defaultString(c.Redis.Addr, "localhost:6380")
+	// OKX public-REST limiter: conservative shared budgets for all OKX calls.
+	c.OKXRateLimit.RatePer2s = defaultFloat(c.OKXRateLimit.RatePer2s, 15)
+	c.OKXRateLimit.BooksPer2s = defaultFloat(c.OKXRateLimit.BooksPer2s, 15)
+	c.OKXRateLimit.InstrPer2s = defaultFloat(c.OKXRateLimit.InstrPer2s, 5)
+	c.OKXRateLimit.FundingPer2s = defaultFloat(c.OKXRateLimit.FundingPer2s, 10)
+	c.OKXRateLimit.MaxConcurrent = defaultInt(c.OKXRateLimit.MaxConcurrent, 3)
 }
 
 func defaultString(val, fallback string) string {
@@ -347,6 +364,11 @@ func (c *Config) applyEnvOverrides() {
 	setEnvInt(&c.WebSocketBookMaxAgeSeconds, "WEBSOCKET_BOOK_MAX_AGE_SECONDS")
 	setEnvString(&c.GlobalFuturesExchange, "GLOBAL_FUTURES_EXCHANGE")
 	setEnvBool(&c.EnableExecutorSignals, "ENABLE_EXECUTOR_SIGNALS")
+	setEnvFloat(&c.OKXRateLimit.RatePer2s, "OKX_RATE_PER_2S")
+	setEnvFloat(&c.OKXRateLimit.BooksPer2s, "OKX_BOOKS_PER_2S")
+	setEnvFloat(&c.OKXRateLimit.InstrPer2s, "OKX_INSTRUMENTS_PER_2S")
+	setEnvFloat(&c.OKXRateLimit.FundingPer2s, "OKX_FUNDING_PER_2S")
+	setEnvInt(&c.OKXRateLimit.MaxConcurrent, "OKX_MAX_CONCURRENT")
 	setEnvString(&c.SupabaseURL, "SUPABASE_URL")
 	setEnvString(&c.SupabaseKey, "SUPABASE_KEY")
 	setEnvSlice(&c.ExcludedSymbols, "EXCLUDED_SYMBOLS")
