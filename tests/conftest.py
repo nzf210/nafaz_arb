@@ -43,13 +43,13 @@ class MockExchangeClient:
                 "timestamp": int(time.time() * 1000),
             },
             "btc_usdt": {
-                "bid": 65_000.0,
-                "ask": 65_010.0,
+                "bid": 65_100.0,
+                "ask": 65_110.0,
                 "timestamp": int(time.time() * 1000),
             },
             "btcusdt": {
-                "bid": 65_000.0,
-                "ask": 65_010.0,
+                "bid": 65_100.0,
+                "ask": 65_110.0,
                 "timestamp": int(time.time() * 1000),
             },
         }
