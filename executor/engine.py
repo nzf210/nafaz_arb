@@ -159,10 +159,15 @@ class ArbitrageEngine(
         orders_reader = getattr(self.client, "fetch_account_open_orders_report", None)
         if not callable(positions_reader) or not callable(orders_reader):
             reason = "account-wide positions/open-orders readers are unavailable"
-            for venue in getattr(self.client, "perpetual_clients", {}):
-                self._exchange_halted[venue] = reason
-            for venue in getattr(self.client, "spot_clients", {}):
-                self._exchange_halted[venue] = reason
+            perpetual_venues = set(getattr(self.client, "perpetual_clients", {}) or {})
+            spot_venues = set(getattr(self.client, "spot_clients", {}) or {})
+            if not perpetual_venues:
+                perpetual_venues.add(str(getattr(self.config, "global_exchange_name", "") or "").lower())
+            if not spot_venues:
+                spot_venues.add(str(getattr(self.config, "local_exchange_name", "") or "").lower())
+            for venue in perpetual_venues | spot_venues:
+                if venue:
+                    self._exchange_halted[venue] = reason
             logger.critical(f"[Reconciliation] {reason}; all live entries blocked")
             return
 
