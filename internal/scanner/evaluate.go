@@ -100,13 +100,31 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 	isSynthetic := s.cfg.EnableSyntheticIDR && isIDRQuote
 	var fxRate float64
 	fxLive := false
-	if isSynthetic || isIDRQuote {
+	if isIDRQuote {
+		// IDR/BIDR prices must be converted with a fresh live USDT/IDR rate.
+		// Never substitute the configured example rate or a cached rate for
+		// live spread calculations.
 		fxRate, fxLive = s.getUSDTIDRRate(ctx)
+		if !fxLive {
+			log.Printf("warning: skipping %s/%s - live USDT/IDR ticker unavailable", sm.BaseAsset, sm.QuoteAsset)
+			return evalResult{
+				err: fmt.Errorf("%s/%s (%s vs %s): USDT/IDR live ticker unavailable - IDR pair skipped",
+					sm.BaseAsset, sm.QuoteAsset, sm.Exchange, pm.Exchange),
+				exchangeMetrics: exchangeMetrics,
+			}
+		}
+		if err := validateFXRateSanity(fxRate, s.cfg.SyntheticUSDTIDRRate, s.cfg.FXRateSanityPct); err != nil {
+			return evalResult{
+				err: fmt.Errorf("%s/%s (%s vs %s): %w", sm.BaseAsset, sm.QuoteAsset, sm.Exchange, pm.Exchange, err),
+				exchangeMetrics: exchangeMetrics,
+			}
+		}
 		if isSynthetic {
 			sb = normalizeOrderBookCurrency(rawSB, fxRate)
 		}
 	} else {
-		fxRate, fxLive = s.getUSDTIDRRate(ctx)
+		// Direct USDT/USDC pairs do not depend on the IDR FX endpoint.
+		fxRate = s.lastKnownFXRate()
 	}
 	if !fxLive && isIDRQuote {
 		// IDR pairs must never trade on a stale, synthetic, or hardcoded rate:
