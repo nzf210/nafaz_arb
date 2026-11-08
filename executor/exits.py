@@ -568,10 +568,18 @@ class ExitMixin:
                     )
                 closed_trade = {
                     "trade_id": f"trade-{int(time.time()*1000)}",
+                    "pair_key": pair_tag,
+                    "position_id": pos.position_id,
                     "local_exchange": pos.local_exchange,
                     "global_exchange": pos.global_exchange,
+                    "global_symbol": self._resolve_global_symbol(pos.symbol),
                     "symbol": pos.symbol,
                     "qty": unclosed_delta,
+                    "remaining_qty": max(0.0, pos.qty),
+                    "opened_at_ms": pos.opened_at_ms,
+                    "entry_usdt_idr_rate": pos.entry_usdt_idr_rate,
+                    "exit_usdt_idr_rate": usdt_rate,
+                    "total_fees_usdt": fees_usdt,
                     "entry_price_idr": entry_price_idr,
                     "exit_price_idr": exit_price_idr,
                     "short_entry_usdt": short_entry_usdt,
@@ -625,6 +633,7 @@ class ExitMixin:
                 }
                 pipe.publish(self.ARB_TRADE_EVENTS, json.dumps(event_msg))
                 await pipe.execute()
+                await self._persist_supabase_event(event_msg)
 
                 self.record_realized_pnl(net_profit_usdt)
                 await self.publish_status()
