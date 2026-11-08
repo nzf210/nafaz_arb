@@ -267,7 +267,11 @@ which is why the feature ships off by default.
 
 **Kill switch:** publish `{"action": "on"}` to the `arb:kill_switch` Redis channel (or use the Telegram `/killswitch on` / `/killswitch off` commands). ON halts *all* new entries globally until an explicit OFF — it never auto-resets on a UTC rollover. Open positions continue to be managed.
 | `estimated_round_trip_fee_pct` | `ESTIMATED_ROUND_TRIP_FEE_PCT` | `0.001` | Fraction of position notional reserved for estimated round-trip fees across both legs; consistently used by sizing, floating PnL and realized PnL. |
-| `max_exit_slippage_pct` | `MAX_EXIT_SLIPPAGE_PCT` | `0.003` | Adverse futures-ask allowance (0.3% default) applied to the short buyback price when computing the spot profit floor. This is a buffer, not a guaranteed execution cap. |
+| `max_exit_slippage_pct` | `MAX_EXIT_SLIPPAGE_PCT` | `0.003` | Conservative fallback until enough fresh futures price samples exist. |
+| `min_exit_slippage_pct` | `MIN_EXIT_SLIPPAGE_PCT` | `0.001` | Lower bound for adaptive buffer (fraction; 0.001 = 0.1%). |
+| `max_dynamic_exit_slippage_pct` | `MAX_DYNAMIC_EXIT_SLIPPAGE_PCT` | `0.02` | Upper bound for adaptive buffer (fraction; 0.02 = 2%). |
+| `exit_volatility_multiplier` | `EXIT_VOLATILITY_MULTIPLIER` | `2.0` | Multiplier for the largest consecutive futures ask move in the rolling five-minute window. |
+| `exit_spread_multiplier` | `EXIT_SPREAD_MULTIPLIER` | `0.5` | Multiplier applied to current futures bid-ask spread. |
 | `private_stream_enabled` | `PRIVATE_STREAM_ENABLED` | `false` | Reads order/balance updates from a private feed cache before polling REST. Stale entries fall back to REST. This is the cache and fallback path, not a venue auth client. |
 | `private_stream_max_age_seconds` | `PRIVATE_STREAM_MAX_AGE_SECONDS` | `5.0` | How long a pushed order update is trusted before re-polling. |
 
@@ -314,3 +318,5 @@ The executor remains in paper mode by default (`EXECUTOR_MOCK_MODE=true`). Do no
 quote assets, balance permissions, and venue-specific order/funding/position behavior
 have all been validated in paper mode. Scanner LIVE mode and executor LIVE mode are
 separate switches and must be configured deliberately.
+
+The adaptive exit buffer is computed per position route from fresh futures bid/ask snapshots: half the current relative spread plus twice the largest consecutive ask-price move observed in the rolling five-minute sample window, clamped between the configured minimum and maximum. Up to 20 samples are retained in Redis with a 10-minute TTL. Until two valid observations are available, the configured `max_exit_slippage_pct` fallback is used. This reserve is not a hard market-order price cap or a profit guarantee.
