@@ -9,7 +9,6 @@ Extracted from executor/engine.py as a mixin.
 
 import json
 import logging
-import math
 import time
 from typing import Optional
 
@@ -35,13 +34,13 @@ class ExitFillMixin:
         )
         entry_price_idr = float(pos.entry_price_idr)
         short_entry_usdt = float(pos.short_entry_usdt)
-        usdt_rate, _ = await self._load_exit_market_snapshot(pair_tag, short_entry_usdt)
+        usdt_rate = await self._load_exit_usdt_idr_rate(pair_tag)
         logger.info(
             f"[State 4 Exit Execution] Local Limit Sell fill detected: sold_delta={unclosed_delta} "
             f"on {pair_tag}. Immediately closing Short via Market Buy (reduceOnly=True)!"
         )
         try:
-            close_order, global_symbol, client_order_id = await self._close_futures_short_for_exit(
+            close_order = await self._close_futures_short_for_exit(
                 pair_tag, pos, unclosed_delta
             )
             settlement = await self._settle_exit_fill(

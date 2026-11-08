@@ -28,6 +28,7 @@ class ExitSettlement:
     futures_pnl_usdt: float
     funding_usdt: float
     fees_usdt: float
+    usdt_idr_rate: float
 
 
 class ExitSettlementMixin:
@@ -67,23 +68,18 @@ class ExitSettlementMixin:
             raise ValueError("spot exit fill price unavailable; refusing to report fabricated PnL")
         return price
 
-    async def _load_exit_market_snapshot(self, pair_tag: str, short_entry_usdt: float) -> tuple[float, float]:
-        usdt_rate = helpers.FALLBACK_USDT_IDR_RATE
-        global_ask = float(self.last_pegged_global_ask.get(pair_tag, short_entry_usdt))
+    async def _load_exit_usdt_idr_rate(self, pair_tag: str) -> float:
         raw = await self.redis.get(f"arb:live_price:{pair_tag}")
         if not raw:
-            return usdt_rate, global_ask
+            return helpers.FALLBACK_USDT_IDR_RATE
         try:
             snapshot = json.loads(raw)
-            usdt_rate = float(snapshot.get("usdt_idr_rate", helpers.FALLBACK_USDT_IDR_RATE))
-            candidate = float(snapshot.get("global_best_ask_usdt", 0.0))
-            if candidate > 0:
-                global_ask = candidate
+            return float(snapshot.get("usdt_idr_rate", helpers.FALLBACK_USDT_IDR_RATE))
         except Exception:
-            logger.debug("could not parse latest exit market snapshot for %s", pair_tag, exc_info=True)
-        return usdt_rate, global_ask
+            logger.debug("could not parse latest exit FX snapshot for %s", pair_tag, exc_info=True)
+            return helpers.FALLBACK_USDT_IDR_RATE
 
-    async def _close_futures_short_for_exit(self, pair_tag: str, pos, qty: float) -> tuple[dict, str, str]:
+    async def _close_futures_short_for_exit(self, pair_tag: str, pos, qty: float) -> dict:
         global_symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
         client_order_id = build_client_order_id(pair_tag, "unwind", self._next_order_seq())
         order = await self.client.close_global_short_market(
@@ -95,7 +91,7 @@ class ExitSettlementMixin:
             global_symbol, order, client_order_id=client_order_id,
             reduce_only=True, is_mock=bool(getattr(self.config, "mock_mode", False)),
         )
-        return order, global_symbol, client_order_id
+        return order
 
     @staticmethod
     def _validate_futures_close_order(order: dict, requested_qty: float) -> None:
@@ -175,7 +171,7 @@ class ExitSettlementMixin:
         futures_margin = getattr(pos, "futures_margin_usdt", qty * short_entry_usdt) * fill_ratio
         return ExitSettlement(
             closed_trade, net_profit_usdt, net_profit_idr, spot_cost,
-            spot_pnl_usdt, futures_margin, futures_pnl_usdt, funding_usdt, fees_usdt,
+            spot_pnl_usdt, futures_margin, futures_pnl_usdt, funding_usdt, fees_usdt, usdt_rate,
         )
 
     def _log_realized_exit_pnl(self, pair_tag: str, net_profit: float, roi: float, spot_pnl: float, futures_pnl: float, funding: float, fees: float) -> None:
@@ -207,7 +203,7 @@ class ExitSettlementMixin:
             )
             balances = await self._get_balance_snapshot(
                 pair_tag=pair_tag, symbol=pos.symbol,
-                usdt_idr_rate=trade.get("usdt_idr_rate", helpers.FALLBACK_USDT_IDR_RATE),
+                usdt_idr_rate=settlement.usdt_idr_rate,
             )
             if balances is not None:
                 await self.redis.set(BALANCES_KEY, json.dumps(balances))
