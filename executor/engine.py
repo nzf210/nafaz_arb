@@ -929,6 +929,7 @@ class ArbitrageEngine(
                     local_exchange=pair_info.local_exchange,
                     global_exchange=pair_info.global_exchange,
                     max_ticker_age_ms=int(getattr(self.config, "entry_revalidation_max_age_ms", 2000) or 2000),
+                    max_price_deviation_pct=float(getattr(self.config, "max_entry_slippage_pct", 0.003) or 0.0),
                 )
             except Exception as preflight_error:
                 logger.warning(
