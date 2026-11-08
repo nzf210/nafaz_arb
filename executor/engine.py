@@ -38,6 +38,7 @@ from executor.exits import ExitMixin
 from executor.force_close import ForceCloseMixin
 from executor.risk import RiskMixin
 from executor.rollback import RollbackMixin
+from executor.supabase import SupabaseWriter
 
 logger = logging.getLogger("executor.engine")
 
@@ -122,6 +123,10 @@ class ArbitrageEngine(
         # Tasks
         self._tasks = []
 
+        # Best-effort audit persistence. Writes are queued and flushed by a
+        # background task, so an unreachable database can never delay a hedge.
+        self.supabase = SupabaseWriter(getattr(config, "supabase", None))
+
     async def initialize(self):
         """Initializes Redis connection and restores in-flight state from Redis."""
         if self.redis is None:
@@ -129,6 +134,9 @@ class ArbitrageEngine(
                 self.config.redis_url,
                 decode_responses=True,
             )
+        # Start the writer before recovery so positions restored from Redis are
+        # re-registered in Supabase instead of only existing in Redis.
+        await self.supabase.start()
         await self._recover_active_positions()
         await self._recover_pending_entry_orders()
         if not getattr(self.config, "mock_mode", False):
@@ -464,6 +472,12 @@ class ArbitrageEngine(
                     f"entry_idr={pos.entry_price_idr}, short_entry_usdt={pos.short_entry_usdt}, "
                     f"state={self.states[pair_tag].value}"
                 )
+                self.supabase.position_opened(
+                    pair_tag,
+                    pos,
+                    getattr(self, "_pair_infos", {}).get(pair_tag),
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
             except Exception as exc:
                 self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
                 self._mark_failed(
@@ -501,6 +515,8 @@ class ArbitrageEngine(
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        if self.supabase.enabled:
+            await self.supabase.close()
         if self.client:
             await self.client.close()
         if self.redis:
@@ -917,6 +933,16 @@ class ArbitrageEngine(
             )
             order_id = str(order.get("id", ""))
             self._record_order_success(pair_info.local_exchange)
+            self.supabase.order(
+                pair_tag,
+                "spot_entry",
+                pair_info.local_exchange,
+                "spot",
+                pair_info.local_symbol,
+                order,
+                client_order_id=entry_coid,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+            )
             self.states[pair_tag] = PositionState.ENTRY_PENDING
             self.pending_entry_orders[pair_tag] = {
                 "order_id": order_id,
@@ -1018,6 +1044,13 @@ class ArbitrageEngine(
             await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(payload, default=str))
         except Exception:
             logger.exception("failed to publish execution failure event for %s", pair_tag)
+        self.supabase.event(
+            "EXECUTION_FAILURE",
+            pair_key=pair_tag,
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+            occurred_at_ms=payload["timestamp_ms"],
+            payload=payload,
+        )
 
     @staticmethod
     def _utc_day() -> str:

@@ -92,6 +92,16 @@ class EntryMixin:
                 if await self._expire_stale_entry_order(pair_tag, order_info, order):
                     return
 
+                self.supabase.order(
+                    pair_tag,
+                    "spot_entry",
+                    order_info.get("local_exchange", ""),
+                    "spot",
+                    local_symbol,
+                    order,
+                    client_order_id=order_info.get("client_order_id"),
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
                 await self._handle_entry_fills(pair_tag, order_info, order)
                 await self._finalize_entry_order(pair_tag, order.get("status", ""))
 
@@ -158,6 +168,16 @@ class EntryMixin:
             # A fill can race the cancel. Hedge the final cumulative fill before
             # releasing the unused reservation.
             order_info["filled"] = float(order.get("filled", 0.0) or 0.0)
+            self.supabase.order(
+                pair_tag,
+                "spot_entry",
+                order_info.get("local_exchange", ""),
+                "spot",
+                local_symbol,
+                order,
+                client_order_id=order_info.get("client_order_id"),
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+            )
             await self._handle_entry_fills(pair_tag, order_info, order)
             if self.states.get(pair_tag) in (
                 PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
@@ -303,11 +323,14 @@ class EntryMixin:
                 )
 
                 # CORE RULE 2: ONLY Short 1x Futures (Market Sell)
+                hedge_coid = build_client_order_id(
+                    pair_tag, "hedge", self._next_order_seq()
+                )
                 short_order = await self.client.open_global_short_market(
                     global_symbol,
                     unhedged_delta,
                     price=expected_short_price,
-                    client_order_id=build_client_order_id(pair_tag, "hedge", self._next_order_seq()),
+                    client_order_id=hedge_coid,
                 )
                 if not isinstance(short_order, dict):
                     raise ValueError(
@@ -340,6 +363,23 @@ class EntryMixin:
                 self._record_hedged_position(
                     pair_tag, order_info, actual_hedged_qty, short_order, price_idr, usdt_rate
                 )
+                self.supabase.order(
+                    pair_tag,
+                    "futures_entry",
+                    order_info.get("global_exchange", ""),
+                    "perpetual",
+                    global_symbol,
+                    short_order,
+                    client_order_id=hedge_coid,
+                    reduce_only=False,
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
+                self.supabase.position_opened(
+                    pair_tag,
+                    self.active_positions[pair_tag],
+                    getattr(self, "_pair_infos", {}).get(pair_tag),
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
 
                 active_key = f"arb:active_pos:{pair_tag}"
                 await self.redis.set(
@@ -362,6 +402,13 @@ class EntryMixin:
                     "timestamp_ms": int(time.time() * 1000),
                 }
                 await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(open_msg))
+                self.supabase.event(
+                    "POSITION_OPENED",
+                    pair_key=pair_tag,
+                    is_mock=open_msg["is_mock"],
+                    occurred_at_ms=open_msg["timestamp_ms"],
+                    payload=open_msg,
+                )
             except Exception as he:
                 logger.critical(
                     f"[State 2 CRITICAL] Failed to execute instant short hedge for {pair_tag}: {he}"

@@ -156,12 +156,13 @@ class ForceCloseMixin:
                         f"[Force Close] failed to sync futures quote for {pair_key}"
                     )
             try:
+                force_coid = build_client_order_id(
+                    pair_key, "force-close", self._next_order_seq()
+                )
                 res = await self.client.close_global_short_market(
                     global_sym,
                     pos.qty,
-                    client_order_id=build_client_order_id(
-                        pair_key, "force-close", self._next_order_seq()
-                    ),
+                    client_order_id=force_coid,
                 )
                 if not isinstance(res, dict):
                     logger.critical(
@@ -185,6 +186,18 @@ class ForceCloseMixin:
                         f"requested={pos.qty}, filled={filled_qty}"
                     )
                     return False, 0.0
+
+                self.supabase.order(
+                    pair_key,
+                    "futures_exit",
+                    pos.global_exchange,
+                    "perpetual",
+                    global_sym,
+                    res,
+                    client_order_id=force_coid,
+                    reduce_only=True,
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
 
                 # Order acknowledgement is not proof that the short is flat.
                 # The authoritative position endpoint must confirm zero exposure.
@@ -266,6 +279,16 @@ class ForceCloseMixin:
                 # market sell leaves residual spot exposure and must not be reported
                 # as a successful force close.
                 if isinstance(spot_order, dict):
+                    self.supabase.order(
+                        pair_key,
+                        "force_close",
+                        pos.local_exchange,
+                        "spot",
+                        pos.symbol,
+                        spot_order,
+                        client_order_id=build_client_order_id(pair_key, "force-liq", seq),
+                        is_mock=bool(getattr(self.config, "mock_mode", False)),
+                    )
                     filled_qty = float(spot_order.get("filled", 0.0) or 0.0)
                     spot_exit_price_idr = helpers.extract_fill_price(spot_order)
                     if filled_qty + max(1e-12, pos.qty * 1e-8) < pos.qty:
@@ -393,6 +416,7 @@ class ForceCloseMixin:
             await self.redis.ltrim(
                 ARB_TRADE_HISTORY_KEY, 0, ARB_TRADE_HISTORY_MAX_LEN
             )
+            self.supabase.trade_closed(pair_key, closed_trade, pos)
 
             # Update exchange account balances with realized PnL & release locked funds
             spot_cost = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)

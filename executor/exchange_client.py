@@ -4,6 +4,8 @@ import time
 from typing import Optional, Dict, Any
 import ccxt.async_support as ccxt
 
+from executor.indodax_v2 import IndodaxTAPIv2
+
 
 def _client_order_params(client_order_id: Optional[str]) -> tuple:
     """
@@ -577,6 +579,21 @@ def create_exchange_client(config: Any) -> Any:
     )
 
 
+# Venues whose TAPI v1 support was retired. ccxt still signs their legacy
+# endpoint, which rejects TAPIv2 keys with `invalid_version_key`, so these
+# need the v2 adapter instead of a ccxt instance.
+V2_ADAPTERS = {"indodax": IndodaxTAPIv2}
+
+def init_local_exchange(exchange_name: str, creds: Any, default_type: str = "spot") -> Any:
+    """Builds the local spot client: v2 adapter when required, else ccxt."""
+    adapter = V2_ADAPTERS.get(exchange_name.lower())
+    if adapter is not None:
+        return adapter(
+            api_key=getattr(creds, "api_key", ""),
+            api_secret=getattr(creds, "api_secret", ""),
+        )
+    return init_ccxt_exchange(exchange_name, creds, default_type=default_type)
+
 def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot") -> Any:
     """Helper to initialize a CCXT async exchange with proper credentials and settings."""
     ex_class = getattr(ccxt, exchange_name.lower())
@@ -599,6 +616,6 @@ def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot
 
 def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds) -> ExchangeClient:
     """Factory creating CCXT async instances."""
-    local_ex = init_ccxt_exchange(local_name, local_creds, default_type="spot")
+    local_ex = init_local_exchange(local_name, local_creds, default_type="spot")
     global_ex = init_ccxt_exchange(global_name, global_creds, default_type="future")
     return ExchangeClient(local_ex, global_ex)

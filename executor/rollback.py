@@ -58,6 +58,16 @@ class RollbackMixin:
             return None, exhausted.last_error
         if not isinstance(emergency_order, dict):
             return None, RuntimeError("spot rollback returned no verifiable order")
+        self.supabase.order(
+            pair_tag,
+            "rollback",
+            getattr(self.config, "local_exchange_name", ""),
+            "spot",
+            symbol,
+            emergency_order,
+            client_order_id=build_client_order_id(pair_tag, "rollback", seq),
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
         status = str(emergency_order.get("status", "")).lower()
         if status not in ("closed", "filled"):
             return None, RuntimeError(
@@ -240,6 +250,13 @@ class RollbackMixin:
                 "timestamp_ms": int(time.time() * 1000),
             }
             await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(event))
+            self.supabase.event(
+                "HEDGE_FAILED",
+                pair_key=pair_tag,
+                is_mock=bool(event.get("is_mock", False)),
+                occurred_at_ms=event.get("timestamp_ms"),
+                payload=event,
+            )
             await self.publish_status()
             return
 
@@ -276,6 +293,14 @@ class RollbackMixin:
             "timestamp_ms": int(time.time() * 1000),
         }
         await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(event))
+
+        self.supabase.event(
+            "HEDGE_FAILED",
+            pair_key=pair_tag,
+            is_mock=bool(event.get("is_mock", False)),
+            occurred_at_ms=event.get("timestamp_ms"),
+            payload=event,
+        )
 
         if emergency_error is not None:
             self._mark_failed(

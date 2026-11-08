@@ -25,6 +25,13 @@ USDT/IDR rate from the scanner signal; missing FX or balance data blocks new ent
 USDT/USDC quote balances are treated at a 1:1 stablecoin assumption for sizing, so
 USDC depeg risk is not eliminated.
 
+INDODAX is the exception: its keys are issued on `indodax.com/trade_api` and are
+TAPIv2-only. The legacy `/tapi` endpoint that CCXT still signs rejects them with
+`invalid_version_key`, so the executor talks to `https://api.indodax.com/api/v2`
+directly through `executor/indodax_v2.py` (`X-APIKEY` + `Sign` = HMAC-SHA256 over the
+request query string). Create or rotate INDODAX keys on the Trade API page — keys
+generated on the legacy API page will not authenticate.
+
 Both images run as a non-root user. Set `APP_UID` and `APP_GID` in the deployment `.env`
 file to the owner IDs of the host `data/` directory (default: 1000/1000) so the
 scanner can write its persistent history bind mount without running as root. The executor image runs as a non-root user. Do not bake `config.json`, exchange API keys,
@@ -282,10 +289,21 @@ operational tables for exchange accounts, strategy/risk configuration, market pa
 scanner opportunities, orders/fills, positions/legs, funding payments, closed trades,
 balances, risk events, and executor events/status snapshots.
 
-**Important:** the schema is created, but runtime persistence is not yet connected.
-Redis remains the live coordination layer and scanner opportunity history still uses
-the configured JSON file. Do not assume Supabase is receiving live orders or trades
-until the persistence adapter and its idempotent retry/outbox tests are merged.
+**Important:** the schema is created, and the executor now writes to it on a
+best-effort basis. Redis remains the live coordination layer and scanner
+opportunity history still uses the configured JSON file.
+
+Set both `SUPABASE_URL` and `SUPABASE_KEY` (secret/service-role key — never the
+publishable key, whose `anon` role these tables deliberately deny) in the server
+environment to enable it. With either unset the writer is inert, and every write
+is queued and flushed by a background task, so an unreachable database can never
+delay a hedge, rollback, or force close.
+
+Persisted by the executor: `positions`, `orders`, `order_fills`, `closed_trades`,
+`executor_events`. Writes are upserts on client-generated ids, so retries are
+idempotent, and fill rows derive from cumulative filled quantity so a replayed
+write cannot duplicate a fill. `scanner_opportunities`, `balance_snapshots`,
+`funding_payments`, and `executor_status_snapshots` are not yet written.
 
 
 For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.

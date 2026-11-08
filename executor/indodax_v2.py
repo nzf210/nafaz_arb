@@ -1,0 +1,307 @@
+"""
+INDODAX Trade API 2.0 adapter (https://api.indodax.com/api/v2).
+
+ccxt's indodax client still signs the legacy TAPI v1 endpoint
+(``https://indodax.com/tapi``, HMAC-SHA512). Keys created on
+``https://indodax.com/trade_api`` are TAPIv2-only and the legacy endpoint answers
+``{"error_code":"invalid_version_key"}`` for them, so every private call (balance,
+order create/cancel/query) fails. This module implements the subset of the ccxt
+exchange surface the executor actually uses, on top of the v2 REST API
+(``X-APIKEY`` + ``Sign`` = HMAC-SHA256 over the request query string).
+
+Return shapes deliberately mirror ccxt so ``ExchangeClient`` and the engine need
+no changes.
+"""
+
+import hashlib
+import hmac
+import json
+import logging
+import time
+from decimal import ROUND_DOWN, Decimal
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
+
+import aiohttp
+
+logger = logging.getLogger("executor.indodax_v2")
+
+BASE_URL = "https://api.indodax.com"
+
+# v2 status names -> ccxt status names. Partially filled orders stay "open":
+# the engine derives the filled delta from `filled`, not from the status.
+_STATUS_MAP = {
+    "NEW": "open",
+    "PARTIALLY_FILLED": "open",
+    "FILLED": "closed",
+    "CANCELLED": "canceled",
+    "REJECTED": "rejected",
+    "EXPIRED": "expired",
+}
+
+class IndodaxAPIError(Exception):
+    """Raised for any v2 error payload; carries the venue error code."""
+
+    def __init__(self, code: Any, message: str):
+        super().__init__(f"indodax v2 error {code}: {message}")
+        self.code = code
+        self.message = message
+
+def normalize_symbol(symbol: str) -> str:
+    """'btc_idr' / 'btc/idr' -> 'BTCIDR' (v2 expects the compact upper form)."""
+    cleaned = "".join(ch for ch in str(symbol or "") if ch.isalnum())
+    return cleaned.upper()
+
+def _fmt(value: Any) -> str:
+    """Formats a numeric value without exponent and without float noise.
+
+    The venue rejects quantities/prices carrying more precision than the pair
+    allows. A value like ``0.00012300000000000001`` (float artefact from the
+    engine's lot-size flooring) is quantized before it reaches the wire, and
+    rounding is downward so a buy never asks for more than the balance covers.
+    """
+    dec = Decimal(str(value)).quantize(Decimal("1e-10"), rounding=ROUND_DOWN)
+    text = format(dec, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+class IndodaxTAPIv2:
+    """Minimal ccxt-compatible async client for INDODAX Trade API 2.0."""
+
+    id = "indodax"
+    # v2 rejects requests whose timestamp is older than recvWindow. The default
+    # 5000ms leaves no room for a small VPS clock drift, so ask for more.
+    recv_window = 10000
+
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        base_url: str = BASE_URL,
+        session: Optional[aiohttp.ClientSession] = None,
+    ):
+        if not api_key or not api_secret:
+            raise ValueError("indodax v2 requires both api_key and api_secret")
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.base_url = base_url.rstrip("/")
+        self._session = session
+        self._owns_session = session is None
+
+    # ------------------------------------------------------------------ http
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=20)
+            )
+            self._owns_session = True
+        return self._session
+
+    def sign(self, payload: str) -> str:
+        return hmac.new(
+            self.api_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        signed: bool = True,
+    ) -> Any:
+        params = dict(params or {})
+        query = ""
+        if signed:
+            params.setdefault("timestamp", int(time.time() * 1000))
+            params.setdefault("recvWindow", self.recv_window)
+            query = urlencode(
+                {k: v for k, v in params.items() if v is not None}
+            )
+        elif params:
+            query = urlencode(params)
+
+        headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
+        url = f"{self.base_url}{path}"
+        body = None
+        if signed:
+            headers["X-APIKEY"] = self.api_key
+            headers["Sign"] = self.sign(query)
+
+        if method in ("POST", "PUT"):
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            body = query
+        elif query:
+            # GET and DELETE carry their parameters in the query string; the
+            # signature covers exactly that string.
+            url = f"{url}?{query}"
+
+        session = await self._get_session()
+        async with session.request(method, url, data=body, headers=headers) as resp:
+            text = await resp.text()
+            try:
+                payload = json.loads(text)
+            except ValueError:
+                raise IndodaxAPIError(
+                    f"http_{resp.status}", f"non-JSON response: {text[:200]}"
+                )
+            if isinstance(payload, dict) and payload.get("code") not in (None, 0):
+                raise IndodaxAPIError(payload.get("code"), str(payload.get("msg") or payload))
+            if resp.status >= 400:
+                raise IndodaxAPIError(f"http_{resp.status}", text[:200])
+            return payload
+
+    # --------------------------------------------------------------- mapping
+
+    @staticmethod
+    def _order(order: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+        amount = _to_float(order.get("origQty"))
+        filled = _to_float(order.get("executedQty"))
+        status_raw = str(order.get("status") or "").upper()
+        return {
+            "id": str(order.get("orderId") or ""),
+            "clientOrderId": order.get("clientOrderId"),
+            "symbol": symbol,
+            "type": str(order.get("type") or "").lower(),
+            "side": str(order.get("side") or "").lower(),
+            "price": _to_float(order.get("price")),
+            "amount": amount,
+            "filled": filled,
+            "remaining": max(0.0, amount - filled),
+            "status": _STATUS_MAP.get(status_raw, status_raw.lower()),
+            "timestamp": order.get("time"),
+            "info": order,
+        }
+
+    # ---------------------------------------------------------- ccxt surface
+
+    async def create_limit_buy_order(
+        self, symbol: str, amount: float, price: float, params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        return await self._create_order(symbol, "BUY", "LIMIT", amount, price, params)
+
+    async def create_limit_sell_order(
+        self, symbol: str, amount: float, price: float, params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        return await self._create_order(symbol, "SELL", "LIMIT", amount, price, params)
+
+    async def create_market_sell_order(
+        self, symbol: str, amount: float, params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        return await self._create_order(symbol, "SELL", "MARKET", amount, None, params)
+
+    async def _create_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        amount: float,
+        price: Optional[float],
+        params: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if amount <= 0:
+            raise ValueError(f"invalid order amount: {amount}")
+        if order_type == "LIMIT" and (price is None or price <= 0):
+            raise ValueError(f"invalid limit price: {price}")
+
+        payload: Dict[str, Any] = {
+            "symbol": normalize_symbol(symbol),
+            "side": side,
+            "type": order_type,
+            "quantity": _fmt(amount),
+        }
+        if price is not None:
+            payload["price"] = _fmt(price)
+        client_order_id = (params or {}).get("clientOrderId")
+        if client_order_id:
+            payload["newClientOrderId"] = str(client_order_id)[:36]
+
+        created = await self._request("POST", "/api/v2/order", payload)
+        # The create payload omits `status` entirely; a successful POST means the
+        # venue accepted the order and it is now live. Defaulting to "open" keeps
+        # the engine's expiry/adverse-selection polling working on the first tick.
+        created["status"] = created.get("status") or "NEW"
+        return self._order(created, symbol)
+
+    async def cancel_order(self, order_id: str, symbol: Optional[str] = None) -> Dict[str, Any]:
+        if not order_id:
+            raise ValueError("cancel_order requires an order id")
+        if not symbol:
+            raise ValueError("indodax v2 cancel_order requires the order symbol")
+        cancelled = await self._request(
+            "DELETE", "/api/v2/order", {"symbol": normalize_symbol(symbol), "orderId": str(order_id)}
+        )
+        # The DELETE payload carries no `status` field: the venue answering with
+        # a cancelled order *is* the confirmation. Without this the engine would
+        # see an empty status and refuse to treat the order as terminal.
+        cancelled = dict(cancelled)
+        cancelled.setdefault("clientOrderId", cancelled.get("origClientOrderId"))
+        cancelled["status"] = cancelled.get("status") or "CANCELLED"
+        return self._order(cancelled, symbol)
+
+    async def fetch_order(self, order_id: str, symbol: Optional[str] = None) -> Dict[str, Any]:
+        if not order_id:
+            raise ValueError("fetch_order requires an order id")
+        if not symbol:
+            raise ValueError("indodax v2 fetch_order requires the order symbol")
+        order = await self._request(
+            "GET", "/api/v2/order", {"symbol": normalize_symbol(symbol), "orderId": str(order_id)}
+        )
+        return self._order(order, symbol)
+
+    async def fetch_balance(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        account = await self._request("GET", "/api/v2/account")
+        free: Dict[str, float] = {}
+        used: Dict[str, float] = {}
+        total: Dict[str, float] = {}
+        per_asset: Dict[str, Dict[str, float]] = {}
+        for row in account.get("balances") or []:
+            asset = str(row.get("asset") or "")
+            if not asset:
+                continue
+            if not isinstance(row.get("free"), (str, int, float)) or not isinstance(
+                row.get("locked"), (str, int, float)
+            ):
+                raise ValueError(f"indodax v2 returned a malformed balance row for {asset}")
+            available = Decimal(str(row["free"]))
+            locked = Decimal(str(row["locked"]))
+            if available < 0 or locked < 0:
+                raise ValueError(f"indodax v2 returned a negative balance for {asset}")
+            free[asset] = float(available)
+            used[asset] = float(locked)
+            total[asset] = float(available + locked)
+            per_asset[asset] = {
+                "free": free[asset],
+                "used": used[asset],
+                "total": total[asset],
+            }
+        result: Dict[str, Any] = {
+            "free": free,
+            "used": used,
+            "total": total,
+            "info": account,
+        }
+        result.update(per_asset)
+        return result
+
+    async def fetch_open_orders(
+        self, symbol: Optional[str] = None, since: Optional[int] = None, limit: Optional[int] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        query: Dict[str, Any] = {}
+        if symbol:
+            query["symbol"] = normalize_symbol(symbol)
+        orders = await self._request("GET", "/api/v2/openOrders", query)
+        if not isinstance(orders, list):
+            raise ValueError("indodax v2 returned a malformed open orders payload")
+        return [self._order(o, symbol or o.get("symbol", "")) for o in orders]
+
+    async def close(self) -> None:
+        if self._session is not None and self._owns_session and not self._session.closed:
+            await self._session.close()
+
+def _to_float(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    return float(value)

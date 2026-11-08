@@ -54,6 +54,9 @@ services:
       # Executor mode follows config.json mode (MOCK/LIVE).
       # Set EXECUTOR_MOCK_MODE=true only as an explicit emergency override.
       - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-}
+      # Best-effort audit persistence. Unset = disabled, trading unaffected.
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
     depends_on:
       - redis
 

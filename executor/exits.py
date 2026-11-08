@@ -264,15 +264,29 @@ class ExitMixin:
             global_ask_usdt: float,
         ) -> None:
             try:
+                exit_coid = build_client_order_id(
+                    pair_tag, "exit", self._next_order_seq()
+                )
                 order = await self.client.place_local_limit_sell(
                     pos.symbol,
                     pos.qty,
                     limit_sell_idr,
-                    client_order_id=build_client_order_id(pair_tag, "exit", self._next_order_seq()),
+                    client_order_id=exit_coid,
                 )
                 order_id = str(order.get("id", ""))
+                self.supabase.order(
+                    pair_tag,
+                    "spot_exit",
+                    pos.local_exchange,
+                    "spot",
+                    pos.symbol,
+                    order,
+                    client_order_id=exit_coid,
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
                 self.pending_exit_orders[pair_tag] = {
                     "order_id": order_id,
+                    "client_order_id": exit_coid,
                     "symbol": pos.symbol,
                     "price": limit_sell_idr,
                     "qty": pos.qty,
@@ -282,6 +296,7 @@ class ExitMixin:
                 }
                 self.last_pegged_global_ask[pair_tag] = global_ask_usdt
                 self.states[pair_tag] = PositionState.EXIT_PENDING
+                self.supabase.position_status(pair_tag, "EXIT_PENDING", pos)
             except Exception:
                 logger.exception(f"[State 3] failed to place dynamic limit sell for {pair_tag}")
 
@@ -448,6 +463,18 @@ class ExitMixin:
             closed_qty = float(order_info.get("closed_short_qty", 0.0))
             unclosed_delta = current_filled - closed_qty
 
+            if isinstance(order, dict):
+                self.supabase.order(
+                    pair_tag,
+                    "spot_exit",
+                    pos.local_exchange,
+                    "spot",
+                    local_symbol,
+                    order,
+                    client_order_id=order_info.get("client_order_id"),
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
+
             if unclosed_delta > 0:
                 await self._execute_exit_fill(pair_tag, order_info, pos, unclosed_delta)
 
@@ -483,10 +510,13 @@ class ExitMixin:
             )
             try:
                 global_sym = self._resolve_global_symbol(pos.symbol)
+                unwind_coid = build_client_order_id(
+                    pair_tag, "unwind", self._next_order_seq()
+                )
                 close_order = await self.client.close_global_short_market(
                     global_sym,
                     unclosed_delta,
-                    client_order_id=build_client_order_id(pair_tag, "unwind", self._next_order_seq()),
+                    client_order_id=unwind_coid,
                 )
                 if not isinstance(close_order, dict):
                     raise ValueError(
@@ -512,6 +542,18 @@ class ExitMixin:
                         f"futures close overfilled: requested={unclosed_delta}, "
                         f"filled={actual_closed_qty}"
                     )
+
+                self.supabase.order(
+                    pair_tag,
+                    "futures_exit",
+                    pos.global_exchange,
+                    "perpetual",
+                    global_sym,
+                    close_order,
+                    client_order_id=unwind_coid,
+                    reduce_only=True,
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
 
                 # Snapshot qty before mutation so PnL fractions stay consistent.
                 total_qty_before = pos.qty
@@ -588,6 +630,7 @@ class ExitMixin:
 
                 await self.redis.lpush(ARB_TRADE_HISTORY_KEY, json.dumps(closed_trade))
                 await self.redis.ltrim(ARB_TRADE_HISTORY_KEY, 0, ARB_TRADE_HISTORY_MAX_LEN)
+                self.supabase.trade_closed(pair_tag, closed_trade, pos)
 
                 # Release only the pro-rata share of locked capital for this fill.
                 spot_cost = getattr(pos, "spot_cost_usdt", unclosed_delta * entry_price_idr / usdt_rate) * fill_ratio
