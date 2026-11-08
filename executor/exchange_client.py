@@ -55,6 +55,40 @@ class ExchangeClient:
         """Fetches status of an order on local spot exchange."""
         return await self.local.fetch_order(order_id, symbol)
 
+
+    async def fetch_balance_report(self) -> list:
+        """Fetch complete free/used/total balances from both live venues."""
+        reports = []
+        for name, market, exchange in (
+            (getattr(self.local, "id", "local"), "spot", self.local),
+            (getattr(self.global_fut, "id", "global"), "futures", self.global_fut),
+        ):
+            try:
+                raw = await exchange.fetch_balance()
+                free_map, used_map, total_map = raw.get("free") or {}, raw.get("used") or {}, raw.get("total") or {}
+                assets = []
+                for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
+                    free_raw = free_map.get(asset)
+                    used_raw = used_map.get(asset)
+                    total_raw = total_map.get(asset)
+                    free = float(free_raw or 0.0)
+                    total = float(total_raw) if total_raw is not None else 0.0
+                    used = (
+                        float(used_raw)
+                        if used_raw is not None
+                        else max(0.0, total - free)
+                    )
+                    if total_raw is None:
+                        total = free + used
+                    if not all(math.isfinite(v) and v >= 0 for v in (free, used, total)):
+                        raise ValueError(f"invalid balance value for {asset}")
+                    if free or used or total:
+                        assets.append({"asset": str(asset), "free": free, "used": used, "total": total})
+                reports.append({"name": name, "market": market, "status": "ok", "assets": assets})
+            except Exception as exc:
+                reports.append({"name": name, "market": market, "status": "error", "error": str(exc), "assets": []})
+        return reports
+
     async def get_balances(
         self,
         local_quote_asset: str = "IDR",
@@ -234,6 +268,16 @@ class PaperTradingExchangeClient:
         self.order_counter = 1000
         self.trades = []
         self.market_prices: Dict[str, Dict[str, float]] = {}
+
+
+    async def fetch_balance_report(self) -> list:
+        """Returns simulated balances with an explicit simulation label."""
+        return [
+            {"name": self.local_name, "market": "spot", "status": "ok", "assets": [
+                {"asset": "USDT", "free": max(0.0, self.balance_spot-self.locked_spot), "used": self.locked_spot, "total": self.balance_spot}]},
+            {"name": self.global_name, "market": "futures", "status": "ok", "assets": [
+                {"asset": "USDT", "free": max(0.0, self.balance_futures-self.locked_futures), "used": self.locked_futures, "total": self.balance_futures}]},
+        ]
 
     def get_balances(
         self,

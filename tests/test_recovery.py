@@ -416,7 +416,7 @@ async def test_engine_lifecycle_start_stop(engine):
     """Test engine start and stop coroutine lifecycle to prevent TypeError."""
     await engine.start()
     assert engine._running is True
-    assert len(engine._tasks) == 5
+    assert len(engine._tasks) == 6
     await engine.stop()
     assert engine._running is False
 
@@ -736,3 +736,48 @@ async def test_fetch_positions_matches_ccxt_contract_symbol_aliases():
     positions = await client.fetch_positions("BTCUSDT")
     assert len(positions) == 1
     assert positions[0]["side"] == "short"
+
+
+@pytest.mark.asyncio
+async def test_fetch_balance_report_returns_all_assets_and_isolates_venue_errors():
+    from executor.exchange_client import ExchangeClient
+
+    class LocalSpot:
+        id = "indodax"
+
+        async def fetch_balance(self):
+            return {
+                "free": {"IDR": 1_200_000.0, "BTC": 0.01, "XRP": 5.0},
+                "used": {"IDR": 300_000.0, "BTC": 0.002},
+                "total": {"IDR": 1_500_000.0, "BTC": 0.012, "XRP": 8.0},
+            }
+
+    class GlobalFutures:
+        id = "okx"
+
+        async def fetch_balance(self):
+            raise RuntimeError("private API unavailable")
+
+    reports = await ExchangeClient(LocalSpot(), GlobalFutures()).fetch_balance_report()
+
+    assert reports[0]["name"] == "indodax"
+    assert reports[0]["status"] == "ok"
+    assert {item["asset"] for item in reports[0]["assets"]} == {"IDR", "BTC", "XRP"}
+    btc = next(item for item in reports[0]["assets"] if item["asset"] == "BTC")
+    assert btc == {"asset": "BTC", "free": 0.01, "used": 0.002, "total": 0.012}
+    xrp = next(item for item in reports[0]["assets"] if item["asset"] == "XRP")
+    assert xrp == {"asset": "XRP", "free": 5.0, "used": 3.0, "total": 8.0}
+    assert reports[1]["name"] == "okx"
+    assert reports[1]["status"] == "error"
+    assert "private API unavailable" in reports[1]["error"]
+
+
+@pytest.mark.asyncio
+async def test_paper_balance_report_is_explicitly_simulated():
+    from executor.exchange_client import PaperTradingExchangeClient
+
+    reports = await PaperTradingExchangeClient().fetch_balance_report()
+
+    assert len(reports) == 2
+    assert all(report["status"] == "ok" for report in reports)
+    assert all(report["assets"][0]["asset"] == "USDT" for report in reports)

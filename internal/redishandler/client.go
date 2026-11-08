@@ -2,6 +2,9 @@ package redishandler
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -31,6 +34,8 @@ const (
 	KeyTradeStats          = "arb:stats"
 	KeyBalances            = "arb:balances"
 	KeyExecutorStatus      = "arb:executor:status"
+	ChannelBalanceRequest  = "arb:balance_request"
+	KeyPrefixBalanceReply  = "arb:balance_reply:"
 )
 
 type TradeStats struct {
@@ -443,4 +448,30 @@ func (c *Client) Close() error {
 		return c.rdb.Close()
 	}
 	return nil
+}
+
+ 
+// RequestLiveBalances asks the running Executor to fetch fresh balances from both exchanges.
+func (c *Client) RequestLiveBalances(ctx context.Context) (string, error) {
+	if c == nil || c.rdb == nil { return "", errors.New("redis is not connected") }
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil { return "", fmt.Errorf("generate balance request id: %w", err) }
+	requestID := hex.EncodeToString(idBytes)
+	payload, err := json.Marshal(map[string]string{"request_id": requestID})
+	if err != nil { return "", fmt.Errorf("marshal balance request: %w", err) }
+	if err := c.rdb.Publish(ctx, ChannelBalanceRequest, payload).Err(); err != nil { return "", fmt.Errorf("publish balance request: %w", err) }
+	key := KeyPrefixBalanceReply + requestID
+	ticker := time.NewTicker(200 * time.Millisecond); defer ticker.Stop()
+	timeout := time.NewTimer(15 * time.Second); defer timeout.Stop()
+	for {
+		select {
+		case <-ctx.Done(): return "", ctx.Err()
+		case <-timeout.C: return "", errors.New("executor tidak merespons permintaan saldo dalam 15 detik")
+		case <-ticker.C:
+			raw, err := c.rdb.Get(ctx, key).Result()
+			if err == redis.Nil { continue }
+			if err != nil { return "", fmt.Errorf("read balance response: %w", err) }
+			return raw, nil
+		}
+	}
 }

@@ -86,6 +86,12 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatActiveOpportunities(), b.defaultKeyboard())
 	case "/positions":
 		b.handlePositionsCommand(ctx, msg.Chat.ID, msg.MessageID)
+	case "/balance":
+		userID := int64(0)
+		if msg.From != nil {
+			userID = msg.From.ID
+		}
+		b.handleBalanceCommand(ctx, msg.Chat.ID, msg.MessageID, userID)
 	case "/history":
 		b.handleHistoryCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/frozen":
@@ -157,6 +163,8 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatActiveOpportunities(), b.defaultKeyboard())
 	case "positions":
 		b.handlePositionsCommand(ctx, chatID, 0)
+	case "balance":
+		b.handleBalanceCommand(ctx, chatID, 0, cb.From.ID)
 	case "history":
 		b.handleHistoryCommand(ctx, chatID, 0)
 	case "frozen":
@@ -187,6 +195,52 @@ func (b *Bot) handleExtendedCallback(ctx context.Context, chatID int64, cb *Call
 		b.sendReplyWithMarkup(ctx, chatID, 0, "❌ Tutup paksa dibatalkan.", b.defaultKeyboard())
 		return
 	}
+}
+
+
+type balanceAsset struct { Asset string `json:"asset"`; Free float64 `json:"free"`; Used float64 `json:"used"`; Total float64 `json:"total"` }
+type balanceExchange struct { Name string `json:"name"`; Market string `json:"market"`; Status string `json:"status"`; Error string `json:"error,omitempty"`; Assets []balanceAsset `json:"assets"` }
+type balanceReport struct { TimestampMS int64 `json:"timestamp_ms"`; MockMode bool `json:"mock_mode"`; Exchanges []balanceExchange `json:"exchanges"` }
+
+func (b *Bot) handleBalanceCommand(ctx context.Context, chatID, replyToID, userID int64) {
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⛔ <b>Akses ditolak:</b> User tidak diizinkan melihat saldo exchange.", b.defaultKeyboard())
+		return
+	}
+	b.mu.Lock(); rc := b.redisClient; b.mu.Unlock()
+	if rc == nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Balance tidak tersedia:</b> Redis belum terhubung.", b.defaultKeyboard()); return }
+	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⏳ <i>Mengambil saldo terbaru langsung dari exchange...</i>", nil)
+	raw, err := rc.RequestLiveBalances(ctx)
+	if err != nil {
+		b.sendReplyWithMarkup(ctx, chatID, 0, "❌ <b>Gagal mengambil balance:</b> "+html.EscapeString(err.Error())+"\n<i>Pastikan Executor aktif dan Redis berjalan.</i>", b.defaultKeyboard()); return
+	}
+	var report balanceReport
+	if err := json.Unmarshal([]byte(raw), &report); err != nil {
+		b.sendReplyWithMarkup(ctx, chatID, 0, "❌ <b>Respons balance tidak valid:</b> "+html.EscapeString(err.Error()), b.defaultKeyboard()); return
+	}
+	var out strings.Builder
+	out.WriteString("💰 <b>BALANCE EXCHANGE TERKINI</b>\n")
+	if report.MockMode { out.WriteString("⚠️ <b>MODE SIMULASI</b> — bukan saldo akun exchange.\n") } else { out.WriteString("🟢 <b>LIVE API</b> — data dibaca langsung dari exchange.\n") }
+	if report.TimestampMS > 0 { out.WriteString("🕒 "+time.UnixMilli(report.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC")+"\n") }
+	out.WriteString("\n")
+	for _, ex := range report.Exchanges {
+		out.WriteString("🏦 <b>"+html.EscapeString(strings.ToUpper(ex.Name))+" ("+html.EscapeString(strings.ToUpper(ex.Market))+")</b>\n")
+		if ex.Status != "ok" { out.WriteString("❌ Gagal: "+html.EscapeString(ex.Error)+"\n\n"); continue }
+		if len(ex.Assets) == 0 { out.WriteString("<i>Tidak ada saldo aset.</i>\n\n"); continue }
+		for _, asset := range ex.Assets {
+			if asset.Total == 0 && asset.Free == 0 && asset.Used == 0 { continue }
+			out.WriteString(fmt.Sprintf("• <code>%s</code> | Free: <code>%.8g</code> | Used: <code>%.8g</code> | Total: <b><code>%.8g</code></b>\n", html.EscapeString(asset.Asset), asset.Free, asset.Used, asset.Total))
+		}
+		out.WriteString("\n")
+	}
+	if len(report.Exchanges) == 0 { out.WriteString("❌ Executor tidak melaporkan exchange aktif.\n") }
+	out.WriteString("<i>Hanya membaca saldo; tidak mengubah order atau posisi.</i>")
+	message := out.String()
+	if len([]rune(message)) > 3800 {
+		runes := []rune(message)
+		message = string(runes[:3700]) + "\n<i>Daftar dipotong karena batas panjang pesan Telegram.</i>"
+	}
+	b.sendReplyWithMarkup(ctx, chatID, 0, message, b.defaultKeyboard())
 }
 
 func (b *Bot) handleKillSwitchCommand(ctx context.Context, chatID int64, userID int64, replyToID int64, parts []string) {
