@@ -90,6 +90,17 @@ class AccountWideReconciliationMixin:
                 venue, expected_by_venue.get(venue, {}), actual, tags_by_venue_symbol
             )
 
+    def _parse_account_futures_positions(self, report):
+        actual: Dict[str, float] = {}
+        for position in report.get("positions") or []:
+            normalized, size, reason = self._parse_account_futures_position(position)
+            if reason:
+                return actual, reason
+            if size <= 1e-12:
+                continue
+            actual[normalized] = actual.get(normalized, 0.0) + size
+        return actual, ""
+
     def _parse_account_futures_position(self, position: dict):
         metadata, reason = self._account_position_metadata(position)
         if reason:
