@@ -271,9 +271,12 @@ class ArbitrageEngine(
                     )
 
         known_spot_order_ids = {
-            str(info.get("order_id"))
+            (
+                str(info.get("local_exchange") or "").lower(),
+                str(info.get("order_id")),
+            )
             for info in list(self.pending_entry_orders.values()) + list(self.pending_exit_orders.values())
-            if info.get("order_id")
+            if info.get("order_id") and info.get("local_exchange")
         }
         for report in order_reports or []:
             venue = str(report.get("name") or "").lower()
@@ -283,9 +286,10 @@ class ArbitrageEngine(
                 continue
             for order in report.get("orders") or []:
                 order_id = str(order.get("id") or "")
-                # The executor only intentionally leaves spot entry/exit orders
-                # resting. Futures orders are market-only and must be terminal.
-                known = market == "spot" and order_id in known_spot_order_ids
+                # Scope known IDs to their venue: many exchanges issue overlapping
+                # numeric order IDs, so an ID from Indodax must not whitelist an
+                # unrelated Tokocrypto order with the same value.
+                known = market == "spot" and (venue, order_id) in known_spot_order_ids
                 if known:
                     continue
                 reason = f"untracked {market} open order {order_id} on {venue}"
