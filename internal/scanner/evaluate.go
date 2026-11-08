@@ -34,7 +34,7 @@ type tradeActivityProvider interface {
 
 func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, exposures []domain.OpenExposure, positionStateKnown bool, started time.Time) evalResult {
 	sm, pm := pair[0], pair[1]
-	pairKey := sm.Symbol + ":" + pm.Symbol
+	pairKey := strings.ToLower(sm.Exchange) + ":" + sm.Symbol + "->" + strings.ToLower(pm.Exchange) + ":" + pm.Symbol
 
 	if reporter, ok := s.adapter.(availabilityReporter); ok {
 		for _, name := range []string{sm.Exchange, pm.Exchange} {
