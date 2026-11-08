@@ -574,7 +574,8 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	settlementsDec := decimal.NewFromInt(int64(settlements))
 	funding := prices.perpEntry.Mul(qty).Mul(frRate).Mul(settlementsDec) // positive rate: short receives
 
-	net := spread.Add(funding).Sub(fees).Sub(slippage)
+	gross := spread.Add(funding)
+	net := gross.Sub(fees).Sub(slippage)
 	capital := prices.spotEntry.Mul(qty).Add(prices.perpEntry.Mul(qty).Div(perpLev))
 	if capital.LessThanOrEqual(decimal.Zero) {
 		return domain.Opportunity{}, fmt.Errorf("invalid allocated capital")
@@ -643,6 +644,7 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 		Quantity:               qty.InexactFloat64(),
 		SpreadPnL:              spread.InexactFloat64(),
 		FundingPnL:             funding.InexactFloat64(),
+		GrossProfit:            gross.InexactFloat64(),
 		TradingFees:            fees.InexactFloat64(),
 		Slippage:               slippage.InexactFloat64(),
 		NetProfit:              netFloat,
