@@ -426,29 +426,34 @@ class ArbitrageEngine(
                     continue
 
                 if status in terminal_statuses:
-                    # A terminal order can still contain fills that occurred before
-                    # cancellation or before the process crashed. Hedge that final
-                    # cumulative fill before releasing the unused reservation.
-                    self.pending_entry_orders[pair_tag] = order_info
-                    self.states[pair_tag] = PositionState.ENTRY_PENDING
-                    await self._handle_entry_fills(
-                        pair_tag,
-                        order_info,
-                        {"id": order_id, "status": status, "filled": order_info["filled"]},
-                    )
-                    if self.states.get(pair_tag) in (
-                        PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
-                    ):
-                        logger.critical(
-                            f"[Recovery] fill reconciliation failed for {pair_tag}; "
-                            "pending record retained"
+                    # Hedge any final fill on the exact venue before releasing reserves.
+                    token = None
+                    try:
+                        if not getattr(self.config, "mock_mode", False):
+                            token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
+                        self.pending_entry_orders[pair_tag] = order_info
+                        self.states[pair_tag] = PositionState.ENTRY_PENDING
+                        await self._handle_entry_fills(
+                            pair_tag,
+                            order_info,
+                            {"id": order_id, "status": status, "filled": order_info["filled"]},
                         )
-                        continue
-                    await self._finalize_entry_order(pair_tag, status)
-                    logger.info(
-                        f"[Recovery] reconciled terminal order {order_id} for "
-                        f"{pair_tag} (status={status}, filled={filled})"
-                    )
+                        if self.states.get(pair_tag) in (
+                            PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+                        ):
+                            logger.critical(
+                                f"[Recovery] fill reconciliation failed for {pair_tag}; "
+                                "pending record retained"
+                            )
+                            continue
+                        await self._finalize_entry_order(pair_tag, status)
+                        logger.info(
+                            f"[Recovery] reconciled terminal order {order_id} for "
+                            f"{pair_tag} (status={status}, filled={filled})"
+                        )
+                    finally:
+                        if token is not None:
+                            self._reset_pair_client(token)
                     continue
 
                 self.pending_entry_orders[pair_tag] = order_info
