@@ -170,6 +170,7 @@ type ExecutionDirectives struct {
 	// scan that published it. Lets the executor distinguish a fresh quote from
 	// a replayed Redis key.
 	ScannerValidated                bool    `json:"scanner_validated"`
+	EstimatedNetProfitUSDT           float64 `json:"estimated_net_profit_usdt"`
 }
 
 type ExecutorPayload struct {
