@@ -56,3 +56,30 @@ def test_registry_rejects_replacing_existing_pair_client():
     registry.register(key, object())
     with pytest.raises(ValueError, match="already registered"):
         registry.register(key, object())
+
+
+def test_pair_key_can_be_built_from_executor_pair_info_mapping():
+    key = ExchangePairKey.from_pair_info({
+        "local_exchange": "Tokocrypto",
+        "local_symbol": "btc_idr",
+        "global_exchange": "OKX",
+        "global_symbol": "BTCUSDT",
+    })
+    assert key.tag == "tokocrypto:BTC_IDR__okx:BTC_USDT"
+
+
+def test_pair_key_can_be_built_from_pair_info_object():
+    class PairInfo:
+        local_exchange = "indodax"
+        local_symbol = "ETH/IDR"
+        global_exchange = "bybit"
+        global_symbol = "ETH/USDT"
+
+    key = ExchangePairKey.from_pair_info(PairInfo())
+    assert key.local_symbol == "ETH/IDR"
+    assert key.global_symbol == "ETH/USDT"
+
+
+def test_pair_key_rejects_missing_pair_info_fields():
+    with pytest.raises(ValueError, match="local_exchange is required"):
+        ExchangePairKey.from_pair_info({})
