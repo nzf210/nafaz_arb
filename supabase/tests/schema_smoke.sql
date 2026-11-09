@@ -71,3 +71,65 @@ begin
         raise exception 'trade currency / FX audit columns are missing';
     end if;
 end $$;
+
+-- Runtime scanner repository contract: nullable unique keys preserve historical rows
+-- and deterministic keys make a retried scan an upsert rather than a duplicate.
+do $$
+begin
+    if not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'scanner_opportunities'
+          and column_name = 'idempotency_key'
+    ) then
+        raise exception 'scanner opportunity idempotency_key column is missing';
+    end if;
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid = 'public.scanner_opportunities'::regclass
+          and conname = 'uq_scanner_opportunities_idempotency_key'
+          and contype = 'u'
+    ) then
+        raise exception 'scanner opportunity idempotency constraint is missing';
+    end if;
+end $$;
+
+insert into public.scanner_opportunities (
+    scan_id, pair_key, idempotency_key, local_exchange, global_exchange,
+    local_symbol, global_symbol, quote_asset, eligibility_status, observed_at, payload
+) values (
+    'schema-smoke-idempotency', 'indodax:btc_idr',
+    'schema-smoke-idempotency:indodax:btc_idr', 'indodax', 'okx',
+    'btc_idr', 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":1}'::jsonb
+)
+on conflict (idempotency_key) do update
+set payload = excluded.payload;
+
+insert into public.scanner_opportunities (
+    scan_id, pair_key, idempotency_key, local_exchange, global_exchange,
+    local_symbol, global_symbol, quote_asset, eligibility_status, observed_at, payload
+) values (
+    'schema-smoke-idempotency', 'indodax:btc_idr',
+    'schema-smoke-idempotency:indodax:btc_idr', 'indodax', 'okx',
+    'btc_idr', 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":2}'::jsonb
+)
+on conflict (idempotency_key) do update
+set payload = excluded.payload;
+
+do $$
+begin
+    if (
+        select count(*) from public.scanner_opportunities
+        where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr'
+    ) <> 1 then
+        raise exception 'scanner opportunity retry created duplicate rows';
+    end if;
+    if (
+        select payload ->> 'attempt' from public.scanner_opportunities
+        where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr'
+    ) <> '2' then
+        raise exception 'scanner opportunity upsert did not update the existing row';
+    end if;
+end $$;
+
+delete from public.scanner_opportunities
+where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr';
