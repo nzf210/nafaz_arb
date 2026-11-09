@@ -237,3 +237,57 @@ async def test_exchange_client_reports_failed_venue_without_faking_zero_balance(
     assert reports[0]["status"] == "error"
     assert reports[0]["assets"] == []
     assert reports[1]["status"] == "ok"
+
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_restores_preexisting_operator_halt_after_issue_clears(monkeypatch):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
+
+    class MutableClient(FakeClient):
+        spot_total = 0.5
+        short_qty = 0.5
+
+        async def fetch_balance_report(self):
+            return [
+                {
+                    "name": "indodax", "market": "spot", "status": "ok",
+                    "assets": [{"asset": "BTC", "free": self.spot_total,
+                                "used": 0.0, "total": self.spot_total}],
+                },
+                {"name": "okx", "market": "futures", "status": "ok", "assets": []},
+            ]
+
+        async def fetch_positions(self, symbol):
+            return [{"symbol": symbol, "side": "short", "contracts": self.short_qty}]
+
+    client = MutableClient()
+    position = SimpleNamespace(
+        qty=1.0, local_exchange="indodax", global_exchange="okx",
+        base_asset="BTC", global_symbol="BTC/USDT:USDT",
+    )
+    engine = SimpleNamespace(
+        config=SimpleNamespace(mock_mode=False),
+        client=client,
+        active_positions={"pair": position},
+        _pair_infos={},
+        _exchange_halted={"okx": "operator kill switch"},
+        supabase=FakeSupabase(),
+        failures=[],
+    )
+
+    async def publish_failure(*args, **kwargs):
+        engine.failures.append((args, kwargs))
+
+    engine._publish_execution_failure = publish_failure
+    worker = ExposureReconciliationWorker(engine)
+    await worker.reconcile_once()
+
+    assert engine._exchange_halted["okx"].startswith("exposure reconciliation:")
+
+    client.spot_total = 1.0
+    client.short_qty = 1.0
+    await worker.reconcile_once()
+
+    assert "indodax" not in engine._exchange_halted
+    assert engine._exchange_halted["okx"] == "operator kill switch"
