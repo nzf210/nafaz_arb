@@ -3,6 +3,7 @@ package supabase
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -114,6 +115,38 @@ func TestSaveOpportunitiesUpsertsIdempotentlyAndRetriesTransientFailure(t *testi
 	}
 	if firstKey != "scan-123:indodax:btc_idr->okx:btc/usdt:usdt" {
 		t.Fatalf("idempotency key=%q", firstKey)
+	}
+}
+
+func TestSaveOpportunitiesBatchesLargeScans(t *testing.T) {
+	var calls atomic.Int32
+	var rowCounts []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var rows []map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&rows); err != nil {
+			t.Errorf("decode batch: %v", err)
+		}
+		rowCounts = append(rowCounts, len(rows))
+		calls.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	opportunities := make([]domain.Opportunity, 0, maxBatchSize+1)
+	for i := 0; i < maxBatchSize+1; i++ {
+		op := sampleOpportunity()
+		op.SpotSymbol = fmt.Sprintf("asset_%03d_idr", i)
+		opportunities = append(opportunities, op)
+	}
+	client := &Client{baseURL: server.URL, serviceRoleKey: "test", httpClient: server.Client()}
+	if err := client.SaveOpportunities(context.Background(), "scan-batch", opportunities); err != nil {
+		t.Fatalf("SaveOpportunities: %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("got %d requests, want 2 batches", calls.Load())
+	}
+	if len(rowCounts) != 2 || rowCounts[0] != maxBatchSize || rowCounts[1] != 1 {
+		t.Fatalf("unexpected batch sizes: %v", rowCounts)
 	}
 }
 
