@@ -346,8 +346,11 @@ class SupabaseWriter:
                     "order_fills", "id", fill_row, f"{exchange}:{key}", filled
                 )
                 if delta > 1e-12 and self._queue is not None:
+                    queued_fill = dict(fill_row)
+                    queued_fill["qty"] = delta
+                    queued_fill["quote_qty"] = delta * price
                     try:
-                        self._queue.put_nowait(("order_fills", "id", fill_row))
+                        self._queue.put_nowait(("order_fills", "id", queued_fill))
                     except asyncio.QueueFull:
                         self._dropped += 1
             except Exception:
