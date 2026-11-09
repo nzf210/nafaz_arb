@@ -333,7 +333,7 @@ class SupabaseWriter:
             }
             try:
                 delta = self._outbox.enqueue_cumulative_fill(
-                    "order_fills", "id", fill_row, f"{exchange}:{key}", filled
+                    "order_fills", "id", fill_row, f"{exchange}:{pair_key}:{key}", filled
                 )
             except Exception:
                 self._dropped += 1
