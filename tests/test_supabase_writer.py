@@ -51,7 +51,7 @@ class TestDisabledWriter:
         writer = _writer(enabled=False)
         writer.position_opened("indodax:usdt_idr", _pos(), None)
         writer.event("PROBE")
-        assert writer._queue is None
+        assert writer._outbox is None
 
     def test_missing_credentials_disables(self):
         writer = SupabaseWriter(SimpleNamespace(enabled=True, url="", key="k"))
