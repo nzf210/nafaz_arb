@@ -134,7 +134,7 @@ class ExposureReconciliationWorker:
         for report in reports or []:
             if isinstance(report, dict):
                 report_map[(str(report.get("name", "")).lower(), str(report.get("market", "")).lower())] = report
-                await self._persist_balance_report(report)
+                self._persist_balance_report(report)
 
         spot_expected = defaultdict(float)
         futures_expected = defaultdict(float)
