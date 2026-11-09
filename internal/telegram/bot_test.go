@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -636,5 +637,86 @@ func TestBroadcastExecutionFailureCooldown(t *testing.T) {
 	bot.broadcastTradeEvent(context.Background(), ev)
 	if received != 1 {
 		t.Fatalf("expected cooldown to suppress duplicate alert, got %d messages", received)
+	}
+}
+
+type fakeOpportunityHistoryReader struct {
+	scans []domain.ScanResult
+	err error
+	limit int
+}
+
+func (f *fakeOpportunityHistoryReader) LatestOpportunityScans(_ context.Context, limit int) ([]domain.ScanResult, error) {
+	f.limit = limit
+	return f.scans, f.err
+}
+
+func TestLatestCommandLoadsTenRecentScansFromHistoryReader(t *testing.T) {
+	messages := make(chan SendMessageReq, 12)
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var req SendMessageReq
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			messages <- req
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	reader := &fakeOpportunityHistoryReader{}
+	for i := 0; i < 10; i++ {
+		reader.scans = append(reader.scans, domain.ScanResult{
+			ScanID: fmt.Sprintf("scan-%02d", 10-i),
+			CompletedAt: time.Date(2026, 11, 9, 0, i, 0, 0, time.UTC),
+			Opportunities: []domain.Opportunity{{
+				BaseAsset: "BTC", QuoteAsset: "IDR", SpotSymbol: "btc_idr",
+				PerpSymbol: "BTC/USDT:USDT", NetROIPct: float64(i),
+				LastScannedAt: time.Date(2026, 11, 9, 0, i, 0, 0, time.UTC),
+			}},
+		})
+	}
+	bot.SetOpportunityHistoryReader(reader)
+	bot.handleCommand(context.Background(),
+		&Message{Chat: Chat{ID: -100123456789}, MessageID: 21},
+		"/latest", []string{"/latest"})
+
+	if reader.limit != 10 {
+		t.Fatalf("reader limit=%d, want 10", reader.limit)
+	}
+	for i := 0; i < 10; i++ {
+		select {
+		case msg := <-messages:
+			if !strings.Contains(msg.Text, fmt.Sprintf("Scan Peluang Terbaru %d/10", i+1)) {
+				t.Fatalf("message %d missing scan sequence: %s", i+1, msg.Text)
+			}
+			if !strings.Contains(msg.Text, fmt.Sprintf("scan-%02d", 10-i)) {
+				t.Fatalf("message %d missing scan ID: %s", i+1, msg.Text)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("only received %d of 10 scan messages", i)
+		}
+	}
+}
+
+func TestLatestCommandReportsHistoryReadFailure(t *testing.T) {
+	messages := make(chan SendMessageReq, 1)
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var req SendMessageReq
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			messages <- req
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.SetOpportunityHistoryReader(&fakeOpportunityHistoryReader{err: fmt.Errorf("database unavailable")})
+	bot.handleCommand(context.Background(),
+		&Message{Chat: Chat{ID: -100123456789}, MessageID: 22},
+		"/latest", []string{"/latest"})
+	msg := <-messages
+	if !strings.Contains(msg.Text, "Gagal mengambil 10 scan") {
+		t.Fatalf("unexpected history failure message: %s", msg.Text)
 	}
 }
