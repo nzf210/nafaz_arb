@@ -181,7 +181,7 @@ func (b *Bot) Start(ctx context.Context) error {
 		{Command: "balance", Description: "💰 Cek saldo live Spot & Futures semua aset"},
 		{Command: "history", Description: "📜 Riwayat transaksi yang berhasil ditutup"},
 		{Command: "scan", Description: "🔍 Jalankan scan pasar & cari peluang baru"},
-		{Command: "latest", Description: "📋 Lihat hasil scan & peluang ROI tertinggi"},
+		{Command: "latest", Description: "📋 Lihat peluang dari 10 scan terakhir"},
 		{Command: "pair", Description: "🔎 Cek peluang aset tertentu (misal: /pair BTC)"},
 		{Command: "active", Description: "🔥 Lihat peluang aktif yang sedang berjalan"},
 		{Command: "frozen", Description: "❄️ Lihat daftar pasangan yang dibekukan"},
