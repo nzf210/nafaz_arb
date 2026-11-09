@@ -112,7 +112,7 @@ func TestSaveOpportunitiesUpsertsIdempotentlyAndRetriesTransientFailure(t *testi
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("got %d calls, want retry count 2", got)
 	}
-	if firstKey != "scan-123:indodax:btc_idr" {
+	if firstKey != "scan-123:indodax:btc_idr->okx:btc/usdt:usdt" {
 		t.Fatalf("idempotency key=%q", firstKey)
 	}
 }
