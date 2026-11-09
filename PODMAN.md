@@ -55,7 +55,9 @@ Pastikan VPS Anda telah terpasang:
 
 3. Buat folder penyimpanan data histori peluang:
    ```bash
-   mkdir -p data
+   mkdir -p data data/executor
+   # Pastikan UID/GID ini sama dengan APP_UID/APP_GID saat build container.
+   chown -R ${APP_UID:-1000}:${APP_GID:-1000} data/executor
    ```
 
 4. Edit file `config.json` sesuai kebutuhan:
@@ -272,6 +274,9 @@ Sediakan dua environment variable berikut pada host/container:
 
 - `SUPABASE_URL`: URL project Supabase HTTPS.
 - `SUPABASE_KEY`: secret `service_role` key (server-only), bukan anon/publishable key.
+- `SUPABASE_OUTBOX_PATH`: file SQLite outbox executor; default
+  `/app/data/executor/supabase-outbox.sqlite3`. Direktori ini dipetakan ke
+  `./data/executor` di host agar antrean tetap ada setelah container restart/recreate.
 
 Contoh memasukkan key tanpa menuliskannya sebagai literal ke command history:
 

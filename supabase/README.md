@@ -63,15 +63,29 @@ Still schema-only / not yet connected to runtime writes: `position_legs`,
 `funding_payments`, `balance_snapshots`, and `executor_status_snapshots`.
 Strategy/risk configuration tables are also not read dynamically by this runtime.
 
-Delivery limitations are important:
+Delivery guarantees and remaining limitations:
 
-- The executor uses a bounded in-process queue (512 items). It can drop writes
-  under backpressure, and a process crash can lose queued-but-unflushed events.
-- The scanner retries each write a bounded number of times but does not retain a
-  failed batch after all retries.
-- There is no durable Redis/disk outbox or reconciliation worker yet. Supabase
-  history can therefore contain gaps during prolonged outages. Do not treat it as
-  a complete exchange ledger or as proof that an order/position is flat.
+- Executor writes are first committed to a local SQLite outbox at
+  `SUPABASE_OUTBOX_PATH` (default:
+  `/app/data/executor/supabase-outbox.sqlite3`) using WAL and
+  `synchronous=FULL`. The database must live on a persistent host volume.
+- The async worker retries failed PostgREST delivery with bounded exponential
+  backoff. Rows are deleted only after a successful idempotent upsert; permanent
+  schema/permission failures remain queued for replay after repair.
+- Order-fill cumulative watermarks and their corresponding fill rows are
+  committed in one SQLite transaction. This prevents a restart between those
+  operations from silently advancing the watermark without journaling the fill.
+- The in-memory queue is only a wakeup hint. A full wakeup queue does not discard
+  the already committed outbox row. The local outbox has a 50,000-row hard cap;
+  capacity or disk errors are logged as critical and must be monitored.
+- Redis remains the real-time coordination/recovery layer. SQLite is a local
+  delivery journal, not a cross-host shared database; run only one executor
+  writer against a given outbox file and keep that file on persistent local
+  storage. Supabase remains an audit sink, never authority for exchange exposure.
+- Scanner persistence still uses bounded in-process retry and does not yet have
+  a durable scanner outbox. Scanner history can therefore have gaps during long
+  Supabase outages. Do not treat Supabase history as a complete exchange ledger
+  or proof that an order/position is flat.
 
 ## Runtime configuration
 
@@ -80,12 +94,15 @@ Set these variables in the server environment and inject them into both
 
 - `SUPABASE_URL=https://<project-ref>.supabase.co`
 - `SUPABASE_KEY=<server-only service_role key>`
+- `SUPABASE_OUTBOX_PATH=/app/data/executor/supabase-outbox.sqlite3` (executor only)
 
 The existing `SUPABASE_KEY` name is retained for compatibility with the executor;
 its value must be the Supabase `service_role` secret, never the anon/publishable
 key. The scanner also rejects non-HTTPS remote URLs. HTTP is accepted only for
-loopback tests. If both variables are absent, persistence stays disabled. If only
+loopback tests. If both URL/key are absent, persistence stays disabled. If only
 one is supplied, scanner startup logs a warning and continues without persistence.
+The executor's outbox path must be on persistent local storage and writable by
+the container UID; Compose mounts `./data/executor` at `/app/data/executor`.
 
 Do not commit credentials, place them in `config.example.json`, bake them into an
 image, or expose them to Vue/Telegram. Use a host secret manager or a protected
