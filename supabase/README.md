@@ -40,19 +40,67 @@ Do not run the migration against a production project until its existing schema 
 migration history have been checked. Do not make ad-hoc remote schema changes in
 Studio after adopting versioned migrations.
 
-## Runtime integration status
+## Runtime persistence status
 
-This migration establishes the durable schema only. The current scanner/executor
-still uses Redis for live coordination and the configured JSON opportunity-history
-file for scanner history. The Supabase tables are not yet wired into runtime writes.
-Do not treat Supabase as the operational source of truth until a persistence adapter
-with idempotent writes, retry/outbox handling, and integration tests has been merged.
+The runtime uses Supabase as a best-effort audit/history sink. It is not the
+authority for live exposure and is not in the exchange-order critical path.
 
-The intended runtime split is:
+Implemented writes:
 
-- Redis: ephemeral signals, live prices, pub/sub, fast executor coordination.
-- Supabase: durable order/fill ledger, position lifecycle, funding settlement ledger,
-  closed trades, risk/audit events, scanner opportunity history and status snapshots.
+- Go scanner: evaluated opportunities to `scanner_opportunities`, using
+  `scan_id + pair_key` as a deterministic nullable-unique idempotency key.
+  Transient PostgREST/network errors are retried; permanent schema/auth errors
+  are logged and do not suppress Redis signal delivery.
+- Python executor: `positions`, `orders`, `order_fills`, `closed_trades`,
+  `executor_events`, and `risk_events`. Client-generated/deterministic keys
+  make retries idempotent; order-fill rows are derived from cumulative filled
+  quantity and only new deltas are emitted.
+- Redis remains authoritative for active-position recovery, locks, live prices,
+  balances, pub/sub, and fast coordination. Exchange APIs remain authoritative
+  for actual balances, order state, and position exposure.
 
-The executor must continue protecting/closing live exposure if Supabase is unavailable.
-A Supabase outage must never prevent a required hedge, rollback, or emergency close.
+Still schema-only / not yet connected to runtime writes: `position_legs`,
+`funding_payments`, `balance_snapshots`, and `executor_status_snapshots`.
+Strategy/risk configuration tables are also not read dynamically by this runtime.
+
+Delivery limitations are important:
+
+- The executor uses a bounded in-process queue (512 items). It can drop writes
+  under backpressure, and a process crash can lose queued-but-unflushed events.
+- The scanner retries each write a bounded number of times but does not retain a
+  failed batch after all retries.
+- There is no durable Redis/disk outbox or reconciliation worker yet. Supabase
+  history can therefore contain gaps during prolonged outages. Do not treat it as
+  a complete exchange ledger or as proof that an order/position is flat.
+
+## Runtime configuration
+
+Set these variables in the server environment and inject them into both
+`nafaz-scanner` and `nafaz-executor`:
+
+- `SUPABASE_URL=https://<project-ref>.supabase.co`
+- `SUPABASE_KEY=<server-only service_role key>`
+
+The existing `SUPABASE_KEY` name is retained for compatibility with the executor;
+its value must be the Supabase `service_role` secret, never the anon/publishable
+key. The scanner also rejects non-HTTPS remote URLs. HTTP is accepted only for
+loopback tests. If both variables are absent, persistence stays disabled. If only
+one is supplied, scanner startup logs a warning and continues without persistence.
+
+Do not commit credentials, place them in `config.example.json`, bake them into an
+image, or expose them to Vue/Telegram. Use a host secret manager or a protected
+systemd/container environment. The repository's `.env` is git-ignored, but a
+tracked or shared plaintext secret file is still unsafe.
+
+## Apply migrations
+
+1. Install Supabase CLI and authenticate.
+2. Link the intended project: `supabase link --project-ref <project-ref>`.
+3. Inspect remote history: `supabase migration list --remote`.
+4. Review pending SQL and the remote schema before applying:
+   `supabase db push --remote`.
+
+CI applies every versioned migration in lexical order, replays each migration to
+check idempotency, and runs `supabase/tests/schema_smoke.sql` against PostgreSQL 16.
+The original baseline migration remains immutable. Do not apply migrations to the
+production project until its existing migration history and schema have been reviewed.
