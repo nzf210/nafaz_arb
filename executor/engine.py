@@ -256,9 +256,6 @@ class ArbitrageEngine(
             except Exception as exc:
                 actual_short_qty = None
                 reason = f"cannot verify futures position after restart: {exc}"
-            finally:
-                if token is not None:
-                    self._reset_pair_client(token)
             else:
                 tolerance = max(1e-10, expected_qty * 1e-4)
                 if abs(actual_short_qty - expected_qty) <= tolerance:
@@ -271,6 +268,9 @@ class ArbitrageEngine(
                     f"futures quantity mismatch after restart: expected={expected_qty}, "
                     f"exchange={actual_short_qty}"
                 )
+            finally:
+                if token is not None:
+                    self._reset_pair_client(token)
 
             logger.critical(
                 f"[Recovery] {global_symbol}: {reason}; restored positions blocked"
