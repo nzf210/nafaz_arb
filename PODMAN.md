@@ -57,7 +57,7 @@ Pastikan VPS Anda telah terpasang:
    ```bash
    mkdir -p data data/executor data/scanner
    # Pastikan UID/GID ini sama dengan APP_UID/APP_GID saat build container.
-   chown -R ${APP_UID:-1000}:${APP_GID:-1000} data/executor
+   chown -R ${APP_UID:-1000}:${APP_GID:-1000} data/executor data/scanner
    ```
 
 4. Edit file `config.json` sesuai kebutuhan:
