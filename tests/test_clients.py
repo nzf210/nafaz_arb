@@ -209,3 +209,50 @@ def test_p3_02_client_order_id_is_bounded():
     """Exchange limits are tight; an over-long pair must not blow past 36 chars."""
     oid = build_client_order_id("a" * 60 + ":" + "b" * 60, "force-close", 123456)
     assert len(oid) <= 36
+
+
+def test_live_exchange_client_resolves_exact_pair_without_mutating_default_clients():
+    from types import SimpleNamespace
+    from executor.exchange_client import ExchangeClient
+
+    toko = object()
+    indo = object()
+    okx = object()
+    mexc = object()
+    balances = {
+        "tokocrypto": {"market": "spot", "client": toko},
+        "indodax": {"market": "spot", "client": indo},
+        "okx": {"market": "futures", "client": okx},
+        "mexc": {"market": "futures", "client": mexc},
+    }
+    default = ExchangeClient(indo, okx, balances)
+    toko_okx = default.for_pair(SimpleNamespace(
+        local_exchange="tokocrypto", global_exchange="okx"
+    ))
+    indo_mexc = default.for_pair(SimpleNamespace(
+        local_exchange="indodax", global_exchange="mexc"
+    ))
+
+    assert toko_okx.local is toko
+    assert toko_okx.global_fut is okx
+    assert indo_mexc.local is indo
+    assert indo_mexc.global_fut is mexc
+    assert default.local is indo
+    assert default.global_fut is okx
+
+
+def test_live_exchange_client_rejects_unconfigured_pair_venue():
+    from types import SimpleNamespace
+    from executor.exchange_client import ExchangeClient
+
+    spot = object()
+    futures = object()
+    client = ExchangeClient(spot, futures, {
+        "tokocrypto": {"market": "spot", "client": spot},
+        "okx": {"market": "futures", "client": futures},
+        "mexc": {"market": "futures", "client": None, "error": "credentials missing"},
+    })
+    with pytest.raises(LookupError, match="futures client unavailable"):
+        client.for_pair(SimpleNamespace(
+            local_exchange="tokocrypto", global_exchange="mexc"
+        ))
