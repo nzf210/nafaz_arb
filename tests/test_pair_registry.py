@@ -83,3 +83,21 @@ def test_pair_key_can_be_built_from_pair_info_object():
 def test_pair_key_rejects_missing_pair_info_fields():
     with pytest.raises(ValueError, match="local_exchange is required"):
         ExchangePairKey.from_pair_info({})
+
+
+@pytest.mark.parametrize(
+    ("spot_symbol", "futures_symbol", "expected_spot", "expected_futures"),
+    [
+        ("btc_idr", "BTCUSDT", "BTC/IDR", "BTC/USDT"),
+        ("ETH/IDR", "ETH-USDC", "ETH/IDR", "ETH/USDC"),
+        ("SOL-IDR", "SOLUSDT", "SOL/IDR", "SOL/USDT"),
+    ],
+)
+def test_pair_key_normalizes_compact_and_delimited_symbols(
+    spot_symbol, futures_symbol, expected_spot, expected_futures
+):
+    key = ExchangePairKey.create(
+        "tokocrypto", spot_symbol, "okx", futures_symbol
+    )
+    assert key.local_symbol == expected_spot
+    assert key.global_symbol == expected_futures
