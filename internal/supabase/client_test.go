@@ -205,3 +205,55 @@ func TestNewFromEnvAllowsLoopbackHTTPForLocalTests(t *testing.T) {
 	}
 	client.Close()
 }
+
+func TestLatestOpportunityScansReturnsTenNewestDistinctScans(t *testing.T) {
+	rows := make([]map[string]any, 0, 12)
+	for i := 0; i < 12; i++ {
+		op := sampleOpportunity()
+		op.LastScannedAt = time.Date(2026, 11, 9, 0, i, 0, 0, time.UTC)
+		op.NetROIPct = float64(i)
+		rows = append(rows, map[string]any{
+			"scan_id": fmt.Sprintf("scan-%02d", i+1),
+			"observed_at": op.LastScannedAt,
+			"payload": op,
+		})
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/rest/v1/scanner_opportunities" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		if r.URL.Query().Get("select") != "scan_id,observed_at,payload" ||
+			r.URL.Query().Get("order") != "observed_at.desc,scan_id.desc" ||
+			r.URL.Query().Get("limit") != "1000" ||
+			r.URL.Query().Get("offset") != "0" {
+			t.Errorf("unexpected history query: %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("apikey") != "service-role-test" {
+			t.Error("missing service-role API key")
+		}
+		_ = json.NewEncoder(w).Encode(rows)
+	}))
+	defer server.Close()
+
+	client := &Client{baseURL: server.URL, serviceRoleKey: "service-role-test", httpClient: server.Client()}
+	scans, err := client.LatestOpportunityScans(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("LatestOpportunityScans: %v", err)
+	}
+	if len(scans) != 10 {
+		t.Fatalf("got %d scans, want 10", len(scans))
+	}
+	if scans[0].ScanID != "scan-12" || scans[9].ScanID != "scan-03" {
+		t.Fatalf("unexpected scan window: first=%s last=%s", scans[0].ScanID, scans[9].ScanID)
+	}
+	if len(scans[0].Opportunities) != 1 || scans[0].Opportunities[0].NetROIPct != 11 {
+		t.Fatalf("latest scan payload not reconstructed: %+v", scans[0])
+	}
+}
+
+func TestLatestOpportunityScansRejectsUnavailableReader(t *testing.T) {
+	var client *Client
+	if _, err := client.LatestOpportunityScans(context.Background(), 10); err == nil {
+		t.Fatal("expected missing Supabase reader error")
+	}
+}
