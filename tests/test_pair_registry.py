@@ -137,11 +137,6 @@ def test_pair_key_strips_mexc_adapter_namespace_only_for_mexc():
 
 
 def test_pair_key_does_not_strip_unknown_namespace_as_asset_prefix():
-    key = ExchangePairKey.create(
-        "tokocrypto", "toko:BTC_USDT", "okx", "UNKNOWN:BTC-USDT-SWAP"
-    )
-    assert key.local_symbol == "BTC/USDT"
-    assert key.global_symbol == "UNKNOWN:BTC/USDT"
     with pytest.raises(ValueError, match="base asset mismatch"):
         ExchangePairKey.create(
             "tokocrypto", "toko:BTC_USDT", "okx", "UNKNOWN:BTC-USDT-SWAP"
