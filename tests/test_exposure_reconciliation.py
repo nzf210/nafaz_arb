@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from executor.exchange_client import ExchangeClient
 from executor.models import ActivePosition
 from executor.exposure_reconciliation import (
     ExposureReconciliationWorker,
@@ -186,3 +187,53 @@ def test_active_position_round_trip_keeps_reconciliation_metadata():
 
     assert restored.base_asset == "BTC"
     assert restored.global_symbol == "BTC/USDT:USDT"
+
+
+
+class FakeBalanceVenue:
+    def __init__(self, venue_id, balance=None, error=None):
+        self.id = venue_id
+        self.balance = balance or {}
+        self.error = error
+
+    async def fetch_balance(self):
+        if self.error:
+            raise self.error
+        return self.balance
+
+
+@pytest.mark.asyncio
+async def test_exchange_client_balance_report_normalizes_both_venues():
+    local = FakeBalanceVenue(
+        "indodax",
+        {"free": {"BTC": 0.4}, "used": {"BTC": 0.1}, "total": {"BTC": 0.5}},
+    )
+    futures = FakeBalanceVenue(
+        "okx",
+        {"free": {"USDT": 80}, "used": {"USDT": 20}, "total": {"USDT": 100}},
+    )
+
+    reports = await ExchangeClient(local, futures).fetch_balance_report()
+
+    assert reports[0]["name"] == "indodax"
+    assert reports[0]["market"] == "spot"
+    assert reports[0]["assets"] == [
+        {"asset": "BTC", "free": 0.4, "used": 0.1, "total": 0.5}
+    ]
+    assert reports[1]["name"] == "okx"
+    assert reports[1]["market"] == "futures"
+    assert reports[1]["assets"][0]["total"] == 100
+
+
+@pytest.mark.asyncio
+async def test_exchange_client_reports_failed_venue_without_faking_zero_balance():
+    local = FakeBalanceVenue("indodax", error=RuntimeError("private API unavailable"))
+    futures = FakeBalanceVenue(
+        "okx", {"free": {"USDT": 10}, "used": {"USDT": 0}, "total": {"USDT": 10}}
+    )
+
+    reports = await ExchangeClient(local, futures).fetch_balance_report()
+
+    assert reports[0]["status"] == "error"
+    assert reports[0]["assets"] == []
+    assert reports[1]["status"] == "ok"
