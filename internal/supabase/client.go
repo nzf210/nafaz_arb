@@ -95,7 +95,7 @@ func buildRows(scanID string, opportunities []domain.Opportunity) []opportunityR
 			continue
 		}
 
-		pairKey := localExchange + ":" + strings.ToLower(localSymbol)
+		pairKey := localExchange + ":" + strings.ToLower(localSymbol) + "->" + globalExchange + ":" + strings.ToLower(globalSymbol)
 		status := strings.TrimSpace(op.ProfitabilityStatus)
 		if op.TradingEligible {
 			status = "ELIGIBLE"
