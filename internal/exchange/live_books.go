@@ -29,8 +29,13 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 	}
 	if symbol != "" {
 		l.mu.RLock()
-		cache, maxAge := l.wsCache, l.wsMaxAge
+		manager, cache, maxAge, okxMaxAge := l.okxBooks, l.wsCache, l.wsMaxAge, l.okxWSMaxAge
 		l.mu.RUnlock()
+		if exchangeName == "okx" && manager != nil {
+			if book, ok := manager.Get(symbol, okxMaxAge); ok {
+				return book, nil
+			}
+		}
 		if cache != nil {
 			book, ok, isDuplicate, isOutOfOrder, isGap, _ := cache.Get(exchangeName, symbol, maxAge)
 			if !ok {
@@ -46,9 +51,44 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 			}
 		}
 	}
-	book, err := fetch()
+	var book domain.OrderBook
+	var err error
+	if exchangeName == "okx" {
+		book, err = l.fetchOKXBookSingleflight(symbol, fetch)
+		if err != nil { err = fmt.Errorf("okx REST order-book fallback failed for %s: %w", symbol, err) }
+	} else {
+		book, err = fetch()
+	}
 	l.recordOutcome(exchangeName, err)
 	return book, err
+}
+
+type okxBookCall struct {
+	done chan struct{}
+	book domain.OrderBook
+	err error
+}
+
+// fetchOKXBookSingleflight collapses concurrent cache misses for one instrument
+// into one REST recovery request. Every caller observes the same result.
+func (l *LiveAdapter) fetchOKXBookSingleflight(symbol string, fetch func() (domain.OrderBook, error)) (domain.OrderBook, error) {
+	if symbol == "" { return fetch() }
+	l.mu.Lock()
+	if call := l.okxBookCalls[symbol]; call != nil {
+		l.mu.Unlock()
+		<-call.done
+		return call.book, call.err
+	}
+	call := &okxBookCall{done: make(chan struct{})}
+	l.okxBookCalls[symbol] = call
+	l.mu.Unlock()
+
+	call.book, call.err = fetch()
+	l.mu.Lock()
+	delete(l.okxBookCalls, symbol)
+	close(call.done)
+	l.mu.Unlock()
+	return call.book, call.err
 }
 
 // SpotOrderBook fetches live order book depth from Tokocrypto, Indodax, or MEXC Spot.
@@ -228,14 +268,10 @@ func cleanSymbol(symbol string) string {
 
 func (l *LiveAdapter) fetchOKXOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
 	rawSymbol := cleanSymbol(symbol)
-	endpoint := fmt.Sprintf("%s/api/v5/market/books?instId=%s&sz=20", l.okxBaseURL, url.QueryEscape(rawSymbol))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("okx depth req: %w", err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
+	path := fmt.Sprintf("/api/v5/market/books?instId=%s&sz=20", url.QueryEscape(rawSymbol))
+	resp, err := l.okxDo(ctx, path, func() (*http.Request, error) {
+		return l.newOKXRequest(ctx, path)
+	})
 	if err != nil {
 		return domain.OrderBook{}, fmt.Errorf("okx depth request: %w", err)
 	}
