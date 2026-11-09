@@ -71,3 +71,101 @@ begin
         raise exception 'trade currency / FX audit columns are missing';
     end if;
 end $$;
+
+-- The workflow inserts this row after the immutable baseline and before
+-- the idempotency migration. It must survive with a NULL key.
+do $$
+begin
+    if (
+        select count(*) from public.scanner_opportunities
+        where scan_id = 'legacy-before-idempotency' and idempotency_key is null
+    ) <> 1 then
+        raise exception 'additive idempotency migration did not preserve legacy scanner history';
+    end if;
+end $$;
+
+-- A nullable unique key must continue accepting multiple historical rows.
+insert into public.scanner_opportunities (
+    scan_id, pair_key, local_exchange, global_exchange,
+    local_symbol, global_symbol, quote_asset, eligibility_status,
+    observed_at, payload
+) values (
+    'legacy-null-key-second', 'indodax:legacy_idr',
+    'indodax', 'okx', 'legacy_idr', 'LEGACY/USDT:USDT',
+    'IDR', 'EXCLUDED', now(), '{}'::jsonb
+);
+
+do $$
+begin
+    if (
+        select count(*) from public.scanner_opportunities
+        where pair_key = 'indodax:legacy_idr' and idempotency_key is null
+    ) <> 2 then
+        raise exception 'nullable unique key rejected or lost legacy rows';
+    end if;
+end $$;
+
+delete from public.scanner_opportunities
+where scan_id in ('legacy-before-idempotency', 'legacy-null-key-second');
+
+-- Runtime scanner repository contract: nullable unique keys preserve historical rows
+-- and deterministic keys make a retried scan an upsert rather than a duplicate.
+do $$
+begin
+    if not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'scanner_opportunities'
+          and column_name = 'idempotency_key'
+    ) then
+        raise exception 'scanner opportunity idempotency_key column is missing';
+    end if;
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid = 'public.scanner_opportunities'::regclass
+          and conname = 'uq_scanner_opportunities_idempotency_key'
+          and contype = 'u'
+    ) then
+        raise exception 'scanner opportunity idempotency constraint is missing';
+    end if;
+end $$;
+
+insert into public.scanner_opportunities (
+    scan_id, pair_key, idempotency_key, local_exchange, global_exchange,
+    local_symbol, global_symbol, quote_asset, eligibility_status, observed_at, payload
+) values (
+    'schema-smoke-idempotency', 'indodax:btc_idr->okx:btc/usdt:usdt',
+    'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt', 'indodax', 'okx',
+    'btc_idr', 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":1}'::jsonb
+)
+on conflict (idempotency_key) do update
+set payload = excluded.payload;
+
+insert into public.scanner_opportunities (
+    scan_id, pair_key, idempotency_key, local_exchange, global_exchange,
+    local_symbol, global_symbol, quote_asset, eligibility_status, observed_at, payload
+) values (
+    'schema-smoke-idempotency', 'indodax:btc_idr->okx:btc/usdt:usdt',
+    'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt', 'indodax', 'okx',
+    'btc_idr', 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":2}'::jsonb
+)
+on conflict (idempotency_key) do update
+set payload = excluded.payload;
+
+do $$
+begin
+    if (
+        select count(*) from public.scanner_opportunities
+        where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt'
+    ) <> 1 then
+        raise exception 'scanner opportunity retry created duplicate rows';
+    end if;
+    if (
+        select payload ->> 'attempt' from public.scanner_opportunities
+        where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt'
+    ) <> '2' then
+        raise exception 'scanner opportunity upsert did not update the existing row';
+    end if;
+end $$;
+
+delete from public.scanner_opportunities
+where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt';

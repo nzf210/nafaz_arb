@@ -2,7 +2,7 @@ name: Test
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "feat/supabase-scanner-persistence"]
   push:
     branches: [main, "feat/**", "fix/**"]
 
@@ -60,14 +60,31 @@ jobs:
             -c "CREATE ROLE anon NOLOGIN;" \
             -c "CREATE ROLE authenticated NOLOGIN;" \
             -c "CREATE ROLE service_role NOLOGIN BYPASSRLS;"
-      - name: Apply migration
+      - name: Apply all versioned migrations in order
         run: |
-          psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
-            -f supabase/migrations/20261107000100_create_nafaz_core_schema.sql
-      - name: Verify migration is idempotent
+          for migration in supabase/migrations/*.sql; do
+            echo "Applying $migration"
+            psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 -f "$migration"
+            if [[ "$migration" == "supabase/migrations/20261107000100_create_nafaz_core_schema.sql" ]]; then
+              # Seed a pre-existing baseline row before the additive idempotency migration.
+              psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 -c "
+                INSERT INTO public.scanner_opportunities (
+                  scan_id, pair_key, local_exchange, global_exchange,
+                  local_symbol, global_symbol, quote_asset, eligibility_status,
+                  observed_at, payload
+                ) VALUES (
+                  'legacy-before-idempotency', 'indodax:legacy_idr',
+                  'indodax', 'okx', 'legacy_idr', 'LEGACY/USDT:USDT',
+                  'IDR', 'EXCLUDED', now(), '{}'::jsonb
+                );"
+            fi
+          done
+      - name: Verify every migration is idempotent
         run: |
-          psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
-            -f supabase/migrations/20261107000100_create_nafaz_core_schema.sql
+          for migration in supabase/migrations/*.sql; do
+            echo "Replaying $migration"
+            psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 -f "$migration"
+          done
       - name: Verify RLS, grants and updated_at triggers
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
