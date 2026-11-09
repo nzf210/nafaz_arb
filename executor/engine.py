@@ -699,6 +699,42 @@ class ArbitrageEngine(
             self._pair_locks[pair_tag] = lock
         return lock
 
+    def _pair_info_for_tag(self, pair_tag: str):
+        info = self._pair_infos.get(pair_tag)
+        if info is not None:
+            return info
+        pending = self.pending_entry_orders.get(pair_tag) or self.pending_exit_orders.get(pair_tag) or {}
+        pos = self.active_positions.get(pair_tag)
+        if pos is not None:
+            local_symbol = pos.symbol
+            global_symbol = pos.global_symbol
+            return type("RecoveredPairInfo", (), {
+                "local_exchange": pos.local_exchange,
+                "global_exchange": pos.global_exchange,
+                "local_symbol": local_symbol,
+                "global_symbol": global_symbol,
+                "base_asset": pos.base_asset or local_symbol.split("/")[0],
+                "quote_asset": local_symbol.split("/")[-1] if "/" in local_symbol else "IDR",
+            })()
+        if pending.get("local_exchange") and pending.get("global_exchange"):
+            return type("PendingPairInfo", (), {
+                "local_exchange": pending["local_exchange"],
+                "global_exchange": pending["global_exchange"],
+                "local_symbol": pending.get("symbol", ""),
+                "global_symbol": pending.get("global_symbol", ""),
+                "base_asset": pending.get("base_asset", ""),
+                "quote_asset": pending.get("quote_asset", "IDR"),
+            })()
+        raise LookupError(f"exchange pair metadata unavailable for {pair_tag}")
+
+    async def _run_pair_bound(self, pair_tag: str, operation, *args, **kwargs):
+        pair_info = self._pair_info_for_tag(pair_tag)
+        token = self._bind_pair_client(pair_info)
+        try:
+            return await operation(*args, **kwargs)
+        finally:
+            self._reset_pair_client(token)
+
     def _pair_venues(self, pair_tag: str) -> tuple[str, str]:
         """Best-effort (local_exchange, global_exchange) names for a pair tag."""
         pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
