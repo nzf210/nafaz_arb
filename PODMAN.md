@@ -55,7 +55,7 @@ Pastikan VPS Anda telah terpasang:
 
 3. Buat folder penyimpanan data histori peluang:
    ```bash
-   mkdir -p data data/executor
+   mkdir -p data data/executor data/scanner
    # Pastikan UID/GID ini sama dengan APP_UID/APP_GID saat build container.
    chown -R ${APP_UID:-1000}:${APP_GID:-1000} data/executor
    ```
@@ -277,6 +277,9 @@ Sediakan dua environment variable berikut pada host/container:
 - `SUPABASE_OUTBOX_PATH`: file SQLite outbox executor; default
   `/app/data/executor/supabase-outbox.sqlite3`. Direktori ini dipetakan ke
   `./data/executor` di host agar antrean tetap ada setelah container restart/recreate.
+- `SUPABASE_SCANNER_OUTBOX_PATH`: jurnal JSONL scanner; default
+  `/app/data/scanner/supabase-outbox.jsonl`. Path ini berada di volume
+  `./data` yang sama tetapi direktori scanner terpisah dari executor.
 
 Contoh memasukkan key tanpa menuliskannya sebagai literal ke command history:
 
