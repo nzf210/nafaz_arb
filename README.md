@@ -289,21 +289,26 @@ operational tables for exchange accounts, strategy/risk configuration, market pa
 scanner opportunities, orders/fills, positions/legs, funding payments, closed trades,
 balances, risk events, and executor events/status snapshots.
 
-**Important:** the schema is created, and the executor now writes to it on a
-best-effort basis. Redis remains the live coordination layer and scanner
-opportunity history still uses the configured JSON file.
+**Runtime persistence:** the Go scanner writes evaluated snapshots to
+`scanner_opportunities`; the Python executor writes `positions`, `orders`,
+`order_fills`, `closed_trades`, `executor_events`, and `risk_events`.
+Scanner opportunity upserts use a deterministic `scan_id + pair_key` idempotency
+key. Executor order/fill writes use client-generated or deterministic ids.
+Redis remains authoritative for live coordination and active exposure recovery;
+the scanner's existing JSON history remains in place for its API.
 
-Set both `SUPABASE_URL` and `SUPABASE_KEY` (secret/service-role key — never the
-publishable key, whose `anon` role these tables deliberately deny) in the server
-environment to enable it. With either unset the writer is inert, and every write
-is queued and flushed by a background task, so an unreachable database can never
-delay a hedge, rollback, or force close.
+Set `SUPABASE_URL` and `SUPABASE_KEY` in the server environment to enable both
+writers. `SUPABASE_KEY` must be the server-only Supabase `service_role` secret,
+never the anon/publishable key. Do not commit it, put it in the image, or expose it
+to frontend/Telegram clients. If credentials are absent, persistence is disabled;
+a database outage does not block exchange risk management.
 
-Persisted by the executor: `positions`, `orders`, `order_fills`, `closed_trades`,
-`executor_events`. Writes are upserts on client-generated ids, so retries are
-idempotent, and fill rows derive from cumulative filled quantity so a replayed
-write cannot duplicate a fill. `scanner_opportunities`, `balance_snapshots`,
-`funding_payments`, and `executor_status_snapshots` are not yet written.
+Still schema-only: `position_legs`, `funding_payments`, `balance_snapshots`,
+and `executor_status_snapshots`. There is no durable outbox yet: executor's
+bounded in-memory queue can drop writes under backpressure or process failure,
+and scanner writes are discarded after bounded retries. Supabase history can
+therefore contain gaps and must not be treated as a complete exchange ledger.
+See [Supabase runtime and deployment notes](./supabase/README.md).
 
 
 For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.
