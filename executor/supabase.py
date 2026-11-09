@@ -8,12 +8,15 @@ cannot duplicate a position, an order, or a fill.
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import aiohttp
+
+from executor.supabase_outbox import DurableOutbox
 
 logger = logging.getLogger("executor.supabase")
 
@@ -82,6 +85,17 @@ class SupabaseWriter:
         self._task: Optional[asyncio.Task] = None
         self._session: Optional[aiohttp.ClientSession] = None
         self._dropped = 0
+        self._outbox: Optional[DurableOutbox] = None
+        if self.enabled:
+            outbox_path = str(
+                getattr(config, "outbox_path", "")
+                or os.getenv("SUPABASE_OUTBOX_PATH", "/app/data/executor/supabase-outbox.sqlite3")
+            )
+            try:
+                self._outbox = DurableOutbox(outbox_path)
+            except Exception:
+                self.enabled = False
+                logger.exception("Supabase persistence disabled: durable outbox could not be opened")
 
         # Client-generated ids keep upserts idempotent across retries and
         # restarts, and remove the need to read an id back from Supabase.
@@ -95,20 +109,21 @@ class SupabaseWriter:
     async def start(self) -> None:
         if not self.enabled or self._task is not None:
             return
+        if self._outbox is None:
+            logger.error("Supabase persistence is enabled but durable outbox is unavailable")
+            return
         self._queue = asyncio.Queue(maxsize=_QUEUE_MAX)
         self._task = asyncio.create_task(self._run())
-        logger.info("Supabase persistence enabled -> %s", self.url)
+        logger.info("Supabase persistence enabled -> %s (durable outbox: %s)", self.url, self._outbox.path)
 
     async def close(self) -> None:
         if self._task is None:
             return
-        if self._queue is not None:
-            try:
-                await asyncio.wait_for(self._queue.join(), timeout=2.0)
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Supabase queue not drained on shutdown (%d pending)", self._queue.qsize()
-                )
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while self._outbox is not None and self._outbox.pending_count() and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+        if self._outbox is not None and self._outbox.pending_count():
+            logger.warning("Supabase durable outbox retained %d pending rows for restart", self._outbox.pending_count())
         self._task.cancel()
         try:
             await self._task
@@ -122,19 +137,31 @@ class SupabaseWriter:
                 pass
             self._session = None
         if self._dropped:
-            logger.warning("Supabase writer dropped %d writes under backpressure", self._dropped)
+            logger.warning("Supabase writer dropped %d in-memory wakeups; durable rows remain in SQLite", self._dropped)
+        if self._outbox is not None:
+            self._outbox.close()
+            self._outbox = None
 
     # ------------------------------------------------------------------- emit
 
     def _emit(self, table: str, row: Dict[str, Any], on_conflict: Optional[str] = None) -> None:
         """Queues one row. Never blocks, never raises."""
-        if not self.enabled or self._queue is None:
+        if not self.enabled or self._outbox is None:
             return
-        item = (table, on_conflict, row)
         try:
-            self._queue.put_nowait(item)
-        except asyncio.QueueFull:
+            self._outbox.enqueue(table, on_conflict, row)
+        except Exception:
             self._dropped += 1
+            logger.exception("CRITICAL: durable Supabase outbox enqueue failed for table=%s", table)
+            return
+        # The in-memory queue is only a wakeup/test hook. The SQLite journal is
+        # authoritative and is polled after restart, so a full wakeup queue loses
+        # no persisted event.
+        if self._queue is not None:
+            try:
+                self._queue.put_nowait((table, on_conflict, row))
+            except asyncio.QueueFull:
+                self._dropped += 1
 
     def event(
         self,
@@ -260,7 +287,9 @@ class SupabaseWriter:
         key = client_order_id or exchange_order_id
         if not key:
             return
-        order_id = self._order_ids.setdefault(key, str(uuid.uuid4()))
+        order_id = self._order_ids.setdefault(
+            key, str(uuid.uuid5(_POSITION_NS, f"order:{pair_key}:{exchange}:{key}"))
+        )
 
         requested = _num(order.get("amount"), _num(order.get("filled")))
         filled = _num(order.get("filled"))
@@ -297,8 +326,12 @@ class SupabaseWriter:
             on_conflict="id",
         )
 
-        previous = self._order_filled.get(key, 0.0)
-        delta = filled - previous
+        try:
+            delta = self._outbox.advance_cumulative_fill(f"{exchange}:{key}", filled) if self._outbox else 0.0
+        except Exception:
+            self._dropped += 1
+            logger.exception("CRITICAL: failed to persist cumulative fill watermark for %s", key)
+            delta = 0.0
         if delta > 1e-12:
             self._order_filled[key] = filled
             price = _num(order.get("average"), _num(order.get("price")))
@@ -376,36 +409,26 @@ class SupabaseWriter:
     async def _run(self) -> None:
         while True:
             try:
-                batch = [await self._queue.get()]
-                while len(batch) < _BATCH_MAX:
-                    try:
-                        batch.append(self._queue.get_nowait())
-                    except asyncio.QueueEmpty:
-                        break
+                if self._outbox is None:
+                    await asyncio.sleep(1.0)
+                    continue
+                batch = await asyncio.to_thread(self._outbox.pending, _BATCH_MAX)
+                if not batch:
+                    await asyncio.sleep(0.25)
+                    continue
                 await self._flush(batch)
-                for _ in batch:
-                    self._queue.task_done()
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("supabase writer loop error")
+                logger.exception("Supabase durable outbox worker error")
+                await asyncio.sleep(1.0)
 
     async def _flush(self, batch: list) -> None:
         grouped: Dict[tuple, list] = {}
-        for table, on_conflict, row in batch:
-            # PostgREST rejects a batch whose objects have different key sets, so
-            # the key signature is part of the grouping key.
-            grouped.setdefault((table, on_conflict, frozenset(row)), []).append(row)
-
-        for key, rows in list(grouped.items()):
-            # An upsert cannot touch the same row twice in one statement, and a
-            # newer queued write always supersedes an older one for the same row.
-            table, on_conflict, _keys = key
-            conflict_cols = [c.strip() for c in (on_conflict or "id").split(",")]
-            by_row: Dict[tuple, Dict[str, Any]] = {}
-            for row in rows:
-                by_row[tuple(str(row.get(c)) for c in conflict_cols)] = row
-            grouped[key] = list(by_row.values())
+        for item_id, table, on_conflict, row in batch:
+            grouped.setdefault((table, on_conflict, frozenset(row)), []).append(
+                (item_id, row)
+            )
 
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
@@ -415,26 +438,47 @@ class SupabaseWriter:
                     "Authorization": f"Bearer {self.key}",
                     "Content-Type": "application/json",
                     "Prefer": "resolution=merge-duplicates,return=minimal",
-                    # This host's aiohttp cannot decode brotli; ask for identity.
                     "Accept-Encoding": "identity",
                 },
             )
 
-        for (table, on_conflict, _keys), rows in grouped.items():
+        for (table, on_conflict, _keys), items in grouped.items():
+            # PostgREST rejects duplicate conflict keys in one upsert statement.
+            # Keep the newest row, but acknowledge all superseded journal entries
+            # only after that newest state has been accepted.
+            conflict_cols = [c.strip() for c in (on_conflict or "id").split(",")]
+            latest: Dict[tuple, Dict[str, Any]] = {}
+            for _item_id, row in items:
+                latest[tuple(str(row.get(col)) for col in conflict_cols)] = row
+            rows = list(latest.values())
             url = f"{self.url}/rest/v1/{table}"
             if on_conflict:
                 url = f"{url}?on_conflict={on_conflict}"
+            last_error = "Supabase request failed"
+            delivered = False
             for attempt in range(1, _MAX_ATTEMPTS + 1):
                 try:
                     async with self._session.post(url, json=rows) as resp:
                         if resp.status < 300:
+                            delivered = True
                             break
                         body = (await resp.text())[:300]
-                        raise RuntimeError(f"HTTP {resp.status}: {body}")
+                        last_error = f"HTTP {resp.status}: {body}"
+                        # Keep permanent 4xx errors in the outbox as well: a
+                        # schema/permission repair must be able to replay them.
+                        if 400 <= resp.status < 500 and resp.status not in (408, 429):
+                            break
                 except Exception as exc:
-                    if attempt == _MAX_ATTEMPTS:
-                        logger.warning(
-                            "supabase write failed table=%s rows=%d: %s", table, len(rows), exc
-                        )
-                    else:
-                        await asyncio.sleep(0.5 * attempt)
+                    last_error = str(exc)[:500]
+                if attempt < _MAX_ATTEMPTS:
+                    await asyncio.sleep(0.5 * attempt)
+
+            item_ids = [item_id for item_id, _row in items]
+            if delivered:
+                await asyncio.to_thread(self._outbox.ack, item_ids)
+            else:
+                await asyncio.to_thread(self._outbox.retry, item_ids, last_error)
+                logger.error(
+                    "Supabase delivery deferred table=%s rows=%d: %s",
+                    table, len(rows), last_error,
+                )
