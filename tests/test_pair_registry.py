@@ -123,7 +123,7 @@ def test_pair_key_normalizes_real_tokocrypto_and_okx_symbols(
     assert key.global_symbol.split("/", 1)[0] == expected_base
     assert key.tag == (
         f"tokocrypto:{expected_base}_"
-        f"{'IDR' if spot_symbol.endswith(('IDR', 'BIDR')) else 'USDT'}"
+        f"{'BIDR' if spot_symbol.endswith('BIDR') else 'IDR' if spot_symbol.endswith('IDR') else 'USDT'}"
         f"__okx:{expected_base}_USDT"
     )
 
