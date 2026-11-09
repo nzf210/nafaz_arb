@@ -82,6 +82,30 @@ class TestEventQueue:
         writer.event("PROBE", event_id="fixed-id")
         assert _drain(writer)[0][2]["event_id"] == "fixed-id"
 
+    def test_execution_failure_is_written_to_deduplicated_risk_ledger(self):
+        writer = _writer()
+        writer.event(
+            "EXECUTION_FAILURE",
+            pair_key="indodax:btc_idr",
+            payload={
+                "reason": "HEDGE_STATE_UNKNOWN",
+                "message": "futures position could not be verified",
+                "state": "RECONCILIATION_REQUIRED",
+            },
+            is_mock=False,
+            occurred_at_ms=1234,
+        )
+
+        rows = _drain(writer)
+        risk_rows = [row for table, _, row in rows if table == "risk_events"]
+        assert len(risk_rows) == 1
+        risk = risk_rows[0]
+        assert risk["event_key"] == "EXECUTION_FAILURE:indodax:btc_idr:1234"
+        assert risk["severity"] == "critical"
+        assert risk["message"] == "futures position could not be verified"
+        assert risk["is_mock"] is False
+        assert risk["details"]["reason"] == "HEDGE_STATE_UNKNOWN"
+
     def test_queue_full_drops_instead_of_raising(self):
         writer = _writer()
         writer._queue = asyncio.Queue(maxsize=1)
