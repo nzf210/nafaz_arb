@@ -77,6 +77,55 @@ class DurableOutbox:
                 self._db.execute("ROLLBACK")
                 raise
 
+    def enqueue_cumulative_fill(
+        self,
+        table: str,
+        conflict_target: Optional[str],
+        row: Dict[str, Any],
+        state_key: str,
+        cumulative: float,
+    ) -> float:
+        """Atomically journal a new fill delta and advance its cumulative watermark."""
+        value = max(0.0, float(cumulative))
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                previous_row = self._db.execute(
+                    "SELECT numeric_value FROM writer_state WHERE state_key=?",
+                    (state_key,),
+                ).fetchone()
+                previous = float(previous_row[0]) if previous_row else 0.0
+                delta = value - previous
+                if delta <= 1e-12:
+                    self._db.execute("COMMIT")
+                    return 0.0
+                count = self._db.execute("SELECT COUNT(*) FROM pending_outbox").fetchone()[0]
+                if count >= self.max_pending:
+                    raise OutboxFull(f"durable outbox capacity reached ({self.max_pending})")
+                fill_row = dict(row)
+                fill_row["qty"] = delta
+                fill_row["quote_qty"] = delta * float(fill_row.get("price") or 0.0)
+                payload = json.dumps(fill_row, separators=(",", ":"), ensure_ascii=False, default=str)
+                self._db.execute(
+                    """INSERT INTO pending_outbox
+                       (table_name, conflict_target, row_json, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (table, conflict_target, payload, time.time()),
+                )
+                self._db.execute(
+                    """INSERT INTO writer_state(state_key, numeric_value, updated_at)
+                       VALUES (?, ?, ?)
+                       ON CONFLICT(state_key) DO UPDATE SET
+                         numeric_value=excluded.numeric_value,
+                         updated_at=excluded.updated_at""",
+                    (state_key, value, time.time()),
+                )
+                self._db.execute("COMMIT")
+                return delta
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+
     def pending(self, limit: int = 50) -> List[Tuple[int, str, Optional[str], Dict[str, Any]]]:
         with self._lock:
             rows = self._db.execute(
