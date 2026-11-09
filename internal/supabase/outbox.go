@@ -73,6 +73,13 @@ func NewDurableOutbox(path string, maxBytes int64) (*DurableOutbox, error) {
 	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("close scanner outbox: %w", err)
 	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat scanner outbox at startup: %w", err)
+	}
+	if info.Size() > maxBytes {
+		return nil, fmt.Errorf("%w: existing file size=%d max_bytes=%d", ErrOutboxCapacity, info.Size(), maxBytes)
+	}
 	outbox := &DurableOutbox{
 		path: path, maxBytes: maxBytes,
 		records: make(map[string]outboxRecord),
@@ -82,15 +89,10 @@ func NewDurableOutbox(path string, maxBytes int64) (*DurableOutbox, error) {
 		return nil, fmt.Errorf("validate scanner outbox: %w", validateErr)
 	}
 	for _, record := range loaded {
+		if _, exists := outbox.records[record.ID]; !exists {
+			outbox.order = append(outbox.order, record.ID)
+		}
 		outbox.records[record.ID] = record
-		outbox.order = append(outbox.order, record.ID)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat scanner outbox at startup: %w", err)
-	}
-	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("%w: existing file size=%d max_bytes=%d", ErrOutboxCapacity, info.Size(), maxBytes)
 	}
 	return outbox, nil
 }
