@@ -27,7 +27,8 @@ def _finite(value: Any) -> float:
 
 def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
     try:
-        value = float(os.getenv(name, str(default)))
+        # Blank (e.g. compose `${VAR:-}`) means unset, not invalid.
+        value = float(os.getenv(name) or default)
     except (TypeError, ValueError):
         logger.warning("invalid %s; using default %s", name, default)
         return default
@@ -36,10 +37,9 @@ def _env_float(name: str, default: float, minimum: float, maximum: float) -> flo
         return default
     return min(maximum, max(minimum, value))
 
-
 def _env_interval() -> int:
     try:
-        value = int(os.getenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "300"))
+        value = int(os.getenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS") or "300")
     except (TypeError, ValueError):
         logger.warning("invalid reconciliation interval; using 300 seconds")
         return 300

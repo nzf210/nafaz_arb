@@ -304,3 +304,14 @@ def test_reconciliation_environment_values_fail_safe(monkeypatch):
     assert _env_interval() == 300
     assert _env_float("EXPOSURE_RECONCILIATION_REL_TOLERANCE", 0.005, 0.0, 0.05) == 0.005
     assert _env_float("EXPOSURE_RECONCILIATION_ABS_TOLERANCE", 1e-8, 1e-12, 1.0) == 1e-12
+
+
+def test_reconciliation_blank_environment_values_use_defaults(monkeypatch):
+    # compose forwards `${VAR:-}` as an empty string; that means unset, not invalid.
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "")
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_REL_TOLERANCE", "")
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_ABS_TOLERANCE", "")
+
+    assert _env_interval() == 300
+    assert _env_float("EXPOSURE_RECONCILIATION_REL_TOLERANCE", 0.005, 0.0, 0.05) == 0.005
+    assert _env_float("EXPOSURE_RECONCILIATION_ABS_TOLERANCE", 1e-8, 1e-12, 1.0) == 1e-8
