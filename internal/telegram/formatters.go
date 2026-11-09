@@ -258,6 +258,19 @@ func (b *Bot) formatOpportunityAlert(op domain.Opportunity) string {
 	if op.CapacityPct > 0 && op.CapacityPct < 99.9 {
 		capacityInfo = fmt.Sprintf(" (Kapasitas: %.1f%%)", op.CapacityPct)
 	}
+	executionInfo := ""
+	switch op.ExecutionSignalStatus {
+	case "published":
+		executionInfo = "\n🟢 <b>Signal Executor:</b> berhasil dipublikasikan ke Redis"
+	case "disabled":
+		executionInfo = "\n⚪ <b>Signal Executor:</b> dinonaktifkan pada konfigurasi scanner"
+	case "redis_unavailable":
+		executionInfo = "\n🔴 <b>Signal Executor:</b> Redis tidak tersedia; posisi tidak dikirim"
+	case "live_price_publish_failed":
+		executionInfo = "\n🔴 <b>Signal Executor:</b> gagal memperbarui live price; posisi tidak dikirim"
+	case "publish_failed":
+		executionInfo = "\n🔴 <b>Signal Executor:</b> gagal dipublikasikan; periksa error scan"
+	}
 
 	return fmt.Sprintf(`🚨 <b>PROFITABLE ARBITRAGE OPPORTUNITY%s</b> 🚨
 
@@ -267,7 +280,7 @@ Net ROI: <b>%+.2f%%</b> | Net Profit: <b>%+.4f %s</b>
 📈 <b>%s:</b> <code>%.4f</code> (%s)
 📉 <b>Short Perp:</b> <code>%.4f</code> (%s)%s
 📦 <b>Quantity:</b> %.4f %s
-💼 <b>Allocated Capital:</b> %.2f %s%s
+💼 <b>Allocated Capital:</b> %.2f %s%s%s%s
 
 ⚡ <b>Rincian:</b>
 • Spread PnL: %+.4f %s
@@ -284,7 +297,7 @@ Net ROI: <b>%+.2f%%</b> | Net Profit: <b>%+.4f %s</b>
 		op.PerpEntryPrice, html.EscapeString(op.PerpSymbol),
 		extraGuardrail,
 		op.Quantity, html.EscapeString(op.BaseAsset),
-		op.AllocatedCapital, html.EscapeString(op.QuoteAsset), capacityInfo,
+		op.AllocatedCapital, html.EscapeString(op.QuoteAsset), capacityInfo, extraGuardrail, executionInfo,
 		op.SpreadPnL, html.EscapeString(op.QuoteAsset),
 		op.FundingPnL, html.EscapeString(op.QuoteAsset),
 		op.CurrentFundingRate*100, op.CurrentFundingRate,

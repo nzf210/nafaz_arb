@@ -74,6 +74,8 @@ type Opportunity struct {
 	NetROIPct              float64   `json:"net_roi_pct"`
 	ProfitabilityStatus    string    `json:"profitability_status"`
 	TradingEligible        bool      `json:"trading_eligible"`
+	// ExecutionSignalStatus describes signal delivery independently of strategy eligibility.
+	ExecutionSignalStatus  string    `json:"execution_signal_status,omitempty"`
 	ExclusionReasons       []string  `json:"exclusion_reasons,omitempty"`
 	LastScannedAt          time.Time `json:"last_scanned_at"`
 	SpotTargetLimitPrice   float64   `json:"spot_target_limit_price,omitempty"`

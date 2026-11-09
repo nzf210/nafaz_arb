@@ -323,21 +323,26 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		TimestampMS:       time.Now().UnixMilli(),
 	}
 
-	if rc == nil && op.TradingEligible {
-		op.ExclusionReasons = append(op.ExclusionReasons, "EXECUTOR_REDIS_UNAVAILABLE")
+	if op.TradingEligible {
+		switch {
+		case rc == nil:
+			op.ExecutionSignalStatus = "redis_unavailable"
+		case !s.cfg.EnableExecutorSignals:
+			op.ExecutionSignalStatus = "disabled"
+		default:
+			op.ExecutionSignalStatus = "pending"
+		}
 	}
 	if rc != nil {
 		if err := rc.UpdateLivePrice(ctx, sm.Exchange, sm.Symbol, pricingSnapshot); err != nil {
-			op.ExclusionReasons = append(op.ExclusionReasons, "LIVE_PRICE_PUBLISH_FAILED")
+			if op.TradingEligible {
+				op.ExecutionSignalStatus = "live_price_publish_failed"
+			}
 		}
 	}
-	if op.TradingEligible && !hasActive && !s.cfg.EnableExecutorSignals {
-		op.ExclusionReasons = append(op.ExclusionReasons, "EXECUTOR_SIGNALS_DISABLED")
-	}
-	op.TradingEligible = len(op.ExclusionReasons) == 0
 
 	if rc != nil {
-		if op.TradingEligible && !hasActive && s.cfg.EnableExecutorSignals {
+		if op.TradingEligible && !hasActive && s.cfg.EnableExecutorSignals && op.ExecutionSignalStatus != "live_price_publish_failed" {
 			maxPosUSDT := s.cfg.CapitalTotal * s.cfg.AllocationPerPair
 			payload := domain.ExecutorPayload{
 				PairInfo: domain.PairInfo{
@@ -371,10 +376,10 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 			if err := rc.PublishSignal(ctx, payload); err != nil {
 				// A signal that never reached Redis would be silently lost:
 				// surface it as a fatal error so the scan is not "complete".
-				op.ExclusionReasons = append(op.ExclusionReasons, "SIGNAL_PUBLISH_FAILED")
-				op.TradingEligible = false
+				op.ExecutionSignalStatus = "publish_failed"
 				return fmt.Errorf("publish signal %s: %w", sm.Symbol, err)
 			}
+			op.ExecutionSignalStatus = "published"
 		}
 	}
 	return nil
