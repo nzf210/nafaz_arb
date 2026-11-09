@@ -137,9 +137,12 @@ func TestDurableOutboxRetryPersistsBackoffAcrossRestart(t *testing.T) {
 	if err != nil || len(due) != 0 {
 		t.Fatalf("retry backoff not persisted: due=%d err=%v", len(due), err)
 	}
-	if dueRecords, err := restarted.readForTest(); err != nil || len(dueRecords) != 1 ||
+	restarted.mu.Lock()
+	dueRecords, readErr := restarted.readLocked()
+	restarted.mu.Unlock()
+	if readErr != nil || len(dueRecords) != 1 ||
 		dueRecords[0].Attempts != 1 || !strings.Contains(dueRecords[0].LastError, "503") {
-		t.Fatalf("retry metadata not persisted: records=%+v err=%v", dueRecords, err)
+		t.Fatalf("retry metadata not persisted: records=%+v err=%v", dueRecords, readErr)
 	}
 }
 
