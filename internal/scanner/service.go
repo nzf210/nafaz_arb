@@ -15,7 +15,6 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
-	"github.com/nafaz/spot-perp-scanner/internal/supabase"
 	"github.com/shopspring/decimal"
 )
 
