@@ -95,6 +95,38 @@ func TestDurableOutboxTruncatesOnlyTornUncommittedTail(t *testing.T) {
 	}
 }
 
+func TestDurableOutboxRepairsValidUnterminatedFinalRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.jsonl")
+	outbox, err := NewDurableOutbox(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Enqueue("scan-complete-json", []domain.Opportunity{sampleOpportunity()}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.TrimSuffix(string(data), "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewDurableOutbox(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Due(10); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Enqueue("scan-next", []domain.Opportunity{sampleOpportunity()}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := restarted.Due(10)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("valid unterminated row merged with next append: records=%d err=%v", len(records), err)
+	}
+}
+
 func TestDurableOutboxFailsClosedOnCommittedCorruption(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "outbox.jsonl")
 	if err := os.WriteFile(path, []byte("{invalid}\n"), 0o600); err != nil {
