@@ -292,10 +292,11 @@ balances, risk events, and executor events/status snapshots.
 **Runtime persistence:** the Go scanner writes evaluated snapshots to
 `scanner_opportunities`; the Python executor writes `positions`, `orders`,
 `order_fills`, `closed_trades`, `executor_events`, and `risk_events`.
-Scanner opportunity upserts use a deterministic `scan_id + pair_key` idempotency
-key. Executor order/fill writes use client-generated or deterministic ids.
-Redis remains authoritative for live coordination and active exposure recovery;
-the scanner's existing JSON history remains in place for its API.
+Scanner opportunity snapshots are first committed to a persistent JSONL outbox
+and replayed by a background delivery reconciliation worker; executor events use
+a persistent SQLite outbox. Upserts and order/fill writes use deterministic
+idempotency keys. Redis remains authoritative for live coordination and active
+exposure recovery; the scanner's existing JSON history remains in place for its API.
 
 Set `SUPABASE_URL` and `SUPABASE_KEY` in the server environment to enable both
 writers. `SUPABASE_KEY` must be the server-only Supabase `service_role` secret,
@@ -304,10 +305,10 @@ to frontend/Telegram clients. If credentials are absent, persistence is disabled
 a database outage does not block exchange risk management.
 
 Still schema-only: `position_legs`, `funding_payments`, `balance_snapshots`,
-and `executor_status_snapshots`. There is no durable outbox yet: executor's
-bounded in-memory queue can drop writes under backpressure or process failure,
-and scanner writes are discarded after bounded retries. Supabase history can
-therefore contain gaps and must not be treated as a complete exchange ledger.
+and `executor_status_snapshots`. The scanner delivery worker reconciles only
+durable opportunity delivery; it does not reconcile private exchange positions
+or balances. Supabase history is not a complete exchange ledger and must never
+replace authenticated exchange-side exposure verification.
 See [Supabase runtime and deployment notes](./supabase/README.md).
 
 
