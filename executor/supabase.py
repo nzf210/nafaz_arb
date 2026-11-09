@@ -20,7 +20,6 @@ from executor.supabase_outbox import DurableOutbox
 
 logger = logging.getLogger("executor.supabase")
 
-_QUEUE_MAX = 512
 _MAX_ATTEMPTS = 3
 _BATCH_MAX = 50
 _TIMEOUT = aiohttp.ClientTimeout(total=8, connect=3)
@@ -81,7 +80,6 @@ class SupabaseWriter:
         self.key = str(getattr(config, "key", "") or "")
         self.enabled = bool(getattr(config, "enabled", False)) and bool(self.url) and bool(self.key)
 
-        self._queue: Optional[asyncio.Queue] = None
         self._task: Optional[asyncio.Task] = None
         self._session: Optional[aiohttp.ClientSession] = None
         self._dropped = 0
@@ -102,7 +100,6 @@ class SupabaseWriter:
         self._position_ids: Dict[str, str] = {}
         self._position_rows: Dict[str, Dict[str, Any]] = {}
         self._order_ids: Dict[str, str] = {}
-        self._order_filled: Dict[str, float] = {}
 
     # ---------------------------------------------------------------- lifecycle
 
