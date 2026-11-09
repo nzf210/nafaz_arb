@@ -328,7 +328,7 @@ async def test_p0_pending_entry_persisted_and_cleared(engine, fake_redis):
     client = engine.client
     client.orders["501"] = {"id": "501", "status": "closed", "filled": 0.5}
     await engine._check_entry_orders()
-    assert await fake_redis.get("arb:pending_entry:indodax:btc_idr") is None
+    assert await fake_redis.get("arb:pending_entry:indodax:btc_idr__binance:btc_usdt") is None
 
 @pytest.mark.asyncio
 async def test_p0_pending_entry_adopted_on_startup(engine, fake_redis, mock_client):
@@ -356,7 +356,7 @@ async def test_p0_pending_entry_adopted_on_startup(engine, fake_redis, mock_clie
     assert "indodax:btc_idr__binance:btc_usdt" in engine.pending_entry_orders
     assert engine.states["indodax:btc_idr__binance:btc_usdt"] == PositionState.ENTRY_PENDING
     # Re-adoption must remain durable across another process restart.
-    persisted = await fake_redis.get("arb:pending_entry:indodax:btc_idr")
+    persisted = await fake_redis.get("arb:pending_entry:indodax:btc_idr__binance:btc_usdt")
     assert persisted is not None
     assert json.loads(persisted)["order_id"] == "777"
 
