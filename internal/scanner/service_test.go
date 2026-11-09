@@ -2,8 +2,11 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
+	"github.com/nafaz/spot-perp-scanner/internal/supabase"
 	"github.com/shopspring/decimal"
 )
 
@@ -936,5 +940,66 @@ func TestApplyEvaluationResultsCountsFailedPairs(t *testing.T) {
 	}
 	if result.FailedPairs != 1 {
 		t.Fatalf("failed_pairs=%d, want 1", result.FailedPairs)
+	}
+}
+
+func TestScanPersistsOpportunitiesToSupabase(t *testing.T) {
+	var persistedRows []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/rest/v1/scanner_opportunities" {
+			t.Errorf("unexpected persistence request: %s %s", r.Method, r.URL.String())
+		}
+		if r.Header.Get("apikey") != "service-role-test" {
+			t.Errorf("missing service-role apikey header")
+		}
+		if err := json.NewDecoder(r.Body).Decode(&persistedRows); err != nil {
+			t.Errorf("decode persisted rows: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	t.Setenv("SUPABASE_URL", server.URL)
+	t.Setenv("SUPABASE_KEY", "service-role-test")
+	client, err := supabase.NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if client == nil {
+		t.Fatal("expected configured Supabase client")
+	}
+	defer client.Close()
+
+	cfg := config.Config{
+		Mode:                  "MOCK",
+		QuoteAssets:           []string{"USDT"},
+		CapitalTotal:          1000,
+		AllocationPerPair:     0.5,
+		PerpLeverage:          1,
+		EstimatedHoldingHours: 8,
+		MinNetROIPct:          0.1,
+		MaxNetROIPct:          10,
+		MaxSlippagePct:        5,
+		SpotTakerFeePct:       0.1,
+		PerpTakerFeePct:       0.05,
+	}
+	s := New(cfg, exchange.NewMockAdapter())
+	s.SetSupabaseClient(client)
+
+	result, _, err := s.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(result.Opportunities) == 0 {
+		t.Fatal("mock scan produced no opportunities to persist")
+	}
+	if len(persistedRows) == 0 {
+		t.Fatal("scan did not persist any opportunity rows")
+	}
+	if persistedRows[0]["scan_id"] != result.ScanID {
+		t.Fatalf("persisted scan_id=%v, want %s", persistedRows[0]["scan_id"], result.ScanID)
+	}
+	if persistedRows[0]["idempotency_key"] == "" {
+		t.Fatal("persisted opportunity is missing idempotency_key")
 	}
 }
