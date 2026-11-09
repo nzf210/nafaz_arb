@@ -136,15 +136,19 @@ class ArbitrageEngine(
         """Task-local exchange facade; concurrent pairs never switch shared clients."""
         return self._client_context.get() or self._base_client
 
+    @client.setter
+    def client(self, value):
+        self._base_client = value
+
     def _bind_pair_client(self, pair_info):
         key = ExchangePairKey.from_pair_info(pair_info)
         if getattr(self.config, "mock_mode", False):
-            configured = (
-                str(getattr(self._base_client, "local_name", "")).lower(),
-                str(getattr(self._base_client, "global_name", "")).lower(),
-            )
-            if configured != (key.local_exchange, key.global_exchange):
-                raise LookupError("paper client is configured for a different exchange pair")
+            local_name = getattr(self._base_client, "local_name", None)
+            global_name = getattr(self._base_client, "global_name", None)
+            if local_name is not None and global_name is not None:
+                configured = (str(local_name).lower(), str(global_name).lower())
+                if configured != (key.local_exchange, key.global_exchange):
+                    raise LookupError("paper client is configured for a different exchange pair")
             return self._client_context.set(self._base_client)
         if not self._pair_client_registry.contains(key):
             self._pair_client_registry.register(key, self._base_client.for_pair(pair_info))
@@ -728,6 +732,8 @@ class ArbitrageEngine(
         raise LookupError(f"exchange pair metadata unavailable for {pair_tag}")
 
     async def _run_pair_bound(self, pair_tag: str, operation, *args, **kwargs):
+        if getattr(self.config, "mock_mode", False):
+            return await operation(*args, **kwargs)
         pair_info = self._pair_info_for_tag(pair_tag)
         token = self._bind_pair_client(pair_info)
         try:
@@ -753,13 +759,16 @@ class ArbitrageEngine(
         payload = await self._load_signal_payload(pair_tag)
         if payload is None:
             return
+        if getattr(self.config, "mock_mode", False):
+            await self._handle_signal_notification_bound(pair_tag)
+            return
         try:
             token = self._bind_pair_client(payload.pair_info)
         except Exception as exc:
             self._pair_infos[pair_tag] = payload.pair_info
             self._mark_failed(
                 pair_tag,
-                "PAIR_CLIENT_UNAVAILABLE",
+                "EXECUTOR_VENUE_MISMATCH",
                 f"Signal rejected: {exc}",
                 detail={
                     "local_exchange": payload.pair_info.local_exchange,
