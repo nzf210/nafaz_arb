@@ -65,6 +65,19 @@ jobs:
           for migration in supabase/migrations/*.sql; do
             echo "Applying $migration"
             psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 -f "$migration"
+            if [[ "$migration" == "supabase/migrations/20261107000100_create_nafaz_core_schema.sql" ]]; then
+              # Seed a pre-existing baseline row before the additive idempotency migration.
+              psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 -c "
+                INSERT INTO public.scanner_opportunities (
+                  scan_id, pair_key, local_exchange, global_exchange,
+                  local_symbol, global_symbol, quote_asset, eligibility_status,
+                  observed_at, payload
+                ) VALUES (
+                  'legacy-before-idempotency', 'indodax:legacy_idr',
+                  'indodax', 'okx', 'legacy_idr', 'LEGACY/USDT:USDT',
+                  'IDR', 'EXCLUDED', now(), '{}'::jsonb
+                );"
+            fi
           done
       - name: Verify every migration is idempotent
         run: |
