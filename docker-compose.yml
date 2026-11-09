@@ -30,7 +30,7 @@ services:
       # and silently falls back to the default bridge, where only container
       # names resolve (via the dnsname plugin).
       - REDIS_ADDR=nafaz-redis:6380
-      - GLOBAL_FUTURES_EXCHANGE=okx
+      - GLOBAL_FUTURES_EXCHANGE=all
       # Server-only service_role key; shared with the executor, never put in tracked files.
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_KEY=${SUPABASE_KEY:-}
@@ -59,7 +59,7 @@ services:
       - TZ=Asia/Jakarta
       - REDIS_URL=redis://nafaz-redis:6380/0
       - LOCAL_EXCHANGE=indodax
-      - GLOBAL_EXCHANGE=okx
+      - GLOBAL_EXCHANGE=all
       # Executor mode follows config.json mode (MOCK/LIVE).
       # Set EXECUTOR_MOCK_MODE=true only as an explicit emergency override.
       - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-}
