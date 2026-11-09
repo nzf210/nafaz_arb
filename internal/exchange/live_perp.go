@@ -92,6 +92,7 @@ func (l *LiveAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, er
 		okxMarkets, err := l.fetchOKXPerpetualMarkets(ctx)
 		if err == nil {
 			allMarkets = append(allMarkets, okxMarkets...)
+			l.SubscribeOKXBooks(okxMarkets)
 		} else {
 			errs = append(errs, fmt.Sprintf("okx: %v", err))
 		}
@@ -118,14 +119,11 @@ func (l *LiveAdapter) fetchOKXPerpetualMarkets(ctx context.Context) ([]domain.Ma
 		return cached, nil
 	}
 
-	endpoint := l.okxBaseURL + "/api/v5/public/instruments?instType=SWAP"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return l.getFallbackOKXPerp(err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
+	endpoint := "/api/v5/public/instruments?instType=SWAP"
 
-	resp, err := l.client.Do(req)
+	resp, err := l.okxDo(ctx, endpoint, func() (*http.Request, error) {
+		return l.newOKXRequest(ctx, endpoint)
+	})
 	if err != nil {
 		return l.getFallbackOKXPerp(err)
 	}
