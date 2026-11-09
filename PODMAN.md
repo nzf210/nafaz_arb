@@ -260,4 +260,52 @@ podman run -d --name nafaz-scanner --restart always -p 8080:8080 -v $(pwd)/confi
 | **failed to connect to the docker API at unix:///run/user/1000/podman/podman.sock** | Provider docker-compose membutuhkan Podman API Socket yang belum aktif. | Jalankan `systemctl --user enable --now podman.socket` atau gunakan binary native `podman-compose up -d --build`. |
 | **error creating systemd unit `crun-buildah-....scope`: got `failed`** | Rootless Podman di VPS tidak memiliki delegasi cgroup systemd. | Atur cgroup manager ke `cgroupfs` dengan menjalankan perintah:<br>`mkdir -p ~/.config/containers && echo -e '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"' > ~/.config/containers/containers.conf` |
 
+---
 
+## 9. Integrasi Supabase (opsional)
+
+Scanner dan executor dapat menulis histori operasional ke Supabase. Redis tetap
+dipakai untuk pub/sub, locks, harga live, saldo cache, dan pemulihan posisi aktif.
+Supabase bukan jalur kritis untuk hedge, rollback, atau force-close.
+
+Sediakan dua environment variable berikut pada host/container:
+
+- `SUPABASE_URL`: URL project Supabase HTTPS.
+- `SUPABASE_KEY`: secret `service_role` key (server-only), bukan anon/publishable key.
+
+Contoh memasukkan key tanpa menuliskannya sebagai literal ke command history:
+
+```bash
+export SUPABASE_URL="https://<project-ref>.supabase.co"
+read -rsp "Supabase service_role key: " SUPABASE_KEY
+export SUPABASE_KEY
+echo
+podman-compose up -d --build
+```
+
+Pastikan environment tersebut diteruskan ke kedua service `nafaz-scanner` dan
+`nafaz-executor`. Jangan commit key, jangan masukkan ke image, dan jangan expose
+ke Vue atau Telegram. File `.env` di repository di-ignore oleh Git, tetapi gunakan
+secret manager atau environment systemd yang terlindungi untuk deployment VPS.
+
+Untuk menerapkan migration, periksa project dan migration history terlebih dahulu:
+
+```bash
+supabase link --project-ref <project-ref>
+supabase migration list --remote
+supabase db push --remote
+```
+
+Jangan jalankan `db push` sebelum schema dan migration history remote ditinjau.
+Migration CI hanya membuktikan kompatibilitas pada PostgreSQL test, bukan bahwa
+project Supabase remote Anda sudah menerima migration.
+
+Cakupan runtime saat ini: scanner menulis `scanner_opportunities`; executor
+menulis `positions`, `orders`, `order_fills`, `closed_trades`,
+`executor_events`, dan `risk_events`. Tabel `position_legs`,
+`funding_payments`, `balance_snapshots`, dan `executor_status_snapshots`
+belum dihubungkan ke runtime.
+
+Penulisan Supabase bersifat best-effort. Belum ada durable outbox; outage panjang,
+queue penuh, atau proses mati dapat menyebabkan histori Supabase tidak lengkap.
+Redis dan exchange API tetap menjadi sumber runtime untuk koordinasi dan exposure.
