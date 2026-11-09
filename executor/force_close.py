@@ -603,6 +603,12 @@ class ForceCloseMixin:
                 logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")
 
         async def _force_close_locked(self, pair_key: str) -> None:
+            """Bind emergency order routing to this position's exact venues."""
+            await self._run_pair_bound(
+                pair_key, self._force_close_locked_bound, pair_key
+            )
+
+        async def _force_close_locked_bound(self, pair_key: str) -> None:
             # A corrupted persisted position has no trustworthy quantity/symbol to
             # submit against the venue. Never treat it as an already-flat position.
             failure = self._failure_reasons.get(pair_key, {})
