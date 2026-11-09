@@ -143,6 +143,8 @@ class ExposureReconciliationWorker:
                          "global_symbol": global_symbol},
                     )
                 continue
+            self._clear_issue(f"EXPOSURE_MAPPING_UNAVAILABLE:{local_name}", local_name)
+            self._clear_issue(f"EXPOSURE_MAPPING_UNAVAILABLE:{global_name}", global_name)
             spot_expected[(local_name, base_asset)] += float(position.qty)
             spot_pairs[(local_name, base_asset)].append(pair_key)
             futures_expected[(global_name, global_symbol)] += float(position.qty)
