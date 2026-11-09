@@ -289,7 +289,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	// publishing without knowing the executor state risks a doubled position.
 	hasActive := false
 	if rc != nil {
-		posExists, errPos := rc.HasActivePosition(ctx, sm.Exchange, sm.Symbol)
+		posExists, errPos := rc.HasActivePosition(ctx, sm.Exchange, sm.Symbol, pm.Exchange, pm.Symbol)
 		switch {
 		case errPos == nil && posExists:
 			hasActive = true
@@ -339,7 +339,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		}
 	}
 	if rc != nil {
-		if err := rc.UpdateLivePrice(ctx, sm.Exchange, sm.Symbol, pricingSnapshot); err != nil {
+		if err := rc.UpdateLivePrice(ctx, sm.Exchange, sm.Symbol, pricingSnapshot, pm.Exchange, pm.Symbol); err != nil {
 			if op.TradingEligible {
 				op.ExecutionSignalStatus = "live_price_publish_failed"
 			}
