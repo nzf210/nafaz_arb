@@ -313,7 +313,7 @@ async def test_p0_pending_entry_persisted_and_cleared(engine, fake_redis):
 
     await engine.handle_signal_notification(pair_tag)
 
-    raw = await fake_redis.get("arb:pending_entry:indodax:btc_idr__binance:btc_usdt")
+    raw = await fake_redis.get("arb:pending_entry:indodax:btc_idr")
     assert raw is not None
     stored = json.loads(raw)
     assert stored["client_order_id"] == list(engine.pending_entry_orders.values())[0]["client_order_id"]
@@ -328,7 +328,7 @@ async def test_p0_pending_entry_persisted_and_cleared(engine, fake_redis):
     client = engine.client
     client.orders["501"] = {"id": "501", "status": "closed", "filled": 0.5}
     await engine._check_entry_orders()
-    assert await fake_redis.get("arb:pending_entry:indodax:btc_idr__binance:btc_usdt") is None
+    assert await fake_redis.get("arb:pending_entry:indodax:btc_idr") is None
 
 @pytest.mark.asyncio
 async def test_p0_pending_entry_adopted_on_startup(engine, fake_redis, mock_client):
