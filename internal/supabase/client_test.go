@@ -31,7 +31,7 @@ func TestBuildRowsUsesSchemaColumnsAndStablePairKey(t *testing.T) {
 		t.Fatalf("got %d rows, want 1", len(rows))
 	}
 	row := rows[0]
-	if row.PairKey != "indodax:btc_idr" || row.IdempotencyKey != "scan-123:indodax:btc_idr" || row.EligibilityStatus != "ELIGIBLE" {
+	if row.PairKey != "indodax:btc_idr->okx:btc/usdt:usdt" || row.IdempotencyKey != "scan-123:indodax:btc_idr->okx:btc/usdt:usdt" || row.EligibilityStatus != "ELIGIBLE" {
 		t.Fatalf("unexpected key/status: %#v", row)
 	}
 	if row.QuoteAsset != "IDR" || row.LocalExchange != "indodax" || row.GlobalExchange != "okx" {
@@ -39,6 +39,21 @@ func TestBuildRowsUsesSchemaColumnsAndStablePairKey(t *testing.T) {
 	}
 	if row.ScanID != "scan-123" || row.ObservedAt.IsZero() {
 		t.Fatalf("missing scan id or timestamp: %#v", row)
+	}
+}
+
+func TestBuildRowsKeepsDifferentPerpetualRoutesDistinct(t *testing.T) {
+	first := sampleOpportunity()
+	second := sampleOpportunity()
+	second.GlobalExchange = "binance"
+	second.PerpSymbol = "BTC/USDT"
+
+	rows := buildRows("scan-123", []domain.Opportunity{first, second})
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	if rows[0].IdempotencyKey == rows[1].IdempotencyKey || rows[0].PairKey == rows[1].PairKey {
+		t.Fatalf("different global venues collided: %#v", rows)
 	}
 }
 
