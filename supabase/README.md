@@ -48,7 +48,7 @@ authority for live exposure and is not in the exchange-order critical path.
 Implemented writes:
 
 - Go scanner: evaluated opportunities to `scanner_opportunities`, using
-  `scan_id + pair_key` as a deterministic nullable-unique idempotency key.
+  `scan_id + pair_key` as a deterministic nullable-unique idempotency key. The pair key includes both the local spot venue/symbol and global perpetual venue/symbol, so parallel global routes do not overwrite each other.
   Transient PostgREST/network errors are retried; permanent schema/auth errors
   are logged and do not suppress Redis signal delivery.
 - Python executor: `positions`, `orders`, `order_fills`, `closed_trades`,
