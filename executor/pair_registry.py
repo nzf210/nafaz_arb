@@ -20,20 +20,51 @@ def _normalize(value: str, field: str) -> str:
     return normalized
 
 
-def _normalize_symbol(value: str, field: str) -> str:
-    normalized = str(value or "").strip().upper().replace("-", "/").replace("_", "/")
+# The scanner adds these prefixes to keep symbols from different adapters
+# unambiguous. They are internal venue namespaces, not part of the asset code.
+_VENUE_SYMBOL_PREFIXES = {
+    "tokocrypto": ("TOKO:",),
+    "mexc": ("MEXC:",),
+}
+_SUPPORTED_QUOTES = (
+    "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "IDRT", "IDR",
+    "USD", "BTC", "ETH", "BNB",
+)
+
+
+def _normalize_symbol(value: str, field: str, venue: str) -> str:
+    normalized = str(value or "").strip().upper()
+    if not normalized:
+        raise ValueError(f"{field} must be a qualified BASE/QUOTE symbol")
+
+    # Strip only adapter-owned namespace prefixes for the matching venue.
+    # Never discard arbitrary text before ':' because it could be a real asset.
+    for prefix in _VENUE_SYMBOL_PREFIXES.get(venue, ()):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):]
+            break
+
+    # OKX native SWAP instrument IDs are BASE-QUOTE-SWAP. SWAP is the
+    # contract type, not a third asset component.
+    for suffix in ("-SWAP", "_SWAP", "/SWAP"):
+        if normalized.endswith(suffix):
+            normalized = normalized[:-len(suffix)]
+            break
+
+    normalized = normalized.replace("-", "/").replace("_", "/")
     if "/" not in normalized:
-        # CCXT adapters may expose compact symbols (BTCUSDT) while local
-        # adapters often expose BASE_QUOTE. Split only on a known quote suffix.
-        for quote in ("USDT", "USDC", "BUSD", "FDUSD", "TUSD", "IDRT", "IDR", "USD", "BTC", "ETH", "BNB"):
+        # Binance/Bybit may expose compact symbols (BTCUSDT); split only
+        # on a known quote suffix, longest first to avoid partial matches.
+        for quote in _SUPPORTED_QUOTES:
             if normalized.endswith(quote) and len(normalized) > len(quote):
                 normalized = f"{normalized[:-len(quote)]}/{quote}"
                 break
-    if not normalized or "/" not in normalized:
+
+    if "/" not in normalized:
         raise ValueError(f"{field} must be a qualified BASE/QUOTE symbol")
     base, quote = normalized.split("/", 1)
-    if not base or not quote:
-        raise ValueError(f"{field} must contain base and quote assets")
+    if not base or not quote or "/" in quote:
+        raise ValueError(f"{field} must contain exactly one BASE/QUOTE pair")
     return f"{base}/{quote}"
 
 
@@ -51,9 +82,9 @@ class ExchangePairKey:
     ) -> "ExchangePairKey":
         key = cls(
             _normalize(local_exchange, "local_exchange"),
-            _normalize_symbol(local_symbol, "local_symbol"),
+            _normalize_symbol(local_symbol, "local_symbol", _normalize(local_exchange, "local_exchange")),
             _normalize(global_exchange, "global_exchange"),
-            _normalize_symbol(global_symbol, "global_symbol"),
+            _normalize_symbol(global_symbol, "global_symbol", _normalize(global_exchange, "global_exchange")),
         )
         if key.local_exchange not in SUPPORTED_SPOT_VENUES:
             raise ValueError(f"unsupported spot venue: {key.local_exchange}")
