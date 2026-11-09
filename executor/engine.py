@@ -1,4 +1,5 @@
 import asyncio
+from contextvars import ContextVar
 import json
 import logging
 import math
@@ -12,6 +13,7 @@ from executor.models import (
     ActivePosition,
 )
 from executor.exchange_client import ExchangeClient
+from executor.pair_registry import ExchangePairKey, PairClientRegistry
 from executor.config import ExecutorConfig
 from executor.private_stream import PrivateStreamCache
 
@@ -68,7 +70,9 @@ class ArbitrageEngine(
         redis_client: Optional[aioredis.Redis] = None,
     ):
         self.config = config
-        self.client = client
+        self._base_client = client
+        self._client_context: ContextVar[Any] = ContextVar(f"executor_client_{id(self)}", default=None)
+        self._pair_client_registry = PairClientRegistry()
         self.redis = redis_client
         self._running = False
         self.ARB_TRADE_EVENTS = "arb:trade_events"
@@ -126,6 +130,20 @@ class ArbitrageEngine(
         # Best-effort audit persistence. Writes are queued and flushed by a
         # background task, so an unreachable database can never delay a hedge.
         self.supabase = SupabaseWriter(getattr(config, "supabase", None))
+
+    @property
+    def client(self):
+        """Task-local exchange facade; concurrent pairs never switch shared clients."""
+        return self._client_context.get() or self._base_client
+
+    def _bind_pair_client(self, pair_info):
+        key = ExchangePairKey.from_pair_info(pair_info)
+        if not self._pair_client_registry.contains(key):
+            self._pair_client_registry.register(key, self._base_client.for_pair(pair_info))
+        return self._client_context.set(self._pair_client_registry.resolve(key))
+
+    def _reset_pair_client(self, token) -> None:
+        self._client_context.reset(token)
 
     async def initialize(self):
         """Initializes Redis connection and restores in-flight state from Redis."""
@@ -687,6 +705,31 @@ class ArbitrageEngine(
         return "", ""
 
     async def handle_signal_notification(self, pair_tag: str):
+        """Bind the signal to its immutable venue pair before any exchange call."""
+        payload = await self._load_signal_payload(pair_tag)
+        if payload is None:
+            return
+        try:
+            token = self._bind_pair_client(payload.pair_info)
+        except Exception as exc:
+            self._pair_infos[pair_tag] = payload.pair_info
+            self._mark_failed(
+                pair_tag,
+                "PAIR_CLIENT_UNAVAILABLE",
+                f"Signal rejected: {exc}",
+                detail={
+                    "local_exchange": payload.pair_info.local_exchange,
+                    "global_exchange": payload.pair_info.global_exchange,
+                },
+            )
+            await self.publish_status()
+            return
+        try:
+            await self._handle_signal_notification_bound(pair_tag)
+        finally:
+            self._reset_pair_client(token)
+
+    async def _handle_signal_notification_bound(self, pair_tag: str):
         """
         State 1 (Entry Order Pegging):
         1. GET arb:signal:{local_ex}:{symbol}
