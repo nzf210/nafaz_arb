@@ -25,6 +25,27 @@ def _finite(value: Any) -> float:
     return number
 
 
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        logger.warning("invalid %s; using default %s", name, default)
+        return default
+    if not math.isfinite(value):
+        logger.warning("non-finite %s; using default %s", name, default)
+        return default
+    return min(maximum, max(minimum, value))
+
+
+def _env_interval() -> int:
+    try:
+        value = int(os.getenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "300"))
+    except (TypeError, ValueError):
+        logger.warning("invalid reconciliation interval; using 300 seconds")
+        return 300
+    return max(60, value)
+
+
 def _position_short_qty(positions: Iterable[dict]) -> float:
     total = 0.0
     for position in positions:
@@ -64,12 +85,12 @@ class ExposureReconciliationWorker:
 
     def __init__(self, engine: Any):
         self.engine = engine
-        self.interval = max(60, int(os.getenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "300")))
-        self.relative_tolerance = min(
-            0.05, max(0.0, float(os.getenv("EXPOSURE_RECONCILIATION_REL_TOLERANCE", "0.005")))
+        self.interval = _env_interval()
+        self.relative_tolerance = _env_float(
+            "EXPOSURE_RECONCILIATION_REL_TOLERANCE", 0.005, 0.0, 0.05
         )
-        self.absolute_tolerance = max(
-            1e-12, float(os.getenv("EXPOSURE_RECONCILIATION_ABS_TOLERANCE", "1e-8"))
+        self.absolute_tolerance = _env_float(
+            "EXPOSURE_RECONCILIATION_ABS_TOLERANCE", 1e-8, 1e-12, 1.0
         )
         self._reported: Dict[str, str] = {}
         self._previous_halts: Dict[str, str] = {}
