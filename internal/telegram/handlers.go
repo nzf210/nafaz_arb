@@ -82,6 +82,8 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatActiveOpportunities(), b.defaultKeyboard())
 	case "/positions":
 		b.handlePositionsCommand(ctx, msg.Chat.ID, msg.MessageID)
+	case "/pending":
+		b.handlePendingOrdersCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/balance":
 		userID := int64(0)
 		if msg.From != nil {
@@ -154,6 +156,8 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatActiveOpportunities(), b.defaultKeyboard())
 	case "positions":
 		b.handlePositionsCommand(ctx, chatID, 0)
+	case "pending_orders":
+		b.handlePendingOrdersCommand(ctx, chatID, 0)
 	case "balance":
 		b.handleBalanceCommand(ctx, chatID, 0, cb.From.ID)
 	case "history":
