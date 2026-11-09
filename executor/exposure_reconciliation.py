@@ -270,14 +270,23 @@ class ExposureReconciliationWorker:
                 venue_report = report_map.get((exchange, "futures"))
                 if not venue_report or venue_report.get("status") != "ok":
                     raise RuntimeError("configured futures venue balance report unavailable")
-                configured_venue = str(
-                    getattr(getattr(client, "global_fut", None), "id", exchange)
-                ).lower()
-                if configured_venue and configured_venue != exchange:
-                    raise RuntimeError(
-                        f"executor is connected to {configured_venue}, not {exchange}"
-                    )
-                actual = _position_short_qty(await client.fetch_positions(symbol))
+                pair_key = futures_pairs[(exchange, symbol)][0]
+                pair_client = client
+                base_client = getattr(self.engine, "_base_client", client)
+                pair_resolver = getattr(base_client, "for_pair", None)
+                pair_info_resolver = getattr(self.engine, "_pair_info_for_tag", None)
+                if callable(pair_resolver) and callable(pair_info_resolver):
+                    pair_info = pair_info_resolver(pair_key)
+                    pair_client = pair_resolver(pair_info)
+                else:
+                    configured_venue = str(
+                        getattr(getattr(client, "global_fut", None), "id", exchange)
+                    ).lower()
+                    if configured_venue and configured_venue != exchange:
+                        raise RuntimeError(
+                            f"executor is connected to {configured_venue}, not {exchange}"
+                        )
+                actual = _position_short_qty(await pair_client.fetch_positions(symbol))
             except Exception as exc:
                 self._set_halt(exchange, "futures position unavailable")
                 await self._alert(
