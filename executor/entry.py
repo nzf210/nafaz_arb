@@ -517,6 +517,8 @@ class EntryMixin:
                     local_exchange=order_info["local_exchange"],
                     global_exchange=order_info["global_exchange"],
                     symbol=order_info["symbol"],
+                    base_asset=order_info.get("base_asset", ""),
+                    global_symbol=order_info.get("global_symbol", ""),
                     entry_price_idr=price_idr,
                     short_entry_usdt=short_entry_usdt,
                     qty=qty,
