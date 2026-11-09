@@ -313,7 +313,7 @@ async def test_p0_pending_entry_persisted_and_cleared(engine, fake_redis):
 
     await engine.handle_signal_notification(pair_tag)
 
-    raw = await fake_redis.get("arb:pending_entry:indodax:btc_idr")
+    raw = await fake_redis.get("arb:pending_entry:indodax:btc_idr__binance:btc_usdt")
     assert raw is not None
     stored = json.loads(raw)
     assert stored["client_order_id"] == list(engine.pending_entry_orders.values())[0]["client_order_id"]
@@ -353,8 +353,8 @@ async def test_p0_pending_entry_adopted_on_startup(engine, fake_redis, mock_clie
 
     await engine._recover_pending_entry_orders()
 
-    assert "indodax:btc_idr" in engine.pending_entry_orders
-    assert engine.states["indodax:btc_idr"] == PositionState.ENTRY_PENDING
+    assert "indodax:btc_idr__binance:btc_usdt" in engine.pending_entry_orders
+    assert engine.states["indodax:btc_idr__binance:btc_usdt"] == PositionState.ENTRY_PENDING
     # Re-adoption must remain durable across another process restart.
     persisted = await fake_redis.get("arb:pending_entry:indodax:btc_idr")
     assert persisted is not None
@@ -459,7 +459,7 @@ async def test_p2_03_retry_with_backoff_raises_after_exhaustion():
 @pytest.mark.asyncio
 async def test_p0_pending_entry_terminal_partial_fill_is_hedged_on_recovery(engine, fake_redis, mock_client):
     """A canceled order with a final partial fill must hedge that fill before clearing state."""
-    pair_tag = "indodax:btc_idr"
+    pair_tag = "indodax:btc_idr__binance:btc_usdt"
     order_info = {
         "order_id": "889",
         "symbol": "btc_idr",
