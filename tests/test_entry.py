@@ -72,6 +72,7 @@ async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, moc
     stale_payload = dict(fresh_payload)
     stale_payload["pair_info"] = dict(fresh_payload["pair_info"])
     stale_payload["pair_info"]["local_symbol"] = "eth_idr"
+    stale_payload["pair_info"]["global_symbol"] = "ETHUSDT"
     stale_payload["pricing_snapshot"] = dict(fresh_payload["pricing_snapshot"])
     stale_payload["pricing_snapshot"]["timestamp_ms"] = now_ms - 800  # 800ms old!
 
