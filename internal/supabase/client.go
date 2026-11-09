@@ -258,7 +258,8 @@ func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]d
 	}
 	byScan := make(map[string]*domain.ScanResult, scanLimit+1)
 	order := make([]string, 0, scanLimit+1)
-	for page := 0; page < maxPages && len(order) <= scanLimit; page++ {
+	windowComplete := false
+	for page := 0; page < maxPages && !windowComplete; page++ {
 		query := url.Values{}
 		query.Set("select", "scan_id,observed_at,payload")
 		query.Set("scan_id", "not.is.null")
@@ -292,8 +293,10 @@ func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]d
 			result, exists := byScan[row.ScanID]
 			if !exists {
 				if len(order) == scanLimit {
-					// The extra scan marks the end of the requested window.
-					continue
+					// The first row of the next scan proves the requested
+					// window is complete; all rows for the prior scan were read.
+					windowComplete = true
+					break
 				}
 				result = &domain.ScanResult{
 					ScanID: row.ScanID, StartedAt: row.ObservedAt,
@@ -309,7 +312,7 @@ func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]d
 				result.Opportunities = append(result.Opportunities, row.Payload)
 			}
 		}
-		if len(rows) < pageSize || len(order) > scanLimit {
+		if len(rows) < pageSize {
 			break
 		}
 	}
