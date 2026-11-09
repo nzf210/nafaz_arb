@@ -38,12 +38,19 @@ type evalResult struct {
 	exchangeMetrics []domain.ExchangeScanMetrics
 }
 
+// OpportunityPersister is deliberately local-write-only in production: the
+// implementation journals a scan snapshot before returning and delivers it
+// asynchronously, so Supabase latency cannot delay Redis signal publication.
+type OpportunityPersister interface {
+	SaveOpportunities(context.Context, string, []domain.Opportunity) error
+}
+
 type Service struct {
 	cfg            config.Config
 	adapter        exchange.ReadOnlyAdapter
 	fundingWorker  *exchange.FundingWorker
 	redisClient    *redishandler.Client
-	supabaseClient *supabase.Client
+	supabaseClient OpportunityPersister
 	mu             sync.Mutex
 	emptyTrackers  map[string]emptyBookRecord
 	spikeTrackers  map[string]*spikeRecord
@@ -61,7 +68,7 @@ func New(cfg config.Config, adapter exchange.ReadOnlyAdapter) *Service {
 
 // SetSupabaseClient enables best-effort durable scanner opportunity history.
 // Redis remains authoritative for real-time signals and executor coordination.
-func (s *Service) SetSupabaseClient(client *supabase.Client) {
+func (s *Service) SetSupabaseClient(client OpportunityPersister) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.supabaseClient = client
