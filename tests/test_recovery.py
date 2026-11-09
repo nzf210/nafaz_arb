@@ -416,7 +416,7 @@ async def test_engine_lifecycle_start_stop(engine):
     """Test engine start and stop coroutine lifecycle to prevent TypeError."""
     await engine.start()
     assert engine._running is True
-    assert len(engine._tasks) == 6
+    assert len(engine._tasks) == 7
     await engine.stop()
     assert engine._running is False
 
