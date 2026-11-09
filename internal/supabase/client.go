@@ -153,9 +153,17 @@ func (c *Client) SaveOpportunities(ctx context.Context, scanID string, opportuni
 		return fmt.Errorf("Supabase HTTP client is not initialized")
 	}
 
-	rows := buildRows(scanID, opportunities)
-	if len(rows) == 0 {
+	return c.saveRows(ctx, buildRows(scanID, opportunities))
+}
+
+// saveRows is shared by direct callers and the durable outbox reconciliation
+// worker. The worker replays the exact serialized row payload that was journaled.
+func (c *Client) saveRows(ctx context.Context, rows []opportunityRow) error {
+	if c == nil || len(rows) == 0 {
 		return nil
+	}
+	if c.httpClient == nil {
+		return fmt.Errorf("Supabase HTTP client is not initialized")
 	}
 	batchCount := (len(rows) + maxBatchSize - 1) / maxBatchSize
 	for start := 0; start < len(rows); start += maxBatchSize {
