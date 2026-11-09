@@ -145,7 +145,8 @@ func (c *Client) SaveOpportunities(ctx context.Context, scanID string, opportuni
 	if c == nil || len(opportunities) == 0 {
 		return nil
 	}
-	if strings.TrimSpace(scanID) == "" {
+	scanID = strings.TrimSpace(scanID)
+	if scanID == "" {
 		return fmt.Errorf("scan_id is required for Supabase persistence")
 	}
 	if c.httpClient == nil {
@@ -156,6 +157,23 @@ func (c *Client) SaveOpportunities(ctx context.Context, scanID string, opportuni
 	if len(rows) == 0 {
 		return nil
 	}
+	batchCount := (len(rows) + maxBatchSize - 1) / maxBatchSize
+	for start := 0; start < len(rows); start += maxBatchSize {
+		end := start + maxBatchSize
+		if end > len(rows) {
+			end = len(rows)
+		}
+		if err := c.saveBatch(ctx, rows[start:end]); err != nil {
+			batchNumber := start/maxBatchSize + 1
+			return fmt.Errorf("persist scanner opportunity batch %d/%d: %w", batchNumber, batchCount, err)
+		}
+	}
+	return nil
+}
+
+const maxBatchSize = 100
+
+func (c *Client) saveBatch(ctx context.Context, rows []opportunityRow) error {
 	body, err := json.Marshal(rows)
 	if err != nil {
 		return fmt.Errorf("encode scanner opportunities: %w", err)
