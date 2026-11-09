@@ -150,8 +150,17 @@ class ArbitrageEngine(
                 if configured != (key.local_exchange, key.global_exchange):
                     raise LookupError("paper client is configured for a different exchange pair")
             return self._client_context.set(self._base_client)
+        resolver = getattr(self._base_client, "for_pair", None)
+        if not callable(resolver):
+            configured = (
+                str(getattr(self.config, "local_exchange_name", "")).lower(),
+                str(getattr(self.config, "global_exchange_name", "")).lower(),
+            )
+            if configured != (key.local_exchange, key.global_exchange):
+                raise LookupError("client does not support pair-bound routing for this venue")
+            return self._client_context.set(self._base_client)
         if not self._pair_client_registry.contains(key):
-            self._pair_client_registry.register(key, self._base_client.for_pair(pair_info))
+            self._pair_client_registry.register(key, resolver(pair_info))
         return self._client_context.set(self._pair_client_registry.resolve(key))
 
     def _reset_pair_client(self, token) -> None:
@@ -748,7 +757,7 @@ class ArbitrageEngine(
                 "local_exchange": pos.local_exchange,
                 "global_exchange": pos.global_exchange,
                 "local_symbol": local_symbol,
-                "global_symbol": global_symbol,
+                "global_symbol": global_symbol or self._resolve_global_symbol(local_symbol),
                 "base_asset": pos.base_asset or local_symbol.split("/")[0],
                 "quote_asset": local_symbol.split("/")[-1] if "/" in local_symbol else "IDR",
             })()
