@@ -17,6 +17,7 @@ type pendingOrderSnapshot struct {
 	Leg           string  `json:"leg"`
 	OrderID       string  `json:"order_id"`
 	Symbol        string  `json:"symbol"`
+	QuoteAsset    string  `json:"quote_asset"`
 	LocalExchange string  `json:"local_exchange"`
 	GlobalExchange string `json:"global_exchange"`
 	Price         float64 `json:"price"`
