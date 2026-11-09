@@ -256,3 +256,38 @@ def test_live_exchange_client_rejects_unconfigured_pair_venue():
         client.for_pair(SimpleNamespace(
             local_exchange="tokocrypto", global_exchange="mexc"
         ))
+
+
+def test_engine_pair_client_binding_is_task_local_and_restores_previous_binding():
+    from types import SimpleNamespace
+    from executor.exchange_client import ExchangeClient
+
+    venues = {
+        "tokocrypto": {"market": "spot", "client": object()},
+        "indodax": {"market": "spot", "client": object()},
+        "okx": {"market": "futures", "client": object()},
+        "mexc": {"market": "futures", "client": object()},
+    }
+    base = ExchangeClient(venues["indodax"]["client"], venues["okx"]["client"], venues)
+    config = ExecutorConfig(mock_mode=False)
+    engine = ArbitrageEngine(config=config, client=base)
+
+    toko_okx = SimpleNamespace(
+        local_exchange="tokocrypto", local_symbol="BTC/IDR",
+        global_exchange="okx", global_symbol="BTC/USDT",
+    )
+    indo_mexc = SimpleNamespace(
+        local_exchange="indodax", local_symbol="BTC/IDR",
+        global_exchange="mexc", global_symbol="BTC/USDT",
+    )
+
+    token_a = engine._bind_pair_client(toko_okx)
+    toko_client = engine.client
+    token_b = engine._bind_pair_client(indo_mexc)
+    assert engine.client.local is venues["indodax"]["client"]
+    assert engine.client.global_fut is venues["mexc"]["client"]
+
+    engine._reset_pair_client(token_b)
+    assert engine.client is toko_client
+    engine._reset_pair_client(token_a)
+    assert engine.client is base
