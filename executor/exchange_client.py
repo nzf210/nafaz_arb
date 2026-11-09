@@ -163,6 +163,22 @@ class ExchangeClient:
             "stablecoin_peg_assumed": local_quote == "USDC" or global_quote == "USDC",
         }
 
+    def for_pair(self, pair_info: Any) -> "ExchangeClient":
+        """Return an immutable facade bound to the exact spot/futures venue pair."""
+        local_name = str(getattr(pair_info, "local_exchange", "") or "").strip().lower()
+        global_name = str(getattr(pair_info, "global_exchange", "") or "").strip().lower()
+        local_entry = self.balance_exchanges.get(local_name)
+        global_entry = self.balance_exchanges.get(global_name)
+        if not local_entry or local_entry.get("market") != "spot" or local_entry.get("client") is None:
+            raise LookupError(f"spot client unavailable for venue: {local_name or 'unknown'}")
+        if not global_entry or global_entry.get("market") != "futures" or global_entry.get("client") is None:
+            raise LookupError(f"futures client unavailable for venue: {global_name or 'unknown'}")
+        return ExchangeClient(
+            local_entry["client"],
+            global_entry["client"],
+            self.balance_exchanges,
+        )
+
     async def fetch_positions(self, symbol: str) -> list:
         """Fetches open futures positions for a symbol (global exchange).
 
@@ -659,7 +675,14 @@ def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot
         instance.set_sandbox_mode(True)
     return instance
 
-BALANCE_MARKETS = {"tokocrypto": "spot", "indodax": "spot", "okx": "futures", "mexc": "futures"}
+BALANCE_MARKETS = {
+    "tokocrypto": "spot",
+    "indodax": "spot",
+    "okx": "futures",
+    "mexc": "futures",
+    "binance": "futures",
+    "bybit": "futures",
+}
 
 
 def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds, configured_exchanges=None) -> ExchangeClient:
