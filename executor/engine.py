@@ -1130,11 +1130,14 @@ class ArbitrageEngine(
                     created_at_ms = int(float(placed_at) * 1000) if float(placed_at) < 100000000000 else int(float(placed_at))
                 except (TypeError, ValueError):
                     created_at_ms = 0
+                symbol = str(order.get("symbol", ""))
+                inferred_quote = symbol.replace("_", "/").split("/")[-1] if "/" in symbol or "_" in symbol else ""
                 orders.append({
                     "pair_tag": pair_tag,
                     "leg": leg,
                     "order_id": str(order.get("order_id", "")),
-                    "symbol": str(order.get("symbol", "")),
+                    "symbol": symbol,
+                    "quote_asset": str(order.get("quote_asset") or inferred_quote),
                     "local_exchange": str(order.get("local_exchange") or getattr(position, "local_exchange", "") or self.config.local_exchange_name),
                     "global_exchange": str(order.get("global_exchange") or getattr(position, "global_exchange", "") or self.config.global_exchange_name),
                     "price": float(order.get("price", 0.0) or 0.0),
