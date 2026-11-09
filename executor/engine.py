@@ -667,8 +667,10 @@ class ArbitrageEngine(
     async def _process_signal_priority_queue(self):
         """Drain eligible signals in descending estimated net-profit order."""
         queue_key = "arb:signal_priority"
-        quiet_window = 0.05
-        max_batch_window = 0.5
+        # Coalesce a short burst so ZPOPMAX can rank concurrent signals, but
+        # do not spend half the signal-freshness budget waiting for a batch.
+        quiet_window = 0.02
+        max_batch_window = 0.1
         while self._running:
             await self._signal_queue_event.wait()
             self._signal_queue_event.clear()
@@ -887,7 +889,7 @@ class ArbitrageEngine(
         if payload is None:
             return
         if getattr(self.config, "mock_mode", False):
-            await self._handle_signal_notification_bound(pair_tag)
+            await self._handle_signal_notification_bound(pair_tag, payload)
             return
         try:
             token = self._bind_pair_client(payload.pair_info)
@@ -905,11 +907,13 @@ class ArbitrageEngine(
             await self.publish_status()
             return
         try:
-            await self._handle_signal_notification_bound(pair_tag)
+            await self._handle_signal_notification_bound(pair_tag, payload)
         finally:
             self._reset_pair_client(token)
 
-    async def _handle_signal_notification_bound(self, pair_tag: str):
+    async def _handle_signal_notification_bound(
+        self, pair_tag: str, payload: Optional[ExecutorPayload] = None
+    ):
         """
         State 1 (Entry Order Pegging):
         1. GET arb:signal:{local_ex}:{symbol}
@@ -918,7 +922,8 @@ class ArbitrageEngine(
         """
         async with self._pair_lock(pair_tag):
             self._roll_loss_day_if_needed()
-            payload = await self._load_signal_payload(pair_tag)
+            if payload is None:
+                payload = await self._load_signal_payload(pair_tag)
             if payload is None:
                 return
             configured_local = str(self.config.local_exchange_name or "").strip().lower()
