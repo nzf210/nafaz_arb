@@ -99,6 +99,7 @@ class ExecutionDirectives:
     # live orderbook within the same scan. When False the executor must do its
     scanner_validated: bool
     scanner_validated: bool = False
+    estimated_net_profit_usdt: float = 0.0
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ExecutionDirectives":
@@ -111,6 +112,7 @@ class ExecutionDirectives:
             max_position_usdt=float(d.get("max_position_usdt", 0.0)),
             cancel_if_global_bid_drops_below_usdt=float(d.get("cancel_if_global_bid_drops_below_usdt", 0.0)),
             scanner_validated=bool(d.get("scanner_validated", False)),
+            estimated_net_profit_usdt=float(d.get("estimated_net_profit_usdt", 0.0)),
         )
 
 
