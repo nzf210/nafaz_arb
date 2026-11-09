@@ -72,6 +72,7 @@ class ExposureReconciliationWorker:
             1e-12, float(os.getenv("EXPOSURE_RECONCILIATION_ABS_TOLERANCE", "1e-8"))
         )
         self._reported: Dict[str, str] = {}
+        self._previous_halts: Dict[str, str] = {}
 
     def _tolerance(self, expected: float) -> float:
         return max(self.absolute_tolerance, abs(expected) * self.relative_tolerance)
@@ -133,8 +134,8 @@ class ExposureReconciliationWorker:
             if not local_name or not global_name or not base_asset or not global_symbol:
                 missing_venues = [name for name in (local_name, global_name) if name]
                 for exchange in missing_venues or ["unknown"]:
-                    self.engine._exchange_halted[exchange] = (
-                        "exposure reconciliation: active position mapping unavailable"
+                    self._set_halt(
+                        exchange, "active position mapping unavailable"
                     )
                     await self._alert(
                         "EXPOSURE_MAPPING_UNAVAILABLE", exchange,
@@ -153,7 +154,7 @@ class ExposureReconciliationWorker:
         for (exchange, asset), expected in spot_expected.items():
             report = report_map.get((exchange, "spot"))
             if not report or report.get("status") != "ok":
-                self.engine._exchange_halted[exchange] = "exposure reconciliation: spot balance unavailable"
+                self._set_halt(exchange, "spot balance unavailable")
                 await self._alert(
                     "EXPOSURE_BALANCE_UNAVAILABLE", exchange,
                     f"Cannot verify {asset} spot balance on {exchange}.",
@@ -164,9 +165,7 @@ class ExposureReconciliationWorker:
             try:
                 actual = self._asset_total(report, asset)
             except (TypeError, ValueError) as exc:
-                self.engine._exchange_halted[exchange] = (
-                    "exposure reconciliation: malformed spot balance"
-                )
+                self._set_halt(exchange, "malformed spot balance")
                 await self._alert(
                     "EXPOSURE_BALANCE_INVALID", exchange,
                     f"Exchange returned an invalid {asset} spot balance.",
@@ -199,7 +198,7 @@ class ExposureReconciliationWorker:
                     )
                 actual = _position_short_qty(await client.fetch_positions(symbol))
             except Exception as exc:
-                self.engine._exchange_halted[exchange] = "exposure reconciliation: futures position unavailable"
+                self._set_halt(exchange, "futures position unavailable")
                 await self._alert(
                     "EXPOSURE_POSITION_UNAVAILABLE", exchange,
                     f"Cannot verify futures position {symbol} on {exchange}.",
@@ -259,7 +258,7 @@ class ExposureReconciliationWorker:
 
     async def _mismatch(self, reason: str, exchange: str, message: str, detail: dict) -> None:
         key = f"{reason}:{exchange}:{detail.get('symbol') or detail.get('asset') or ''}"
-        self.engine._exchange_halted[exchange] = f"exposure reconciliation: {reason}"
+        self._set_halt(exchange, reason)
         await self._alert(reason, exchange, message, detail, key=key)
 
     async def _alert(
@@ -277,6 +276,12 @@ class ExposureReconciliationWorker:
             state=PositionState.RECONCILIATION_REQUIRED,
         )
 
+    def _set_halt(self, exchange: str, reason: str) -> None:
+        current = self.engine._exchange_halted.get(exchange, "")
+        if not current.startswith("exposure reconciliation:"):
+            self._previous_halts[exchange] = current
+        self.engine._exchange_halted[exchange] = f"exposure reconciliation: {reason}"
+
     def _clear_issue(self, issue_key: str, exchange: str) -> None:
         self._reported.pop(issue_key, None)
         still_mismatched = any(
@@ -285,5 +290,9 @@ class ExposureReconciliationWorker:
         )
         halt = self.engine._exchange_halted.get(exchange, "")
         if halt.startswith("exposure reconciliation:") and not still_mismatched:
-            self.engine._exchange_halted.pop(exchange, None)
-            logger.info("[Exposure Reconciliation] %s mismatch cleared; entry halt released", exchange)
+            previous = self._previous_halts.pop(exchange, "")
+            if previous:
+                self.engine._exchange_halted[exchange] = previous
+            else:
+                self.engine._exchange_halted.pop(exchange, None)
+            logger.info("[Exposure Reconciliation] %s reconciliation issue cleared", exchange)
