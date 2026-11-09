@@ -5,7 +5,6 @@ trading callbacks; the async worker delivers rows to Supabase and deletes them
 only after a successful idempotent upsert.
 """
 import json
-import os
 import sqlite3
 import threading
 import time
@@ -19,13 +18,13 @@ class OutboxFull(RuntimeError):
 
 class DurableOutbox:
     def __init__(self, path: str, max_pending: int = 50000):
-        self.path = path
+        self.path = path if path == ":memory:" else str(Path(path).expanduser())
         self.max_pending = max(1, int(max_pending))
-        if path != ":memory:":
-            Path(path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+        if self.path != ":memory:":
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._db = sqlite3.connect(
-            path, timeout=5.0, isolation_level=None, check_same_thread=False
+            self.path, timeout=5.0, isolation_level=None, check_same_thread=False
         )
         with self._lock:
             self._db.execute("PRAGMA busy_timeout=5000")
