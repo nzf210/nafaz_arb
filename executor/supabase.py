@@ -133,7 +133,7 @@ class SupabaseWriter:
                 pass
             self._session = None
         if self._dropped:
-            logger.warning("Supabase writer dropped %d in-memory wakeups; durable rows remain in SQLite", self._dropped)
+            logger.error("Supabase durable outbox enqueue failures: %d rows were not journaled", self._dropped)
         if self._outbox is not None:
             self._outbox.close()
             self._outbox = None
