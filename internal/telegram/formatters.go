@@ -21,6 +21,7 @@ func (b *Bot) formatHelp() string {
 <b>Perintah Keyboard:</b>
 /menu - <i>Buka menu tombol interaktif</i>
 /positions - <i>Lihat posisi aktif Executor & opsi tutup paksa</i>
+/pending - <i>Lihat pending order Spot yang belum selesai</i>
 /balance - <i>Cek saldo live seluruh aset Spot & Futures</i>
 /scan - <i>Jalankan scan pasar on-demand</i>
 /latest - <i>Lihat peluang dari 10 scan terakhir</i>
