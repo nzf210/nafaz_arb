@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"encoding/json"
+	"math"
 	"fmt"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ const (
 	ChannelKillSwitch      = "arb:kill_switch"
 	ChannelTradeEvents     = "arb:trade_events"
 	KeyPrefixSignal        = "arb:signal:"
+	KeySignalPriority      = "arb:signal_priority"
 	KeyPrefixLivePrice     = "arb:live_price:"
 	KeyPrefixActivePos     = "arb:active_pos:"
 	KeyTradeHistory        = "arb:trade_history"
@@ -211,6 +213,11 @@ func (c *Client) PublishSignal(ctx context.Context, payload domain.ExecutorPaylo
 
 	pipe := c.rdb.Pipeline()
 	pipe.Set(ctx, liveKey, liveData, DefaultTTL)
+	profit := payload.ExecutionDirectives.EstimatedNetProfitUSDT
+	if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
+		pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
+		pipe.Expire(ctx, KeySignalPriority, SignalTTL+2*time.Second)
+	}
 	pipe.Set(ctx, signalKey, signalData, SignalTTL)
 	pipe.Publish(ctx, ChannelSignalNotify, tag)
 	_, err = pipe.Exec(ctx)
@@ -266,6 +273,11 @@ func (c *Client) ExecuteBatchUpdates(ctx context.Context, updates []PairUpdate) 
 			signalKey := KeyPrefixSignal + tag
 			signalData, err := json.Marshal(u.Payload)
 			if err == nil {
+				profit := u.Payload.ExecutionDirectives.EstimatedNetProfitUSDT
+				if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
+					pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
+					pipe.Expire(ctx, KeySignalPriority, SignalTTL+2*time.Second)
+				}
 				pipe.Set(ctx, signalKey, signalData, SignalTTL)
 				pipe.Publish(ctx, ChannelSignalNotify, tag)
 			}
