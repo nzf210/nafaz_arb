@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from executor.models import ActivePosition
 from executor.exposure_reconciliation import (
     ExposureReconciliationWorker,
     _position_short_qty,
@@ -166,3 +167,22 @@ async def test_unavailable_exchange_reads_halt_new_entries(monkeypatch):
     assert "okx" in engine._exchange_halted
     assert len(engine.failures) == 2
     assert client.order_calls == 0
+
+
+
+def test_active_position_round_trip_keeps_reconciliation_metadata():
+    position = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000,
+        short_entry_usdt=65_000,
+        qty=0.01,
+        base_asset="BTC",
+        global_symbol="BTC/USDT:USDT",
+    )
+
+    restored = ActivePosition.from_dict(position.to_dict())
+
+    assert restored.base_asset == "BTC"
+    assert restored.global_symbol == "BTC/USDT:USDT"
