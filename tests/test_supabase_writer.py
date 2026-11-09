@@ -11,6 +11,7 @@ import pytest
 
 from executor.models import ActivePosition
 from executor.supabase import SupabaseWriter, _ms_to_iso
+from executor.supabase_outbox import DurableOutbox, OutboxFull
 
 
 def _writer(enabled: bool = True) -> SupabaseWriter:
@@ -18,6 +19,7 @@ def _writer(enabled: bool = True) -> SupabaseWriter:
         enabled=enabled,
         url="https://example.supabase.co",
         key="sb_secret_test",
+        outbox_path=":memory:",
     )
     writer = SupabaseWriter(cfg)
     if enabled:
@@ -106,12 +108,13 @@ class TestEventQueue:
         assert risk["is_mock"] is False
         assert risk["details"]["reason"] == "HEDGE_STATE_UNKNOWN"
 
-    def test_queue_full_drops_instead_of_raising(self):
+    def test_full_wakeup_queue_does_not_drop_durable_rows(self):
         writer = _writer()
         writer._queue = asyncio.Queue(maxsize=1)
         writer.event("A")
         writer.event("B")
-        assert writer._dropped == 1
+        assert writer._dropped == 1  # only the in-memory wakeup was dropped
+        assert writer._outbox.pending_count() == 2
 
     def test_ms_to_iso_rejects_invalid(self):
         assert _ms_to_iso(0) is None
@@ -256,3 +259,65 @@ class TestClosedTrades:
         writer = _writer()
         writer.trade_closed("p", {"net_profit_usdt": 1.0}, None)
         assert _drain(writer) == []
+
+class TestDurableOutbox:
+    def test_pending_rows_survive_reopen_and_ack(self, tmp_path):
+        path = str(tmp_path / "outbox.sqlite3")
+        first = DurableOutbox(path)
+        first.enqueue("executor_events", "event_id", {"event_id": "evt-1"})
+        first.close()
+
+        reopened = DurableOutbox(path)
+        pending = reopened.pending()
+        assert len(pending) == 1
+        assert pending[0][1:] == (
+            "executor_events", "event_id", {"event_id": "evt-1"}
+        )
+        reopened.ack([pending[0][0]])
+        assert reopened.pending_count() == 0
+        reopened.close()
+
+    def test_retry_retains_row_for_reconciliation(self):
+        outbox = DurableOutbox(":memory:")
+        row_id = outbox.enqueue("risk_events", "event_key", {"event_key": "risk-1"})
+        outbox.retry([row_id], "HTTP 503")
+        assert outbox.pending_count() == 1
+        assert outbox.pending() == []
+        outbox.close()
+
+    def test_capacity_failure_is_explicit(self):
+        outbox = DurableOutbox(":memory:", max_pending=1)
+        outbox.enqueue("executor_events", "event_id", {"event_id": "one"})
+        with pytest.raises(OutboxFull):
+            outbox.enqueue("executor_events", "event_id", {"event_id": "two"})
+        assert outbox.pending_count() == 1
+        outbox.close()
+
+    def test_fill_watermark_and_outbox_insert_are_atomic_across_restart(self, tmp_path):
+        path = str(tmp_path / "fills.sqlite3")
+        first = DurableOutbox(path)
+        first.enqueue_cumulative_fill(
+            "order_fills", "id",
+            {"id": "fill-4", "qty": 0, "price": 2.0, "quote_qty": 0},
+            "okx:order-1", 4.0,
+        )
+        first.close()
+
+        reopened = DurableOutbox(path)
+        delta = reopened.enqueue_cumulative_fill(
+            "order_fills", "id",
+            {"id": "fill-7", "qty": 0, "price": 2.0, "quote_qty": 0},
+            "okx:order-1", 7.0,
+        )
+        duplicate = reopened.enqueue_cumulative_fill(
+            "order_fills", "id",
+            {"id": "fill-7", "qty": 0, "price": 2.0, "quote_qty": 0},
+            "okx:order-1", 7.0,
+        )
+        pending = reopened.pending()
+        assert delta == 3.0
+        assert duplicate == 0.0
+        assert [item[3]["qty"] for item in pending] == [4.0, 3.0]
+        assert [item[3]["quote_qty"] for item in pending] == [8.0, 6.0]
+        reopened.close()
+
