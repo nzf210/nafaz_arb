@@ -61,6 +61,12 @@ class EntryMixin:
                 await self._process_pending_entry(pair_tag, order_info)
 
         async def _process_pending_entry(self, pair_tag: str, order_info: dict) -> None:
+            """Route pending entry lifecycle calls through the pair-bound clients."""
+            await self._run_pair_bound(
+                pair_tag, self._process_pending_entry_bound, pair_tag, order_info
+            )
+
+        async def _process_pending_entry_bound(self, pair_tag: str, order_info: dict) -> None:
             """Process adverse selection check, fill tracking, and position creation for an entry order.
 
             Runs under the pair lock so the monitoring loop cannot mutate pending
