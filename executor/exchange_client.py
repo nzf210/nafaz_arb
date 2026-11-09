@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 import ccxt.async_support as ccxt
 
 from executor.indodax_v2 import IndodaxTAPIv2
+from executor.quantity import AmountSpec, base_to_order_amount, order_amount_to_base
 
 
 def _client_order_params(client_order_id: Optional[str]) -> tuple:
@@ -20,18 +21,34 @@ def _client_order_params(client_order_id: Optional[str]) -> tuple:
 def _local_order_params(
     exchange: Any,
     client_order_id: Optional[str],
-    amount_step: Optional[float],
+    amount_spec: AmountSpec,
     require_amount_step: bool = False,
 ) -> tuple:
     params = {"clientOrderId": client_order_id} if client_order_id else {}
     if isinstance(exchange, IndodaxTAPIv2):
-        if amount_step is not None and not math.isfinite(amount_step):
-            raise ValueError(f"invalid Indodax quantity increment: {amount_step}")
-        if (amount_step is None or amount_step <= 0) and require_amount_step:
+        if amount_spec.unit != "BASE":
+            raise ValueError("Indodax spot amount rules must use BASE units")
+        if amount_spec.step <= 0 and require_amount_step:
             raise ValueError("Indodax orders require the market quantity increment")
-        if amount_step is not None and amount_step > 0:
-            params["quantityIncrement"] = amount_step
+        params["quantityIncrement"] = amount_spec.step
     return (params,) if params else ()
+
+
+def _require_amount_spec(value: Any) -> AmountSpec:
+    spec = value if isinstance(value, AmountSpec) else AmountSpec.from_dict(value)
+    if spec is None:
+        raise ValueError("market amount rules are required before submitting an order")
+    spec.validate()
+    return spec
+
+
+def _base_order_result(order: Dict[str, Any], spec: AmountSpec) -> Dict[str, Any]:
+    """Keep ExchangeClient responses in base-asset units, regardless of venue API units."""
+    normalized = dict(order)
+    for key in ("amount", "filled", "remaining"):
+        if normalized.get(key) is not None:
+            normalized[key] = order_amount_to_base(float(normalized[key]), spec)
+    return normalized
 
 
 class ExchangeClient:
@@ -48,62 +65,141 @@ class ExchangeClient:
         local_exchange: Any,
         global_exchange: Any,
         balance_exchanges: Optional[Dict[str, Dict[str, Any]]] = None,
+        pair_info: Any = None,
     ):
         self.local = local_exchange
         self.global_fut = global_exchange
+        self._pair_info = pair_info
         self.balance_exchanges = balance_exchanges or {
             getattr(local_exchange, "id", "local"): {"market": "spot", "client": local_exchange},
             getattr(global_exchange, "id", "global"): {"market": "futures", "client": global_exchange},
         }
 
+    async def _resolve_symbol(self, exchange: Any, symbol: str, market_kind: str) -> str:
+        """Resolve scanner market IDs to the venue's CCXT unified symbol."""
+        if isinstance(exchange, IndodaxTAPIv2):
+            return symbol
+        markets = getattr(exchange, "markets", None)
+        if not markets:
+            loader = getattr(exchange, "load_markets", None)
+            if callable(loader):
+                markets = await loader()
+        if not isinstance(markets, dict) or not markets:
+            return symbol
+
+        exchange_id = str(getattr(exchange, "id", "") or "").lower()
+        raw_id = str(symbol or "").strip()
+        if ":" in raw_id and raw_id.split(":", 1)[0].lower() in {
+            exchange_id, "toko", "okx", "mexc",
+        }:
+            raw_id = raw_id.split(":", 1)[1]
+        normalized_id = "".join(char for char in raw_id.upper() if char.isalnum())
+        pair_base = str(getattr(self._pair_info, "base_asset", "") or "").upper()
+        pair_quote = str(
+            getattr(self._pair_info, "global_quote_asset", "")
+            if market_kind == "futures"
+            else getattr(self._pair_info, "quote_asset", "")
+        ).upper()
+        candidates = []
+        for market in markets.values():
+            if not isinstance(market, dict):
+                continue
+            market_id = "".join(
+                char for char in str(market.get("id", "")).upper() if char.isalnum()
+            )
+            if market_id != normalized_id:
+                continue
+            if pair_base and str(market.get("base", "")).upper() != pair_base:
+                continue
+            if pair_quote and str(market.get("quote", "")).upper() != pair_quote:
+                # Synthetic IDR pairs may map BIDR scanner markets to an IDR
+                # CCXT alias; exact venue market ID remains authoritative.
+                quote_alias = {pair_quote, "BIDR" if pair_quote == "IDR" else pair_quote}
+                if str(market.get("quote", "")).upper() not in quote_alias:
+                    continue
+            if market_kind == "spot":
+                if market.get("swap") or market.get("future") or market.get("contract"):
+                    continue
+            elif not (market.get("swap") or market.get("future") or market.get("contract")):
+                continue
+            candidates.append(market)
+
+        if len(candidates) == 1 and candidates[0].get("symbol"):
+            return str(candidates[0]["symbol"])
+        if len(candidates) > 1:
+            raise ValueError(f"ambiguous {market_kind} market symbol {symbol}")
+        raise ValueError(
+            f"scanner symbol {symbol} did not match a {market_kind} market "
+            f"on {exchange_id or 'exchange'}"
+        )
+
     async def place_local_limit_buy(
         self, symbol: str, amount: float, price: float,
-        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+        client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
         """Places a Maker Limit Buy on local spot exchange."""
         if amount <= 0 or price <= 0:
             raise ValueError(f"invalid buy params: amount={amount}, price={price}")
-        return await self.local.create_limit_buy_order(
-            symbol,
-            amount,
+        spec = _require_amount_spec(amount_spec)
+        if spec.unit != "BASE":
+            raise ValueError("spot order amount rules must use BASE units")
+        order_amount = base_to_order_amount(amount, spec)
+        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
+        order = await self.local.create_limit_buy_order(
+            order_symbol,
+            order_amount,
             price,
             *_local_order_params(
-                self.local, client_order_id, amount_step, require_amount_step=True
+                self.local, client_order_id, spec, require_amount_step=True
             ),
         )
+        return _base_order_result(order, spec)
 
     async def place_local_limit_sell(
         self, symbol: str, amount: float, price: float,
-        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+        client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
         """Places a Maker Limit Sell on local spot exchange."""
         if amount <= 0 or price <= 0:
             raise ValueError(f"invalid sell params: amount={amount}, price={price}")
-        return await self.local.create_limit_sell_order(
-            symbol,
-            amount,
+        spec = _require_amount_spec(amount_spec)
+        if spec.unit != "BASE":
+            raise ValueError("spot order amount rules must use BASE units")
+        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
+        order = await self.local.create_limit_sell_order(
+            order_symbol,
+            base_to_order_amount(amount, spec),
             price,
-            *_local_order_params(self.local, client_order_id, amount_step),
+            *_local_order_params(self.local, client_order_id, spec),
         )
+        return _base_order_result(order, spec)
 
     async def cancel_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Cancels an existing order on local spot exchange."""
-        return await self.local.cancel_order(order_id, symbol)
+        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
+        return await self.local.cancel_order(order_id, order_symbol)
 
     async def place_local_market_sell(
         self, symbol: str, amount: float,
-        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+        client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
         """Taker market sell on local spot. Used only for emergency de-risking."""
         if amount <= 0:
             raise ValueError(f"invalid market sell amount: {amount}")
-        return await self.local.create_market_sell_order(
-            symbol, amount, *_local_order_params(self.local, client_order_id, amount_step)
+        spec = _require_amount_spec(amount_spec)
+        if spec.unit != "BASE":
+            raise ValueError("spot order amount rules must use BASE units")
+        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
+        order = await self.local.create_market_sell_order(
+            order_symbol, base_to_order_amount(amount, spec),
+            *_local_order_params(self.local, client_order_id, spec),
         )
+        return _base_order_result(order, spec)
 
     async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Fetches status of an order on local spot exchange."""
-        return await self.local.fetch_order(order_id, symbol)
+        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
+        return await self.local.fetch_order(order_id, order_symbol)
 
 
     async def fetch_balance_report(self) -> list:
@@ -216,6 +312,7 @@ class ExchangeClient:
             local_entry["client"],
             global_entry["client"],
             self.balance_exchanges,
+            pair_info=pair_info,
         )
 
     async def fetch_positions(self, symbol: str) -> list:
@@ -224,6 +321,9 @@ class ExchangeClient:
         A malformed position response must never be converted into an empty list:
         callers use an empty list as proof that the futures leg is flat.
         """
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError("requested futures symbol is missing; flat state cannot be verified")
+        symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
         try:
             positions = await self.global_fut.fetch_positions([symbol])
         except (TypeError, AttributeError):
@@ -231,9 +331,6 @@ class ExchangeClient:
 
         if positions is None or not isinstance(positions, (list, tuple)):
             raise ValueError("exchange returned an invalid futures positions payload")
-
-        if not isinstance(symbol, str) or not symbol.strip():
-            raise ValueError("requested futures symbol is missing; flat state cannot be verified")
 
         def normalize_symbol(value: str) -> str:
             # CCXT may represent the same linear contract as BTCUSDT or
@@ -254,27 +351,43 @@ class ExchangeClient:
                 matched.append(position)
         return matched
 
-    async def open_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def open_global_short_market(
+        self, symbol: str, amount: float, client_order_id: Optional[str] = None,
+        amount_spec: Any = None,
+    ) -> Dict[str, Any]:
         """
         Executes an instant Short 1x Market Hedge on Global Futures.
         STRICT: Only executes Market SELL. Never buy/long to open.
         """
         if amount <= 0:
             raise ValueError(f"invalid short amount: {amount}")
+        spec = _require_amount_spec(amount_spec)
+        order_amount = base_to_order_amount(amount, spec)
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
         # Market Sell on Futures opens a Short position
-        return await self.global_fut.create_market_sell_order(symbol, amount, *_client_order_params(client_order_id))
+        order = await self.global_fut.create_market_sell_order(
+            order_symbol, order_amount, *_client_order_params(client_order_id)
+        )
+        return _base_order_result(order, spec)
 
-    async def close_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def close_global_short_market(
+        self, symbol: str, amount: float, client_order_id: Optional[str] = None,
+        amount_spec: Any = None,
+    ) -> Dict[str, Any]:
         """
         Closes Global Short position by buying back sold coins with reduceOnly=True.
         STRICT: Must have reduceOnly=True so it can never inadvertently open a Long.
         """
         if amount <= 0:
             raise ValueError(f"invalid close amount: {amount}")
+        spec = _require_amount_spec(amount_spec)
+        order_amount = base_to_order_amount(amount, spec)
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
         params = {"reduceOnly": True}
         if client_order_id:
             params["clientOrderId"] = client_order_id
-        return await self.global_fut.create_market_buy_order(symbol, amount, params)
+        order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)
+        return _base_order_result(order, spec)
 
     async def fetch_funding_history(
         self, symbol: str, since: Optional[int] = None, limit: int = 100
@@ -285,7 +398,8 @@ class ExchangeClient:
             raise NotImplementedError(
                 f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_history"
             )
-        return await fetcher(symbol, since, limit)
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        return await fetcher(order_symbol, since, limit)
 
     async def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
         """Fetches current funding rate and the venue's next settlement timestamp."""
@@ -294,11 +408,13 @@ class ExchangeClient:
             raise NotImplementedError(
                 f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_rate"
             )
-        return await fetcher(symbol)
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        return await fetcher(order_symbol)
 
     async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
         """Fetches ticker from global futures exchange."""
-        return await self.global_fut.fetch_ticker(symbol)
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        return await self.global_fut.fetch_ticker(order_symbol)
 
     async def close(self):
         """Closes each unique exchange connection exactly once."""
@@ -378,6 +494,11 @@ class PaperTradingExchangeClient:
         self.locked_futures += futures_usdt
         return True
 
+    @staticmethod
+    def _validate_base_amount(amount: float, amount_spec: Any) -> None:
+        spec = _require_amount_spec(amount_spec)
+        base_to_order_amount(amount, spec)
+
     def unlock_funds(self, spot_usdt: float, futures_usdt: float) -> None:
         """Unlocks reserved funds when order is cancelled or position exited."""
         self.locked_spot = max(0.0, self.locked_spot - spot_usdt)
@@ -417,8 +538,9 @@ class PaperTradingExchangeClient:
 
     async def place_local_limit_buy(
         self, symbol: str, amount: float, price: float,
-        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+        client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
+        self._validate_base_amount(amount, amount_spec)
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
             if existing is not None:
@@ -445,8 +567,9 @@ class PaperTradingExchangeClient:
 
     async def place_local_limit_sell(
         self, symbol: str, amount: float, price: float,
-        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+        client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
+        self._validate_base_amount(amount, amount_spec)
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
             if existing is not None:
@@ -471,9 +594,10 @@ class PaperTradingExchangeClient:
 
     async def place_local_market_sell(
         self, symbol: str, amount: float,
-        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+        client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
         """Taker market sell at the live best bid. Used for emergency hedge rollback."""
+        self._validate_base_amount(amount, amount_spec)
         if amount <= 0:
             raise ValueError(f"invalid market sell amount: {amount}")
         self.order_counter += 1
@@ -556,7 +680,11 @@ class PaperTradingExchangeClient:
                     return mid
         return 0.0
 
-    async def open_global_short_market(self, symbol: str, amount: float, price: float = 0.0, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def open_global_short_market(
+        self, symbol: str, amount: float, price: float = 0.0,
+        client_order_id: Optional[str] = None, amount_spec: Any = None,
+    ) -> Dict[str, Any]:
+        self._validate_base_amount(amount, amount_spec)
         if amount <= 0:
             raise ValueError(f"invalid short amount: {amount}")
         self.order_counter += 1
@@ -578,7 +706,11 @@ class PaperTradingExchangeClient:
         self.trades.append(trade)
         return trade
 
-    async def close_global_short_market(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def close_global_short_market(
+        self, symbol: str, amount: float, client_order_id: Optional[str] = None,
+        amount_spec: Any = None,
+    ) -> Dict[str, Any]:
+        self._validate_base_amount(amount, amount_spec)
         self.order_counter += 1
         oid = f"mock-close-{self.order_counter}"
         # A buy-to-close pays the ask; reporting a fill price keeps paper-mode PnL

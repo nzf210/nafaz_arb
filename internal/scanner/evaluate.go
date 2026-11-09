@@ -146,6 +146,8 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 	op.LocalExchange = sm.Exchange
 	op.GlobalExchange = pm.Exchange
 
+	// Executor active-position state is resolved inside applyHybridMakerTakerRules
+	// (which owns the Redis client); there is no prior knowledge here.
 	if !fxLive && isIDRQuote {
 		// Defense in depth: unreachable in normal flow (the skip above fires
 		// first), but kept as a hard gate so a fallback-rate opportunity can
@@ -301,6 +303,16 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	}
 
 	op.TradingEligible = len(op.ExclusionReasons) == 0
+	if op.TradingEligible && s.cfg.EnableExecutorSignals && !hasActive &&
+		(!validAmountSpec(sm.AmountSpec) || !validAmountSpec(pm.AmountSpec)) {
+		op.TradingEligible = false
+		op.ExecutionSignalStatus = "amount_rules_missing"
+		op.ExclusionReasons = append(op.ExclusionReasons, "AMOUNT_RULES_MISSING")
+		log.Printf(
+			"execution signal suppressed for %s/%s: spot or perpetual amount rules are missing or invalid",
+			sm.Exchange+":"+sm.Symbol, pm.Exchange+":"+pm.Symbol,
+		)
+	}
 
 	// Populate metadata fields
 	op.LocalPriceTick = tickIDR
@@ -373,6 +385,9 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					QuoteAsset:     sm.QuoteAsset,
 					LocalPriceTick: tickIDR,
 					LocalLotSize:   sm.LotSize,
+					LocalAmountSpec:  sm.AmountSpec,
+					GlobalAmountSpec: pm.AmountSpec,
+					GlobalQuoteAsset: pm.QuoteAsset,
 				},
 				PricingSnapshot: pricingSnapshot,
 				FundingMetrics: domain.FundingMetrics{
@@ -393,6 +408,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					EstimatedNetProfitUSDT:           netProfitUSDT,
 				},
 			}
+
 			if err := rc.PublishSignal(ctx, payload); err != nil {
 				// A signal that never reached Redis would be silently lost:
 				// surface it as a fatal error so the scan is not "complete".
@@ -403,6 +419,18 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		}
 	}
 	return nil
+}
+
+func validAmountSpec(spec *domain.AmountSpec) bool {
+	if spec == nil || spec.Step <= 0 || spec.Min < 0 || spec.BasePerUnit <= 0 {
+		return false
+	}
+	if math.IsNaN(spec.Step) || math.IsInf(spec.Step, 0) ||
+		math.IsNaN(spec.Min) || math.IsInf(spec.Min, 0) ||
+		math.IsNaN(spec.BasePerUnit) || math.IsInf(spec.BasePerUnit, 0) {
+		return false
+	}
+	return spec.Unit == "BASE" || spec.Unit == "CONTRACT"
 }
 
 func (s *Service) evaluateActivePairs(ctx context.Context, pairs [][2]domain.Market, exposures []domain.OpenExposure, positionStateKnown bool, started time.Time) []evalResult {

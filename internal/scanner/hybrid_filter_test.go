@@ -22,12 +22,12 @@ type customMockAdapter struct {
 
 func (c *customMockAdapter) SpotMarkets(context.Context) ([]domain.Market, error) {
 	return []domain.Market{
-		{Exchange: "indodax", Symbol: "BTC_IDR", BaseAsset: "BTC", QuoteAsset: "IDR", MarketType: "SPOT", Active: true, TickSize: 1000},
+		{Exchange: "indodax", Symbol: "BTC_IDR", BaseAsset: "BTC", QuoteAsset: "IDR", MarketType: "SPOT", Active: true, TickSize: 1000, AmountSpec: &domain.AmountSpec{Unit: "BASE", Step: 0.00000001, Min: 0.00000001, BasePerUnit: 1}},
 	}, nil
 }
 func (c *customMockAdapter) PerpetualMarkets(context.Context) ([]domain.Market, error) {
 	return []domain.Market{
-		{Exchange: "binance", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true, ContractSize: 1},
+		{Exchange: "binance", Symbol: "BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "PERPETUAL", Active: true, ContractSize: 1, AmountSpec: &domain.AmountSpec{Unit: "CONTRACT", Step: 1, Min: 1, BasePerUnit: 1}},
 	}, nil
 }
 func (c *customMockAdapter) SpotOrderBook(_ context.Context, _ string) (domain.OrderBook, error) {

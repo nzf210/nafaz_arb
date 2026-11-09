@@ -9,6 +9,26 @@ Starter Go project for the **read-only** Scanner described in the PRD: discover/
 - Go 1.22+
 - Uses `github.com/shopspring/decimal` for fixed-point financial arithmetic
 
+## CEX amount rules
+
+The scanner and executor use **base-asset quantity** as the shared quantity contract.
+Each market publishes an `amount_spec` describing how its venue accepts order amounts:
+
+- `unit`: `BASE` for spot/base-denominated orders or `CONTRACT` for futures contracts.
+- `step`: the venue's order-amount increment, expressed in `unit`.
+- `min`: the minimum order amount, expressed in `unit`.
+- `base_per_unit`: base-asset quantity represented by one `unit` (1 for `BASE`; contract
+  size for `CONTRACT`).
+
+Before opening a position, the scanner requires valid rules for both legs and the
+executor rounds the shared base quantity down to a value representable by both markets.
+An order below either venue minimum is rejected rather than sent with a guessed amount.
+New venues must therefore expose authoritative step, minimum, and contract-size metadata
+from their market metadata/API; add parser and regression coverage for spot and/or futures
+as applicable. Keep scanner pair IDs separate from the CCXT unified market symbols used
+for execution: the executor resolves IDs against loaded venue markets and fails closed
+when the match is missing or ambiguous.
+
 ## Run
 
 ```sh

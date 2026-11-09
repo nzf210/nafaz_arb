@@ -14,6 +14,13 @@ from executor.engine import ArbitrageEngine, build_client_order_id
 
 from tests.conftest import _exposure_engine, _half_budget_signal, engine, fake_redis
 
+BASE_AMOUNT_SPEC = {
+    "unit": "BASE",
+    "step": 0.00000001,
+    "min": 0.00000001,
+    "base_per_unit": 1.0,
+}
+
 @pytest.mark.asyncio
 async def test_live_balance_report_reads_each_configured_exchange():
     from executor.exchange_client import ExchangeClient
@@ -47,6 +54,101 @@ async def test_live_balance_report_reads_each_configured_exchange():
 
 
 @pytest.mark.asyncio
+async def test_live_futures_order_converts_base_quantity_to_contracts_and_back():
+    from executor.exchange_client import ExchangeClient
+
+    class Futures:
+        def __init__(self):
+            self.calls = []
+
+        async def create_market_sell_order(self, symbol, amount, *params):
+            self.calls.append((symbol, amount, params))
+            return {"symbol": symbol, "amount": amount, "filled": amount, "status": "closed"}
+
+        async def create_market_buy_order(self, symbol, amount, params):
+            self.calls.append((symbol, amount, params))
+            return {"symbol": symbol, "amount": amount, "filled": amount, "status": "closed"}
+
+    futures = Futures()
+    client = ExchangeClient(object(), futures)
+    spec = {
+        "unit": "CONTRACT",
+        "step": 1.0,
+        "min": 1.0,
+        "base_per_unit": 0.001,
+    }
+
+    opened = await client.open_global_short_market(
+        "BTC/USDT:USDT", 0.003, amount_spec=spec
+    )
+    closed = await client.close_global_short_market(
+        "BTC/USDT:USDT", 0.003, amount_spec=spec
+    )
+
+    assert futures.calls[0][1] == 3
+    assert opened["filled"] == pytest.approx(0.003)
+    assert futures.calls[1][1] == 3
+    assert futures.calls[1][2]["reduceOnly"] is True
+    assert closed["filled"] == pytest.approx(0.003)
+
+
+@pytest.mark.asyncio
+async def test_live_client_resolves_scanner_market_ids_before_orders():
+    from types import SimpleNamespace
+
+    from executor.exchange_client import ExchangeClient
+
+    class Spot:
+        id = "tokocrypto"
+        markets = {
+            "BTC/IDR": {
+                "id": "BTCIDR", "symbol": "BTC/IDR", "base": "BTC",
+                "quote": "IDR", "spot": True,
+            },
+        }
+
+        def __init__(self):
+            self.calls = []
+
+        async def create_limit_buy_order(self, symbol, amount, price, *params):
+            self.calls.append((symbol, amount, price))
+            return {"symbol": symbol, "amount": amount, "filled": amount}
+
+    class Futures:
+        id = "okx"
+        markets = {
+            "BTC/USDT:USDT": {
+                "id": "BTC-USDT-SWAP", "symbol": "BTC/USDT:USDT",
+                "base": "BTC", "quote": "USDT", "swap": True,
+            },
+        }
+
+        def __init__(self):
+            self.calls = []
+
+        async def create_market_sell_order(self, symbol, amount, *params):
+            self.calls.append((symbol, amount))
+            return {"symbol": symbol, "amount": amount, "filled": amount}
+
+    spot, futures = Spot(), Futures()
+    pair = SimpleNamespace(
+        base_asset="BTC",
+        quote_asset="IDR",
+        global_quote_asset="USDT",
+    )
+    client = ExchangeClient(spot, futures, pair_info=pair)
+    await client.place_local_limit_buy(
+        "toko:BTC_IDR", 0.001, 1_000_000_000, amount_spec=BASE_AMOUNT_SPEC
+    )
+    await client.open_global_short_market(
+        "okx:BTC-USDT-SWAP", 0.001, amount_spec=BASE_AMOUNT_SPEC
+    )
+
+    assert spot.calls[0][0] == "BTC/IDR"
+    assert futures.calls[0][0] == "BTC/USDT:USDT"
+
+
+@pytest.mark.asyncio
 async def test_paper_trading_client_fill_only_when_price_touches():
     """
     Test PaperTradingExchangeClient:
@@ -58,7 +160,7 @@ async def test_paper_trading_client_fill_only_when_price_touches():
     client = PaperTradingExchangeClient(local_name="indodax", global_name="okx")
 
     # 1. Place Limit Buy at Rp 1000.0
-    buy_order = await client.place_local_limit_buy("btc_idr", 0.5, 1000.0)
+    buy_order = await client.place_local_limit_buy("btc_idr", 0.5, 1000.0, amount_spec=BASE_AMOUNT_SPEC)
     oid = buy_order["id"]
 
     # Market ask is Rp 1010.0 (higher than our buy limit) -> Order must stay OPEN, filled 0.0
@@ -74,7 +176,7 @@ async def test_paper_trading_client_fill_only_when_price_touches():
     assert fetched["filled"] == 0.5
 
     # 2. Place Limit Sell at Rp 1020.0
-    sell_order = await client.place_local_limit_sell("btc_idr", 0.5, 1020.0)
+    sell_order = await client.place_local_limit_sell("btc_idr", 0.5, 1020.0, amount_spec=BASE_AMOUNT_SPEC)
     soid = sell_order["id"]
 
     # Market bid is Rp 1015.0 (below our sell limit) -> Order must stay OPEN, filled 0.0
@@ -97,7 +199,7 @@ async def test_paper_client_market_sell_fills_at_bid():
     client = PaperTradingExchangeClient(local_name="indodax", global_name="okx")
     client.update_market_price("btc_idr", best_bid=999_000_000.0, best_ask=1_000_000_000.0)
 
-    order = await client.place_local_market_sell("btc_idr", 0.25)
+    order = await client.place_local_market_sell("btc_idr", 0.25, amount_spec=BASE_AMOUNT_SPEC)
 
     assert order["type"] == "market"
     assert order["side"] == "sell"
@@ -112,7 +214,7 @@ async def test_paper_client_market_sell_rejects_non_positive_amount():
 
     client = PaperTradingExchangeClient(local_name="indodax", global_name="okx")
     with pytest.raises(ValueError):
-        await client.place_local_market_sell("btc_idr", 0.0)
+        await client.place_local_market_sell("btc_idr", 0.0, amount_spec=BASE_AMOUNT_SPEC)
 
 @pytest.mark.asyncio
 async def test_paper_client_short_returns_reference_price():
@@ -120,7 +222,9 @@ async def test_paper_client_short_returns_reference_price():
     from executor.exchange_client import PaperTradingExchangeClient
 
     client = PaperTradingExchangeClient(local_name="indodax", global_name="okx")
-    trade = await client.open_global_short_market("BTCUSDT", 0.01, price=65_000.0)
+    trade = await client.open_global_short_market(
+        "BTCUSDT", 0.01, price=65_000.0, amount_spec=BASE_AMOUNT_SPEC
+    )
 
     assert trade["price"] == 65_000.0
     assert trade["average"] == 65_000.0
@@ -134,7 +238,9 @@ async def test_bug10_paper_client_close_reports_fill_price():
     client = PaperTradingExchangeClient(local_name="indodax", global_name="okx")
     client.update_market_price("btc_usdt", best_bid=64_990.0, best_ask=65_010.0)
 
-    order = await client.close_global_short_market("btc_usdt", 0.01)
+    order = await client.close_global_short_market(
+        "btc_usdt", 0.01, amount_spec=BASE_AMOUNT_SPEC
+    )
 
     assert order["average"] == 65_010.0
     assert order["price"] == 65_010.0

@@ -106,7 +106,8 @@ async def test_create_limit_buy_posts_signed_body_with_client_order_id():
     client = ExchangeClient(ex, object())
     order = await client.place_local_limit_buy(
         "btc_idr", 0.01, 1_000_000.0,
-        client_order_id="btcidr-entry-1", amount_step=0.00000001,
+        client_order_id="btcidr-entry-1",
+        amount_spec={"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
     )
 
     call = session.calls[0]
@@ -140,7 +141,8 @@ async def test_indodax_order_quantity_is_floored_to_market_increment():
     client = ExchangeClient(ex, object())
 
     await client.place_local_limit_buy(
-        "btc_idr", 0.123456789012, 1_000_000.0, amount_step=0.00000001
+        "btc_idr", 0.123456789012, 1_000_000.0,
+        amount_spec={"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
     )
 
     assert "quantity=0.12345678" in session.calls[0]["data"]
@@ -162,7 +164,8 @@ async def test_indodax_order_respects_whole_unit_increment():
     client = ExchangeClient(ex, object())
 
     await client.place_local_limit_buy(
-        "btc_idr", 1.999999, 1_000_000.0, amount_step=1
+        "btc_idr", 1.999999, 1_000_000.0,
+        amount_spec={"unit": "BASE", "step": 1.0, "min": 1.0, "base_per_unit": 1.0},
     )
 
     assert "quantity=1" in session.calls[0]["data"]
@@ -172,7 +175,7 @@ async def test_indodax_order_requires_market_increment():
     ex = IndodaxTAPIv2("K", "S", session=_StubSession({}))
     client = ExchangeClient(ex, object())
 
-    with pytest.raises(ValueError, match="quantity increment"):
+    with pytest.raises(ValueError, match="market amount rules"):
         await client.place_local_limit_buy("btc_idr", 0.1, 1_000_000.0)
 
 @pytest.mark.asyncio
@@ -190,7 +193,10 @@ async def test_indodax_emergency_market_sell_remains_available_for_legacy_positi
     ex = IndodaxTAPIv2("K", "S", session=session)
     client = ExchangeClient(ex, object())
 
-    await client.place_local_market_sell("btc_idr", 0.1, amount_step=0.0)
+    await client.place_local_market_sell(
+        "btc_idr", 0.1,
+        amount_spec={"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
+    )
 
     assert "quantity=0.1" in session.calls[0]["data"]
 

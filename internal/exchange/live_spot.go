@@ -133,6 +133,11 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 				BaseAsset         string `json:"baseAsset"`
 				QuoteAsset        string `json:"quoteAsset"`
 				SpotTradingEnable int    `json:"spotTradingEnable"`
+				Filters           []struct {
+					FilterType string `json:"filterType"`
+					StepSize   string `json:"stepSize"`
+					MinQty     string `json:"minQty"`
+				} `json:"filters"`
 			} `json:"list"`
 		} `json:"data"`
 	}
@@ -145,14 +150,42 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 		if s.SpotTradingEnable != 1 || s.Symbol == "" || s.BaseAsset == "" || s.QuoteAsset == "" {
 			continue
 		}
-		markets = append(markets, domain.Market{
+		var amountSpec *domain.AmountSpec
+		for _, filter := range s.Filters {
+			if strings.EqualFold(filter.FilterType, "LOT_SIZE") ||
+				strings.EqualFold(filter.FilterType, "LOT_SIZE_FILTER") {
+				step, stepErr := strconv.ParseFloat(filter.StepSize, 64)
+				minimum, minErr := strconv.ParseFloat(filter.MinQty, 64)
+				if stepErr == nil && minErr == nil && step > 0 && minimum >= 0 &&
+					!math.IsNaN(step) && !math.IsInf(step, 0) &&
+					!math.IsNaN(minimum) && !math.IsInf(minimum, 0) {
+					amountSpec = &domain.AmountSpec{
+						Unit:        "BASE",
+						Step:        step,
+						Min:         minimum,
+						BasePerUnit: 1,
+					}
+				}
+				break
+			}
+		}
+		if amountSpec == nil {
+			log.Printf("tokocrypto: symbol %s has no valid LOT_SIZE filter; execution disabled for market", s.Symbol)
+		}
+		market := domain.Market{
 			Exchange:   "tokocrypto",
 			Symbol:     "toko:" + s.Symbol,
 			BaseAsset:  strings.ToUpper(s.BaseAsset),
 			QuoteAsset: strings.ToUpper(s.QuoteAsset),
 			MarketType: "SPOT",
 			Active:     true,
-		})
+			AmountSpec: amountSpec,
+		}
+		if amountSpec != nil {
+			market.LotSize = amountSpec.Step
+			market.MinOrder = amountSpec.Min
+		}
+		markets = append(markets, market)
 	}
 
 	if len(markets) > 0 {
@@ -229,6 +262,13 @@ func (l *LiveAdapter) fetchIndodaxSpotMarkets(ctx context.Context) ([]domain.Mar
 			MarketType: "SPOT",
 			Active:     true,
 			LotSize:    p.QuantityIncrement,
+			MinOrder:   p.QuantityIncrement,
+			AmountSpec: &domain.AmountSpec{
+				Unit:        "BASE",
+				Step:        p.QuantityIncrement,
+				Min:         p.QuantityIncrement,
+				BasePerUnit: 1,
+			},
 		})
 	}
 

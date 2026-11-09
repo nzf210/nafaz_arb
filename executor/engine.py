@@ -17,6 +17,7 @@ from executor.exchange_client import ExchangeClient
 from executor.pair_registry import ExchangePairKey, PairClientRegistry
 from executor.config import ExecutorConfig
 from executor.private_stream import PrivateStreamCache
+from executor.quantity import quantize_base_quantity
 
 # Module-level helpers live in executor.helpers; re-exported here so existing
 # callers (tests, simulator, main) keep importing them from executor.engine.
@@ -1108,14 +1109,24 @@ class ArbitrageEngine(
         directives = payload.execution_directives
         pair_info = payload.pair_info
         snapshot = payload.pricing_snapshot
-        if pair_info.local_exchange.strip().lower() == "indodax" and (
-            not math.isfinite(pair_info.local_lot_size) or pair_info.local_lot_size <= 0
-        ):
+        if pair_info.local_amount_spec is None or pair_info.global_amount_spec is None:
             self._mark_failed(
                 pair_tag,
-                "LOCAL_QUANTITY_INCREMENT_MISSING",
-                "Indodax market quantity increment is missing; entry was not submitted.",
-                detail={"symbol": pair_info.local_symbol},
+                "MARKET_AMOUNT_RULES_MISSING",
+                "Spot and perpetual market amount rules are required; entry was not submitted.",
+                detail={
+                    "local_symbol": pair_info.local_symbol,
+                    "global_symbol": pair_info.global_symbol,
+                },
+            )
+            await self.publish_status()
+            return
+        if pair_info.local_amount_spec.unit != "BASE":
+            self._mark_failed(
+                pair_tag,
+                "LOCAL_AMOUNT_UNIT_UNSUPPORTED",
+                "Spot market amount rules must be expressed in base-asset units.",
+                detail={"local_symbol": pair_info.local_symbol},
             )
             await self.publish_status()
             return
@@ -1131,13 +1142,22 @@ class ArbitrageEngine(
         max_pos_usdt, _ = sizing
 
         capital_idr = Decimal(str(max_pos_usdt)) * Decimal(str(snapshot.usdt_idr_rate))
-        buy_qty = float(capital_idr / Decimal(str(buy_price_idr)))
-        if pair_info.local_lot_size > 0:
-            quantity = capital_idr / Decimal(str(buy_price_idr))
-            increment = Decimal(str(pair_info.local_lot_size))
-            buy_qty = float(
-                (quantity / increment).to_integral_value(rounding=ROUND_DOWN) * increment
+        desired_qty = float(capital_idr / Decimal(str(buy_price_idr)))
+        try:
+            buy_qty = quantize_base_quantity(
+                desired_qty,
+                pair_info.local_amount_spec,
+                pair_info.global_amount_spec,
             )
+        except ValueError as exc:
+            self._mark_failed(
+                pair_tag,
+                "MARKET_AMOUNT_RULES_REJECT_SIZE",
+                "Requested position cannot satisfy both market amount rules.",
+                detail={"requested_base_qty": desired_qty, "error": str(exc)},
+            )
+            await self.publish_status()
+            return
 
         if buy_qty <= 0:
             return
@@ -1178,7 +1198,7 @@ class ArbitrageEngine(
                 buy_qty,
                 buy_price_idr,
                 client_order_id=entry_coid,
-                amount_step=pair_info.local_lot_size,
+                amount_spec=pair_info.local_amount_spec,
             )
             order_id = str(order.get("id", ""))
             self._record_order_success(pair_info.local_exchange)
@@ -1200,6 +1220,8 @@ class ArbitrageEngine(
                 "global_symbol": pair_info.global_symbol,
                 "base_asset": pair_info.base_asset,
                 "local_lot_size": pair_info.local_lot_size,
+                "local_amount_spec": pair_info.local_amount_spec.to_dict(),
+                "global_amount_spec": pair_info.global_amount_spec.to_dict(),
                 "local_exchange": pair_info.local_exchange,
                 "global_exchange": pair_info.global_exchange,
                 "price": buy_price_idr,

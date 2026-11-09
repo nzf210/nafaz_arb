@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from executor.models import ActivePosition, PairInfo, PositionState
 from executor import helpers
+from executor.quantity import AmountSpec
 from executor.helpers import (
     BALANCES_KEY,
     HedgeSlippageExceeded,
@@ -337,6 +338,7 @@ class EntryMixin:
                     unhedged_delta,
                     price=expected_short_price,
                     client_order_id=hedge_coid,
+                    amount_spec=AmountSpec.from_dict(order_info.get("global_amount_spec")),
                 )
                 if not isinstance(short_order, dict):
                     raise ValueError(
@@ -534,6 +536,8 @@ class EntryMixin:
                     current_funding_rate=order_info["current_funding_rate"],
                     local_price_tick=float(order_info.get("tick_size", 1.0)),
                     local_lot_size=float(order_info.get("local_lot_size", 0.0)),
+                    local_amount_spec=AmountSpec.from_dict(order_info.get("local_amount_spec")),
+                    global_amount_spec=AmountSpec.from_dict(order_info.get("global_amount_spec")),
                     spot_cost_usdt=spot_cost,
                     futures_margin_usdt=fut_margin,
                 )

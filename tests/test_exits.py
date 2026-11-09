@@ -330,7 +330,7 @@ async def test_bug10_short_exit_uses_actual_close_fill(fake_redis):
 
     # The short actually closes 200 USDT higher than the pegged ask; the old code
     # booked the PnL against 65_000 and understated the loss.
-    async def close_at_65200(symbol, amount, client_order_id=None):
+    async def close_at_65200(symbol, amount, client_order_id=None, amount_spec=None):
         return {"id": "close-1", "status": "closed", "average": 65_200.0, "filled": amount}
 
     client.close_global_short_market = close_at_65200
@@ -460,7 +460,7 @@ async def test_partial_futures_close_after_spot_fill_requires_reconciliation(eng
         "id": "992", "symbol": "btc_idr", "status": "closed", "filled": 0.005
     }
 
-    async def partial_close(symbol, amount, client_order_id=None):
+    async def partial_close(symbol, amount, client_order_id=None, amount_spec=None):
         return {
             "id": "partial-close",
             "symbol": symbol,

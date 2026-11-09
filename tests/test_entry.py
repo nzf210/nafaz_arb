@@ -32,6 +32,8 @@ async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, moc
             "quote_asset": "IDR",
             "local_price_tick": 1000.0,
             "local_lot_size": 0.00000001,
+            "local_amount_spec": {"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
+            "global_amount_spec": {"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
         },
         "pricing_snapshot": {
             "local_best_bid": 1000000000.0,
@@ -91,6 +93,9 @@ async def test_entry_quantity_is_floored_to_market_increment(engine, fake_redis,
     now_ms = int(time.time() * 1000)
     payload = _fresh_signal_payload(now_ms)
     payload["pair_info"]["local_lot_size"] = 0.0005
+    payload["pair_info"]["local_amount_spec"] = {
+        "unit": "BASE", "step": 0.0005, "min": 0.0005, "base_per_unit": 1.0
+    }
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
 
     await engine.handle_signal_notification(pair_tag)
@@ -106,13 +111,14 @@ async def test_entry_without_market_increment_is_rejected(engine, fake_redis, mo
     pair_tag = "indodax:btc_idr"
     payload = _fresh_signal_payload(int(time.time() * 1000))
     payload["pair_info"].pop("local_lot_size")
+    payload["pair_info"].pop("local_amount_spec")
     await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
 
     await engine.handle_signal_notification(pair_tag)
 
     assert mock_client.placed_buys == []
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == (
-        "LOCAL_QUANTITY_INCREMENT_MISSING"
+        "MARKET_AMOUNT_RULES_MISSING"
     )
 
 @pytest.mark.asyncio
@@ -408,7 +414,7 @@ async def test_p0_04_missing_futures_price_aborts_and_rolls_back(fake_redis):
     now_ms = int(time.time() * 1000)
 
     class NoPriceShortClient(MockExchangeClient):
-        async def open_global_short_market(self, symbol, amount, price=0.0, client_order_id=None):
+        async def open_global_short_market(self, symbol, amount, price=0.0, client_order_id=None, amount_spec=None):
             record = {
                 "id": "no-price-hedge",
                 "symbol": symbol,

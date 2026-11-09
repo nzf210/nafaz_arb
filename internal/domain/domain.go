@@ -2,6 +2,15 @@ package domain
 
 import "time"
 
+// AmountSpec normalizes venue quantity rules. Step and Min are expressed in
+// the venue's order amount unit; BasePerUnit converts that unit to base asset.
+type AmountSpec struct {
+	Unit        string  `json:"unit"` // BASE for spot/base-amount markets; CONTRACT for derivatives.
+	Step        float64 `json:"step"`
+	Min         float64 `json:"min"`
+	BasePerUnit float64 `json:"base_per_unit"`
+}
+
 type Market struct {
 	Exchange     string  `json:"exchange"`
 	Symbol       string  `json:"symbol"`
@@ -13,6 +22,7 @@ type Market struct {
 	TickSize     float64 `json:"tick_size,omitempty"`
 	LotSize      float64 `json:"lot_size,omitempty"` // Minimum valid quantity increment.
 	MinOrder     float64 `json:"min_order,omitempty"`
+	AmountSpec   *AmountSpec `json:"amount_spec,omitempty"`
 }
 
 type PriceLevel struct {
@@ -148,14 +158,17 @@ type FundingMetrics struct {
 }
 
 type PairInfo struct {
-	LocalExchange  string  `json:"local_exchange"`
-	GlobalExchange string  `json:"global_exchange"`
-	LocalSymbol    string  `json:"local_symbol"`
-	GlobalSymbol   string  `json:"global_symbol"`
-	BaseAsset      string  `json:"base_asset"`
-	QuoteAsset     string  `json:"quote_asset"`
-	LocalPriceTick float64 `json:"local_price_tick"`
-	LocalLotSize   float64 `json:"local_lot_size,omitempty"` // Local market quantity increment.
+	LocalExchange    string      `json:"local_exchange"`
+	GlobalExchange   string      `json:"global_exchange"`
+	LocalSymbol      string      `json:"local_symbol"`
+	GlobalSymbol     string      `json:"global_symbol"`
+	BaseAsset        string      `json:"base_asset"`
+	QuoteAsset       string      `json:"quote_asset"`
+	LocalPriceTick   float64     `json:"local_price_tick"`
+	LocalLotSize     float64     `json:"local_lot_size,omitempty"` // Deprecated; use LocalAmountSpec.
+	LocalAmountSpec  *AmountSpec `json:"local_amount_spec,omitempty"`
+	GlobalAmountSpec *AmountSpec `json:"global_amount_spec,omitempty"`
+	GlobalQuoteAsset string      `json:"global_quote_asset,omitempty"`
 }
 
 type ExecutionDirectives struct {

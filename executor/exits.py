@@ -272,7 +272,7 @@ class ExitMixin:
                     pos.qty,
                     limit_sell_idr,
                     client_order_id=exit_coid,
-                    amount_step=pos.local_lot_size,
+                    amount_spec=pos.local_amount_spec,
                 )
                 order_id = str(order.get("id", ""))
                 self.supabase.order(
@@ -532,6 +532,7 @@ class ExitMixin:
                     global_sym,
                     unclosed_delta,
                     client_order_id=unwind_coid,
+                    amount_spec=pos.global_amount_spec,
                 )
                 if not isinstance(close_order, dict):
                     raise ValueError(

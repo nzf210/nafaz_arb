@@ -163,6 +163,7 @@ class ForceCloseMixin:
                     global_sym,
                     pos.qty,
                     client_order_id=force_coid,
+                    amount_spec=pos.global_amount_spec,
                 )
                 if not isinstance(res, dict):
                     logger.critical(
@@ -270,7 +271,7 @@ class ForceCloseMixin:
                         pos.symbol,
                         pos.qty,
                         client_order_id=build_client_order_id(pair_key, "force-liq", seq),
-                        amount_step=pos.local_lot_size,
+                        amount_spec=pos.local_amount_spec,
                     ),
                     max_retries=4,  # 5 total attempts
                     base_delay=0.5,
