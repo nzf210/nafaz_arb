@@ -492,3 +492,22 @@ async def test_exit_price_snapshot_without_live_fx_is_rejected(engine, fake_redi
     await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
 
     assert await engine._fetch_live_price(pair_tag) is None
+
+
+@pytest.mark.asyncio
+async def test_status_snapshot_exposes_managed_pending_orders(engine):
+    pair_tag = "tokocrypto:ath_usdt"
+    engine.pending_entry_orders[pair_tag] = {
+        "order_id": "entry-1", "symbol": "ATH/USDT", "price": 0.0044,
+        "qty": 2200.0, "filled": 200.0, "placed_time": time.time(),
+        "local_exchange": "tokocrypto", "global_exchange": "okx",
+    }
+    snapshot = engine.status_snapshot()
+    assert snapshot["pending_entries"] == 1
+    assert len(snapshot["pending_orders"]) == 1
+    order = snapshot["pending_orders"][0]
+    assert order["leg"] == "SPOT_ENTRY"
+    assert order["status"] == "PARTIALLY_FILLED"
+    assert order["local_exchange"] == "tokocrypto"
+    assert order["global_exchange"] == "okx"
+    assert order["remaining"] == 2000.0
