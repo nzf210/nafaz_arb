@@ -58,6 +58,9 @@ func TestMockScanReturnsMatchedPairs(t *testing.T) {
 		t.Fatalf("opportunities=%d, want 2", len(r.Opportunities))
 	}
 	for _, op := range r.Opportunities {
+		if op.LocalExchange == "" || op.GlobalExchange == "" {
+			t.Fatalf("opportunity is missing source venues: %+v", op)
+		}
 		switch op.BaseAsset {
 		case "BTC":
 			verifyBTCOpportunity(t, op.TradingEligible, op.ExclusionReasons)
