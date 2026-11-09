@@ -207,7 +207,7 @@ func TestPublishSignalRanksByEstimatedNetProfitUSDT(t *testing.T) {
 	items, err := client.rdb.ZRevRangeWithScores(ctx, KeySignalPriority, 0, -1).Result()
 	if err != nil { t.Fatal(err) }
 	if len(items) != 3 { t.Fatalf("got %d ranked signals, want 3", len(items)) }
-	if items[0].Member != "indodax:eth_idr__okx:ethusdt" || items[0].Score != 3.75 {
+	if items[0].Member != "indodax:eth_idr__okx:eth_idrusdt" || items[0].Score != 3.75 {
 		t.Fatalf("highest priority = %+v, want ETH at 3.75 USDT", items[0])
 	}
 }
