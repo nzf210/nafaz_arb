@@ -957,13 +957,13 @@ class ArbitrageEngine(
                 await self.publish_status()
                 return
             self._pair_infos[pair_tag] = payload.pair_info
-            balances = await self._check_balance_mismatch(
-                payload.pair_info,
-                payload.pricing_snapshot.usdt_idr_rate,
-                pair_tag,
-            )
-            if balances is None and not getattr(self.config, "mock_mode", False):
-                return
+            mock_mode = bool(getattr(self.config, "mock_mode", False))
+            if mock_mode:
+                await self._check_balance_mismatch(
+                    payload.pair_info,
+                    payload.pricing_snapshot.usdt_idr_rate,
+                    pair_tag,
+                )
             if self._trading_halted:
                 logger.warning(
                     f"[Circuit Breaker] rejecting entry for {pair_tag}: "
@@ -1164,8 +1164,9 @@ class ArbitrageEngine(
 
         actual_cost_usdt = (buy_qty * buy_price_idr) / snapshot.usdt_idr_rate
 
-        # Lock funds in exchange client
-        if hasattr(self.client, "lock_funds"):
+        # Paper trading reserves simulated funds locally. Live orders are sent
+        # directly to the venue so its response is authoritative for availability.
+        if getattr(self.config, "mock_mode", False) and hasattr(self.client, "lock_funds"):
             if not self.client.lock_funds(actual_cost_usdt, actual_cost_usdt):
                 logger.warning(
                     f"[State 1 Balance Check] Failed to lock funds for {actual_cost_usdt:.2f} USDT on {pair_tag}"
@@ -1242,16 +1243,43 @@ class ArbitrageEngine(
                 "futures_margin_usdt": actual_cost_usdt,
             }
             await self._persist_pending_entry(pair_tag, self.pending_entry_orders[pair_tag])
-        except Exception:
-            if hasattr(self.client, "unlock_funds"):
+        except Exception as exc:
+            if (
+                getattr(self.config, "mock_mode", False)
+                and hasattr(self.client, "unlock_funds")
+            ):
                 self.client.unlock_funds(actual_cost_usdt, actual_cost_usdt)
-            self._record_order_failure(pair_info.local_exchange, "entry order placement failed")
+            exchange_error = str(exc).strip() or type(exc).__name__
+            normalized_error = f"{type(exc).__name__} {exchange_error}".lower()
+            insufficient_balance = any(
+                marker in normalized_error
+                for marker in (
+                    "insufficientfunds",
+                    "insufficient balance",
+                    "insufficient funds",
+                    "insufficient margin",
+                    "not enough balance",
+                    "not enough funds",
+                    "saldo tidak cukup",
+                    "saldo tidak mencukupi",
+                )
+            )
+            reason = "INSUFFICIENT_BALANCE" if insufficient_balance else "SPOT_ORDER_OPEN_FAILED"
+            self._record_order_failure(
+                pair_info.local_exchange,
+                "insufficient balance" if insufficient_balance else "entry order placement failed",
+            )
             logger.exception(f"[State 1] failed to place limit buy for {pair_tag}")
             await self._publish_execution_failure(
                 pair_tag,
-                "SPOT_ORDER_OPEN_FAILED",
-                "Gagal membuka order Spot; periksa error exchange dan saldo.",
-                detail={"exchange": pair_info.local_exchange, "symbol": pair_info.local_symbol},
+                reason,
+                f"Exchange menolak order Spot: {exchange_error[:500]}",
+                detail={
+                    "exchange": pair_info.local_exchange,
+                    "symbol": pair_info.local_symbol,
+                    "error_type": type(exc).__name__,
+                    "exchange_error": exchange_error[:1000],
+                },
             )
     # -------------------------------------------------------------
     # Failure tracking & status reporting

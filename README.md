@@ -37,13 +37,15 @@ go test ./...
 go run ./cmd/nafaz-scanner -config config.json
 ```
 
-### Container security
+### Live trading behavior and safeguards
 
-The live executor reads spot/futures balances through CCXT. For IDR-quoted spot pairs,
-it converts the available IDR balance to a USDT-equivalent amount using the fresh
-USDT/IDR rate from the scanner signal; missing FX or balance data blocks new entries.
-USDT/USDC quote balances are treated at a 1:1 stablecoin assumption for sizing, so
-USDC depeg risk is not eliminated.
+Live entry sizing uses the signal budget, exposure cap, and fee reserve; it does not
+poll private balance endpoints before submitting an order. The exchange validates
+available spot funds when the limit order is sent and validates futures margin when
+the hedge is submitted. Rejection alerts include the exchange error. A spot fill can
+still occur before a futures-margin rejection, so the executor attempts its guarded
+spot rollback and reports any unresolved exposure. Simulated entries continue to use
+the paper account's balance snapshot.
 
 INDODAX is the exception: its keys are issued on `indodax.com/trade_api` and are
 TAPIv2-only. The legacy `/tapi` endpoint that CCXT still signs rejects them with
@@ -291,7 +293,7 @@ remain outside this OKX-specific change.
 | `max_entry_slippage_pct` | `MAX_ENTRY_SLIPPAGE_PCT` | `0.003` | Aborts the hedge if the futures ask moved more than this fraction past the expected short price. **Fail-open**: an unreadable ticker logs and proceeds, because refusing to hedge leaves spot naked. `0` disables. |
 | `entry_revalidation_min_spread_pct` | `ENTRY_REVALIDATION_MIN_SPREAD_PCT` | `0` (use payload floor) | Before placing the maker buy, re-quotes the global futures bid and rejects the signal when the live entry spread fell below this floor. When `0`, the payload's `min_entry_spread_pct` from the scanner is used instead. **Fail-open** on an unreadable ticker. |
 | `max_exposure_per_exchange_usdt` | `MAX_EXPOSURE_PER_EXCHANGE_USDT` | `0` (off) | Caps total committed capital per venue across open positions *and* pending entries. Left at `0` because no per-venue limit has been agreed. |
-| `balance_mismatch_fraction` | `BALANCE_MISMATCH_FRACTION` | `0.20` | Halts a venue for new entries when its available balance drops more than this fraction below the last observed value, beyond what committed capital can explain (withdrawal/liquidation detection). `0` disables. |
+| `balance_mismatch_fraction` | `BALANCE_MISMATCH_FRACTION` | `0.20` | Simulated-entry balance drift threshold; live entries do not poll balances for this guard. `0` disables mismatch comparison. |
 | `max_consecutive_order_failures` | `MAX_CONSECUTIVE_ORDER_FAILURES` | `3` | Halts a venue for new entries after this many consecutive order-placement failures. `0` disables. Clear via `resume_exchange()` or restart. |
 
 **Kill switch:** publish `{"action": "on"}` to the `arb:kill_switch` Redis channel (or use the Telegram `/killswitch on` / `/killswitch off` commands). ON halts *all* new entries globally until an explicit OFF — it never auto-resets on a UTC rollover. Open positions continue to be managed.

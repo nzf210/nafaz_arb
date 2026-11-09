@@ -313,9 +313,9 @@ class RiskMixin:
         self, pair_tag: str, payload: ExecutorPayload
     ) -> Optional[tuple[float, float]]:
         """
-        Sizes an entry from the signal budget, available balance, exposure cap and
-        the fee reserve. Returns ``(max_pos_usdt, min_cap)``, or None when the
-        trade cannot be funded.
+        Sizes an entry from the signal budget, exposure cap and fee reserve.
+        Simulated entries are additionally capped by simulated balances; live
+        venues validate funds when the order is submitted.
         """
         directives = payload.execution_directives
         pair_info = payload.pair_info
@@ -324,34 +324,16 @@ class RiskMixin:
         if max_pos_usdt <= 0:
             max_pos_usdt = 100.0  # fallback budget
 
-        # Check exchange balance limits ($100 balance per exchange in simulation)
         min_cap = getattr(self.config, "min_allocated_capital", 10.0)
 
-        balances = self._balance_snapshots.pop(pair_tag, None)
-        if balances is None:
+        mock_mode = bool(getattr(self.config, "mock_mode", False))
+        balances = self._balance_snapshots.pop(pair_tag, None) if mock_mode else None
+        if mock_mode and balances is None:
             balances = await self._check_balance_mismatch(
                 pair_info,
                 payload.pricing_snapshot.usdt_idr_rate,
                 pair_tag,
             )
-        local_ex, global_ex = self._pair_venues(pair_tag)
-        for venue in (local_ex, global_ex):
-            if venue and venue in self._exchange_halted:
-                logger.warning(
-                    f"[Risk Control] rejecting entry for {pair_tag}: "
-                    f"{venue} halted ({self._exchange_halted[venue]})"
-                )
-                return None
-
-        if balances is None and not getattr(self.config, "mock_mode", False):
-            await self._publish_execution_failure(
-                pair_tag,
-                "BALANCE_SNAPSHOT_UNAVAILABLE",
-                "Snapshot saldo live tidak tersedia; entry ditolak.",
-                detail={"local_exchange": local_ex, "global_exchange": global_ex},
-            )
-            return None
-
         if balances is not None:
             avail_spot = float(balances["spot_available"])
             avail_fut = float(balances["futures_available"])
@@ -372,6 +354,8 @@ class RiskMixin:
                 return None
 
             max_pos_usdt = min(max_pos_usdt, usable_capital)
+
+        if balances is not None or not mock_mode:
             if not self._exposure_allows(pair_tag, pair_info, max_pos_usdt):
                 await self._publish_execution_failure(
                     pair_tag,
