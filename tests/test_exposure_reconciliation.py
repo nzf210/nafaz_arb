@@ -6,6 +6,8 @@ from executor.exchange_client import ExchangeClient
 from executor.models import ActivePosition
 from executor.exposure_reconciliation import (
     ExposureReconciliationWorker,
+    _env_float,
+    _env_interval,
     _position_short_qty,
 )
 
@@ -291,3 +293,14 @@ async def test_reconciliation_restores_preexisting_operator_halt_after_issue_cle
 
     assert "indodax" not in engine._exchange_halted
     assert engine._exchange_halted["okx"] == "operator kill switch"
+
+
+
+def test_reconciliation_environment_values_fail_safe(monkeypatch):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "not-a-number")
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_REL_TOLERANCE", "nan")
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_ABS_TOLERANCE", "-1")
+
+    assert _env_interval() == 300
+    assert _env_float("EXPOSURE_RECONCILIATION_REL_TOLERANCE", 0.005, 0.0, 0.05) == 0.005
+    assert _env_float("EXPOSURE_RECONCILIATION_ABS_TOLERANCE", 1e-8, 1e-12, 1.0) == 1e-12
