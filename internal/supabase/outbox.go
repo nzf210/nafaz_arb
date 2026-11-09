@@ -60,6 +60,10 @@ func NewDurableOutbox(path string, maxBytes int64) (*DurableOutbox, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open scanner outbox: %w", err)
 	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("secure scanner outbox permissions: %w", err)
+	}
 	if err := file.Sync(); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("sync scanner outbox: %w", err)
@@ -259,6 +263,26 @@ func (o *DurableOutbox) readLocked() ([]outboxRecord, error) {
 			return nil, fmt.Errorf("scanner outbox record %d is missing required fields", index+1)
 		}
 		records = append(records, record)
+		if index == len(lines)-1 && !strings.HasSuffix(string(data), "\\n") {
+			// The JSON payload reached disk but the process stopped before its
+			// delimiter. Preserve it and terminate the record before future appends.
+			file, openErr := os.OpenFile(o.path, os.O_APPEND|os.O_WRONLY, 0o600)
+			if openErr != nil {
+				return nil, fmt.Errorf("open scanner outbox to finish final delimiter: %w", openErr)
+			}
+			_, writeErr := file.Write([]byte("\\n"))
+			syncErr := file.Sync()
+			closeErr := file.Close()
+			if writeErr != nil {
+				return nil, fmt.Errorf("finish scanner outbox final delimiter: %w", writeErr)
+			}
+			if syncErr != nil {
+				return nil, fmt.Errorf("sync scanner outbox final delimiter: %w", syncErr)
+			}
+			if closeErr != nil {
+				return nil, fmt.Errorf("close scanner outbox after delimiter repair: %w", closeErr)
+			}
+		}
 	}
 	return records, nil
 }
