@@ -184,10 +184,10 @@ class ExposureReconciliationWorker:
         active_spot_venues = {exchange for exchange, _ in active_spot_keys}
         active_futures_venues = {exchange for exchange, _ in active_futures_keys}
         for issue_key in list(self._reported):
-            parts = issue_key.split(":")
-            if len(parts) < 2:
+            reason, _, remainder = issue_key.partition(":")
+            exchange, _, identifier = remainder.partition(":")
+            if not exchange:
                 continue
-            reason, exchange = parts[0], parts[1]
             if reason == "EXPOSURE_MAPPING_UNAVAILABLE" and exchange not in missing_mapping_venues:
                 self._clear_issue(issue_key, exchange)
             elif reason == "EXPOSURE_EXPECTED_QTY_INVALID" and exchange not in invalid_qty_venues:
@@ -196,9 +196,9 @@ class ExposureReconciliationWorker:
                 self._clear_issue(issue_key, exchange)
             elif reason == "EXPOSURE_POSITION_UNAVAILABLE" and exchange not in active_futures_venues:
                 self._clear_issue(issue_key, exchange)
-            elif reason == "SPOT_BASE_BALANCE_DEFICIT" and (exchange, parts[2] if len(parts) > 2 else "") not in active_spot_keys:
+            elif reason == "SPOT_BASE_BALANCE_DEFICIT" and (exchange, identifier) not in active_spot_keys:
                 self._clear_issue(issue_key, exchange)
-            elif reason == "FUTURES_POSITION_MISMATCH" and (exchange, parts[2] if len(parts) > 2 else "") not in active_futures_keys:
+            elif reason == "FUTURES_POSITION_MISMATCH" and (exchange, identifier) not in active_futures_keys:
                 self._clear_issue(issue_key, exchange)
 
         for (exchange, asset), expected in spot_expected.items():
