@@ -206,6 +206,9 @@ func formatScanOpportunity(i int, op domain.Opportunity) string {
 		html.EscapeString(op.ProfitabilityStatus),
 	))
 
+	if op.LocalExchange != "" || op.GlobalExchange != "" {
+		sb.WriteString(fmt.Sprintf("   • CEX: <b>%s Spot</b> vs <b>%s Futures</b>\\n", html.EscapeString(strings.ToUpper(op.LocalExchange)), html.EscapeString(strings.ToUpper(op.GlobalExchange))))
+	}
 	if op.ExecutionMode == "MAKER_TAKER" {
 		sb.WriteString(fmt.Sprintf("   • Spot Limit (Maker): <code>%.4f</code> (%s) [Antrean: %.2f]\n", op.SpotEntryPrice, html.EscapeString(op.SpotSymbol), op.SpotQueueDepth))
 		sb.WriteString(fmt.Sprintf("   • Perp Short: <code>%.4f</code> (%s)\n", op.PerpEntryPrice, html.EscapeString(op.PerpSymbol)))
@@ -275,6 +278,8 @@ func (b *Bot) formatOpportunityAlert(op domain.Opportunity) string {
 	return fmt.Sprintf(`🚨 <b>PROFITABLE ARBITRAGE OPPORTUNITY%s</b> 🚨
 
 Pair: <b>%s/%s</b>
+🏦 <b>Spot CEX:</b> %s
+🏦 <b>Futures CEX:</b> %s
 Net ROI: <b>%+.2f%%</b> | Net Profit: <b>%+.4f %s</b>
 
 📈 <b>%s:</b> <code>%.4f</code> (%s)
@@ -292,6 +297,7 @@ Net ROI: <b>%+.2f%%</b> | Net Profit: <b>%+.4f %s</b>
 🕒 <i>Terdeteksi: %s</i>`,
 		modeBadge,
 		html.EscapeString(op.BaseAsset), html.EscapeString(op.QuoteAsset),
+		html.EscapeString(strings.ToUpper(op.LocalExchange)), html.EscapeString(strings.ToUpper(op.GlobalExchange)),
 		op.NetROIPct, op.NetProfit, html.EscapeString(op.QuoteAsset),
 		spotEntryLabel, op.SpotEntryPrice, html.EscapeString(op.SpotSymbol),
 		op.PerpEntryPrice, html.EscapeString(op.PerpSymbol),
