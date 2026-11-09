@@ -15,6 +15,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/history"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
+	"github.com/nafaz/spot-perp-scanner/internal/supabase"
 	"github.com/nafaz/spot-perp-scanner/internal/telegram"
 )
 func main(){
@@ -42,6 +43,14 @@ func main(){
 		log.Fatalf("invalid mode %q: must be MOCK or LIVE", cfg.Mode)
 	}
 	svc:=scanner.New(cfg,adapter)
+	if durableStore, storeErr := supabase.NewFromEnv(); storeErr != nil {
+		// Supabase is an audit/history sink, never a prerequisite for Redis signals.
+		log.Printf("warning: Supabase opportunity persistence disabled: %v", storeErr)
+	} else if durableStore != nil {
+		svc.SetSupabaseClient(durableStore)
+		defer durableStore.Close()
+		log.Printf("Supabase opportunity persistence enabled")
+	}
 
 	ctx,stop:=signal.NotifyContext(context.Background(),syscall.SIGINT,syscall.SIGTERM);defer stop()
 
