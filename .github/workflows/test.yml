@@ -2,7 +2,7 @@ name: Test
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, "feat/supabase-scanner-persistence"]
   push:
     branches: [main, "feat/**", "fix/**"]
 
