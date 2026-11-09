@@ -949,6 +949,7 @@ class ArbitrageEngine(
                 "client_order_id": entry_coid,
                 "symbol": pair_info.local_symbol,
                 "global_symbol": pair_info.global_symbol,
+                "base_asset": pair_info.base_asset,
                 "local_exchange": pair_info.local_exchange,
                 "global_exchange": pair_info.global_exchange,
                 "price": buy_price_idr,
