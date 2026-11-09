@@ -4,7 +4,6 @@ The writer must never raise into the trading path, must be idempotent on retry,
 and must derive fills from cumulative quantities exactly once.
 """
 
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -21,17 +20,15 @@ def _writer(enabled: bool = True) -> SupabaseWriter:
         key="sb_secret_test",
         outbox_path=":memory:",
     )
-    writer = SupabaseWriter(cfg)
-    if enabled:
-        writer._queue = asyncio.Queue(maxsize=512)
-    return writer
+    return SupabaseWriter(cfg)
 
 
 def _drain(writer: SupabaseWriter) -> list:
-    items = []
-    while not writer._queue.empty():
-        items.append(writer._queue.get_nowait())
-    return items
+    if writer._outbox is None:
+        return []
+    pending = writer._outbox.pending(1000)
+    writer._outbox.ack([item[0] for item in pending])
+    return [(table, conflict, row) for _, table, conflict, row in pending]
 
 
 def _pos(**overrides) -> ActivePosition:
@@ -108,13 +105,13 @@ class TestEventQueue:
         assert risk["is_mock"] is False
         assert risk["details"]["reason"] == "HEDGE_STATE_UNKNOWN"
 
-    def test_full_wakeup_queue_does_not_drop_durable_rows(self):
+    def test_multiple_events_are_durably_journaled(self):
         writer = _writer()
-        writer._queue = asyncio.Queue(maxsize=1)
-        writer.event("A")
-        writer.event("B")
-        assert writer._dropped == 1  # only the in-memory wakeup was dropped
+        writer.event("A", occurred_at_ms=1)
+        writer.event("B", occurred_at_ms=2)
         assert writer._outbox.pending_count() == 2
+        assert [row[2]["event_type"] for row in _drain(writer)] == ["A", "B"]
+        assert writer._outbox.pending_count() == 0
 
     def test_ms_to_iso_rejects_invalid(self):
         assert _ms_to_iso(0) is None
