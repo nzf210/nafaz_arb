@@ -749,3 +749,42 @@ func TestLatestCommandReportsHistoryReadFailure(t *testing.T) {
 		t.Fatalf("unexpected history failure message: %s", msg.Text)
 	}
 }
+
+
+func TestOpportunityAlertShowsSpotAndFuturesCEX(t *testing.T) {
+	bot := New(config.Config{}, nil)
+	message := bot.formatOpportunityAlert(domain.Opportunity{
+		BaseAsset: "ATH", QuoteAsset: "USDT", LocalExchange: "tokocrypto", GlobalExchange: "okx",
+		ExecutionMode: "MAKER_TAKER", SpotSymbol: "ATH/USDT", PerpSymbol: "ATH-USDT-SWAP",
+	})
+	if !strings.Contains(message, "Spot CEX:</b> TOKOCRYPTO") {
+		t.Fatalf("spot CEX missing from opportunity alert: %s", message)
+	}
+	if !strings.Contains(message, "Futures CEX:</b> OKX") {
+		t.Fatalf("futures CEX missing from opportunity alert: %s", message)
+	}
+}
+
+func TestPendingOrdersCommandShowsExecutorSnapshot(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil { t.Fatal(err) }
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	payload := `{"status":"RUNNING","mock_mode":false,"timestamp_ms":1794220000000,"pending_entries":1,"pending_exits":0,"pending_orders":[{"pair_tag":"toko:ath_usdt","leg":"SPOT_ENTRY","order_id":"order-123","symbol":"ATH/USDT","local_exchange":"tokocrypto","global_exchange":"okx","price":0.0044,"qty":2200,"filled":200,"remaining":2000,"status":"PARTIALLY_FILLED","created_at_ms":1794219900000}]}`
+	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, payload, time.Minute).Err(); err != nil { t.Fatal(err) }
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.handlePendingOrdersCommand(context.Background(), -100123456789, 0)
+	if !strings.Contains(sent.Text, "PARTIALLY_FILLED") || !strings.Contains(sent.Text, "TOKOCRYPTO") || !strings.Contains(sent.Text, "OKX") || !strings.Contains(sent.Text, "order-123") {
+		t.Fatalf("pending order details missing: %s", sent.Text)
+	}
+}
