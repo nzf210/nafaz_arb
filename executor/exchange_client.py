@@ -27,9 +27,18 @@ class ExchangeClient:
     3. No transfer/deposit/withdraw features.
     """
 
-    def __init__(self, local_exchange: Any, global_exchange: Any):
+    def __init__(
+        self,
+        local_exchange: Any,
+        global_exchange: Any,
+        balance_exchanges: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
         self.local = local_exchange
         self.global_fut = global_exchange
+        self.balance_exchanges = balance_exchanges or {
+            getattr(local_exchange, "id", "local"): {"market": "spot", "client": local_exchange},
+            getattr(global_exchange, "id", "global"): {"market": "futures", "client": global_exchange},
+        }
 
     async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
         """Places a Maker Limit Buy on local spot exchange."""
@@ -59,29 +68,29 @@ class ExchangeClient:
 
 
     async def fetch_balance_report(self) -> list:
-        """Fetch complete free/used/total balances from both live venues."""
+        """Fetch read-only balances for every configured venue independently."""
         reports = []
-        for name, market, exchange in (
-            (getattr(self.local, "id", "local"), "spot", self.local),
-            (getattr(self.global_fut, "id", "global"), "futures", self.global_fut),
-        ):
+        for name, entry in sorted(self.balance_exchanges.items()):
+            market = str(entry.get("market") or "unknown")
+            exchange = entry.get("client")
+            init_error = str(entry.get("error") or "")
+            if exchange is None:
+                reports.append({
+                    "name": name, "market": market,
+                    "status": "not_configured" if "not configured" in init_error.lower() else "error",
+                    "error": init_error or "exchange client is unavailable", "assets": [],
+                })
+                continue
             try:
                 raw = await exchange.fetch_balance()
                 free_map, used_map, total_map = raw.get("free") or {}, raw.get("used") or {}, raw.get("total") or {}
                 assets = []
                 for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
-                    free_raw = free_map.get(asset)
-                    used_raw = used_map.get(asset)
-                    total_raw = total_map.get(asset)
+                    free_raw, used_raw, total_raw = free_map.get(asset), used_map.get(asset), total_map.get(asset)
                     free = float(free_raw or 0.0)
                     total = float(total_raw) if total_raw is not None else 0.0
-                    used = (
-                        float(used_raw)
-                        if used_raw is not None
-                        else max(0.0, total - free)
-                    )
-                    if total_raw is None:
-                        total = free + used
+                    used = float(used_raw) if used_raw is not None else max(0.0, total - free)
+                    if total_raw is None: total = free + used
                     if not all(math.isfinite(v) and v >= 0 for v in (free, used, total)):
                         raise ValueError(f"invalid balance value for {asset}")
                     if free or used or total:
@@ -237,11 +246,17 @@ class ExchangeClient:
         return await self.global_fut.fetch_ticker(symbol)
 
     async def close(self):
-        """Closes exchange connections."""
-        if self.local and hasattr(self.local, "close"):
-            await self.local.close()
-        if self.global_fut and hasattr(self.global_fut, "close"):
-            await self.global_fut.close()
+        """Closes each unique exchange connection exactly once."""
+        clients = [self.local, self.global_fut]
+        clients.extend(entry.get("client") for entry in self.balance_exchanges.values() if entry.get("client") is not None)
+        closed = set()
+        for exchange in clients:
+            if exchange is None or id(exchange) in closed:
+                continue
+            closed.add(id(exchange))
+            closer = getattr(exchange, "close", None)
+            if callable(closer):
+                await closer()
 
 
 class PaperTradingExchangeClient:
@@ -576,6 +591,7 @@ def create_exchange_client(config: Any) -> Any:
         global_name=config.global_exchange_name,
         local_creds=config.local_credentials,
         global_creds=config.global_credentials,
+        configured_exchanges=getattr(config, "exchanges", {}),
     )
 
 
@@ -614,8 +630,33 @@ def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot
         instance.set_sandbox_mode(True)
     return instance
 
-def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds) -> ExchangeClient:
-    """Factory creating CCXT async instances."""
+BALANCE_MARKETS = {"tokocrypto": "spot", "indodax": "spot", "okx": "futures", "mexc": "futures"}
+
+
+def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds, configured_exchanges=None) -> ExchangeClient:
+    """Create the active trading pair clients and independent read-only balance clients."""
     local_ex = init_local_exchange(local_name, local_creds, default_type="spot")
     global_ex = init_ccxt_exchange(global_name, global_creds, default_type="future")
-    return ExchangeClient(local_ex, global_ex)
+    balance_exchanges = {
+        local_name.lower(): {"market": "spot", "client": local_ex},
+        global_name.lower(): {"market": "futures", "client": global_ex},
+    }
+    credentials = configured_exchanges or {}
+    for name, market in BALANCE_MARKETS.items():
+        if name in balance_exchanges:
+            continue
+        creds = credentials.get(name)
+        if creds is None:
+            balance_exchanges[name] = {"market": market, "client": None, "error": "API key/secret not configured"}
+            continue
+        api_key = str(getattr(creds, "api_key", "") or "").strip()
+        api_secret = str(getattr(creds, "api_secret", "") or "").strip()
+        if not api_key or not api_secret:
+            balance_exchanges[name] = {"market": market, "client": None, "error": "API key/secret not configured"}
+            continue
+        try:
+            client = init_local_exchange(name, creds, default_type="spot") if market == "spot" else init_ccxt_exchange(name, creds, default_type="future")
+            balance_exchanges[name] = {"market": market, "client": client}
+        except Exception as exc:
+            balance_exchanges[name] = {"market": market, "client": None, "error": f"balance client initialization failed: {exc}"}
+    return ExchangeClient(local_ex, global_ex, balance_exchanges)

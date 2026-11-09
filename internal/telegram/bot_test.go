@@ -291,6 +291,35 @@ func TestAlertOnScan(t *testing.T) {
 	}
 }
 
+func TestScanRejectionSummaryNotification(t *testing.T) {
+	alerts := make(chan SendMessageReq, 2)
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var req SendMessageReq
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil { alerts <- req }
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.cfg.Telegram.AlertCooldownMinutes = 15
+	bot.onScanCompleted(context.Background(), domain.ScanResult{
+		ScanID: "rejected-scan", TotalMarkets: 1800, MatchedPairs: 416,
+		ActivePairs: 416, ExcludedPairs: 416,
+		Opportunities: []domain.Opportunity{{
+			BaseAsset: "BTC", TradingEligible: false,
+			ExclusionReasons: []string{"ENTRY_SPREAD_BELOW_MINIMUM", "NEGATIVE_FUNDING_RATE"},
+		}},
+	})
+	select {
+	case alert := <-alerts:
+		if !strings.Contains(alert.Text, "ENTRY_SPREAD_BELOW_MINIMUM") { t.Fatalf("missing rejection reason: %s", alert.Text) }
+		if !strings.Contains(alert.Text, "416") { t.Fatalf("missing matched count: %s", alert.Text) }
+	case <-time.After(time.Second):
+		t.Fatal("expected Telegram rejection summary")
+	}
+}
+
 func TestAlertThresholdsAndCooldown(t *testing.T) {
 	alerts := make(chan SendMessageReq, 4)
 	tsHandler := func(w http.ResponseWriter, r *http.Request) {

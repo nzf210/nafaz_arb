@@ -23,20 +23,33 @@ func validateOrderBookAge(sb, pb domain.OrderBook, now time.Time, maxAgeSeconds 
 		return nil
 	}
 	maxAge := time.Duration(maxAgeSeconds) * time.Second
+	const exchangeClockSkewTolerance = 5 * time.Second
+
 	for _, book := range []domain.OrderBook{sb, pb} {
-		stamp := book.Timestamp
-		if book.Source == "receive_time" && !book.ReceivedAt.IsZero() {
-			stamp = book.ReceivedAt
+		// Local receive time is measured by this process and avoids rejecting a
+		// fresh response merely because a venue clock is slightly ahead.
+		freshnessStamp := book.ReceivedAt
+		if freshnessStamp.IsZero() {
+			freshnessStamp = book.Timestamp
 		}
-		if stamp.IsZero() {
+		if freshnessStamp.IsZero() {
 			return fmt.Errorf("stale order book: %s %s missing timestamp", book.Exchange, book.Symbol)
 		}
-		age := now.Sub(stamp)
-		if age < -time.Second {
-			return fmt.Errorf("order book clock skew: %s %s timestamp is %s in the future", book.Exchange, book.Symbol, (-age).Round(time.Millisecond))
+		age := now.Sub(freshnessStamp)
+		if age < -exchangeClockSkewTolerance {
+			return fmt.Errorf("order book receive clock skew: %s %s received %s in the future", book.Exchange, book.Symbol, (-age).Round(time.Millisecond))
 		}
 		if age > maxAge {
-			return fmt.Errorf("stale order book: %s %s age=%s exceeds %s", book.Exchange, book.Symbol, age.Round(time.Millisecond), maxAge)
+			return fmt.Errorf("stale order book: %s %s receive age=%s exceeds %s", book.Exchange, book.Symbol, age.Round(time.Millisecond), maxAge)
+		}
+		if book.Source != "receive_time" && !book.Timestamp.IsZero() {
+			exchangeAge := now.Sub(book.Timestamp)
+			if exchangeAge < -exchangeClockSkewTolerance {
+				return fmt.Errorf("order book clock skew: %s %s timestamp is %s in the future", book.Exchange, book.Symbol, (-exchangeAge).Round(time.Millisecond))
+			}
+			if exchangeAge > maxAge {
+				return fmt.Errorf("stale order book: %s %s exchange timestamp age=%s exceeds %s", book.Exchange, book.Symbol, exchangeAge.Round(time.Millisecond), maxAge)
+			}
 		}
 	}
 	return nil

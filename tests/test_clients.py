@@ -15,6 +15,38 @@ from executor.engine import ArbitrageEngine, build_client_order_id
 from tests.conftest import _exposure_engine, _half_budget_signal, engine, fake_redis
 
 @pytest.mark.asyncio
+async def test_live_balance_report_reads_each_configured_exchange():
+    from executor.exchange_client import ExchangeClient
+
+    class FakeExchange:
+        def __init__(self, name, balances):
+            self.id, self.balances, self.closed = name, balances, False
+        async def fetch_balance(self):
+            return self.balances
+        async def close(self):
+            self.closed = True
+
+    spot = FakeExchange("indodax", {"free": {"IDR": 1200000}, "used": {"IDR": 300000}, "total": {"IDR": 1500000}})
+    futures = FakeExchange("okx", {"free": {"USDT": 50}, "used": {"USDT": 10}, "total": {"USDT": 60}})
+    toko = FakeExchange("tokocrypto", {"free": {"IDR": 800000, "BTC": 0.001}, "used": {"IDR": 200000}, "total": {"IDR": 1000000, "BTC": 0.001}})
+    client = ExchangeClient(spot, futures, {
+        "indodax": {"market": "spot", "client": spot},
+        "okx": {"market": "futures", "client": futures},
+        "tokocrypto": {"market": "spot", "client": toko},
+        "mexc": {"market": "futures", "client": None, "error": "API key/secret not configured"},
+    })
+    reports = await client.fetch_balance_report()
+    by_name = {report["name"]: report for report in reports}
+    assert by_name["tokocrypto"]["status"] == "ok"
+    assert by_name["tokocrypto"]["market"] == "spot"
+    assert {asset["asset"] for asset in by_name["tokocrypto"]["assets"]} == {"BTC", "IDR"}
+    assert by_name["mexc"]["status"] == "not_configured"
+    assert by_name["indodax"]["status"] == "ok" and by_name["okx"]["status"] == "ok"
+    await client.close()
+    assert spot.closed and futures.closed and toko.closed
+
+
+@pytest.mark.asyncio
 async def test_paper_trading_client_fill_only_when_price_touches():
     """
     Test PaperTradingExchangeClient:
