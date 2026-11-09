@@ -140,6 +140,11 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 			err:             err,
 		}
 	}
+	// Preserve the exact venue pairing used for this evaluation so alerts and history
+	// never infer an exchange from a venue-specific symbol format.
+	op.LocalExchange = sm.Exchange
+	op.GlobalExchange = pm.Exchange
+
 	if !fxLive && isIDRQuote {
 		// Defense in depth: unreachable in normal flow (the skip above fires
 		// first), but kept as a hard gate so a fallback-rate opportunity can
