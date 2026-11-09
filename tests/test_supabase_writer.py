@@ -318,3 +318,49 @@ class TestDurableOutbox:
         assert [item[3]["quote_qty"] for item in pending] == [8.0, 6.0]
         reopened.close()
 
+class _FakeResponse:
+    def __init__(self, status: int):
+        self.status = status
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def text(self):
+        return "simulated response"
+
+
+class _FakeSession:
+    closed = False
+
+    def __init__(self, status: int):
+        self.status = status
+
+    def post(self, *_args, **_kwargs):
+        return _FakeResponse(self.status)
+
+
+class TestOutboxDelivery:
+    @pytest.mark.asyncio
+    async def test_successful_upsert_acknowledges_durable_rows(self):
+        writer = _writer()
+        writer.event("PROBE", event_id="delivery-1")
+        writer._session = _FakeSession(204)
+        batch = writer._outbox.pending()
+        await writer._flush(batch)
+        assert writer._outbox.pending_count() == 0
+        writer._outbox.close()
+
+    @pytest.mark.asyncio
+    async def test_permanent_http_error_retains_row_for_replay(self):
+        writer = _writer()
+        writer.event("PROBE", event_id="delivery-2")
+        writer._session = _FakeSession(401)
+        batch = writer._outbox.pending()
+        await writer._flush(batch)
+        assert writer._outbox.pending_count() == 1
+        assert writer._outbox.pending() == []
+        writer._outbox.close()
+
