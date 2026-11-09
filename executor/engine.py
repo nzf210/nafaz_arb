@@ -126,6 +126,7 @@ class ArbitrageEngine(
 
         # Tasks
         self._tasks = []
+        self._signal_queue_event = asyncio.Event()
 
         # Best-effort audit persistence. Writes are queued and flushed by a
         # background task, so an unreachable database can never delay a hedge.
@@ -616,6 +617,7 @@ class ArbitrageEngine(
         self._running = True
 
         self._tasks.append(asyncio.create_task(self._listen_signals()))
+        self._tasks.append(asyncio.create_task(self._process_signal_priority_queue()))
         self._tasks.append(asyncio.create_task(self._listen_emergency_cancel()))
         self._tasks.append(asyncio.create_task(self._listen_force_close()))
         self._tasks.append(asyncio.create_task(self._listen_kill_switch()))
@@ -656,11 +658,52 @@ class ArbitrageEngine(
                     if isinstance(pair_tag, bytes):
                         pair_tag = pair_tag.decode("utf-8")
                     if pair_tag:
-                        await self.handle_signal_notification(pair_tag)
+                        self._signal_queue_event.set()
                 await asyncio.sleep(0.01)
         finally:
             await pubsub.unsubscribe("arb:signal_notify")
             await pubsub.close()
+
+    async def _process_signal_priority_queue(self):
+        """Drain eligible signals in descending estimated net-profit order."""
+        queue_key = "arb:signal_priority"
+        quiet_window = 0.05
+        max_batch_window = 0.5
+        while self._running:
+            await self._signal_queue_event.wait()
+            self._signal_queue_event.clear()
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max_batch_window
+            quiet_deadline = loop.time() + quiet_window
+            while loop.time() < deadline:
+                timeout = min(quiet_deadline - loop.time(), deadline - loop.time())
+                if timeout <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(self._signal_queue_event.wait(), timeout=timeout)
+                    self._signal_queue_event.clear()
+                    quiet_deadline = loop.time() + quiet_window
+                except asyncio.TimeoutError:
+                    break
+
+            while self._running:
+                try:
+                    ranked = await self.redis.zpopmax(queue_key, count=100)
+                except Exception:
+                    logger.exception("[Signal Priority] failed to claim ranked signals")
+                    break
+                if not ranked:
+                    break
+                for raw_tag, score in ranked:
+                    pair_tag = raw_tag.decode("utf-8") if isinstance(raw_tag, bytes) else str(raw_tag)
+                    logger.info(
+                        "[Signal Priority] executing candidate pair=%s estimated_net_profit=%.8f USDT",
+                        pair_tag, float(score),
+                    )
+                    try:
+                        await self.handle_signal_notification(pair_tag)
+                    except Exception:
+                        logger.exception("[Signal Priority] signal handler failed for %s", pair_tag)
 
     async def _listen_emergency_cancel(self):
         """Subscribes to arb:emergency_cancel channel."""
