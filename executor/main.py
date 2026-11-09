@@ -5,6 +5,7 @@ import sys
 from executor.config import ExecutorConfig
 from executor.exchange_client import create_exchange_client, create_ccxt_client
 from executor.engine import ArbitrageEngine
+from executor.exposure_reconciliation import ExposureReconciliationWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,8 +40,21 @@ async def main():
             pass
 
     await engine.start()
-    await stop_event.wait()
-    await engine.stop()
+    reconciliation_task = None
+    if not config.mock_mode:
+        worker = ExposureReconciliationWorker(engine)
+        reconciliation_task = asyncio.create_task(worker.run())
+        logger.info(
+            "Read-only exposure reconciliation enabled (interval=%ss)",
+            worker.interval,
+        )
+    try:
+        await stop_event.wait()
+    finally:
+        if reconciliation_task is not None:
+            reconciliation_task.cancel()
+            await asyncio.gather(reconciliation_task, return_exceptions=True)
+        await engine.stop()
 
 
 if __name__ == "__main__":
