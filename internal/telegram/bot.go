@@ -97,6 +97,7 @@ type Bot struct {
 	botUsername string
 	lastOffset  int64
 	redisClient *redishandler.Client
+	opportunityReader interface { LatestOpportunityScans(context.Context, int) ([]domain.ScanResult, error) }
 
 	mu          sync.Mutex
 	alertedKeys map[string]time.Time
@@ -131,6 +132,17 @@ func (b *Bot) SetRedisClient(r *redishandler.Client) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.redisClient = r
+}
+
+
+// SetOpportunityHistoryReader wires the durable source used by /latest and
+// the "Peluang Terbaru" button. The reader is read-only.
+func (b *Bot) SetOpportunityHistoryReader(reader interface {
+	LatestOpportunityScans(context.Context, int) ([]domain.ScanResult, error)
+}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.opportunityReader = reader
 }
 
 // SetBaseURL allows overriding Telegram API URL (useful for testing with mock server).
