@@ -230,14 +230,7 @@ class ExposureReconciliationWorker:
 
     def _clear_issue(self, issue_key: str, exchange: str) -> None:
         self._reported.pop(issue_key, None)
-        still_mismatched = any(
-            key.endswith(f":{exchange}:{suffix}")
-            for key in self._reported
-            for suffix in ("",)
-        )
-        still_mismatched = still_mismatched or any(
-            f":{exchange}:" in key for key in self._reported
-        )
+        still_mismatched = any(f":{exchange}:" in key for key in self._reported)
         halt = self.engine._exchange_halted.get(exchange, "")
         if halt.startswith("exposure reconciliation:") and not still_mismatched:
             self.engine._exchange_halted.pop(exchange, None)
