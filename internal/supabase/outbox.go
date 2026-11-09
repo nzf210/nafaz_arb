@@ -239,6 +239,18 @@ func (o *DurableOutbox) readLocked() ([]outboxRecord, error) {
 				if truncateErr := os.Truncate(o.path, int64(len(data)-len(line))); truncateErr != nil {
 					return nil, fmt.Errorf("truncate incomplete scanner outbox tail: %w", truncateErr)
 				}
+				file, openErr := os.OpenFile(o.path, os.O_WRONLY, 0o600)
+				if openErr != nil {
+					return nil, fmt.Errorf("open scanner outbox after tail recovery: %w", openErr)
+				}
+				syncErr := file.Sync()
+				closeErr := file.Close()
+				if syncErr != nil {
+					return nil, fmt.Errorf("sync scanner outbox tail recovery: %w", syncErr)
+				}
+				if closeErr != nil {
+					return nil, fmt.Errorf("close scanner outbox after tail recovery: %w", closeErr)
+				}
 				break
 			}
 			return nil, fmt.Errorf("scanner outbox corrupt at record %d: %w", index+1, err)
