@@ -1,9 +1,8 @@
-"""Best-effort Supabase persistence for the executor.
+"""Durable, asynchronous Supabase audit persistence for the executor.
 
-Every write is queued and flushed by a single background task, so a database
-outage can never delay a hedge, rollback, or force close. Rows are upserted on
-client-generated ids, which makes retries idempotent: replaying a queued write
-cannot duplicate a position, an order, or a fill.
+Callbacks commit rows to a local SQLite journal; a background worker performs
+all network delivery. A database outage therefore cannot hold a hedge,
+rollback, or force-close operation on a remote request.
 """
 
 import asyncio
@@ -69,10 +68,10 @@ def _num(value: Any, default: float = 0.0) -> float:
 
 
 class SupabaseWriter:
-    """Queued, non-blocking writer for the nafaz core schema.
+    """Journaled writer for the nafaz core schema.
 
-    A disabled writer is a no-op object with the same interface, so call sites
-    never branch on configuration.
+    Callbacks perform a local durable SQLite commit only; Supabase HTTP delivery
+    runs in the background. A disabled writer remains a no-op for compatibility.
     """
 
     def __init__(self, config: Any):
