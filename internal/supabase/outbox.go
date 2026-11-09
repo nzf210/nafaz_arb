@@ -71,7 +71,14 @@ func NewDurableOutbox(path string, maxBytes int64) (*DurableOutbox, error) {
 	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("close scanner outbox: %w", err)
 	}
-	return &DurableOutbox{path: path, maxBytes: maxBytes}, nil
+	outbox := &DurableOutbox{path: path, maxBytes: maxBytes}
+	outbox.mu.Lock()
+	_, validateErr := outbox.readLocked()
+	outbox.mu.Unlock()
+	if validateErr != nil {
+		return nil, fmt.Errorf("validate scanner outbox: %w", validateErr)
+	}
+	return outbox, nil
 }
 
 func (o *DurableOutbox) Enqueue(scanID string, opportunities []domain.Opportunity) error {
