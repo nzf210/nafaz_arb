@@ -133,12 +133,8 @@ func TestDurableOutboxFailsClosedOnCommittedCorruption(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{invalid}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	outbox, err := NewDurableOutbox(path, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := outbox.Due(10); err == nil {
-		t.Fatal("expected committed corruption to be reported")
+	if _, err := NewDurableOutbox(path, 1<<20); err == nil {
+		t.Fatal("expected committed corruption to fail startup validation")
 	}
 }
 
