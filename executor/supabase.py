@@ -112,7 +112,6 @@ class SupabaseWriter:
         if self._outbox is None:
             logger.error("Supabase persistence is enabled but durable outbox is unavailable")
             return
-        self._queue = asyncio.Queue(maxsize=_QUEUE_MAX)
         self._task = asyncio.create_task(self._run())
         logger.info("Supabase persistence enabled -> %s (durable outbox: %s)", self.url, self._outbox.path)
 
@@ -154,14 +153,8 @@ class SupabaseWriter:
             self._dropped += 1
             logger.exception("CRITICAL: durable Supabase outbox enqueue failed for table=%s", table)
             return
-        # The in-memory queue is only a wakeup/test hook. The SQLite journal is
-        # authoritative and is polled after restart, so a full wakeup queue loses
-        # no persisted event.
-        if self._queue is not None:
-            try:
-                self._queue.put_nowait((table, on_conflict, row))
-            except asyncio.QueueFull:
-                self._dropped += 1
+        # The worker polls the durable journal. No in-memory queue is needed,
+        # so process restarts and backpressure cannot discard accepted rows.
 
     def event(
         self,
@@ -345,14 +338,6 @@ class SupabaseWriter:
                 delta = self._outbox.enqueue_cumulative_fill(
                     "order_fills", "id", fill_row, f"{exchange}:{key}", filled
                 )
-                if delta > 1e-12 and self._queue is not None:
-                    queued_fill = dict(fill_row)
-                    queued_fill["qty"] = delta
-                    queued_fill["quote_qty"] = delta * price
-                    try:
-                        self._queue.put_nowait(("order_fills", "id", queued_fill))
-                    except asyncio.QueueFull:
-                        self._dropped += 1
             except Exception:
                 self._dropped += 1
                 logger.exception("CRITICAL: failed to journal cumulative fill for %s", key)
