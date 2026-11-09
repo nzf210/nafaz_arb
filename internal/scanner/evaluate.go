@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"errors"
+	"math"
 	"fmt"
 	"log"
 	"sort"
@@ -349,6 +350,19 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	if rc != nil {
 		if op.TradingEligible && !hasActive && s.cfg.EnableExecutorSignals && op.ExecutionSignalStatus != "live_price_publish_failed" {
 			maxPosUSDT := s.cfg.CapitalTotal * s.cfg.AllocationPerPair
+			netProfitUSDT := op.NetProfit
+			quote := strings.ToUpper(op.QuoteAsset)
+			if quote == "IDR" || quote == "BIDR" {
+				if fxRate <= 0 || math.IsNaN(fxRate) || math.IsInf(fxRate, 0) {
+					return fmt.Errorf("cannot rank %s: valid live USDT/IDR conversion unavailable", sm.Symbol)
+				}
+				netProfitUSDT /= fxRate
+			} else if quote != "USDT" {
+				return fmt.Errorf("cannot rank %s: unsupported profit quote asset %s", sm.Symbol, quote)
+			}
+			if netProfitUSDT <= 0 || math.IsNaN(netProfitUSDT) || math.IsInf(netProfitUSDT, 0) {
+				return fmt.Errorf("cannot rank %s: estimated net profit is not finite and positive", sm.Symbol)
+			}
 			payload := domain.ExecutorPayload{
 				PairInfo: domain.PairInfo{
 					LocalExchange:  sm.Exchange,
@@ -376,6 +390,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					MaxPositionUSDT:                 maxPosUSDT,
 					CancelIfGlobalBidDropsBelowUSDT: cancelIfGlobalBidDropsBelowUSDT,
 					ScannerValidated:                true,
+					EstimatedNetProfitUSDT:           netProfitUSDT,
 				},
 			}
 			if err := rc.PublishSignal(ctx, payload); err != nil {
