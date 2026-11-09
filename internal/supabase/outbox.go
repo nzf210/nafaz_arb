@@ -263,14 +263,14 @@ func (o *DurableOutbox) readLocked() ([]outboxRecord, error) {
 			return nil, fmt.Errorf("scanner outbox record %d is missing required fields", index+1)
 		}
 		records = append(records, record)
-		if index == len(lines)-1 && !strings.HasSuffix(string(data), "\\n") {
+		if index == len(lines)-1 && !strings.HasSuffix(string(data), "\n") {
 			// The JSON payload reached disk but the process stopped before its
 			// delimiter. Preserve it and terminate the record before future appends.
 			file, openErr := os.OpenFile(o.path, os.O_APPEND|os.O_WRONLY, 0o600)
 			if openErr != nil {
 				return nil, fmt.Errorf("open scanner outbox to finish final delimiter: %w", openErr)
 			}
-			_, writeErr := file.Write([]byte("\\n"))
+			_, writeErr := file.Write([]byte("\n"))
 			syncErr := file.Sync()
 			closeErr := file.Close()
 			if writeErr != nil {
