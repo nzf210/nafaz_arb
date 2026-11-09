@@ -345,6 +345,34 @@ class ArbitrageEngine(
                 order_info = json.loads(raw)
                 order_id = str(order_info.get("order_id", ""))
                 symbol = str(order_info.get("symbol", ""))
+                if (
+                    "__" not in pair_tag
+                    and order_info.get("local_exchange")
+                    and order_info.get("global_exchange")
+                    and order_info.get("global_symbol")
+                ):
+                    migrated_tag = ExchangePairKey.from_pair_info({
+                        "local_exchange": order_info["local_exchange"],
+                        "local_symbol": symbol,
+                        "global_exchange": order_info["global_exchange"],
+                        "global_symbol": order_info["global_symbol"],
+                    }).tag.lower()
+                    if migrated_tag != pair_tag:
+                        migrated_key = PENDING_ENTRY_KEY_PREFIX + migrated_tag
+                        if await self.redis.exists(migrated_key):
+                            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                            self._mark_failed(
+                                pair_tag,
+                                "LEGACY_PENDING_KEY_COLLISION",
+                                "Legacy pending entry cannot be migrated because its venue-qualified key already exists.",
+                                detail={"legacy_key": key, "target_key": migrated_key},
+                                state=PositionState.RECONCILIATION_REQUIRED,
+                            )
+                            continue
+                        await self.redis.set(migrated_key, json.dumps(order_info))
+                        await self.redis.delete(key)
+                        pair_tag, key = migrated_tag, migrated_key
+                self.pending_entry_orders[pair_tag] = order_info
                 if not order_id or not symbol:
                     self.pending_entry_orders[pair_tag] = order_info
                     self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
@@ -360,7 +388,7 @@ class ArbitrageEngine(
                         "Redis record retained for manual reconciliation"
                     )
                     continue
-                status, filled = await self._resolve_venue_order_state(order_id, symbol)
+                status, filled = await self._resolve_venue_order_state(order_id, symbol, pair_tag)
                 terminal_statuses = ("closed", "canceled", "cancelled", "rejected", "expired")
                 if status == "unknown":
                     # Missing/ambiguous venue state is not proof that an order is gone.
@@ -439,13 +467,21 @@ class ArbitrageEngine(
             except Exception:
                 logger.exception(f"[Recovery] failed to restore pending entry from {key}")
 
-    async def _resolve_venue_order_state(self, order_id: str, symbol: str) -> tuple:
-        """Returns (status, filled) for a venue order; ('unknown', None) if it cannot be fetched."""
+    async def _resolve_venue_order_state(
+        self, order_id: str, symbol: str, pair_tag: Optional[str] = None
+    ) -> tuple:
+        """Returns (status, filled) using the exact local venue when known."""
+        token = None
         try:
+            if pair_tag and not getattr(self.config, "mock_mode", False):
+                token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
             order = await self.client.fetch_local_order(order_id, symbol)
         except Exception as exc:
             logger.warning(f"[Recovery] fetch order {order_id} failed: {exc}")
             return "unknown", None
+        finally:
+            if token is not None:
+                self._reset_pair_client(token)
         if not isinstance(order, dict) or not order.get("id") and order_id not in str(order):
             # A missing response is ambiguous (history retention, API lag, or
             # wrong symbol); never interpret it as a safely canceled order.
