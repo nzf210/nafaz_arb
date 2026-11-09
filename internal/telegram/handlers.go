@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nafaz/spot-perp-scanner/internal/domain"
 
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 )
