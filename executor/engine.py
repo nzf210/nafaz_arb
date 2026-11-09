@@ -187,8 +187,9 @@ class ArbitrageEngine(
             )
             groups = {}
             for pair_tag, pos in self.active_positions.items():
-                groups.setdefault(self._resolve_global_symbol(pos.symbol), []).append((pair_tag, pos))
-            for symbol, items in groups.items():
+                symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
+                groups.setdefault((pos.global_exchange, symbol), []).append((pair_tag, pos))
+            for (_, symbol), items in groups.items():
                 for pair_tag, pos in items:
                     pos.state = "RECONCILIATION_REQUIRED"
                     self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
@@ -206,12 +207,14 @@ class ArbitrageEngine(
 
         groups = {}
         for pair_tag, pos in self.active_positions.items():
-            global_symbol = self._resolve_global_symbol(pos.symbol)
-            groups.setdefault(global_symbol, []).append((pair_tag, pos))
+            global_symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
+            groups.setdefault((pos.global_exchange, global_symbol), []).append((pair_tag, pos))
 
-        for global_symbol, items in groups.items():
+        for (global_exchange, global_symbol), items in groups.items():
             expected_qty = sum(pos.qty for _, pos in items)
+            token = None
             try:
+                token = self._bind_pair_client(self._pair_info_for_tag(items[0][0]))
                 positions = await self.client.fetch_positions(global_symbol)
                 if positions is None:
                     raise ValueError("fetch_positions returned None")
@@ -253,6 +256,9 @@ class ArbitrageEngine(
             except Exception as exc:
                 actual_short_qty = None
                 reason = f"cannot verify futures position after restart: {exc}"
+            finally:
+                if token is not None:
+                    self._reset_pair_client(token)
             else:
                 tolerance = max(1e-10, expected_qty * 1e-4)
                 if abs(actual_short_qty - expected_qty) <= tolerance:
