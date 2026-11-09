@@ -175,9 +175,25 @@ func TestDurableOutboxRetryPersistsBackoffAcrossRestart(t *testing.T) {
 	}
 }
 
+func newTestDurableStore(t *testing.T, handler http.Handler) (*DurableOutbox, *DurableStore) {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	outbox, err := NewDurableOutbox(filepath.Join(t.TempDir(), "outbox.jsonl"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{baseURL: server.URL, serviceRoleKey: "test", httpClient: server.Client()}
+	store, err := NewDurableStore(client, outbox, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return outbox, store
+}
+
 func TestScannerReconciliationWorkerAcknowledgesSuccessfulUpsert(t *testing.T) {
 	var calls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	outbox, store := newTestDurableStore(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if r.Method != http.MethodPost || r.URL.Path != "/rest/v1/scanner_opportunities" {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.String())
@@ -194,17 +210,6 @@ func TestScannerReconciliationWorkerAcknowledgesSuccessfulUpsert(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer server.Close()
-
-	outbox, err := NewDurableOutbox(filepath.Join(t.TempDir(), "outbox.jsonl"), 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &Client{baseURL: server.URL, serviceRoleKey: "test", httpClient: server.Client()}
-	store, err := NewDurableStore(client, outbox, time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := store.SaveOpportunities(context.Background(), "scan-worker", []domain.Opportunity{sampleOpportunity()}); err != nil {
 		t.Fatal(err)
 	}
@@ -223,20 +228,10 @@ func TestScannerReconciliationWorkerAcknowledgesSuccessfulUpsert(t *testing.T) {
 }
 
 func TestScannerReconciliationWorkerRetainsRowsOnRemoteFailure(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	outbox, store := newTestDurableStore(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = w.Write([]byte("temporarily unavailable"))
 	}))
-	defer server.Close()
-	outbox, err := NewDurableOutbox(filepath.Join(t.TempDir(), "outbox.jsonl"), 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &Client{baseURL: server.URL, serviceRoleKey: "test", httpClient: server.Client()}
-	store, err := NewDurableStore(client, outbox, time.Millisecond)
-	if err != nil {
-		t.Fatal(err)
-	}
 	if err := store.SaveOpportunities(context.Background(), "scan-outage", []domain.Opportunity{sampleOpportunity()}); err != nil {
 		t.Fatal(err)
 	}
