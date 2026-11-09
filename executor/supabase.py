@@ -276,8 +276,9 @@ class SupabaseWriter:
         key = client_order_id or exchange_order_id
         if not key:
             return
+        order_state_key = f"{exchange}:{pair_key}:{key}"
         order_id = self._order_ids.setdefault(
-            key, str(uuid.uuid5(_POSITION_NS, f"order:{pair_key}:{exchange}:{key}"))
+            order_state_key, str(uuid.uuid5(_POSITION_NS, f"order:{order_state_key}"))
         )
 
         requested = _num(order.get("amount"), _num(order.get("filled")))
