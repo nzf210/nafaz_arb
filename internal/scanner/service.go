@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"log"
 	"errors"
 	"fmt"
 	"math"
@@ -14,6 +15,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
+	"github.com/nafaz/spot-perp-scanner/internal/supabase"
 	"github.com/shopspring/decimal"
 )
 
@@ -41,6 +43,7 @@ type Service struct {
 	adapter        exchange.ReadOnlyAdapter
 	fundingWorker  *exchange.FundingWorker
 	redisClient    *redishandler.Client
+	supabaseClient *supabase.Client
 	mu             sync.Mutex
 	emptyTrackers  map[string]emptyBookRecord
 	spikeTrackers  map[string]*spikeRecord
@@ -54,6 +57,14 @@ func New(cfg config.Config, adapter exchange.ReadOnlyAdapter) *Service {
 		emptyTrackers: make(map[string]emptyBookRecord),
 		spikeTrackers: make(map[string]*spikeRecord),
 	}
+}
+
+// SetSupabaseClient enables best-effort durable scanner opportunity history.
+// Redis remains authoritative for real-time signals and executor coordination.
+func (s *Service) SetSupabaseClient(client *supabase.Client) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.supabaseClient = client
 }
 
 // SetFundingWorker sets the background funding rate worker.
@@ -79,6 +90,17 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 		result.Complete = complete && scanErr == nil
 		if scanErr != nil {
 			result.Errors = append(result.Errors, scanErr.Error())
+		}
+		s.mu.Lock()
+		persistor := s.supabaseClient
+		s.mu.Unlock()
+		if persistor != nil && len(result.Opportunities) > 0 {
+			persistCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			if err := persistor.SaveOpportunities(persistCtx, result.ScanID, result.Opportunities); err != nil {
+				// Persistence is fail-open: it must not suppress Redis signals or scan results.
+				log.Printf("warning: Supabase opportunity persistence failed for scan %s: %v", result.ScanID, err)
+			}
+			cancel()
 		}
 	}()
 
