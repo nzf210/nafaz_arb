@@ -119,6 +119,8 @@ class ExposureReconciliationWorker:
         futures_expected = defaultdict(float)
         spot_pairs = defaultdict(list)
         futures_pairs = defaultdict(list)
+        missing_mapping_venues = set()
+        invalid_qty_venues = set()
         for pair_key, position in self.engine.active_positions.items():
             pair_info = self.engine._pair_infos.get(pair_key)
             try:
@@ -134,6 +136,7 @@ class ExposureReconciliationWorker:
                     str(getattr(position, "global_exchange", "") or getattr(pair_info, "global_exchange", "")).lower(),
                 ]
                 for exchange in [venue for venue in known_venues if venue] or ["unknown"]:
+                    invalid_qty_venues.add(exchange)
                     self._set_halt(exchange, "active position quantity invalid")
                     await self._alert(
                         "EXPOSURE_EXPECTED_QTY_INVALID", exchange,
@@ -160,6 +163,7 @@ class ExposureReconciliationWorker:
             if not local_name or not global_name or not base_asset or not global_symbol:
                 missing_venues = [name for name in (local_name, global_name) if name]
                 for exchange in missing_venues or ["unknown"]:
+                    missing_mapping_venues.add(exchange)
                     self._set_halt(
                         exchange, "active position mapping unavailable"
                     )
@@ -170,12 +174,32 @@ class ExposureReconciliationWorker:
                          "global_symbol": global_symbol},
                     )
                 continue
-            self._clear_issue(f"EXPOSURE_MAPPING_UNAVAILABLE:{local_name}", local_name)
-            self._clear_issue(f"EXPOSURE_MAPPING_UNAVAILABLE:{global_name}", global_name)
-            spot_expected[(local_name, base_asset)] += float(position.qty)
+            spot_expected[(local_name, base_asset)] += expected_qty
             spot_pairs[(local_name, base_asset)].append(pair_key)
-            futures_expected[(global_name, global_symbol)] += float(position.qty)
+            futures_expected[(global_name, global_symbol)] += expected_qty
             futures_pairs[(global_name, global_symbol)].append(pair_key)
+
+        active_spot_keys = set(spot_expected)
+        active_futures_keys = set(futures_expected)
+        active_spot_venues = {exchange for exchange, _ in active_spot_keys}
+        active_futures_venues = {exchange for exchange, _ in active_futures_keys}
+        for issue_key in list(self._reported):
+            parts = issue_key.split(":")
+            if len(parts) < 2:
+                continue
+            reason, exchange = parts[0], parts[1]
+            if reason == "EXPOSURE_MAPPING_UNAVAILABLE" and exchange not in missing_mapping_venues:
+                self._clear_issue(issue_key, exchange)
+            elif reason == "EXPOSURE_EXPECTED_QTY_INVALID" and exchange not in invalid_qty_venues:
+                self._clear_issue(issue_key, exchange)
+            elif reason in ("EXPOSURE_BALANCE_UNAVAILABLE", "EXPOSURE_BALANCE_INVALID") and exchange not in active_spot_venues:
+                self._clear_issue(issue_key, exchange)
+            elif reason == "EXPOSURE_POSITION_UNAVAILABLE" and exchange not in active_futures_venues:
+                self._clear_issue(issue_key, exchange)
+            elif reason == "SPOT_BASE_BALANCE_DEFICIT" and (exchange, parts[2] if len(parts) > 2 else "") not in active_spot_keys:
+                self._clear_issue(issue_key, exchange)
+            elif reason == "FUTURES_POSITION_MISMATCH" and (exchange, parts[2] if len(parts) > 2 else "") not in active_futures_keys:
+                self._clear_issue(issue_key, exchange)
 
         for (exchange, asset), expected in spot_expected.items():
             report = report_map.get((exchange, "spot"))
