@@ -323,10 +323,14 @@ func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]d
 		sort.Slice(result.Opportunities, func(i, j int) bool {
 			return result.Opportunities[i].NetROIPct > result.Opportunities[j].NetROIPct
 		})
+		result.MatchedPairs = len(result.Opportunities)
 		result.EligiblePairs = 0
+		result.ExcludedPairs = 0
 		for _, op := range result.Opportunities {
 			if op.TradingEligible {
 				result.EligiblePairs++
+			} else {
+				result.ExcludedPairs++
 			}
 		}
 		out = append(out, result)
