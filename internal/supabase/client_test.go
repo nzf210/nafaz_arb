@@ -208,7 +208,7 @@ func TestNewFromEnvAllowsLoopbackHTTPForLocalTests(t *testing.T) {
 
 func TestLatestOpportunityScansReturnsTenNewestDistinctScans(t *testing.T) {
 	rows := make([]map[string]any, 0, 12)
-	for i := 0; i < 12; i++ {
+	for i := 11; i >= 0; i-- {
 		op := sampleOpportunity()
 		op.LastScannedAt = time.Date(2026, 11, 9, 0, i, 0, 0, time.UTC)
 		op.NetROIPct = float64(i)
