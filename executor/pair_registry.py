@@ -60,6 +60,25 @@ class ExchangePairKey:
             )
         return key
 
+    @classmethod
+    def from_pair_info(cls, pair_info: Any) -> "ExchangePairKey":
+        """Build a key from the executor PairInfo dataclass or its JSON mapping."""
+        if isinstance(pair_info, dict):
+            values = pair_info
+        else:
+            values = {
+                "local_exchange": getattr(pair_info, "local_exchange", ""),
+                "local_symbol": getattr(pair_info, "local_symbol", ""),
+                "global_exchange": getattr(pair_info, "global_exchange", ""),
+                "global_symbol": getattr(pair_info, "global_symbol", ""),
+            }
+        return cls.create(
+            values.get("local_exchange", ""),
+            values.get("local_symbol", ""),
+            values.get("global_exchange", ""),
+            values.get("global_symbol", ""),
+        )
+
     @property
     def tag(self) -> str:
         return (
