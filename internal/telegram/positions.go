@@ -11,6 +11,101 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 )
 
+type pendingOrderSnapshot struct {
+	PairTag       string  `json:"pair_tag"`
+	Leg           string  `json:"leg"`
+	OrderID       string  `json:"order_id"`
+	Symbol        string  `json:"symbol"`
+	LocalExchange string  `json:"local_exchange"`
+	GlobalExchange string `json:"global_exchange"`
+	Price         float64 `json:"price"`
+	Qty           float64 `json:"qty"`
+	Filled        float64 `json:"filled"`
+	Remaining     float64 `json:"remaining"`
+	Status        string  `json:"status"`
+	CreatedAtMS   int64   `json:"created_at_ms"`
+}
+
+type executorPendingSnapshot struct {
+	Status       string                 `json:"status"`
+	MockMode     bool                   `json:"mock_mode"`
+	TimestampMS  int64                  `json:"timestamp_ms"`
+	PendingOrders []pendingOrderSnapshot `json:"pending_orders"`
+	PendingEntries int                  `json:"pending_entries"`
+	PendingExits   int                  `json:"pending_exits"`
+}
+
+// handlePendingOrdersCommand shows only executor-managed orders still awaiting
+// resolution. It reads the executor's latest status snapshot and never mutates orders.
+func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID int64) {
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🕒 <b>Pending Orders</b>\\n\\n❌ Redis belum terhubung; status order tidak dapat dibaca.", b.defaultKeyboard())
+		return
+	}
+	raw, found, err := rc.GetExecutorStatus(ctx)
+	if err != nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Gagal membaca status executor:</b> "+html.EscapeString(err.Error()), b.defaultKeyboard())
+		return
+	}
+	if !found {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🕒 <b>Pending Orders</b>\\n\\n⚠️ Executor offline atau status terakhir sudah kedaluwarsa. Tidak ada data pending yang dapat diverifikasi.", b.defaultKeyboard())
+		return
+	}
+	var snapshot executorPendingSnapshot
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Format status executor tidak valid:</b> "+html.EscapeString(err.Error()), b.defaultKeyboard())
+		return
+	}
+	if len(snapshot.PendingOrders) == 0 && snapshot.PendingEntries+snapshot.PendingExits > 0 {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Executor belum mengirim rincian pending order.</b>\\n\\nPerbarui image executor agar menu ini dapat menampilkan ID order, CEX, harga, dan kuantitas. Jumlah tercatat: "+fmt.Sprintf("%d entry / %d exit", snapshot.PendingEntries, snapshot.PendingExits), b.defaultKeyboard())
+		return
+	}
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf("🕒 <b>PENDING ORDERS (%d)</b>\\n", len(snapshot.PendingOrders)))
+	if snapshot.MockMode {
+		out.WriteString("⚠️ <b>MODE SIMULASI</b>\\n")
+	} else {
+		out.WriteString("🟢 <b>EXECUTOR LIVE</b>\\n")
+	}
+	if snapshot.TimestampMS > 0 {
+		out.WriteString("🕓 Snapshot: "+time.UnixMilli(snapshot.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC")+"\\n")
+	}
+	out.WriteString("\\n")
+	if len(snapshot.PendingOrders) == 0 {
+		out.WriteString("<i>Tidak ada order Spot yang masih pending.</i>\\n")
+	} else {
+		for i, order := range snapshot.PendingOrders {
+			if i >= 20 {
+				out.WriteString("\\n<i>Daftar dibatasi hingga 20 order.</i>")
+				break
+			}
+			status := order.Status
+			if status == "" { status = "UNKNOWN" }
+			out.WriteString(fmt.Sprintf("<b>[%d] %s — %s</b>\\n", i+1, html.EscapeString(strings.ToUpper(order.Symbol)), html.EscapeString(status)))
+			out.WriteString(fmt.Sprintf("• Leg: <code>%s</code> | Order ID: <code>%s</code>\\n", html.EscapeString(order.Leg), html.EscapeString(order.OrderID)))
+			out.WriteString(fmt.Sprintf("• CEX Spot: <b>%s</b> | CEX Futures: <b>%s</b>\\n", html.EscapeString(strings.ToUpper(order.LocalExchange)), html.EscapeString(strings.ToUpper(order.GlobalExchange))))
+			out.WriteString(fmt.Sprintf("• Harga: <code>%.10g</code> | Qty: <code>%.8g</code>\\n", order.Price, order.Qty))
+			out.WriteString(fmt.Sprintf("• Filled: <code>%.8g</code> | Sisa: <code>%.8g</code>\\n", order.Filled, order.Remaining))
+			if order.CreatedAtMS > 0 {
+				age := time.Since(time.UnixMilli(order.CreatedAtMS))
+				if age < 0 { age = 0 }
+				out.WriteString(fmt.Sprintf("• Dibuka: %s (umur %s)\\n", time.UnixMilli(order.CreatedAtMS).UTC().Format(TIME_FORMAT), age.Round(time.Second)))
+			} else {
+				out.WriteString("• Waktu pembukaan: <i>tidak tersedia</i>\\n")
+			}
+			out.WriteString("\\n")
+		}
+	}
+	out.WriteString("<i>Read-only: menu ini tidak membatalkan atau mengubah order. Status berasal dari order yang dikelola executor NAFAZ.</i>")
+	b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{
+		{{Text: "🔄 Refresh Pending", CallbackData: "pending_orders"}, {Text: "💼 Posisi Aktif", CallbackData: "positions"}},
+		{{Text: MenuUtamaText, CallbackData: "menu"}},
+	}})
+}
+
 func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToID int64) {
 	b.mu.Lock()
 	rc := b.redisClient
