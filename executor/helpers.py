@@ -1,6 +1,7 @@
 """Shared helpers: client order ids, tick rounding, retry, key builders."""
 
 import asyncio
+import hashlib
 import logging
 import math
 from typing import Awaitable, Callable, Optional, TypeVar
@@ -22,8 +23,21 @@ def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     double-filling. Kept to lowercase alphanumerics and dashes because Binance,
     OKX and Indodax each accept a different, partly overlapping character set.
     """
-    clean_pair = "".join(c if c.isalnum() else "-" for c in pair_tag.lower())[:24]
-    return f"{clean_pair}-{leg.lower()}-{seq}"[:36]
+    clean_pair = "".join(c if c.isalnum() else "-" for c in pair_tag.lower()).strip("-")
+    clean_leg = "".join(c if c.isalnum() else "-" for c in leg.lower()).strip("-")
+    suffix = f"-{clean_leg}-{seq}"
+    max_pair_length = 36 - len(suffix)
+    if max_pair_length < 1:
+        raise ValueError("client order ID leg and sequence exceed the 36-character limit")
+
+    if len(clean_pair) > max_pair_length:
+        pair_hash = hashlib.sha256(pair_tag.lower().encode("utf-8")).hexdigest()[:8]
+        visible_length = max_pair_length - len(pair_hash) - 1
+        if visible_length < 1:
+            clean_pair = pair_hash[:max_pair_length]
+        else:
+            clean_pair = f"{clean_pair[:visible_length].rstrip('-')}-{pair_hash}"
+    return f"{clean_pair}{suffix}"
 
 
 class HedgeSlippageExceeded(Exception):

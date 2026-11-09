@@ -317,6 +317,29 @@ def test_p3_02_client_order_id_is_bounded():
     assert len(oid) <= 36
 
 
+def test_client_order_id_preserves_sequence_for_long_pairs():
+    """Long venue-qualified pairs must not truncate the unique sequence suffix."""
+    pair = "indodax:auctionidr__okx:auction_usdt_swap"
+    first = build_client_order_id(pair, "entry", 794266239)
+    second = build_client_order_id(pair, "entry", 794266240)
+
+    assert first != second
+    assert first.endswith("-entry-794266239")
+    assert second.endswith("-entry-794266240")
+    assert len(first) <= 36
+    assert len(second) <= 36
+
+
+def test_client_order_id_hashes_truncated_pair_identity():
+    """Long pairs sharing a prefix must keep distinct venue-safe IDs."""
+    first = build_client_order_id("same-prefix:" + "a" * 50, "entry", 123)
+    second = build_client_order_id("same-prefix:" + "b" * 50, "entry", 123)
+
+    assert first != second
+    assert len(first) <= 36
+    assert len(second) <= 36
+
+
 def test_live_exchange_client_resolves_exact_pair_without_mutating_default_clients():
     from types import SimpleNamespace
     from executor.exchange_client import ExchangeClient
