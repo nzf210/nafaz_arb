@@ -49,6 +49,14 @@ type LiveAdapter struct {
 	wsMaxAge      time.Duration
 	wsClient      *WSClient
 	wsStopCleanup func()
+
+	// okxLimiter is the process-wide gate for OKX public REST.
+	okxLimiter     *okxLimiter
+	okxLimiterOnce sync.Once
+	okxLimiterCfg  OKXLimiterConfig
+	okxBooks       *OKXBookManager
+	okxWSMaxAge    time.Duration
+	okxBookCalls   map[string]*okxBookCall
 }
 
 func NewLiveAdapter() *LiveAdapter {
@@ -93,8 +101,26 @@ func NewLiveAdapter() *LiveAdapter {
 		mexcBaseURL:       "https://contract.mexc.com",
 		mexcSpotBaseURL:   "https://api.mexc.com",
 		contractSizes:     make(map[string]float64),
+		okxBookCalls:      make(map[string]*okxBookCall),
 	}
 }
+
+// SetOKXLimiterConfig installs shared-limiter settings. Call before the first
+// OKX request; settings after the limiter has been created have no effect.
+func (l *LiveAdapter) SetOKXLimiterConfig(cfg OKXLimiterConfig) {
+	l.okxLimiterCfg = cfg
+}
+
+// OKXMetrics returns the OKX rate-limiter counters for observability. It
+// returns an empty snapshot when no OKX request has been made yet, so callers
+// never see a nil map.
+func (l *LiveAdapter) OKXMetrics() OKXMetricsSnapshot {
+	l.okxLimiterOnce.Do(func() {
+		l.okxLimiter = newOKXLimiter(l.okxLimiterCfg)
+	})
+	return l.okxLimiter.metrics.snapshot()
+}
+
 
 // SetBaseURLs allows overriding API base URLs for testing.
 func (l *LiveAdapter) SetBaseURLs(urls ...string) {
@@ -218,13 +244,49 @@ func (l *LiveAdapter) EnableWebSocketFeed(ctx context.Context, maxAge time.Durat
 
 	client := NewWSClient(l.wsCache, nil,
 		indodaxDepthStream(l.indodaxBaseURL),
-		okxBookStream(l.okxBaseURL),
 		mexcSpotDepthStream(l.mexcSpotBaseURL),
 	)
 	l.mu.Lock()
 	l.wsClient = client
 	l.mu.Unlock()
 	client.Start(ctx)
+}
+
+// EnableOKXBookWebSocket starts the authoritative OKX books-channel feed.
+func (l *LiveAdapter) EnableOKXBookWebSocket(ctx context.Context, wsURL string, staleAfter, reconnect, maxBackoff time.Duration) {
+	l.mu.Lock()
+	if l.okxBooks != nil { l.mu.Unlock(); return }
+	l.okxWSMaxAge = staleAfter
+	if strings.TrimSpace(wsURL) == "" { wsURL = "wss://ws.okx.com/ws/v5/public" }
+	manager := NewOKXBookManager(wsURL, nil, func(symbol string) float64 {
+		l.mu.RLock()
+		defer l.mu.RUnlock()
+		return l.contractSizes[symbol]
+	}, reconnect, maxBackoff)
+	l.okxBooks = manager
+	l.mu.Unlock()
+	manager.Start(ctx)
+}
+
+// SubscribeOKXBooks replaces the desired instrument set. The manager applies
+// additions/removals on the existing connection and repeats subscriptions after reconnect.
+func (l *LiveAdapter) SubscribeOKXBooks(markets []domain.Market) {
+	l.mu.RLock()
+	manager := l.okxBooks
+	l.mu.RUnlock()
+	if manager == nil { return }
+	symbols := make([]string, 0, len(markets))
+	for _, market := range markets {
+		if strings.EqualFold(market.Exchange, "okx") && market.Active {
+			symbols = append(symbols, market.Symbol)
+		}
+	}
+	manager.SetInstruments(symbols)
+}
+
+func (l *LiveAdapter) OKXWebSocketConnected() bool {
+	l.mu.RLock(); manager := l.okxBooks; l.mu.RUnlock()
+	return manager != nil && manager.IsConnected()
 }
 
 // WebSocketStats reports (hits, misses) for the cached realtime books.
@@ -282,5 +344,9 @@ func (l *LiveAdapter) Close() {
 	if l.wsClient != nil {
 		l.wsClient.Stop()
 		l.wsClient = nil
+	}
+	if l.okxBooks != nil {
+		l.okxBooks.Stop()
+		l.okxBooks = nil
 	}
 }

@@ -470,3 +470,27 @@ func TestRejectsInvalidFeeProfile(t *testing.T) {
 		t.Fatalf("expected fee profile validation error, got %v", err)
 	}
 }
+
+
+func TestOKXWebSocketConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"mode":"MOCK","capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OKX_WS_ENABLED", "true")
+	t.Setenv("OKX_WS_URL", "wss://regional.example/ws/v5/public")
+	t.Setenv("OKX_WS_STALE_AFTER", "4s")
+	t.Setenv("OKX_WS_RECONNECT_INTERVAL", "2s")
+	t.Setenv("OKX_WS_MAX_RECONNECT_BACKOFF", "45s")
+	cfg, err := Load(path)
+	if err != nil { t.Fatal(err) }
+	if cfg.OKXWebSocketEnabled == nil || !*cfg.OKXWebSocketEnabled || cfg.OKXWSURL != "wss://regional.example/ws/v5/public" ||
+		cfg.OKXWSStaleAfter != "4s" || cfg.OKXWSReconnectInterval != "2s" || cfg.OKXWSMaxReconnectBackoff != "45s" {
+		t.Fatalf("unexpected OKX websocket config: %+v", cfg)
+	}
+
+	t.Setenv("OKX_WS_STALE_AFTER", "0s")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "okx_ws_stale_after") {
+		t.Fatalf("expected invalid stale duration error, got %v", err)
+	}
+}

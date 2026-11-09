@@ -31,6 +31,11 @@ services:
       # names resolve (via the dnsname plugin).
       - REDIS_ADDR=nafaz-redis:6380
       - GLOBAL_FUTURES_EXCHANGE=all
+      - OKX_WS_ENABLED=${OKX_WS_ENABLED:-}
+      - OKX_WS_URL=${OKX_WS_URL:-}
+      - OKX_WS_STALE_AFTER=${OKX_WS_STALE_AFTER:-}
+      - OKX_WS_RECONNECT_INTERVAL=${OKX_WS_RECONNECT_INTERVAL:-}
+      - OKX_WS_MAX_RECONNECT_BACKOFF=${OKX_WS_MAX_RECONNECT_BACKOFF:-}
       # Server-only service_role key; shared with the executor, never put in tracked files.
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_KEY=${SUPABASE_KEY:-}
