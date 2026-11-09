@@ -82,7 +82,7 @@ class ExchangeClient:
                 })
                 continue
             try:
-                raw = await exchange.fetch_balance()
+                raw = await exchange.fetch_balance(_balance_fetch_params(exchange, market))
                 free_map, used_map, total_map = raw.get("free") or {}, raw.get("used") or {}, raw.get("total") or {}
                 assets = []
                 for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
@@ -122,7 +122,9 @@ class ExchangeClient:
             )
 
         spot_raw = await self.local.fetch_balance()
-        futures_raw = await self.global_fut.fetch_balance()
+        futures_raw = await self.global_fut.fetch_balance(
+            _balance_fetch_params(self.global_fut, "futures")
+        )
 
         def amount(balance: Dict[str, Any], asset: str, bucket: str) -> float:
             section = balance.get(bucket)
@@ -610,17 +612,38 @@ def init_local_exchange(exchange_name: str, creds: Any, default_type: str = "spo
         )
     return init_ccxt_exchange(exchange_name, creds, default_type=default_type)
 
+def _balance_fetch_params(exchange: Any, market: str) -> Dict[str, Any]:
+    """Return explicit CCXT market params where a venue needs them."""
+    exchange_id = str(getattr(exchange, "id", "") or "").lower()
+    if market == "futures" and exchange_id == "mexc":
+        return {"type": "swap"}
+    return {}
+
+
+def _resolve_default_type(exchange_name: str, default_type: str) -> str:
+    """Map the executor's generic futures type to each venue's CCXT market type."""
+    if exchange_name.lower() == "mexc" and default_type.lower() in {"future", "futures"}:
+        return "swap"
+    return default_type
+
+
 def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot") -> Any:
     """Helper to initialize a CCXT async exchange with proper credentials and settings."""
-    ex_class = getattr(ccxt, exchange_name.lower())
+    normalized_name = exchange_name.lower()
+    ex_class = getattr(ccxt, normalized_name)
+    resolved_default_type = _resolve_default_type(normalized_name, default_type)
     cfg: Dict[str, Any] = {
         "apiKey": getattr(creds, "api_key", ""),
         "secret": getattr(creds, "api_secret", ""),
         "enableRateLimit": True,
-        "options": {"defaultType": default_type},
+        "options": {"defaultType": resolved_default_type},
     }
     if hasattr(creds, "options") and isinstance(creds.options, dict):
         cfg["options"].update(creds.options)
+    # MEXC's CCXT futures market is named "swap". Keep it explicit even if
+    # an old config.json still contains options.defaultType="future".
+    if normalized_name == "mexc" and default_type.lower() in {"future", "futures"}:
+        cfg["options"]["defaultType"] = "swap"
 
     if getattr(creds, "passphrase", None):
         cfg["password"] = creds.passphrase
