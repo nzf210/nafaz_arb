@@ -42,6 +42,8 @@ type DurableOutbox struct {
 	path     string
 	maxBytes int64
 	mu       sync.Mutex
+	records  map[string]outboxRecord
+	order    []string
 }
 
 func NewDurableOutbox(path string, maxBytes int64) (*DurableOutbox, error) {
@@ -71,12 +73,24 @@ func NewDurableOutbox(path string, maxBytes int64) (*DurableOutbox, error) {
 	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("close scanner outbox: %w", err)
 	}
-	outbox := &DurableOutbox{path: path, maxBytes: maxBytes}
-	outbox.mu.Lock()
-	_, validateErr := outbox.readLocked()
-	outbox.mu.Unlock()
+	outbox := &DurableOutbox{
+		path: path, maxBytes: maxBytes,
+		records: make(map[string]outboxRecord),
+	}
+	loaded, validateErr := outbox.readLocked()
 	if validateErr != nil {
 		return nil, fmt.Errorf("validate scanner outbox: %w", validateErr)
+	}
+	for _, record := range loaded {
+		outbox.records[record.ID] = record
+		outbox.order = append(outbox.order, record.ID)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat scanner outbox at startup: %w", err)
+	}
+	if info.Size() > maxBytes {
+		return nil, fmt.Errorf("%w: existing file size=%d max_bytes=%d", ErrOutboxCapacity, info.Size(), maxBytes)
 	}
 	return outbox, nil
 }
@@ -112,14 +126,8 @@ func (o *DurableOutbox) Enqueue(scanID string, opportunities []domain.Opportunit
 
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	records, err := o.readLocked()
-	if err != nil {
-		return err
-	}
-	for _, existing := range records {
-		if existing.ID == record.ID {
-			return nil // same scan replay is idempotent while pending
-		}
+	if _, exists := o.records[record.ID]; exists {
+		return nil // same scan replay is idempotent while pending
 	}
 	info, err := os.Stat(o.path)
 	if err != nil {
@@ -143,6 +151,8 @@ func (o *DurableOutbox) Enqueue(scanID string, opportunities []domain.Opportunit
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close scanner outbox: %w", err)
 	}
+	o.records[record.ID] = record
+	o.order = append(o.order, record.ID)
 	return nil
 }
 
@@ -155,13 +165,10 @@ func (o *DurableOutbox) Due(limit int) ([]outboxRecord, error) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	records, err := o.readLocked()
-	if err != nil {
-		return nil, err
-	}
 	now := time.Now().UTC()
 	due := make([]outboxRecord, 0, limit)
-	for _, record := range records {
+	for _, id := range o.order {
+		record := o.records[id]
 		if !record.NextAttemptAt.IsZero() && record.NextAttemptAt.After(now) {
 			continue
 		}
@@ -204,28 +211,30 @@ func (o *DurableOutbox) mutate(ids []string, update func(*outboxRecord) bool) er
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	records, err := o.readLocked()
-	if err != nil {
-		return err
-	}
-	kept := make([]outboxRecord, 0, len(records))
-	for _, record := range records {
-		if _, ok := wanted[record.ID]; !ok {
-			kept = append(kept, record)
+	kept := make([]outboxRecord, 0, len(o.records))
+	nextRecords := make(map[string]outboxRecord, len(o.records))
+	nextOrder := make([]string, 0, len(o.order))
+	for _, id := range o.order {
+		record := o.records[id]
+		if _, ok := wanted[id]; ok && !update(&record) {
 			continue
 		}
-		if update(&record) {
-			kept = append(kept, record)
-		}
+		kept = append(kept, record)
+		nextRecords[id] = record
+		nextOrder = append(nextOrder, id)
 	}
-	return o.rewriteLocked(kept)
+	if err := o.rewriteLocked(kept); err != nil {
+		return err
+	}
+	o.records = nextRecords
+	o.order = nextOrder
+	return nil
 }
 
 func (o *DurableOutbox) PendingCount() (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	records, err := o.readLocked()
-	return len(records), err
+	return len(o.records), nil
 }
 
 func (o *DurableOutbox) readLocked() ([]outboxRecord, error) {
