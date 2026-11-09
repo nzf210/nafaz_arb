@@ -159,7 +159,20 @@ class ExposureReconciliationWorker:
                 )
                 continue
             self._clear_issue(f"EXPOSURE_BALANCE_UNAVAILABLE:{exchange}", exchange)
-            actual = self._asset_total(report, asset)
+            try:
+                actual = self._asset_total(report, asset)
+            except (TypeError, ValueError) as exc:
+                self.engine._exchange_halted[exchange] = (
+                    "exposure reconciliation: malformed spot balance"
+                )
+                await self._alert(
+                    "EXPOSURE_BALANCE_INVALID", exchange,
+                    f"Exchange returned an invalid {asset} spot balance.",
+                    {"asset": asset, "error": str(exc),
+                     "pair_keys": spot_pairs[(exchange, asset)]},
+                )
+                continue
+            self._clear_issue(f"EXPOSURE_BALANCE_INVALID:{exchange}", exchange)
             if actual + self._tolerance(expected) < expected:
                 await self._mismatch(
                     "SPOT_BASE_BALANCE_DEFICIT", exchange,
