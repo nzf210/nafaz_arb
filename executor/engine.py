@@ -138,6 +138,14 @@ class ArbitrageEngine(
 
     def _bind_pair_client(self, pair_info):
         key = ExchangePairKey.from_pair_info(pair_info)
+        if getattr(self.config, "mock_mode", False):
+            configured = (
+                str(getattr(self._base_client, "local_name", "")).lower(),
+                str(getattr(self._base_client, "global_name", "")).lower(),
+            )
+            if configured != (key.local_exchange, key.global_exchange):
+                raise LookupError("paper client is configured for a different exchange pair")
+            return self._client_context.set(self._base_client)
         if not self._pair_client_registry.contains(key):
             self._pair_client_registry.register(key, self._base_client.for_pair(pair_info))
         return self._client_context.set(self._pair_client_registry.resolve(key))
