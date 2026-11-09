@@ -74,7 +74,7 @@ end $$;
 
 -- The workflow inserts this row after the immutable baseline and before
 -- the idempotency migration. It must survive with a NULL key.
-do $
+do $$
 begin
     if (
         select count(*) from public.scanner_opportunities
@@ -82,7 +82,7 @@ begin
     ) <> 1 then
         raise exception 'additive idempotency migration did not preserve legacy scanner history';
     end if;
-end $;
+end $$;
 
 -- A nullable unique key must continue accepting multiple historical rows.
 insert into public.scanner_opportunities (
@@ -95,7 +95,7 @@ insert into public.scanner_opportunities (
     'IDR', 'EXCLUDED', now(), '{}'::jsonb
 );
 
-do $
+do $$
 begin
     if (
         select count(*) from public.scanner_opportunities
@@ -103,14 +103,14 @@ begin
     ) <> 2 then
         raise exception 'nullable unique key rejected or lost legacy rows';
     end if;
-end $;
+end $$;
 
 delete from public.scanner_opportunities
 where scan_id in ('legacy-before-idempotency', 'legacy-null-key-second');
 
 -- Runtime scanner repository contract: nullable unique keys preserve historical rows
 -- and deterministic keys make a retried scan an upsert rather than a duplicate.
-do $
+do $$
 begin
     if not exists (
         select 1 from information_schema.columns
