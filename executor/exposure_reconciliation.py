@@ -93,14 +93,22 @@ class ExposureReconciliationWorker:
         client = self.engine.client
         report_fn = getattr(client, "fetch_balance_report", None)
         if not callable(report_fn):
-            await self._alert(
-                "EXPOSURE_BALANCE_UNAVAILABLE", "unknown",
+            await self._halt_active_venues(
+                "EXPOSURE_BALANCE_UNAVAILABLE",
                 "Exchange balance report API is unavailable; exposure reconciliation is incomplete.",
                 {"reason": "fetch_balance_report_not_supported"},
             )
             return
 
-        reports = await report_fn()
+        try:
+            reports = await report_fn()
+        except Exception as exc:
+            await self._halt_active_venues(
+                "EXPOSURE_BALANCE_UNAVAILABLE",
+                "Exchange balance report request failed; exposure reconciliation is incomplete.",
+                {"error": str(exc)},
+            )
+            return
         report_map = {}
         for report in reports or []:
             if isinstance(report, dict):
@@ -112,25 +120,43 @@ class ExposureReconciliationWorker:
         spot_pairs = defaultdict(list)
         futures_pairs = defaultdict(list)
         for pair_key, position in self.engine.active_positions.items():
-            if float(getattr(position, "qty", 0) or 0) <= 0:
-                continue
             pair_info = self.engine._pair_infos.get(pair_key)
+            try:
+                expected_qty = _finite(getattr(position, "qty", 0))
+            except (TypeError, ValueError):
+                expected_qty = 0.0
+                invalid_qty = True
+            else:
+                invalid_qty = expected_qty <= 0
+            if invalid_qty:
+                known_venues = [
+                    str(getattr(position, "local_exchange", "") or getattr(pair_info, "local_exchange", "")).lower(),
+                    str(getattr(position, "global_exchange", "") or getattr(pair_info, "global_exchange", "")).lower(),
+                ]
+                for exchange in [venue for venue in known_venues if venue] or ["unknown"]:
+                    self._set_halt(exchange, "active position quantity invalid")
+                    await self._alert(
+                        "EXPOSURE_EXPECTED_QTY_INVALID", exchange,
+                        f"Cannot reconcile active position {pair_key}: managed quantity is invalid.",
+                        {"pair_key": pair_key, "qty": getattr(position, "qty", None)},
+                    )
+                continue
             local_name = str(
                 getattr(position, "local_exchange", "")
                 or getattr(pair_info, "local_exchange", "")
-            ).lower()
+            ).strip().lower()
             global_name = str(
                 getattr(position, "global_exchange", "")
                 or getattr(pair_info, "global_exchange", "")
-            ).lower()
+            ).strip().lower()
             base_asset = str(
                 getattr(position, "base_asset", "")
                 or getattr(pair_info, "base_asset", "")
-            ).upper()
+            ).strip().upper()
             global_symbol = str(
                 getattr(position, "global_symbol", "")
                 or getattr(pair_info, "global_symbol", "")
-            )
+            ).strip()
             if not local_name or not global_name or not base_asset or not global_symbol:
                 missing_venues = [name for name in (local_name, global_name) if name]
                 for exchange in missing_venues or ["unknown"]:
@@ -216,9 +242,30 @@ class ExposureReconciliationWorker:
             else:
                 self._clear_issue(f"FUTURES_POSITION_MISMATCH:{exchange}:{symbol}", exchange)
 
+    async def _halt_active_venues(
+        self, reason: str, message: str, detail: dict
+    ) -> None:
+        for pair_key, position in self.engine.active_positions.items():
+            pair_info = self.engine._pair_infos.get(pair_key)
+            venues = {
+                str(getattr(position, "local_exchange", "") or getattr(pair_info, "local_exchange", "")).strip().lower(),
+                str(getattr(position, "global_exchange", "") or getattr(pair_info, "global_exchange", "")).strip().lower(),
+            }
+            for exchange in [venue for venue in venues if venue] or ["unknown"]:
+                self._set_halt(exchange, reason)
+                await self._alert(
+                    reason, exchange, message,
+                    {"pair_key": pair_key, **detail},
+                )
+
     @staticmethod
     def _asset_total(report: dict, asset: str) -> float:
-        for item in report.get("assets", []):
+        assets = report.get("assets", [])
+        if not isinstance(assets, list):
+            raise ValueError("exchange balance assets payload is not a list")
+        for item in assets:
+            if not isinstance(item, dict):
+                raise ValueError("exchange balance asset row is malformed")
             if str(item.get("asset", "")).upper() == asset:
                 value = _finite(item.get("total", 0))
                 if value < 0:
@@ -232,7 +279,14 @@ class ExposureReconciliationWorker:
         market = str(report.get("market", "")).lower()
         if market not in ("spot", "futures"):
             return
-        for asset in report.get("assets", []):
+        assets = report.get("assets", [])
+        if not isinstance(assets, list):
+            logger.error("invalid balance assets payload from %s", report.get("name"))
+            return
+        for asset in assets:
+            if not isinstance(asset, dict):
+                logger.error("invalid balance asset row from %s", report.get("name"))
+                continue
             try:
                 total = _finite(asset.get("total", 0))
                 free = _finite(asset.get("free", 0))
