@@ -145,7 +145,17 @@ func (c *Client) HasActivePosition(ctx context.Context, localEx, symbol string, 
 	if err != nil {
 		return false, fmt.Errorf("redis exists %s: %w", key, err)
 	}
-	return val > 0, nil
+	if val > 0 || len(globalPair) < 2 {
+		return val > 0, nil
+	}
+	// Legacy keys do not identify the futures venue. Treat one as active for
+	// every matching spot pair until the executor migrates its stored metadata.
+	legacyKey := KeyPrefixActivePos + CleanPairKey(localEx, symbol)
+	legacy, err := c.rdb.Exists(ctx, legacyKey).Result()
+	if err != nil {
+		return false, fmt.Errorf("redis exists legacy %s: %w", legacyKey, err)
+	}
+	return legacy > 0, nil
 }
 
 // GetActivePosition retrieves active position info if present.
