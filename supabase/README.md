@@ -1,9 +1,9 @@
 # Supabase database
 
-NAFAZ is preparing Supabase as its durable operational database. Redis remains the
-low-latency coordination layer between the Go scanner and Python executor. The schema
-is versioned here, but application writes are not connected yet; until that integration
-is complete, Redis and the configured JSON history file remain the current runtime stores.
+Supabase stores durable operational history for NAFAZ. Redis remains the
+low-latency coordination layer between the Go scanner and Python executor. Local
+persistent outboxes protect scanner and executor audit writes from process restarts
+and temporary Supabase outages; they do not replace Redis or exchange-side state.
 
 ## Schema
 
