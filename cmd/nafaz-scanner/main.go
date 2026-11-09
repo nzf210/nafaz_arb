@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -43,16 +44,38 @@ func main(){
 		log.Fatalf("invalid mode %q: must be MOCK or LIVE", cfg.Mode)
 	}
 	svc:=scanner.New(cfg,adapter)
-	if durableStore, storeErr := supabase.NewFromEnv(); storeErr != nil {
+	remoteStore, storeErr := supabase.NewFromEnv()
+	var durableStore *supabase.DurableStore
+	if storeErr != nil {
 		// Supabase is an audit/history sink, never a prerequisite for Redis signals.
 		log.Printf("warning: Supabase opportunity persistence disabled: %v", storeErr)
-	} else if durableStore != nil {
-		svc.SetSupabaseClient(durableStore)
-		defer durableStore.Close()
-		log.Printf("Supabase opportunity persistence enabled")
+	} else if remoteStore != nil {
+		outboxPath := os.Getenv("SUPABASE_SCANNER_OUTBOX_PATH")
+		if outboxPath == "" {
+			outboxPath = "/app/data/scanner/supabase-outbox.jsonl"
+		}
+		outbox, outboxErr := supabase.NewDurableOutbox(outboxPath, 0)
+		if outboxErr != nil {
+			log.Printf("warning: Supabase scanner outbox unavailable; persistence disabled: %v", outboxErr)
+			remoteStore.Close()
+		} else {
+			durableStore, outboxErr = supabase.NewDurableStore(remoteStore, outbox, 0)
+			if outboxErr != nil {
+				log.Printf("warning: Supabase scanner outbox worker unavailable: %v", outboxErr)
+				remoteStore.Close()
+			} else {
+				svc.SetSupabaseClient(durableStore)
+				log.Printf("Supabase scanner durable outbox enabled -> %s", outbox.Path())
+			}
+		}
 	}
 
 	ctx,stop:=signal.NotifyContext(context.Background(),syscall.SIGINT,syscall.SIGTERM);defer stop()
+	if durableStore != nil {
+		go durableStore.Run(ctx)
+		defer remoteStore.Close()
+		log.Printf("Supabase scanner reconciliation worker started")
+	}
 
 	// Initialize Redis handler if enabled
 	var redisClient *redishandler.Client
