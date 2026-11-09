@@ -243,17 +243,26 @@ existing deployment keeps working unchanged unless it opts in.
 | Key | Env | Default | Effect |
 |---|---|---|---|
 | `min_top_of_book_quote_usdt` | `MIN_TOP_OF_BOOK_QUOTE_USDT` | `0` (off) | Rejects pairs whose **best price level** holds less than this notional on the spot ask or perp bid. The threshold is capped at the per-pair allocation budget, so a small account is never asked for liquidity it does not need. A weak proxy for the "24h volume" idea: it costs no extra REST calls and measures exactly what a taker order will walk into. |
-| `enable_websocket_feed` | `ENABLE_WEBSOCKET_FEED` | `false` | Streams order books over websocket and serves them from cache instead of REST. Misses and stale books fall back to REST, so coverage never shrinks. See the caveat below. |
-| `websocket_book_max_age_seconds` | `WEBSOCKET_BOOK_MAX_AGE_SECONDS` | `2` | How old a websocket book may be before REST is used again. |
+| `okx_ws_enabled` | `OKX_WS_ENABLED` | `true` in LIVE, `false` in MOCK | Starts one persistent OKX public WebSocket connection and subscribes to active SWAP instruments on the `books` channel. A connected socket is not considered ready until a valid snapshot is received. |
+| `okx_ws_url` | `OKX_WS_URL` | `wss://ws.okx.com/ws/v5/public` | Public endpoint. Override with the regional WebSocket host required by the OKX account region. |
+| `okx_ws_stale_after` | `OKX_WS_STALE_AFTER` | `65s` | Maximum age since the last instrument-specific book frame. OKX may send an empty heartbeat after 60 seconds without book changes; connection ping/pong refreshes receive-time freshness separately. Stale or not-yet-snapshotted books use REST. Accepts Go durations such as `65s`. |
+| `okx_ws_reconnect_interval` | `OKX_WS_RECONNECT_INTERVAL` | `1s` | Initial reconnect delay after disconnect or subscription failure. |
+| `okx_ws_max_reconnect_backoff` | `OKX_WS_MAX_RECONNECT_BACKOFF` | `30s` | Maximum exponential reconnect delay. Must be at least the initial reconnect interval. |
+| `enable_websocket_feed` | `ENABLE_WEBSOCKET_FEED` | `false` | Legacy best-effort feed switch for non-OKX streams. It does not control the OKX books manager. |
+| `websocket_book_max_age_seconds` | `WEBSOCKET_BOOK_MAX_AGE_SECONDS` | `2` | Maximum age for the legacy non-OKX websocket cache. |
 | `exchange_error_window_seconds` | — | `300` | Maintenance-detection window (P2-05). |
 | `exchange_error_rate_threshold` | — | `0.5` | Error ratio that marks a venue unavailable for the rest of the window. |
 | `exchange_error_min_requests` | — | `5` | Minimum observations before the ratio is trusted. |
 
-**Websocket caveat:** only the OKX public `books5` channel is fully covered today.
-Indodax and MEXC spot need per-symbol subscriptions that the scanner does not yet
-issue, so those venues stay on REST even when the feed is enabled. The venue
-payloads are verified against unit-test fixtures only, not against live feeds —
-which is why the feature ships off by default.
+**OKX order-book integrity:** the OKX manager subscribes per instrument to
+`books`, replaces local state on `snapshot`, and applies `update` price-level
+deltas only when `prevSeqId` matches the cached `seqId`. Duplicate updates are
+ignored. A sequence gap, malformed update, disconnect, or stale receive time
+invalidates the cache; the scanner then uses a per-instrument single-flight REST
+recovery request through the shared OKX REST limiter. It never serves a partial
+or pre-snapshot WebSocket book. The mock WebSocket tests verify this behavior;
+they do not constitute a live OKX/VPS soak test. Indodax and MEXC spot feeds
+remain outside this OKX-specific change.
 
 ### Executor (`executor` block in `config.json` / environment)
 
