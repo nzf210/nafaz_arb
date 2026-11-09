@@ -329,7 +329,7 @@ func TestRedisActivePositionAndSignalPublishing(t *testing.T) {
 	}
 
 	// Verify live price in Redis
-	liveKey := redishandler.KeyPrefixLivePrice + "indodax:btc_idr"
+	liveKey := redishandler.KeyPrefixLivePrice + "indodax:btc_idr__binance:btcusdt"
 	liveVal, err := rdb.Get(ctx, liveKey).Result()
 	if err != nil {
 		t.Fatalf("failed to get live price: %v", err)
@@ -341,7 +341,7 @@ func TestRedisActivePositionAndSignalPublishing(t *testing.T) {
 	}
 
 	// Verify signal in Redis
-	sigKey := redishandler.KeyPrefixSignal + "indodax:btc_idr"
+	sigKey := redishandler.KeyPrefixSignal + "indodax:btc_idr__binance:btcusdt"
 	sigVal, err := rdb.Get(ctx, sigKey).Result()
 	if err != nil {
 		t.Fatalf("failed to get signal: %v", err)
@@ -353,7 +353,7 @@ func TestRedisActivePositionAndSignalPublishing(t *testing.T) {
 	}
 
 	// 2. Set active position in Redis (written by Python)
-	activeKey := redishandler.KeyPrefixActivePos + "indodax:btc_idr"
+	activeKey := redishandler.KeyPrefixActivePos + "indodax:btc_idr__binance:btcusdt"
 	_ = rdb.Set(ctx, activeKey, `{"symbol":"btc_idr","qty":0.01}`, 0).Err()
 
 	// Scan again: Scanner should still update live price, but NOT emit new PLACE_MAKER_BUY
