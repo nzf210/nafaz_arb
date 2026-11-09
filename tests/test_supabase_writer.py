@@ -149,6 +149,17 @@ class TestPositions:
 
 
 class TestOrdersAndFills:
+    def test_order_id_is_stable_across_writer_restarts(self):
+        order = {"id": "exchange-order-7", "amount": 2.0, "filled": 0.0, "status": "open"}
+        first = _writer()
+        first.order("pair-a", "spot_entry", "indodax", "spot", "btc_idr", order)
+        first_id = _drain(first)[0][2]["id"]
+
+        restarted = _writer()
+        restarted.order("pair-a", "spot_entry", "indodax", "spot", "btc_idr", order)
+        restarted_id = _drain(restarted)[0][2]["id"]
+        assert first_id == restarted_id
+
     def test_order_upsert_uses_client_order_id_key(self):
         writer = _writer()
         writer.order(
