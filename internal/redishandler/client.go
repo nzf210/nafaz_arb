@@ -153,7 +153,7 @@ func (c *Client) GetActivePosition(ctx context.Context, localEx, symbol string, 
 	if c == nil || c.rdb == nil {
 		return nil, nil
 	}
-	key := KeyPrefixActivePos + CleanPairKey(localEx, symbol)
+	key := KeyPrefixActivePos + CleanPairKey(localEx, symbol, globalPair...)
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, nil
@@ -366,7 +366,7 @@ func (c *Client) GetLivePrice(ctx context.Context, localEx, symbol string, globa
 	if c == nil || c.rdb == nil {
 		return nil, nil
 	}
-	key := KeyPrefixLivePrice + CleanPairKey(localEx, symbol)
+	key := KeyPrefixLivePrice + CleanPairKey(localEx, symbol, globalPair...)
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, nil
