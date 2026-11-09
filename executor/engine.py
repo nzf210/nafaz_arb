@@ -1391,18 +1391,27 @@ class ArbitrageEngine(
 
         for p_key in to_cancel:
             async with self._pair_lock(p_key):
-                order_info = self.pending_entry_orders.get(p_key)
-                if not order_info:
-                    continue
-                order_id = order_info["order_id"]
-                logger.warning(
-                    f"[Emergency Cancel] Cancelling pending entry order {order_id} for {p_key} due to negative funding"
-                )
-                resolved = await self._cancel_entry_order_and_reconcile(
-                    p_key, order_info, "Emergency Cancel"
-                )
-                if not resolved:
-                    logger.critical(
-                        f"[Emergency Cancel] order {order_id} remains unresolved; "
-                        "pending state and reserved funds are retained"
+                token = None
+                try:
+                    if not getattr(self.config, "mock_mode", False):
+                        token = self._bind_pair_client(self._pair_info_for_tag(p_key))
+                    order_info = self.pending_entry_orders.get(p_key)
+                    if not order_info:
+                        continue
+                    order_id = order_info["order_id"]
+                    logger.warning(
+                        f"[Emergency Cancel] Cancelling pending entry order {order_id} for {p_key} due to negative funding"
                     )
+                    resolved = await self._cancel_entry_order_and_reconcile(
+                        p_key, order_info, "Emergency Cancel"
+                    )
+                    if not resolved:
+                        logger.critical(
+                            f"[Emergency Cancel] order {order_id} remains unresolved; "
+                            "pending state and reserved funds are retained"
+                        )
+                except Exception:
+                    logger.exception(f"[Emergency Cancel] pair routing failed for {p_key}")
+                finally:
+                    if token is not None:
+                        self._reset_pair_client(token)
