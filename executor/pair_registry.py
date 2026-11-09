@@ -27,7 +27,7 @@ _VENUE_SYMBOL_PREFIXES = {
     "mexc": ("MEXC:",),
 }
 _SUPPORTED_QUOTES = (
-    "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "IDRT", "IDR",
+    "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "BIDR", "IDRT", "IDR",
     "USD", "BTC", "ETH", "BNB",
 )
 
