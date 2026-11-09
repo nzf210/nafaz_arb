@@ -82,7 +82,7 @@ class ExchangeClient:
                 })
                 continue
             try:
-                raw = await exchange.fetch_balance(_balance_fetch_params(exchange, market))
+                raw = await _fetch_exchange_balance(exchange, market)
                 free_map, used_map, total_map = raw.get("free") or {}, raw.get("used") or {}, raw.get("total") or {}
                 assets = []
                 for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
@@ -122,9 +122,7 @@ class ExchangeClient:
             )
 
         spot_raw = await self.local.fetch_balance()
-        futures_raw = await self.global_fut.fetch_balance(
-            _balance_fetch_params(self.global_fut, "futures")
-        )
+        futures_raw = await _fetch_exchange_balance(self.global_fut, "futures")
 
         def amount(balance: Dict[str, Any], asset: str, bucket: str) -> float:
             section = balance.get(bucket)
@@ -618,6 +616,14 @@ def _balance_fetch_params(exchange: Any, market: str) -> Dict[str, Any]:
     if market == "futures" and exchange_id == "mexc":
         return {"type": "swap"}
     return {}
+
+
+async def _fetch_exchange_balance(exchange: Any, market: str) -> Dict[str, Any]:
+    """Fetch a balance without changing legacy no-argument adapter contracts."""
+    params = _balance_fetch_params(exchange, market)
+    if params:
+        return await exchange.fetch_balance(params)
+    return await exchange.fetch_balance()
 
 
 def _resolve_default_type(exchange_name: str, default_type: str) -> str:
