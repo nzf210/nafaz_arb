@@ -22,6 +22,13 @@ def _normalize(value: str, field: str) -> str:
 
 def _normalize_symbol(value: str, field: str) -> str:
     normalized = str(value or "").strip().upper().replace("-", "/").replace("_", "/")
+    if "/" not in normalized:
+        # CCXT adapters may expose compact symbols (BTCUSDT) while local
+        # adapters often expose BASE_QUOTE. Split only on a known quote suffix.
+        for quote in ("USDT", "USDC", "BUSD", "FDUSD", "TUSD", "IDRT", "IDR", "USD", "BTC", "ETH", "BNB"):
+            if normalized.endswith(quote) and len(normalized) > len(quote):
+                normalized = f"{normalized[:-len(quote)]}/{quote}"
+                break
     if not normalized or "/" not in normalized:
         raise ValueError(f"{field} must be a qualified BASE/QUOTE symbol")
     base, quote = normalized.split("/", 1)
