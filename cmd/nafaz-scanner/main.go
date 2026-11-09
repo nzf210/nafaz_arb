@@ -116,6 +116,9 @@ func main(){
 	go server.RunPeriodic(ctx)
 
 	tgBot:=telegram.New(cfg,server)
+	if remoteStore != nil {
+		tgBot.SetOpportunityHistoryReader(remoteStore)
+	}
 	if redisClient != nil {
 		tgBot.SetRedisClient(redisClient)
 	}
