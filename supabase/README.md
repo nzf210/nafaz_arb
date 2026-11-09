@@ -94,12 +94,15 @@ Set these variables in the server environment and inject them into both
 
 - `SUPABASE_URL=https://<project-ref>.supabase.co`
 - `SUPABASE_KEY=<server-only service_role key>`
+- `SUPABASE_OUTBOX_PATH=/app/data/executor/supabase-outbox.sqlite3` (executor only)
 
 The existing `SUPABASE_KEY` name is retained for compatibility with the executor;
 its value must be the Supabase `service_role` secret, never the anon/publishable
 key. The scanner also rejects non-HTTPS remote URLs. HTTP is accepted only for
-loopback tests. If both variables are absent, persistence stays disabled. If only
+loopback tests. If both URL/key are absent, persistence stays disabled. If only
 one is supplied, scanner startup logs a warning and continues without persistence.
+The executor's outbox path must be on persistent local storage and writable by
+the container UID; Compose mounts `./data/executor` at `/app/data/executor`.
 
 Do not commit credentials, place them in `config.example.json`, bake them into an
 image, or expose them to Vue/Telegram. Use a host secret manager or a protected
