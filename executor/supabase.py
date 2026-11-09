@@ -326,34 +326,33 @@ class SupabaseWriter:
             on_conflict="id",
         )
 
-        try:
-            delta = self._outbox.advance_cumulative_fill(f"{exchange}:{key}", filled) if self._outbox else 0.0
-        except Exception:
-            self._dropped += 1
-            logger.exception("CRITICAL: failed to persist cumulative fill watermark for %s", key)
-            delta = 0.0
-        if delta > 1e-12:
-            self._order_filled[key] = filled
+        if filled > 1e-12 and self._outbox is not None:
             price = _num(order.get("average"), _num(order.get("price")))
             fill_id = f"{exchange_order_id or key}:{filled:.18f}"
-            self._emit(
-                "order_fills",
-                {
-                    # Deterministic primary key: the schema's unique index spans an
-                    # expression (coalesce on exchange_account_id) and so cannot be
-                    # targeted by ON CONFLICT, while the id can.
-                    "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
-                    "order_id": order_id,
-                    "exchange_name": exchange,
-                    "exchange_fill_id": fill_id,
-                    "qty": delta,
-                    "price": price,
-                    "quote_qty": delta * price,
-                    "filled_at": datetime.now(timezone.utc).isoformat(),
-                    "raw_payload": {"derived_from": "cumulative_filled"},
-                },
-                on_conflict="id",
-            )
+            fill_row = {
+                # Deterministic primary key: the schema's unique index spans an
+                # expression (coalesce on exchange_account_id) and so cannot be
+                # targeted by ON CONFLICT, while the id can.
+                "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
+                "order_id": order_id,
+                "exchange_name": exchange,
+                "exchange_fill_id": fill_id,
+                "price": price,
+                "filled_at": datetime.now(timezone.utc).isoformat(),
+                "raw_payload": {"derived_from": "cumulative_filled"},
+            }
+            try:
+                delta = self._outbox.enqueue_cumulative_fill(
+                    "order_fills", "id", fill_row, f"{exchange}:{key}", filled
+                )
+                if delta > 1e-12 and self._queue is not None:
+                    try:
+                        self._queue.put_nowait(("order_fills", "id", fill_row))
+                    except asyncio.QueueFull:
+                        self._dropped += 1
+            except Exception:
+                self._dropped += 1
+                logger.exception("CRITICAL: failed to journal cumulative fill for %s", key)
 
     # ------------------------------------------------------------ closed trades
 
