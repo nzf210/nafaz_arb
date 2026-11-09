@@ -75,7 +75,7 @@ func TestRedisHandler_PublishSignalAndLivePrice(t *testing.T) {
 	}
 
 	// Verify key was set in Redis
-	sigKey := KeyPrefixSignal + "indodax:btc_idr"
+	sigKey := KeyPrefixSignal + "indodax:btc_idr__binance:btcusdt"
 	val, err := client.rdb.Get(ctx, sigKey).Result()
 	if err != nil {
 		t.Fatalf("failed to get signal key: %v", err)
@@ -89,7 +89,7 @@ func TestRedisHandler_PublishSignalAndLivePrice(t *testing.T) {
 	}
 
 	// Verify live price key
-	liveKey := KeyPrefixLivePrice + "indodax:btc_idr"
+	liveKey := KeyPrefixLivePrice + "indodax:btc_idr__binance:btcusdt"
 	liveVal, err := client.rdb.Get(ctx, liveKey).Result()
 	if err != nil {
 		t.Fatalf("failed to get live price key: %v", err)
@@ -150,5 +150,37 @@ func TestRedisHandler_ActivePositionAndEmergencyCancel(t *testing.T) {
 
 	if err := client.PublishEmergencyCancel(ctx, "indodax", "btc_idr", "CANCEL_ALL_NEGATIVE_FUNDING", -0.0001); err != nil {
 		t.Fatalf("emergency cancel failed: %v", err)
+	}
+}
+
+
+func TestCleanPairKeyIncludesBothExchangeLegs(t *testing.T) {
+	first := CleanPairKey("tokocrypto", "BTC/IDR", "okx", "BTC/USDT")
+	second := CleanPairKey("tokocrypto", "BTC/IDR", "mexc", "BTC/USDT")
+	if first == second {
+		t.Fatalf("different futures venues collided: %q", first)
+	}
+	if first != "tokocrypto:btc_idr__okx:btc_usdt" {
+		t.Fatalf("unexpected full pair key: %q", first)
+	}
+}
+
+func TestRedisHandler_ActivePositionsAreIsolatedByFuturesVenue(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx := context.Background()
+
+	okxKey := KeyPrefixActivePos + CleanPairKey("tokocrypto", "BTC/IDR", "okx", "BTC/USDT")
+	if err := client.rdb.Set(ctx, okxKey, `{"qty":0.01}`, 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	okxActive, err := client.HasActivePosition(ctx, "tokocrypto", "BTC/IDR", "okx", "BTC/USDT")
+	if err != nil || !okxActive {
+		t.Fatalf("expected OKX position active, got %v err=%v", okxActive, err)
+	}
+	mexcActive, err := client.HasActivePosition(ctx, "tokocrypto", "BTC/IDR", "mexc", "BTC/USDT")
+	if err != nil || mexcActive {
+		t.Fatalf("MEXC pair must remain independent, got %v err=%v", mexcActive, err)
 	}
 }
