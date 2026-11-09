@@ -171,34 +171,6 @@ class DurableOutbox:
         with self._lock:
             return int(self._db.execute("SELECT COUNT(*) FROM pending_outbox").fetchone()[0])
 
-    def advance_cumulative_fill(self, state_key: str, cumulative: float) -> float:
-        """Atomically persist the highest cumulative fill and return its new delta."""
-        value = max(0.0, float(cumulative))
-        with self._lock:
-            self._db.execute("BEGIN IMMEDIATE")
-            try:
-                row = self._db.execute(
-                    "SELECT numeric_value FROM writer_state WHERE state_key=?",
-                    (state_key,),
-                ).fetchone()
-                previous = float(row[0]) if row else 0.0
-                if value <= previous:
-                    self._db.execute("COMMIT")
-                    return 0.0
-                self._db.execute(
-                    """INSERT INTO writer_state(state_key, numeric_value, updated_at)
-                       VALUES (?, ?, ?)
-                       ON CONFLICT(state_key) DO UPDATE SET
-                         numeric_value=excluded.numeric_value,
-                         updated_at=excluded.updated_at""",
-                    (state_key, value, time.time()),
-                )
-                self._db.execute("COMMIT")
-                return value - previous
-            except Exception:
-                self._db.execute("ROLLBACK")
-                raise
-
     def close(self) -> None:
         with self._lock:
             self._db.close()
