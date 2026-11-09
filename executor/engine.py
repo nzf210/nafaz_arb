@@ -158,7 +158,9 @@ class ArbitrageEngine(
             )
             if configured != (key.local_exchange, key.global_exchange):
                 raise LookupError("client does not support pair-bound routing for this venue")
-            return self._client_context.set(self._base_client)
+            if not self._pair_client_registry.contains(key):
+                self._pair_client_registry.register(key, self._base_client)
+            return self._client_context.set(self._pair_client_registry.resolve(key))
         if not self._pair_client_registry.contains(key):
             self._pair_client_registry.register(key, resolver(pair_info))
         return self._client_context.set(self._pair_client_registry.resolve(key))
@@ -880,9 +882,10 @@ class ArbitrageEngine(
             configured_global = str(self.config.global_exchange_name or "").strip().lower()
             signal_local = str(payload.pair_info.local_exchange or "").strip().lower()
             signal_global = str(payload.pair_info.global_exchange or "").strip().lower()
+            pair_key = ExchangePairKey.from_pair_info(payload.pair_info)
             if (
                 not getattr(self.config, "mock_mode", False)
-                and (signal_local != configured_local or signal_global != configured_global)
+                and not self._pair_client_registry.contains(pair_key)
             ):
                 reason = "EXECUTOR_VENUE_MISMATCH"
                 message = (
