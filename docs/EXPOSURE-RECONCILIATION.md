@@ -35,6 +35,15 @@ existing startup futures recovery check remains in place.
 - `EXPOSURE_RECONCILIATION_ABS_TOLERANCE`: default `1e-8` base units.
 
 The worker is disabled in MOCK/PAPER mode. It requires the exchange adapters'
-read-only `fetch_balance_report` and `fetch_positions` methods. It does not
-reconcile individual order/fill history, fees, transfers, deposits, withdrawals,
-or funding settlements; those require separate ledger reconciliation.
+read-only `fetch_balance_report` and `fetch_positions` methods. The current
+executor adapter is configured for one local spot venue and one global
+perpetual venue per executor instance; this worker does not create extra
+exchange clients for other venues. Positions created by this version persist
+their base asset and futures symbol in the Redis active-position record. Older
+records without that metadata are marked as mapping-unavailable and halt new
+entries on their known venues until the mapping is restored or manually
+resolved.
+
+It does not reconcile individual order/fill history, fees, transfers, deposits,
+withdrawals, or funding settlements; those require separate ledger
+reconciliation.
