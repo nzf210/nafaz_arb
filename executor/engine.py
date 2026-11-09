@@ -1109,6 +1109,43 @@ class ArbitrageEngine(
             if self.states.get(pair_tag) == PositionState.FAILED:
                 self.states[pair_tag] = PositionState.IDLE
 
+    def _pending_order_snapshots(self) -> list:
+        """Returns read-only metadata for managed spot orders awaiting resolution."""
+        orders = []
+        for leg, source in (("SPOT_ENTRY", self.pending_entry_orders), ("SPOT_EXIT", self.pending_exit_orders)):
+            for pair_tag, order in source.items():
+                if not isinstance(order, dict):
+                    continue
+                position = self.active_positions.get(pair_tag)
+                state = self.states.get(pair_tag)
+                if state == PositionState.RECONCILIATION_REQUIRED:
+                    status = "RECONCILIATION_REQUIRED"
+                else:
+                    filled = max(0.0, float(order.get("filled", 0.0) or 0.0))
+                    status = "PARTIALLY_FILLED" if filled > 0 else "OPEN"
+                quantity = max(0.0, float(order.get("qty", 0.0) or 0.0))
+                filled = max(0.0, float(order.get("filled", 0.0) or 0.0))
+                placed_at = order.get("placed_time", 0) or order.get("created_at", 0) or 0
+                try:
+                    created_at_ms = int(float(placed_at) * 1000) if float(placed_at) < 100000000000 else int(float(placed_at))
+                except (TypeError, ValueError):
+                    created_at_ms = 0
+                orders.append({
+                    "pair_tag": pair_tag,
+                    "leg": leg,
+                    "order_id": str(order.get("order_id", "")),
+                    "symbol": str(order.get("symbol", "")),
+                    "local_exchange": str(order.get("local_exchange") or getattr(position, "local_exchange", "") or self.config.local_exchange_name),
+                    "global_exchange": str(order.get("global_exchange") or getattr(position, "global_exchange", "") or self.config.global_exchange_name),
+                    "price": float(order.get("price", 0.0) or 0.0),
+                    "qty": quantity,
+                    "filled": filled,
+                    "remaining": max(0.0, quantity - filled),
+                    "status": status,
+                    "created_at_ms": created_at_ms,
+                })
+        return sorted(orders, key=lambda item: (item["created_at_ms"], item["pair_tag"]))
+
     def status_snapshot(self) -> Dict[str, Any]:
         """Point-in-time view of the executor, suitable for a JSON API."""
         return {
@@ -1119,6 +1156,7 @@ class ArbitrageEngine(
             "open_positions": len(self.active_positions),
             "pending_entries": len(self.pending_entry_orders),
             "pending_exits": len(self.pending_exit_orders),
+            "pending_orders": self._pending_order_snapshots(),
             "failed_pairs": len(self._failure_reasons),
             "trading_halted": self._trading_halted,
             "halt_reason": self._halt_reason,
