@@ -105,7 +105,7 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 			persistCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 			if err := persistor.SaveOpportunities(persistCtx, result.ScanID, result.Opportunities); err != nil {
 				// Persistence is fail-open: it must not suppress Redis signals or scan results.
-				log.Printf("warning: Supabase opportunity persistence failed for scan %s: %v", result.ScanID, err)
+				log.Printf("CRITICAL: scanner durable outbox enqueue failed for scan %s; audit history may have a gap: %v", result.ScanID, err)
 			}
 			cancel()
 		}
