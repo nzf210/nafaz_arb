@@ -466,6 +466,32 @@ class ArbitrageEngine(
                 if not raw:
                     continue
                 pos = ActivePosition.from_dict(json.loads(raw))
+                if "__" not in pair_tag and pos.global_exchange and pos.global_symbol:
+                    migrated_tag = ExchangePairKey.from_pair_info({
+                        "local_exchange": pos.local_exchange,
+                        "local_symbol": pos.symbol,
+                        "global_exchange": pos.global_exchange,
+                        "global_symbol": pos.global_symbol,
+                    }).tag.lower()
+                    if migrated_tag != pair_tag:
+                        migrated_key = f"arb:active_pos:{migrated_tag}"
+                        existing = await self.redis.get(migrated_key)
+                        if existing:
+                            pos.state = "RECONCILIATION_REQUIRED"
+                            self.active_positions[pair_tag] = pos
+                            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                            await self.redis.set(key, json.dumps(pos.to_dict()))
+                            self._mark_failed(
+                                pair_tag,
+                                "LEGACY_POSITION_KEY_COLLISION",
+                                "Legacy position cannot be migrated because the venue-qualified key already exists.",
+                                detail={"legacy_key": key, "target_key": migrated_key},
+                                state=PositionState.RECONCILIATION_REQUIRED,
+                            )
+                            continue
+                        await self.redis.set(migrated_key, json.dumps(pos.to_dict()))
+                        await self.redis.delete(key)
+                        pair_tag, key = migrated_tag, migrated_key
                 if pos.qty <= 0:
                     # A zero/invalid Redis quantity is not proof that the exchange
                     # is flat. Retain the record and require explicit reconciliation.
