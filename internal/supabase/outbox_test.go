@@ -1,6 +1,7 @@
 package supabase
 
 import (
+	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"context"
 	"encoding/json"
 	"errors"
