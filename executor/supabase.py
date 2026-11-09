@@ -148,18 +148,41 @@ class SupabaseWriter:
     ) -> None:
         """Appends to the executor event journal. `event_id` makes it idempotent."""
         stamp = int(occurred_at_ms or time.time() * 1000)
+        resolved_event_id = event_id or f"{event_type}:{pair_key or '-'}:{stamp}"
+        event_payload = payload or {}
+        occurred_at = _ms_to_iso(stamp) or datetime.now(timezone.utc).isoformat()
         self._emit(
             "executor_events",
             {
-                "event_id": event_id or f"{event_type}:{pair_key or '-'}:{stamp}",
+                "event_id": resolved_event_id,
                 "event_type": event_type,
                 "pair_key": pair_key,
                 "is_mock": bool(is_mock),
-                "occurred_at": _ms_to_iso(stamp),
-                "payload": payload or {},
+                "occurred_at": occurred_at,
+                "payload": event_payload,
             },
             on_conflict="event_id",
         )
+        if event_type == "EXECUTION_FAILURE":
+            state = str(event_payload.get("state") or "").upper()
+            self._emit(
+                "risk_events",
+                {
+                    "event_key": resolved_event_id,
+                    "severity": "critical" if state == "RECONCILIATION_REQUIRED" else "error",
+                    "event_type": event_type,
+                    "pair_key": pair_key,
+                    "exchange_name": event_payload.get("exchange_name") or event_payload.get("exchange"),
+                    "message": str(
+                        event_payload.get("message") or event_payload.get("reason") or "Execution failure"
+                    ),
+                    "action_taken": event_payload.get("action_taken") or state or None,
+                    "is_mock": bool(is_mock),
+                    "details": event_payload,
+                    "occurred_at": occurred_at,
+                },
+                on_conflict="event_key",
+            )
 
     # --------------------------------------------------------------- positions
 
