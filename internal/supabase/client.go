@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"os"
 	"strings"
 	"time"
@@ -235,6 +236,98 @@ func (c *Client) saveBatch(ctx context.Context, rows []opportunityRow) error {
 		}
 	}
 	return lastErr
+}
+
+
+// LatestOpportunityScans returns opportunities grouped by the newest distinct
+// scan IDs. It pages through PostgREST so the project's max-rows setting does
+// not silently reduce the requested scan history to a single page.
+func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]domain.ScanResult, error) {
+	if c == nil || c.httpClient == nil {
+		return nil, fmt.Errorf("Supabase opportunity history is not configured")
+	}
+	if scanLimit <= 0 {
+		scanLimit = 10
+	}
+	const pageSize = 1000
+	const maxPages = 100
+	type storedRow struct {
+		ScanID     string              `json:"scan_id"`
+		ObservedAt time.Time           `json:"observed_at"`
+		Payload    domain.Opportunity  `json:"payload"`
+	}
+	byScan := make(map[string]*domain.ScanResult, scanLimit+1)
+	order := make([]string, 0, scanLimit+1)
+	for page := 0; page < maxPages && len(order) <= scanLimit; page++ {
+		query := url.Values{}
+		query.Set("select", "scan_id,observed_at,payload")
+		query.Set("scan_id", "not.is.null")
+		query.Set("order", "observed_at.desc,scan_id.desc")
+		query.Set("limit", fmt.Sprint(pageSize))
+		query.Set("offset", fmt.Sprint(page*pageSize))
+		endpoint := c.baseURL + "/rest/v1/scanner_opportunities?" + query.Encode()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create scanner history request: %w", err)
+		}
+		req.Header.Set("apikey", c.serviceRoleKey)
+		req.Header.Set("Authorization", "Bearer "+c.serviceRoleKey)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("read scanner opportunity history: %w", err)
+		}
+		var rows []storedRow
+		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&rows)
+		_ = resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("read scanner opportunity history returned HTTP %d", resp.StatusCode)
+		}
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode scanner opportunity history: %w", decodeErr)
+		}
+		for _, row := range rows {
+			if strings.TrimSpace(row.ScanID) == "" {
+				continue
+			}
+			result, exists := byScan[row.ScanID]
+			if !exists {
+				if len(order) == scanLimit {
+					// The extra scan marks the end of the requested window.
+					continue
+				}
+				result = &domain.ScanResult{
+					ScanID: row.ScanID, StartedAt: row.ObservedAt,
+					CompletedAt: row.ObservedAt, Opportunities: []domain.Opportunity{},
+				}
+				byScan[row.ScanID] = result
+				order = append(order, row.ScanID)
+			}
+			if row.ObservedAt.After(result.CompletedAt) {
+				result.CompletedAt = row.ObservedAt
+			}
+			if !row.Payload.LastScannedAt.IsZero() {
+				result.Opportunities = append(result.Opportunities, row.Payload)
+			}
+		}
+		if len(rows) < pageSize || len(order) > scanLimit {
+			break
+		}
+	}
+	out := make([]domain.ScanResult, 0, len(order))
+	for _, scanID := range order {
+		result := *byScan[scanID]
+		sort.Slice(result.Opportunities, func(i, j int) bool {
+			return result.Opportunities[i].NetROIPct > result.Opportunities[j].NetROIPct
+		})
+		result.EligiblePairs = 0
+		for _, op := range result.Opportunities {
+			if op.TradingEligible {
+				result.EligiblePairs++
+			}
+		}
+		out = append(out, result)
+	}
+	return out, nil
 }
 
 // Close releases idle connections when the scanner shuts down.
