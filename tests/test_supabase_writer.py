@@ -160,6 +160,15 @@ class TestOrdersAndFills:
         restarted_id = _drain(restarted)[0][2]["id"]
         assert first_id == restarted_id
 
+    def test_order_ids_are_scoped_to_pair_and_exchange(self):
+        writer = _writer()
+        order = {"id": "reused-client-id", "amount": 1.0, "filled": 0.0, "status": "open"}
+        writer.order("pair-a", "spot_entry", "indodax", "spot", "btc_idr", order, client_order_id="same")
+        writer.order("pair-b", "spot_entry", "indodax", "spot", "eth_idr", order, client_order_id="same")
+        ids = [row[2]["id"] for row in _drain(writer) if row[0] == "orders"]
+        assert len(ids) == 2
+        assert ids[0] != ids[1]
+
     def test_order_upsert_uses_client_order_id_key(self):
         writer = _writer()
         writer.order(
