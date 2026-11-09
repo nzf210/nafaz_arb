@@ -27,6 +27,9 @@ services:
       - REDIS_ENABLED=true
       - REDIS_ADDR=redis:6380
       - GLOBAL_FUTURES_EXCHANGE=okx
+      # Server-only service_role key; shared with the executor, never put in tracked files.
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
       # Optional override for Telegram config:
       # - TELEGRAM_ENABLED=true
       # - TELEGRAM_BOT_TOKEN=your_bot_token
