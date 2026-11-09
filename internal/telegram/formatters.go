@@ -207,7 +207,7 @@ func formatScanOpportunity(i int, op domain.Opportunity) string {
 	))
 
 	if op.LocalExchange != "" || op.GlobalExchange != "" {
-		sb.WriteString(fmt.Sprintf("   • CEX: <b>%s Spot</b> vs <b>%s Futures</b>\\n", html.EscapeString(strings.ToUpper(op.LocalExchange)), html.EscapeString(strings.ToUpper(op.GlobalExchange))))
+		sb.WriteString(fmt.Sprintf("   • CEX: <b>%s Spot</b> vs <b>%s Futures</b>\n", html.EscapeString(strings.ToUpper(op.LocalExchange)), html.EscapeString(strings.ToUpper(op.GlobalExchange))))
 	}
 	if op.ExecutionMode == "MAKER_TAKER" {
 		sb.WriteString(fmt.Sprintf("   • Spot Limit (Maker): <code>%.4f</code> (%s) [Antrean: %.2f]\n", op.SpotEntryPrice, html.EscapeString(op.SpotSymbol), op.SpotQueueDepth))
