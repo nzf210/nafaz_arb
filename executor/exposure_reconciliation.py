@@ -11,7 +11,7 @@ import math
 import os
 import time
 from collections import defaultdict
-from typing import Any, Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable
 
 from executor.models import PositionState
 
@@ -114,29 +114,51 @@ class ExposureReconciliationWorker:
             if float(getattr(position, "qty", 0) or 0) <= 0:
                 continue
             pair_info = self.engine._pair_infos.get(pair_key)
-            if pair_info is None:
-                logger.warning("skip spot reconciliation for %s: venue/symbol mapping unavailable", pair_key)
+            local_name = str(
+                getattr(position, "local_exchange", "")
+                or getattr(pair_info, "local_exchange", "")
+            ).lower()
+            global_name = str(
+                getattr(position, "global_exchange", "")
+                or getattr(pair_info, "global_exchange", "")
+            ).lower()
+            base_asset = str(
+                getattr(position, "base_asset", "")
+                or getattr(pair_info, "base_asset", "")
+            ).upper()
+            global_symbol = str(
+                getattr(position, "global_symbol", "")
+                or getattr(pair_info, "global_symbol", "")
+            )
+            if not local_name or not global_name or not base_asset or not global_symbol:
+                missing_venues = [name for name in (local_name, global_name) if name]
+                for exchange in missing_venues or ["unknown"]:
+                    self.engine._exchange_halted[exchange] = (
+                        "exposure reconciliation: active position mapping unavailable"
+                    )
+                    await self._alert(
+                        "EXPOSURE_MAPPING_UNAVAILABLE", exchange,
+                        f"Cannot reconcile restored position {pair_key}: exchange/symbol mapping is incomplete.",
+                        {"pair_key": pair_key, "base_asset": base_asset,
+                         "global_symbol": global_symbol},
+                    )
                 continue
-            local_name = str(pair_info.local_exchange).lower()
-            global_name = str(pair_info.global_exchange).lower()
-            base_asset = str(pair_info.base_asset).upper()
-            global_symbol = str(pair_info.global_symbol)
-            if base_asset:
-                spot_expected[(local_name, base_asset)] += float(position.qty)
-                spot_pairs[(local_name, base_asset)].append(pair_key)
-            if global_symbol:
-                futures_expected[(global_name, global_symbol)] += float(position.qty)
-                futures_pairs[(global_name, global_symbol)].append(pair_key)
+            spot_expected[(local_name, base_asset)] += float(position.qty)
+            spot_pairs[(local_name, base_asset)].append(pair_key)
+            futures_expected[(global_name, global_symbol)] += float(position.qty)
+            futures_pairs[(global_name, global_symbol)].append(pair_key)
 
         for (exchange, asset), expected in spot_expected.items():
             report = report_map.get((exchange, "spot"))
             if not report or report.get("status") != "ok":
+                self.engine._exchange_halted[exchange] = "exposure reconciliation: spot balance unavailable"
                 await self._alert(
                     "EXPOSURE_BALANCE_UNAVAILABLE", exchange,
                     f"Cannot verify {asset} spot balance on {exchange}.",
                     {"asset": asset, "pair_keys": spot_pairs[(exchange, asset)]},
                 )
                 continue
+            self._clear_issue(f"EXPOSURE_BALANCE_UNAVAILABLE:{exchange}", exchange)
             actual = self._asset_total(report, asset)
             if actual + self._tolerance(expected) < expected:
                 await self._mismatch(
@@ -150,14 +172,26 @@ class ExposureReconciliationWorker:
 
         for (exchange, symbol), expected in futures_expected.items():
             try:
+                venue_report = report_map.get((exchange, "futures"))
+                if not venue_report or venue_report.get("status") != "ok":
+                    raise RuntimeError("configured futures venue balance report unavailable")
+                configured_venue = str(
+                    getattr(getattr(client, "global_fut", None), "id", exchange)
+                ).lower()
+                if configured_venue and configured_venue != exchange:
+                    raise RuntimeError(
+                        f"executor is connected to {configured_venue}, not {exchange}"
+                    )
                 actual = _position_short_qty(await client.fetch_positions(symbol))
             except Exception as exc:
+                self.engine._exchange_halted[exchange] = "exposure reconciliation: futures position unavailable"
                 await self._alert(
                     "EXPOSURE_POSITION_UNAVAILABLE", exchange,
                     f"Cannot verify futures position {symbol} on {exchange}.",
                     {"symbol": symbol, "error": str(exc), "pair_keys": futures_pairs[(exchange, symbol)]},
                 )
                 continue
+            self._clear_issue(f"EXPOSURE_POSITION_UNAVAILABLE:{exchange}", exchange)
             if abs(actual - expected) > self._tolerance(expected):
                 await self._mismatch(
                     "FUTURES_POSITION_MISMATCH", exchange,
@@ -230,7 +264,10 @@ class ExposureReconciliationWorker:
 
     def _clear_issue(self, issue_key: str, exchange: str) -> None:
         self._reported.pop(issue_key, None)
-        still_mismatched = any(f":{exchange}:" in key for key in self._reported)
+        still_mismatched = any(
+            len(parts := key.split(":")) > 1 and parts[1] == exchange
+            for key in self._reported
+        )
         halt = self.engine._exchange_halted.get(exchange, "")
         if halt.startswith("exposure reconciliation:") and not still_mismatched:
             self.engine._exchange_halted.pop(exchange, None)
