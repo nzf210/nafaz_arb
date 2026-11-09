@@ -162,6 +162,7 @@ class ActivePosition:
     state: str = "HEDGED_ACTIVE"
     base_asset: str = ""
     global_symbol: str = ""
+    local_lot_size: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -170,6 +171,7 @@ class ActivePosition:
             "symbol": self.symbol,
             "base_asset": self.base_asset,
             "global_symbol": self.global_symbol,
+            "local_lot_size": self.local_lot_size,
             "entry_price_idr": self.entry_price_idr,
             "short_entry_usdt": self.short_entry_usdt,
             "qty": self.qty,
@@ -202,6 +204,7 @@ class ActivePosition:
             symbol=d.get("symbol", ""),
             base_asset=d.get("base_asset", ""),
             global_symbol=d.get("global_symbol", ""),
+            local_lot_size=float(d.get("local_lot_size", 0.0)),
             entry_price_idr=float(d.get("entry_price_idr", 0.0)),
             short_entry_usdt=float(d.get("short_entry_usdt", 0.0)),
             qty=float(d.get("qty", 0.0)),

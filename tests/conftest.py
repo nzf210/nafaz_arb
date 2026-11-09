@@ -50,7 +50,7 @@ class MockExchangeClient:
     async def fetch_funding_rate(self, symbol: str):
         return dict(self.funding_rate_data)
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None):
+    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None, amount_step=None):
         self.order_counter += 1
         order_id = str(self.order_counter)
         order = {
@@ -69,7 +69,7 @@ class MockExchangeClient:
         self.placed_buys.append(order)
         return order
 
-    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id=None):
+    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id=None, amount_step=None):
         self.order_counter += 1
         order_id = str(self.order_counter)
         order = {
@@ -86,7 +86,7 @@ class MockExchangeClient:
         self.placed_sells.append(order)
         return order
 
-    async def place_local_market_sell(self, symbol: str, amount: float, client_order_id=None):
+    async def place_local_market_sell(self, symbol: str, amount: float, client_order_id=None, amount_step=None):
         self.order_counter += 1
         order_id = str(self.order_counter)
         order = {
@@ -211,6 +211,7 @@ def _fresh_signal_payload(now_ms: int) -> dict:
             "base_asset": "BTC",
             "quote_asset": "IDR",
             "local_price_tick": 1.0,
+            "local_lot_size": 0.00000001,
             "local_min_qty": 0.00001,
         },
         "pricing_snapshot": {
@@ -273,6 +274,7 @@ def _revalidation_payload(now_ms: int, *, min_spread_pct: float = 0.10) -> dict:
             "base_asset": "BTC",
             "quote_asset": "IDR",
             "local_price_tick": 1000.0,
+            "local_lot_size": 0.00000001,
         },
         "pricing_snapshot": {
             "local_best_bid": 1000000000.0,
@@ -336,10 +338,10 @@ class SlowLimitBuyClient(MockExchangeClient):
         super().__init__()
         self.entry_orders = 0
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None):
+    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id=None, amount_step=None):
         self.entry_orders += 1
         await asyncio.sleep(0.05)
-        return await super().place_local_limit_buy(symbol, amount, price)
+        return await super().place_local_limit_buy(symbol, amount, price, amount_step=amount_step)
 
 class FailingHedgeClient(MockExchangeClient):
     """Client whose futures short always fails, to exercise the hedge rollback path."""
@@ -353,13 +355,13 @@ class BlockingSellClient(MockExchangeClient):
     async def open_global_short_market(self, symbol: str, amount: float, price: float = 0.0, client_order_id=None):
         raise RuntimeError("global futures unavailable")
 
-    async def place_local_market_sell(self, symbol: str, amount: float, client_order_id=None):
+    async def place_local_market_sell(self, symbol: str, amount: float, client_order_id=None, amount_step=None):
         raise RuntimeError("local spot exchange unavailable")
 
 class SpotSellFailureClient(MockExchangeClient):
     """Client whose futures work but whose spot market sell always fails."""
 
-    async def place_local_market_sell(self, symbol: str, amount: float, client_order_id=None):
+    async def place_local_market_sell(self, symbol: str, amount: float, client_order_id=None, amount_step=None):
         raise RuntimeError("local spot exchange unavailable")
 
 class OpenShortPositionClient(MockExchangeClient):
@@ -390,7 +392,9 @@ class BalancesMockClient(MockExchangeClient):
     def lock_funds(self, spot, futures):
         return True
 
-    async def place_local_limit_buy(self, symbol, amount, price, client_order_id=None):
+    async def place_local_limit_buy(self, symbol, amount, price, client_order_id=None, amount_step=None):
         if self.fail_next_buy:
             raise RuntimeError("exchange down")
-        return await super().place_local_limit_buy(symbol, amount, price, client_order_id)
+        return await super().place_local_limit_buy(
+            symbol, amount, price, client_order_id, amount_step=amount_step
+        )

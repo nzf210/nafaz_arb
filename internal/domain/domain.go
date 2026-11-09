@@ -11,7 +11,7 @@ type Market struct {
 	Active       bool    `json:"active"`
 	ContractSize float64 `json:"contract_size,omitempty"`
 	TickSize     float64 `json:"tick_size,omitempty"`
-	LotSize      float64 `json:"lot_size,omitempty"`
+	LotSize      float64 `json:"lot_size,omitempty"` // Minimum valid quantity increment.
 	MinOrder     float64 `json:"min_order,omitempty"`
 }
 
@@ -155,7 +155,7 @@ type PairInfo struct {
 	BaseAsset      string  `json:"base_asset"`
 	QuoteAsset     string  `json:"quote_asset"`
 	LocalPriceTick float64 `json:"local_price_tick"`
-	LocalLotSize   float64 `json:"local_lot_size,omitempty"`
+	LocalLotSize   float64 `json:"local_lot_size,omitempty"` // Local market quantity increment.
 }
 
 type ExecutionDirectives struct {
@@ -211,4 +211,3 @@ type BalancesRecord struct {
 	FuturesLocked    float64 `json:"futures_locked"`
 	TotalEquity      float64 `json:"total_equity"`
 }
-

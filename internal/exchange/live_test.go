@@ -15,8 +15,9 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 		if r.URL.Path == "/api/pairs" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`[
-				{"id":"btcusdt","symbol":"BTCUSDT","base_currency":"usdt","traded_currency":"btc"},
-				{"id":"ethusdt","symbol":"ETHUSDT","base_currency":"usdt","traded_currency":"eth"}
+				{"id":"btcusdt","symbol":"BTCUSDT","base_currency":"usdt","traded_currency":"btc","quantity_increment":0.00000001},
+				{"id":"ethusdt","symbol":"ETHUSDT","base_currency":"usdt","traded_currency":"eth","quantity_increment":0.001},
+				{"id":"missingincrement","symbol":"MISSINGINCREMENT","base_currency":"usdt","traded_currency":"missing"}
 			]`))
 			return
 		}
@@ -64,6 +65,17 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	}
 	if len(markets) != 4 {
 		t.Fatalf("expected 4 local spot markets (2 toko + 2 indodax), got %d", len(markets))
+	}
+	for _, market := range markets {
+		if market.Exchange == "indodax" {
+			want := 0.00000001
+			if market.Symbol == "ethusdt" {
+				want = 0.001
+			}
+			if market.LotSize != want {
+				t.Errorf("Indodax %s quantity increment = %g, want %g", market.Symbol, market.LotSize, want)
+			}
+		}
 	}
 	for _, market := range markets {
 		if market.Exchange == "mexc" || strings.HasPrefix(market.Symbol, "mexc_spot:") {

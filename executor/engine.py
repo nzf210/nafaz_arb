@@ -1,5 +1,6 @@
 import asyncio
 from contextvars import ContextVar
+from decimal import Decimal, ROUND_DOWN
 import json
 import logging
 import math
@@ -1107,6 +1108,17 @@ class ArbitrageEngine(
         directives = payload.execution_directives
         pair_info = payload.pair_info
         snapshot = payload.pricing_snapshot
+        if pair_info.local_exchange.strip().lower() == "indodax" and (
+            not math.isfinite(pair_info.local_lot_size) or pair_info.local_lot_size <= 0
+        ):
+            self._mark_failed(
+                pair_tag,
+                "LOCAL_QUANTITY_INCREMENT_MISSING",
+                "Indodax market quantity increment is missing; entry was not submitted.",
+                detail={"symbol": pair_info.local_symbol},
+            )
+            await self.publish_status()
+            return
 
         # Target Limit Buy price in IDR
         buy_price_idr = directives.recommended_limit_buy_idr
@@ -1118,10 +1130,14 @@ class ArbitrageEngine(
             return
         max_pos_usdt, _ = sizing
 
-        capital_idr = max_pos_usdt * snapshot.usdt_idr_rate
-        buy_qty = capital_idr / buy_price_idr
+        capital_idr = Decimal(str(max_pos_usdt)) * Decimal(str(snapshot.usdt_idr_rate))
+        buy_qty = float(capital_idr / Decimal(str(buy_price_idr)))
         if pair_info.local_lot_size > 0:
-            buy_qty = math.floor(buy_qty / pair_info.local_lot_size) * pair_info.local_lot_size
+            quantity = capital_idr / Decimal(str(buy_price_idr))
+            increment = Decimal(str(pair_info.local_lot_size))
+            buy_qty = float(
+                (quantity / increment).to_integral_value(rounding=ROUND_DOWN) * increment
+            )
 
         if buy_qty <= 0:
             return
@@ -1158,7 +1174,11 @@ class ArbitrageEngine(
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
             order = await self.client.place_local_limit_buy(
-                pair_info.local_symbol, buy_qty, buy_price_idr, client_order_id=entry_coid
+                pair_info.local_symbol,
+                buy_qty,
+                buy_price_idr,
+                client_order_id=entry_coid,
+                amount_step=pair_info.local_lot_size,
             )
             order_id = str(order.get("id", ""))
             self._record_order_success(pair_info.local_exchange)
@@ -1179,6 +1199,7 @@ class ArbitrageEngine(
                 "symbol": pair_info.local_symbol,
                 "global_symbol": pair_info.global_symbol,
                 "base_asset": pair_info.base_asset,
+                "local_lot_size": pair_info.local_lot_size,
                 "local_exchange": pair_info.local_exchange,
                 "global_exchange": pair_info.global_exchange,
                 "price": buy_price_idr,

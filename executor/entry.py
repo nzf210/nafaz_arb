@@ -533,6 +533,7 @@ class EntryMixin:
                     base_target_exit_spread_pct=order_info["base_target_exit_spread_pct"],
                     current_funding_rate=order_info["current_funding_rate"],
                     local_price_tick=float(order_info.get("tick_size", 1.0)),
+                    local_lot_size=float(order_info.get("local_lot_size", 0.0)),
                     spot_cost_usdt=spot_cost,
                     futures_margin_usdt=fut_margin,
                 )

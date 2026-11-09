@@ -270,6 +270,7 @@ class ForceCloseMixin:
                         pos.symbol,
                         pos.qty,
                         client_order_id=build_client_order_id(pair_key, "force-liq", seq),
+                        amount_step=pos.local_lot_size,
                     ),
                     max_retries=4,  # 5 total attempts
                     base_delay=0.5,

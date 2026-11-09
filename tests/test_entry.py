@@ -31,6 +31,7 @@ async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, moc
             "base_asset": "BTC",
             "quote_asset": "IDR",
             "local_price_tick": 1000.0,
+            "local_lot_size": 0.00000001,
         },
         "pricing_snapshot": {
             "local_best_bid": 1000000000.0,
@@ -65,6 +66,7 @@ async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, moc
     placed = mock_client.placed_buys[0]
     assert placed["symbol"] == "btc_idr"
     assert placed["price"] == 1000001000.0
+    assert placed["amount"] == pytest.approx(0.00799999)
     assert engine.states[pair_tag] == PositionState.ENTRY_PENDING
 
     # 2. Stale signal test (> 500ms)
@@ -81,6 +83,37 @@ async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, moc
 
     # No new buy placed
     assert len(mock_client.placed_buys) == 1
+
+
+@pytest.mark.asyncio
+async def test_entry_quantity_is_floored_to_market_increment(engine, fake_redis, mock_client):
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    payload = _fresh_signal_payload(now_ms)
+    payload["pair_info"]["local_lot_size"] = 0.0005
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(mock_client.placed_buys) == 1
+    # Sizing yields 0.0016 BTC; floor to the venue's 0.0005 increment.
+    assert mock_client.placed_buys[0]["amount"] == pytest.approx(0.0015)
+    assert mock_client.placed_buys[0]["amount"] / 0.0005 == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_entry_without_market_increment_is_rejected(engine, fake_redis, mock_client):
+    pair_tag = "indodax:btc_idr"
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    payload["pair_info"].pop("local_lot_size")
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert mock_client.placed_buys == []
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == (
+        "LOCAL_QUANTITY_INCREMENT_MISSING"
+    )
 
 @pytest.mark.asyncio
 async def test_state1_adverse_selection_cancellation(engine, fake_redis, mock_client):

@@ -272,6 +272,7 @@ class ExitMixin:
                     pos.qty,
                     limit_sell_idr,
                     client_order_id=exit_coid,
+                    amount_step=pos.local_lot_size,
                 )
                 order_id = str(order.get("id", ""))
                 self.supabase.order(

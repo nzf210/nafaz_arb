@@ -70,10 +70,12 @@ async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_
     attempts = 0
     original = client.place_local_market_sell
 
-    async def counting_sell(symbol, amount, client_order_id=None):
+    async def counting_sell(symbol, amount, client_order_id=None, amount_step=None):
         nonlocal attempts
         attempts += 1
-        return await original(symbol, amount, client_order_id=client_order_id)
+        return await original(
+            symbol, amount, client_order_id=client_order_id, amount_step=amount_step
+        )
 
     client.place_local_market_sell = counting_sell
 
@@ -173,7 +175,9 @@ async def test_hedge_ambiguity_binance_position_amt_blocks_rollback(engine, fake
 async def test_partial_spot_rollback_does_not_release_reserve_or_close(engine, fake_redis):
     """A partial market sell is not a completed rollback and must remain FAILED."""
     class PartialRollbackClient(FailingHedgeClient):
-        async def place_local_market_sell(self, symbol, amount, client_order_id=None):
+        async def place_local_market_sell(
+            self, symbol, amount, client_order_id=None, amount_step=None
+        ):
             return {
                 "id": "partial-1",
                 "symbol": symbol,

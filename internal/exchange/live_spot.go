@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -199,10 +201,11 @@ func (l *LiveAdapter) fetchIndodaxSpotMarkets(ctx context.Context) ([]domain.Mar
 	}
 
 	var indodaxPairs []struct {
-		ID             string `json:"id"`
-		Symbol         string `json:"symbol"`
-		BaseCurrency   string `json:"base_currency"`   // quote currency (e.g. usdt, idr)
-		TradedCurrency string `json:"traded_currency"` // base currency (e.g. btc, eth)
+		ID                string  `json:"id"`
+		Symbol            string  `json:"symbol"`
+		BaseCurrency      string  `json:"base_currency"`   // quote currency (e.g. usdt, idr)
+		TradedCurrency    string  `json:"traded_currency"` // base currency (e.g. btc, eth)
+		QuantityIncrement float64 `json:"quantity_increment"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&indodaxPairs); err != nil {
@@ -214,6 +217,10 @@ func (l *LiveAdapter) fetchIndodaxSpotMarkets(ctx context.Context) ([]domain.Mar
 		if p.ID == "" || p.TradedCurrency == "" || p.BaseCurrency == "" {
 			continue
 		}
+		if p.QuantityIncrement <= 0 || math.IsNaN(p.QuantityIncrement) || math.IsInf(p.QuantityIncrement, 0) {
+			log.Printf("indodax: skipping pair %s with missing or invalid quantity_increment", p.ID)
+			continue
+		}
 		markets = append(markets, domain.Market{
 			Exchange:   "indodax",
 			Symbol:     p.ID,
@@ -221,6 +228,7 @@ func (l *LiveAdapter) fetchIndodaxSpotMarkets(ctx context.Context) ([]domain.Mar
 			QuoteAsset: strings.ToUpper(p.BaseCurrency),
 			MarketType: "SPOT",
 			Active:     true,
+			LotSize:    p.QuantityIncrement,
 		})
 	}
 

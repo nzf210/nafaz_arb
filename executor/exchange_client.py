@@ -17,6 +17,22 @@ def _client_order_params(client_order_id: Optional[str]) -> tuple:
     """
     return ({"clientOrderId": client_order_id},) if client_order_id else ()
 
+def _local_order_params(
+    exchange: Any,
+    client_order_id: Optional[str],
+    amount_step: Optional[float],
+    require_amount_step: bool = False,
+) -> tuple:
+    params = {"clientOrderId": client_order_id} if client_order_id else {}
+    if isinstance(exchange, IndodaxTAPIv2):
+        if amount_step is not None and not math.isfinite(amount_step):
+            raise ValueError(f"invalid Indodax quantity increment: {amount_step}")
+        if (amount_step is None or amount_step <= 0) and require_amount_step:
+            raise ValueError("Indodax orders require the market quantity increment")
+        if amount_step is not None and amount_step > 0:
+            params["quantityIncrement"] = amount_step
+    return (params,) if params else ()
+
 
 class ExchangeClient:
     """
@@ -40,27 +56,50 @@ class ExchangeClient:
             getattr(global_exchange, "id", "global"): {"market": "futures", "client": global_exchange},
         }
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_buy(
+        self, symbol: str, amount: float, price: float,
+        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """Places a Maker Limit Buy on local spot exchange."""
         if amount <= 0 or price <= 0:
             raise ValueError(f"invalid buy params: amount={amount}, price={price}")
-        return await self.local.create_limit_buy_order(symbol, amount, price, *_client_order_params(client_order_id))
+        return await self.local.create_limit_buy_order(
+            symbol,
+            amount,
+            price,
+            *_local_order_params(
+                self.local, client_order_id, amount_step, require_amount_step=True
+            ),
+        )
 
-    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_sell(
+        self, symbol: str, amount: float, price: float,
+        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """Places a Maker Limit Sell on local spot exchange."""
         if amount <= 0 or price <= 0:
             raise ValueError(f"invalid sell params: amount={amount}, price={price}")
-        return await self.local.create_limit_sell_order(symbol, amount, price, *_client_order_params(client_order_id))
+        return await self.local.create_limit_sell_order(
+            symbol,
+            amount,
+            price,
+            *_local_order_params(self.local, client_order_id, amount_step),
+        )
 
     async def cancel_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Cancels an existing order on local spot exchange."""
         return await self.local.cancel_order(order_id, symbol)
 
-    async def place_local_market_sell(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_market_sell(
+        self, symbol: str, amount: float,
+        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """Taker market sell on local spot. Used only for emergency de-risking."""
         if amount <= 0:
             raise ValueError(f"invalid market sell amount: {amount}")
-        return await self.local.create_market_sell_order(symbol, amount, *_client_order_params(client_order_id))
+        return await self.local.create_market_sell_order(
+            symbol, amount, *_local_order_params(self.local, client_order_id, amount_step)
+        )
 
     async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Fetches status of an order on local spot exchange."""
@@ -376,7 +415,10 @@ class PaperTradingExchangeClient:
             "updated_at": time.time(),
         }
 
-    async def place_local_limit_buy(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_buy(
+        self, symbol: str, amount: float, price: float,
+        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+    ) -> Dict[str, Any]:
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
             if existing is not None:
@@ -401,7 +443,10 @@ class PaperTradingExchangeClient:
         self.orders[oid] = order
         return order
 
-    async def place_local_limit_sell(self, symbol: str, amount: float, price: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_limit_sell(
+        self, symbol: str, amount: float, price: float,
+        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+    ) -> Dict[str, Any]:
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
             if existing is not None:
@@ -424,7 +469,10 @@ class PaperTradingExchangeClient:
         self.orders[oid] = order
         return order
 
-    async def place_local_market_sell(self, symbol: str, amount: float, client_order_id: Optional[str] = None) -> Dict[str, Any]:
+    async def place_local_market_sell(
+        self, symbol: str, amount: float,
+        client_order_id: Optional[str] = None, amount_step: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """Taker market sell at the live best bid. Used for emergency hedge rollback."""
         if amount <= 0:
             raise ValueError(f"invalid market sell amount: {amount}")
