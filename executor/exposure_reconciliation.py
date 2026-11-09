@@ -132,9 +132,14 @@ class ExposureReconciliationWorker:
                 invalid_qty = expected_qty <= 0
             if invalid_qty:
                 known_venues = [
-                    str(getattr(position, "local_exchange", "") or getattr(pair_info, "local_exchange", "")).lower(),
-                    str(getattr(position, "global_exchange", "") or getattr(pair_info, "global_exchange", "")).lower(),
+                    str(getattr(position, "local_exchange", "") or getattr(pair_info, "local_exchange", "")).strip().lower(),
+                    str(getattr(position, "global_exchange", "") or getattr(pair_info, "global_exchange", "")).strip().lower(),
                 ]
+                if not any(known_venues):
+                    known_venues = [
+                        str(getattr(self.engine.config, "local_exchange_name", "")).strip().lower(),
+                        str(getattr(self.engine.config, "global_exchange_name", "")).strip().lower(),
+                    ]
                 for exchange in [venue for venue in known_venues if venue] or ["unknown"]:
                     invalid_qty_venues.add(exchange)
                     self._set_halt(exchange, "active position quantity invalid")
@@ -162,7 +167,12 @@ class ExposureReconciliationWorker:
             ).strip()
             if not local_name or not global_name or not base_asset or not global_symbol:
                 missing_venues = [name for name in (local_name, global_name) if name]
-                for exchange in missing_venues or ["unknown"]:
+                if not missing_venues:
+                    missing_venues = [
+                        str(getattr(self.engine.config, "local_exchange_name", "")).strip().lower(),
+                        str(getattr(self.engine.config, "global_exchange_name", "")).strip().lower(),
+                    ]
+                for exchange in [venue for venue in missing_venues if venue] or ["unknown"]:
                     missing_mapping_venues.add(exchange)
                     self._set_halt(
                         exchange, "active position mapping unavailable"
@@ -275,6 +285,11 @@ class ExposureReconciliationWorker:
                 str(getattr(position, "local_exchange", "") or getattr(pair_info, "local_exchange", "")).strip().lower(),
                 str(getattr(position, "global_exchange", "") or getattr(pair_info, "global_exchange", "")).strip().lower(),
             }
+            if not any(venues):
+                venues = {
+                    str(getattr(self.engine.config, "local_exchange_name", "")).strip().lower(),
+                    str(getattr(self.engine.config, "global_exchange_name", "")).strip().lower(),
+                }
             for exchange in [venue for venue in venues if venue] or ["unknown"]:
                 self._set_halt(exchange, reason)
                 await self._alert(
