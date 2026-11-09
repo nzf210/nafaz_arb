@@ -101,3 +101,48 @@ def test_pair_key_normalizes_compact_and_delimited_symbols(
     )
     assert key.local_symbol == expected_spot
     assert key.global_symbol == expected_futures
+
+
+
+@pytest.mark.parametrize(
+    ("spot_symbol", "futures_symbol", "expected_base"),
+    [
+        ("toko:ATH_USDT", "ATH-USDT-SWAP", "ATH"),
+        ("toko:FLOKI_IDR", "FLOKI-USDT-SWAP", "FLOKI"),
+        ("toko:SOLBIDR", "SOL-USDT-SWAP", "SOL"),
+        ("BTC_IDR", "BTC-USDT-SWAP", "BTC"),
+    ],
+)
+def test_pair_key_normalizes_real_tokocrypto_and_okx_symbols(
+    spot_symbol, futures_symbol, expected_base
+):
+    key = ExchangePairKey.create(
+        "tokocrypto", spot_symbol, "okx", futures_symbol
+    )
+    assert key.local_symbol.split("/", 1)[0] == expected_base
+    assert key.global_symbol.split("/", 1)[0] == expected_base
+    assert key.tag == (
+        f"tokocrypto:{expected_base}_"
+        f"{'IDR' if spot_symbol.endswith(('IDR', 'BIDR')) else 'USDT'}"
+        f"__okx:{expected_base}_USDT"
+    )
+
+
+def test_pair_key_strips_mexc_adapter_namespace_only_for_mexc():
+    key = ExchangePairKey.create(
+        "tokocrypto", "toko:ATH_USDT", "mexc", "mexc:ATH_USDT"
+    )
+    assert key.local_symbol == "ATH/USDT"
+    assert key.global_symbol == "ATH/USDT"
+
+
+def test_pair_key_does_not_strip_unknown_namespace_as_asset_prefix():
+    key = ExchangePairKey.create(
+        "tokocrypto", "toko:BTC_USDT", "okx", "UNKNOWN:BTC-USDT-SWAP"
+    )
+    assert key.local_symbol == "BTC/USDT"
+    assert key.global_symbol == "UNKNOWN:BTC/USDT"
+    with pytest.raises(ValueError, match="base asset mismatch"):
+        ExchangePairKey.create(
+            "tokocrypto", "toko:BTC_USDT", "okx", "UNKNOWN:BTC-USDT-SWAP"
+        )
