@@ -308,9 +308,10 @@ func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]d
 			if row.ObservedAt.After(result.CompletedAt) {
 				result.CompletedAt = row.ObservedAt
 			}
-			if !row.Payload.LastScannedAt.IsZero() {
-				result.Opportunities = append(result.Opportunities, row.Payload)
+			if row.Payload.LastScannedAt.IsZero() {
+				row.Payload.LastScannedAt = row.ObservedAt
 			}
+			result.Opportunities = append(result.Opportunities, row.Payload)
 		}
 		if len(rows) < pageSize {
 			break
