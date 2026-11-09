@@ -89,7 +89,7 @@ func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID 
 			out.WriteString(fmt.Sprintf("<b>[%d] %s — %s</b>\n", i+1, html.EscapeString(strings.ToUpper(order.Symbol)), html.EscapeString(status)))
 			out.WriteString(fmt.Sprintf("• Leg: <code>%s</code> | Order ID: <code>%s</code>\n", html.EscapeString(order.Leg), html.EscapeString(order.OrderID)))
 			out.WriteString(fmt.Sprintf("• CEX Spot: <b>%s</b> | CEX Futures: <b>%s</b>\n", html.EscapeString(strings.ToUpper(order.LocalExchange)), html.EscapeString(strings.ToUpper(order.GlobalExchange))))
-			out.WriteString(fmt.Sprintf("• Harga: <code>%.10g</code> | Qty: <code>%.8g</code>\n", order.Price, order.Qty))
+			out.WriteString(fmt.Sprintf("• Harga: <code>%.10g %s</code> | Qty: <code>%.8g</code>\n", order.Price, html.EscapeString(order.QuoteAsset), order.Qty))
 			out.WriteString(fmt.Sprintf("• Filled: <code>%.8g</code> | Sisa: <code>%.8g</code>\n", order.Filled, order.Remaining))
 			if order.CreatedAtMS > 0 {
 				age := time.Since(time.UnixMilli(order.CreatedAtMS))
