@@ -49,7 +49,7 @@ func NewFromEnv() (*Client, error) {
 	return &Client{
 		baseURL:        baseURL,
 		serviceRoleKey: key,
-		httpClient:     &http.Client{Timeout: 3 * time.Second},
+		httpClient:     &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
 
@@ -239,6 +239,54 @@ func (c *Client) saveBatch(ctx context.Context, rows []opportunityRow) error {
 }
 
 
+// readScannerHistory performs one GET against scanner_opportunities with a
+// bounded retry: transient network stalls previously surfaced as Telegram
+// history failures even though writes kept flowing through the outbox.
+func (c *Client) readScannerHistory(ctx context.Context, endpoint string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create scanner history request: %w", err)
+		}
+		req.Header.Set("apikey", c.serviceRoleKey)
+		req.Header.Set("Authorization", "Bearer "+c.serviceRoleKey)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("read scanner opportunity history: %w", err)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		} else {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				if readErr != nil {
+					return nil, fmt.Errorf("read scanner opportunity history body: %w", readErr)
+				}
+				return body, nil
+			}
+			lastErr = fmt.Errorf("read scanner opportunity history returned HTTP %d", resp.StatusCode)
+			retryable := resp.StatusCode == http.StatusRequestTimeout ||
+				resp.StatusCode == http.StatusTooManyRequests ||
+				resp.StatusCode >= http.StatusInternalServerError
+			if !retryable {
+				return nil, lastErr
+			}
+		}
+		if attempt < 2 {
+			timer := time.NewTimer(time.Duration(100*(1<<attempt)) * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return nil, lastErr
+}
+
 // LatestOpportunityScans returns opportunities grouped by the newest distinct
 // scan IDs. It pages through PostgREST so the project's max-rows setting does
 // not silently reduce the requested scan history to a single page.
@@ -252,9 +300,9 @@ func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]d
 	const pageSize = 1000
 	const maxPages = 100
 	type storedRow struct {
-		ScanID     string              `json:"scan_id"`
-		ObservedAt time.Time           `json:"observed_at"`
-		Payload    domain.Opportunity  `json:"payload"`
+		ScanID     string             `json:"scan_id"`
+		ObservedAt time.Time          `json:"observed_at"`
+		Payload    domain.Opportunity `json:"payload"`
 	}
 	byScan := make(map[string]*domain.ScanResult, scanLimit+1)
 	order := make([]string, 0, scanLimit+1)
@@ -267,24 +315,13 @@ func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]d
 		query.Set("limit", fmt.Sprint(pageSize))
 		query.Set("offset", fmt.Sprint(page*pageSize))
 		endpoint := c.baseURL + "/rest/v1/scanner_opportunities?" + query.Encode()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		body, err := c.readScannerHistory(ctx, endpoint)
 		if err != nil {
-			return nil, fmt.Errorf("create scanner history request: %w", err)
-		}
-		req.Header.Set("apikey", c.serviceRoleKey)
-		req.Header.Set("Authorization", "Bearer "+c.serviceRoleKey)
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("read scanner opportunity history: %w", err)
+			return nil, err
 		}
 		var rows []storedRow
-		decodeErr := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&rows)
-		_ = resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("read scanner opportunity history returned HTTP %d", resp.StatusCode)
-		}
-		if decodeErr != nil {
-			return nil, fmt.Errorf("decode scanner opportunity history: %w", decodeErr)
+		if err := json.Unmarshal(body, &rows); err != nil {
+			return nil, fmt.Errorf("decode scanner opportunity history: %w", err)
 		}
 		for _, row := range rows {
 			if strings.TrimSpace(row.ScanID) == "" {
