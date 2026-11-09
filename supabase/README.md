@@ -82,10 +82,31 @@ Delivery guarantees and remaining limitations:
   delivery journal, not a cross-host shared database; run only one executor
   writer against a given outbox file and keep that file on persistent local
   storage. Supabase remains an audit sink, never authority for exchange exposure.
-- Scanner persistence still uses bounded in-process retry and does not yet have
-  a durable scanner outbox. Scanner history can therefore have gaps during long
-  Supabase outages. Do not treat Supabase history as a complete exchange ledger
-  or proof that an order/position is flat.
+- Scanner writes are first committed to a local append-only JSONL journal at
+  `SUPABASE_SCANNER_OUTBOX_PATH` (default:
+  `/app/data/scanner/supabase-outbox.jsonl`). Each append is fsynced before
+  `SaveOpportunities` returns; a background reconciliation worker replays due
+  records to PostgREST using the existing idempotency key.
+- Scanner acknowledgements happen only after successful PostgREST upsert.
+  Network/HTTP failures remain on disk with persisted exponential backoff;
+  malformed committed records fail closed, while an incomplete final append is
+  truncated during recovery. The scanner journal has a 128 MiB default hard cap.
+- Full disk, permission errors, and capacity exhaustion are logged as CRITICAL.
+  Scanner evaluation and Redis signalling remain fail-open, so operators must
+  monitor these logs and restore storage before audit history can resume.
+- Both journals are local to one process/host and must not be shared by multiple
+  replicas. Use persistent local volumes and back up journals before replacing
+  hosts or volumes.
+- The scanner reconciliation worker is a delivery reconciler only: it replays
+  scanner opportunity snapshots and confirms durable delivery. It does not
+  inspect private exchange balances/positions, change Redis exposure state, or
+  place/cancel orders. Executor restart verification separately checks restored
+  futures exposure against exchange positions and marks mismatches
+  `RECONCILIATION_REQUIRED`.
+- Supabase remains an audit/history sink, never authority for live exposure.
+  Scanner opportunities and executor history are not a complete exchange ledger
+  unless fills, fees, funding settlements, balances, and position legs are also
+  independently reconciled from authenticated exchange records.
 
 ## Runtime configuration
 
@@ -95,14 +116,18 @@ Set these variables in the server environment and inject them into both
 - `SUPABASE_URL=https://<project-ref>.supabase.co`
 - `SUPABASE_KEY=<server-only service_role key>`
 - `SUPABASE_OUTBOX_PATH=/app/data/executor/supabase-outbox.sqlite3` (executor only)
+- `SUPABASE_SCANNER_OUTBOX_PATH=/app/data/scanner/supabase-outbox.jsonl` (scanner only)
 
 The existing `SUPABASE_KEY` name is retained for compatibility with the executor;
 its value must be the Supabase `service_role` secret, never the anon/publishable
 key. The scanner also rejects non-HTTPS remote URLs. HTTP is accepted only for
 loopback tests. If both URL/key are absent, persistence stays disabled. If only
 one is supplied, scanner startup logs a warning and continues without persistence.
-The executor's outbox path must be on persistent local storage and writable by
-the container UID; Compose mounts `./data/executor` at `/app/data/executor`.
+Both outbox paths must be on persistent local storage and writable by
+the container UID; Compose mounts `./data` at `/app/data`. The scanner journal
+defaults to a 128 MiB hard cap; capacity or disk errors are critical and require
+operator intervention. No automatic deletion or truncation of committed records
+is performed to make room.
 
 Do not commit credentials, place them in `config.example.json`, bake them into an
 image, or expose them to Vue/Telegram. Use a host secret manager or a protected
