@@ -1,4 +1,3 @@
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -65,8 +64,8 @@ class FakeSupabase:
 async def test_reconciliation_halts_new_entries_on_confirmed_mismatch_without_orders(monkeypatch):
     monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
     client = FakeClient()
-    position = SimpleNamespace(qty=1.0)
-    pair_info = SimpleNamespace(
+    position = SimpleNamespace(
+        qty=1.0,
         local_exchange="indodax",
         global_exchange="okx",
         base_asset="BTC",
@@ -76,7 +75,7 @@ async def test_reconciliation_halts_new_entries_on_confirmed_mismatch_without_or
         config=SimpleNamespace(mock_mode=False),
         client=client,
         active_positions={"indodax:BTC_IDR:okx:BTC_USDT": position},
-        _pair_infos={"indodax:BTC_IDR:okx:BTC_USDT": pair_info},
+        _pair_infos={},
         _exchange_halted={},
         supabase=FakeSupabase(),
         failures=[],
@@ -95,3 +94,75 @@ async def test_reconciliation_halts_new_entries_on_confirmed_mismatch_without_or
     assert client.order_calls == 0
     assert engine.supabase.rows
     assert all(row["is_mock"] is False for table, row in engine.supabase.rows)
+
+
+
+@pytest.mark.asyncio
+async def test_missing_restored_position_mapping_halts_both_venues(monkeypatch):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
+    client = FakeClient()
+    position = SimpleNamespace(
+        qty=1.0, local_exchange="indodax", global_exchange="okx",
+        base_asset="", global_symbol="",
+    )
+    engine = SimpleNamespace(
+        config=SimpleNamespace(mock_mode=False),
+        client=client,
+        active_positions={"legacy-pair": position},
+        _pair_infos={},
+        _exchange_halted={},
+        supabase=FakeSupabase(),
+        failures=[],
+    )
+
+    async def publish_failure(*args, **kwargs):
+        engine.failures.append((args, kwargs))
+
+    engine._publish_execution_failure = publish_failure
+    await ExposureReconciliationWorker(engine).reconcile_once()
+
+    assert "indodax" in engine._exchange_halted
+    assert "okx" in engine._exchange_halted
+    assert len(engine.failures) == 2
+    assert client.order_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_unavailable_exchange_reads_halt_new_entries(monkeypatch):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
+
+    class UnavailableClient(FakeClient):
+        async def fetch_balance_report(self):
+            return [
+                {"name": "indodax", "market": "spot", "status": "error", "assets": []},
+                {"name": "okx", "market": "futures", "status": "ok", "assets": []},
+            ]
+
+        async def fetch_positions(self, symbol):
+            raise RuntimeError("private endpoint unavailable")
+
+    client = UnavailableClient()
+    position = SimpleNamespace(
+        qty=1.0, local_exchange="indodax", global_exchange="okx",
+        base_asset="BTC", global_symbol="BTC/USDT:USDT",
+    )
+    engine = SimpleNamespace(
+        config=SimpleNamespace(mock_mode=False),
+        client=client,
+        active_positions={"pair": position},
+        _pair_infos={},
+        _exchange_halted={},
+        supabase=FakeSupabase(),
+        failures=[],
+    )
+
+    async def publish_failure(*args, **kwargs):
+        engine.failures.append((args, kwargs))
+
+    engine._publish_execution_failure = publish_failure
+    await ExposureReconciliationWorker(engine).reconcile_once()
+
+    assert "indodax" in engine._exchange_halted
+    assert "okx" in engine._exchange_halted
+    assert len(engine.failures) == 2
+    assert client.order_calls == 0
