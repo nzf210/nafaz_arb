@@ -20,7 +20,7 @@ import (
 const (
 	defaultScannerOutboxMaxBytes = int64(128 << 20)
 	defaultReconcileInterval     = 2 * time.Second
-	maxOutboxBatchRecords        = 25
+	maxOutboxBatchRecords        = 5
 )
 
 var ErrOutboxCapacity = errors.New("scanner durable outbox capacity reached")
@@ -377,26 +377,27 @@ func (s *DurableStore) Run(ctx context.Context) {
 
 func (s *DurableStore) reconcileDue(ctx context.Context) error {
 	records, err := s.outbox.Due(maxOutboxBatchRecords)
-	if err != nil {
+	if err != nil || len(records) == 0 {
 		return err
 	}
+	ids := make([]string, 0, len(records))
+	rows := make([]opportunityRow, 0)
 	for _, record := range records {
-		if ctx.Err() != nil {
-			return ctx.Err()
+		ids = append(ids, record.ID)
+		rows = append(rows, record.Rows...)
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	deliveryErr := s.client.saveRows(requestCtx, rows)
+	cancel()
+	if deliveryErr != nil {
+		if retryErr := s.outbox.Retry(ids, deliveryErr); retryErr != nil {
+			return fmt.Errorf("persist scanner outbox retry schedule: %w", retryErr)
 		}
-		requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-		err := s.client.saveRows(requestCtx, record.Rows)
-		cancel()
-		if err != nil {
-			if retryErr := s.outbox.Retry([]string{record.ID}, err); retryErr != nil {
-				return fmt.Errorf("persist retry schedule for scan %s: %w", record.ScanID, retryErr)
-			}
-			log.Printf("warning: scanner outbox delivery deferred scan=%s attempts=%d: %v", record.ScanID, record.Attempts+1, err)
-			continue
-		}
-		if err := s.outbox.Ack([]string{record.ID}); err != nil {
-			return fmt.Errorf("ack delivered scanner scan %s: %w", record.ScanID, err)
-		}
+		log.Printf("warning: scanner outbox delivery deferred records=%d rows=%d: %v", len(records), len(rows), deliveryErr)
+		return nil
+	}
+	if err := s.outbox.Ack(ids); err != nil {
+		return fmt.Errorf("ack delivered scanner outbox records: %w", err)
 	}
 	return nil
 }
