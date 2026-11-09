@@ -301,6 +301,12 @@ class ExitMixin:
                 logger.exception(f"[State 3] failed to place dynamic limit sell for {pair_tag}")
 
         async def _check_dynamic_exit_pair(self, pair_tag: str) -> None:
+            """Run exit evaluation against this position's exact exchange pair."""
+            await self._run_pair_bound(
+                pair_tag, self._check_dynamic_exit_pair_bound, pair_tag
+            )
+
+        async def _check_dynamic_exit_pair_bound(self, pair_tag: str) -> None:
             if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
                 return
 
@@ -405,6 +411,14 @@ class ExitMixin:
                 await self._process_pending_exit(pair_tag)
 
         async def _process_pending_exit(
+            self, pair_tag: str, force_reconcile: bool = False
+        ) -> None:
+            """Route pending exit operations through the pair-bound clients."""
+            await self._run_pair_bound(
+                pair_tag, self._process_pending_exit_bound, pair_tag, force_reconcile
+            )
+
+        async def _process_pending_exit_bound(
             self, pair_tag: str, force_reconcile: bool = False
         ) -> None:
             """Fetch local exit order and trigger short closure on fills.
