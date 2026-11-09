@@ -221,11 +221,11 @@ func (c *Client) PublishSignal(ctx context.Context, payload domain.ExecutorPaylo
 }
 
 // PublishEmergencyCancel publishes cancel directive to arb:emergency_cancel.
-func (c *Client) PublishEmergencyCancel(ctx context.Context, localEx, symbol, reason string, fundingRate float64) error {
+func (c *Client) PublishEmergencyCancel(ctx context.Context, localEx, symbol, reason string, fundingRate float64, globalPair ...string) error {
 	if c == nil || c.rdb == nil {
 		return nil
 	}
-	tag := CleanPairKey(localEx, symbol)
+	tag := CleanPairKey(localEx, symbol, globalPair...)
 	payload := map[string]interface{}{
 		"action":         "CANCEL_ALL_NEGATIVE_FUNDING",
 		"local_exchange": localEx,
