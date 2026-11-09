@@ -499,7 +499,7 @@ async def test_status_snapshot_exposes_managed_pending_orders(engine):
     pair_tag = "tokocrypto:ath_usdt"
     engine.pending_entry_orders[pair_tag] = {
         "order_id": "entry-1", "symbol": "ATH/USDT", "price": 0.0044,
-        "qty": 2200.0, "filled": 200.0, "placed_time": time.time(),
+        "qty": 2200.0, "filled": 200.0, "placed_time": time.time(), "quote_asset": "USDT",
         "local_exchange": "tokocrypto", "global_exchange": "okx",
     }
     snapshot = engine.status_snapshot()
@@ -510,4 +510,5 @@ async def test_status_snapshot_exposes_managed_pending_orders(engine):
     assert order["status"] == "PARTIALLY_FILLED"
     assert order["local_exchange"] == "tokocrypto"
     assert order["global_exchange"] == "okx"
+    assert order["quote_asset"] == "USDT"
     assert order["remaining"] == 2000.0
