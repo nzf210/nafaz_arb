@@ -184,3 +184,30 @@ func TestRedisHandler_ActivePositionsAreIsolatedByFuturesVenue(t *testing.T) {
 		t.Fatalf("MEXC pair must remain independent, got %v err=%v", mexcActive, err)
 	}
 }
+
+
+func TestPublishSignalRanksByEstimatedNetProfitUSDT(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx := context.Background()
+
+	publish := func(symbol string, profit float64) {
+		t.Helper()
+		payload := domain.ExecutorPayload{
+			PairInfo: domain.PairInfo{LocalExchange: "indodax", GlobalExchange: "okx", LocalSymbol: symbol, GlobalSymbol: symbol + "USDT"},
+			ExecutionDirectives: domain.ExecutionDirectives{EstimatedNetProfitUSDT: profit},
+		}
+		if err := client.PublishSignal(ctx, payload); err != nil { t.Fatal(err) }
+	}
+	publish("btc_idr", 1.25)
+	publish("eth_idr", 3.75)
+	publish("sol_idr", 2.50)
+
+	items, err := client.rdb.ZRevRangeWithScores(ctx, KeySignalPriority, 0, -1).Result()
+	if err != nil { t.Fatal(err) }
+	if len(items) != 3 { t.Fatalf("got %d ranked signals, want 3", len(items)) }
+	if items[0].Member != "indodax:eth_idr__okx:ethusdt" || items[0].Score != 3.75 {
+		t.Fatalf("highest priority = %+v, want ETH at 3.75 USDT", items[0])
+	}
+}
