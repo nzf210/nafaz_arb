@@ -23,7 +23,7 @@ func (b *Bot) formatHelp() string {
 /positions - <i>Lihat posisi aktif Executor & opsi tutup paksa</i>
 /balance - <i>Cek saldo live seluruh aset Spot & Futures</i>
 /scan - <i>Jalankan scan pasar on-demand</i>
-/latest - <i>Lihat hasil scan & peluang ROI tertinggi</i>
+/latest - <i>Lihat peluang dari 10 scan terakhir</i>
 /pair [simbol] - <i>Cek rincian koin tertentu (misal: /pair BTC)</i>
 /active - <i>Lihat peluang yang sedang aktif berkelanjutan</i>
 /frozen - <i>Lihat daftar pasangan yang sedang dibekukan</i>
