@@ -750,6 +750,7 @@ class EntryMixin:
                     fee_source=str(order_info.get("fee_source", "LEGACY_UNVERIFIED")),
                     fee_verified=bool(order_info.get("fee_verified", False)),
                     fee_fetched_at_ms=int(order_info.get("fee_fetched_at_ms", 0)),
+                    fee_asset_surcharge_pct=float(order_info.get("fee_asset_surcharge_pct", 0.0)),
                 )
             else:
                 self.active_positions[pair_tag].qty += qty
