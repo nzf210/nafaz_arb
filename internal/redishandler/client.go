@@ -406,44 +406,44 @@ func (c *Client) GetLivePrice(ctx context.Context, localEx, symbol string, globa
 // DynamicFeeProfile is an authenticated, short-lived account fee snapshot
 // published by the executor. Rates are percentages, not decimal fractions.
 type DynamicFeeProfile struct {
-    MakerFeePct float64 `json:"maker_fee_pct"`
-    TakerFeePct float64 `json:"taker_fee_pct"`
-    Source string `json:"source"`
-    Verified bool `json:"verified"`
-    FetchedAtMS int64 `json:"fetched_at_ms"`
+	MakerFeePct float64 `json:"maker_fee_pct"`
+	TakerFeePct float64 `json:"taker_fee_pct"`
+	Source string `json:"source"`
+	Verified bool `json:"verified"`
+	FetchedAtMS int64 `json:"fetched_at_ms"`
 }
 
 // GetDynamicFeeProfile returns only a fresh, verified executor fee snapshot.
 func (c *Client) GetDynamicFeeProfile(ctx context.Context, exchange, market, symbol string) (*DynamicFeeProfile, error) {
-    if c == nil || c.rdb == nil {
-        return nil, nil
-    }
-    normalize := func(value string) string {
-        value = strings.ToLower(strings.TrimSpace(value))
-        value = strings.ReplaceAll(value, "/", "_")
-        value = strings.ReplaceAll(value, "-", "_")
-        return strings.ReplaceAll(value, ":", "_")
-    }
-    key := "arb:fee_profile:" + normalize(exchange) + ":" + normalize(market) + ":" + normalize(symbol)
-    raw, err := c.rdb.Get(ctx, key).Bytes()
-    if err == redis.Nil {
-        return nil, nil
-    }
-    if err != nil {
-        return nil, fmt.Errorf("redis get fee profile %s: %w", key, err)
-    }
-    var profile DynamicFeeProfile
-    if err := json.Unmarshal(raw, &profile); err != nil {
-        return nil, fmt.Errorf("decode fee profile %s: %w", key, err)
-    }
-    age := time.Now().UnixMilli() - profile.FetchedAtMS
-    if !profile.Verified || profile.Source != "EXCHANGE_API" ||
-        profile.FetchedAtMS <= 0 || age < 0 || age > int64(5*time.Minute/time.Millisecond) ||
-        profile.MakerFeePct < 0 || profile.MakerFeePct > 100 ||
-        profile.TakerFeePct < 0 || profile.TakerFeePct > 100 {
-        return nil, nil
-    }
-    return &profile, nil
+	if c == nil || c.rdb == nil {
+		return nil, nil
+	}
+	normalize := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		value = strings.ReplaceAll(value, "/", "_")
+		value = strings.ReplaceAll(value, "-", "_")
+		return strings.ReplaceAll(value, ":", "_")
+	}
+	key := "arb:fee_profile:" + normalize(exchange) + ":" + normalize(market) + ":" + normalize(symbol)
+	raw, err := c.rdb.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("redis get fee profile %s: %w", key, err)
+	}
+	var profile DynamicFeeProfile
+	if err := json.Unmarshal(raw, &profile); err != nil {
+		return nil, fmt.Errorf("decode fee profile %s: %w", key, err)
+	}
+	age := time.Now().UnixMilli() - profile.FetchedAtMS
+	if !profile.Verified || profile.Source != "EXCHANGE_API" ||
+		profile.FetchedAtMS <= 0 || age < 0 || age > int64(5*time.Minute/time.Millisecond) ||
+		profile.MakerFeePct < 0 || profile.MakerFeePct > 100 ||
+		profile.TakerFeePct < 0 || profile.TakerFeePct > 100 {
+		return nil, nil
+	}
+	return &profile, nil
 }
 
 // GetTradeStats retrieves aggregate statistics of closed arbitrage trades.
@@ -527,7 +527,7 @@ func (c *Client) Close() error {
 	return nil
 }
 
- 
+
 // RequestLiveBalances asks the running Executor to fetch fresh balances from both exchanges.
 func (c *Client) RequestLiveBalances(ctx context.Context) (string, error) {
 	if c == nil || c.rdb == nil { return "", errors.New("redis is not connected") }
