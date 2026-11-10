@@ -1180,6 +1180,7 @@ class ArbitrageEngine(
                         directives.fee_source,
                         directives.fee_verified,
                         directives.fee_fetched_at_ms,
+                        directives.fee_asset_surcharge_pct,
                     ),
                 )
                 directives.estimated_net_profit_usdt += (
@@ -1354,6 +1355,7 @@ class ArbitrageEngine(
                 "fee_source": directives.fee_source,
                 "fee_verified": directives.fee_verified,
                 "fee_fetched_at_ms": directives.fee_fetched_at_ms,
+                "fee_asset_surcharge_pct": directives.fee_asset_surcharge_pct,
                 "placed_time": placed_time,
                 "spot_cost_usdt": actual_cost_usdt,
                 "futures_margin_usdt": actual_cost_usdt,
