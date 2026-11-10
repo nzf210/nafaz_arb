@@ -166,3 +166,24 @@ def test_live_mode_accepts_complete_indodax_okx_credentials():
         api_key="global-key", api_secret="global-secret", passphrase="okx-passphrase"
     )
     cfg.validate_live_credentials()
+
+
+def test_supabase_env_requires_both_credentials_and_respects_disable(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "service-role-test")
+    monkeypatch.delenv("SUPABASE_ENABLED", raising=False)
+    cfg = ExecutorConfig()
+    cfg._apply_env()
+    assert cfg.supabase.enabled is True
+    assert cfg.supabase.url == "https://example.supabase.co"
+    assert cfg.supabase.key == "service-role-test"
+
+    monkeypatch.setenv("SUPABASE_ENABLED", "false")
+    cfg._apply_env()
+    assert cfg.supabase.enabled is False
+
+    monkeypatch.setenv("SUPABASE_ENABLED", "true")
+    monkeypatch.setenv("SUPABASE_KEY", "")
+    cfg = ExecutorConfig()
+    cfg._apply_env()
+    assert cfg.supabase.enabled is False
