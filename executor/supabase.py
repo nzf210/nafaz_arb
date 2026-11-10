@@ -99,6 +99,8 @@ class SupabaseWriter:
         self._position_ids: Dict[str, str] = {}
         self._position_rows: Dict[str, Dict[str, Any]] = {}
         self._order_ids: Dict[str, str] = {}
+        self._order_submitted_at: Dict[str, str] = {}
+        self._order_completed_at: Dict[str, str] = {}
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -268,8 +270,14 @@ class SupabaseWriter:
         client_order_id: Optional[str] = None,
         reduce_only: bool = False,
         is_mock: bool = True,
+        submitted_at_ms: Optional[int] = None,
     ) -> None:
-        """Upserts an order and appends any newly observed fill quantity."""
+        """Upserts an order and appends any newly observed fill quantity.
+
+        ``submitted_at_ms`` is the executor-side submission timestamp. It must
+        remain stable across polling updates so DB timestamps describe order
+        lifetime rather than the most recent observation.
+        """
         if not isinstance(order, dict):
             return
         exchange_order_id = str(order.get("id") or "") or None
@@ -283,6 +291,19 @@ class SupabaseWriter:
 
         requested = _num(order.get("amount"), _num(order.get("filled")))
         filled = _num(order.get("filled"))
+        now_iso = datetime.now(timezone.utc).isoformat()
+        submitted_at = (
+            _ms_to_iso(submitted_at_ms)
+            or _ms_to_iso(order.get("timestamp"))
+            or self._order_submitted_at.setdefault(order_state_key, now_iso)
+        )
+        terminal_status = str(order.get("status") or "").lower() in (
+            "closed", "canceled", "cancelled", "rejected", "expired"
+        )
+        completed_at = (
+            self._order_completed_at.setdefault(order_state_key, now_iso)
+            if terminal_status else self._order_completed_at.get(order_state_key)
+        )
         self._emit(
             "orders",
             {
@@ -304,13 +325,9 @@ class SupabaseWriter:
                 "limit_price": _num(order.get("price")) or None,
                 "average_fill_price": _num(order.get("average")) or None,
                 "reduce_only": bool(reduce_only),
-                "submitted_at": datetime.now(timezone.utc).isoformat(),
-                "completed_at": (
-                    datetime.now(timezone.utc).isoformat()
-                    if str(order.get("status") or "").lower() in ("closed", "canceled", "cancelled", "rejected", "expired")
-                    else None
-                ),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "submitted_at": submitted_at,
+                "completed_at": completed_at,
+                "updated_at": now_iso,
                 "raw_payload": order,
             },
             on_conflict="id",
