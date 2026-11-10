@@ -544,23 +544,24 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	feeSource := "CONFIG"
 	feeVerified := false
 	var feeFetchedAtMS int64
-	if len(dynamicProfiles) > 0 && dynamicProfiles[0] != nil {
+	spotDynamic := len(dynamicProfiles) > 0 && dynamicProfiles[0] != nil
+	perpDynamic := len(dynamicProfiles) > 1 && dynamicProfiles[1] != nil
+	if spotDynamic {
 		spotMakerFeePct = dynamicProfiles[0].MakerFeePct
 		spotTakerFeePct = dynamicProfiles[0].TakerFeePct
-		feeSource = "EXCHANGE_API"
-		feeVerified = true
 		feeFetchedAtMS = dynamicProfiles[0].FetchedAtMS
 	}
-	if len(dynamicProfiles) > 1 && dynamicProfiles[1] != nil {
+	if perpDynamic {
 		perpTakerFeePct = dynamicProfiles[1].TakerFeePct
 		if dynamicProfiles[1].FetchedAtMS > feeFetchedAtMS {
 			feeFetchedAtMS = dynamicProfiles[1].FetchedAtMS
 		}
-	} else {
-		feeVerified = false
-		if feeSource == "EXCHANGE_API" {
-			feeSource = "PARTIAL_EXCHANGE_API"
-		}
+	}
+	if spotDynamic && perpDynamic {
+		feeSource = "EXCHANGE_API"
+		feeVerified = true
+	} else if spotDynamic || perpDynamic {
+		feeSource = "PARTIAL_EXCHANGE_API"
 	}
 	spotTakerFeeRate := decimal.NewFromFloat(spotTakerFeePct).Div(hundred)
 	perpTakerFeeRate := decimal.NewFromFloat(perpTakerFeePct).Div(hundred)
