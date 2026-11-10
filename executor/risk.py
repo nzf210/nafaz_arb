@@ -31,6 +31,29 @@ class RiskMixin:
         """
         if not exchange:
             return
+
+        # Venue-side business rejections describe this order, not venue health.
+        # They must reject the opportunity without degrading an otherwise healthy CEX.
+        normalized_reason = str(reason or "").strip().lower().replace("-", "_")
+        business_rejections = (
+            "insufficient_balance",
+            "insufficient balance",
+            "insufficient funds",
+            "insufficientfunds",
+            "min_notional",
+            "minimum notional",
+            "invalid_symbol",
+            "invalid symbol",
+        )
+        if any(marker in normalized_reason for marker in business_rejections):
+            logger.info(
+                "[Risk Control] Business order rejection on %s is not counted "
+                "toward the venue failure breaker: %s",
+                exchange,
+                reason,
+            )
+            return
+
         threshold = int(getattr(self.config, "max_consecutive_order_failures", 0) or 0)
         if threshold <= 0:
             return
