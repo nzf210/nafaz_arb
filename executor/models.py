@@ -124,6 +124,12 @@ class ExecutionDirectives:
     fee_source: str = "LEGACY_UNVERIFIED"
     fee_verified: bool = False
     fee_fetched_at_ms: int = 0
+    estimated_fees_usdt: float = 0.0
+    quantity: float = 0.0
+    spot_entry_price_usdt: float = 0.0
+    spot_exit_price_usdt: float = 0.0
+    perp_entry_price_usdt: float = 0.0
+    perp_exit_price_usdt: float = 0.0
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ExecutionDirectives":
@@ -144,6 +150,12 @@ class ExecutionDirectives:
             fee_source=str(d.get("fee_source", "LEGACY_UNVERIFIED")),
             fee_verified=bool(d.get("fee_verified", False)),
             fee_fetched_at_ms=int(d.get("fee_fetched_at_ms", 0)),
+            estimated_fees_usdt=float(d.get("estimated_fees_usdt", 0.0)),
+            quantity=float(d.get("quantity", 0.0)),
+            spot_entry_price_usdt=float(d.get("spot_entry_price_usdt", 0.0)),
+            spot_exit_price_usdt=float(d.get("spot_exit_price_usdt", 0.0)),
+            perp_entry_price_usdt=float(d.get("perp_entry_price_usdt", 0.0)),
+            perp_exit_price_usdt=float(d.get("perp_exit_price_usdt", 0.0)),
         )
 
 
