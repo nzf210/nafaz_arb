@@ -405,8 +405,10 @@ async def test_live_entry_fails_closed_when_balance_endpoint_is_unavailable(engi
 
     await engine.handle_signal_notification(pair_tag)
 
-    assert len(client.placed_buys) == 1
-    assert engine._exchange_halted == {}
+    assert len(client.placed_buys) == 0
+    assert "indodax" in engine._exchange_halted
+    assert "binance" in engine._exchange_halted
+    assert "balance feed unavailable" in engine._exchange_halted["indodax"]
 
 
 @pytest.mark.asyncio
