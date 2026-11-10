@@ -226,6 +226,39 @@ class TestOrdersAndFills:
             "rollback": "sell",
         }
 
+    def test_order_submission_timestamp_is_stable_across_status_updates(self):
+        writer = _writer()
+        submitted_at_ms = 1_700_000_000_000
+        writer.order(
+            "p", "spot_entry", "indodax", "spot", "btc_idr",
+            {"id": "1", "amount": 1, "filled": 0, "status": "open"},
+            submitted_at_ms=submitted_at_ms,
+        )
+        first = _drain(writer)[0][2]["submitted_at"]
+        writer.order(
+            "p", "spot_entry", "indodax", "spot", "btc_idr",
+            {"id": "1", "amount": 1, "filled": 0, "status": "canceled"},
+            submitted_at_ms=submitted_at_ms,
+        )
+        terminal = _drain(writer)[0][2]
+        assert terminal["submitted_at"] == first
+        assert terminal["completed_at"] is not None
+
+    def test_completed_timestamp_is_not_cleared_by_later_open_snapshot(self):
+        writer = _writer()
+        writer.order(
+            "p", "spot_entry", "indodax", "spot", "btc_idr",
+            {"id": "1", "amount": 1, "filled": 0, "status": "canceled"},
+            submitted_at_ms=1_700_000_000_000,
+        )
+        completed_at = _drain(writer)[0][2]["completed_at"]
+        writer.order(
+            "p", "spot_entry", "indodax", "spot", "btc_idr",
+            {"id": "1", "amount": 1, "filled": 0, "status": "open"},
+            submitted_at_ms=1_700_000_000_000,
+        )
+        assert _drain(writer)[0][2]["completed_at"] == completed_at
+
     def test_terminal_order_gets_completed_at(self):
         writer = _writer()
         writer.order(
