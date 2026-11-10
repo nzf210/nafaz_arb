@@ -28,6 +28,8 @@ type WSStream struct {
 	// Handle decodes one frame. Returning skip=true means "not a book update",
 	// which is normal for heartbeat or acknowledgement frames.
 	Handle func(msg []byte) (book domain.OrderBook, skip bool, err error)
+	// OnConnected runs after subscriptions are sent and before the read loop; it must return quickly.
+	OnConnected func(ctx context.Context)
 }
 
 // WSClient owns the websocket connections and the book cache they feed.
@@ -188,6 +190,9 @@ func (c *WSClient) consume(ctx context.Context, s WSStream) error {
 				return fmt.Errorf("write subscribe: %w", err)
 			}
 		}
+	}
+	if s.OnConnected != nil {
+		s.OnConnected(ctx)
 	}
 
 	for {
