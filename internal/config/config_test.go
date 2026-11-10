@@ -470,3 +470,53 @@ func TestRejectsInvalidFeeProfile(t *testing.T) {
 		t.Fatalf("expected fee profile validation error, got %v", err)
 	}
 }
+
+
+func TestSupabaseConfigEnvironmentAndValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUPABASE_URL", "https://example.supabase.co")
+	t.Setenv("SUPABASE_KEY", "service-role-test")
+	t.Setenv("SUPABASE_ENABLED", "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Supabase.Enabled || cfg.Supabase.URL != "https://example.supabase.co" || cfg.Supabase.Key != "service-role-test" {
+		t.Fatalf("unexpected Supabase env config: %+v", cfg.Supabase)
+	}
+
+	t.Setenv("SUPABASE_ENABLED", "false")
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Supabase.Enabled {
+		t.Fatal("SUPABASE_ENABLED=false must override supplied credentials")
+	}
+
+	t.Setenv("SUPABASE_ENABLED", "true")
+	t.Setenv("SUPABASE_KEY", "")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "SUPABASE_URL and SUPABASE_KEY") {
+		t.Fatalf("expected missing Supabase credentials validation, got %v", err)
+	}
+}
+
+func TestSupabaseConfigRejectsInvalidURL(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{
+		"capital_total":100,
+		"allocation_per_pair":0.5,
+		"supabase":{"enabled":true,"url":"ftp://example.com","key":"service-role-test"}
+	}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SUPABASE_ENABLED", "")
+	t.Setenv("SUPABASE_URL", "")
+	t.Setenv("SUPABASE_KEY", "")
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "supabase.url") {
+		t.Fatalf("expected invalid Supabase URL validation, got %v", err)
+	}
+}
