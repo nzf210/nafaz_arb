@@ -113,6 +113,24 @@ class EntryMixin:
                     is_mock=bool(getattr(self.config, "mock_mode", False)),
                     submitted_at_ms=int(float(order_info.get("placed_time", 0.0) or 0.0) * 1000) or None,
                 )
+                observed_status = str(order.get("status", "")).lower()
+                if observed_status in ("closed", "canceled", "cancelled", "rejected", "expired"):
+                    self.supabase.event(
+                        "ENTRY_ORDER_TERMINAL_OBSERVED",
+                        pair_key=pair_tag,
+                        is_mock=bool(getattr(self.config, "mock_mode", False)),
+                        payload={
+                            "order_id": order_id,
+                            "client_order_id": order_info.get("client_order_id", ""),
+                            "symbol": local_symbol,
+                            "exchange": order_info.get("local_exchange", ""),
+                            "venue_status": observed_status,
+                            "filled_qty": float(order.get("filled", 0.0) or 0.0),
+                            "remaining_qty": float(order.get("remaining", 0.0) or 0.0),
+                            "cancel_requested_at_ms": order_info.get("cancel_requested_at_ms"),
+                            "cancel_reason": order_info.get("last_cancel_reason"),
+                        },
+                    )
                 await self._handle_entry_fills(pair_tag, order_info, order)
                 # Persist cumulative fill/hedge progress before the next poll or
                 # restart. This prevents an already-hedged partial fill being
