@@ -185,6 +185,17 @@ func (c *WSBookCache) Get(exchange, symbol string, maxAge time.Duration) (domain
 	return entry.book, true, isDuplicate, isOutOfOrder, isGap, nil
 }
 
+// Invalidate removes a book that can no longer be trusted, such as after a sequence gap.
+func (c *WSBookCache) Invalidate(exchange, symbol string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := cacheKey(exchange, symbol)
+	delete(c.books, key)
+	delete(c.staleTracker, key)
+	delete(c.seqTracker, key)
+	delete(c.gapTracker, key)
+}
+
 // Stats reports how often a websocket book was usable versus falling back to REST.
 func (c *WSBookCache) Stats() (hits, misses int64) {
 	c.mu.RLock()
