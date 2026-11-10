@@ -56,13 +56,28 @@ func TestTokocryptoMBXDepthFrameUsesCanonicalMarketSymbol(t *testing.T) {
 	manager := newTokocryptoBookManager(NewLiveAdapter(), cache, []domain.Market{
 		{Exchange: "tokocrypto", Symbol: "toko:BTC_USDT", ExchangeSymbolType: 1, Active: true},
 	})
-	message := []byte(`{"stream":"btcusdt@depth20@100ms","data":{"lastUpdateId":12,"E":1700000000000,"s":"BTCUSDT","bids":[["100","2"]],"asks":[["101","3"]]}}`)
-	book, skip, err := manager.handleMBXFrame(message)
-	if err != nil || skip {
-		t.Fatalf("handle MBX frame: skip=%v err=%v", skip, err)
+	state := manager.state("toko:BTC_USDT")
+	state.initialized = true
+	state.lastSeq = 11
+	state.bids = map[string]float64{"100": 1}
+	state.asks = map[string]float64{"101": 3}
+	message := []byte(`{"stream":"btcusdt@depth@100ms","data":{"E":1700000000000,"s":"BTCUSDT","U":12,"u":13,"b":[["100","2"],["99","1"]],"a":[["101","0"],["102","3"]]}}`)
+	_, skip, err := manager.handleMBXFrame(message)
+	if err != nil || !skip {
+		t.Fatalf("handle MBX diff frame: skip=%v err=%v", skip, err)
+	}
+	book, ok, _, _, _, _ := cache.Get("tokocrypto", "toko:BTC_USDT", time.Second)
+	if !ok {
+		t.Fatal("updated MBX book was not stored")
 	}
 	if book.Symbol != "toko:BTC_USDT" || book.Exchange != "tokocrypto" {
 		t.Fatalf("unexpected book identity: %+v", book)
+	}
+	if len(book.Bids) != 2 || book.Bids[0].Price != 100 || book.Bids[0].Quantity != 2 {
+		t.Fatalf("MBX diff was not applied to local book: %+v", book.Bids)
+	}
+	if len(book.Asks) != 1 || book.Asks[0].Price != 102 {
+		t.Fatalf("MBX ask deletion/update was not applied: %+v", book.Asks)
 	}
 }
 
