@@ -172,19 +172,23 @@ class ExposureReconciliationWorker:
                 )
             return
 
-        tracked_ids = set()
-        tracked_client_ids = set()
+        tracked_by_venue_market = defaultdict(lambda: {"ids": set(), "client_ids": set()})
         for source_name in ("pending_entry_orders", "pending_exit_orders"):
             source = getattr(self.engine, source_name, {}) or {}
             for order in source.values():
                 if not isinstance(order, dict):
                     continue
+                exchange = str(order.get("local_exchange") or "").strip().lower()
+                if not exchange:
+                    continue
+                # Pending entry and exit orders in this strategy are local Spot legs.
+                tracked = tracked_by_venue_market[(exchange, "spot")]
                 order_id = str(order.get("order_id") or order.get("id") or "").strip()
                 client_id = str(order.get("client_order_id") or order.get("clientOrderId") or "").strip()
                 if order_id:
-                    tracked_ids.add(order_id)
+                    tracked["ids"].add(order_id)
                 if client_id:
-                    tracked_client_ids.add(client_id)
+                    tracked["client_ids"].add(client_id)
 
         unmanaged = []
         for report in reports or []:
@@ -222,7 +226,8 @@ class ExposureReconciliationWorker:
                     continue
                 order_id = str(order.get("id") or "").strip()
                 client_id = str(order.get("client_order_id") or "").strip()
-                if (order_id and order_id in tracked_ids) or (client_id and client_id in tracked_client_ids):
+                tracked = tracked_by_venue_market.get((exchange, str(report.get("market") or "").lower()), {"ids": set(), "client_ids": set()})
+                if (order_id and order_id in tracked["ids"]) or (client_id and client_id in tracked["client_ids"]):
                     continue
                 if not order_id:
                     # The client report validates IDs; retain this guard for custom adapters.
