@@ -147,6 +147,64 @@ async def test_live_client_resolves_scanner_market_ids_before_orders():
     assert spot.calls[0][0] == "BTC/IDR"
     assert futures.calls[0][0] == "BTC/USDT:USDT"
 
+@pytest.mark.asyncio
+async def test_tokocrypto_order_carries_binance_broker_prefix():
+    """Binance Cloud venues reject client ids without the broker prefix (error 3703)."""
+    from types import SimpleNamespace
+
+    from executor.exchange_client import ExchangeClient, venue_client_order_id
+
+    class TokoSpot:
+        id = "tokocrypto"
+        markets = {
+            "FLOKI/IDR": {
+                "id": "FLOKIIDR", "symbol": "FLOKI/IDR", "base": "FLOKI",
+                "quote": "IDR", "spot": True,
+            },
+        }
+
+        def __init__(self):
+            self.calls = []
+
+        async def create_limit_buy_order(self, symbol, amount, price, *params):
+            self.calls.append((symbol, params))
+            return {"symbol": symbol, "amount": amount, "filled": amount}
+
+    spot = TokoSpot()
+    pair = SimpleNamespace(
+        base_asset="FLOKI",
+        quote_asset="IDR",
+        global_quote_asset="USDT",
+    )
+    client = ExchangeClient(spot, object(), pair_info=pair)
+    raw_id = build_client_order_id(
+        "tokocrypto:toko:floki_idr__okx:floki_usdt_swap", "entry", 1
+    )
+    await client.place_local_limit_buy(
+        "toko:FLOKI_IDR", 1.0, 1_000.0,
+        client_order_id=raw_id,
+        amount_spec=BASE_AMOUNT_SPEC,
+    )
+
+    params = spot.calls[0][1][0]
+    sent_id = params["clientOrderId"]
+    assert sent_id.startswith("x-")
+    assert sent_id.endswith(raw_id)
+    # The final on-the-wire id must fit the venue's 36-character limit even
+    # with the broker prefix.
+    assert len(sent_id) <= 36
+
+    # Venues outside Binance Cloud keep the plain id; Tokocrypto ids that
+    # already carry the prefix are left untouched.
+    assert venue_client_order_id(spot, "x-TKT5PX2Fabc") == "x-TKT5PX2Fabc"
+
+    class IndodaxSpot:
+        id = "indodax"
+
+    assert venue_client_order_id(IndodaxSpot(), "indodax-btc-idr-entry-1") == (
+        "indodax-btc-idr-entry-1"
+    )
+
 
 @pytest.mark.asyncio
 async def test_paper_trading_client_fill_only_when_price_touches():

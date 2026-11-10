@@ -309,7 +309,11 @@ buffer) is called out explicitly so it is a visible choice rather than an accide
 Order placement sends a deterministic `clientOrderId` (`{pair}-{leg}-{seq}`) on
 every leg so a retried submit is rejected by the venue instead of double-filling.
 The sequence is seeded from wall-clock time at startup, so ids never collide
-across process restarts.
+across process restarts. Binance Cloud venues such as Tokocrypto require the
+registered Binance broker prefix (`x-TKT5PX2F`) on every client order id —
+without it the venue rejects orders with error `3703 Invalid client ID` — so
+ids built for those venues reserve prefix room and the executor prepends the
+prefix at submission time.
 
 
 ## Supabase Database

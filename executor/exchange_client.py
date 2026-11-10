@@ -6,6 +6,7 @@ import ccxt.async_support as ccxt
 
 from executor.indodax_v2 import IndodaxTAPIv2
 from executor.quantity import AmountSpec, base_to_order_amount, order_amount_to_base
+from executor.helpers import BINANCE_BROKER_PREFIX
 
 
 def _client_order_params(client_order_id: Optional[str]) -> tuple:
@@ -24,7 +25,8 @@ def _local_order_params(
     amount_spec: AmountSpec,
     require_amount_step: bool = False,
 ) -> tuple:
-    params = {"clientOrderId": client_order_id} if client_order_id else {}
+    venue_id = venue_client_order_id(exchange, client_order_id)
+    params = {"clientOrderId": venue_id} if venue_id else {}
     if isinstance(exchange, IndodaxTAPIv2):
         if amount_spec.unit != "BASE":
             raise ValueError("Indodax spot amount rules must use BASE units")
@@ -32,6 +34,17 @@ def _local_order_params(
             raise ValueError("Indodax orders require the market quantity increment")
         params["quantityIncrement"] = amount_spec.step
     return (params,) if params else ()
+
+def venue_client_order_id(
+    exchange: Any, client_order_id: Optional[str]
+) -> Optional[str]:
+    """Prefixes a broker id for Binance Cloud venues when the id has none."""
+    if not client_order_id:
+        return client_order_id
+    exchange_id = str(getattr(exchange, "id", "") or "").lower()
+    if exchange_id == "tokocrypto" and not client_order_id.startswith("x-"):
+        return f"{BINANCE_BROKER_PREFIX}{client_order_id}"
+    return client_order_id
 
 
 def _require_amount_spec(value: Any) -> AmountSpec:
