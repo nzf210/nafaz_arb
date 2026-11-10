@@ -110,6 +110,10 @@ class EntryMixin:
                     is_mock=bool(getattr(self.config, "mock_mode", False)),
                 )
                 await self._handle_entry_fills(pair_tag, order_info, order)
+                # Persist cumulative fill/hedge progress before the next poll or
+                # restart. This prevents an already-hedged partial fill being
+                # interpreted as unhedged after recovery.
+                await self._persist_pending_entry(pair_tag, order_info)
                 await self._finalize_entry_order(pair_tag, order.get("status", ""))
 
         async def _sync_live_price_for_client(
@@ -202,7 +206,7 @@ class EntryMixin:
             self, pair_tag: str, order_info: dict, order: dict
         ) -> bool:
             """Cancel an unfilled entry past TTL; resolve only after venue verification."""
-            if order.get("status") != "open" or not math.isclose(float(order.get("filled", 0.0)), 0.0, abs_tol=1e-12):
+            if str(order.get("status", "")).lower() != "open":
                 return False
 
             order_id = order_info["order_id"]
@@ -212,9 +216,11 @@ class EntryMixin:
             if placed_time <= 0 or age < max_ttl:
                 return False
 
+            filled = float(order.get("filled", 0.0) or 0.0)
             logger.info(
                 f"[State 1 Order Expired] Maker Limit Buy {order_id} for {pair_tag} "
-                f"expired after {age:.1f}s without market fill. Cancelling."
+                f"expired after {age:.1f}s (filled={filled}). Cancelling remainder "
+                "and reconciling the final cumulative fill."
             )
             return await self._cancel_entry_order_and_reconcile(
                 pair_tag, order_info, "Order Expired"
@@ -257,7 +263,10 @@ class EntryMixin:
         ) -> None:
             """Check order fill delta and trigger short hedge if threshold is met."""
             status = order.get("status", "")
-            current_filled = float(order.get("filled", 0.0))
+            current_filled = float(order.get("filled", 0.0) or 0.0)
+            order_info["filled"] = max(
+                float(order_info.get("filled", 0.0) or 0.0), current_filled
+            )
             hedged_qty = float(order_info.get("hedged_short_qty", 0.0))
             unhedged_delta = current_filled - hedged_qty
 
