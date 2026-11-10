@@ -61,6 +61,20 @@ class ExecutorConfig:
     # proven path. When on, stale or missing entries still fall back to REST.
     private_stream_enabled: bool = False
     private_stream_max_age_seconds: float = 5.0
+    # Monitoring loop cadence. The venue rate-limits per IP, so a sub-second tick
+    # with several pending orders drains the quota and the order-status poll
+    # starts answering HTTP 429 with an HTML body. 500ms stays responsive while
+    # leaving headroom for the pair fan-out.
+    monitor_interval_seconds: float = 0.5
+    # Consecutive order-status fetch failures tolerated for one pending entry
+    # before it is force-reconciled, so a venue outage cannot pin a pending order
+    # (and its reserved funds) open indefinitely.
+    max_order_fetch_failures: int = 10
+    # Exponential backoff ceiling for order-status polls that keep failing.
+    order_fetch_backoff_max_seconds: float = 60.0
+    # A pricing HTTP 429 on the local venue (rate limit / throttle) pauses new
+    # entry placement for this long instead of hammering the endpoint.
+    venue_rate_limit_cooldown_seconds: float = 30.0
     local_exchange_name: str = "indodax"
     global_exchange_name: str = "okx"
     execution_mode: str = "TAKER_TAKER"
@@ -118,6 +132,10 @@ class ExecutorConfig:
                 ("mock_mode", bool),
                 ("private_stream_enabled", bool),
                 ("private_stream_max_age_seconds", float),
+                ("monitor_interval_seconds", float),
+                ("max_order_fetch_failures", int),
+                ("order_fetch_backoff_max_seconds", float),
+                ("venue_rate_limit_cooldown_seconds", float),
             ):
                 if key in exec_cfg:
                     setattr(self, key, conv(exec_cfg[key]))
@@ -167,6 +185,30 @@ class ExecutorConfig:
         if ws_age_env := os.getenv("PRIVATE_STREAM_MAX_AGE_SECONDS"):
             try:
                 self.private_stream_max_age_seconds = float(ws_age_env)
+            except ValueError:
+                pass
+
+        if monitor_env := os.getenv("MONITOR_INTERVAL_SECONDS"):
+            try:
+                self.monitor_interval_seconds = float(monitor_env)
+            except ValueError:
+                pass
+
+        if fetch_fail_env := os.getenv("MAX_ORDER_FETCH_FAILURES"):
+            try:
+                self.max_order_fetch_failures = int(fetch_fail_env)
+            except ValueError:
+                pass
+
+        if fetch_backoff_env := os.getenv("ORDER_FETCH_BACKOFF_MAX_SECONDS"):
+            try:
+                self.order_fetch_backoff_max_seconds = float(fetch_backoff_env)
+            except ValueError:
+                pass
+
+        if rl_cooldown_env := os.getenv("VENUE_RATE_LIMIT_COOLDOWN_SECONDS"):
+            try:
+                self.venue_rate_limit_cooldown_seconds = float(rl_cooldown_env)
             except ValueError:
                 pass
 
@@ -316,6 +358,10 @@ class ExecutorConfig:
         "max_consecutive_order_failures": (0, 100, 50),
         "estimated_round_trip_fee_pct": (0.0, 1.0, 0.001),
         "private_stream_max_age_seconds": (0.5, 60.0, 5.0),
+        "monitor_interval_seconds": (0.05, 60.0, 0.5),
+        "max_order_fetch_failures": (1, 1000, 10),
+        "order_fetch_backoff_max_seconds": (0.1, 600.0, 60.0),
+        "venue_rate_limit_cooldown_seconds": (1.0, 3600.0, 30.0),
     }
 
     def sanitize(self) -> list:

@@ -1300,6 +1300,17 @@ class ArbitrageEngine(
 
         actual_cost_usdt = (buy_qty * buy_price_idr) / snapshot.usdt_idr_rate
 
+        # Both legs are committed at entry: the spot buy locks the local quote
+        # currency and the 1x futures short locks margin on the global venue.
+        # Verify BOTH are funded before submitting, so a live run cannot end up
+        # with a filled spot leg and an unhedged (or margin-rejected) short leg.
+        if not getattr(self.config, "mock_mode", False):
+            funded = await self._verify_dual_leg_funding(
+                pair_tag, pair_info, actual_cost_usdt, snapshot.usdt_idr_rate
+            )
+            if not funded:
+                return
+
         # Paper trading reserves simulated funds locally. Live orders are sent
         # directly to the venue so its response is authoritative for availability.
         if getattr(self.config, "mock_mode", False) and hasattr(self.client, "lock_funds"):
@@ -1402,6 +1413,42 @@ class ArbitrageEngine(
                 self.client.unlock_funds(actual_cost_usdt, actual_cost_usdt)
             exchange_error = str(exc).strip() or type(exc).__name__
             normalized_error = f"{type(exc).__name__} {exchange_error}".lower()
+
+            # A venue throttle is not a venue fault and not a business rejection:
+            # pause new entries on that venue for a bounded cooldown, keep managing
+            # open positions, and let the cooldown lapse on its own.
+            is_rate_limited = (
+                type(exc).__name__ == "IndodaxRateLimitError"
+                or "http_429" in normalized_error
+                or "http_503" in normalized_error
+                or "rate limit" in normalized_error
+                or "too many requests" in normalized_error
+            )
+            if is_rate_limited:
+                cooldown = float(
+                    getattr(exc, "retry_after", None)
+                    or getattr(self.config, "venue_rate_limit_cooldown_seconds", 30.0)
+                )
+                self._pause_venue_for_cooldown(pair_info.local_exchange, cooldown)
+                logger.warning(
+                    f"[Risk Control] {pair_info.local_exchange} rate limited on entry "
+                    f"placement; pausing new entries for {cooldown:.1f}s"
+                )
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "VENUE_RATE_LIMITED",
+                    f"Venue {pair_info.local_exchange} membatasi laju request; "
+                    f"entry dijeda {cooldown:.1f}s.",
+                    detail={
+                        "exchange": pair_info.local_exchange,
+                        "symbol": pair_info.local_symbol,
+                        "cooldown_seconds": cooldown,
+                        "error_type": type(exc).__name__,
+                        "exchange_error": exchange_error[:500],
+                    },
+                )
+                return
+
             insufficient_balance = any(
                 marker in normalized_error
                 for marker in (

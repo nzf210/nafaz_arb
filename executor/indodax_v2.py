@@ -47,6 +47,27 @@ class IndodaxAPIError(Exception):
         self.code = code
         self.message = message
 
+class IndodaxRateLimitError(IndodaxAPIError):
+    """Raised when the venue throttles the caller (HTTP 429/503).
+
+    Subclasses IndodaxAPIError so existing handlers keep working, while the
+    engine can catch this specific type to back off and pause new entries.
+    """
+
+    def __init__(self, code: Any, message: str, retry_after: Optional[float] = None):
+        super().__init__(code, message)
+        self.retry_after = retry_after
+
+def _parse_retry_after(raw: Any) -> Optional[float]:
+    """Parses a Retry-After header (delta-seconds form) into float seconds."""
+    if raw is None:
+        return None
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None
+
 def normalize_symbol(symbol: str) -> str:
     """'btc_idr' / 'btc/idr' -> 'BTCIDR' (v2 expects the compact upper form)."""
     cleaned = "".join(ch for ch in str(symbol or "") if ch.isalnum())
@@ -152,6 +173,15 @@ class IndodaxTAPIv2:
         session = await self._get_session()
         async with session.request(method, url, data=body, headers=headers) as resp:
             text = await resp.text()
+            # A throttle or WAF page answers with HTML, not the JSON envelope, so
+            # it must be classified as a rate limit before the decode attempt --
+            # otherwise it surfaces as a generic non-JSON error and callers retry
+            # straight into the same wall.
+            if resp.status == 429 or resp.status == 503:
+                retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
+                raise IndodaxRateLimitError(
+                    f"http_{resp.status}", f"rate limited: {text[:200]}", retry_after
+                )
             try:
                 payload = json.loads(text)
             except ValueError:

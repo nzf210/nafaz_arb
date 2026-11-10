@@ -300,8 +300,20 @@ Unfilled maker quotes can be refreshed after 45 seconds (`maker_refresh_after_se
 
 **Kill switch:** publish `{"action": "on"}` to the `arb:kill_switch` Redis channel (or use the Telegram `/killswitch on` / `/killswitch off` commands). ON halts *all* new entries globally until an explicit OFF — it never auto-resets on a UTC rollover. Open positions continue to be managed.
 | `estimated_round_trip_fee_pct` | `ESTIMATED_ROUND_TRIP_FEE_PCT` | `0.001` | Shrinks the position so both legs' fees are still covered by the exit. If that drops the size below `min_allocated_capital` the entry is **rejected** rather than silently undersized. |
-| `private_stream_enabled` | `PRIVATE_STREAM_ENABLED` | `false` | Reads order/balance updates from a private feed cache before polling REST. Stale entries fall back to REST. This is the cache and fallback path, not a venue auth client. |
+| `private_stream_enabled` | `PRIVATE_STREAM_ENABLED` | `false` | Reads order/balance updates from a private feed cache before polling REST. Stale entries fall back to REST. This is the cache and fallback path, not a venue auth client. **Status: the cache is not yet populated** — no websocket subscriber writes to it, so enabling this does not currently reduce REST polling. Leave it off until a feed publisher exists; the rate-limit resilience below does not depend on it. |
 | `private_stream_max_age_seconds` | `PRIVATE_STREAM_MAX_AGE_SECONDS` | `5.0` | How long a pushed order update is trusted before re-polling. |
+| `monitor_interval_seconds` | `MONITOR_INTERVAL_SECONDS` | `0.5` | Monitoring loop cadence. The venue rate-limits **per IP**, so a sub-second tick with several pending orders drains the quota and order-status reads start answering HTTP 429. |
+| `max_order_fetch_failures` | `MAX_ORDER_FETCH_FAILURES` | `10` | Consecutive order-status fetch failures tolerated for one pending entry before it is force-reconciled. Without this a venue outage pins the order and its reserved funds open indefinitely. |
+| `order_fetch_backoff_max_seconds` | `ORDER_FETCH_BACKOFF_MAX_SECONDS` | `60.0` | Ceiling for the per-order exponential backoff applied to failing status polls. |
+| `venue_rate_limit_cooldown_seconds` | `VENUE_RATE_LIMIT_COOLDOWN_SECONDS` | `30.0` | How long a venue answering HTTP 429/503 on order placement is paused for new entries. The cooldown clears itself; open positions stay managed throughout. |
+
+Order-status reads are resilient to venue throttling: a failed fetch counts
+toward `max_order_fetch_failures` and spaces the next attempt out with
+exponential backoff up to `order_fetch_backoff_max_seconds`, instead of retrying
+on every monitoring tick. The maker-order TTL is enforced from the local clock as
+well as from a fetched payload, so an order cannot be pinned open just because
+its status is unreadable. Reconciliation that cannot confirm a terminal state
+retains the pending order and its reserved funds rather than assuming the worst.
 
 Every numeric executor setting is range-checked at startup by
 `ExecutorConfig.sanitize()`. A value out of range is replaced by its default and a

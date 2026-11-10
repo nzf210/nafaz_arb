@@ -73,6 +73,23 @@ services:
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_KEY=${SUPABASE_KEY:-}
       - SUPABASE_OUTBOX_PATH=${SUPABASE_OUTBOX_PATH:-/app/data/executor/supabase-outbox.sqlite3}
+      # Private order/balance feed. NOTE: the private-stream cache is currently
+      # read-only -- nothing populates it yet (no websocket subscriber is wired),
+      # so enabling it does NOT reduce REST polling. Leave off until a feed
+      # publisher is implemented; the default below is off for that reason.
+      # The rate-limit fix does not depend on this flag.
+      - PRIVATE_STREAM_ENABLED=${PRIVATE_STREAM_ENABLED:-false}
+      - PRIVATE_STREAM_MAX_AGE_SECONDS=${PRIVATE_STREAM_MAX_AGE_SECONDS:-5.0}
+      # Monitoring loop cadence (seconds). The venue rate-limits per IP; a
+      # sub-second tick with several pending orders drains the quota.
+      - MONITOR_INTERVAL_SECONDS=${MONITOR_INTERVAL_SECONDS:-0.5}
+      # Order-status poll resilience: consecutive failures tolerated before a
+      # pending entry is force-reconciled, and the backoff ceiling between
+      # retries.
+      - MAX_ORDER_FETCH_FAILURES=${MAX_ORDER_FETCH_FAILURES:-10}
+      - ORDER_FETCH_BACKOFF_MAX_SECONDS=${ORDER_FETCH_BACKOFF_MAX_SECONDS:-60.0}
+      # Cooldown applied to a venue that answers HTTP 429 on order placement.
+      - VENUE_RATE_LIMIT_COOLDOWN_SECONDS=${VENUE_RATE_LIMIT_COOLDOWN_SECONDS:-30.0}
       # Read-only exposure reconciliation. Empty = executor defaults
       # (interval 300s, rel tolerance 0.5%, abs tolerance 1e-8).
       - EXPOSURE_RECONCILIATION_INTERVAL_SECONDS=${EXPOSURE_RECONCILIATION_INTERVAL_SECONDS:-}

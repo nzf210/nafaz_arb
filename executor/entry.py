@@ -29,6 +29,7 @@ class EntryMixin:
 
         async def _monitoring_loop(self):
             """Periodic loop monitoring pending entry orders and active positions."""
+            interval = float(getattr(self.config, "monitor_interval_seconds", 0.5))
             while self._running:
                 try:
                     await self._check_entry_orders()
@@ -37,7 +38,7 @@ class EntryMixin:
                     await self._maybe_publish_status()
                 except Exception:
                     logger.exception("error in monitoring loop")
-                await asyncio.sleep(0.05)  # 50ms fast reactive polling
+                await asyncio.sleep(interval)
 
         async def _maybe_publish_status(self) -> None:
             """Throttled status publication (at most once per second)."""
@@ -83,17 +84,47 @@ class EntryMixin:
                 order_id = order_info["order_id"]
                 local_symbol = order_info["symbol"]
 
+                # Backoff gate: a venue answering 429/HTML (or timing out) must not
+                # be polled 20x/second. Skip this tick while the per-order backoff
+                # window is open; the TTL reconciliation below still runs so a
+                # pending order can never be pinned open by a broken status feed.
+                now = time.time()
+                retry_after = float(order_info.get("fetch_retry_after", 0.0) or 0.0)
+                fetch_blocked = now < retry_after
+
                 # Sync latest live prices to client for realistic market touch evaluation
                 await self._sync_live_price_for_client(pair_tag, local_symbol)
 
-                try:
-                    order = await fetch_order_preferring_stream(
-                        self.private_stream,
-                        lambda: self.client.fetch_local_order(order_id, local_symbol),
-                        order_id,
-                    )
-                except Exception:
-                    logger.exception(f"failed to fetch local order {order_id}")
+                order = None
+                if not fetch_blocked:
+                    try:
+                        order = await fetch_order_preferring_stream(
+                            self.private_stream,
+                            lambda: self.client.fetch_local_order(order_id, local_symbol),
+                            order_id,
+                        )
+                    except Exception as exc:
+                        # Count the failure instead of retrying blindly, then space
+                        # out the next attempt so a throttled venue can recover.
+                        failures = int(order_info.get("fetch_failures", 0) or 0) + 1
+                        order_info["fetch_failures"] = failures
+                        order_info["last_fetch_error"] = f"{type(exc).__name__}: {exc}"
+                        base = max(0.05, float(getattr(self.config, "monitor_interval_seconds", 0.5)))
+                        ceiling = float(getattr(self.config, "order_fetch_backoff_max_seconds", 60.0))
+                        delay = min(ceiling, base * (2 ** min(failures, 10)))
+                        order_info["fetch_retry_after"] = now + delay
+                        logger.error(
+                            f"failed to fetch local order {order_id} "
+                            f"(attempt {failures}, retry in {delay:.1f}s): {type(exc).__name__}"
+                        )
+                        await self._expire_unfetchable_entry_order(pair_tag, order_info)
+                        return
+                    order_info["fetch_failures"] = 0
+                    order_info["fetch_retry_after"] = 0.0
+                else:
+                    # The status feed is down; still enforce the order TTL on the
+                    # clock so a stuck order is cancelled rather than sitting open.
+                    await self._expire_unfetchable_entry_order(pair_tag, order_info)
                     return
 
                 if await self._expire_stale_entry_order(pair_tag, order_info, order):
@@ -331,6 +362,39 @@ class EntryMixin:
             return await self._cancel_entry_order_and_reconcile(
                 pair_tag, order_info, "Order Expired"
             )
+
+        async def _expire_unfetchable_entry_order(
+            self, pair_tag: str, order_info: dict
+        ) -> bool:
+            """Enforce the entry TTL when the order status cannot be fetched.
+
+            The normal expiry path needs a live order payload. When the venue is
+            rate-limiting (HTTP 429 returning HTML, so the client cannot even
+            decode a status) that payload never arrives, and without this the
+            pending order and its reserved funds stay open forever. Age is taken
+            from the local clock instead, and the cancel path re-verifies with the
+            venue before anything is declared terminal.
+            """
+            order_id = order_info.get("order_id")
+            placed_time = float(order_info.get("placed_time", 0.0) or 0.0)
+            if placed_time <= 0:
+                return False
+
+            max_ttl = float(getattr(self.config, "max_order_ttl_seconds", 120))
+            max_failures = int(getattr(self.config, "max_order_fetch_failures", 10))
+            age = time.time() - placed_time
+            failures = int(order_info.get("fetch_failures", 0) or 0)
+
+            if age < max_ttl and failures < max_failures:
+                return False
+
+            reason = "Order Expired" if age >= max_ttl else "Order Status Unavailable"
+            logger.warning(
+                f"[State 1 {reason}] Maker Limit Buy {order_id} for {pair_tag}: "
+                f"age={age:.1f}s failures={failures}; "
+                "cancelling and reconciling without a fetched status"
+            )
+            return await self._cancel_entry_order_and_reconcile(pair_tag, order_info, reason)
 
         async def _refresh_stale_maker_quote(
             self, pair_tag: str, order_info: dict, order: dict

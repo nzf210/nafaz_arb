@@ -18,7 +18,7 @@
         "db": 0
     },
     "listen_addr": ":8080",
-  "api_auth_token": "",
+    "api_auth_token": "",
     "scan_interval_seconds": 30,
     "quote_assets": [
         "USDT",
@@ -110,5 +110,20 @@
         "enabled": false,
         "url": "",
         "key": ""
+    },
+    "executor": {
+        "mock_mode": true,
+        "max_order_ttl_seconds": 120,
+        "maker_refresh_after_seconds": 45,
+        "maker_refresh_cooldown_seconds": 300,
+        "min_partial_fill_usd": 10,
+        "monitor_interval_seconds": 0.5,
+        "max_order_fetch_failures": 10,
+        "order_fetch_backoff_max_seconds": 60,
+        "venue_rate_limit_cooldown_seconds": 30,
+        "private_stream_enabled": false,
+        "private_stream_max_age_seconds": 5,
+        "max_daily_loss_usdt": 50,
+        "max_exposure_per_exchange_usdt": 0
     }
 }

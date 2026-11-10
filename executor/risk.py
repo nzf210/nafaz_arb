@@ -81,6 +81,47 @@ class RiskMixin:
             return True
         return False
 
+    def _pause_venue_for_cooldown(self, exchange: str, seconds: float) -> None:
+        """Pauses new entries on a venue for a bounded cooldown, then auto-clears.
+
+        Used for rate limits: unlike the consecutive-failure halt this expires on
+        its own so a transient throttle cannot stop trading until a manual
+        resume, while open positions remain managed throughout.
+        """
+        if not exchange:
+            return
+        seconds = max(1.0, float(seconds))
+        self._exchange_halted[exchange] = f"rate limited ({seconds:.0f}s cooldown)"
+        token = self._venue_cooldown_epoch = getattr(self, "_venue_cooldown_epoch", 0) + 1
+
+        async def _clear_after_cooldown():
+            try:
+                await asyncio.sleep(seconds)
+            except asyncio.CancelledError:
+                return
+            # Only clear the halt this task installed; a newer cooldown or a
+            # manual halt must not be undone by a stale timer.
+            if getattr(self, "_venue_cooldown_epoch", 0) != token:
+                return
+            if self._exchange_halted.get(exchange, "").startswith("rate limited"):
+                del self._exchange_halted[exchange]
+                logger.warning(
+                    f"[Risk Control] Exchange {exchange} rate-limit cooldown elapsed; "
+                    "entries re-enabled"
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+            self._venue_cooldown_tasks = getattr(self, "_venue_cooldown_tasks", {})
+            previous = self._venue_cooldown_tasks.get(exchange)
+            if previous is not None and not previous.done():
+                previous.cancel()
+            self._venue_cooldown_tasks[exchange] = loop.create_task(_clear_after_cooldown())
+        except RuntimeError:
+            # No event loop (sync caller): fall back to a plain counter-based
+            # halt that the next failure/success path will clear.
+            pass
+
     async def _get_balance_snapshot(
         self,
         pair_tag: Optional[str] = None,
@@ -411,3 +452,82 @@ class RiskMixin:
                 return None
 
         return max_pos_usdt, min_cap
+
+    async def _verify_dual_leg_funding(
+        self,
+        pair_tag: str,
+        pair_info: PairInfo,
+        required_usdt: float,
+        usdt_idr_rate: float,
+    ) -> bool:
+        """Confirms both legs can be funded before a live entry is submitted.
+
+        Entry commits two legs at once: a spot buy that locks the local quote
+        currency, and a 1x futures short that locks margin on the global venue.
+        Checking them together prevents the failure mode where the spot leg fills
+        but the hedge leg is rejected for margin, leaving unhedged exposure.
+        Returns False (and publishes the reason) when either leg is short.
+        """
+        try:
+            balances = await self._get_balance_snapshot(
+                pair_tag=pair_tag,
+                pair_info=pair_info,
+                usdt_idr_rate=usdt_idr_rate,
+            )
+        except Exception as exc:
+            # A balance probe failure must not silently pass the gate; surface it
+            # and let the caller decide, matching the pre-existing fail-open on
+            # unsupported clients while logging loudly.
+            logger.error(
+                f"[State 1 Funding Preflight] balance probe failed for {pair_tag}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return True
+
+        if not isinstance(balances, dict):
+            return True
+
+        try:
+            avail_spot = float(balances.get("spot_available", 0.0) or 0.0)
+            avail_fut = float(balances.get("futures_available", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            logger.error(
+                f"[State 1 Funding Preflight] unreadable balance payload for {pair_tag}"
+            )
+            return True
+
+        if not (math.isfinite(avail_spot) and math.isfinite(avail_fut)):
+            logger.error(
+                f"[State 1 Funding Preflight] non-finite balance for {pair_tag}"
+            )
+            return True
+
+        required = float(required_usdt)
+        missing = []
+        if avail_spot < required:
+            missing.append(f"spot ${avail_spot:.2f} < ${required:.2f}")
+        if avail_fut < required:
+            missing.append(f"futures ${avail_fut:.2f} < ${required:.2f}")
+        if not missing:
+            logger.debug(
+                f"[State 1 Funding Preflight] {pair_tag} funded: "
+                f"spot=${avail_spot:.2f} futures=${avail_fut:.2f} required=${required:.2f}"
+            )
+            return True
+
+        logger.warning(
+            f"[State 1 Funding Preflight] {pair_tag} underfunded for a dual-leg "
+            f"entry ({'; '.join(missing)})"
+        )
+        await self._publish_execution_failure(
+            pair_tag,
+            "DUAL_LEG_UNDERFUNDED",
+            "Saldo Spot dan/atau Futures tidak cukup untuk mengeksekusi kedua kaki sekaligus.",
+            detail={
+                "required_usdt_per_leg": required,
+                "spot_available_usdt": avail_spot,
+                "futures_available_usdt": avail_fut,
+                "shortfall": missing,
+            },
+        )
+        return False
