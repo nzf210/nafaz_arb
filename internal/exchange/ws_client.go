@@ -31,6 +31,7 @@ type WSStream struct {
 	// OnConnected runs after subscriptions are sent and before the read loop; it must return quickly.
 	OnConnected func(ctx context.Context)
 	KeepAliveInterval time.Duration
+	TouchSymbols []string
 }
 
 // WSClient owns the websocket connections and the book cache they feed.
@@ -248,7 +249,9 @@ func (c *WSClient) keepAlive(ctx context.Context, conn *websocket.Conn, stream W
 				_ = conn.CloseNow()
 				return
 			}
-			if c.cache != nil { c.cache.TouchExchange(streamExchange(stream)) }
+			if c.cache != nil {
+				if len(stream.TouchSymbols) > 0 { c.cache.TouchSymbols(streamExchange(stream), stream.TouchSymbols) } else { c.cache.TouchExchange(streamExchange(stream)) }
+			}
 		}
 	}
 }
