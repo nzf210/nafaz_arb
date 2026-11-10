@@ -305,7 +305,7 @@ class EntryMixin:
                 market_values = (local_bid, local_ask, global_bid, fx_rate, current_price, tick)
                 if not all(math.isfinite(value) and value > 0 for value in market_values):
                     return False
-                candidate = math.ceil((local_bid - 1e-12) / tick) * tick
+                candidate = math.floor((local_bid + 1e-12) / tick) * tick
                 if candidate <= current_price or candidate >= local_ask:
                     return False
                 live_global_idr = global_bid * fx_rate
