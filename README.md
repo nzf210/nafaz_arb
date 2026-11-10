@@ -257,8 +257,9 @@ unverifiable) short blocks the rollback and marks the pair
 
 ## Reliability & Risk Controls
 
-These knobs are all optional and default to the pre-Fase-3 behaviour, so an
-existing deployment keeps working unchanged unless it opts in.
+These controls keep the existing strategy and risk rules unchanged. Tokocrypto's
+public market-data WebSocket is enabled by default in LIVE mode; the legacy
+non-Tokocrypto feeds remain opt-in.
 
 ### Scanner (`config.json` / environment)
 
@@ -270,8 +271,10 @@ existing deployment keeps working unchanged unless it opts in.
 | `okx_ws_stale_after` | `OKX_WS_STALE_AFTER` | `65s` | Maximum age since the last instrument-specific book frame. OKX may send an empty heartbeat after 60 seconds without book changes; connection ping/pong refreshes receive-time freshness separately. Stale or not-yet-snapshotted books use REST. Accepts Go durations such as `65s`. |
 | `okx_ws_reconnect_interval` | `OKX_WS_RECONNECT_INTERVAL` | `1s` | Initial reconnect delay after disconnect or subscription failure. |
 | `okx_ws_max_reconnect_backoff` | `OKX_WS_MAX_RECONNECT_BACKOFF` | `30s` | Maximum exponential reconnect delay. Must be at least the initial reconnect interval. |
-| `enable_websocket_feed` | `ENABLE_WEBSOCKET_FEED` | `false` | Legacy best-effort feed switch for non-OKX streams. It does not control the OKX books manager. |
-| `websocket_book_max_age_seconds` | `WEBSOCKET_BOOK_MAX_AGE_SECONDS` | `2` | Maximum age for the legacy non-OKX websocket cache. |
+| `tokocrypto_websocket_enabled` | `TOKOCRYPTO_WEBSOCKET_ENABLED` | `true` in LIVE, `false` in MOCK | Starts public MBX and NextMe depth feeds. When enabled, missing/stale Tokocrypto books fail closed instead of falling back to per-scan REST depth requests. |
+| `tokocrypto_ws_stale_after_seconds` | `TOKOCRYPTO_WS_STALE_AFTER_SECONDS` | `3` | Maximum age for a Tokocrypto public depth book. |
+| `enable_websocket_feed` | `ENABLE_WEBSOCKET_FEED` | `false` | Legacy best-effort feed switch for Indodax and MEXC spot streams. It does not control Tokocrypto or OKX managers. |
+| `websocket_book_max_age_seconds` | `WEBSOCKET_BOOK_MAX_AGE_SECONDS` | `2` | Maximum age for the legacy Indodax/MEXC websocket cache. |
 | `exchange_error_window_seconds` | — | `300` | Maintenance-detection window (P2-05). |
 | `exchange_error_rate_threshold` | — | `0.5` | Error ratio that marks a venue unavailable for the rest of the window. |
 | `exchange_error_min_requests` | — | `5` | Minimum observations before the ratio is trusted. |

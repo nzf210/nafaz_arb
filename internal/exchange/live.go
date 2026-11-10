@@ -2,6 +2,7 @@ package exchange
 
 import (
 	"context"
+	"fmt"
 	"crypto/tls"
 	"net"
 	"net/http"
@@ -22,6 +23,9 @@ type LiveAdapter struct {
 	client            *http.Client
 	indodaxBaseURL    string
 	tokocryptoBaseURL string
+	tokocryptoMBXMarketDataURL string
+	tokocryptoNextMeMarketDataURL string
+	tokocryptoSymbolTypes map[string]int
 	okxBaseURL        string
 	mexcBaseURL       string
 	mexcSpotBaseURL   string
@@ -49,6 +53,8 @@ type LiveAdapter struct {
 	wsMaxAge      time.Duration
 	wsClient      *WSClient
 	wsStopCleanup func()
+	tokocryptoWSClient *WSClient
+	tokocryptoBooks *tokocryptoBookManager
 
 	// okxLimiter is the process-wide gate for OKX public REST.
 	okxLimiter     *okxLimiter
@@ -97,6 +103,9 @@ func NewLiveAdapter() *LiveAdapter {
 		client:            &http.Client{Transport: tr, Timeout: 15 * time.Second},
 		indodaxBaseURL:    "https://indodax.com",
 		tokocryptoBaseURL: "https://www.tokocrypto.com",
+		tokocryptoMBXMarketDataURL: "https://www.tokocrypto.site",
+		tokocryptoNextMeMarketDataURL: "https://cloudme-toko.2meta.app",
+		tokocryptoSymbolTypes: make(map[string]int),
 		okxBaseURL:        "https://www.okx.com",
 		mexcBaseURL:       "https://contract.mexc.com",
 		mexcSpotBaseURL:   "https://api.mexc.com",
@@ -140,6 +149,14 @@ func (l *LiveAdapter) SetBaseURLs(urls ...string) {
 	}
 	if len(urls) > 4 && urls[4] != "" {
 		l.tokocryptoBaseURL = urls[4]
+		// Preserve the historical test override for the MBX public market-data host.
+		l.tokocryptoMBXMarketDataURL = urls[4]
+	}
+	if len(urls) > 5 && urls[5] != "" {
+		l.tokocryptoMBXMarketDataURL = urls[5]
+	}
+	if len(urls) > 6 && urls[6] != "" {
+		l.tokocryptoNextMeMarketDataURL = urls[6]
 	}
 }
 
@@ -289,6 +306,33 @@ func (l *LiveAdapter) OKXWebSocketConnected() bool {
 	return manager != nil && manager.IsConnected()
 }
 
+// EnableTokocryptoBookWebSocket starts public depth feeds for MBX and NextMe symbols.
+// NextMe diff-depth streams are synchronized from a public REST snapshot before being served.
+func (l *LiveAdapter) EnableTokocryptoBookWebSocket(ctx context.Context, staleAfter time.Duration) error {
+	markets, err := l.SpotMarkets(ctx)
+	if err != nil { return fmt.Errorf("load Tokocrypto symbols for websocket: %w", err) }
+	var tokocryptoMarkets []domain.Market
+	for _, market := range markets {
+		if strings.EqualFold(market.Exchange, "tokocrypto") && market.Active { tokocryptoMarkets = append(tokocryptoMarkets, market) }
+	}
+	if len(tokocryptoMarkets) == 0 { return fmt.Errorf("Tokocrypto returned no active symbols for websocket subscriptions") }
+	if staleAfter <= 0 { staleAfter = 3 * time.Second }
+	l.mu.Lock()
+	if l.tokocryptoWSClient != nil { l.mu.Unlock(); return nil }
+	if l.wsCache == nil { l.wsCache = NewWSBookCache() }
+	if l.wsStopCleanup == nil { l.wsStopCleanup = l.wsCache.StartStaleBookCleanup(staleAfter, time.Minute) }
+	if l.wsMaxAge <= 0 { l.wsMaxAge = staleAfter } else { staleAfter = l.wsMaxAge }
+	manager := newTokocryptoBookManager(l, l.wsCache, tokocryptoMarkets)
+	streams := manager.streams()
+	if len(streams) == 0 { l.mu.Unlock(); return fmt.Errorf("Tokocrypto markets do not include supported MBX/NextMe symbol types") }
+	client := NewWSClient(l.wsCache, nil, streams...)
+	l.tokocryptoBooks = manager
+	l.tokocryptoWSClient = client
+	l.mu.Unlock()
+	client.Start(ctx)
+	return nil
+}
+
 // WebSocketStats reports (hits, misses) for the cached realtime books.
 func (l *LiveAdapter) WebSocketStats() (hits, misses int64) {
 	l.mu.RLock()
@@ -345,6 +389,11 @@ func (l *LiveAdapter) Close() {
 		l.wsClient.Stop()
 		l.wsClient = nil
 	}
+	if l.tokocryptoWSClient != nil {
+		l.tokocryptoWSClient.Stop()
+		l.tokocryptoWSClient = nil
+	}
+	l.tokocryptoBooks = nil
 	if l.okxBooks != nil {
 		l.okxBooks.Stop()
 		l.okxBooks = nil

@@ -2,6 +2,7 @@ package exchange
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -28,6 +29,10 @@ type WSStream struct {
 	// Handle decodes one frame. Returning skip=true means "not a book update",
 	// which is normal for heartbeat or acknowledgement frames.
 	Handle func(msg []byte) (book domain.OrderBook, skip bool, err error)
+	// OnConnected runs after subscriptions are sent and before the read loop; it must return quickly.
+	OnConnected func(ctx context.Context)
+	KeepAliveInterval time.Duration
+	TouchSymbols []string
 }
 
 // WSClient owns the websocket connections and the book cache they feed.
@@ -189,6 +194,12 @@ func (c *WSClient) consume(ctx context.Context, s WSStream) error {
 			}
 		}
 	}
+	if s.OnConnected != nil {
+		s.OnConnected(ctx)
+	}
+	if s.KeepAliveInterval > 0 {
+		go c.keepAlive(ctx, conn, s)
+	}
 
 	for {
 		_, data, err := conn.Read(ctx)
@@ -197,6 +208,10 @@ func (c *WSClient) consume(ctx context.Context, s WSStream) error {
 		}
 		book, skip, err := s.Handle(data)
 		if err != nil {
+			if errors.Is(err, errTokocryptoSubscriptionRejected) {
+				_ = conn.CloseNow()
+				return err
+			}
 			// A malformed frame must not kill a healthy stream.
 			c.log.Debug("dropping undecodable websocket frame", "stream", s.Name, "err", err)
 			continue
@@ -218,6 +233,29 @@ func (c *WSClient) consume(ctx context.Context, s WSStream) error {
 			}
 			if gapDetected {
 				c.log.Warn("sequence gap detected", "stream", s.Name, "symbol", book.Symbol)
+			}
+		}
+	}
+}
+
+func (c *WSClient) keepAlive(ctx context.Context, conn *websocket.Conn, stream WSStream) {
+	ticker := time.NewTicker(stream.KeepAliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, stream.KeepAliveInterval)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				c.log.Warn("websocket keepalive failed", "stream", stream.Name, "err", err)
+				_ = conn.CloseNow()
+				return
+			}
+			if c.cache != nil {
+				if len(stream.TouchSymbols) > 0 { c.cache.TouchSymbols(streamExchange(stream), stream.TouchSymbols) } else { c.cache.TouchExchange(streamExchange(stream)) }
 			}
 		}
 	}

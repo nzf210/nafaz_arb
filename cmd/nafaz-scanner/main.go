@@ -37,6 +37,11 @@ func main(){
 		if cfg.EnableWebSocketFeed {
 			live.EnableWebSocketFeed(context.Background(), time.Duration(cfg.WebSocketBookMaxAgeSeconds)*time.Second)
 		}
+		if cfg.TokocryptoWebSocketEnabled != nil && *cfg.TokocryptoWebSocketEnabled {
+			if err := live.EnableTokocryptoBookWebSocket(context.Background(), time.Duration(cfg.TokocryptoWSStaleAfterSeconds)*time.Second); err != nil {
+				log.Printf("warning: Tokocrypto public websocket unavailable; scanner will use public REST only when feed was not initialized: %v", err)
+			}
+		}
 		if cfg.OKXWebSocketEnabled != nil && *cfg.OKXWebSocketEnabled {
 			staleAfter, _ := time.ParseDuration(cfg.OKXWSStaleAfter)
 			reconnect, _ := time.ParseDuration(cfg.OKXWSReconnectInterval)

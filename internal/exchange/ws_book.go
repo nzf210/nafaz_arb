@@ -152,10 +152,9 @@ func (c *WSBookCache) Get(exchange, symbol string, maxAge time.Duration) (domain
 		return domain.OrderBook{}, false, false, false, false, nil
 	}
 	if maxAge > 0 {
-		stamp := entry.book.Timestamp
-		if stamp.IsZero() {
-			stamp = entry.at
-		}
+		stamp := entry.book.ReceivedAt
+		if stamp.IsZero() { stamp = entry.book.Timestamp }
+		if stamp.IsZero() { stamp = entry.at }
 		if c.now().Sub(stamp) > maxAge {
 			c.misses++
 			return domain.OrderBook{}, false, false, false, false, nil
@@ -183,6 +182,55 @@ func (c *WSBookCache) Get(exchange, symbol string, maxAge time.Duration) (domain
 		}
 	}
 	return entry.book, true, isDuplicate, isOutOfOrder, isGap, nil
+}
+
+// TouchExchange refreshes local receive-time freshness after a successful connection heartbeat.
+// It does not alter exchange timestamps or order-book levels.
+func (c *WSBookCache) TouchExchange(exchange string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	prefix := strings.ToLower(exchange) + "|"
+	for key, entry := range c.books {
+		if !strings.HasPrefix(key, prefix) { continue }
+		entry.book.ReceivedAt = now
+		c.books[key] = entry
+		c.staleTracker[key] = now
+		if health := c.healthTracker[key]; health != nil {
+			health.LastMessageAt = now
+			health.IsHealthy = true
+		}
+	}
+}
+
+// TouchSymbols refreshes receive-time freshness for only the symbols on a live stream.
+func (c *WSBookCache) TouchSymbols(exchange string, symbols []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	for _, symbol := range symbols {
+		key := cacheKey(exchange, symbol)
+		entry, ok := c.books[key]
+		if !ok { continue }
+		entry.book.ReceivedAt = now
+		c.books[key] = entry
+		c.staleTracker[key] = now
+		if health := c.healthTracker[key]; health != nil {
+			health.LastMessageAt = now
+			health.IsHealthy = true
+		}
+	}
+}
+
+// Invalidate removes a book that can no longer be trusted, such as after a sequence gap.
+func (c *WSBookCache) Invalidate(exchange, symbol string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := cacheKey(exchange, symbol)
+	delete(c.books, key)
+	delete(c.staleTracker, key)
+	delete(c.seqTracker, key)
+	delete(c.gapTracker, key)
 }
 
 // Stats reports how often a websocket book was usable versus falling back to REST.
@@ -333,10 +381,9 @@ func (c *WSBookCache) ValidateAfterReconnect(exchange, symbol string, maxAge tim
 		return fmt.Errorf("post-reconnect validation: no cached book for %s %s", exchange, symbol)
 	}
 	if maxAge > 0 {
-		stamp := entry.book.Timestamp
-		if stamp.IsZero() {
-			stamp = entry.at
-		}
+		stamp := entry.book.ReceivedAt
+		if stamp.IsZero() { stamp = entry.book.Timestamp }
+		if stamp.IsZero() { stamp = entry.at }
 		if c.now().Sub(stamp) > maxAge {
 			return fmt.Errorf("post-reconnect validation: stale book for %s %s", exchange, symbol)
 		}

@@ -92,6 +92,8 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 		}
 	}
 	for _, market := range markets {
+		if market.Symbol == "toko:BTC_USDT" && market.ExchangeSymbolType != 1 { t.Fatalf("expected MBX symbol type 1, got %+v", market) }
+		if market.Symbol == "toko:ETH_IDR" && market.ExchangeSymbolType != 3 { t.Fatalf("expected NextMe symbol type 3, got %+v", market) }
 		if market.Exchange == "mexc" || strings.HasPrefix(market.Symbol, "mexc_spot:") {
 			t.Fatalf("MEXC Spot must not be included in the local spot candidate universe: %+v", market)
 		}
@@ -280,7 +282,7 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 	defer indodaxServer.Close()
 
 	tokoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/open/v1/market/depth" {
+		if r.URL.Path == "/api/v3/depth" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{
 				"code": 0,

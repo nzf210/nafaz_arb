@@ -494,3 +494,28 @@ func TestOKXWebSocketConfiguration(t *testing.T) {
 		t.Fatalf("expected invalid stale duration error, got %v", err)
 	}
 }
+
+func TestTokocryptoWebSocketConfiguration(t *testing.T) {
+	mock := Config{Mode: "MOCK"}
+	mock.setDefaults()
+	if mock.TokocryptoWebSocketEnabled == nil || *mock.TokocryptoWebSocketEnabled {
+		t.Fatal("Tokocrypto websocket must default off in MOCK mode")
+	}
+	if mock.TokocryptoWSStaleAfterSeconds != 3 {
+		t.Fatalf("Tokocrypto stale age=%d, want 3 seconds", mock.TokocryptoWSStaleAfterSeconds)
+	}
+
+	live := Config{Mode: "LIVE"}
+	live.setDefaults()
+	if live.TokocryptoWebSocketEnabled == nil || !*live.TokocryptoWebSocketEnabled {
+		t.Fatal("Tokocrypto public websocket must default on in LIVE mode")
+	}
+
+	t.Setenv("TOKOCRYPTO_WEBSOCKET_ENABLED", "false")
+	t.Setenv("TOKOCRYPTO_WS_STALE_AFTER_SECONDS", "5")
+	live.applyEnvOverrides()
+	if live.TokocryptoWebSocketEnabled == nil || *live.TokocryptoWebSocketEnabled || live.TokocryptoWSStaleAfterSeconds != 5 {
+		t.Fatalf("Tokocrypto env overrides not applied: enabled=%v stale=%d", live.TokocryptoWebSocketEnabled, live.TokocryptoWSStaleAfterSeconds)
+	}
+}
+

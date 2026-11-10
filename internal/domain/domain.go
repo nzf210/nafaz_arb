@@ -17,6 +17,7 @@ type Market struct {
 	BaseAsset    string  `json:"base_asset"`
 	QuoteAsset   string  `json:"quote_asset"`
 	MarketType   string  `json:"market_type"`
+	ExchangeSymbolType int `json:"exchange_symbol_type,omitempty"`
 	Active       bool    `json:"active"`
 	ContractSize float64 `json:"contract_size,omitempty"`
 	TickSize     float64 `json:"tick_size,omitempty"`
