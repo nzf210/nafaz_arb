@@ -117,6 +117,13 @@ class ExecutionDirectives:
     scanner_validated: bool
     scanner_validated: bool = False
     estimated_net_profit_usdt: float = 0.0
+    spot_entry_fee_pct: float = 0.0
+    spot_exit_fee_pct: float = 0.0
+    perp_entry_fee_pct: float = 0.0
+    perp_exit_fee_pct: float = 0.0
+    fee_source: str = "LEGACY_UNVERIFIED"
+    fee_verified: bool = False
+    fee_fetched_at_ms: int = 0
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ExecutionDirectives":
@@ -130,6 +137,13 @@ class ExecutionDirectives:
             cancel_if_global_bid_drops_below_usdt=float(d.get("cancel_if_global_bid_drops_below_usdt", 0.0)),
             scanner_validated=bool(d.get("scanner_validated", False)),
             estimated_net_profit_usdt=float(d.get("estimated_net_profit_usdt", 0.0)),
+            spot_entry_fee_pct=float(d.get("spot_entry_fee_pct", 0.0)),
+            spot_exit_fee_pct=float(d.get("spot_exit_fee_pct", 0.0)),
+            perp_entry_fee_pct=float(d.get("perp_entry_fee_pct", 0.0)),
+            perp_exit_fee_pct=float(d.get("perp_exit_fee_pct", 0.0)),
+            fee_source=str(d.get("fee_source", "LEGACY_UNVERIFIED")),
+            fee_verified=bool(d.get("fee_verified", False)),
+            fee_fetched_at_ms=int(d.get("fee_fetched_at_ms", 0)),
         )
 
 
@@ -182,6 +196,13 @@ class ActivePosition:
     local_lot_size: float = 0.0
     local_amount_spec: Optional[AmountSpec] = None
     global_amount_spec: Optional[AmountSpec] = None
+    spot_entry_fee_pct: float = 0.0
+    spot_exit_fee_pct: float = 0.0
+    perp_entry_fee_pct: float = 0.0
+    perp_exit_fee_pct: float = 0.0
+    fee_source: str = "LEGACY_UNVERIFIED"
+    fee_verified: bool = False
+    fee_fetched_at_ms: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -215,6 +236,13 @@ class ActivePosition:
             "spot_cost_usdt": self.spot_cost_usdt,
             "futures_margin_usdt": self.futures_margin_usdt,
             "state": self.state,
+            "spot_entry_fee_pct": self.spot_entry_fee_pct,
+            "spot_exit_fee_pct": self.spot_exit_fee_pct,
+            "perp_entry_fee_pct": self.perp_entry_fee_pct,
+            "perp_exit_fee_pct": self.perp_exit_fee_pct,
+            "fee_source": self.fee_source,
+            "fee_verified": self.fee_verified,
+            "fee_fetched_at_ms": self.fee_fetched_at_ms,
         }
 
     @classmethod
@@ -267,6 +295,13 @@ class ActivePosition:
             spot_cost_usdt=float(d.get("spot_cost_usdt", 0.0)),
             futures_margin_usdt=float(d.get("futures_margin_usdt", 0.0)),
             state=d.get("state", "HEDGED_ACTIVE"),
+            spot_entry_fee_pct=float(d.get("spot_entry_fee_pct", 0.0)),
+            spot_exit_fee_pct=float(d.get("spot_exit_fee_pct", 0.0)),
+            perp_entry_fee_pct=float(d.get("perp_entry_fee_pct", 0.0)),
+            perp_exit_fee_pct=float(d.get("perp_exit_fee_pct", 0.0)),
+            fee_source=str(d.get("fee_source", "LEGACY_UNVERIFIED")),
+            fee_verified=bool(d.get("fee_verified", False)),
+            fee_fetched_at_ms=int(d.get("fee_fetched_at_ms", 0)),
         )
 
 
