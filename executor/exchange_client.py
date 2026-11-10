@@ -232,7 +232,31 @@ class ExchangeClient:
             if cached and time.time() - cached[0] < 300:
                 return cached[1]
             fetcher = getattr(exchange, "fetch_trading_fee", None)
-            if callable(fetcher):
+            if exchange_id == "tokocrypto" and market_kind == "spot":
+                endpoint = (
+                    getattr(exchange, "privateGetOpenV1AccountSpot", None)
+                    or getattr(exchange, "private_get_open_v1_account_spot", None)
+                )
+                if callable(endpoint):
+                    raw = await endpoint()
+                    account = raw.get("data", {}) if isinstance(raw, dict) else {}
+                    if not isinstance(account, dict):
+                        raise ValueError("invalid Tokocrypto account fee response")
+                    maker_bips = account.get("makerCommission")
+                    taker_bips = account.get("takerCommission")
+                    if maker_bips is None or taker_bips is None:
+                        raise ValueError("Tokocrypto account response omitted commission rates")
+                    # Tokocrypto account commission values are basis points (1 bp = 0.01%).
+                    maker_pct, taker_pct = float(maker_bips) / 100.0, float(taker_bips) / 100.0
+                elif callable(fetcher):
+                    raw = await fetcher(resolved)
+                    maker, taker = raw.get("maker"), raw.get("taker")
+                    if maker is None or taker is None:
+                        raise ValueError("incomplete Tokocrypto spot trading fee response")
+                    maker_pct, taker_pct = float(maker) * 100.0, float(taker) * 100.0
+                else:
+                    return None
+            elif callable(fetcher):
                 raw = await fetcher(resolved)
                 if not isinstance(raw, dict):
                     raise ValueError(f"invalid {market_kind} trading fee response")
@@ -240,23 +264,6 @@ class ExchangeClient:
                 if maker is None or taker is None:
                     raise ValueError(f"incomplete {market_kind} trading fee response")
                 maker_pct, taker_pct = float(maker) * 100.0, float(taker) * 100.0
-            elif exchange_id == "tokocrypto" and market_kind == "spot":
-                endpoint = (
-                    getattr(exchange, "privateGetOpenV1AccountSpot", None)
-                    or getattr(exchange, "private_get_open_v1_account_spot", None)
-                )
-                if not callable(endpoint):
-                    return None
-                raw = await endpoint()
-                account = raw.get("data", {}) if isinstance(raw, dict) else {}
-                if not isinstance(account, dict):
-                    raise ValueError("invalid Tokocrypto account fee response")
-                maker_bips = account.get("makerCommission")
-                taker_bips = account.get("takerCommission")
-                if maker_bips is None or taker_bips is None:
-                    raise ValueError("Tokocrypto account response omitted commission rates")
-                # Tokocrypto account commission values are basis points (1 bp = 0.01%).
-                maker_pct, taker_pct = float(maker_bips) / 100.0, float(taker_bips) / 100.0
             else:
                 return None
             if not all(math.isfinite(v) and 0 <= v <= 100 for v in (maker_pct, taker_pct)):
