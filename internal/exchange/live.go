@@ -323,7 +323,9 @@ func (l *LiveAdapter) EnableTokocryptoBookWebSocket(ctx context.Context, staleAf
 	if l.wsStopCleanup == nil { l.wsStopCleanup = l.wsCache.StartStaleBookCleanup(staleAfter, time.Minute) }
 	if l.wsMaxAge <= 0 { l.wsMaxAge = staleAfter } else { staleAfter = l.wsMaxAge }
 	manager := newTokocryptoBookManager(l, l.wsCache, tokocryptoMarkets)
-	client := NewWSClient(l.wsCache, nil, manager.streams()...)
+	streams := manager.streams()
+	if len(streams) == 0 { l.mu.Unlock(); return fmt.Errorf("Tokocrypto markets do not include supported MBX/NextMe symbol types") }
+	client := NewWSClient(l.wsCache, nil, streams...)
 	l.tokocryptoBooks = manager
 	l.tokocryptoWSClient = client
 	l.mu.Unlock()
