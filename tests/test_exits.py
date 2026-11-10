@@ -194,6 +194,14 @@ async def test_state4_records_negative_pnl_realistically(engine, fake_redis, moc
     assert len(history_raw) == 1
     trade = json.loads(history_raw[0])
     assert trade["net_profit_usdt"] < 0  # Verified negative PnL recorded honestly!
+    assert trade["fees_usdt"] > 0
+    assert trade["spot_fees_usdt"] > 0
+    assert trade["futures_fees_usdt"] > 0
+    assert trade["fees_usdt"] == pytest.approx(
+        trade["spot_fees_usdt"] + trade["futures_fees_usdt"]
+    )
+    assert trade["fee_source"] == "LEGACY_CONSERVATIVE_FALLBACK"
+    assert trade["fee_verified"] is False
 
     # 4. Verify stats: total_closed incremented, but win_count is 0!
     stats = await fake_redis.hgetall("arb:stats")
