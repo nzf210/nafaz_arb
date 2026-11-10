@@ -175,10 +175,16 @@ class ExposureReconciliationWorker:
         tracked_by_venue_market = defaultdict(lambda: {"ids": set(), "client_ids": set()})
         for source_name in ("pending_entry_orders", "pending_exit_orders"):
             source = getattr(self.engine, source_name, {}) or {}
-            for order in source.values():
+            for pair_tag, order in source.items():
                 if not isinstance(order, dict):
                     continue
-                exchange = str(order.get("local_exchange") or "").strip().lower()
+                position = (getattr(self.engine, "active_positions", {}) or {}).get(pair_tag)
+                pair_info = (getattr(self.engine, "_pair_infos", {}) or {}).get(pair_tag)
+                exchange = str(
+                    order.get("local_exchange")
+                    or getattr(position, "local_exchange", "")
+                    or getattr(pair_info, "local_exchange", "")
+                ).strip().lower()
                 if not exchange:
                     continue
                 # Pending entry and exit orders in this strategy are local Spot legs.
