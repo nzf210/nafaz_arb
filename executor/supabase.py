@@ -88,7 +88,7 @@ class SupabaseWriter:
         self._position_ids: Dict[str, str] = {}
         self._position_rows: Dict[str, Dict[str, Any]] = {}
         self._order_ids: Dict[str, str] = {}
-        self._order_filled: Dict[str, float] = {}
+        self._last_status_snapshot = 0.0
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -196,6 +196,7 @@ class SupabaseWriter:
         }
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
+        self._emit_position_legs(pair_key, pos, pair_info, row["status"], is_mock)
 
     def position_status(self, pair_key: str, status: str, pos: Any = None) -> None:
         position_id = self._position_ids.get(pair_key)
@@ -214,6 +215,32 @@ class SupabaseWriter:
                 row["closed_at"] = datetime.now(timezone.utc).isoformat()
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
+        self._emit_position_legs(pair_key, pos, None, status, row.get("is_mock", True))
+
+    def _emit_position_legs(self, pair_key: str, pos: Any, pair_info: Any, status: str, is_mock: bool) -> None:
+        if pos is None:
+            return
+        position_id = self._position_ids.get(pair_key) or _position_uuid(
+            pair_key, getattr(pos, "opened_at_ms", 0)
+        )
+        local_symbol = getattr(pair_info, "local_symbol", "") or getattr(pos, "symbol", "")
+        global_symbol = getattr(pair_info, "global_symbol", "") or getattr(pos, "symbol", "")
+        common = {
+            "position_id": position_id,
+            "status": status,
+            "qty": _num(getattr(pos, "qty", 0.0)),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self._emit("position_legs", {
+            **common, "leg": "spot", "exchange_name": getattr(pos, "local_exchange", "") or "",
+            "symbol": local_symbol, "side": "long",
+            "average_entry_price": _num(getattr(pos, "entry_price_idr", 0.0)) or None,
+        }, on_conflict="position_id,leg")
+        self._emit("position_legs", {
+            **common, "leg": "perpetual", "exchange_name": getattr(pos, "global_exchange", "") or "",
+            "symbol": global_symbol, "side": "short",
+            "average_entry_price": _num(getattr(pos, "short_entry_usdt", 0.0)) or None,
+        }, on_conflict="position_id,leg")
 
     # ------------------------------------------------------------------ orders
 
@@ -237,7 +264,8 @@ class SupabaseWriter:
         key = client_order_id or exchange_order_id
         if not key:
             return
-        order_id = self._order_ids.setdefault(key, str(uuid.uuid4()))
+        order_identity = f"{exchange}:{key}"
+        order_id = self._order_ids.setdefault(key, str(uuid.uuid5(_POSITION_NS, "order:" + order_identity)))
 
         requested = _num(order.get("amount"), _num(order.get("filled")))
         filled = _num(order.get("filled"))
@@ -274,27 +302,37 @@ class SupabaseWriter:
             on_conflict="id",
         )
 
-        previous = self._order_filled.get(key, 0.0)
-        delta = filled - previous
-        if delta > 1e-12:
-            self._order_filled[key] = filled
-            price = _num(order.get("average"), _num(order.get("price")))
-            fill_id = f"{exchange_order_id or key}:{filled:.18f}"
+        # Only persist exchange-reported trade fills. Cumulative order.filled is
+        # persisted on orders, but must not be converted into synthetic fills:
+        # after a restart the in-memory delta cursor is gone and would double count.
+        for trade in order.get("trades") or []:
+            if not isinstance(trade, dict):
+                continue
+            info = trade.get("info") if isinstance(trade.get("info"), dict) else {}
+            exchange_fill_id = str(
+                trade.get("id") or info.get("tradeId") or info.get("trade_id") or ""
+            ).strip()
+            qty = _num(trade.get("amount"), _num(trade.get("qty")))
+            price = _num(trade.get("price"))
+            if not exchange_fill_id or qty <= 0 or price < 0:
+                continue
+            timestamp = trade.get("timestamp") or order.get("lastTradeTimestamp")
+            filled_at = _ms_to_iso(timestamp) or datetime.now(timezone.utc).isoformat()
+            fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
             self._emit(
                 "order_fills",
                 {
-                    # Deterministic primary key: the schema's unique index spans an
-                    # expression (coalesce on exchange_account_id) and so cannot be
-                    # targeted by ON CONFLICT, while the id can.
-                    "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
+                    "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{exchange_fill_id}")),
                     "order_id": order_id,
                     "exchange_name": exchange,
-                    "exchange_fill_id": fill_id,
-                    "qty": delta,
+                    "exchange_fill_id": exchange_fill_id,
+                    "qty": qty,
                     "price": price,
-                    "quote_qty": delta * price,
-                    "filled_at": datetime.now(timezone.utc).isoformat(),
-                    "raw_payload": {"derived_from": "cumulative_filled"},
+                    "quote_qty": _num(trade.get("cost"), qty * price),
+                    "fee_amount": _num(fee.get("cost")) or None,
+                    "fee_asset": fee.get("currency"),
+                    "filled_at": filled_at,
+                    "raw_payload": trade,
                 },
                 on_conflict="id",
             )
@@ -307,10 +345,13 @@ class SupabaseWriter:
         trade_key = str(trade.get("trade_id") or "")
         if not trade_key:
             return
+        position_id = self._position_ids.get(pair_key) or (
+            _position_uuid(pair_key, getattr(pos, "opened_at_ms", 0)) if pos is not None else None
+        )
         self._emit(
             "closed_trades",
             {
-                "position_id": self._position_ids.get(pair_key),
+                "position_id": position_id,
                 "trade_key": trade_key,
                 "pair_key": pair_key,
                 "local_exchange": str(trade.get("local_exchange") or ""),
@@ -348,10 +389,98 @@ class SupabaseWriter:
             payload=trade,
         )
 
+    # ---------------------------------------------------------- other snapshots
+
+    def balance_snapshot(
+        self, exchange: str, market_type: str, asset: str, total: Any, free: Any,
+        used: Any, *, is_mock: bool = False, observed_at_ms: Optional[int] = None,
+    ) -> None:
+        stamp = int(observed_at_ms or time.time() * 1000)
+        identity = f"balance:{exchange}:{market_type}:{asset}:{stamp}"
+        self._emit("balance_snapshots", {
+            "id": str(uuid.uuid5(_POSITION_NS, identity)),
+            "exchange_name": exchange,
+            "market_type": market_type,
+            "asset": asset,
+            "total": _num(total),
+            "free": _num(free),
+            "used": _num(used),
+            "is_mock": bool(is_mock),
+            "observed_at": _ms_to_iso(stamp),
+        }, on_conflict="id")
+
+    def risk_event(
+        self, event_type: str, message: str, *, pair_key: Optional[str] = None,
+        exchange_name: Optional[str] = None, severity: str = "warning",
+        action_taken: Optional[str] = None, details: Optional[Dict[str, Any]] = None,
+        is_mock: bool = False, occurred_at_ms: Optional[int] = None,
+    ) -> None:
+        stamp = int(occurred_at_ms or time.time() * 1000)
+        event_key = str(uuid.uuid5(
+            _POSITION_NS, f"risk:{event_type}:{pair_key or '-'}:{stamp}"
+        ))
+        self._emit("risk_events", {
+            "event_key": event_key,
+            "severity": severity if severity in ("info", "warning", "error", "critical") else "warning",
+            "event_type": event_type,
+            "pair_key": pair_key,
+            "exchange_name": exchange_name,
+            "message": str(message)[:1000],
+            "action_taken": action_taken,
+            "is_mock": bool(is_mock),
+            "details": details or {},
+            "occurred_at": _ms_to_iso(stamp),
+        }, on_conflict="event_key")
+
+    def funding_payment(
+        self, pair_key: str, exchange: str, symbol: str, payment: Dict[str, Any],
+        *, amount: float, asset: str = "USDT", is_mock: bool = False,
+    ) -> None:
+        if not isinstance(payment, dict):
+            return
+        info = payment.get("info") if isinstance(payment.get("info"), dict) else {}
+        timestamp = int(payment.get("timestamp") or info.get("timestamp") or 0)
+        raw_id = str(payment.get("id") or info.get("tranId") or info.get("id") or "").strip()
+        identity = raw_id or f"{exchange}:{symbol}:{timestamp}:{amount:.18f}:{asset}"
+        payment_id = str(uuid.uuid5(_POSITION_NS, f"funding:{identity}"))
+        position_id = self._position_ids.get(pair_key)
+        self._emit("funding_payments", {
+            "id": payment_id,
+            "position_id": position_id,
+            "exchange_name": exchange,
+            "symbol": symbol,
+            "exchange_payment_id": raw_id or None,
+            "funding_rate": _num(payment.get("rate")) or None,
+            "position_qty": _num(payment.get("contracts")) or None,
+            "mark_price": _num(payment.get("price")) or None,
+            "amount": _num(amount),
+            "asset": asset,
+            "payment_status": "confirmed",
+            "settled_at": _ms_to_iso(timestamp) or datetime.now(timezone.utc).isoformat(),
+            "raw_payload": payment,
+        }, on_conflict="id")
+
+    def status_snapshot(self, snapshot: Dict[str, Any], *, is_mock: bool = False) -> None:
+        now = time.monotonic()
+        if now - self._last_status_snapshot < 10.0:
+            return
+        self._last_status_snapshot = now
+        instance_id = str(uuid.uuid5(_POSITION_NS, f"executor-instance:{id(self)}"))
+        self._emit("executor_status_snapshots", {
+            "id": str(uuid.uuid4()),
+            "instance_id": instance_id,
+            "status": str(snapshot.get("status") or "UNKNOWN"),
+            "mode": "MOCK" if is_mock else "LIVE",
+            "is_mock": bool(is_mock),
+            "snapshot": snapshot,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="id")
+
     # ------------------------------------------------------------------- flush
 
     async def _run(self) -> None:
         while True:
+            batch = []
             try:
                 batch = [await self._queue.get()]
                 while len(batch) < _BATCH_MAX:
@@ -360,12 +489,13 @@ class SupabaseWriter:
                     except asyncio.QueueEmpty:
                         break
                 await self._flush(batch)
-                for _ in batch:
-                    self._queue.task_done()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("supabase writer loop error")
+            finally:
+                for _ in batch:
+                    self._queue.task_done()
 
     async def _flush(self, batch: list) -> None:
         grouped: Dict[tuple, list] = {}
