@@ -325,6 +325,8 @@ func (m *tokocryptoBookManager) refreshLoop(ctx context.Context, state *tokocryp
 				return
 			}
 			err = fmt.Errorf("Tokocrypto depth sequence could not be synchronized")
+		} else if err == nil {
+			err = fmt.Errorf("Tokocrypto public depth snapshot has no lastUpdateId")
 		}
 		slog.Warn("Tokocrypto NextMe book snapshot/re-sync failed", "symbol", state.symbol, "err", err, "retry_in", delay)
 		select {
