@@ -23,12 +23,13 @@ const (
 )
 
 type tokocryptoBookManager struct {
-	adapter *LiveAdapter
-	cache   *WSBookCache
+	adapter      *LiveAdapter
+	cache        *WSBookCache
 	markets      map[int][]string
 	states       map[string]*tokocryptoBookState
 	symbolNames  map[string]string
-	ctx          context.Context
+	symbolTypes  map[string]int
+	contexts     map[int]context.Context
 	snapshotSem  chan struct{}
 	snapshotMu   sync.Mutex
 	lastSnapshot time.Time
@@ -59,11 +60,13 @@ type tokocryptoDepthEvent struct {
 
 func newTokocryptoBookManager(adapter *LiveAdapter, cache *WSBookCache, markets []domain.Market) *tokocryptoBookManager {
 	manager := &tokocryptoBookManager{
-		adapter: adapter,
-		cache:   cache,
+		adapter:     adapter,
+		cache:       cache,
 		markets:     map[int][]string{1: {}, 3: {}},
 		states:      make(map[string]*tokocryptoBookState),
 		symbolNames: make(map[string]string),
+		symbolTypes: make(map[string]int),
+		contexts:    make(map[int]context.Context),
 		snapshotSem: make(chan struct{}, 2),
 	}
 	for _, market := range markets {
@@ -81,12 +84,11 @@ func newTokocryptoBookManager(adapter *LiveAdapter, cache *WSBookCache, markets 
 		if raw == "" {
 			continue
 		}
-		manager.markets[symbolType] = append(manager.markets[symbolType], raw)
 		canonical := "toko:" + strings.ToUpper(strings.TrimPrefix(market.Symbol, "toko:"))
+		manager.markets[symbolType] = append(manager.markets[symbolType], raw)
 		manager.symbolNames[raw] = canonical
-		if symbolType == 3 {
-			manager.states[canonical] = &tokocryptoBookState{symbol: canonical}
-		}
+		manager.symbolTypes[canonical] = symbolType
+		manager.states[canonical] = &tokocryptoBookState{symbol: canonical}
 	}
 	return manager
 }
@@ -97,19 +99,22 @@ func (m *tokocryptoBookManager) streams() []WSStream {
 		streams = append(streams, WSStream{
 			Name:      "tokocrypto-mbx-depth",
 			URL:       tokocryptoMBXWSURL,
-			Subscribe: func() ([][]byte, error) { return tokocryptoSubscribeFrames(m.markets[1], "depth20@100ms") },
-			Handle:    m.handleMBXFrame,
+			Subscribe: func() ([][]byte, error) { return tokocryptoSubscribeFrames(m.markets[1], "depth@100ms") },
+			Handle:    m.handleDepthFrame,
+			OnConnected: func(ctx context.Context) {
+				m.bootstrap(ctx, 1)
+			},
 		})
 	}
 	if len(m.markets[3]) > 0 {
 		streams = append(streams, WSStream{
-			Name: "tokocrypto-nextme-depth",
-			URL:  tokocryptoNextMeWSURL,
-			Subscribe: func() ([][]byte, error) {
-				return tokocryptoSubscribeFrames(m.markets[3], "depth")
+			Name:      "tokocrypto-nextme-depth",
+			URL:       tokocryptoNextMeWSURL,
+			Subscribe: func() ([][]byte, error) { return tokocryptoSubscribeFrames(m.markets[3], "depth@100ms") },
+			Handle:    m.handleDepthFrame,
+			OnConnected: func(ctx context.Context) {
+				m.bootstrap(ctx, 3)
 			},
-			Handle:       m.handleNextMeFrame,
-			OnConnected:  m.bootstrapNextMe,
 		})
 	}
 	return streams
@@ -132,54 +137,14 @@ func tokocryptoSubscribeFrames(symbols []string, channel string) ([][]byte, erro
 }
 
 func (m *tokocryptoBookManager) handleMBXFrame(message []byte) (domain.OrderBook, bool, error) {
-	var envelope struct {
-		Stream string          `json:"stream"`
-		Data   json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(message, &envelope); err != nil {
-		return domain.OrderBook{}, true, err
-	}
-	if len(envelope.Data) == 0 || !strings.Contains(envelope.Stream, "@depth") {
-		return domain.OrderBook{}, true, nil
-	}
-	var data struct {
-		LastUpdateID int64      `json:"lastUpdateId"`
-		Event        int64      `json:"E"`
-		Symbol       string     `json:"s"`
-		Bids         [][]string `json:"bids"`
-		Asks         [][]string `json:"asks"`
-	}
-	if err := json.Unmarshal(envelope.Data, &data); err != nil {
-		return domain.OrderBook{}, true, err
-	}
-	if len(data.Bids) == 0 || len(data.Asks) == 0 {
-		return domain.OrderBook{}, true, nil
-	}
-	symbol := data.Symbol
-	if symbol == "" {
-		symbol = strings.SplitN(envelope.Stream, "@", 2)[0]
-	}
-	now := time.Now().UTC()
-	stamp := now
-	if data.Event > 0 {
-		stamp = time.UnixMilli(data.Event).UTC()
-	}
-	book := domain.OrderBook{
-		Exchange:   "tokocrypto",
-		Symbol:     m.symbolName(symbol),
-		Bids:       parseStringLevels(data.Bids, 1),
-		Asks:       parseStringLevels(data.Asks, 1),
-		Timestamp:  stamp,
-		ReceivedAt: now,
-		Source:     "websocket",
-	}
-	if len(book.Bids) == 0 || len(book.Asks) == 0 {
-		return domain.OrderBook{}, true, nil
-	}
-	return book, false, nil
+	return m.handleDepthFrame(message)
 }
 
 func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderBook, bool, error) {
+	return m.handleDepthFrame(message)
+}
+
+func (m *tokocryptoBookManager) handleDepthFrame(message []byte) (domain.OrderBook, bool, error) {
 	var envelope struct {
 		Stream string          `json:"stream"`
 		Data   json.RawMessage `json:"data"`
@@ -197,14 +162,16 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 	if event.Symbol == "" {
 		event.Symbol = strings.SplitN(envelope.Stream, "@", 2)[0]
 	}
-	if event.Last <= 0 || event.First <= 0 { return domain.OrderBook{}, true, fmt.Errorf("Tokocrypto NextMe depth event is missing sequence IDs") }
+	if event.Last <= 0 || event.First <= 0 {
+		return domain.OrderBook{}, true, fmt.Errorf("Tokocrypto depth event is missing sequence IDs")
+	}
 	key := m.symbolName(event.Symbol)
 	state := m.state(key)
 	state.mu.Lock()
 	if !state.initialized {
 		m.appendBuffered(state, event)
 		state.mu.Unlock()
-		m.scheduleRefresh(m.currentContext(), key)
+		m.scheduleRefresh(m.currentContext(key), key)
 		return domain.OrderBook{}, true, nil
 	}
 	if event.Last <= state.lastSeq {
@@ -219,14 +186,16 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 		m.appendBuffered(state, event)
 		state.mu.Unlock()
 		m.cache.Invalidate("tokocrypto", key)
-		m.scheduleRefresh(m.currentContext(), key)
+		m.scheduleRefresh(m.currentContext(key), key)
 		return domain.OrderBook{}, true, nil
 	}
 	applyTokocryptoLevels(state.bids, event.Bids)
 	applyTokocryptoLevels(state.asks, event.Asks)
 	state.lastSeq = event.Last
 	state.timestamp = time.Now().UTC()
-	if event.Event > 0 { state.timestamp = time.UnixMilli(event.Event).UTC() }
+	if event.Event > 0 {
+		state.timestamp = time.UnixMilli(event.Event).UTC()
+	}
 	book := tokocryptoStateBook(state)
 	state.mu.Unlock()
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
@@ -235,22 +204,24 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 		m.appendBuffered(state, event)
 		state.mu.Unlock()
 		m.cache.Invalidate("tokocrypto", key)
-		m.scheduleRefresh(m.currentContext(), key)
+		m.scheduleRefresh(m.currentContext(key), key)
 		return domain.OrderBook{}, true, nil
 	}
 	_, _, _, _ = m.cache.Store(book)
 	return domain.OrderBook{}, true, nil
 }
 
-func (m *tokocryptoBookManager) currentContext() context.Context {
+func (m *tokocryptoBookManager) currentContext(symbol string) context.Context {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.ctx
+	return m.contexts[m.symbolTypes[symbol]]
 }
 
 func (m *tokocryptoBookManager) symbolName(raw string) string {
 	key := strings.ToLower(strings.ReplaceAll(raw, "_", ""))
-	if name := m.symbolNames[key]; name != "" { return name }
+	if name := m.symbolNames[key]; name != "" {
+		return name
+	}
 	return "toko:" + strings.ToUpper(raw)
 }
 
@@ -272,11 +243,13 @@ func (m *tokocryptoBookManager) appendBuffered(state *tokocryptoBookState, event
 	state.buffer = append(state.buffer, event)
 }
 
-func (m *tokocryptoBookManager) bootstrapNextMe(ctx context.Context) {
+func (m *tokocryptoBookManager) bootstrap(ctx context.Context, symbolType int) {
 	m.mu.Lock()
-	m.ctx = ctx
+	m.contexts[symbolType] = ctx
+	symbols := append([]string(nil), m.markets[symbolType]...)
 	m.mu.Unlock()
-	for symbol := range m.states {
+	for _, raw := range symbols {
+		symbol := m.symbolName(raw)
 		state := m.state(symbol)
 		state.mu.Lock()
 		state.initialized = false
@@ -288,8 +261,8 @@ func (m *tokocryptoBookManager) bootstrapNextMe(ctx context.Context) {
 		state.mu.Unlock()
 		m.cache.Invalidate("tokocrypto", symbol)
 	}
-	for symbol := range m.states {
-		m.scheduleRefresh(ctx, symbol)
+	for _, raw := range symbols {
+		m.scheduleRefresh(ctx, m.symbolName(raw))
 	}
 }
 
@@ -315,9 +288,13 @@ func (m *tokocryptoBookManager) refreshLoop(ctx context.Context, state *tokocryp
 	for ctx.Err() == nil {
 		select {
 		case m.snapshotSem <- struct{}{}:
-		case <-ctx.Done(): return
+		case <-ctx.Done():
+			return
 		}
-		if err := m.waitSnapshotSlot(ctx); err != nil { <-m.snapshotSem; return }
+		if err := m.waitSnapshotSlot(ctx); err != nil {
+			<-m.snapshotSem
+			return
+		}
 		book, err := m.adapter.fetchTokocryptoSpotOrderBook(ctx, state.symbol)
 		<-m.snapshotSem
 		if err == nil && book.SequenceID > 0 {
@@ -328,7 +305,7 @@ func (m *tokocryptoBookManager) refreshLoop(ctx context.Context, state *tokocryp
 		} else if err == nil {
 			err = fmt.Errorf("Tokocrypto public depth snapshot has no lastUpdateId")
 		}
-		slog.Warn("Tokocrypto NextMe book snapshot/re-sync failed", "symbol", state.symbol, "err", err, "retry_in", delay)
+		slog.Warn("Tokocrypto depth snapshot/re-sync failed", "symbol", state.symbol, "err", err, "retry_in", delay)
 		select {
 		case <-ctx.Done():
 			return
@@ -401,7 +378,9 @@ func (m *tokocryptoBookManager) installSnapshot(state *tokocryptoBookState, snap
 		applyTokocryptoLevels(state.bids, event.Bids)
 		applyTokocryptoLevels(state.asks, event.Asks)
 		state.lastSeq = event.Last
-		if event.Event > 0 { state.timestamp = time.UnixMilli(event.Event).UTC() }
+		if event.Event > 0 {
+			state.timestamp = time.UnixMilli(event.Event).UTC()
+		}
 	}
 	state.initialized = true
 	book := tokocryptoStateBook(state)
@@ -462,7 +441,9 @@ func tokocryptoStateBook(state *tokocryptoBookState) domain.OrderBook {
 	}
 	now := time.Now().UTC()
 	stamp := state.timestamp
-	if stamp.IsZero() { stamp = now }
+	if stamp.IsZero() {
+		stamp = now
+	}
 	return domain.OrderBook{
 		Exchange:   "tokocrypto",
 		Symbol:     state.symbol,
