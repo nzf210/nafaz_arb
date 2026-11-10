@@ -414,11 +414,17 @@ type DynamicFeeProfile struct {
 }
 
 // GetDynamicFeeProfile returns only a fresh, verified executor fee snapshot.
-func (c *Client) GetDynamicFeeProfile(ctx context.Context, exchange, market string) (*DynamicFeeProfile, error) {
+func (c *Client) GetDynamicFeeProfile(ctx context.Context, exchange, market, symbol string) (*DynamicFeeProfile, error) {
     if c == nil || c.rdb == nil {
         return nil, nil
     }
-    key := "arb:fee_profile:" + strings.ToLower(strings.TrimSpace(exchange)) + ":" + strings.ToLower(strings.TrimSpace(market))
+    normalize := func(value string) string {
+        value = strings.ToLower(strings.TrimSpace(value))
+        value = strings.ReplaceAll(value, "/", "_")
+        value = strings.ReplaceAll(value, "-", "_")
+        return strings.ReplaceAll(value, ":", "_")
+    }
+    key := "arb:fee_profile:" + normalize(exchange) + ":" + normalize(market) + ":" + normalize(symbol)
     raw, err := c.rdb.Get(ctx, key).Bytes()
     if err == redis.Nil {
         return nil, nil
