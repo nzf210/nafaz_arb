@@ -51,3 +51,22 @@ async def test_tokocrypto_account_commission_bips_are_converted_to_percent():
     assert profile["perp"] == {"maker": pytest.approx(0.02), "taker": pytest.approx(0.05)}
     assert profile["source"] == "EXCHANGE_API"
     assert profile["verified"] is True
+
+@pytest.mark.asyncio
+async def test_fresh_symbol_fee_cache_prevents_duplicate_private_api_calls():
+    spot = FeeExchange("tokocrypto")
+    perp = FeeExchange("okx")
+    client = ExchangeClient(spot, perp)
+    cached = {
+        "spot": {"maker": 0.1, "taker": 0.1, "fetched_at_ms": 1_800_000_000_000},
+        "perp": {"maker": 0.02, "taker": 0.05, "fetched_at_ms": 1_800_000_000_000},
+    }
+    pair = type("Pair", (), {
+        "local_symbol": "BTC_USDT",
+        "global_symbol": "BTC/USDT:USDT",
+    })()
+    profile = await client.fetch_pair_fee_rates(pair, cached)
+    assert profile["source"] == "EXCHANGE_API"
+    assert profile["verified"] is True
+    assert profile["spot"]["taker"] == pytest.approx(0.1)
+    assert profile["perp"]["taker"] == pytest.approx(0.05)
