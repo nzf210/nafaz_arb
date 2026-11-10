@@ -54,18 +54,35 @@ class FeeRates:
         }
 
 
-def round_trip_fees_usdt(qty, spot_entry, spot_exit, perp_entry, perp_exit, rates):
-    """Fee sum for both legs, both entry and exit, using executable notionals."""
+def round_trip_fee_breakdown_usdt(
+    qty, spot_entry, spot_exit, perp_entry, perp_exit, rates
+):
+    """Return fee estimates split by spot/perpetual venue for all four fills."""
     rates.validate()
     values = (qty, spot_entry, spot_exit, perp_entry, perp_exit)
-    if any(not isfinite(float(v)) or float(v) < 0 for v in values):
+    if any(not isfinite(float(value)) or float(value) < 0 for value in values):
         raise ValueError("quantity and notionals must be finite and non-negative")
-    return qty * (
+
+    spot_fees = qty * (
         spot_entry * (rates.spot_entry_pct + rates.surcharge_pct)
         + spot_exit * (rates.spot_exit_pct + rates.surcharge_pct)
-        + perp_entry * (rates.perp_entry_pct + rates.surcharge_pct)
+    ) / 100.0
+    futures_fees = qty * (
+        perp_entry * (rates.perp_entry_pct + rates.surcharge_pct)
         + perp_exit * (rates.perp_exit_pct + rates.surcharge_pct)
     ) / 100.0
+    return {
+        "spot_fees_usdt": spot_fees,
+        "futures_fees_usdt": futures_fees,
+        "total_fees_usdt": spot_fees + futures_fees,
+    }
+
+
+def round_trip_fees_usdt(qty, spot_entry, spot_exit, perp_entry, perp_exit, rates):
+    """Fee sum for both legs, both entry and exit, using executable notionals."""
+    return round_trip_fee_breakdown_usdt(
+        qty, spot_entry, spot_exit, perp_entry, perp_exit, rates
+    )["total_fees_usdt"]
 
 
 def required_spot_exit_usdt(
