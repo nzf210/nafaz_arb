@@ -11,6 +11,7 @@ import time
 from typing import Tuple
 
 from executor.models import PositionState
+from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt
 from executor import helpers
 from executor.helpers import (
     ARB_TRADE_HISTORY_KEY,
@@ -364,7 +365,28 @@ class ForceCloseMixin:
             spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
             futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - current_ask)
             funding_usdt = float(pos.accumulated_funding_usdt)
-            fees_usdt = (pos.qty * (pos.short_entry_usdt + current_ask)) * 0.0005
+            rates = rates_for_position(pos)
+            spot_entry_usdt = (
+                pos.entry_price_idr / usdt_rate
+                if usdt_rate > 0 and math.isfinite(usdt_rate)
+                else 0.0
+            )
+            spot_exit_usdt = (
+                current_spot_bid / usdt_rate
+                if usdt_rate > 0 and math.isfinite(usdt_rate)
+                else 0.0
+            )
+            fee_breakdown = round_trip_fee_breakdown_usdt(
+                pos.qty,
+                spot_entry_usdt,
+                spot_exit_usdt,
+                pos.short_entry_usdt,
+                current_ask,
+                rates,
+            )
+            spot_fees_usdt = fee_breakdown["spot_fees_usdt"]
+            futures_fees_usdt = fee_breakdown["futures_fees_usdt"]
+            fees_usdt = fee_breakdown["total_fees_usdt"]
             net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
             capital_usdt = pos.qty * pos.short_entry_usdt
             return {
@@ -376,7 +398,11 @@ class ForceCloseMixin:
                 "spot_pnl_usdt": spot_pnl_usdt,
                 "futures_pnl_usdt": futures_pnl_usdt,
                 "funding_usdt": funding_usdt,
+                "spot_fees_usdt": spot_fees_usdt,
+                "futures_fees_usdt": futures_fees_usdt,
                 "fees_usdt": fees_usdt,
+                "fee_source": rates.source,
+                "fee_verified": rates.verified,
                 "net_profit_usdt": net_profit_usdt,
                 "net_profit_idr": net_profit_usdt * usdt_rate,
                 "roi_pct": (net_profit_usdt / capital_usdt * 100.0) if capital_usdt > 0 else 0.0,
@@ -407,6 +433,11 @@ class ForceCloseMixin:
                 "spot_pnl_idr": pnl["spot_pnl_idr"],
                 "futures_pnl_usdt": pnl["futures_pnl_usdt"],
                 "accumulated_funding_usdt": pnl["funding_usdt"],
+                "spot_fees_usdt": pnl["spot_fees_usdt"],
+                "futures_fees_usdt": pnl["futures_fees_usdt"],
+                "fees_usdt": pnl["fees_usdt"],
+                "fee_source": pnl["fee_source"],
+                "fee_verified": pnl["fee_verified"],
                 "net_profit_usdt": pnl["net_profit_usdt"],
                 "net_profit_idr": pnl["net_profit_idr"],
                 "net_roi_pct": pnl["roi_pct"],
@@ -437,11 +468,11 @@ class ForceCloseMixin:
                 self.client.apply_realized_trade(
                     spot_cost_usdt=spot_cost,
                     spot_pnl_usdt=pnl["spot_pnl_usdt"],
-                    spot_fees_usdt=0.0,
+                    spot_fees_usdt=pnl["spot_fees_usdt"],
                     futures_margin_usdt=fut_margin,
                     futures_pnl_usdt=pnl["futures_pnl_usdt"],
                     funding_usdt=pnl["funding_usdt"],
-                    futures_fees_usdt=pnl["fees_usdt"],
+                    futures_fees_usdt=pnl["futures_fees_usdt"],
                 )
                 if usdt_rate > 0 and math.isfinite(usdt_rate):
                     bals = await self._get_balance_snapshot(
