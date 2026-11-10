@@ -149,13 +149,17 @@ func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol s
 	}
 	var raw struct {
 		Code int `json:"code"`
-		Data struct {
-			LastUpdateID int64      `json:"lastUpdateId"`
-			Event        int64      `json:"E"`
-			Bids         [][]string `json:"bids"`
-			Asks         [][]string `json:"asks"`
-		} `json:"data"`
+		LastUpdateID int64 `json:"lastUpdateId"`
+		Event int64 `json:"E"`
+		Bids [][]string `json:"bids"`
+		Asks [][]string `json:"asks"`
 		Timestamp int64 `json:"timestamp"`
+		Data struct {
+			LastUpdateID int64 `json:"lastUpdateId"`
+			Event int64 `json:"E"`
+			Bids [][]string `json:"bids"`
+			Asks [][]string `json:"asks"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return domain.OrderBook{}, fmt.Errorf("decode Tokocrypto public depth: %w", err)
@@ -163,17 +167,24 @@ func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol s
 	if raw.Code != 0 {
 		return domain.OrderBook{}, fmt.Errorf("Tokocrypto public depth API error code %d", raw.Code)
 	}
-	bids := parseStringLevels(raw.Data.Bids, 1.0)
-	asks := parseStringLevels(raw.Data.Asks, 1.0)
+	lastUpdateID, eventTime := raw.LastUpdateID, raw.Event
+	bidsRaw, asksRaw := raw.Bids, raw.Asks
+	if len(raw.Data.Bids) > 0 || len(raw.Data.Asks) > 0 {
+		bidsRaw, asksRaw = raw.Data.Bids, raw.Data.Asks
+		if raw.Data.LastUpdateID > 0 { lastUpdateID = raw.Data.LastUpdateID }
+		if raw.Data.Event > 0 { eventTime = raw.Data.Event }
+	}
+	bids := parseStringLevels(bidsRaw, 1.0)
+	asks := parseStringLevels(asksRaw, 1.0)
 	if len(bids) == 0 || len(asks) == 0 {
 		return domain.OrderBook{}, fmt.Errorf("Tokocrypto public depth returned an empty or one-sided book for %s", symbol)
 	}
 	now := time.Now().UTC()
 	stamp := now
-	if raw.Data.Event > 0 { stamp = time.UnixMilli(raw.Data.Event).UTC() } else if raw.Timestamp > 0 { stamp = time.UnixMilli(raw.Timestamp).UTC() }
+	if eventTime > 0 { stamp = time.UnixMilli(eventTime).UTC() } else if raw.Timestamp > 0 { stamp = time.UnixMilli(raw.Timestamp).UTC() }
 	return domain.OrderBook{
 		Exchange: "tokocrypto", Symbol: symbol, Bids: bids, Asks: asks,
-		Timestamp: stamp, ReceivedAt: now, SequenceID: raw.Data.LastUpdateID,
+		Timestamp: stamp, ReceivedAt: now, SequenceID: lastUpdateID,
 		Source: "public_rest_snapshot",
 	}, nil
 }
