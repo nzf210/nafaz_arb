@@ -190,6 +190,7 @@ class EntryMixin:
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
             )
             await self._handle_entry_fills(pair_tag, order_info, order)
+            await self._persist_pending_entry(pair_tag, order_info)
             if self.states.get(pair_tag) in (
                 PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
             ):
