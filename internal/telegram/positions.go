@@ -28,11 +28,28 @@ type pendingOrderSnapshot struct {
 	CreatedAtMS   int64   `json:"created_at_ms"`
 }
 
+type unmanagedOpenOrderSnapshot struct {
+	Exchange      string  `json:"exchange"`
+	Market        string  `json:"market"`
+	OrderID       string  `json:"order_id"`
+	ClientOrderID string  `json:"client_order_id"`
+	Symbol        string  `json:"symbol"`
+	Side          string  `json:"side"`
+	Type          string  `json:"type"`
+	Status        string  `json:"status"`
+	Price         float64 `json:"price"`
+	Amount        float64 `json:"amount"`
+	Filled        float64 `json:"filled"`
+	Remaining     float64 `json:"remaining"`
+	Managed       bool    `json:"managed"`
+}
+
 type executorPendingSnapshot struct {
 	Status       string                 `json:"status"`
 	MockMode     bool                   `json:"mock_mode"`
 	TimestampMS  int64                  `json:"timestamp_ms"`
 	PendingOrders []pendingOrderSnapshot `json:"pending_orders"`
+	UnmanagedOpenOrders []unmanagedOpenOrderSnapshot `json:"unmanaged_open_orders"`
 	PendingEntries int                  `json:"pending_entries"`
 	PendingExits   int                  `json:"pending_exits"`
 }
@@ -61,12 +78,12 @@ func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID 
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Format status executor tidak valid:</b> "+html.EscapeString(err.Error()), b.defaultKeyboard())
 		return
 	}
-	if len(snapshot.PendingOrders) == 0 && snapshot.PendingEntries+snapshot.PendingExits > 0 {
+	if len(snapshot.PendingOrders) == 0 && len(snapshot.UnmanagedOpenOrders) == 0 && snapshot.PendingEntries+snapshot.PendingExits > 0 {
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Executor belum mengirim rincian pending order.</b>\n\nPerbarui image executor agar menu ini dapat menampilkan ID order, CEX, harga, dan kuantitas. Jumlah tercatat: "+fmt.Sprintf("%d entry / %d exit", snapshot.PendingEntries, snapshot.PendingExits), b.defaultKeyboard())
 		return
 	}
 	var out strings.Builder
-	out.WriteString(fmt.Sprintf("🕒 <b>PENDING ORDERS (%d)</b>\n", len(snapshot.PendingOrders)))
+	out.WriteString(fmt.Sprintf("🕒 <b>PENDING ORDERS (%d)</b>\n", len(snapshot.PendingOrders)+len(snapshot.UnmanagedOpenOrders)))
 	if snapshot.MockMode {
 		out.WriteString("⚠️ <b>MODE SIMULASI</b>\n")
 	} else {
@@ -76,8 +93,8 @@ func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID 
 		out.WriteString("🕓 Snapshot: "+time.UnixMilli(snapshot.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC")+"\n")
 	}
 	out.WriteString("\n")
-	if len(snapshot.PendingOrders) == 0 {
-		out.WriteString("<i>Tidak ada order Spot yang masih pending.</i>\n")
+	if len(snapshot.PendingOrders) == 0 && len(snapshot.UnmanagedOpenOrders) == 0 {
+		out.WriteString("<i>Tidak ada open order yang terdeteksi pada snapshot terakhir.</i>\n")
 	} else {
 		for i, order := range snapshot.PendingOrders {
 			if i >= 20 {
@@ -101,7 +118,22 @@ func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID 
 			out.WriteString("\n")
 		}
 	}
-	out.WriteString("<i>Read-only: menu ini tidak membatalkan atau mengubah order. Status berasal dari order yang dikelola executor NAFAZ.</i>")
+	if len(snapshot.UnmanagedOpenOrders) > 0 {
+		out.WriteString(fmt.Sprintf("\n🚨 <b>UNMANAGED OPEN ORDERS (%d)</b>\n", len(snapshot.UnmanagedOpenOrders)))
+		out.WriteString("⚠️ <b>Order terdeteksi langsung dari exchange tetapi belum tercatat di state NAFAZ. Entry baru pada CEX terkait diblokir. Jangan abaikan order ini.</b>\n")
+		for i, order := range snapshot.UnmanagedOpenOrders {
+			if i >= 20 {
+				out.WriteString("\n<i>Daftar unmanaged dibatasi hingga 20 order.</i>")
+				break
+			}
+			out.WriteString(fmt.Sprintf("<b>[%d] %s — %s</b>\n", i+1, html.EscapeString(strings.ToUpper(order.Symbol)), html.EscapeString(strings.ToUpper(order.Status))))
+			out.WriteString(fmt.Sprintf("• CEX: <b>%s</b> (%s) | ID: <code>%s</code>\n", html.EscapeString(strings.ToUpper(order.Exchange)), html.EscapeString(order.Market), html.EscapeString(order.OrderID)))
+			out.WriteString(fmt.Sprintf("• Side: <code>%s</code> | Type: <code>%s</code> | Client ID: <code>%s</code>\n", html.EscapeString(order.Side), html.EscapeString(order.Type), html.EscapeString(order.ClientOrderID)))
+			out.WriteString(fmt.Sprintf("• Harga: <code>%.10g</code> | Qty: <code>%.8g</code> | Filled: <code>%.8g</code> | Sisa: <code>%.8g</code>\n", order.Price, order.Amount, order.Filled, order.Remaining))
+		}
+		out.WriteString("\n")
+	}
+	out.WriteString("<i>Read-only: menu ini tidak membatalkan atau mengubah order. Daftar mencakup order terkelola dan order tak dikenal yang ditemukan langsung di exchange.</i>")
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), &InlineKeyboardMarkup{InlineKeyboard: [][]InlineKeyboardButton{
 		{{Text: "🔄 Refresh Pending", CallbackData: "pending_orders"}, {Text: "💼 Posisi Aktif", CallbackData: "positions"}},
 		{{Text: MenuUtamaText, CallbackData: "menu"}},
