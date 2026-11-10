@@ -406,11 +406,11 @@ func (c *Client) GetLivePrice(ctx context.Context, localEx, symbol string, globa
 // DynamicFeeProfile is an authenticated, short-lived account fee snapshot
 // published by the executor. Rates are percentages, not decimal fractions.
 type DynamicFeeProfile struct {
-	MakerFeePct float64 `json:"maker_fee_pct"`
-	TakerFeePct float64 `json:"taker_fee_pct"`
-	Source string `json:"source"`
-	Verified bool `json:"verified"`
-	FetchedAtMS int64 `json:"fetched_at_ms"`
+	MakerFeePct  float64 `json:"maker_fee_pct"`
+	TakerFeePct  float64 `json:"taker_fee_pct"`
+	Source       string  `json:"source"`
+	Verified     bool    `json:"verified"`
+	FetchedAtMS  int64   `json:"fetched_at_ms"`
 }
 
 // GetDynamicFeeProfile returns only a fresh, verified executor fee snapshot.
