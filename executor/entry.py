@@ -271,7 +271,8 @@ class EntryMixin:
                 current_filled = float(order.get("filled", 0.0) or 0.0)
                 known_filled = float(order_info.get("filled", 0.0) or 0.0)
                 hedged = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
-                if min(current_filled, known_filled, hedged) < 0:
+                quantities = (current_filled, known_filled, hedged)
+                if not all(math.isfinite(value) and value >= 0 for value in quantities):
                     return False
             except (TypeError, ValueError):
                 return False
@@ -280,7 +281,7 @@ class EntryMixin:
 
             placed_time = float(order_info.get("placed_time", 0.0) or 0.0)
             age = time.time() - placed_time
-            if placed_time <= 0 or age < refresh_after:
+            if not math.isfinite(placed_time) or placed_time <= 0 or not math.isfinite(age) or age < refresh_after:
                 return False
 
             # A refresh is useful only when the best bid has moved above our
@@ -304,6 +305,8 @@ class EntryMixin:
                 min_spread = float(order_info.get("min_entry_spread_pct", 0.0) or 0.0)
                 market_values = (local_bid, local_ask, global_bid, fx_rate, current_price, tick)
                 if not all(math.isfinite(value) and value > 0 for value in market_values):
+                    return False
+                if not math.isfinite(min_spread) or min_spread < 0:
                     return False
                 candidate = math.floor((local_bid + 1e-12) / tick) * tick
                 if candidate <= current_price or candidate >= local_ask:
