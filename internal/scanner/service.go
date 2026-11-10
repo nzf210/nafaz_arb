@@ -649,6 +649,12 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 
 	op := domain.Opportunity{
 		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
+		SpotEntryFeePct:        func() float64 { if isMakerTaker { return spotMakerFeePct }; return spotTakerFeePct }(),
+		SpotExitFeePct:         spotTakerFeePct,
+		PerpEntryFeePct:        perpTakerFeePct,
+		PerpExitFeePct:         perpTakerFeePct,
+		FeeSource:              "CONFIG",
+		FeeVerified:            false,
 		LocalExchange:          sm.Exchange,
 		GlobalExchange:         pm.Exchange,
 		BaseAsset:              sm.BaseAsset,
