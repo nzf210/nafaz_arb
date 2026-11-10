@@ -30,6 +30,8 @@ type tokocryptoBookManager struct {
 	symbolNames  map[string]string
 	ctx          context.Context
 	snapshotSem  chan struct{}
+	snapshotMu   sync.Mutex
+	lastSnapshot time.Time
 	mu           sync.Mutex
 }
 
@@ -216,6 +218,7 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 		state.asks = nil
 		m.appendBuffered(state, event)
 		state.mu.Unlock()
+		m.cache.Invalidate("tokocrypto", key)
 		m.scheduleRefresh(m.currentContext(), key)
 		return domain.OrderBook{}, true, nil
 	}
@@ -277,6 +280,7 @@ func (m *tokocryptoBookManager) bootstrapNextMe(ctx context.Context) {
 		state.timestamp = time.Time{}
 		state.buffer = nil
 		state.mu.Unlock()
+		m.cache.Invalidate("tokocrypto", symbol)
 	}
 	for symbol := range m.states {
 		m.scheduleRefresh(ctx, symbol)
@@ -307,6 +311,7 @@ func (m *tokocryptoBookManager) refreshLoop(ctx context.Context, state *tokocryp
 		case m.snapshotSem <- struct{}{}:
 		case <-ctx.Done(): return
 		}
+		if err := m.waitSnapshotSlot(ctx); err != nil { <-m.snapshotSem; return }
 		book, err := m.adapter.fetchTokocryptoSpotOrderBook(ctx, state.symbol)
 		<-m.snapshotSem
 		if err == nil && book.SequenceID > 0 {
@@ -326,6 +331,26 @@ func (m *tokocryptoBookManager) refreshLoop(ctx context.Context, state *tokocryp
 			if delay > 30*time.Second {
 				delay = 30 * time.Second
 			}
+		}
+	}
+}
+
+func (m *tokocryptoBookManager) waitSnapshotSlot(ctx context.Context) error {
+	for {
+		m.snapshotMu.Lock()
+		wait := 250*time.Millisecond - time.Since(m.lastSnapshot)
+		if wait <= 0 {
+			m.lastSnapshot = time.Now()
+			m.snapshotMu.Unlock()
+			return nil
+		}
+		m.snapshotMu.Unlock()
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
 		}
 	}
 }
@@ -354,6 +379,7 @@ func (m *tokocryptoBookManager) installSnapshot(state *tokocryptoBookState, snap
 			if event.First > state.lastSeq+1 || event.Last < state.lastSeq+1 {
 				state.initialized = false
 				state.buffer = pending
+				m.cache.Invalidate("tokocrypto", state.symbol)
 				return false
 			}
 			started = true
