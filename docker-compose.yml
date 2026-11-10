@@ -27,6 +27,10 @@ services:
       - REDIS_ENABLED=true
       - REDIS_ADDR=redis:6380
       - GLOBAL_FUTURES_EXCHANGE=okx
+      # Supabase is optional; service-role credentials stay in the host .env file.
+      - SUPABASE_ENABLED=${SUPABASE_ENABLED:-}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
       # Optional override for Telegram config:
       # - TELEGRAM_ENABLED=true
       # - TELEGRAM_BOT_TOKEN=your_bot_token
@@ -55,6 +59,7 @@ services:
       # Set EXECUTOR_MOCK_MODE=true only as an explicit emergency override.
       - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-}
       # Best-effort audit persistence. Unset = disabled, trading unaffected.
+      - SUPABASE_ENABLED=${SUPABASE_ENABLED:-}
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_KEY=${SUPABASE_KEY:-}
     depends_on:
