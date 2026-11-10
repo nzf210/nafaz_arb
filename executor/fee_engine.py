@@ -16,12 +16,15 @@ class FeeRates:
     source: str = "CONFIG"
     verified: bool = False
     fetched_at_ms: int = 0
+    surcharge_pct: float = 0.0
 
     def validate(self):
         for name in ("spot_entry_pct", "spot_exit_pct", "perp_entry_pct", "perp_exit_pct"):
             value = getattr(self, name)
             if not isfinite(value) or value < 0 or value > 100:
                 raise ValueError(f"{name} must be finite and in [0,100]")
+        if not isfinite(self.surcharge_pct) or self.surcharge_pct < 0 or self.surcharge_pct > 100:
+            raise ValueError("surcharge_pct must be finite and in [0,100]")
         return self
 
     @classmethod
@@ -35,6 +38,7 @@ class FeeRates:
             source=str(data.get("fee_source", "LEGACY_UNVERIFIED")),
             verified=bool(data.get("fee_verified", False)),
             fetched_at_ms=int(data.get("fee_fetched_at_ms", 0)),
+            surcharge_pct=float(data.get("fee_asset_surcharge_pct", 0.0)),
         ).validate()
 
     def to_dict(self):
@@ -46,6 +50,7 @@ class FeeRates:
             "fee_source": self.source,
             "fee_verified": self.verified,
             "fee_fetched_at_ms": self.fetched_at_ms,
+            "fee_asset_surcharge_pct": self.surcharge_pct,
         }
 
 
@@ -56,10 +61,10 @@ def round_trip_fees_usdt(qty, spot_entry, spot_exit, perp_entry, perp_exit, rate
     if any(not isfinite(float(v)) or float(v) < 0 for v in values):
         raise ValueError("quantity and notionals must be finite and non-negative")
     return qty * (
-        spot_entry * rates.spot_entry_pct
-        + spot_exit * rates.spot_exit_pct
-        + perp_entry * rates.perp_entry_pct
-        + perp_exit * rates.perp_exit_pct
+        spot_entry * (rates.spot_entry_pct + rates.surcharge_pct)
+        + spot_exit * (rates.spot_exit_pct + rates.surcharge_pct)
+        + perp_entry * (rates.perp_entry_pct + rates.surcharge_pct)
+        + perp_exit * (rates.perp_exit_pct + rates.surcharge_pct)
     ) / 100.0
 
 
@@ -75,10 +80,10 @@ def required_spot_exit_usdt(
     rates.validate()
     if qty <= 0 or spot_entry <= 0 or perp_entry <= 0 or perp_exit <= 0:
         raise ValueError("positive quantity and entry/exit prices are required")
-    spot_entry_rate = rates.spot_entry_pct / 100.0
-    spot_exit_rate = rates.spot_exit_pct / 100.0
-    perp_entry_rate = rates.perp_entry_pct / 100.0
-    perp_exit_rate = rates.perp_exit_pct / 100.0
+    spot_entry_rate = (rates.spot_entry_pct + rates.surcharge_pct) / 100.0
+    spot_exit_rate = (rates.spot_exit_pct + rates.surcharge_pct) / 100.0
+    perp_entry_rate = (rates.perp_entry_pct + rates.surcharge_pct) / 100.0
+    perp_exit_rate = (rates.perp_exit_pct + rates.surcharge_pct) / 100.0
     futures_pnl = qty * (perp_entry - perp_exit)
     fixed_per_unit = (
         spot_entry
@@ -104,4 +109,5 @@ def rates_for_position(position):
         str(position.fee_source),
         bool(position.fee_verified),
         int(position.fee_fetched_at_ms),
+        float(getattr(position, "fee_asset_surcharge_pct", 0.0)),
     ).validate()
