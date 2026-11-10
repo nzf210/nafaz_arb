@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 
 from executor.models import ActivePosition, PositionState
 
@@ -474,3 +475,82 @@ def test_failure_breaker_isolated_per_exchange_and_trips_at_50(engine):
     assert engine._consecutive_order_failures["indodax"] == 50
     assert "indodax" in engine._exchange_halted
     assert "okx" not in engine._exchange_halted
+
+
+class LiveBalancePreflightClient:
+    def __init__(self, spot_available=50.0, futures_available=50.0, error=None):
+        self.spot_available = spot_available
+        self.futures_available = futures_available
+        self.error = error
+
+    async def get_balances(self, **kwargs):
+        if self.error:
+            raise self.error
+        return {
+            "spot_available": self.spot_available,
+            "futures_available": self.futures_available,
+        }
+
+
+def _live_sizing_payload(max_position_usdt=50.0):
+    pair_info = SimpleNamespace(
+        local_exchange="indodax",
+        global_exchange="okx",
+        local_symbol="btc_idr",
+        global_symbol="BTC/USDT:USDT",
+        quote_asset="IDR",
+    )
+    return SimpleNamespace(
+        pair_info=pair_info,
+        execution_directives=SimpleNamespace(max_position_usdt=max_position_usdt),
+        pricing_snapshot=SimpleNamespace(usdt_idr_rate=16000.0),
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_entry_sizing_is_capped_by_current_free_balance(fake_redis):
+    client = LiveBalancePreflightClient(spot_available=15.0, futures_available=40.0)
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(
+            mock_mode=False,
+            min_allocated_capital=10.0,
+            estimated_round_trip_fee_pct=0.0,
+        ),
+        client=client,
+        redis_client=fake_redis,
+    )
+
+    sizing = await engine._compute_entry_sizing("indodax:btc_idr", _live_sizing_payload())
+
+    assert sizing == pytest.approx((15.0, 10.0))
+    assert engine._balance_snapshots["indodax:btc_idr"]["spot_available"] == 15.0
+
+
+@pytest.mark.asyncio
+async def test_live_entry_is_rejected_when_free_balance_is_below_minimum(fake_redis):
+    client = LiveBalancePreflightClient(spot_available=8.0, futures_available=40.0)
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=False, min_allocated_capital=10.0),
+        client=client,
+        redis_client=fake_redis,
+    )
+
+    sizing = await engine._compute_entry_sizing("indodax:btc_idr", _live_sizing_payload())
+
+    assert sizing is None
+
+
+@pytest.mark.asyncio
+async def test_live_entry_fails_closed_when_balance_api_is_unavailable(fake_redis):
+    client = LiveBalancePreflightClient(error=RuntimeError("private balance API unavailable"))
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=False),
+        client=client,
+        redis_client=fake_redis,
+    )
+
+    sizing = await engine._compute_entry_sizing("indodax:btc_idr", _live_sizing_payload())
+
+    assert sizing is None
+    assert "indodax" in engine._exchange_halted
+    assert "okx" in engine._exchange_halted
