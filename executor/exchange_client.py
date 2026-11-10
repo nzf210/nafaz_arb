@@ -215,6 +215,41 @@ class ExchangeClient:
         return await self.local.fetch_order(order_id, order_symbol)
 
 
+    async def fetch_pair_fee_rates(self, pair_info: Any) -> Dict[str, Any]:
+        """Fetch authenticated account fee tiers for this exact spot/perpetual pair.
+
+        CCXT reports rates as fractions; the NAFAZ fee engine stores percentages.
+        Unsupported venue endpoints raise so callers can explicitly retain the
+        scanner's configured profile rather than silently treating fees as zero.
+        """
+        async def read(exchange: Any, symbol: str, market_kind: str) -> Dict[str, float]:
+            resolved = await self._resolve_symbol(exchange, symbol, market_kind)
+            fetcher = getattr(exchange, "fetch_trading_fee", None)
+            if not callable(fetcher):
+                raise NotImplementedError(
+                    f"{getattr(exchange, 'id', market_kind)} does not expose fetchTradingFee"
+                )
+            raw = await fetcher(resolved)
+            if not isinstance(raw, dict):
+                raise ValueError(f"invalid {market_kind} trading fee response")
+            maker, taker = raw.get("maker"), raw.get("taker")
+            if maker is None or taker is None:
+                raise ValueError(f"incomplete {market_kind} trading fee response")
+            maker_pct, taker_pct = float(maker) * 100.0, float(taker) * 100.0
+            if not all(math.isfinite(v) and 0 <= v <= 100 for v in (maker_pct, taker_pct)):
+                raise ValueError(f"invalid {market_kind} fee rates")
+            return {"maker": maker_pct, "taker": taker_pct}
+
+        spot = await read(self.local, pair_info.local_symbol, "spot")
+        perp = await read(self.global_fut, pair_info.global_symbol, "futures")
+        return {
+            "spot": spot,
+            "perp": perp,
+            "source": "EXCHANGE_API",
+            "verified": True,
+            "fetched_at_ms": int(time.time() * 1000),
+        }
+
     async def fetch_balance_report(self) -> list:
         """Fetch read-only balances for every configured venue independently."""
         reports = []
