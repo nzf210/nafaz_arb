@@ -216,7 +216,7 @@ class ExchangeClient:
         return await self.local.fetch_order(order_id, order_symbol)
 
 
-    async def fetch_pair_fee_rates(self, pair_info: Any) -> Dict[str, Any]:
+    async def fetch_pair_fee_rates(self, pair_info: Any, cached_profiles: Optional[Dict[str, Dict[str, float]]] = None) -> Dict[str, Any]:
         """Fetch account-specific rates where the venue exposes a supported endpoint.
 
         CCXT rates are fractions and are converted to percentage points. Indodax
@@ -228,6 +228,9 @@ class ExchangeClient:
             exchange_id = str(getattr(exchange, "id", "") or "").lower()
             resolved = await self._resolve_symbol(exchange, symbol, market_kind)
             cache_key = (exchange_id, market_kind, resolved)
+            cached = (cached_profiles or {}).get("spot" if market_kind == "spot" else "perp")
+            if cached and cached.get("fetched_at_ms", 0) > 0:
+                return cached
             cached = self._fee_cache.get(cache_key)
             if cached and time.time() - cached[0] < 300:
                 return cached[1]
@@ -268,7 +271,11 @@ class ExchangeClient:
                 return None
             if not all(math.isfinite(v) and 0 <= v <= 100 for v in (maker_pct, taker_pct)):
                 raise ValueError(f"invalid {market_kind} fee rates")
-            rates = {"maker": maker_pct, "taker": taker_pct}
+            rates = {
+                "maker": maker_pct,
+                "taker": taker_pct,
+                "fetched_at_ms": int(time.time() * 1000),
+            }
             self._fee_cache[cache_key] = (time.time(), rates)
             return rates
 
@@ -290,7 +297,7 @@ class ExchangeClient:
             "perp": profiles["perp"],
             "source": "EXCHANGE_API" if len(available) == 2 else ("PARTIAL_EXCHANGE_API" if available else "CONFIG"),
             "verified": len(available) == 2,
-            "fetched_at_ms": int(time.time() * 1000) if available else 0,
+            "fetched_at_ms": max((int(profile.get("fetched_at_ms", 0)) for profile in available), default=0),
             "errors": errors,
         }
 
