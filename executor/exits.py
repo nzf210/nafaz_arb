@@ -21,6 +21,7 @@ from executor.helpers import (
     ceil_to_tick,
 )
 from executor.private_stream import fetch_order_preferring_stream
+from executor.fee_engine import rates_for_position, round_trip_fees_usdt, required_spot_exit_usdt as required_spot_exit_usdt_fn
 
 logger = logging.getLogger("executor.engine")
 
@@ -204,8 +205,7 @@ class ExitMixin:
             # Net Profit = Spot_PnL + Futures_PnL + Funding - Fees
             # Futures PnL = Qty * (short_entry_usdt - global_ask_usdt)
             # Fees = Qty * (short_entry_usdt + global_ask_usdt) * fee_rate (covers both legs)
-            fee_rate = 0.0010
-            est_fees_usdt = (pos.qty * (pos.short_entry_usdt + global_ask_usdt)) * fee_rate
+            rates = rates_for_position(pos)
             futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - global_ask_usdt)
 
             # Buffer min ROI: at least +0.05% net ROI or 25% of base target exit spread
@@ -213,17 +213,13 @@ class ExitMixin:
             capital_usdt = pos.qty * pos.short_entry_usdt
             min_profit_target_usdt = capital_usdt * (min_roi_pct / 100.0)
 
-            # Required Spot PnL in USDT to guarantee positive closed PnL
-            required_spot_pnl_usdt = (
-                min_profit_target_usdt
-                + est_fees_usdt
-                - futures_pnl_usdt
-                - pos.accumulated_funding_usdt
+            # Solve the spot exit floor including all four entry/exit fees.
+            spot_entry_usdt = pos.entry_price_idr / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
+            required_spot_exit_usdt_value = required_spot_exit_usdt_fn(
+                pos.qty, spot_entry_usdt, pos.short_entry_usdt, global_ask_usdt,
+                pos.accumulated_funding_usdt, min_profit_target_usdt, rates,
             )
-
-            min_profitable_sell_idr = pos.entry_price_idr
-            if pos.qty > 0 and usdt_idr_rate > 0:
-                min_profitable_sell_idr += (required_spot_pnl_usdt * usdt_idr_rate) / pos.qty
+            min_profitable_sell_idr = required_spot_exit_usdt_value * usdt_idr_rate
 
             limit_sell_idr = max(pegged_limit_sell_idr, min_profitable_sell_idr)
 
@@ -350,7 +346,15 @@ class ExitMixin:
                 spot_pnl_idr = pos.qty * (local_best_bid - pos.entry_price_idr)
                 spot_pnl_usdt = spot_pnl_idr / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
                 futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - global_ask_usdt)
-                est_fees_usdt = (pos.qty * (pos.short_entry_usdt + global_ask_usdt)) * 0.0005
+                rates = rates_for_position(pos)
+                est_fees_usdt = round_trip_fees_usdt(
+                    pos.qty,
+                    pos.entry_price_idr / usdt_idr_rate,
+                    local_best_bid / usdt_idr_rate,
+                    pos.short_entry_usdt,
+                    global_ask_usdt,
+                    rates,
+                )
                 net_unrealized_usdt = (
                     spot_pnl_usdt + futures_pnl_usdt + pos.accumulated_funding_usdt - est_fees_usdt
                 )
@@ -603,7 +607,15 @@ class ExitMixin:
                 funding_usdt = float(pos.accumulated_funding_usdt) * fill_ratio
                 pos.accumulated_funding_usdt -= funding_usdt
 
-                fees_usdt = (unclosed_delta * (short_entry_usdt + short_exit_usdt)) * 0.0005
+                rates = rates_for_position(pos)
+                fees_usdt = round_trip_fees_usdt(
+                    unclosed_delta,
+                    entry_price_idr / usdt_rate,
+                    exit_price_idr / usdt_rate,
+                    short_entry_usdt,
+                    short_exit_usdt,
+                    rates,
+                )
                 net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
                 net_profit_idr = net_profit_usdt * usdt_rate
 
