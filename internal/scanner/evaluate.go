@@ -413,6 +413,12 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					FeeSource:                        op.FeeSource,
 					FeeVerified:                      op.FeeVerified,
 					FeeFetchedAtMS:                   op.FeeFetchedAtMS,
+					EstimatedFeesUSDT:                op.TradingFees,
+					Quantity:                         op.Quantity,
+					SpotEntryPriceUSDT:               op.SpotEntryPrice,
+					SpotExitPriceUSDT:                op.SpotExitPrice,
+					PerpEntryPriceUSDT:               op.PerpEntryPrice,
+					PerpExitPriceUSDT:                op.PerpExitPrice,
 				},
 			}
 
