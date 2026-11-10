@@ -1230,6 +1230,10 @@ class ArbitrageEngine(
                 "filled": 0.0,
                 "hedged_short_qty": 0.0,
                 "cancel_threshold_usdt": directives.cancel_if_global_bid_drops_below_usdt,
+                "min_entry_spread_pct": max(
+                    float(getattr(self.config, "entry_revalidation_min_spread_pct", 0.0) or 0.0),
+                    float(directives.min_entry_spread_pct or 0.0),
+                ),
                 "tick_size": pair_info.local_price_tick,
                 "quote_asset": pair_info.quote_asset,
                 "usdt_idr_rate": snapshot.usdt_idr_rate,
