@@ -620,6 +620,8 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	}
 
 	op := domain.Opportunity{
+		LocalExchange:          sm.Exchange,
+		GlobalExchange:         pm.Exchange,
 		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
 		BaseAsset:              sm.BaseAsset,
 		QuoteAsset:             targetQuote,
