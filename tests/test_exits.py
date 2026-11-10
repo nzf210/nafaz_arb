@@ -140,6 +140,13 @@ async def test_state4_records_negative_pnl_realistically(engine, fake_redis, moc
     records the trade as a loss in history, and does NOT falsely count it as a win.
     """
     pair_tag = "toko:ath_usdt"
+    engine.config.mock_mode = True
+    realized_balance_calls = []
+
+    def capture_realized_trade(**kwargs):
+        realized_balance_calls.append(kwargs)
+
+    mock_client.apply_realized_trade = capture_realized_trade
     pos = ActivePosition(
         local_exchange="tokocrypto",
         global_exchange="okx",
@@ -202,6 +209,10 @@ async def test_state4_records_negative_pnl_realistically(engine, fake_redis, moc
     )
     assert trade["fee_source"] == "LEGACY_CONSERVATIVE_FALLBACK"
     assert trade["fee_verified"] is False
+    assert len(realized_balance_calls) == 1
+    balance_fees = realized_balance_calls[0]
+    assert balance_fees["spot_fees_usdt"] == pytest.approx(trade["spot_fees_usdt"])
+    assert balance_fees["futures_fees_usdt"] == pytest.approx(trade["futures_fees_usdt"])
 
     # 4. Verify stats: total_closed incremented, but win_count is 0!
     stats = await fake_redis.hgetall("arb:stats")
