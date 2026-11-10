@@ -289,21 +289,26 @@ operational tables for exchange accounts, strategy/risk configuration, market pa
 scanner opportunities, orders/fills, positions/legs, funding payments, closed trades,
 balances, risk events, and executor events/status snapshots.
 
-**Important:** the schema is created, and the executor now writes to it on a
-best-effort basis. Redis remains the live coordination layer and scanner
-opportunity history still uses the configured JSON file.
+**Runtime integration:** the Go scanner and Python executor now have optional
+Supabase persistence adapters. Redis remains the live coordination layer for
+signals, locks, live prices and pub/sub; the JSON history file remains the scanner's
+local API/history cache. Supabase receives durable scanner snapshots and executor
+operational ledgers without becoming a dependency of the trading path.
 
-Set both `SUPABASE_URL` and `SUPABASE_KEY` (secret/service-role key — never the
-publishable key, whose `anon` role these tables deliberately deny) in the server
-environment to enable it. With either unset the writer is inert, and every write
-is queued and flushed by a background task, so an unreachable database can never
-delay a hedge, rollback, or force close.
+Set `SUPABASE_URL` and `SUPABASE_KEY` (the server-side service-role key, never the
+publishable/anon key) in the host `.env`. Both services enable persistence when both
+values are present; `SUPABASE_ENABLED=false` explicitly disables it. The background
+writers batch/upsert records and retry transient HTTP failures. They are best-effort:
+a full queue or persistent database failure is logged and may lose telemetry, but
+must never delay a hedge, rollback, force close, or scanner signal.
 
-Persisted by the executor: `positions`, `orders`, `order_fills`, `closed_trades`,
-`executor_events`. Writes are upserts on client-generated ids, so retries are
-idempotent, and fill rows derive from cumulative filled quantity so a replayed
-write cannot duplicate a fill. `scanner_opportunities`, `balance_snapshots`,
-`funding_payments`, and `executor_status_snapshots` are not yet written.
+Scanner tables: `market_pairs` and `scanner_opportunities`. Executor tables:
+`positions`, `orders`, exchange-reported `order_fills`, `closed_trades`,
+`balance_snapshots`, confirmed `funding_payments`, `risk_events`,
+`executor_events`, and throttled `executor_status_snapshots`. Order cumulative
+filled quantity remains on `orders`; the adapter does not invent fill rows from
+cumulative deltas because those are not restart-safe. Fill rows require an actual
+exchange trade ID and are upserted by a deterministic ID.
 
 
 For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.
