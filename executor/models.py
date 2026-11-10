@@ -124,6 +124,7 @@ class ExecutionDirectives:
     fee_source: str = "LEGACY_UNVERIFIED"
     fee_verified: bool = False
     fee_fetched_at_ms: int = 0
+    fee_asset_surcharge_pct: float = 0.0
     estimated_fees_usdt: float = 0.0
     quantity: float = 0.0
     spot_entry_price_usdt: float = 0.0
@@ -150,6 +151,7 @@ class ExecutionDirectives:
             fee_source=str(d.get("fee_source", "LEGACY_UNVERIFIED")),
             fee_verified=bool(d.get("fee_verified", False)),
             fee_fetched_at_ms=int(d.get("fee_fetched_at_ms", 0)),
+            fee_asset_surcharge_pct=float(d.get("fee_asset_surcharge_pct", 0.0)),
             estimated_fees_usdt=float(d.get("estimated_fees_usdt", 0.0)),
             quantity=float(d.get("quantity", 0.0)),
             spot_entry_price_usdt=float(d.get("spot_entry_price_usdt", 0.0)),
@@ -215,6 +217,7 @@ class ActivePosition:
     fee_source: str = "LEGACY_UNVERIFIED"
     fee_verified: bool = False
     fee_fetched_at_ms: int = 0
+    fee_asset_surcharge_pct: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -255,6 +258,7 @@ class ActivePosition:
             "fee_source": self.fee_source,
             "fee_verified": self.fee_verified,
             "fee_fetched_at_ms": self.fee_fetched_at_ms,
+            "fee_asset_surcharge_pct": self.fee_asset_surcharge_pct,
         }
 
     @classmethod
@@ -314,6 +318,7 @@ class ActivePosition:
             fee_source=str(d.get("fee_source", "LEGACY_UNVERIFIED")),
             fee_verified=bool(d.get("fee_verified", False)),
             fee_fetched_at_ms=int(d.get("fee_fetched_at_ms", 0)),
+            fee_asset_surcharge_pct=float(d.get("fee_asset_surcharge_pct", 0.0)),
         )
 
 
