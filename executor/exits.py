@@ -21,7 +21,7 @@ from executor.helpers import (
     ceil_to_tick,
 )
 from executor.private_stream import fetch_order_preferring_stream
-from executor.fee_engine import rates_for_position, round_trip_fees_usdt, required_spot_exit_usdt as required_spot_exit_usdt_fn
+from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt, round_trip_fees_usdt, required_spot_exit_usdt as required_spot_exit_usdt_fn
 
 logger = logging.getLogger("executor.engine")
 
@@ -608,7 +608,7 @@ class ExitMixin:
                 pos.accumulated_funding_usdt -= funding_usdt
 
                 rates = rates_for_position(pos)
-                fees_usdt = round_trip_fees_usdt(
+                fee_breakdown = round_trip_fee_breakdown_usdt(
                     unclosed_delta,
                     entry_price_idr / usdt_rate,
                     exit_price_idr / usdt_rate,
@@ -616,6 +616,9 @@ class ExitMixin:
                     short_exit_usdt,
                     rates,
                 )
+                spot_fees_usdt = fee_breakdown["spot_fees_usdt"]
+                futures_fees_usdt = fee_breakdown["futures_fees_usdt"]
+                fees_usdt = fee_breakdown["total_fees_usdt"]
                 net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
                 net_profit_idr = net_profit_usdt * usdt_rate
 
@@ -649,6 +652,11 @@ class ExitMixin:
                     "spot_pnl_idr": spot_pnl_idr,
                     "futures_pnl_usdt": futures_pnl_usdt,
                     "accumulated_funding_usdt": funding_usdt,
+                    "spot_fees_usdt": spot_fees_usdt,
+                    "futures_fees_usdt": futures_fees_usdt,
+                    "fees_usdt": fees_usdt,
+                    "fee_source": rates.source,
+                    "fee_verified": rates.verified,
                     "net_profit_usdt": net_profit_usdt,
                     "net_profit_idr": net_profit_idr,
                     "net_roi_pct": roi_pct,
@@ -667,11 +675,11 @@ class ExitMixin:
                     self.client.apply_realized_trade(
                         spot_cost_usdt=spot_cost,
                         spot_pnl_usdt=spot_pnl_usdt,
-                        spot_fees_usdt=0.0,
+                        spot_fees_usdt=spot_fees_usdt,
                         futures_margin_usdt=fut_margin,
                         futures_pnl_usdt=futures_pnl_usdt,
                         funding_usdt=funding_usdt,
-                        futures_fees_usdt=fees_usdt,
+                        futures_fees_usdt=futures_fees_usdt,
                     )
                     bals = await self._get_balance_snapshot(
                         pair_tag=pair_tag,
