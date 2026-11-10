@@ -403,6 +403,43 @@ func (c *Client) GetLivePrice(ctx context.Context, localEx, symbol string, globa
 	return &snap, nil
 }
 
+// DynamicFeeProfile is an authenticated, short-lived account fee snapshot
+// published by the executor. Rates are percentages, not decimal fractions.
+type DynamicFeeProfile struct {
+    MakerFeePct float64 `json:"maker_fee_pct"`
+    TakerFeePct float64 `json:"taker_fee_pct"`
+    Source string `json:"source"`
+    Verified bool `json:"verified"`
+    FetchedAtMS int64 `json:"fetched_at_ms"`
+}
+
+// GetDynamicFeeProfile returns only a fresh, verified executor fee snapshot.
+func (c *Client) GetDynamicFeeProfile(ctx context.Context, exchange, market string) (*DynamicFeeProfile, error) {
+    if c == nil || c.rdb == nil {
+        return nil, nil
+    }
+    key := "arb:fee_profile:" + strings.ToLower(strings.TrimSpace(exchange)) + ":" + strings.ToLower(strings.TrimSpace(market))
+    raw, err := c.rdb.Get(ctx, key).Bytes()
+    if err == redis.Nil {
+        return nil, nil
+    }
+    if err != nil {
+        return nil, fmt.Errorf("redis get fee profile %s: %w", key, err)
+    }
+    var profile DynamicFeeProfile
+    if err := json.Unmarshal(raw, &profile); err != nil {
+        return nil, fmt.Errorf("decode fee profile %s: %w", key, err)
+    }
+    age := time.Now().UnixMilli() - profile.FetchedAtMS
+    if !profile.Verified || profile.Source != "EXCHANGE_API" ||
+        profile.FetchedAtMS <= 0 || age < 0 || age > int64(5*time.Minute/time.Millisecond) ||
+        profile.MakerFeePct < 0 || profile.MakerFeePct > 100 ||
+        profile.TakerFeePct < 0 || profile.TakerFeePct > 100 {
+        return nil, nil
+    }
+    return &profile, nil
+}
+
 // GetTradeStats retrieves aggregate statistics of closed arbitrage trades.
 func (c *Client) GetTradeStats(ctx context.Context) (TradeStats, error) {
 	if c == nil || c.rdb == nil {
