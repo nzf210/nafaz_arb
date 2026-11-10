@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -25,6 +26,12 @@ type RedisConfig struct {
 	Addr     string `json:"addr"`
 	Password string `json:"password"`
 	DB       int    `json:"db"`
+}
+
+type SupabaseConfig struct {
+	Enabled bool   `json:"enabled"`
+	URL     string `json:"url"`
+	Key     string `json:"key"`
 }
 
 // ExchangeFeeProfile overrides the conservative global fee defaults for one venue.
@@ -87,6 +94,7 @@ type Config struct {
 	EnableSyntheticIDR            bool           `json:"enable_synthetic_idr"`
 	SyntheticUSDTIDRRate          float64        `json:"synthetic_usdt_idr_rate"`
 	Redis                         RedisConfig    `json:"redis"`
+	Supabase                      SupabaseConfig `json:"supabase"`
 	MinFundingRate                float64        `json:"min_funding_rate"`
 	ExcludedSymbols               []string       `json:"excluded_symbols"`
 	FundingPollingIntervalSeconds int            `json:"funding_polling_interval_seconds"`
@@ -258,6 +266,15 @@ func (c *Config) validate() error {
 	if c.CapitalTotal <= 0 {
 		return fmt.Errorf("capital_total must be positive")
 	}
+	if c.Supabase.Enabled {
+		if strings.TrimSpace(c.Supabase.URL) == "" || strings.TrimSpace(c.Supabase.Key) == "" {
+			return fmt.Errorf("supabase.enabled requires SUPABASE_URL and SUPABASE_KEY")
+		}
+		parsed, err := url.ParseRequestURI(strings.TrimSpace(c.Supabase.URL))
+		if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
+			return fmt.Errorf("supabase.url must be a valid http(s) URL")
+		}
+	}
 	if c.MinNetROIPct > c.MaxNetROIPct {
 		return fmt.Errorf("min_net_roi_pct must not exceed max_net_roi_pct")
 	}
@@ -330,6 +347,12 @@ func (c *Config) applyEnvOverrides() {
 	setEnvInt64(&c.Telegram.ChatID, "TELEGRAM_CHAT_ID")
 	setEnvBool(&c.Telegram.Enabled, "TELEGRAM_ENABLED")
 	setEnvBool(&c.Redis.Enabled, "REDIS_ENABLED")
+	setEnvString(&c.Supabase.URL, "SUPABASE_URL")
+	setEnvString(&c.Supabase.Key, "SUPABASE_KEY")
+	if c.Supabase.URL != "" && c.Supabase.Key != "" {
+		c.Supabase.Enabled = true
+	}
+	setEnvBool(&c.Supabase.Enabled, "SUPABASE_ENABLED")
 	setEnvString(&c.Redis.Addr, "REDIS_ADDR")
 	setEnvString(&c.Redis.Password, "REDIS_PASSWORD")
 	setEnvInt(&c.Redis.DB, "REDIS_DB")
