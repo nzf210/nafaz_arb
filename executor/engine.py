@@ -1114,42 +1114,46 @@ class ArbitrageEngine(
         if not bool(getattr(self.config, "mock_mode", False)) and hasattr(self.client, "fetch_pair_fee_rates"):
             try:
                 fee_snapshot = await self.client.fetch_pair_fee_rates(payload.pair_info)
-                spot_rates = fee_snapshot["spot"]
-                perp_rates = fee_snapshot["perp"]
+                spot_rates = fee_snapshot.get("spot")
+                perp_rates = fee_snapshot.get("perp")
                 maker_taker = str(getattr(self.config, "execution_mode", "TAKER_TAKER")).upper()
-                directives.spot_entry_fee_pct = (
-                    spot_rates["maker"] if maker_taker == "MAKER_TAKER" else spot_rates["taker"]
-                )
-                directives.spot_exit_fee_pct = spot_rates["taker"]
-                directives.perp_entry_fee_pct = perp_rates["taker"]
-                directives.perp_exit_fee_pct = perp_rates["taker"]
+                if spot_rates is not None:
+                    directives.spot_entry_fee_pct = (
+                        spot_rates["maker"] if maker_taker == "MAKER_TAKER" else spot_rates["taker"]
+                    )
+                    directives.spot_exit_fee_pct = spot_rates["taker"]
+                if perp_rates is not None:
+                    directives.perp_entry_fee_pct = perp_rates["taker"]
+                    directives.perp_exit_fee_pct = perp_rates["taker"]
                 directives.fee_source = fee_snapshot["source"]
                 directives.fee_verified = bool(fee_snapshot["verified"])
                 directives.fee_fetched_at_ms = int(fee_snapshot["fetched_at_ms"])
                 if self.redis is not None:
                     fetched_at_ms = int(fee_snapshot["fetched_at_ms"])
-                    await self.redis.set(
-                        f"arb:fee_profile:{payload.pair_info.local_exchange.lower()}:spot",
-                        json.dumps({
-                            "maker_fee_pct": spot_rates["maker"],
-                            "taker_fee_pct": spot_rates["taker"],
-                            "source": "EXCHANGE_API",
-                            "verified": True,
-                            "fetched_at_ms": fetched_at_ms,
-                        }),
-                        ex=300,
-                    )
-                    await self.redis.set(
-                        f"arb:fee_profile:{payload.pair_info.global_exchange.lower()}:perp",
-                        json.dumps({
-                            "maker_fee_pct": perp_rates["maker"],
-                            "taker_fee_pct": perp_rates["taker"],
-                            "source": "EXCHANGE_API",
-                            "verified": True,
-                            "fetched_at_ms": fetched_at_ms,
-                        }),
-                        ex=300,
-                    )
+                    if spot_rates is not None:
+                        await self.redis.set(
+                            f"arb:fee_profile:{payload.pair_info.local_exchange.lower()}:spot",
+                            json.dumps({
+                                "maker_fee_pct": spot_rates["maker"],
+                                "taker_fee_pct": spot_rates["taker"],
+                                "source": "EXCHANGE_API",
+                                "verified": True,
+                                "fetched_at_ms": fetched_at_ms,
+                            }),
+                            ex=300,
+                        )
+                    if perp_rates is not None:
+                        await self.redis.set(
+                            f"arb:fee_profile:{payload.pair_info.global_exchange.lower()}:perp",
+                            json.dumps({
+                                "maker_fee_pct": perp_rates["maker"],
+                                "taker_fee_pct": perp_rates["taker"],
+                                "source": "EXCHANGE_API",
+                                "verified": True,
+                                "fetched_at_ms": fetched_at_ms,
+                            }),
+                            ex=300,
+                        )
                 logger.info(
                     "[Fee Engine] refreshed account fee tiers for %s: spot=%s perp=%s",
                     pair_tag, spot_rates, perp_rates,
@@ -1160,7 +1164,7 @@ class ArbitrageEngine(
                     "using scanner fee snapshot (%s, verified=%s): %s",
                     pair_tag, directives.fee_source, directives.fee_verified, fee_error,
                 )
-        if directives.fee_verified and directives.quantity > 0:
+        if directives.fee_source in ("EXCHANGE_API", "PARTIAL_EXCHANGE_API") and directives.quantity > 0:
             try:
                 dynamic_fees = round_trip_fees_usdt(
                     directives.quantity,
