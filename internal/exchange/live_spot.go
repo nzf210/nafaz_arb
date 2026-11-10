@@ -130,6 +130,8 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 		Data struct {
 			List []struct {
 				Symbol            string `json:"symbol"`
+				Type              int    `json:"type"`
+				SymbolType        int    `json:"symbolType"`
 				BaseAsset         string `json:"baseAsset"`
 				QuoteAsset        string `json:"quoteAsset"`
 				SpotTradingEnable int    `json:"spotTradingEnable"`
@@ -190,6 +192,7 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 
 	if len(markets) > 0 {
 		l.mu.Lock()
+		for _, market := range markets { l.tokocryptoSymbolTypes[market.Symbol] = market.ExchangeSymbolType }
 		l.cachedTokocryptoSpot = markets
 		l.lastTokocryptoFetch = time.Now().UTC()
 		l.mu.Unlock()
