@@ -65,3 +65,11 @@ def test_spot_exit_fee_is_included_in_solved_profit_floor():
     fees = round_trip_fees_usdt(1, 100, floor, 100, 100, rates)
     net = (floor - 100) + (100 - 100) - fees
     assert net == pytest.approx(0.1, abs=1e-9)
+
+def test_fee_asset_surcharge_is_applied_to_all_four_fill_notionals():
+    base = FeeRates(0.1, 0.2, 0.03, 0.04)
+    with_surcharge = FeeRates(0.1, 0.2, 0.03, 0.04, surcharge_pct=0.01)
+    baseline = round_trip_fees_usdt(1, 100, 110, 105, 95, base)
+    actual = round_trip_fees_usdt(1, 100, 110, 105, 95, with_surcharge)
+    expected_delta = (100 + 110 + 105 + 95) * 0.01 / 100
+    assert actual - baseline == pytest.approx(expected_delta)
