@@ -58,7 +58,18 @@ Pastikan VPS Anda telah terpasang:
    mkdir -p data
    ```
 
-4. Edit file `config.json` sesuai kebutuhan:
+4. Siapkan environment Supabase opsional (setelah migration sudah diterapkan):
+   ```bash
+   cp .env.example .env
+   chmod 600 .env
+   ```
+   Edit `.env` dan isi `SUPABASE_ENABLED=true`, `SUPABASE_URL`, serta
+   `SUPABASE_KEY` menggunakan service-role key server-side. Jangan menaruh key
+   tersebut di `config.json`, frontend, atau Git. Default template tetap
+   `SUPABASE_ENABLED=false`; ubah ke `true` hanya setelah schema tersedia.
+   Supabase opsional dan tidak menggantikan Redis untuk signal/lock/pub-sub.
+
+5. Edit file `config.json` sesuai kebutuhan:
    * Ubah `"mode"`: `"MOCK"` (testing simulasi) atau `"LIVE"` (koneksi data bursa live).
    * Konfigurasi alert Telegram jika ingin notifikasi aktif:
      ```json
@@ -87,6 +98,7 @@ podman compose up -d --build
 *(atau jika menggunakan tool eksternal `podman-compose`:)*
 ```bash
 podman-compose up -d --build
+# Compose membaca .env dari direktori project; pastikan file hanya dapat dibaca owner.
 ```
 
 ### Memeriksa Status dan Log
