@@ -85,6 +85,7 @@ type Opportunity struct {
 	FeeSource               string    `json:"fee_source,omitempty"`
 	FeeVerified             bool      `json:"fee_verified"`
 	FeeFetchedAtMS          int64     `json:"fee_fetched_at_ms,omitempty"`
+	FeeAssetSurchargePct    float64   `json:"fee_asset_surcharge_pct,omitempty"`
 	Slippage               float64   `json:"slippage"`
 	NetProfit              float64   `json:"net_profit"`
 	AllocatedCapital       float64   `json:"allocated_capital"`
@@ -198,6 +199,7 @@ type ExecutionDirectives struct {
 	FeeSource                        string  `json:"fee_source,omitempty"`
 	FeeVerified                      bool    `json:"fee_verified"`
 	FeeFetchedAtMS                   int64   `json:"fee_fetched_at_ms,omitempty"`
+	FeeAssetSurchargePct             float64 `json:"fee_asset_surcharge_pct,omitempty"`
 	EstimatedFeesUSDT                float64 `json:"estimated_fees_usdt"`
 	Quantity                         float64 `json:"quantity"`
 	SpotEntryPriceUSDT               float64 `json:"spot_entry_price_usdt"`
