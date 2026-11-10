@@ -23,6 +23,7 @@ config.json
 config.*.json
 .env
 .env.*
+!.env.example
 *.pem
 *.key
 
