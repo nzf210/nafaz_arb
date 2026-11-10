@@ -469,3 +469,46 @@ def test_open_orders_reconciliation_interval_is_fast_and_bounded(monkeypatch):
 
     monkeypatch.setenv("EXPOSURE_OPEN_ORDERS_INTERVAL_SECONDS", "999")
     assert _env_open_orders_interval() == 300
+
+
+@pytest.mark.asyncio
+async def test_pending_exit_order_uses_active_position_venue_for_correlation(monkeypatch):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
+
+    class ClientWithOpenOrders(FakeClient):
+        async def fetch_open_orders_report(self):
+            return [{
+                "name": "indodax", "market": "spot", "status": "ok",
+                "orders": [{
+                    "id": "exit-123", "client_order_id": "nafas-exit-123",
+                    "symbol": "btc_idr", "side": "sell", "type": "limit",
+                    "status": "open", "price": 110, "amount": 1,
+                    "filled": 0, "remaining": 1,
+                }],
+            }]
+
+    client = ClientWithOpenOrders()
+    engine = SimpleNamespace(
+        config=SimpleNamespace(mock_mode=False),
+        client=client,
+        active_positions={"pair": SimpleNamespace(local_exchange="indodax")},
+        pending_entry_orders={},
+        pending_exit_orders={"pair": {
+            "order_id": "exit-123", "client_order_id": "nafas-exit-123",
+        }},
+        unmanaged_open_orders=[],
+        _pair_infos={},
+        _exchange_halted={},
+        supabase=FakeSupabase(),
+        failures=[],
+    )
+
+    async def publish_failure(*args, **kwargs):
+        engine.failures.append((args, kwargs))
+
+    engine._publish_execution_failure = publish_failure
+    await ExposureReconciliationWorker(engine)._reconcile_open_orders(client)
+
+    assert engine.unmanaged_open_orders == []
+    assert engine._exchange_halted == {}
+    assert engine.failures == []
