@@ -8,6 +8,7 @@ from executor.exposure_reconciliation import (
     ExposureReconciliationWorker,
     _env_float,
     _env_interval,
+    _env_open_orders_interval,
     _position_short_qty,
 )
 
@@ -444,3 +445,14 @@ async def test_known_pending_order_is_not_classified_as_unmanaged(monkeypatch):
     assert engine.unmanaged_open_orders == []
     assert "indodax" not in engine._exchange_halted
     assert engine.failures == []
+
+
+def test_open_orders_reconciliation_interval_is_fast_and_bounded(monkeypatch):
+    monkeypatch.delenv("EXPOSURE_OPEN_ORDERS_INTERVAL_SECONDS", raising=False)
+    assert _env_open_orders_interval() == 15
+
+    monkeypatch.setenv("EXPOSURE_OPEN_ORDERS_INTERVAL_SECONDS", "1")
+    assert _env_open_orders_interval() == 5
+
+    monkeypatch.setenv("EXPOSURE_OPEN_ORDERS_INTERVAL_SECONDS", "999")
+    assert _env_open_orders_interval() == 300
