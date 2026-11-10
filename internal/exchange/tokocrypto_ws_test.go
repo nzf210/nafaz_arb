@@ -18,12 +18,12 @@ func TestTokocryptoPublicDepthRoutesBySymbolType(t *testing.T) {
 			if r.URL.Query().Get("symbol") != "BTCUSDT" {
 				t.Errorf("unexpected MBX symbol: %s", r.URL.Query().Get("symbol"))
 			}
-			_, _ = w.Write([]byte(`{"code":0,"data":{"lastUpdateId":77,"bids":[["100","2"]],"asks":[["101","3"]]},"timestamp":1700000000000}`))
+			_, _ = w.Write([]byte(`{"lastUpdateId":77,"bids":[["100","2"]],"asks":[["101","3"]],"timestamp":1700000000000}`))
 		case "/api/v1/depth":
 			if r.URL.Query().Get("symbol") != "BTCIDR" {
 				t.Errorf("unexpected NextMe symbol: %s", r.URL.Query().Get("symbol"))
 			}
-			_, _ = w.Write([]byte(`{"code":0,"data":{"lastUpdateId":88,"E":1700000000001,"bids":[["1000","4"]],"asks":[["1001","5"]]}}`))
+			_, _ = w.Write([]byte(`{"lastUpdateId":88,"E":1700000000001,"bids":[["1000","4"]],"asks":[["1001","5"]]}`))
 		default:
 			http.NotFound(w, r)
 		}
