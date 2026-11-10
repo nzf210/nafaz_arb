@@ -196,7 +196,6 @@ class SupabaseWriter:
         }
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
-        self._emit_position_legs(pair_key, pos, pair_info, row["status"], is_mock)
 
     def position_status(self, pair_key: str, status: str, pos: Any = None) -> None:
         position_id = self._position_ids.get(pair_key)
@@ -215,32 +214,6 @@ class SupabaseWriter:
                 row["closed_at"] = datetime.now(timezone.utc).isoformat()
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
-        self._emit_position_legs(pair_key, pos, None, status, row.get("is_mock", True))
-
-    def _emit_position_legs(self, pair_key: str, pos: Any, pair_info: Any, status: str, is_mock: bool) -> None:
-        if pos is None:
-            return
-        position_id = self._position_ids.get(pair_key) or _position_uuid(
-            pair_key, getattr(pos, "opened_at_ms", 0)
-        )
-        local_symbol = getattr(pair_info, "local_symbol", "") or getattr(pos, "symbol", "")
-        global_symbol = getattr(pair_info, "global_symbol", "") or getattr(pos, "symbol", "")
-        common = {
-            "position_id": position_id,
-            "status": status,
-            "qty": _num(getattr(pos, "qty", 0.0)),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        self._emit("position_legs", {
-            **common, "leg": "spot", "exchange_name": getattr(pos, "local_exchange", "") or "",
-            "symbol": local_symbol, "side": "long",
-            "average_entry_price": _num(getattr(pos, "entry_price_idr", 0.0)) or None,
-        }, on_conflict="position_id,leg")
-        self._emit("position_legs", {
-            **common, "leg": "perpetual", "exchange_name": getattr(pos, "global_exchange", "") or "",
-            "symbol": global_symbol, "side": "short",
-            "average_entry_price": _num(getattr(pos, "short_entry_usdt", 0.0)) or None,
-        }, on_conflict="position_id,leg")
 
     # ------------------------------------------------------------------ orders
 
@@ -462,7 +435,7 @@ class SupabaseWriter:
 
     def status_snapshot(self, snapshot: Dict[str, Any], *, is_mock: bool = False) -> None:
         now = time.monotonic()
-        if now - self._last_status_snapshot < 10.0:
+        if self._last_status_snapshot and now - self._last_status_snapshot < 10.0:
             return
         self._last_status_snapshot = now
         instance_id = str(uuid.uuid5(_POSITION_NS, f"executor-instance:{id(self)}"))
