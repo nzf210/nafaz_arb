@@ -1113,7 +1113,41 @@ class ArbitrageEngine(
         # scanner profile and keep its source/verification status unchanged.
         if not bool(getattr(self.config, "mock_mode", False)) and hasattr(self.client, "fetch_pair_fee_rates"):
             try:
-                fee_snapshot = await self.client.fetch_pair_fee_rates(payload.pair_info)
+                cached_profiles = {}
+                def fee_cache_key(exchange_name, market_name, symbol):
+                    normalized = str(symbol).lower().replace("/", "_").replace("-", "_").replace(":", "_")
+                    return f"arb:fee_profile:{exchange_name.lower()}:{market_name}:{normalized}"
+
+                if self.redis is not None:
+                    for market_name, exchange_name, symbol in (
+                        ("spot", payload.pair_info.local_exchange, payload.pair_info.local_symbol),
+                        ("perp", payload.pair_info.global_exchange, payload.pair_info.global_symbol),
+                    ):
+                        cached_raw = await self.redis.get(
+                            fee_cache_key(exchange_name, market_name, symbol)
+                        )
+                        if not cached_raw:
+                            continue
+                        try:
+                            cached_profile = json.loads(cached_raw)
+                            fetched_at = int(cached_profile.get("fetched_at_ms", 0))
+                            age_ms = int(time.time() * 1000) - fetched_at
+                            if (
+                                cached_profile.get("source") == "EXCHANGE_API"
+                                and cached_profile.get("verified") is True
+                                and 0 <= age_ms <= 300_000
+                            ):
+                                cached_profiles[market_name] = {
+                                    "maker": float(cached_profile["maker_fee_pct"]),
+                                    "taker": float(cached_profile["taker_fee_pct"]),
+                                    "fetched_at_ms": fetched_at,
+                                }
+                        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                            logger.warning("[Fee Engine] ignoring malformed cached %s fee profile", market_name)
+
+                fee_snapshot = await self.client.fetch_pair_fee_rates(
+                    payload.pair_info, cached_profiles
+                )
                 spot_rates = fee_snapshot.get("spot")
                 perp_rates = fee_snapshot.get("perp")
                 maker_taker = str(getattr(self.config, "execution_mode", "TAKER_TAKER")).upper()
@@ -1129,7 +1163,6 @@ class ArbitrageEngine(
                 directives.fee_verified = bool(fee_snapshot["verified"])
                 directives.fee_fetched_at_ms = int(fee_snapshot["fetched_at_ms"])
                 if self.redis is not None:
-                    fetched_at_ms = int(fee_snapshot["fetched_at_ms"])
                     if spot_rates is not None:
                         await self.redis.set(
                             f"arb:fee_profile:{payload.pair_info.local_exchange.lower()}:spot:{payload.pair_info.local_symbol.lower().replace(chr(47), chr(95)).replace(chr(45), chr(95)).replace(chr(58), chr(95))}",
@@ -1138,7 +1171,7 @@ class ArbitrageEngine(
                                 "taker_fee_pct": spot_rates["taker"],
                                 "source": "EXCHANGE_API",
                                 "verified": True,
-                                "fetched_at_ms": fetched_at_ms,
+                                "fetched_at_ms": int(spot_rates["fetched_at_ms"]),
                             }),
                             ex=300,
                         )
@@ -1150,7 +1183,7 @@ class ArbitrageEngine(
                                 "taker_fee_pct": perp_rates["taker"],
                                 "source": "EXCHANGE_API",
                                 "verified": True,
-                                "fetched_at_ms": fetched_at_ms,
+                                "fetched_at_ms": int(perp_rates["fetched_at_ms"]),
                             }),
                             ex=300,
                         )
