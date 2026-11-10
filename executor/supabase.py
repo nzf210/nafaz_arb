@@ -352,6 +352,7 @@ class SupabaseWriter:
 
     async def _run(self) -> None:
         while True:
+            batch = []
             try:
                 batch = [await self._queue.get()]
                 while len(batch) < _BATCH_MAX:
@@ -360,12 +361,15 @@ class SupabaseWriter:
                     except asyncio.QueueEmpty:
                         break
                 await self._flush(batch)
-                for _ in batch:
-                    self._queue.task_done()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("supabase writer loop error")
+            finally:
+                # Queue accounting must complete even when session creation or
+                # a transport implementation raises outside the retry loop.
+                for _ in batch:
+                    self._queue.task_done()
 
     async def _flush(self, batch: list) -> None:
         grouped: Dict[tuple, list] = {}

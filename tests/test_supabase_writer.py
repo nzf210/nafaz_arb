@@ -232,3 +232,19 @@ class TestClosedTrades:
         writer = _writer()
         writer.trade_closed("p", {"net_profit_usdt": 1.0}, None)
         assert _drain(writer) == []
+
+
+
+@pytest.mark.asyncio
+async def test_writer_marks_batch_done_when_flush_raises():
+    writer = _writer()
+    await writer.start()
+
+    async def fail_flush(_batch):
+        raise RuntimeError("simulated transport failure")
+
+    writer._flush = fail_flush
+    writer.event("TRANSPORT_FAILURE", pair_key="indodax:btc_idr")
+
+    await asyncio.wait_for(writer._queue.join(), timeout=1.0)
+    await writer.close()

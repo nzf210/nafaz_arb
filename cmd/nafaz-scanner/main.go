@@ -15,6 +15,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/history"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
+	"github.com/nafaz/spot-perp-scanner/internal/supabase"
 	"github.com/nafaz/spot-perp-scanner/internal/telegram"
 )
 func main(){
@@ -42,6 +43,20 @@ func main(){
 		log.Fatalf("invalid mode %q: must be MOCK or LIVE", cfg.Mode)
 	}
 	svc:=scanner.New(cfg,adapter)
+	writer, writerErr := supabase.NewFromEnv()
+	if writerErr != nil {
+		log.Printf("warning: Supabase scanner-opportunity persistence disabled: %v", writerErr)
+	} else if writer != nil {
+		svc.SetOpportunitySink(writer)
+		log.Printf("Supabase scanner-opportunity persistence enabled")
+		defer func() {
+			closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := writer.Close(closeCtx); err != nil {
+				log.Printf("warning: Supabase writer shutdown: %v", err)
+			}
+		}()
+	}
 
 	ctx,stop:=signal.NotifyContext(context.Background(),syscall.SIGINT,syscall.SIGTERM);defer stop()
 
