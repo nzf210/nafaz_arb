@@ -265,7 +265,7 @@ class SupabaseWriter:
         if not key:
             return
         order_identity = f"{exchange}:{key}"
-        order_id = self._order_ids.setdefault(key, str(uuid.uuid5(_POSITION_NS, "order:" + order_identity)))
+        order_id = self._order_ids.setdefault(order_identity, str(uuid.uuid5(_POSITION_NS, "order:" + order_identity)))
 
         requested = _num(order.get("amount"), _num(order.get("filled")))
         filled = _num(order.get("filled"))
@@ -441,7 +441,7 @@ class SupabaseWriter:
         info = payment.get("info") if isinstance(payment.get("info"), dict) else {}
         timestamp = int(payment.get("timestamp") or info.get("timestamp") or 0)
         raw_id = str(payment.get("id") or info.get("tranId") or info.get("id") or "").strip()
-        identity = raw_id or f"{exchange}:{symbol}:{timestamp}:{amount:.18f}:{asset}"
+        identity = f"{exchange}:{symbol}:{raw_id}" if raw_id else f"{exchange}:{symbol}:{timestamp}:{amount:.18f}:{asset}"
         payment_id = str(uuid.uuid5(_POSITION_NS, f"funding:{identity}"))
         position_id = self._position_ids.get(pair_key)
         self._emit("funding_payments", {
