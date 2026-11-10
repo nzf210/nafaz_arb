@@ -15,6 +15,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/history"
+	"github.com/nafaz/spot-perp-scanner/internal/persistence"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
 )
@@ -35,6 +36,7 @@ type Server struct {
 	activeScans   int
 	scanInFlight  atomic.Bool
 	executor      *redishandler.Client
+	supabase      *persistence.SupabaseWriter
 }
 
 type OperationalStatus struct {
@@ -55,6 +57,11 @@ type OperationalStatus struct {
 
 func New(s *scanner.Service, h *history.Store, c config.Config) *Server {
 	return &Server{scanner: s, history: h, cfg: c}
+}
+
+// SetSupabaseWriter wires the optional asynchronous operational snapshot writer.
+func (s *Server) SetSupabaseWriter(w *persistence.SupabaseWriter) {
+	s.supabase = w
 }
 
 // SetExecutorClient wires the Redis client used to read executor status.
@@ -172,6 +179,10 @@ func (s *Server) runScan(ctx context.Context) (domain.ScanResult, error) {
 	if err != nil {
 		s.finishScan(r, false, err)
 		return r, err
+	}
+	r.Complete = complete
+	if s.supabase != nil {
+		s.supabase.SubmitScan(r)
 	}
 	if e := s.history.Observe(r.CompletedAt, r.Opportunities, complete, s.cfg.MaxMissedSuccessfulScans); e != nil {
 		r.Complete = false
