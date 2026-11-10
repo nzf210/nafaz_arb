@@ -286,7 +286,7 @@ or pre-snapshot WebSocket book. The mock WebSocket tests verify this behavior;
 they do not constitute a live OKX/VPS soak test. Indodax and MEXC spot feeds
 remain outside this OKX-specific change.
 
-### Executor (`executor` block in `config.json` / environment)
+### Executor (`executor` block in `config.json` / environment)\n\nPending maker entry orders default to a 120-second TTL (`max_order_ttl_seconds` / `MAX_ORDER_TTL_SECONDS`). The independent adverse-selection guard can still cancel sooner when the global bid crosses the signal's cancellation threshold; this safety guard is intentionally retained.
 
 | Key | Env | Default | Effect |
 |---|---|---|---|
@@ -294,7 +294,7 @@ remain outside this OKX-specific change.
 | `entry_revalidation_min_spread_pct` | `ENTRY_REVALIDATION_MIN_SPREAD_PCT` | `0` (use payload floor) | Before placing the maker buy, re-quotes the global futures bid and rejects the signal when the live entry spread fell below this floor. When `0`, the payload's `min_entry_spread_pct` from the scanner is used instead. **Fail-open** on an unreadable ticker. |
 | `max_exposure_per_exchange_usdt` | `MAX_EXPOSURE_PER_EXCHANGE_USDT` | `0` (off) | Caps total committed capital per venue across open positions *and* pending entries. Left at `0` because no per-venue limit has been agreed. |
 | `balance_mismatch_fraction` | `BALANCE_MISMATCH_FRACTION` | `0.20` | Simulated-entry balance drift threshold; live entries do not poll balances for this guard. `0` disables mismatch comparison. |
-| `max_consecutive_order_failures` | `MAX_CONSECUTIVE_ORDER_FAILURES` | `3` | Halts a venue for new entries after this many consecutive order-placement failures. `0` disables. Clear via `resume_exchange()` or restart. |
+| `max_consecutive_order_failures` | `MAX_CONSECUTIVE_ORDER_FAILURES` | `50` | Halts only the affected venue for new entries after 50 consecutive system/order-transport failures. Business rejections such as insufficient balance, minimum notional, and invalid symbol do not count. `0` disables. Clear via `resume_exchange()` or restart. |
 
 **Kill switch:** publish `{"action": "on"}` to the `arb:kill_switch` Redis channel (or use the Telegram `/killswitch on` / `/killswitch off` commands). ON halts *all* new entries globally until an explicit OFF — it never auto-resets on a UTC rollover. Open positions continue to be managed.
 | `estimated_round_trip_fee_pct` | `ESTIMATED_ROUND_TRIP_FEE_PCT` | `0.001` | Shrinks the position so both legs' fees are still covered by the exit. If that drops the size below `min_allocated_capital` the entry is **rejected** rather than silently undersized. |
