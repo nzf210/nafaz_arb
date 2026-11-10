@@ -166,3 +166,13 @@ def test_live_mode_accepts_complete_indodax_okx_credentials():
         api_key="global-key", api_secret="global-secret", passphrase="okx-passphrase"
     )
     cfg.validate_live_credentials()
+
+
+def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
+    cfg = ExecutorConfig()
+    assert cfg.max_consecutive_order_failures == 50
+    assert cfg.max_order_ttl_seconds == 120
+
+    cfg.sanitize()
+    assert cfg.max_consecutive_order_failures == 50
+    assert cfg.max_order_ttl_seconds == 120
