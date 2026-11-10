@@ -337,8 +337,8 @@ class RiskMixin:
     ) -> Optional[tuple[float, float]]:
         """
         Sizes an entry from the signal budget, exposure cap and fee reserve.
-        Simulated entries are additionally capped by simulated balances; live
-        venues validate funds when the order is submitted.
+        Both simulated and live entries are capped by current free balances; live
+        balance read failures reject new entries while existing positions remain managed.
         """
         directives = payload.execution_directives
         pair_info = payload.pair_info
@@ -350,13 +350,21 @@ class RiskMixin:
         min_cap = getattr(self.config, "min_allocated_capital", 10.0)
 
         mock_mode = bool(getattr(self.config, "mock_mode", False))
-        balances = self._balance_snapshots.pop(pair_tag, None) if mock_mode else None
-        if mock_mode and balances is None:
+        balances = self._balance_snapshots.pop(pair_tag, None)
+        if balances is None:
+            # Live sizing must use the exchange's current free balance. Resting
+            # orders reduce free funds at the venue; sizing from the signal budget
+            # alone repeatedly submits orders that the exchange will reject.
             balances = await self._check_balance_mismatch(
                 pair_info,
                 payload.pricing_snapshot.usdt_idr_rate,
                 pair_tag,
             )
+        if balances is None and not mock_mode:
+            # A failed live balance read is not equivalent to an empty or
+            # unlimited balance. _check_balance_mismatch has already halted
+            # the affected venues and emitted the operational alert.
+            return None
         if balances is not None:
             avail_spot = float(balances["spot_available"])
             avail_fut = float(balances["futures_available"])

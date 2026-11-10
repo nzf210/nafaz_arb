@@ -334,6 +334,71 @@ class ExchangeClient:
                 reports.append({"name": name, "market": market, "status": "error", "error": str(exc), "assets": []})
         return reports
 
+    async def fetch_open_orders_report(self) -> list:
+        """Fetch account-wide open orders from every configured venue.
+
+        The exchange is authoritative for resting orders. A failed venue read is
+        returned as an error (never an empty order list), allowing the caller to
+        fail closed for new entries without touching existing position management.
+        """
+        reports = []
+        for name, entry in sorted(self.balance_exchanges.items()):
+            market = str(entry.get("market") or "unknown").lower()
+            exchange = entry.get("client")
+            init_error = str(entry.get("error") or "")
+            if exchange is None:
+                status = "not_configured" if "not configured" in init_error.lower() else "error"
+                reports.append({
+                    "name": name, "market": market, "status": status,
+                    "error": init_error or "exchange client is unavailable", "orders": [],
+                })
+                continue
+            try:
+                fetcher = getattr(exchange, "fetch_open_orders", None)
+                if not callable(fetcher):
+                    raise NotImplementedError("fetch_open_orders is not supported by this venue")
+                raw_orders = await fetcher()
+                if not isinstance(raw_orders, (list, tuple)):
+                    raise ValueError("exchange returned a malformed open orders payload")
+                orders = []
+                for raw in raw_orders:
+                    if not isinstance(raw, dict):
+                        raise ValueError("exchange returned a malformed open order row")
+                    info = raw.get("info") if isinstance(raw.get("info"), dict) else {}
+                    order_id = str(raw.get("id") or info.get("orderId") or "").strip()
+                    symbol = str(raw.get("symbol") or info.get("symbol") or "").strip()
+                    if not order_id or not symbol:
+                        raise ValueError("open order is missing exchange order id or symbol")
+                    status = str(raw.get("status") or "unknown").strip().lower()
+                    if status in ("closed", "canceled", "cancelled", "rejected", "expired"):
+                        continue
+                    orders.append({
+                        "id": order_id,
+                        "client_order_id": str(
+                            raw.get("clientOrderId") or raw.get("client_order_id")
+                            or info.get("clientOrderId") or info.get("origClientOrderId")
+                            or info.get("clientOid") or ""
+                        ),
+                        "symbol": symbol,
+                        "side": str(raw.get("side") or info.get("side") or "").lower(),
+                        "type": str(raw.get("type") or info.get("type") or "").lower(),
+                        "status": status,
+                        "price": float(raw.get("price") or 0.0),
+                        "amount": float(raw.get("amount") or 0.0),
+                        "filled": float(raw.get("filled") or 0.0),
+                        "remaining": float(raw.get("remaining") or 0.0),
+                        "timestamp": raw.get("timestamp") or info.get("time"),
+                    })
+                reports.append({
+                    "name": name, "market": market, "status": "ok", "orders": orders,
+                })
+            except Exception as exc:
+                reports.append({
+                    "name": name, "market": market, "status": "error",
+                    "error": str(exc), "orders": [],
+                })
+        return reports
+
     async def get_balances(
         self,
         local_quote_asset: str = "IDR",

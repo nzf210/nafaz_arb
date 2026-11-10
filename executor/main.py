@@ -45,7 +45,9 @@ async def main():
         worker = ExposureReconciliationWorker(engine)
         reconciliation_task = asyncio.create_task(worker.run())
         logger.info(
-            "Read-only exposure reconciliation enabled (interval=%ss)",
+            "Read-only exchange reconciliation enabled "
+            "(open_orders_interval=%ss, balance_position_interval=%ss)",
+            worker.open_orders_interval,
             worker.interval,
         )
     try:

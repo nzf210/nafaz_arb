@@ -126,6 +126,8 @@ class ArbitrageEngine(
         self._balance_snapshots: Dict[str, Dict[str, Any]] = {}
         # Venue names seen from recent payloads, for pair-tag -> exchange mapping.
         self._pair_infos: Dict[str, Any] = {}
+        # Exchange-discovered orders that are not correlated to executor state.
+        self.unmanaged_open_orders: list = []
 
         # Tasks
         self._tasks = []
@@ -1642,6 +1644,7 @@ class ArbitrageEngine(
             "pending_entries": len(self.pending_entry_orders),
             "pending_exits": len(self.pending_exit_orders),
             "pending_orders": self._pending_order_snapshots(),
+            "unmanaged_open_orders": list(self.unmanaged_open_orders),
             "failed_pairs": len(self._failure_reasons),
             "trading_halted": self._trading_halted,
             "halt_reason": self._halt_reason,

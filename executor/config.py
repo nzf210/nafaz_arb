@@ -47,8 +47,8 @@ class ExecutorConfig:
     # Cap on total capital committed per exchange, across all active positions.
     # 0 disables the check.
     max_exposure_per_exchange_usdt: float = 0.0
-    # Balance-mismatch guard for simulated entry snapshots. Live entries do not
-    # poll balances before submission; the venue validates available funds.
+    # Balance-mismatch guard for entry snapshots. LIVE sizing also preflights
+    # current exchange free balances so resting orders cannot silently overspend.
     balance_mismatch_fraction: float = 0.20
     # Consecutive order-placement failures tolerated per exchange before the
     # venue is halted for new entries. 0 disables the breaker.
