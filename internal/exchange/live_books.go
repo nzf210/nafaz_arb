@@ -31,6 +31,8 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 		l.mu.RLock()
 		manager, cache, maxAge, okxMaxAge := l.okxBooks, l.wsCache, l.wsMaxAge, l.okxWSMaxAge
 		tokocryptoWS := l.tokocryptoWSClient != nil
+		tokocryptoType := l.tokocryptoSymbolTypes[symbol]
+		if tokocryptoType == 0 { tokocryptoType = 1 }
 		l.mu.RUnlock()
 		if exchangeName == "okx" && manager != nil {
 			if book, ok := manager.Get(symbol, okxMaxAge); ok {
@@ -51,7 +53,7 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 				return book, nil
 			}
 		}
-		if exchangeName == "tokocrypto" && tokocryptoWS {
+		if exchangeName == "tokocrypto" && tokocryptoWS && (tokocryptoType == 1 || tokocryptoType == 3) {
 			return domain.OrderBook{}, fmt.Errorf("tokocrypto websocket book unavailable or stale for %s; REST fallback disabled while feed is enabled", symbol)
 		}
 	}
