@@ -25,10 +25,12 @@ const (
 type tokocryptoBookManager struct {
 	adapter *LiveAdapter
 	cache   *WSBookCache
-	markets map[int][]string
-	states  map[string]*tokocryptoBookState
-	ctx     context.Context
-	mu      sync.Mutex
+	markets      map[int][]string
+	states       map[string]*tokocryptoBookState
+	symbolNames  map[string]string
+	ctx          context.Context
+	snapshotSem  chan struct{}
+	mu           sync.Mutex
 }
 
 type tokocryptoBookState struct {
@@ -56,8 +58,10 @@ func newTokocryptoBookManager(adapter *LiveAdapter, cache *WSBookCache, markets 
 	manager := &tokocryptoBookManager{
 		adapter: adapter,
 		cache:   cache,
-		markets: map[int][]string{1: {}, 3: {}},
-		states:  make(map[string]*tokocryptoBookState),
+		markets:     map[int][]string{1: {}, 3: {}},
+		states:      make(map[string]*tokocryptoBookState),
+		symbolNames: make(map[string]string),
+		snapshotSem: make(chan struct{}, 2),
 	}
 	for _, market := range markets {
 		if !strings.EqualFold(market.Exchange, "tokocrypto") || !market.Active {
@@ -75,10 +79,10 @@ func newTokocryptoBookManager(adapter *LiveAdapter, cache *WSBookCache, markets 
 			continue
 		}
 		manager.markets[symbolType] = append(manager.markets[symbolType], raw)
+		canonical := "toko:" + strings.ToUpper(strings.TrimPrefix(market.Symbol, "toko:"))
+		manager.symbolNames[raw] = canonical
 		if symbolType == 3 {
-			manager.states["toko:"+strings.ToUpper(strings.TrimPrefix(market.Symbol, "toko:"))] = &tokocryptoBookState{
-				symbol: "toko:" + strings.ToUpper(strings.TrimPrefix(market.Symbol, "toko:")),
-			}
+			manager.states[canonical] = &tokocryptoBookState{symbol: canonical}
 		}
 	}
 	return manager
@@ -159,7 +163,7 @@ func (m *tokocryptoBookManager) handleMBXFrame(message []byte) (domain.OrderBook
 	}
 	book := domain.OrderBook{
 		Exchange:   "tokocrypto",
-		Symbol:     "toko:" + strings.ToUpper(symbol),
+		Symbol:     m.symbolName(symbol),
 		Bids:       parseStringLevels(data.Bids, 1),
 		Asks:       parseStringLevels(data.Asks, 1),
 		Timestamp:  stamp,
@@ -190,7 +194,7 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 	if event.Symbol == "" {
 		event.Symbol = strings.SplitN(envelope.Stream, "@", 2)[0]
 	}
-	key := "toko:" + strings.ToUpper(event.Symbol)
+	key := m.symbolName(event.Symbol)
 	state := m.state(key)
 	state.mu.Lock()
 	if !state.initialized {
@@ -232,6 +236,12 @@ func (m *tokocryptoBookManager) currentContext() context.Context {
 	return m.ctx
 }
 
+func (m *tokocryptoBookManager) symbolName(raw string) string {
+	key := strings.ToLower(strings.ReplaceAll(raw, "_", ""))
+	if name := m.symbolNames[key]; name != "" { return name }
+	return "toko:" + strings.ToUpper(raw)
+}
+
 func (m *tokocryptoBookManager) state(symbol string) *tokocryptoBookState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -264,22 +274,9 @@ func (m *tokocryptoBookManager) bootstrapNextMe(ctx context.Context) {
 		state.buffer = nil
 		state.mu.Unlock()
 	}
-	var wg sync.WaitGroup
-	limit := make(chan struct{}, 2)
 	for symbol := range m.states {
-		wg.Add(1)
-		go func(symbol string) {
-			defer wg.Done()
-			select {
-			case limit <- struct{}{}:
-			case <-ctx.Done():
-				return
-			}
-			defer func() { <-limit }()
-			m.scheduleRefresh(ctx, symbol)
-		}(symbol)
+		m.scheduleRefresh(ctx, symbol)
 	}
-	go func() { wg.Wait() }()
 }
 
 func (m *tokocryptoBookManager) scheduleRefresh(ctx context.Context, symbol string) {
@@ -302,7 +299,12 @@ func (m *tokocryptoBookManager) refreshLoop(ctx context.Context, state *tokocryp
 	}()
 	delay := time.Second
 	for ctx.Err() == nil {
+		select {
+		case m.snapshotSem <- struct{}{}:
+		case <-ctx.Done(): return
+		}
 		book, err := m.adapter.fetchTokocryptoSpotOrderBook(ctx, state.symbol)
+		<-m.snapshotSem
 		if err == nil && book.SequenceID > 0 {
 			if m.installSnapshot(state, book) {
 				return
