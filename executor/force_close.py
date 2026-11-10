@@ -11,7 +11,10 @@ import time
 from typing import Tuple
 
 from executor.models import PositionState
-from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt
+from executor.fee_engine import (
+    rates_for_position,
+    round_trip_fee_breakdown_usdt,
+)
 from executor import helpers
 from executor.helpers import (
     ARB_TRADE_HISTORY_KEY,
