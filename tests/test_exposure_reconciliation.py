@@ -417,6 +417,16 @@ async def test_known_pending_order_is_not_classified_as_unmanaged(monkeypatch):
                     "status": "open", "price": 100, "amount": 1,
                     "filled": 0, "remaining": 1,
                 }],
+            }, {
+                # Same order IDs can exist on different exchanges; correlation
+                # must include both venue and market.
+                "name": "tokocrypto", "market": "spot", "status": "ok",
+                "orders": [{
+                    "id": "known-123", "client_order_id": "nafas-entry-123",
+                    "symbol": "btc_idr", "side": "buy", "type": "limit",
+                    "status": "open", "price": 100, "amount": 1,
+                    "filled": 0, "remaining": 1,
+                }],
             }]
 
     client = ClientWithOpenOrders()
@@ -426,6 +436,7 @@ async def test_known_pending_order_is_not_classified_as_unmanaged(monkeypatch):
         active_positions={},
         pending_entry_orders={"pair": {
             "order_id": "known-123", "client_order_id": "nafas-entry-123",
+            "local_exchange": "indodax",
         }},
         pending_exit_orders={},
         unmanaged_open_orders=[],
@@ -442,9 +453,11 @@ async def test_known_pending_order_is_not_classified_as_unmanaged(monkeypatch):
     worker = ExposureReconciliationWorker(engine)
     await worker._reconcile_open_orders(client)
 
-    assert engine.unmanaged_open_orders == []
+    assert len(engine.unmanaged_open_orders) == 1
+    assert engine.unmanaged_open_orders[0]["exchange"] == "tokocrypto"
     assert "indodax" not in engine._exchange_halted
-    assert engine.failures == []
+    assert "tokocrypto" in engine._exchange_halted
+    assert len(engine.failures) == 1
 
 
 def test_open_orders_reconciliation_interval_is_fast_and_bounded(monkeypatch):
