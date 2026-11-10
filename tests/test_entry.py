@@ -299,6 +299,100 @@ async def test_pending_partial_fill_progress_is_persisted_for_restart(engine, fa
 
 
 @pytest.mark.asyncio
+async def test_stale_unfilled_maker_quote_is_cancelled_for_fresh_scanner_reentry(
+    engine, fake_redis, mock_client
+):
+    """Refresh only cancels a stale quote; it never submits a replacement itself."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    engine.config.maker_refresh_after_seconds = 45
+    engine.config.maker_refresh_cooldown_seconds = 300
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 60
+    order_info["min_entry_spread_pct"] = 0.10
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.0,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps({
+        "local_best_bid": 1_000_001_000.0,
+        "local_best_ask": 1_002_000_000.0,
+        "global_best_bid_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }))
+
+    await engine._check_entry_orders()
+
+    assert ("301", "btc_idr") in mock_client.cancelled_orders
+    assert mock_client.placed_buys == []
+    assert pair_tag not in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.IDLE
+    assert await fake_redis.exists(f"arb:maker_refresh_cooldown:{pair_tag}")
+
+
+@pytest.mark.asyncio
+async def test_stale_maker_quote_with_any_partial_fill_is_never_refreshed(
+    engine, fake_redis, mock_client
+):
+    """A partial spot fill remains on the fill/hedge path, never the refresh path."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    engine.config.maker_refresh_after_seconds = 1
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 60
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.000048,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps({
+        "local_best_bid": 1_000_001_000.0,
+        "local_best_ask": 1_002_000_000.0,
+        "global_best_bid_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }))
+
+    await engine._check_entry_orders()
+
+    assert mock_client.cancelled_orders == []
+    assert pair_tag in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.ENTRY_PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_stale_maker_quote_is_not_refreshed_when_live_edge_is_below_floor(
+    engine, fake_redis, mock_client
+):
+    """Refresh is denied if the best-bid candidate no longer meets the edge floor."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    engine.config.maker_refresh_after_seconds = 1
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 60
+    order_info["min_entry_spread_pct"] = 4.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.0,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps({
+        "local_best_bid": 1_000_001_000.0,
+        "local_best_ask": 1_002_000_000.0,
+        "global_best_bid_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }))
+
+    await engine._check_entry_orders()
+
+    assert mock_client.cancelled_orders == []
+    assert pair_tag in engine.pending_entry_orders
+
+
+@pytest.mark.asyncio
 async def test_p2_01_partial_fill_below_threshold_sets_entry_partial(engine, fake_redis, mock_client):
     """BUG-08/P2-01: below-threshold partial fills must be visible as ENTRY_PARTIAL."""
     pair_tag = "indodax:btc_idr"
