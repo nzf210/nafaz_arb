@@ -112,6 +112,152 @@ class ExposureReconciliationWorker:
 
     async def reconcile_once(self) -> None:
         client = self.engine.client
+        await self._reconcile_open_orders(client)
+
+    async def _reconcile_open_orders(self, client: Any) -> None:
+        """Discover venue-side orders that are absent from executor tracking.
+
+        Unknown orders are never auto-canceled or adopted into a strategy. They
+        are exposed to operators and halt new entries on that venue until an
+        operator resolves them. Existing position management remains enabled.
+        """
+        report_fn = getattr(client, "fetch_open_orders_report", None)
+        if not callable(report_fn):
+            venues = getattr(client, "balance_exchanges", {}) or {}
+            for exchange in venues:
+                exchange = str(exchange).lower()
+                self._set_halt(exchange, "open orders API unavailable")
+                await self._alert(
+                    "OPEN_ORDERS_UNAVAILABLE", exchange,
+                    "Cannot verify account-wide open orders; new entries are blocked.",
+                    {"reason": "fetch_open_orders_report_not_supported"},
+                )
+            return
+
+        try:
+            reports = await report_fn()
+        except Exception as exc:
+            venues = getattr(client, "balance_exchanges", {}) or {}
+            for exchange in venues:
+                exchange = str(exchange).lower()
+                self._set_halt(exchange, "open orders request failed")
+                await self._alert(
+                    "OPEN_ORDERS_UNAVAILABLE", exchange,
+                    "Account-wide open order reconciliation failed; new entries are blocked.",
+                    {"error": str(exc)},
+                )
+            return
+
+        tracked_ids = set()
+        tracked_client_ids = set()
+        for source_name in ("pending_entry_orders", "pending_exit_orders"):
+            source = getattr(self.engine, source_name, {}) or {}
+            for order in source.values():
+                if not isinstance(order, dict):
+                    continue
+                order_id = str(order.get("order_id") or order.get("id") or "").strip()
+                client_id = str(order.get("client_order_id") or order.get("clientOrderId") or "").strip()
+                if order_id:
+                    tracked_ids.add(order_id)
+                if client_id:
+                    tracked_client_ids.add(client_id)
+
+        unmanaged = []
+        successful_venues = set()
+        for report in reports or []:
+            if not isinstance(report, dict):
+                continue
+            exchange = str(report.get("name") or "").strip().lower()
+            if not exchange:
+                continue
+            status = str(report.get("status") or "error").lower()
+            if status == "not_configured":
+                continue
+            if status != "ok":
+                self._set_halt(exchange, "open orders unavailable")
+                await self._alert(
+                    "OPEN_ORDERS_UNAVAILABLE", exchange,
+                    "Cannot verify open orders on this venue; new entries are blocked.",
+                    {"market": report.get("market"), "error": report.get("error", "unknown error")},
+                )
+                continue
+
+            successful_venues.add(exchange)
+            self._clear_issue(f"OPEN_ORDERS_UNAVAILABLE:{exchange}", exchange)
+            orders = report.get("orders")
+            if not isinstance(orders, list):
+                self._set_halt(exchange, "open orders payload invalid")
+                await self._alert(
+                    "OPEN_ORDERS_UNAVAILABLE", exchange,
+                    "Venue returned an invalid open-orders payload; new entries are blocked.",
+                    {"market": report.get("market"), "reason": "orders_not_a_list"},
+                )
+                continue
+
+            current_unknown_ids = set()
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                order_id = str(order.get("id") or "").strip()
+                client_id = str(order.get("client_order_id") or "").strip()
+                if (order_id and order_id in tracked_ids) or (client_id and client_id in tracked_client_ids):
+                    continue
+                if not order_id:
+                    # The client report validates IDs; retain this guard for custom adapters.
+                    self._set_halt(exchange, "open order identity invalid")
+                    await self._alert(
+                        "OPEN_ORDERS_UNAVAILABLE", exchange,
+                        "An open order has no exchange ID and cannot be correlated safely.",
+                        {"market": report.get("market"), "symbol": order.get("symbol", "")},
+                    )
+                    continue
+                current_unknown_ids.add(order_id)
+                item = {
+                    "exchange": exchange,
+                    "market": str(report.get("market") or ""),
+                    "order_id": order_id,
+                    "client_order_id": client_id,
+                    "symbol": str(order.get("symbol") or ""),
+                    "side": str(order.get("side") or ""),
+                    "type": str(order.get("type") or ""),
+                    "status": str(order.get("status") or "unknown"),
+                    "price": order.get("price", 0.0),
+                    "amount": order.get("amount", 0.0),
+                    "filled": order.get("filled", 0.0),
+                    "remaining": order.get("remaining", 0.0),
+                    "timestamp": order.get("timestamp"),
+                    "managed": False,
+                }
+                unmanaged.append(item)
+                self._set_halt(exchange, "unmanaged open order")
+                await self._alert(
+                    "UNMANAGED_OPEN_ORDER", exchange,
+                    "An exchange open order is not tracked by NAFAZ. New entries are blocked; the order was not modified.",
+                    item,
+                    key=f"UNMANAGED_OPEN_ORDER:{exchange}:{order_id}",
+                )
+
+            for issue_key in list(self._reported):
+                parts = issue_key.split(":")
+                if len(parts) >= 3 and parts[0] == "UNMANAGED_OPEN_ORDER" and parts[1] == exchange:
+                    if parts[2] not in current_unknown_ids:
+                        self._clear_issue(issue_key, exchange)
+
+        # Keep the last verified snapshot for venues whose private API failed.
+        previous = getattr(self.engine, "unmanaged_open_orders", []) or []
+        failed_venues = {
+            str(report.get("name") or "").lower()
+            for report in reports or []
+            if isinstance(report, dict) and str(report.get("status") or "").lower() == "error"
+        }
+        unmanaged.extend(
+            item for item in previous
+            if str(item.get("exchange") or "").lower() in failed_venues
+        )
+        self.engine.unmanaged_open_orders = unmanaged
+
+    async def _reconcile_balances_and_positions(self) -> None:
+        client = self.engine.client
         report_fn = getattr(client, "fetch_balance_report", None)
         if not callable(report_fn):
             await self._halt_active_venues(
