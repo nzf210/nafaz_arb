@@ -230,6 +230,12 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 	book := tokocryptoStateBook(state)
 	state.mu.Unlock()
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
+		state.mu.Lock()
+		state.initialized = false
+		m.appendBuffered(state, event)
+		state.mu.Unlock()
+		m.cache.Invalidate("tokocrypto", key)
+		m.scheduleRefresh(m.currentContext(), key)
 		return domain.OrderBook{}, true, nil
 	}
 	_, _, _, _ = m.cache.Store(book)
@@ -387,6 +393,7 @@ func (m *tokocryptoBookManager) installSnapshot(state *tokocryptoBookState, snap
 			(event.Prev == 0 && event.First > state.lastSeq+1) {
 			state.initialized = false
 			state.buffer = pending
+			m.cache.Invalidate("tokocrypto", state.symbol)
 			return false
 		}
 		applyTokocryptoLevels(state.bids, event.Bids)
@@ -398,6 +405,7 @@ func (m *tokocryptoBookManager) installSnapshot(state *tokocryptoBookState, snap
 	book := tokocryptoStateBook(state)
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
 		state.initialized = false
+		m.cache.Invalidate("tokocrypto", state.symbol)
 		return false
 	}
 	_, _, _, _ = m.cache.Store(book)
