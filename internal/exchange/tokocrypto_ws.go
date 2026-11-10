@@ -27,6 +27,7 @@ type tokocryptoBookManager struct {
 	cache   *WSBookCache
 	markets map[int][]string
 	states  map[string]*tokocryptoBookState
+	ctx     context.Context
 	mu      sync.Mutex
 }
 
@@ -195,7 +196,7 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 	if !state.initialized {
 		m.appendBuffered(state, event)
 		state.mu.Unlock()
-		m.scheduleRefresh(context.Background(), key)
+		m.scheduleRefresh(m.currentContext(), key)
 		return domain.OrderBook{}, true, nil
 	}
 	if event.Last <= state.lastSeq {
@@ -209,7 +210,7 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 		state.asks = nil
 		m.appendBuffered(state, event)
 		state.mu.Unlock()
-		m.scheduleRefresh(context.Background(), key)
+		m.scheduleRefresh(m.currentContext(), key)
 		return domain.OrderBook{}, true, nil
 	}
 	applyTokocryptoLevels(state.bids, event.Bids)
@@ -222,6 +223,13 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 	}
 	_, _, _, _ = m.cache.Store(book)
 	return domain.OrderBook{}, true, nil
+}
+
+func (m *tokocryptoBookManager) currentContext() context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ctx == nil { return context.Background() }
+	return m.ctx
 }
 
 func (m *tokocryptoBookManager) state(symbol string) *tokocryptoBookState {
@@ -243,6 +251,9 @@ func (m *tokocryptoBookManager) appendBuffered(state *tokocryptoBookState, event
 }
 
 func (m *tokocryptoBookManager) bootstrapNextMe(ctx context.Context) {
+	m.mu.Lock()
+	m.ctx = ctx
+	m.mu.Unlock()
 	for symbol := range m.states {
 		state := m.state(symbol)
 		state.mu.Lock()
