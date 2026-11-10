@@ -148,3 +148,24 @@ func TestTokocryptoWebSocketModeDoesNotFallbackToREST(t *testing.T) {
 		t.Fatal("REST fallback must not run while Tokocrypto websocket mode is active")
 	}
 }
+
+func TestTokocryptoHeartbeatTouchesOnlyConnectedEngineSymbols(t *testing.T) {
+	cache := NewWSBookCache()
+	now := time.Now().UTC()
+	for _, symbol := range []string{"toko:BTC_USDT", "toko:BTC_IDR"} {
+		_, _, _, err := cache.Store(domain.OrderBook{
+			Exchange: "tokocrypto", Symbol: symbol,
+			Bids: []domain.PriceLevel{{Price: 100, Quantity: 1}},
+			Asks: []domain.PriceLevel{{Price: 101, Quantity: 1}},
+			Timestamp: now.Add(-time.Minute), ReceivedAt: now.Add(-10 * time.Second),
+		})
+		if err != nil { t.Fatal(err) }
+	}
+	cache.TouchSymbols("tokocrypto", []string{"toko:BTC_USDT"})
+	if _, ok, _, _, _, _ := cache.Get("tokocrypto", "toko:BTC_USDT", 3*time.Second); !ok {
+		t.Fatal("heartbeat should refresh the connected MBX symbol")
+	}
+	if _, ok, _, _, _, _ := cache.Get("tokocrypto", "toko:BTC_IDR", 3*time.Second); ok {
+		t.Fatal("MBX heartbeat must not refresh a disconnected NextMe symbol")
+	}
+}
