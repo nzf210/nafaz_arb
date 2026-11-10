@@ -1126,6 +1126,30 @@ class ArbitrageEngine(
                 directives.fee_source = fee_snapshot["source"]
                 directives.fee_verified = bool(fee_snapshot["verified"])
                 directives.fee_fetched_at_ms = int(fee_snapshot["fetched_at_ms"])
+                if self.redis is not None:
+                    fetched_at_ms = int(fee_snapshot["fetched_at_ms"])
+                    await self.redis.set(
+                        f"arb:fee_profile:{pair_info.local_exchange.lower()}:spot",
+                        json.dumps({
+                            "maker_fee_pct": spot_rates["maker"],
+                            "taker_fee_pct": spot_rates["taker"],
+                            "source": "EXCHANGE_API",
+                            "verified": True,
+                            "fetched_at_ms": fetched_at_ms,
+                        }),
+                        ex=300,
+                    )
+                    await self.redis.set(
+                        f"arb:fee_profile:{pair_info.global_exchange.lower()}:perp",
+                        json.dumps({
+                            "maker_fee_pct": perp_rates["maker"],
+                            "taker_fee_pct": perp_rates["taker"],
+                            "source": "EXCHANGE_API",
+                            "verified": True,
+                            "fetched_at_ms": fetched_at_ms,
+                        }),
+                        ex=300,
+                    )
                 logger.info(
                     "[Fee Engine] refreshed account fee tiers for %s: spot=%s perp=%s",
                     pair_tag, spot_rates, perp_rates,
