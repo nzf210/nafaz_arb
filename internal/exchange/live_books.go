@@ -30,6 +30,7 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 	if symbol != "" {
 		l.mu.RLock()
 		manager, cache, maxAge, okxMaxAge := l.okxBooks, l.wsCache, l.wsMaxAge, l.okxWSMaxAge
+		tokocryptoWS := l.tokocryptoWSClient != nil
 		l.mu.RUnlock()
 		if exchangeName == "okx" && manager != nil {
 			if book, ok := manager.Get(symbol, okxMaxAge); ok {
@@ -49,6 +50,9 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 				// Valid cached book - return it
 				return book, nil
 			}
+		}
+		if exchangeName == "tokocrypto" && tokocryptoWS {
+			return domain.OrderBook{}, fmt.Errorf("tokocrypto websocket book unavailable or stale for %s; REST fallback disabled while feed is enabled", symbol)
 		}
 	}
 	var book domain.OrderBook
@@ -109,50 +113,66 @@ func (l *LiveAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.
 }
 
 func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
-	rawSym := strings.TrimPrefix(symbol, "toko:")
-	endpoint := fmt.Sprintf("%s/open/v1/market/depth?symbol=%s&limit=20", l.tokocryptoBaseURL, url.QueryEscape(rawSym))
+	rawSym := strings.ReplaceAll(strings.TrimPrefix(symbol, "toko:"), "_", "")
+	l.mu.RLock()
+	symbolType := l.tokocryptoSymbolTypes[symbol]
+	mbxURL := l.tokocryptoMBXMarketDataURL
+	nextMeURL := l.tokocryptoNextMeMarketDataURL
+	l.mu.RUnlock()
+	if symbolType == 0 { symbolType = 1 }
+	var endpoint string
+	switch symbolType {
+	case 1:
+		endpoint = fmt.Sprintf("%s/api/v3/depth?symbol=%s&limit=20", strings.TrimRight(mbxURL, "/"), url.QueryEscape(strings.ToUpper(rawSym)))
+	case 3:
+		endpoint = fmt.Sprintf("%s/api/v1/depth?symbol=%s&limit=20", strings.TrimRight(nextMeURL, "/"), url.QueryEscape(strings.ToUpper(rawSym)))
+	default:
+		return domain.OrderBook{}, fmt.Errorf("unsupported Tokocrypto symbol type %d for %s", symbolType, symbol)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth req: %w", err)
+		return domain.OrderBook{}, fmt.Errorf("tokocrypto public depth req: %w", err)
 	}
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
 	resp, err := l.client.Do(req)
 	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth request: %w", err)
+		return domain.OrderBook{}, fmt.Errorf("tokocrypto public depth request: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		if classifyHTTPError(resp.StatusCode) {
-			return domain.OrderBook{}, fmt.Errorf("%w: tokocrypto depth status %d", ErrExchangeUnavailable, resp.StatusCode)
+			return domain.OrderBook{}, fmt.Errorf("%w: tokocrypto public depth status %d", ErrExchangeUnavailable, resp.StatusCode)
 		}
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth status: %d", resp.StatusCode)
+		return domain.OrderBook{}, fmt.Errorf("tokocrypto public depth status: %d", resp.StatusCode)
 	}
-
 	var raw struct {
 		Code int `json:"code"`
 		Data struct {
-			Bids [][]string `json:"bids"`
-			Asks [][]string `json:"asks"`
+			LastUpdateID int64      `json:"lastUpdateId"`
+			Event        int64      `json:"E"`
+			Bids         [][]string `json:"bids"`
+			Asks         [][]string `json:"asks"`
 		} `json:"data"`
+		Timestamp int64 `json:"timestamp"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return domain.OrderBook{}, fmt.Errorf("decode tokocrypto depth: %w", err)
+		return domain.OrderBook{}, fmt.Errorf("decode Tokocrypto public depth: %w", err)
 	}
-
+	if raw.Code != 0 {
+		return domain.OrderBook{}, fmt.Errorf("Tokocrypto public depth API error code %d", raw.Code)
+	}
 	bids := parseStringLevels(raw.Data.Bids, 1.0)
 	asks := parseStringLevels(raw.Data.Asks, 1.0)
-
-	receivedAt := time.Now().UTC()
+	if len(bids) == 0 || len(asks) == 0 {
+		return domain.OrderBook{}, fmt.Errorf("Tokocrypto public depth returned an empty or one-sided book for %s", symbol)
+	}
+	now := time.Now().UTC()
+	stamp := now
+	if raw.Data.Event > 0 { stamp = time.UnixMilli(raw.Data.Event).UTC() } else if raw.Timestamp > 0 { stamp = time.UnixMilli(raw.Timestamp).UTC() }
 	return domain.OrderBook{
-		Exchange:   "tokocrypto",
-		Symbol:     symbol,
-		Bids:       bids,
-		Asks:       asks,
-		Timestamp:  receivedAt,
-		ReceivedAt: receivedAt,
-		Source:     "receive_time",
+		Exchange: "tokocrypto", Symbol: symbol, Bids: bids, Asks: asks,
+		Timestamp: stamp, ReceivedAt: now, SequenceID: raw.Data.LastUpdateID,
+		Source: "public_rest_snapshot",
 	}, nil
 }
 
