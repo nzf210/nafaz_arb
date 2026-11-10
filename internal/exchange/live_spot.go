@@ -152,6 +152,9 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 		if s.SpotTradingEnable != 1 || s.Symbol == "" || s.BaseAsset == "" || s.QuoteAsset == "" {
 			continue
 		}
+		symbolType := s.Type
+		if symbolType == 0 { symbolType = s.SymbolType }
+		if symbolType == 0 { symbolType = 1 }
 		var amountSpec *domain.AmountSpec
 		for _, filter := range s.Filters {
 			if strings.EqualFold(filter.FilterType, "LOT_SIZE") ||
@@ -181,6 +184,7 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 			QuoteAsset: strings.ToUpper(s.QuoteAsset),
 			MarketType: "SPOT",
 			Active:     true,
+			ExchangeSymbolType: symbolType,
 			AmountSpec: amountSpec,
 		}
 		if amountSpec != nil {
@@ -188,6 +192,9 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 			market.MinOrder = amountSpec.Min
 		}
 		markets = append(markets, market)
+		l.mu.Lock()
+		l.tokocryptoSymbolTypes[market.Symbol] = symbolType
+		l.mu.Unlock()
 	}
 
 	if len(markets) > 0 {
