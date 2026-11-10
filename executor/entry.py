@@ -111,6 +111,7 @@ class EntryMixin:
                     order,
                     client_order_id=order_info.get("client_order_id"),
                     is_mock=bool(getattr(self.config, "mock_mode", False)),
+                    submitted_at_ms=int(float(order_info.get("placed_time", 0.0) or 0.0) * 1000) or None,
                 )
                 await self._handle_entry_fills(pair_tag, order_info, order)
                 # Persist cumulative fill/hedge progress before the next poll or
@@ -145,15 +146,36 @@ class EntryMixin:
             """
             order_id = str(order_info["order_id"])
             local_symbol = str(order_info["symbol"])
+            requested_at_ms = int(time.time() * 1000)
             order_info["last_cancel_reason"] = reason
-            order_info["cancel_requested_at_ms"] = int(time.time() * 1000)
+            order_info["cancel_requested_at_ms"] = requested_at_ms
+            order_info["cancel_attempts"] = int(order_info.get("cancel_attempts", 0) or 0) + 1
             # Persist intent before the network call so a crash/timeout does not
             # erase why the venue order was being canceled.
             await self._persist_pending_entry(pair_tag, order_info)
+            self.supabase.event(
+                "ENTRY_ORDER_CANCEL_REQUESTED",
+                pair_key=pair_tag,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+                occurred_at_ms=requested_at_ms,
+                payload={
+                    "order_id": order_id,
+                    "client_order_id": order_info.get("client_order_id", ""),
+                    "symbol": local_symbol,
+                    "exchange": order_info.get("local_exchange", ""),
+                    "reason": reason,
+                    "attempt": order_info["cancel_attempts"],
+                    "order_age_seconds": max(0.0, time.time() - float(order_info.get("placed_time", time.time()) or time.time())),
+                    "filled_before_cancel": float(order_info.get("filled", 0.0) or 0.0),
+                    "requested_qty": float(order_info.get("qty", 0.0) or 0.0),
+                },
+            )
+            cancel_error = None
             try:
                 await self.client.cancel_local_order(order_id, local_symbol)
-            except Exception:
+            except Exception as exc:
                 # A timeout is ambiguous: the venue may have accepted the cancel.
+                cancel_error = f"{type(exc).__name__}: {exc}"
                 logger.exception(
                     f"[{reason}] cancel request failed for {order_id}; "
                     "reconciling the order directly with the exchange"
@@ -161,7 +183,20 @@ class EntryMixin:
 
             try:
                 order = await self.client.fetch_local_order(order_id, local_symbol)
-            except Exception:
+            except Exception as exc:
+                self.supabase.event(
+                    "ENTRY_ORDER_CANCEL_RECONCILIATION_FAILED",
+                    pair_key=pair_tag,
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                    payload={
+                        "order_id": order_id,
+                        "client_order_id": order_info.get("client_order_id", ""),
+                        "symbol": local_symbol,
+                        "reason": reason,
+                        "cancel_error": cancel_error,
+                        "fetch_error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
                 logger.exception(
                     f"[{reason}] cannot verify order {order_id}; pending state and "
                     "reserved funds are retained"
@@ -169,6 +204,18 @@ class EntryMixin:
                 return False
 
             if not isinstance(order, dict):
+                self.supabase.event(
+                    "ENTRY_ORDER_CANCEL_RECONCILIATION_FAILED",
+                    pair_key=pair_tag,
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                    payload={
+                        "order_id": order_id,
+                        "symbol": local_symbol,
+                        "reason": reason,
+                        "cancel_error": cancel_error,
+                        "fetch_error": "invalid exchange order payload",
+                    },
+                )
                 logger.critical(
                     f"[{reason}] invalid exchange response for {order_id}; "
                     "pending state is retained"
@@ -176,6 +223,22 @@ class EntryMixin:
                 return False
 
             status = str(order.get("status", "unknown")).lower()
+            self.supabase.event(
+                "ENTRY_ORDER_CANCEL_RESULT",
+                pair_key=pair_tag,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+                payload={
+                    "order_id": order_id,
+                    "client_order_id": order_info.get("client_order_id", ""),
+                    "symbol": local_symbol,
+                    "reason": reason,
+                    "cancel_error": cancel_error,
+                    "venue_status": status,
+                    "terminal_confirmed": status in ("closed", "canceled", "cancelled", "rejected", "expired"),
+                    "filled_qty": float(order.get("filled", 0.0) or 0.0),
+                    "remaining_qty": float(order.get("remaining", 0.0) or 0.0),
+                },
+            )
             terminal = ("closed", "canceled", "cancelled", "rejected", "expired")
             if status not in terminal:
                 logger.critical(
@@ -196,6 +259,7 @@ class EntryMixin:
                 order,
                 client_order_id=order_info.get("client_order_id"),
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
+                submitted_at_ms=int(float(order_info.get("placed_time", 0.0) or 0.0) * 1000) or None,
             )
             await self._handle_entry_fills(pair_tag, order_info, order)
             await self._persist_pending_entry(pair_tag, order_info)
