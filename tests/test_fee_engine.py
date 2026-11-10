@@ -45,7 +45,13 @@ def test_all_venue_pairs_and_execution_modes_have_complete_round_trip_fees(
     floor = required_spot_exit_usdt(
         2.0, 100.0, 101.0, 99.0, 0.0, 0.5, rates
     )
-    assert floor > 100.0
+    assert floor > 0.0
+    net_at_floor = (
+        2.0 * (floor - 100.0)
+        + 2.0 * (101.0 - 99.0)
+        - round_trip_fees_usdt(2.0, 100.0, floor, 101.0, 99.0, rates)
+    )
+    assert net_at_floor == pytest.approx(0.5)
 
 
 def test_explicit_zero_maker_fee_is_preserved():
