@@ -1264,11 +1264,42 @@ class ArbitrageEngine(
                     "saldo tidak mencukupi",
                 )
             )
-            reason = "INSUFFICIENT_BALANCE" if insufficient_balance else "SPOT_ORDER_OPEN_FAILED"
-            self._record_order_failure(
-                pair_info.local_exchange,
-                "insufficient balance" if insufficient_balance else "entry order placement failed",
+            min_notional = any(
+                marker in normalized_error
+                for marker in (
+                    "min_notional",
+                    "min notional",
+                    "minimum notional",
+                    "notional too small",
+                    "cost.min",
+                )
             )
+            invalid_symbol = any(
+                marker in normalized_error
+                for marker in (
+                    "invalid_symbol",
+                    "invalid symbol",
+                    "unknown symbol",
+                    "market is not available",
+                    "symbol not found",
+                )
+            )
+            if insufficient_balance:
+                reason = "INSUFFICIENT_BALANCE"
+            elif min_notional:
+                reason = "MIN_NOTIONAL"
+            elif invalid_symbol:
+                reason = "INVALID_SYMBOL"
+            else:
+                reason = "SPOT_ORDER_OPEN_FAILED"
+
+            # Business rejections reject this opportunity, but do not count as
+            # exchange-health failures. Transport/API/internal errors still count.
+            failure_category = (
+                reason if reason in ("INSUFFICIENT_BALANCE", "MIN_NOTIONAL", "INVALID_SYMBOL")
+                else "entry order placement failed"
+            )
+            self._record_order_failure(pair_info.local_exchange, failure_category)
             logger.exception(f"[State 1] failed to place limit buy for {pair_tag}")
             await self._publish_execution_failure(
                 pair_tag,
