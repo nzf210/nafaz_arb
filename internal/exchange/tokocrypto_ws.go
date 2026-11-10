@@ -93,6 +93,14 @@ func newTokocryptoBookManager(adapter *LiveAdapter, cache *WSBookCache, markets 
 	return manager
 }
 
+func (m *tokocryptoBookManager) canonicalSymbols(symbolType int) []string {
+	symbols := make([]string, 0, len(m.markets[symbolType]))
+	for _, raw := range m.markets[symbolType] {
+		if canonical := m.symbolNames[raw]; canonical != "" { symbols = append(symbols, canonical) }
+	}
+	return symbols
+}
+
 func (m *tokocryptoBookManager) streams() []WSStream {
 	var streams []WSStream
 	if len(m.markets[1]) > 0 {
@@ -102,6 +110,7 @@ func (m *tokocryptoBookManager) streams() []WSStream {
 			Subscribe: func() ([][]byte, error) { return tokocryptoSubscribeFrames(m.markets[1], "depth@100ms") },
 			Handle:    m.handleDepthFrame,
 			KeepAliveInterval: 2 * time.Second,
+			TouchSymbols: m.canonicalSymbols(1),
 			OnConnected: func(ctx context.Context) {
 				m.bootstrap(ctx, 1)
 			},
