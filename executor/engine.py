@@ -1129,7 +1129,7 @@ class ArbitrageEngine(
                 if self.redis is not None:
                     fetched_at_ms = int(fee_snapshot["fetched_at_ms"])
                     await self.redis.set(
-                        f"arb:fee_profile:{pair_info.local_exchange.lower()}:spot",
+                        f"arb:fee_profile:{payload.pair_info.local_exchange.lower()}:spot",
                         json.dumps({
                             "maker_fee_pct": spot_rates["maker"],
                             "taker_fee_pct": spot_rates["taker"],
@@ -1140,7 +1140,7 @@ class ArbitrageEngine(
                         ex=300,
                     )
                     await self.redis.set(
-                        f"arb:fee_profile:{pair_info.global_exchange.lower()}:perp",
+                        f"arb:fee_profile:{payload.pair_info.global_exchange.lower()}:perp",
                         json.dumps({
                             "maker_fee_pct": perp_rates["maker"],
                             "taker_fee_pct": perp_rates["taker"],
