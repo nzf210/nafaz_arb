@@ -63,6 +63,7 @@ class ExecutorConfig:
     private_stream_max_age_seconds: float = 5.0
     local_exchange_name: str = "indodax"
     global_exchange_name: str = "okx"
+    execution_mode: str = "TAKER_TAKER"
     exchanges: Dict[str, ExchangeCredentials] = field(default_factory=dict)
     local_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
     global_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
@@ -87,6 +88,8 @@ class ExecutorConfig:
                 auth_part = f":{password}@" if password else ""
                 db = redis_cfg.get("db", 0)
                 self.redis_url = f"redis://{auth_part}{addr}/{db}"
+
+            self.execution_mode = str(data.get("execution_mode", self.execution_mode)).strip().upper()
 
             # Check root-level config values as fallbacks
             if "allocation_per_pair" in data:
@@ -145,6 +148,9 @@ class ExecutorConfig:
     def _apply_env(self) -> None:
         if redis_env := os.getenv("REDIS_URL"):
             self.redis_url = redis_env
+
+        if mode := os.getenv("EXECUTION_MODE"):
+            self.execution_mode = mode.strip().upper()
 
         if local_ex := os.getenv("LOCAL_EXCHANGE"):
             self.local_exchange_name = local_ex
