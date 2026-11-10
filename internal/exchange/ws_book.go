@@ -203,6 +203,25 @@ func (c *WSBookCache) TouchExchange(exchange string) {
 	}
 }
 
+// TouchSymbols refreshes receive-time freshness for only the symbols on a live stream.
+func (c *WSBookCache) TouchSymbols(exchange string, symbols []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	for _, symbol := range symbols {
+		key := cacheKey(exchange, symbol)
+		entry, ok := c.books[key]
+		if !ok { continue }
+		entry.book.ReceivedAt = now
+		c.books[key] = entry
+		c.staleTracker[key] = now
+		if health := c.healthTracker[key]; health != nil {
+			health.LastMessageAt = now
+			health.IsHealthy = true
+		}
+	}
+}
+
 // Invalidate removes a book that can no longer be trusted, such as after a sequence gap.
 func (c *WSBookCache) Invalidate(exchange, symbol string) {
 	c.mu.Lock()
