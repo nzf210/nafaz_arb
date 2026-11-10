@@ -14,6 +14,7 @@ from executor.models import (
     ActivePosition,
 )
 from executor.exchange_client import ExchangeClient
+from executor.fee_engine import FeeRates, round_trip_fees_usdt
 from executor.pair_registry import ExchangePairKey, PairClientRegistry
 from executor.config import ExecutorConfig
 from executor.private_stream import PrivateStreamCache
@@ -1135,6 +1136,51 @@ class ArbitrageEngine(
                     "using scanner fee snapshot (%s, verified=%s): %s",
                     pair_tag, directives.fee_source, directives.fee_verified, fee_error,
                 )
+        if directives.fee_verified and directives.quantity > 0:
+            try:
+                dynamic_fees = round_trip_fees_usdt(
+                    directives.quantity,
+                    directives.spot_entry_price_usdt,
+                    directives.spot_exit_price_usdt,
+                    directives.perp_entry_price_usdt,
+                    directives.perp_exit_price_usdt,
+                    FeeRates(
+                        directives.spot_entry_fee_pct,
+                        directives.spot_exit_fee_pct,
+                        directives.perp_entry_fee_pct,
+                        directives.perp_exit_fee_pct,
+                        directives.fee_source,
+                        directives.fee_verified,
+                        directives.fee_fetched_at_ms,
+                    ),
+                )
+                directives.estimated_net_profit_usdt += (
+                    directives.estimated_fees_usdt - dynamic_fees
+                )
+                directives.estimated_fees_usdt = dynamic_fees
+                if directives.estimated_net_profit_usdt <= 0:
+                    self._mark_failed(
+                        pair_tag,
+                        "NET_EDGE_ERODED_BY_ACTUAL_FEES",
+                        "Entry rejected: authenticated account fee tiers reduce estimated net profit to zero or below.",
+                        detail={
+                            "fee_source": directives.fee_source,
+                            "estimated_fees_usdt": dynamic_fees,
+                            "adjusted_net_profit_usdt": directives.estimated_net_profit_usdt,
+                        },
+                    )
+                    await self.publish_status()
+                    return
+            except (TypeError, ValueError) as fee_error:
+                self._mark_failed(
+                    pair_tag,
+                    "FEE_REVALIDATION_FAILED",
+                    "Entry rejected because the authenticated fee snapshot could not be applied safely.",
+                    detail={"error": str(fee_error), "fee_source": directives.fee_source},
+                )
+                await self.publish_status()
+                return
+
         pair_info = payload.pair_info
         snapshot = payload.pricing_snapshot
         if pair_info.local_amount_spec is None or pair_info.global_amount_spec is None:
