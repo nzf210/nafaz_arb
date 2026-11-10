@@ -305,6 +305,27 @@ class TestClosedTrades:
         assert tables == ["closed_trades", "positions", "executor_events"]
         assert rows[0][1] == "trade_key"
 
+    def test_trade_fee_breakdown_is_saved_in_metadata(self):
+        writer = _writer()
+        trade = {
+            **self.TRADE,
+            "fees_usdt": 0.25,
+            "spot_fees_usdt": 0.15,
+            "futures_fees_usdt": 0.10,
+            "fee_source": "EXCHANGE_API",
+            "fee_verified": True,
+        }
+        writer.trade_closed("p", trade, _pos())
+        row = _drain(writer)[0][2]
+        assert row["fees"] == pytest.approx(0.25)
+        assert row["metadata"] == {
+            "spot_fees_usdt": pytest.approx(0.15),
+            "futures_fees_usdt": pytest.approx(0.10),
+            "fee_source": "EXCHANGE_API",
+            "fee_verified": True,
+            "fee_estimation": "four_fill_round_trip",
+        }
+
     def test_trade_without_id_ignored(self):
         writer = _writer()
         writer.trade_closed("p", {"net_profit_usdt": 1.0}, None)
