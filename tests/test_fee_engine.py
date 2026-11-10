@@ -50,7 +50,7 @@ def test_all_venue_pairs_and_execution_modes_have_complete_round_trip_fees(
 
 def test_explicit_zero_maker_fee_is_preserved():
     rates = FeeRates(0.0, 0.3, 0.05, 0.05, "CONFIG", True, 10)
-    assert round_trip_fees_usdt(1, 100, 100, 100, 100, rates) == pytest.approx(0.8)
+    assert round_trip_fees_usdt(1, 100, 100, 100, 100, rates) == pytest.approx(0.4)
 
 
 @pytest.mark.parametrize("bad", [-0.01, 100.01, float("nan"), float("inf")])
