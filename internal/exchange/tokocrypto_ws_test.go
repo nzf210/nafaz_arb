@@ -61,7 +61,7 @@ func TestTokocryptoMBXDepthFrameUsesCanonicalMarketSymbol(t *testing.T) {
 	state.lastSeq = 11
 	state.bids = map[string]float64{"100": 1}
 	state.asks = map[string]float64{"101": 3}
-	message := []byte(`{"stream":"btcusdt@depth@100ms","data":{"E":1700000000000,"s":"BTCUSDT","U":12,"u":13,"b":[["100","2"],["99","1"]],"a":[["101","0"],["102","3"]]}}`)
+	message := []byte(`{"stream":"btcusdt@depth@100ms","data":{"E":0,"s":"BTCUSDT","U":12,"u":13,"b":[["100","2"],["99","1"]],"a":[["101","0"],["102","3"]]}}`)
 	_, skip, err := manager.handleMBXFrame(message)
 	if err != nil || !skip {
 		t.Fatalf("handle MBX diff frame: skip=%v err=%v", skip, err)
