@@ -315,3 +315,132 @@ def test_reconciliation_blank_environment_values_use_defaults(monkeypatch):
     assert _env_interval() == 300
     assert _env_float("EXPOSURE_RECONCILIATION_REL_TOLERANCE", 0.005, 0.0, 0.05) == 0.005
     assert _env_float("EXPOSURE_RECONCILIATION_ABS_TOLERANCE", 1e-8, 1e-12, 1.0) == 1e-8
+
+
+class FakeOpenOrdersVenue:
+    def __init__(self, venue_id, orders=None, error=None):
+        self.id = venue_id
+        self.orders = orders or []
+        self.error = error
+
+    async def fetch_open_orders(self):
+        if self.error:
+            raise self.error
+        return self.orders
+
+
+@pytest.mark.asyncio
+async def test_exchange_client_reports_account_wide_open_orders_and_venue_errors():
+    spot = FakeOpenOrdersVenue("indodax", [{
+        "id": "spot-1", "clientOrderId": "nafas-entry-1",
+        "symbol": "btc_idr", "side": "buy", "type": "limit",
+        "status": "open", "price": 100, "amount": 0.1,
+        "filled": 0.02, "remaining": 0.08,
+    }])
+    futures = FakeOpenOrdersVenue("okx", error=RuntimeError("private API rate limited"))
+    client = ExchangeClient(
+        spot, futures,
+        balance_exchanges={
+            "indodax": {"market": "spot", "client": spot},
+            "okx": {"market": "futures", "client": futures},
+        },
+    )
+
+    reports = await client.fetch_open_orders_report()
+
+    assert reports[0]["status"] == "ok"
+    assert reports[0]["orders"][0]["id"] == "spot-1"
+    assert reports[0]["orders"][0]["client_order_id"] == "nafas-entry-1"
+    assert reports[0]["orders"][0]["remaining"] == pytest.approx(0.08)
+    assert reports[1]["status"] == "error"
+    assert reports[1]["orders"] == []
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_exchange_open_order_halts_new_entries_and_is_published(monkeypatch):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
+
+    class ClientWithOpenOrders(FakeClient):
+        async def fetch_open_orders_report(self):
+            return [{
+                "name": "indodax", "market": "spot", "status": "ok",
+                "orders": [{
+                    "id": "orphan-123", "client_order_id": "unknown-client-id",
+                    "symbol": "ath_idr", "side": "buy", "type": "limit",
+                    "status": "open", "price": 1250, "amount": 10,
+                    "filled": 0, "remaining": 10, "timestamp": 1_800_000_000_000,
+                }],
+            }, {
+                "name": "okx", "market": "futures", "status": "ok", "orders": [],
+            }]
+
+    client = ClientWithOpenOrders()
+    engine = SimpleNamespace(
+        config=SimpleNamespace(mock_mode=False),
+        client=client,
+        active_positions={},
+        pending_entry_orders={},
+        pending_exit_orders={},
+        unmanaged_open_orders=[],
+        _pair_infos={},
+        _exchange_halted={},
+        supabase=FakeSupabase(),
+        failures=[],
+    )
+
+    async def publish_failure(*args, **kwargs):
+        engine.failures.append((args, kwargs))
+
+    engine._publish_execution_failure = publish_failure
+    worker = ExposureReconciliationWorker(engine)
+    await worker._reconcile_open_orders(client)
+
+    assert engine._exchange_halted["indodax"].startswith("exposure reconciliation:")
+    assert engine.unmanaged_open_orders[0]["order_id"] == "orphan-123"
+    assert engine.unmanaged_open_orders[0]["managed"] is False
+    assert engine.failures[0][0][1] == "UNMANAGED_OPEN_ORDER"
+    assert client.order_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_known_pending_order_is_not_classified_as_unmanaged(monkeypatch):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
+
+    class ClientWithOpenOrders(FakeClient):
+        async def fetch_open_orders_report(self):
+            return [{
+                "name": "indodax", "market": "spot", "status": "ok",
+                "orders": [{
+                    "id": "known-123", "client_order_id": "nafas-entry-123",
+                    "symbol": "btc_idr", "side": "buy", "type": "limit",
+                    "status": "open", "price": 100, "amount": 1,
+                    "filled": 0, "remaining": 1,
+                }],
+            }]
+
+    client = ClientWithOpenOrders()
+    engine = SimpleNamespace(
+        config=SimpleNamespace(mock_mode=False),
+        client=client,
+        active_positions={},
+        pending_entry_orders={"pair": {
+            "order_id": "known-123", "client_order_id": "nafas-entry-123",
+        }},
+        pending_exit_orders={},
+        unmanaged_open_orders=[],
+        _pair_infos={},
+        _exchange_halted={},
+        supabase=FakeSupabase(),
+        failures=[],
+    )
+
+    async def publish_failure(*args, **kwargs):
+        engine.failures.append((args, kwargs))
+
+    engine._publish_execution_failure = publish_failure
+    worker = ExposureReconciliationWorker(engine)
+    await worker._reconcile_open_orders(client)
+
+    assert engine.unmanaged_open_orders == []
+    assert "indodax" not in engine._exchange_halted
+    assert engine.failures == []
