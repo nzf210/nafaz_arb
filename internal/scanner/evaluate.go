@@ -271,7 +271,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	if fundingSubsidyPct < subsidyFloor {
 		fundingSubsidyPct = subsidyFloor
 	}
-	minimumEntrySpreadPct := (s.cfg.SpotMakerFeePct + s.cfg.PerpTakerFeePct) - fundingSubsidyPct
+	minimumEntrySpreadPct := (op.SpotEntryFeePct + op.PerpEntryFeePct) - fundingSubsidyPct
 
 	var cancelIfGlobalBidDropsBelowUSDT float64
 	denom := fxRate * (1.0 - (minimumEntrySpreadPct / 100.0))
