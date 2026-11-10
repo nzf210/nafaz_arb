@@ -13,6 +13,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
 	"github.com/nafaz/spot-perp-scanner/internal/history"
+	"github.com/nafaz/spot-perp-scanner/internal/persistence"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
 	"github.com/nafaz/spot-perp-scanner/internal/telegram"
@@ -20,6 +21,15 @@ import (
 func main(){
 	path:=flag.String("config","config.json","path to JSON config");flag.Parse()
 	cfg,err:=config.Load(*path);if err!=nil{log.Fatal(err)}
+	supabaseWriter := persistence.NewSupabaseWriter(cfg.Supabase)
+	supabaseWriter.Start()
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := supabaseWriter.Close(flushCtx); err != nil {
+			log.Printf("Supabase scanner writer shutdown: %v", err)
+		}
+	}()
 	var adapter exchange.ReadOnlyAdapter
 	switch cfg.Mode {
 	case "LIVE":
@@ -78,6 +88,7 @@ func main(){
 
 	store,err:=history.New(cfg.HistoryPath);if err!=nil{log.Fatal(err)}
 	server:=api.New(svc,store,cfg)
+	server.SetSupabaseWriter(supabaseWriter)
 	if redisClient != nil {
 		server.SetExecutorClient(redisClient)
 	}
