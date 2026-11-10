@@ -74,6 +74,8 @@ type Config struct {
 	MaxLastTradeAgeSeconds        int            `json:"max_last_trade_age_seconds"`
 	FXRateSanityPct               float64        `json:"fx_rate_sanity_pct"`
 	EnableWebSocketFeed           bool           `json:"enable_websocket_feed"`
+	TokocryptoWebSocketEnabled    *bool          `json:"tokocrypto_websocket_enabled,omitempty"`
+	TokocryptoWSStaleAfterSeconds int            `json:"tokocrypto_ws_stale_after_seconds"`
 	OKXWebSocketEnabled           *bool          `json:"okx_ws_enabled,omitempty"`
 	OKXWSURL                      string         `json:"okx_ws_url"`
 	OKXWSStaleAfter               string         `json:"okx_ws_stale_after"`
@@ -133,6 +135,8 @@ func (c *Config) setDefaults() {
 	c.ExchangeErrorRateThreshold = defaultFloat(c.ExchangeErrorRateThreshold, 0.5)
 	c.ExchangeErrorMinRequests = defaultInt(c.ExchangeErrorMinRequests, 5)
 	c.WebSocketBookMaxAgeSeconds = defaultInt(c.WebSocketBookMaxAgeSeconds, 2)
+	if c.TokocryptoWebSocketEnabled == nil { enabled := strings.EqualFold(c.Mode, "LIVE"); c.TokocryptoWebSocketEnabled = &enabled }
+	c.TokocryptoWSStaleAfterSeconds = defaultInt(c.TokocryptoWSStaleAfterSeconds, 3)
 	if c.OKXWebSocketEnabled == nil { enabled := strings.EqualFold(c.Mode, "LIVE"); c.OKXWebSocketEnabled = &enabled }
 	c.OKXWSURL = defaultString(c.OKXWSURL, "wss://ws.okx.com/ws/v5/public")
 	c.OKXWSStaleAfter = defaultString(c.OKXWSStaleAfter, "65s")
@@ -223,6 +227,9 @@ func (c *Config) validate() error {
 	}
 	if c.WebSocketBookMaxAgeSeconds < 0 {
 		return fmt.Errorf("websocket_book_max_age_seconds cannot be negative")
+	}
+	if c.TokocryptoWSStaleAfterSeconds <= 0 {
+		return fmt.Errorf("tokocrypto_ws_stale_after_seconds must be positive")
 	}
 	if c.OKXWSURL != "" && !strings.HasPrefix(strings.ToLower(c.OKXWSURL), "wss://") {
 		return fmt.Errorf("okx_ws_url must use wss://")
@@ -376,6 +383,8 @@ func (c *Config) applyEnvOverrides() {
 	setEnvInt(&c.MaxLastTradeAgeSeconds, "MAX_LAST_TRADE_AGE_SECONDS")
 	setEnvFloat(&c.FXRateSanityPct, "FX_RATE_SANITY_PCT")
 	setEnvBool(&c.EnableWebSocketFeed, "ENABLE_WEBSOCKET_FEED")
+	if v := os.Getenv("TOKOCRYPTO_WEBSOCKET_ENABLED"); v != "" { enabled := v == "true" || v == "1"; c.TokocryptoWebSocketEnabled = &enabled }
+	setEnvInt(&c.TokocryptoWSStaleAfterSeconds, "TOKOCRYPTO_WS_STALE_AFTER_SECONDS")
 	if v := os.Getenv("OKX_WS_ENABLED"); v != "" {
 		enabled := strings.EqualFold(v, "true") || v == "1"
 		c.OKXWebSocketEnabled = &enabled
