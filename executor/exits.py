@@ -21,7 +21,12 @@ from executor.helpers import (
     ceil_to_tick,
 )
 from executor.private_stream import fetch_order_preferring_stream
-from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt, round_trip_fees_usdt, required_spot_exit_usdt as required_spot_exit_usdt_fn
+from executor.fee_engine import (
+    rates_for_position,
+    round_trip_fee_breakdown_usdt,
+    round_trip_fees_usdt,
+    required_spot_exit_usdt as required_spot_exit_usdt_fn,
+)
 
 logger = logging.getLogger("executor.engine")
 
