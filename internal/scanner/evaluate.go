@@ -13,6 +13,7 @@ import (
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
+	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 )
 
 type availabilityReporter interface {
@@ -131,7 +132,18 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 	// Evaluate freshness against the time after both order books were received,
 	// not the beginning of the full scan (which can be seconds earlier).
 	evaluationTime := time.Now().UTC()
-	op, err := s.calculate(sm, pm, sb, pb, fr, evaluationTime, positionReason, isSynthetic, fxRate, requiredNotional)
+	var dynamicSpotFee, dynamicPerpFee *redishandler.DynamicFeeProfile
+	s.mu.Lock()
+	feeRedis := s.redisClient
+	s.mu.Unlock()
+	if feeRedis != nil {
+		dynamicSpotFee, _ = feeRedis.GetDynamicFeeProfile(ctx, sm.Exchange, "spot")
+		dynamicPerpFee, _ = feeRedis.GetDynamicFeeProfile(ctx, pm.Exchange, "perp")
+	}
+	op, err := s.calculate(
+		sm, pm, sb, pb, fr, evaluationTime, positionReason, isSynthetic,
+		fxRate, requiredNotional, dynamicSpotFee, dynamicPerpFee,
+	)
 	if err != nil {
 		if strings.Contains(err.Error(), "empty order book") {
 			s.recordEmptyBook(pairKey, started)
