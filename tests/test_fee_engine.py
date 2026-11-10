@@ -1,7 +1,12 @@
 """Regression matrix for every supported NAFAZ spot/perpetual venue pairing."""
 import pytest
 
-from executor.fee_engine import FeeRates, required_spot_exit_usdt, round_trip_fees_usdt
+from executor.fee_engine import (
+    FeeRates,
+    required_spot_exit_usdt,
+    round_trip_fee_breakdown_usdt,
+    round_trip_fees_usdt,
+)
 
 
 SPOT = {
@@ -52,6 +57,23 @@ def test_all_venue_pairs_and_execution_modes_have_complete_round_trip_fees(
         - round_trip_fees_usdt(2.0, 100.0, floor, 101.0, 99.0, rates)
     )
     assert net_at_floor == pytest.approx(0.5)
+
+
+def test_round_trip_fee_breakdown_splits_spot_and_perpetual_costs():
+    rates = FeeRates(0.1, 0.2, 0.03, 0.04, surcharge_pct=0.01)
+    breakdown = round_trip_fee_breakdown_usdt(
+        2.0, 100.0, 110.0, 105.0, 95.0, rates
+    )
+    expected_spot = 2.0 * (100.0 * 0.11 + 110.0 * 0.21) / 100.0
+    expected_futures = 2.0 * (105.0 * 0.04 + 95.0 * 0.05) / 100.0
+    assert breakdown["spot_fees_usdt"] == pytest.approx(expected_spot)
+    assert breakdown["futures_fees_usdt"] == pytest.approx(expected_futures)
+    assert breakdown["total_fees_usdt"] == pytest.approx(
+        breakdown["spot_fees_usdt"] + breakdown["futures_fees_usdt"]
+    )
+    assert round_trip_fees_usdt(
+        2.0, 100.0, 110.0, 105.0, 95.0, rates
+    ) == pytest.approx(breakdown["total_fees_usdt"])
 
 
 def test_explicit_zero_maker_fee_is_preserved():
