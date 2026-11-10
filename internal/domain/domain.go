@@ -197,7 +197,13 @@ type ExecutionDirectives struct {
 	PerpExitFeePct                   float64 `json:"perp_exit_fee_pct"`
 	FeeSource                        string  `json:"fee_source,omitempty"`
 	FeeVerified                      bool    `json:"fee_verified"`
-	FeeFetchedAtMS                   int64   `json:"fee_fetched_at_ms,omitempty`
+	FeeFetchedAtMS                   int64   `json:"fee_fetched_at_ms,omitempty"`
+	EstimatedFeesUSDT                float64 `json:"estimated_fees_usdt"`
+	Quantity                         float64 `json:"quantity"`
+	SpotEntryPriceUSDT               float64 `json:"spot_entry_price_usdt"`
+	SpotExitPriceUSDT                float64 `json:"spot_exit_price_usdt"`
+	PerpEntryPriceUSDT                float64 `json:"perp_entry_price_usdt"`
+	PerpExitPriceUSDT                 float64 `json:"perp_exit_price_usdt"`
 }
 
 type ExecutorPayload struct {
