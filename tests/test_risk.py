@@ -446,3 +446,31 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     assert "InsufficientFunds: insufficient balance" in message
     assert detail["exchange_error"] == "InsufficientFunds: insufficient balance"
     assert engine._exchange_halted == {}
+
+
+def test_business_rejections_do_not_count_toward_exchange_failure_breaker(engine):
+    engine.config.max_consecutive_order_failures = 50
+    engine._record_order_failure("indodax", "insufficient balance")
+    engine._record_order_failure("okx", "MIN_NOTIONAL")
+    engine._record_order_failure("mexc", "INVALID_SYMBOL")
+
+    assert engine._consecutive_order_failures == {}
+    assert engine._exchange_halted == {}
+
+
+def test_failure_breaker_isolated_per_exchange_and_trips_at_50(engine):
+    engine.config.max_consecutive_order_failures = 50
+    for _ in range(49):
+        engine._record_order_failure("indodax", "network timeout")
+    for _ in range(20):
+        engine._record_order_failure("okx", "temporary API error")
+
+    assert engine._consecutive_order_failures["indodax"] == 49
+    assert engine._consecutive_order_failures["okx"] == 20
+    assert "indodax" not in engine._exchange_halted
+    assert "okx" not in engine._exchange_halted
+
+    engine._record_order_failure("indodax", "network timeout")
+    assert engine._consecutive_order_failures["indodax"] == 50
+    assert "indodax" in engine._exchange_halted
+    assert "okx" not in engine._exchange_halted
