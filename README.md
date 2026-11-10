@@ -286,7 +286,7 @@ or pre-snapshot WebSocket book. The mock WebSocket tests verify this behavior;
 they do not constitute a live OKX/VPS soak test. Indodax and MEXC spot feeds
 remain outside this OKX-specific change.
 
-### Executor (`executor` block in `config.json` / environment)\n\nPending maker entry orders default to a 120-second TTL (`max_order_ttl_seconds` / `MAX_ORDER_TTL_SECONDS`). The independent adverse-selection guard can still cancel sooner when the global bid crosses the signal's cancellation threshold; this safety guard is intentionally retained.
+### Executor (`executor` block in `config.json` / environment)\n\nPending maker entry orders default to a 120-second TTL (`max_order_ttl_seconds` / `MAX_ORDER_TTL_SECONDS`). TTL applies to both unfilled and partially filled orders: the executor cancels the remaining quantity, reconciles the venue's final cumulative fill, and hedges that fill before releasing unused reserves. Fill/hedge progress is persisted for restart recovery. The independent adverse-selection guard can still cancel sooner when the global bid crosses the signal's cancellation threshold; this safety guard is intentionally retained.
 
 | Key | Env | Default | Effect |
 |---|---|---|---|
