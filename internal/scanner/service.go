@@ -427,7 +427,7 @@ func availableBookDepth(levels []domain.PriceLevel) decimal.Decimal {
 	return sum
 }
 
-func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr domain.FundingRate, now time.Time, positionReason string, isSynthetic bool, fxRate float64, requiredNotional decimal.Decimal) (domain.Opportunity, error) {
+func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr domain.FundingRate, now time.Time, positionReason string, isSynthetic bool, fxRate float64, requiredNotional decimal.Decimal, dynamicProfiles ...*redishandler.DynamicFeeProfile) (domain.Opportunity, error) {
 	if err := validateOrderBooks(sb, pb); err != nil {
 		return domain.Opportunity{}, err
 	}
@@ -541,6 +541,27 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(pm.Exchange)]; ok && profile.PerpTakerFeePct != nil {
 		perpTakerFeePct = *profile.PerpTakerFeePct
 	}
+	feeSource := "CONFIG"
+	feeVerified := false
+	var feeFetchedAtMS int64
+	if len(dynamicProfiles) > 0 && dynamicProfiles[0] != nil {
+		spotMakerFeePct = dynamicProfiles[0].MakerFeePct
+		spotTakerFeePct = dynamicProfiles[0].TakerFeePct
+		feeSource = "EXCHANGE_API"
+		feeVerified = true
+		feeFetchedAtMS = dynamicProfiles[0].FetchedAtMS
+	}
+	if len(dynamicProfiles) > 1 && dynamicProfiles[1] != nil {
+		perpTakerFeePct = dynamicProfiles[1].TakerFeePct
+		if dynamicProfiles[1].FetchedAtMS > feeFetchedAtMS {
+			feeFetchedAtMS = dynamicProfiles[1].FetchedAtMS
+		}
+	} else {
+		feeVerified = false
+		if feeSource == "EXCHANGE_API" {
+			feeSource = "PARTIAL_EXCHANGE_API"
+		}
+	}
 	spotTakerFeeRate := decimal.NewFromFloat(spotTakerFeePct).Div(hundred)
 	perpTakerFeeRate := decimal.NewFromFloat(perpTakerFeePct).Div(hundred)
 	// Fee-asset surcharge: model non-quote-asset fee effects (BNB discount,
@@ -653,8 +674,9 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 		SpotExitFeePct:         spotTakerFeePct,
 		PerpEntryFeePct:        perpTakerFeePct,
 		PerpExitFeePct:         perpTakerFeePct,
-		FeeSource:              "CONFIG",
-		FeeVerified:            false,
+		FeeSource:              feeSource,
+		FeeVerified:            feeVerified,
+		FeeFetchedAtMS:         feeFetchedAtMS,
 		LocalExchange:          sm.Exchange,
 		GlobalExchange:         pm.Exchange,
 		BaseAsset:              sm.BaseAsset,
