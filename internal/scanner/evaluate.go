@@ -230,6 +230,15 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		tickIDR = localTick * fxRate
 	}
 
+	// Direct USDT/USDC pairs share a stable quote unit and must remain
+	// comparable even before this process has observed an IDR/USDT ticker.
+	// Keep fxRate itself untouched (zero still means no FX observation); use
+	// a unit conversion only for the spread comparison and cancellation math.
+	comparisonRate := fxRate
+	if !isIDRQuote && comparisonRate <= 0 {
+		comparisonRate = 1.0
+	}
+
 	var targetLimitBuyIDR float64
 	if isIDRQuote {
 		targetLimitBuyIDR = rawSB.Bids[0].Price + localTick
@@ -241,11 +250,11 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		if len(rawSB.Asks) > 0 && targetUSDT >= rawSB.Asks[0].Price && rawSB.Asks[0].Price > rawSB.Bids[0].Price {
 			targetUSDT = rawSB.Bids[0].Price
 		}
-		targetLimitBuyIDR = targetUSDT * fxRate
+		targetLimitBuyIDR = targetUSDT * comparisonRate
 	}
 
 	globalBestBidUSDT := pb.Bids[0].Price
-	globalBestBidIDR := globalBestBidUSDT * fxRate
+	globalBestBidIDR := globalBestBidUSDT * comparisonRate
 	var entrySpreadPct float64
 	if globalBestBidIDR > 0 {
 		entrySpreadPct = ((globalBestBidIDR - targetLimitBuyIDR) / globalBestBidIDR) * 100.0
@@ -274,7 +283,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	minimumEntrySpreadPct := (op.SpotEntryFeePct + op.PerpEntryFeePct) - fundingSubsidyPct
 
 	var cancelIfGlobalBidDropsBelowUSDT float64
-	denom := fxRate * (1.0 - (minimumEntrySpreadPct / 100.0))
+	denom := comparisonRate * (1.0 - (minimumEntrySpreadPct / 100.0))
 	if denom > 0 {
 		cancelIfGlobalBidDropsBelowUSDT = targetLimitBuyIDR / denom
 	} else {
