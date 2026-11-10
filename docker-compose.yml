@@ -24,6 +24,9 @@ services:
     environment:
       - TZ=Asia/Jakarta
       - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}
+      # Optional audit persistence; service-role key stays server-side.
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
       - REDIS_ENABLED=true
       - REDIS_ADDR=redis:6380
       - GLOBAL_FUTURES_EXCHANGE=okx

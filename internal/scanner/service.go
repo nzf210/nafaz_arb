@@ -36,12 +36,17 @@ type evalResult struct {
 	exchangeMetrics []domain.ExchangeScanMetrics
 }
 
+type OpportunitySink interface {
+	EnqueueScan(domain.ScanResult)
+}
+
 type Service struct {
-	cfg            config.Config
-	adapter        exchange.ReadOnlyAdapter
-	fundingWorker  *exchange.FundingWorker
-	redisClient    *redishandler.Client
-	mu             sync.Mutex
+	cfg             config.Config
+	adapter         exchange.ReadOnlyAdapter
+	fundingWorker   *exchange.FundingWorker
+	redisClient     *redishandler.Client
+	opportunitySink OpportunitySink
+	mu              sync.Mutex
 	emptyTrackers  map[string]emptyBookRecord
 	spikeTrackers  map[string]*spikeRecord
 	lastLiveFXRate float64
@@ -70,6 +75,14 @@ func (s *Service) SetRedisClient(r *redishandler.Client) {
 	s.redisClient = r
 }
 
+// SetOpportunitySink installs an optional asynchronous persistence sink.
+// Persistence is observational only and never gates scan or execution decisions.
+func (s *Service) SetOpportunitySink(sink OpportunitySink) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opportunitySink = sink
+}
+
 func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete bool, scanErr error) {
 	started := time.Now().UTC()
 	result = domain.ScanResult{ScanID: id(), Mode: s.cfg.Mode, StartedAt: started, Opportunities: []domain.Opportunity{}}
@@ -79,6 +92,12 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 		result.Complete = complete && scanErr == nil
 		if scanErr != nil {
 			result.Errors = append(result.Errors, scanErr.Error())
+		}
+		s.mu.Lock()
+		sink := s.opportunitySink
+		s.mu.Unlock()
+		if sink != nil {
+			sink.EnqueueScan(result)
 		}
 	}()
 
@@ -621,6 +640,8 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 
 	op := domain.Opportunity{
 		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
+		LocalExchange:          sm.Exchange,
+		GlobalExchange:         pm.Exchange,
 		BaseAsset:              sm.BaseAsset,
 		QuoteAsset:             targetQuote,
 		SpotSymbol:             sm.Symbol,
