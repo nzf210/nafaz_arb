@@ -113,6 +113,7 @@ class ExposureReconciliationWorker:
     async def reconcile_once(self) -> None:
         client = self.engine.client
         await self._reconcile_open_orders(client)
+        await self._reconcile_balances_and_positions()
 
     async def _reconcile_open_orders(self, client: Any) -> None:
         """Discover venue-side orders that are absent from executor tracking.
@@ -163,7 +164,6 @@ class ExposureReconciliationWorker:
                     tracked_client_ids.add(client_id)
 
         unmanaged = []
-        successful_venues = set()
         for report in reports or []:
             if not isinstance(report, dict):
                 continue
@@ -182,7 +182,6 @@ class ExposureReconciliationWorker:
                 )
                 continue
 
-            successful_venues.add(exchange)
             self._clear_issue(f"OPEN_ORDERS_UNAVAILABLE:{exchange}", exchange)
             orders = report.get("orders")
             if not isinstance(orders, list):
