@@ -224,10 +224,10 @@ func TestGetDynamicFeeProfileRequiresFreshVerifiedExchangeSnapshot(t *testing.T)
     }
     raw, err := json.Marshal(profile)
     if err != nil { t.Fatal(err) }
-    if err := rc.rdb.Set(ctx, "arb:fee_profile:okx:perp", raw, 5*time.Minute).Err(); err != nil {
+    if err := rc.rdb.Set(ctx, "arb:fee_profile:okx:perp:btc_usdt_usdt", raw, 5*time.Minute).Err(); err != nil {
         t.Fatal(err)
     }
-    got, err := rc.GetDynamicFeeProfile(ctx, "OKX", "PERP")
+    got, err := rc.GetDynamicFeeProfile(ctx, "OKX", "PERP", "BTC/USDT:USDT")
     if err != nil { t.Fatal(err) }
     if got == nil || got.TakerFeePct != 0.05 || !got.Verified {
         t.Fatalf("unexpected fee profile: %+v", got)
@@ -235,16 +235,16 @@ func TestGetDynamicFeeProfileRequiresFreshVerifiedExchangeSnapshot(t *testing.T)
 
     profile.Verified = false
     raw, _ = json.Marshal(profile)
-    _ = rc.rdb.Set(ctx, "arb:fee_profile:okx:perp", raw, 5*time.Minute).Err()
-    got, err = rc.GetDynamicFeeProfile(ctx, "okx", "perp")
+    _ = rc.rdb.Set(ctx, "arb:fee_profile:okx:perp:btc_usdt_usdt", raw, 5*time.Minute).Err()
+    got, err = rc.GetDynamicFeeProfile(ctx, "okx", "perp", "BTC/USDT:USDT")
     if err != nil { t.Fatal(err) }
     if got != nil { t.Fatalf("unverified profile must be ignored: %+v", got) }
 
     profile.Verified = true
     profile.FetchedAtMS = time.Now().Add(-6*time.Minute).UnixMilli()
     raw, _ = json.Marshal(profile)
-    _ = rc.rdb.Set(ctx, "arb:fee_profile:okx:perp", raw, 5*time.Minute).Err()
-    got, err = rc.GetDynamicFeeProfile(ctx, "okx", "perp")
+    _ = rc.rdb.Set(ctx, "arb:fee_profile:okx:perp:btc_usdt_usdt", raw, 5*time.Minute).Err()
+    got, err = rc.GetDynamicFeeProfile(ctx, "okx", "perp", "BTC/USDT:USDT")
     if err != nil { t.Fatal(err) }
     if got != nil { t.Fatalf("stale profile must be ignored: %+v", got) }
 }
