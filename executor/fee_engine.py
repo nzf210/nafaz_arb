@@ -91,3 +91,17 @@ def required_spot_exit_usdt(
     if denominator <= 0:
         raise ValueError("spot exit fee rate must be below 100%")
     return fixed_per_unit / denominator
+
+def rates_for_position(position):
+    """Return the immutable position snapshot; legacy positions use conservative rates."""
+    if getattr(position, "fee_source", "") == "LEGACY_UNVERIFIED":
+        return FeeRates(0.30, 0.30, 0.05, 0.05, "LEGACY_CONSERVATIVE_FALLBACK", False, 0)
+    return FeeRates(
+        float(position.spot_entry_fee_pct),
+        float(position.spot_exit_fee_pct),
+        float(position.perp_entry_fee_pct),
+        float(position.perp_exit_fee_pct),
+        str(position.fee_source),
+        bool(position.fee_verified),
+        int(position.fee_fetched_at_ms),
+    ).validate()
