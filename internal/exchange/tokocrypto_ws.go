@@ -124,6 +124,8 @@ func (m *tokocryptoBookManager) streams() []WSStream {
 			URL:       tokocryptoNextMeWSURL,
 			Subscribe: func() ([][]byte, error) { return tokocryptoSubscribeFrames(m.markets[3], "depth@100ms") },
 			Handle:    m.handleNextMeFrame,
+			KeepAliveInterval: 2 * time.Second,
+			TouchSymbols: m.canonicalSymbols(3),
 			OnConnected: func(ctx context.Context) {
 				m.bootstrap(ctx, 3)
 			},
