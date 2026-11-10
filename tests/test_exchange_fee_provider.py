@@ -36,7 +36,9 @@ async def test_indodax_unsupported_fee_endpoint_does_not_hide_perpetual_dynamic_
         type("Pair", (), {"local_symbol": "BTC_IDR", "global_symbol": "BTC/USDT:USDT"})()
     )
     assert profile["spot"] is None
-    assert profile["perp"] == {"maker": pytest.approx(0.02), "taker": pytest.approx(0.05)}
+    assert profile["perp"]["maker"] == pytest.approx(0.02)
+    assert profile["perp"]["taker"] == pytest.approx(0.05)
+    assert profile["perp"]["fetched_at_ms"] > 0
     assert profile["source"] == "PARTIAL_EXCHANGE_API"
     assert profile["verified"] is False
 
@@ -47,8 +49,12 @@ async def test_tokocrypto_account_commission_bips_are_converted_to_percent():
     profile = await client.fetch_pair_fee_rates(
         type("Pair", (), {"local_symbol": "BTC_USDT", "global_symbol": "BTC/USDT:USDT"})()
     )
-    assert profile["spot"] == {"maker": pytest.approx(0.1), "taker": pytest.approx(0.1)}
-    assert profile["perp"] == {"maker": pytest.approx(0.02), "taker": pytest.approx(0.05)}
+    assert profile["spot"]["maker"] == pytest.approx(0.1)
+    assert profile["spot"]["taker"] == pytest.approx(0.1)
+    assert profile["spot"]["fetched_at_ms"] > 0
+    assert profile["perp"]["maker"] == pytest.approx(0.02)
+    assert profile["perp"]["taker"] == pytest.approx(0.05)
+    assert profile["perp"]["fetched_at_ms"] > 0
     assert profile["source"] == "EXCHANGE_API"
     assert profile["verified"] is True
 
