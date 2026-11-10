@@ -1107,6 +1107,34 @@ class ArbitrageEngine(
             return
 
         directives = payload.execution_directives
+        # Refresh account-specific rates before any new LIVE order. If a venue
+        # lacks an authenticated fee endpoint, retain the explicitly supplied
+        # scanner profile and keep its source/verification status unchanged.
+        if not bool(getattr(self.config, "mock_mode", False)) and hasattr(self.client, "fetch_pair_fee_rates"):
+            try:
+                fee_snapshot = await self.client.fetch_pair_fee_rates(payload.pair_info)
+                spot_rates = fee_snapshot["spot"]
+                perp_rates = fee_snapshot["perp"]
+                maker_taker = str(getattr(self.config, "execution_mode", "TAKER_TAKER")).upper()
+                directives.spot_entry_fee_pct = (
+                    spot_rates["maker"] if maker_taker == "MAKER_TAKER" else spot_rates["taker"]
+                )
+                directives.spot_exit_fee_pct = spot_rates["taker"]
+                directives.perp_entry_fee_pct = perp_rates["taker"]
+                directives.perp_exit_fee_pct = perp_rates["taker"]
+                directives.fee_source = fee_snapshot["source"]
+                directives.fee_verified = bool(fee_snapshot["verified"])
+                directives.fee_fetched_at_ms = int(fee_snapshot["fetched_at_ms"])
+                logger.info(
+                    "[Fee Engine] refreshed account fee tiers for %s: spot=%s perp=%s",
+                    pair_tag, spot_rates, perp_rates,
+                )
+            except Exception as fee_error:
+                logger.warning(
+                    "[Fee Engine] authenticated fee refresh unavailable for %s; "
+                    "using scanner fee snapshot (%s, verified=%s): %s",
+                    pair_tag, directives.fee_source, directives.fee_verified, fee_error,
+                )
         pair_info = payload.pair_info
         snapshot = payload.pricing_snapshot
         if pair_info.local_amount_spec is None or pair_info.global_amount_spec is None:
