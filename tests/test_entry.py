@@ -254,6 +254,51 @@ async def test_entry_order_ttl_expiration(engine, fake_redis, mock_client):
     assert engine.states[pair_tag] == PositionState.IDLE
 
 @pytest.mark.asyncio
+async def test_entry_order_ttl_cancels_remainder_and_hedges_partial_fill(engine, fake_redis, mock_client):
+    """An aged partially-filled maker order must cancel its remainder and hedge the final fill."""
+    pair_tag = "indodax:btc_idr"
+    engine.config.max_order_ttl_seconds = 10
+    order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
+    order_info["placed_time"] = time.time() - 15
+    order_info["qty"] = 0.01
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.000048,
+    }
+
+    await engine._check_entry_orders()
+
+    assert ("301", "btc_idr") in mock_client.cancelled_orders
+    assert len(mock_client.global_short_sells) == 1
+    assert mock_client.global_short_sells[0]["amount"] == pytest.approx(0.000048)
+    assert pair_tag in engine.active_positions
+    assert engine.active_positions[pair_tag].qty == pytest.approx(0.000048)
+    assert pair_tag not in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.HEDGED_ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_pending_partial_fill_progress_is_persisted_for_restart(engine, fake_redis, mock_client):
+    """A below-threshold partial fill is durably recorded before the next monitoring cycle."""
+    pair_tag = "indodax:btc_idr"
+    order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
+    order_info["qty"] = 0.1
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.000048,
+    }
+
+    await engine._check_entry_orders()
+
+    persisted = json.loads(await fake_redis.get("arb:pending_entry:" + pair_tag))
+    assert persisted["filled"] == pytest.approx(0.000048)
+    assert persisted["hedged_short_qty"] == pytest.approx(0.0)
+    assert engine.states[pair_tag] == PositionState.ENTRY_PARTIAL
+
+
+@pytest.mark.asyncio
 async def test_p2_01_partial_fill_below_threshold_sets_entry_partial(engine, fake_redis, mock_client):
     """BUG-08/P2-01: below-threshold partial fills must be visible as ENTRY_PARTIAL."""
     pair_tag = "indodax:btc_idr"
