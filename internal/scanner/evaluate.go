@@ -137,8 +137,8 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 	feeRedis := s.redisClient
 	s.mu.Unlock()
 	if feeRedis != nil {
-		dynamicSpotFee, _ = feeRedis.GetDynamicFeeProfile(ctx, sm.Exchange, "spot")
-		dynamicPerpFee, _ = feeRedis.GetDynamicFeeProfile(ctx, pm.Exchange, "perp")
+		dynamicSpotFee, _ = feeRedis.GetDynamicFeeProfile(ctx, sm.Exchange, "spot", sm.Symbol)
+		dynamicPerpFee, _ = feeRedis.GetDynamicFeeProfile(ctx, pm.Exchange, "perp", pm.Symbol)
 	}
 	op, err := s.calculate(
 		sm, pm, sb, pb, fr, evaluationTime, positionReason, isSynthetic,
