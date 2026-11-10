@@ -26,7 +26,7 @@ class ExecutorConfig:
     max_stale_latency_ms: int = 500
     min_partial_fill_usd: float = 10.0
     exit_price_move_threshold: float = 0.0015  # 0.15%
-    max_order_ttl_seconds: int = 30  # Max TTL for pending maker entry orders before cancel
+    max_order_ttl_seconds: int = 120  # Max TTL for pending maker entry orders before cancel
     mock_mode: bool = True  # Paper trading / simulation by default
     initial_exchange_balance_usdt: float = 100.0  # $100 per exchange
     allocation_per_pair: float = 0.5  # Max 50% capital per pair
@@ -49,7 +49,7 @@ class ExecutorConfig:
     balance_mismatch_fraction: float = 0.20
     # Consecutive order-placement failures tolerated per exchange before the
     # venue is halted for new entries. 0 disables the breaker.
-    max_consecutive_order_failures: int = 3
+    max_consecutive_order_failures: int = 50
     # Round-trip taker/maker fees charged on both legs, used to shrink the
     # position size so the exit can still net a profit. 0 disables the buffer.
     estimated_round_trip_fee_pct: float = 0.001
@@ -277,7 +277,7 @@ class ExecutorConfig:
     # accepting unlimited risk.
     _NUMERIC_BOUNDS = {
         "max_stale_latency_ms": (1, 60000, 500),
-        "max_order_ttl_seconds": (1, 86400, 30),
+        "max_order_ttl_seconds": (1, 86400, 120),
         "min_partial_fill_usd": (0.0, None, 10.0),
         "exit_price_move_threshold": (0.0, 1.0, 0.0015),
         "initial_exchange_balance_usdt": (0.01, None, 100.0),
@@ -288,7 +288,7 @@ class ExecutorConfig:
         "entry_revalidation_min_spread_pct": (0.0, 100.0, 0.0),
         "max_exposure_per_exchange_usdt": (0.0, None, 0.0),
         "balance_mismatch_fraction": (0.0, 1.0, 0.20),
-        "max_consecutive_order_failures": (0, 100, 3),
+        "max_consecutive_order_failures": (0, 100, 50),
         "estimated_round_trip_fee_pct": (0.0, 1.0, 0.001),
         "private_stream_max_age_seconds": (0.5, 60.0, 5.0),
     }
