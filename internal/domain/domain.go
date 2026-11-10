@@ -52,6 +52,8 @@ type OpenExposure struct {
 }
 
 type Opportunity struct {
+	LocalExchange          string    `json:"local_exchange"`
+	GlobalExchange         string    `json:"global_exchange"`
 	OpportunityKey         string    `json:"opportunity_key"`
 	BaseAsset              string    `json:"base_asset"`
 	QuoteAsset             string    `json:"quote_asset"`
