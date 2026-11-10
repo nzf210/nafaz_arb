@@ -192,9 +192,6 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 			market.MinOrder = amountSpec.Min
 		}
 		markets = append(markets, market)
-		l.mu.Lock()
-		l.tokocryptoSymbolTypes[market.Symbol] = symbolType
-		l.mu.Unlock()
 	}
 
 	if len(markets) > 0 {
