@@ -174,8 +174,6 @@ def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
     assert cfg.max_order_ttl_seconds == 120
     assert cfg.maker_refresh_after_seconds == 45
     assert cfg.maker_refresh_cooldown_seconds == 300
-    assert cfg.maker_refresh_after_seconds == 45
-    assert cfg.maker_refresh_cooldown_seconds == 300
 
     cfg.sanitize()
     assert cfg.max_consecutive_order_failures == 50
