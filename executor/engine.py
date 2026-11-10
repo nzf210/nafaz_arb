@@ -598,8 +598,27 @@ class ArbitrageEngine(
                         if not request_id or len(request_id) > 64 or not request_id.isalnum():
                             continue
                         reports = await self.client.fetch_balance_report()
-                        payload = {"request_id": request_id, "timestamp_ms": int(time.time()*1000),
-                                   "mock_mode": bool(getattr(self.config, "mock_mode", False)), "exchanges": reports}
+                        timestamp_ms = int(time.time() * 1000)
+                        is_mock = bool(getattr(self.config, "mock_mode", False))
+                        for report in reports:
+                            if not isinstance(report, dict) or report.get("status") != "ok":
+                                continue
+                            market_type = "spot" if report.get("market") == "spot" else "perpetual"
+                            for asset_balance in report.get("assets") or []:
+                                if not isinstance(asset_balance, dict):
+                                    continue
+                                self.supabase.balance_snapshot(
+                                    str(report.get("name") or ""),
+                                    market_type,
+                                    str(asset_balance.get("asset") or ""),
+                                    asset_balance.get("total", 0),
+                                    asset_balance.get("free", 0),
+                                    asset_balance.get("used", 0),
+                                    is_mock=is_mock,
+                                    observed_at_ms=timestamp_ms,
+                                )
+                        payload = {"request_id": request_id, "timestamp_ms": timestamp_ms,
+                                   "mock_mode": is_mock, "exchanges": reports}
                         await self.redis.set(f"arb:balance_reply:{request_id}", json.dumps(payload, allow_nan=False), ex=30)
                     except Exception:
                         logger.exception("failed to process Telegram balance request")
@@ -1044,12 +1063,29 @@ class ArbitrageEngine(
             await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(payload, default=str))
         except Exception:
             logger.exception("failed to publish execution failure event for %s", pair_tag)
+        is_mock = bool(getattr(self.config, "mock_mode", False))
         self.supabase.event(
             "EXECUTION_FAILURE",
             pair_key=pair_tag,
-            is_mock=bool(getattr(self.config, "mock_mode", False)),
+            is_mock=is_mock,
             occurred_at_ms=payload["timestamp_ms"],
             payload=payload,
+        )
+        self.supabase.risk_event(
+            reason,
+            message,
+            pair_key=pair_tag,
+            exchange_name=payload["global_exchange"] or payload["local_exchange"] or None,
+            severity=(
+                "critical"
+                if state == PositionState.RECONCILIATION_REQUIRED
+                or "HEDGE" in reason or "ROLLBACK" in reason
+                else "error"
+            ),
+            action_taken="entry_blocked_or_manual_reconciliation",
+            details=payload["detail"],
+            is_mock=is_mock,
+            occurred_at_ms=payload["timestamp_ms"],
         )
 
     @staticmethod
@@ -1140,7 +1176,11 @@ class ArbitrageEngine(
         """Makes the latest status readable by the Go API and operators."""
         if self.redis is None:
             return
-        payload = json.dumps(self.status_snapshot())
+        snapshot = self.status_snapshot()
+        self.supabase.status_snapshot(
+            snapshot, is_mock=bool(getattr(self.config, "mock_mode", False))
+        )
+        payload = json.dumps(snapshot)
         try:
             await self.redis.set("arb:executor:status", payload, ex=30)
         except Exception:
