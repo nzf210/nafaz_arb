@@ -152,10 +152,9 @@ func (c *WSBookCache) Get(exchange, symbol string, maxAge time.Duration) (domain
 		return domain.OrderBook{}, false, false, false, false, nil
 	}
 	if maxAge > 0 {
-		stamp := entry.book.Timestamp
-		if stamp.IsZero() {
-			stamp = entry.at
-		}
+		stamp := entry.book.ReceivedAt
+		if stamp.IsZero() { stamp = entry.book.Timestamp }
+		if stamp.IsZero() { stamp = entry.at }
 		if c.now().Sub(stamp) > maxAge {
 			c.misses++
 			return domain.OrderBook{}, false, false, false, false, nil
@@ -183,6 +182,25 @@ func (c *WSBookCache) Get(exchange, symbol string, maxAge time.Duration) (domain
 		}
 	}
 	return entry.book, true, isDuplicate, isOutOfOrder, isGap, nil
+}
+
+// TouchExchange refreshes local receive-time freshness after a successful connection heartbeat.
+// It does not alter exchange timestamps or order-book levels.
+func (c *WSBookCache) TouchExchange(exchange string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	prefix := strings.ToLower(exchange) + "|"
+	for key, entry := range c.books {
+		if !strings.HasPrefix(key, prefix) { continue }
+		entry.book.ReceivedAt = now
+		c.books[key] = entry
+		c.staleTracker[key] = now
+		if health := c.healthTracker[key]; health != nil {
+			health.LastMessageAt = now
+			health.IsHealthy = true
+		}
+	}
 }
 
 // Invalidate removes a book that can no longer be trusted, such as after a sequence gap.
@@ -344,10 +362,9 @@ func (c *WSBookCache) ValidateAfterReconnect(exchange, symbol string, maxAge tim
 		return fmt.Errorf("post-reconnect validation: no cached book for %s %s", exchange, symbol)
 	}
 	if maxAge > 0 {
-		stamp := entry.book.Timestamp
-		if stamp.IsZero() {
-			stamp = entry.at
-		}
+		stamp := entry.book.ReceivedAt
+		if stamp.IsZero() { stamp = entry.book.Timestamp }
+		if stamp.IsZero() { stamp = entry.at }
 		if c.now().Sub(stamp) > maxAge {
 			return fmt.Errorf("post-reconnect validation: stale book for %s %s", exchange, symbol)
 		}
