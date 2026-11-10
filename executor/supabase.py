@@ -382,6 +382,13 @@ class SupabaseWriter:
                 "futures_pnl": _num(trade.get("futures_pnl_usdt")),
                 "funding_pnl": _num(trade.get("accumulated_funding_usdt")),
                 "fees": _num(trade.get("fees_usdt")),
+                "metadata": {
+                    "spot_fees_usdt": _num(trade.get("spot_fees_usdt")),
+                    "futures_fees_usdt": _num(trade.get("futures_fees_usdt")),
+                    "fee_source": str(trade.get("fee_source") or "LEGACY_UNVERIFIED"),
+                    "fee_verified": bool(trade.get("fee_verified", False)),
+                    "fee_estimation": "four_fill_round_trip",
+                },
                 "net_pnl": _num(trade.get("net_profit_usdt")),
                 "net_pnl_idr": _num(trade.get("net_profit_idr")),
                 "net_roi_pct": _num(trade.get("net_roi_pct")),
