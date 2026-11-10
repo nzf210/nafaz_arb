@@ -386,8 +386,8 @@ async def test_balance_feed_failure_halts_new_entries(engine, fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis):
-    """Live order submission, not a balance endpoint, decides whether funds suffice."""
+async def test_live_entry_fails_closed_when_balance_endpoint_is_unavailable(engine, fake_redis):
+    """A live entry must not submit when current free balance cannot be verified."""
     client = BalancesMockClient()
 
     def fail_balances():
@@ -416,13 +416,9 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     """An insufficient-funds rejection is reported with the venue's reason."""
     client = BalancesMockClient()
 
-    def fail_balances():
-        raise TimeoutError("balance endpoint rate limited")
-
     async def reject_order(*args, **kwargs):
         raise RuntimeError("InsufficientFunds: insufficient balance")
 
-    client.get_balances = fail_balances
     client.place_local_limit_buy = reject_order
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
