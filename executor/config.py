@@ -263,10 +263,16 @@ class ExecutorConfig:
 
         if sup_url := os.getenv("SUPABASE_URL"):
             self.supabase.url = sup_url
-            self.supabase.enabled = True
         if sup_key := os.getenv("SUPABASE_KEY"):
             self.supabase.key = sup_key
+
+        if self.supabase.url and self.supabase.key:
             self.supabase.enabled = True
+        if sup_enabled := os.getenv("SUPABASE_ENABLED"):
+            self.supabase.enabled = sup_enabled.strip().lower() in ("true", "1", "yes")
+        if self.supabase.enabled and not (self.supabase.url and self.supabase.key):
+            print("warning: Supabase persistence disabled; SUPABASE_URL and SUPABASE_KEY are both required")
+            self.supabase.enabled = False
 
     # Bounds applied by sanitize(): (field, minimum, maximum, default when invalid).
     # A bad value is replaced by the default rather than aborting the boot, so a
