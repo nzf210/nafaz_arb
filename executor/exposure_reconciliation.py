@@ -46,6 +46,15 @@ def _env_interval() -> int:
     return max(60, value)
 
 
+def _env_open_orders_interval() -> int:
+    try:
+        value = int(os.getenv("EXPOSURE_OPEN_ORDERS_INTERVAL_SECONDS") or "15")
+    except (TypeError, ValueError):
+        logger.warning("invalid open-orders interval; using 15 seconds")
+        return 15
+    return min(300, max(5, value))
+
+
 def _position_short_qty(positions: Iterable[dict]) -> float:
     total = 0.0
     for position in positions:
@@ -86,6 +95,7 @@ class ExposureReconciliationWorker:
     def __init__(self, engine: Any):
         self.engine = engine
         self.interval = _env_interval()
+        self.open_orders_interval = _env_open_orders_interval()
         self.relative_tolerance = _env_float(
             "EXPOSURE_RECONCILIATION_REL_TOLERANCE", 0.005, 0.0, 0.05
         )
@@ -99,16 +109,29 @@ class ExposureReconciliationWorker:
         return max(self.absolute_tolerance, abs(expected) * self.relative_tolerance)
 
     async def run(self) -> None:
-        """Run immediately, then periodically until cancelled."""
+        """Reconcile open orders frequently and balances/positions less often."""
+        if self.engine.config.mock_mode:
+            return
+        try:
+            await self.reconcile_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("initial exchange exposure reconciliation failed")
+
+        next_exposure_check = time.monotonic() + self.interval
         while True:
+            await asyncio.sleep(self.open_orders_interval)
             try:
-                if not self.engine.config.mock_mode:
-                    await self.reconcile_once()
+                await self._reconcile_open_orders(self.engine.client)
+                now = time.monotonic()
+                if now >= next_exposure_check:
+                    await self._reconcile_balances_and_positions()
+                    next_exposure_check = now + self.interval
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("periodic exchange exposure reconciliation failed")
-            await asyncio.sleep(self.interval)
 
     async def reconcile_once(self) -> None:
         client = self.engine.client
