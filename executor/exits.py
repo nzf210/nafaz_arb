@@ -140,6 +140,16 @@ class ExitMixin:
                 return False
 
             settled.sort(key=lambda item: item[0])
+            for _timestamp, payment_amount, payment in settled:
+                self.supabase.funding_payment(
+                    pair_tag,
+                    pos.global_exchange,
+                    symbol,
+                    payment,
+                    amount=payment_amount,
+                    asset="USDT",
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
             actual_amount = sum(item[1] for item in settled)
             pos.accumulated_funding_usdt += actual_amount
             pos.last_funding_time_ms = settled[-1][0]
