@@ -14,6 +14,42 @@ from executor.engine import ArbitrageEngine, retry_with_backoff
 
 from tests.conftest import MockExchangeClient, SpotSellFailureClient, engine, fake_redis, mock_client
 
+def test_force_close_pnl_uses_position_fee_snapshot_and_splits_costs():
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        spot_entry_fee_pct=0.1,
+        spot_exit_fee_pct=0.2,
+        perp_entry_fee_pct=0.03,
+        perp_exit_fee_pct=0.04,
+        fee_source="EXCHANGE_API",
+        fee_verified=True,
+        fee_fetched_at_ms=123,
+        fee_asset_surcharge_pct=0.01,
+    )
+    pnl = ArbitrageEngine._compute_force_close_pnl(
+        pos,
+        current_ask=64_900.0,
+        usdt_rate=16_000.0,
+        current_spot_bid=1_010_000_000.0,
+    )
+    expected_spot = 0.01 * (
+        62_500.0 * 0.11 + 63_125.0 * 0.21
+    ) / 100.0
+    expected_futures = 0.01 * (
+        65_000.0 * 0.04 + 64_900.0 * 0.05
+    ) / 100.0
+    assert pnl["spot_fees_usdt"] == pytest.approx(expected_spot)
+    assert pnl["futures_fees_usdt"] == pytest.approx(expected_futures)
+    assert pnl["fees_usdt"] == pytest.approx(expected_spot + expected_futures)
+    assert pnl["fee_source"] == "EXCHANGE_API"
+    assert pnl["fee_verified"] is True
+
+
 @pytest.mark.asyncio
 async def test_force_close_directive(engine, fake_redis, mock_client):
     """Test Force Close: Cancels exit orders, closes short on futures, and clears Redis."""
