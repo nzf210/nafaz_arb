@@ -120,6 +120,24 @@ class RiskMixin:
             if not math.isfinite(value) or value < 0:
                 raise ValueError(f"balance response contains invalid {field}")
             result[field] = value
+
+        # Persist only the balance values already fetched for risk sizing; this
+        # adds no exchange API calls and never feeds Supabase values back to risk.
+        local_exchange = pair_info.local_exchange if pair_info else self.config.local_exchange_name
+        global_exchange = pair_info.global_exchange if pair_info else self.config.global_exchange_name
+        spot_total = float(result.get("spot_total", result["spot_available"]) or 0.0)
+        futures_total = float(result.get("futures_total", result["futures_available"]) or 0.0)
+        is_mock = bool(getattr(self.config, "mock_mode", False))
+        self.supabase.balance_snapshot(
+            local_exchange, "spot", quote_asset or "IDR", spot_total,
+            result["spot_available"], max(0.0, spot_total - result["spot_available"]),
+            is_mock=is_mock,
+        )
+        self.supabase.balance_snapshot(
+            global_exchange, "perpetual", global_quote_asset, futures_total,
+            result["futures_available"], max(0.0, futures_total - result["futures_available"]),
+            is_mock=is_mock,
+        )
         return result
 
     async def _check_balance_mismatch(
