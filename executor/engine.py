@@ -1194,6 +1194,7 @@ class ArbitrageEngine(
             )
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
+            placed_time = time.time()
             order = await self.client.place_local_limit_buy(
                 pair_info.local_symbol,
                 buy_qty,
@@ -1212,6 +1213,7 @@ class ArbitrageEngine(
                 order,
                 client_order_id=entry_coid,
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
+                submitted_at_ms=int(placed_time * 1000),
             )
             self.states[pair_tag] = PositionState.ENTRY_PENDING
             self.pending_entry_orders[pair_tag] = {
@@ -1243,7 +1245,7 @@ class ArbitrageEngine(
                 "base_target_exit_spread_pct": directives.base_target_exit_spread_pct,
                 "current_funding_rate": payload.funding_metrics.current_funding_rate,
                 "next_funding_time_ms": payload.funding_metrics.next_funding_time_ms,
-                "placed_time": time.time(),
+                "placed_time": placed_time,
                 "spot_cost_usdt": actual_cost_usdt,
                 "futures_margin_usdt": actual_cost_usdt,
             }
