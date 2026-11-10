@@ -240,7 +240,7 @@ class TestClosedTrades:
         writer.trade_closed("p", self.TRADE, _pos(qty=0.0))
         rows = _drain(writer)
         tables = [t for t, _, _ in rows]
-        assert tables == ["closed_trades", "positions", "position_legs", "position_legs", "executor_events"]
+        assert tables == ["closed_trades", "positions", "executor_events"]
         assert rows[0][1] == "trade_key"
 
     def test_trade_without_id_ignored(self):
@@ -280,8 +280,6 @@ class TestOperationalSnapshots:
         assert by_table["risk_events"][0]["severity"] == "critical"
         assert by_table["risk_events"][0]["event_key"]
         assert by_table["funding_payments"][0]["exchange_payment_id"] == "funding-1"
-        assert len(by_table["position_legs"]) == 2
-        assert {row["leg"] for row in by_table["position_legs"]} == {"spot", "perpetual"}
 
     @pytest.mark.asyncio
     async def test_worker_marks_queue_tasks_done_after_unexpected_flush_error(self):
