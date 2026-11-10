@@ -101,6 +101,7 @@ func (m *tokocryptoBookManager) streams() []WSStream {
 			URL:       tokocryptoMBXWSURL,
 			Subscribe: func() ([][]byte, error) { return tokocryptoSubscribeFrames(m.markets[1], "depth@100ms") },
 			Handle:    m.handleDepthFrame,
+			KeepAliveInterval: 2 * time.Second,
 			OnConnected: func(ctx context.Context) {
 				m.bootstrap(ctx, 1)
 			},
