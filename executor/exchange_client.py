@@ -83,6 +83,7 @@ class ExchangeClient:
         self.local = local_exchange
         self.global_fut = global_exchange
         self._pair_info = pair_info
+        self._fee_cache: Dict[tuple, tuple] = {}
         self.balance_exchanges = balance_exchanges or {
             getattr(local_exchange, "id", "local"): {"market": "spot", "client": local_exchange},
             getattr(global_exchange, "id", "global"): {"market": "futures", "client": global_exchange},
@@ -226,6 +227,10 @@ class ExchangeClient:
         async def read(exchange: Any, symbol: str, market_kind: str):
             exchange_id = str(getattr(exchange, "id", "") or "").lower()
             resolved = await self._resolve_symbol(exchange, symbol, market_kind)
+            cache_key = (exchange_id, market_kind, resolved)
+            cached = self._fee_cache.get(cache_key)
+            if cached and time.time() - cached[0] < 300:
+                return cached[1]
             fetcher = getattr(exchange, "fetch_trading_fee", None)
             if callable(fetcher):
                 raw = await fetcher(resolved)
@@ -256,7 +261,9 @@ class ExchangeClient:
                 return None
             if not all(math.isfinite(v) and 0 <= v <= 100 for v in (maker_pct, taker_pct)):
                 raise ValueError(f"invalid {market_kind} fee rates")
-            return {"maker": maker_pct, "taker": taker_pct}
+            rates = {"maker": maker_pct, "taker": taker_pct}
+            self._fee_cache[cache_key] = (time.time(), rates)
+            return rates
 
         errors = {}
         profiles = {}
