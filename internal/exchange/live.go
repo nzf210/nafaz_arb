@@ -321,7 +321,7 @@ func (l *LiveAdapter) EnableTokocryptoBookWebSocket(ctx context.Context, staleAf
 	if l.tokocryptoWSClient != nil { l.mu.Unlock(); return nil }
 	if l.wsCache == nil { l.wsCache = NewWSBookCache() }
 	if l.wsStopCleanup == nil { l.wsStopCleanup = l.wsCache.StartStaleBookCleanup(staleAfter, time.Minute) }
-	l.wsMaxAge = staleAfter
+	if l.wsMaxAge <= 0 { l.wsMaxAge = staleAfter } else { staleAfter = l.wsMaxAge }
 	manager := newTokocryptoBookManager(l, l.wsCache, tokocryptoMarkets)
 	client := NewWSClient(l.wsCache, nil, manager.streams()...)
 	l.tokocryptoBooks = manager
