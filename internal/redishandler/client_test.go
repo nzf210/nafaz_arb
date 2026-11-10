@@ -213,7 +213,7 @@ func TestPublishSignalRanksByEstimatedNetProfitUSDT(t *testing.T) {
 }
 
 func TestGetDynamicFeeProfileRequiresFreshVerifiedExchangeSnapshot(t *testing.T) {
-    mr, rc := setupRedis(t)
+    mr, rc := setupTestRedis(t)
     defer mr.Close()
     defer rc.Close()
     ctx := context.Background()
