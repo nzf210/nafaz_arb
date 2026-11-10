@@ -15,6 +15,8 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
 
+var errTokocryptoSubscriptionRejected = fmt.Errorf("Tokocrypto websocket subscription rejected")
+
 const (
 	tokocryptoMBXWSURL    = "wss://stream-cloud.tokocrypto.site/stream"
 	tokocryptoNextMeWSURL = "wss://stream-toko.2meta.app"
@@ -108,7 +110,7 @@ func (m *tokocryptoBookManager) streams() []WSStream {
 			Name:      "tokocrypto-mbx-depth",
 			URL:       tokocryptoMBXWSURL,
 			Subscribe: func() ([][]byte, error) { return tokocryptoSubscribeFrames(m.markets[1], "depth@100ms") },
-			Handle:    m.handleDepthFrame,
+			Handle:    m.handleMBXFrame,
 			KeepAliveInterval: 2 * time.Second,
 			TouchSymbols: m.canonicalSymbols(1),
 			OnConnected: func(ctx context.Context) {
@@ -121,7 +123,7 @@ func (m *tokocryptoBookManager) streams() []WSStream {
 			Name:      "tokocrypto-nextme-depth",
 			URL:       tokocryptoNextMeWSURL,
 			Subscribe: func() ([][]byte, error) { return tokocryptoSubscribeFrames(m.markets[3], "depth@100ms") },
-			Handle:    m.handleDepthFrame,
+			Handle:    m.handleNextMeFrame,
 			OnConnected: func(ctx context.Context) {
 				m.bootstrap(ctx, 3)
 			},
@@ -147,14 +149,14 @@ func tokocryptoSubscribeFrames(symbols []string, channel string) ([][]byte, erro
 }
 
 func (m *tokocryptoBookManager) handleMBXFrame(message []byte) (domain.OrderBook, bool, error) {
-	return m.handleDepthFrame(message)
+	return m.handleDepthFrame(message, 1)
 }
 
 func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderBook, bool, error) {
-	return m.handleDepthFrame(message)
+	return m.handleDepthFrame(message, 3)
 }
 
-func (m *tokocryptoBookManager) handleDepthFrame(message []byte) (domain.OrderBook, bool, error) {
+func (m *tokocryptoBookManager) handleDepthFrame(message []byte, symbolType int) (domain.OrderBook, bool, error) {
 	var envelope struct {
 		Stream string          `json:"stream"`
 		Data   json.RawMessage `json:"data"`
@@ -162,9 +164,15 @@ func (m *tokocryptoBookManager) handleDepthFrame(message []byte) (domain.OrderBo
 	if err := json.Unmarshal(message, &envelope); err != nil {
 		return domain.OrderBook{}, true, err
 	}
-	if len(envelope.Data) == 0 || !strings.Contains(envelope.Stream, "@depth") {
+	if len(envelope.Data) == 0 {
+		var response struct { Code *int `json:"code"`; Msg string `json:"msg"` }
+		if json.Unmarshal(message, &response) == nil && response.Code != nil && *response.Code != 0 {
+			m.invalidateType(symbolType)
+			return domain.OrderBook{}, true, fmt.Errorf("%w: code=%d msg=%s", errTokocryptoSubscriptionRejected, *response.Code, response.Msg)
+		}
 		return domain.OrderBook{}, true, nil
 	}
+	if !strings.Contains(envelope.Stream, "@depth") { return domain.OrderBook{}, true, nil }
 	var event tokocryptoDepthEvent
 	if err := json.Unmarshal(envelope.Data, &event); err != nil {
 		return domain.OrderBook{}, true, err
@@ -251,6 +259,10 @@ func (m *tokocryptoBookManager) appendBuffered(state *tokocryptoBookState, event
 		state.buffer = append([]tokocryptoDepthEvent(nil), state.buffer[len(state.buffer)/2:]...)
 	}
 	state.buffer = append(state.buffer, event)
+}
+
+func (m *tokocryptoBookManager) invalidateType(symbolType int) {
+	for _, raw := range m.markets[symbolType] { m.cache.Invalidate("tokocrypto", m.symbolName(raw)) }
 }
 
 func (m *tokocryptoBookManager) bootstrap(ctx context.Context, symbolType int) {
