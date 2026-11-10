@@ -406,6 +406,13 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					CancelIfGlobalBidDropsBelowUSDT: cancelIfGlobalBidDropsBelowUSDT,
 					ScannerValidated:                true,
 					EstimatedNetProfitUSDT:           netProfitUSDT,
+					SpotEntryFeePct:                  op.SpotEntryFeePct,
+					SpotExitFeePct:                   op.SpotExitFeePct,
+					PerpEntryFeePct:                  op.PerpEntryFeePct,
+					PerpExitFeePct:                   op.PerpExitFeePct,
+					FeeSource:                        op.FeeSource,
+					FeeVerified:                      op.FeeVerified,
+					FeeFetchedAtMS:                   op.FeeFetchedAtMS,
 				},
 			}
 
