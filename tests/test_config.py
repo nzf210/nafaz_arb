@@ -93,6 +93,14 @@ async def test_modular_exchanges_config_and_env():
         assert cfg.exchanges["binance"].api_key == "binance_key_env"
         assert cfg.exchanges["binance"].api_secret == "binance_sec_env"
 
+        # Binance Cloud broker id (Tokocrypto) comes from the environment too and
+        # must reach the ccxt client options that prefix client order ids.
+        os.environ["TOKOCRYPTO_API_KEY"] = "toko_key_env"
+        os.environ["TOKOCRYPTO_API_SECRET"] = "toko_sec_env"
+        os.environ["TOKOCRYPTO_BROKER_ID"] = "x-TKT5PX2F"
+        cfg._apply_env()
+        assert cfg.exchanges["tokocrypto"].options["broker_id"] == "x-TKT5PX2F"
+
         # Verify global credentials synced from okx
         assert cfg.global_credentials.api_key == "okx_key_1"
         assert cfg.global_credentials.passphrase == "pass_1"
@@ -120,6 +128,9 @@ async def test_modular_exchanges_config_and_env():
     finally:
         os.environ.pop("BINANCE_API_KEY", None)
         os.environ.pop("BINANCE_API_SECRET", None)
+        os.environ.pop("TOKOCRYPTO_BROKER_ID", None)
+        os.environ.pop("TOKOCRYPTO_API_KEY", None)
+        os.environ.pop("TOKOCRYPTO_API_SECRET", None)
         if os.path.exists(f_path):
             os.remove(f_path)
 

@@ -84,7 +84,10 @@
         },
         "tokocrypto": {
             "api_key": "",
-            "api_secret": ""
+            "api_secret": "",
+            "options": {
+                "broker_id": ""
+            }
         },
         "okx": {
             "api_key": "",

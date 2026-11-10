@@ -378,8 +378,9 @@ class RiskMixin:
     ) -> Optional[tuple[float, float]]:
         """
         Sizes an entry from the signal budget, exposure cap and fee reserve.
-        Simulated entries are additionally capped by simulated balances; live
-        venues validate funds when the order is submitted.
+        Both legs commit the same USDT notional, so the budget is capped to
+        min(spot, futures) available on every venue mode; when the balance is
+        unreadable the size is left uncapped and the funding preflight decides.
         """
         directives = payload.execution_directives
         pair_info = payload.pair_info
@@ -389,15 +390,34 @@ class RiskMixin:
             max_pos_usdt = 100.0  # fallback budget
 
         min_cap = getattr(self.config, "min_allocated_capital", 10.0)
-
         mock_mode = bool(getattr(self.config, "mock_mode", False))
-        balances = self._balance_snapshots.pop(pair_tag, None) if mock_mode else None
-        if mock_mode and balances is None:
+
+        # Both legs commit the same USDT notional, so the entry must be capped to
+        # min(spot, futures) for live venues too, not just simulated ones: a
+        # directive that outruns the thinner leg would otherwise reach the
+        # funding preflight and be rejected as underfunded instead of sized down.
+        balances = self._balance_snapshots.pop(pair_tag, None)
+        if balances is None and mock_mode:
             balances = await self._check_balance_mismatch(
                 pair_info,
                 payload.pricing_snapshot.usdt_idr_rate,
                 pair_tag,
             )
+        if balances is None and not mock_mode:
+            # Live uses its own probe rather than _check_balance_mismatch: a
+            # transient read failure must not halt the venues, and the funding
+            # preflight downstream already fails open on an unreadable balance.
+            try:
+                balances = await self._get_balance_snapshot(
+                    pair_tag=pair_tag,
+                    pair_info=pair_info,
+                    usdt_idr_rate=payload.pricing_snapshot.usdt_idr_rate,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"[State 1 Balance Check] balance probe failed for {pair_tag}; "
+                    f"sizing uncapped and deferred to the funding preflight: {exc}"
+                )
         if balances is not None:
             avail_spot = float(balances["spot_available"])
             avail_fut = float(balances["futures_available"])
@@ -419,7 +439,7 @@ class RiskMixin:
 
             max_pos_usdt = min(max_pos_usdt, usable_capital)
 
-        if balances is not None or not mock_mode:
+        if not mock_mode or balances is not None:
             if not self._exposure_allows(pair_tag, pair_info, max_pos_usdt):
                 await self._publish_execution_failure(
                     pair_tag,
@@ -515,9 +535,16 @@ class RiskMixin:
             )
             return True
 
+        # Both legs commit the same USDT-equivalent notional, so the entry is
+        # fundable exactly when the thinner leg covers it. Sizing is normally
+        # capped to min(spot, futures) upstream, so reaching here means the
+        # directive outran the balance (e.g. scanner allocated capital_total
+        # for one leg while the preflight needs it on both); report the cap the
+        # caller can actually use instead of only the shortfall.
+        fundable_usdt = min(avail_spot, avail_fut)
         logger.warning(
             f"[State 1 Funding Preflight] {pair_tag} underfunded for a dual-leg "
-            f"entry ({'; '.join(missing)})"
+            f"entry ({'; '.join(missing)}); fundable per leg ${fundable_usdt:.2f}"
         )
         await self._publish_execution_failure(
             pair_tag,
@@ -527,6 +554,7 @@ class RiskMixin:
                 "required_usdt_per_leg": required,
                 "spot_available_usdt": avail_spot,
                 "futures_available_usdt": avail_fut,
+                "fundable_usdt_per_leg": fundable_usdt,
                 "shortfall": missing,
             },
         )

@@ -148,14 +148,19 @@ async def test_live_client_resolves_scanner_market_ids_before_orders():
     assert futures.calls[0][0] == "BTC/USDT:USDT"
 
 @pytest.mark.asyncio
-async def test_tokocrypto_order_carries_binance_broker_prefix():
-    """Binance Cloud venues reject client ids without the broker prefix (error 3703)."""
+async def test_tokocrypto_order_carries_registered_broker_prefix():
+    """A configured broker id prefixes the client id; error 3703 otherwise."""
     from types import SimpleNamespace
 
     from executor.exchange_client import ExchangeClient, venue_client_order_id
 
+    BROKER_ID = "x-TKT5PX2F"
+
     class TokoSpot:
         id = "tokocrypto"
+        # The registered broker id travels with the account (ccxt options),
+        # populated from the exchange credentials by init_ccxt_exchange.
+        options = {"broker": {"marketType": BROKER_ID}}
         markets = {
             "FLOKI/IDR": {
                 "id": "FLOKIIDR", "symbol": "FLOKI/IDR", "base": "FLOKI",
@@ -188,15 +193,17 @@ async def test_tokocrypto_order_carries_binance_broker_prefix():
 
     params = spot.calls[0][1][0]
     sent_id = params["clientOrderId"]
-    assert sent_id.startswith("x-")
-    assert sent_id.endswith(raw_id)
+    assert sent_id.startswith(BROKER_ID)
+    # The deterministic "-{leg}-{seq}" tail survives trimming, so a retried
+    # submit is still recognised as a duplicate by the venue.
+    assert sent_id.endswith("-entry-1")
     # The final on-the-wire id must fit the venue's 36-character limit even
     # with the broker prefix.
     assert len(sent_id) <= 36
 
-    # Venues outside Binance Cloud keep the plain id; Tokocrypto ids that
-    # already carry the prefix are left untouched.
-    assert venue_client_order_id(spot, "x-TKT5PX2Fabc") == "x-TKT5PX2Fabc"
+    # Venues outside Binance Cloud keep the plain id; ids that already carry
+    # the prefix are left untouched.
+    assert venue_client_order_id(spot, f"{BROKER_ID}abc", BROKER_ID) == f"{BROKER_ID}abc"
 
     class IndodaxSpot:
         id = "indodax"
@@ -204,6 +211,159 @@ async def test_tokocrypto_order_carries_binance_broker_prefix():
     assert venue_client_order_id(IndodaxSpot(), "indodax-btc-idr-entry-1") == (
         "indodax-btc-idr-entry-1"
     )
+
+    # With no registered broker id, no prefix is fabricated: the id is sent
+    # unchanged so ccxt mints a venue-native one instead of guessing a prefix
+    # the venue rejects with error 3703.
+    class UnregisteredTokoSpot:
+        id = "tokocrypto"
+        options = {}
+
+    assert venue_client_order_id(UnregisteredTokoSpot(), raw_id) == raw_id
+
+@pytest.mark.asyncio
+async def test_tokocrypto_broker_prefix_travels_from_credentials_to_wire():
+    """The broker id set in exchange credentials must prefix the sent id."""
+    from executor.config import ExchangeCredentials
+    from executor.exchange_client import ExchangeClient, init_ccxt_exchange
+    from executor.helpers import build_client_order_id
+    from executor.quantity import AmountSpec
+
+    creds = ExchangeCredentials(
+        api_key="k", api_secret="s", options={"broker_id": "x-TKT5PX2F"}
+    )
+    local = init_ccxt_exchange("tokocrypto", creds, "spot")
+    sent = {}
+
+    async def create_limit_buy_order(symbol, amount, price, *params):
+        sent["params"] = params[0]
+        return {"symbol": symbol, "amount": amount, "filled": amount}
+
+    local.create_limit_buy_order = create_limit_buy_order
+    local.markets = {"FLOKI/IDR": {"id": "FLOKIIDR", "symbol": "FLOKI/IDR", "spot": True}}
+
+    client = ExchangeClient(local, object())
+    assert client._local_broker_prefix == "x-TKT5PX2F"
+
+    await client.place_local_limit_buy(
+        "FLOKI/IDR", 1.0, 1_000.0,
+        client_order_id=build_client_order_id(
+            "tokocrypto:toko:floki_idr__okx:floki_usdt_swap", "entry", 1
+        ),
+        amount_spec=AmountSpec(unit="BASE", step=0.001, minimum=0.0, base_per_unit=1.0),
+    )
+    sent_id = sent["params"]["clientOrderId"]
+    assert sent_id.startswith("x-TKT5PX2F")
+    assert sent_id.endswith("-entry-1")
+    assert len(sent_id) <= 36
+
+
+@pytest.mark.asyncio
+async def test_dual_leg_sizing_caps_by_thinner_balance():
+    """Live sizing must cap to min(spot, futures) so both legs stay fundable."""
+    from types import SimpleNamespace
+
+    from executor.risk import RiskMixin
+
+    class Engine(RiskMixin):
+        def __init__(self):
+            self.config = SimpleNamespace(
+                mock_mode=False,
+                min_allocated_capital=10.0,
+                max_exposure_per_exchange_usdt=1000.0,
+                estimated_round_trip_fee_pct=0.0,
+            )
+            self._balance_snapshots = {}
+            self._last_balances = {}
+            self._exchange_halted = {}
+
+        async def _get_balance_snapshot(self, **kwargs):
+            return {"spot_available": 80.0, "futures_available": 30.0}
+
+        def _exposure_allows(self, pair_tag, pair_info, planned):
+            return True
+
+        async def _publish_execution_failure(self, *args, **kwargs):
+            raise AssertionError("a fundable size must not be rejected")
+
+    engine = Engine()
+    payload = SimpleNamespace(
+        execution_directives=SimpleNamespace(max_position_usdt=50.0),
+        pair_info=SimpleNamespace(),
+        pricing_snapshot=SimpleNamespace(usdt_idr_rate=16000.0),
+    )
+    sized = await engine._compute_entry_sizing("pair", payload)
+    assert sized is not None
+    # Directive asked for $50 but futures only has $30, so the entry is capped.
+    assert sized[0] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_live_sizing_probe_failure_does_not_halt_venues():
+    """A transient live balance read must not halt venues; the preflight decides."""
+    from types import SimpleNamespace
+
+    from executor.risk import RiskMixin
+
+    class Engine(RiskMixin):
+        def __init__(self):
+            self.config = SimpleNamespace(
+                mock_mode=False,
+                min_allocated_capital=10.0,
+                max_exposure_per_exchange_usdt=1000.0,
+                estimated_round_trip_fee_pct=0.0,
+            )
+            self._balance_snapshots = {}
+            self._last_balances = {}
+            self._exchange_halted = {}
+
+        async def _get_balance_snapshot(self, **kwargs):
+            raise RuntimeError("venue timeout")
+
+        def _exposure_allows(self, pair_tag, pair_info, planned):
+            return True
+
+        async def _publish_execution_failure(self, *args, **kwargs):
+            raise AssertionError("an unreadable balance must not reject here")
+
+    engine = Engine()
+    payload = SimpleNamespace(
+        execution_directives=SimpleNamespace(max_position_usdt=50.0),
+        pair_info=SimpleNamespace(),
+        pricing_snapshot=SimpleNamespace(usdt_idr_rate=16000.0),
+    )
+    sized = await engine._compute_entry_sizing("pair", payload)
+    assert sized is not None
+    # Sizing is left uncapped and the funding preflight owns the decision.
+    assert sized[0] == 50.0
+    assert engine._exchange_halted == {}
+
+
+@pytest.mark.asyncio
+async def test_dual_leg_underfunded_reports_fundable_cap():
+    """A shortfall reports the per-leg cap the caller can actually use."""
+    from types import SimpleNamespace
+
+    from executor.risk import RiskMixin
+
+    published = []
+
+    class Engine(RiskMixin):
+        def __init__(self):
+            self.config = SimpleNamespace(mock_mode=False)
+
+        async def _get_balance_snapshot(self, **kwargs):
+            return {"spot_available": 40.0, "futures_available": 12.0}
+
+        async def _publish_execution_failure(self, *args, **kwargs):
+            published.append((args, kwargs))
+
+    engine = Engine()
+    ok = await engine._verify_dual_leg_funding("pair", SimpleNamespace(), 50.0, 16000.0)
+    assert ok is False
+    args, kwargs = published[-1]
+    assert args[1] == "DUAL_LEG_UNDERFUNDED"
+    assert kwargs["detail"]["fundable_usdt_per_leg"] == 12.0
 
 
 @pytest.mark.asyncio

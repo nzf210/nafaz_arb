@@ -6,7 +6,7 @@ import ccxt.async_support as ccxt
 
 from executor.indodax_v2 import IndodaxTAPIv2
 from executor.quantity import AmountSpec, base_to_order_amount, order_amount_to_base
-from executor.helpers import BINANCE_BROKER_PREFIX
+from executor.helpers import _broker_prefix_for
 
 
 def _client_order_params(client_order_id: Optional[str]) -> tuple:
@@ -24,8 +24,9 @@ def _local_order_params(
     client_order_id: Optional[str],
     amount_spec: AmountSpec,
     require_amount_step: bool = False,
+    broker_prefix: str = "",
 ) -> tuple:
-    venue_id = venue_client_order_id(exchange, client_order_id)
+    venue_id = venue_client_order_id(exchange, client_order_id, broker_prefix)
     params = {"clientOrderId": venue_id} if venue_id else {}
     if isinstance(exchange, IndodaxTAPIv2):
         if amount_spec.unit != "BASE":
@@ -35,16 +36,43 @@ def _local_order_params(
         params["quantityIncrement"] = amount_spec.step
     return (params,) if params else ()
 
+VENUE_CLIENT_ORDER_ID_MAX_LEN = 36
+
 def venue_client_order_id(
-    exchange: Any, client_order_id: Optional[str]
+    exchange: Any, client_order_id: Optional[str], broker_prefix: str = ""
 ) -> Optional[str]:
-    """Prefixes a broker id for Binance Cloud venues when the id has none."""
+    """Prefixes a broker id for Binance Cloud venues when the id has none.
+
+    ``broker_prefix`` is the account's registered broker id. With no prefix the
+    id is sent unchanged; ccxt then mints its own venue-native client id, which
+    the venue accepts, rather than rejecting a guessed prefix with error 3703.
+
+    The prefix is prepended here, so the pair slug -- the only free-form part --
+    is trimmed to keep the final id within the venue's 36-character limit.
+    Callers therefore need not know the prefix when building the id.
+    """
     if not client_order_id:
         return client_order_id
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
-    if exchange_id == "tokocrypto" and not client_order_id.startswith("x-"):
-        return f"{BINANCE_BROKER_PREFIX}{client_order_id}"
-    return client_order_id
+    if exchange_id != "tokocrypto" or not broker_prefix:
+        return client_order_id
+    if client_order_id.startswith(broker_prefix):
+        return client_order_id[:VENUE_CLIENT_ORDER_ID_MAX_LEN]
+    # Trim the free-form pair slug, never the trailing "-{leg}-{seq}" that keeps
+    # a retried submit idempotent at the venue.
+    room = VENUE_CLIENT_ORDER_ID_MAX_LEN - len(broker_prefix)
+    if room < 1:
+        raise ValueError("broker prefix leaves no room for a client order id")
+    if len(client_order_id) > room:
+        leg_tail = ""
+        parts = client_order_id.rsplit("-", 2)
+        if len(parts) == 3:
+            leg_tail = f"-{parts[1]}-{parts[2]}"
+        keep = room - len(leg_tail)
+        if keep < 1:
+            raise ValueError("client order ID leaves no room for the pair slug")
+        client_order_id = f"{client_order_id[:keep]}{leg_tail}"
+    return f"{broker_prefix}{client_order_id}"
 
 
 def _require_amount_spec(value: Any) -> AmountSpec:
@@ -84,6 +112,12 @@ class ExchangeClient:
         self.global_fut = global_exchange
         self._pair_info = pair_info
         self._fee_cache: Dict[tuple, tuple] = {}
+        # Registered broker id for Binance Cloud venues (Tokocrypto). Read from
+        # the local client's own options, so it travels with the account;
+        # empty means "let the venue mint the client id".
+        self._local_broker_prefix = _broker_prefix_for(
+            getattr(local_exchange, "id", ""), local_exchange
+        )
         self.balance_exchanges = balance_exchanges or {
             getattr(local_exchange, "id", "local"): {"market": "spot", "client": local_exchange},
             getattr(global_exchange, "id", "global"): {"market": "futures", "client": global_exchange},
@@ -164,7 +198,8 @@ class ExchangeClient:
             order_amount,
             price,
             *_local_order_params(
-                self.local, client_order_id, spec, require_amount_step=True
+                self.local, client_order_id, spec, require_amount_step=True,
+                broker_prefix=self._local_broker_prefix,
             ),
         )
         return _base_order_result(order, spec)
@@ -184,7 +219,10 @@ class ExchangeClient:
             order_symbol,
             base_to_order_amount(amount, spec),
             price,
-            *_local_order_params(self.local, client_order_id, spec),
+            *_local_order_params(
+                self.local, client_order_id, spec,
+                broker_prefix=self._local_broker_prefix,
+            ),
         )
         return _base_order_result(order, spec)
 
@@ -206,7 +244,10 @@ class ExchangeClient:
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
         order = await self.local.create_market_sell_order(
             order_symbol, base_to_order_amount(amount, spec),
-            *_local_order_params(self.local, client_order_id, spec),
+            *_local_order_params(
+                self.local, client_order_id, spec,
+                broker_prefix=self._local_broker_prefix,
+            ),
         )
         return _base_order_result(order, spec)
 
