@@ -668,10 +668,14 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	if !isSynthetic {
 		targetQuote = sm.QuoteAsset
 	}
+	spotEntryFeePct := spotTakerFeePct
+	if isMakerTaker {
+		spotEntryFeePct = spotMakerFeePct
+	}
 
 	op := domain.Opportunity{
 		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
-		SpotEntryFeePct:        func() float64 { if isMakerTaker { return spotMakerFeePct }; return spotTakerFeePct }(),
+		SpotEntryFeePct:        spotEntryFeePct,
 		SpotExitFeePct:         spotTakerFeePct,
 		PerpEntryFeePct:        perpTakerFeePct,
 		PerpExitFeePct:         perpTakerFeePct,
