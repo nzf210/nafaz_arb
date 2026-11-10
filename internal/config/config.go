@@ -228,8 +228,8 @@ func (c *Config) validate() error {
 	if c.WebSocketBookMaxAgeSeconds < 0 {
 		return fmt.Errorf("websocket_book_max_age_seconds cannot be negative")
 	}
-	if c.TokocryptoWSStaleAfterSeconds <= 0 {
-		return fmt.Errorf("tokocrypto_ws_stale_after_seconds must be positive")
+	if c.TokocryptoWSStaleAfterSeconds < 0 {
+		return fmt.Errorf("tokocrypto_ws_stale_after_seconds cannot be negative")
 	}
 	if c.OKXWSURL != "" && !strings.HasPrefix(strings.ToLower(c.OKXWSURL), "wss://") {
 		return fmt.Errorf("okx_ws_url must use wss://")
