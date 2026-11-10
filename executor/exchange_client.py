@@ -274,7 +274,7 @@ class ExchangeClient:
         return {
             "spot": profiles["spot"],
             "perp": profiles["perp"],
-            "source": "EXCHANGE_API" if len(available) == 2 else "PARTIAL_EXCHANGE_API",
+            "source": "EXCHANGE_API" if len(available) == 2 else ("PARTIAL_EXCHANGE_API" if available else "CONFIG"),
             "verified": len(available) == 2,
             "fetched_at_ms": int(time.time() * 1000) if available else 0,
             "errors": errors,
