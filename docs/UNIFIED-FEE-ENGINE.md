@@ -9,7 +9,7 @@ All rates are percentage points: `0.10` means `0.10%`. The scanner and executor 
 - Perpetual entry: taker.
 - Perpetual exit: taker.
 
-The estimated fee total is calculated from each executable fill notional, not by multiplying one flat rate by the combined two-leg notional. The executor uses the same formula for floating PnL, the minimum profitable spot exit floor, and close PnL estimates. The spot exit floor algebraically includes its own exit fee.
+The estimated fee total is calculated from each executable fill notional, not by multiplying one flat rate by the combined two-leg notional. The configured fee-asset surcharge is applied to all four notionals in both scanner and executor. The executor uses the same formula for floating PnL, the minimum profitable spot exit floor, and close PnL estimates. The spot exit floor algebraically includes its own exit fee.
 
 ## Account fee sources
 
