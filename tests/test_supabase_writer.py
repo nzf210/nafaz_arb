@@ -319,6 +319,8 @@ class TestClosedTrades:
         row = _drain(writer)[0][2]
         assert row["fees"] == pytest.approx(0.25)
         assert row["metadata"] == {
+            "pnl_complete": None,
+            "spot_liquidation_failed": None,
             "spot_fees_usdt": pytest.approx(0.15),
             "futures_fees_usdt": pytest.approx(0.10),
             "fee_source": "EXCHANGE_API",
