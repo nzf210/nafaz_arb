@@ -682,6 +682,7 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 		FeeSource:              feeSource,
 		FeeVerified:            feeVerified,
 		FeeFetchedAtMS:         feeFetchedAtMS,
+		FeeAssetSurchargePct:   s.cfg.FeeAssetSurchargePct,
 		LocalExchange:          sm.Exchange,
 		GlobalExchange:         pm.Exchange,
 		BaseAsset:              sm.BaseAsset,
