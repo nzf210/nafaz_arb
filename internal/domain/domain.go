@@ -78,6 +78,13 @@ type Opportunity struct {
 	SpreadPnL              float64   `json:"spread_pnl"`
 	FundingPnL             float64   `json:"funding_pnl"`
 	TradingFees            float64   `json:"trading_fees"`
+	SpotEntryFeePct         float64   `json:"spot_entry_fee_pct"`
+	SpotExitFeePct          float64   `json:"spot_exit_fee_pct"`
+	PerpEntryFeePct         float64   `json:"perp_entry_fee_pct"`
+	PerpExitFeePct          float64   `json:"perp_exit_fee_pct"`
+	FeeSource               string    `json:"fee_source,omitempty"`
+	FeeVerified             bool      `json:"fee_verified"`
+	FeeFetchedAtMS          int64     `json:"fee_fetched_at_ms,omitempty`
 	Slippage               float64   `json:"slippage"`
 	NetProfit              float64   `json:"net_profit"`
 	AllocatedCapital       float64   `json:"allocated_capital"`
@@ -184,6 +191,13 @@ type ExecutionDirectives struct {
 	// a replayed Redis key.
 	ScannerValidated                bool    `json:"scanner_validated"`
 	EstimatedNetProfitUSDT           float64 `json:"estimated_net_profit_usdt"`
+	SpotEntryFeePct                  float64 `json:"spot_entry_fee_pct"`
+	SpotExitFeePct                   float64 `json:"spot_exit_fee_pct"`
+	PerpEntryFeePct                  float64 `json:"perp_entry_fee_pct"`
+	PerpExitFeePct                   float64 `json:"perp_exit_fee_pct"`
+	FeeSource                        string  `json:"fee_source,omitempty"`
+	FeeVerified                      bool    `json:"fee_verified"`
+	FeeFetchedAtMS                   int64   `json:"fee_fetched_at_ms,omitempty`
 }
 
 type ExecutorPayload struct {
