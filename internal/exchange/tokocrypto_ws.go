@@ -39,6 +39,7 @@ type tokocryptoBookState struct {
 	bids        map[string]float64
 	asks        map[string]float64
 	lastSeq     int64
+	timestamp   time.Time
 	initialized bool
 	refreshing  bool
 	buffer      []tokocryptoDepthEvent
@@ -194,6 +195,7 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 	if event.Symbol == "" {
 		event.Symbol = strings.SplitN(envelope.Stream, "@", 2)[0]
 	}
+	if event.Last <= 0 || event.First <= 0 { return domain.OrderBook{}, true, fmt.Errorf("Tokocrypto NextMe depth event is missing sequence IDs") }
 	key := m.symbolName(event.Symbol)
 	state := m.state(key)
 	state.mu.Lock()
@@ -220,6 +222,8 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 	applyTokocryptoLevels(state.bids, event.Bids)
 	applyTokocryptoLevels(state.asks, event.Asks)
 	state.lastSeq = event.Last
+	state.timestamp = time.Now().UTC()
+	if event.Event > 0 { state.timestamp = time.UnixMilli(event.Event).UTC() }
 	book := tokocryptoStateBook(state)
 	state.mu.Unlock()
 	if len(book.Bids) == 0 || len(book.Asks) == 0 {
@@ -232,7 +236,6 @@ func (m *tokocryptoBookManager) handleNextMeFrame(message []byte) (domain.OrderB
 func (m *tokocryptoBookManager) currentContext() context.Context {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.ctx == nil { return context.Background() }
 	return m.ctx
 }
 
@@ -271,6 +274,7 @@ func (m *tokocryptoBookManager) bootstrapNextMe(ctx context.Context) {
 		state.bids = nil
 		state.asks = nil
 		state.lastSeq = 0
+		state.timestamp = time.Time{}
 		state.buffer = nil
 		state.mu.Unlock()
 	}
@@ -282,7 +286,7 @@ func (m *tokocryptoBookManager) bootstrapNextMe(ctx context.Context) {
 func (m *tokocryptoBookManager) scheduleRefresh(ctx context.Context, symbol string) {
 	state := m.state(symbol)
 	state.mu.Lock()
-	if state.refreshing || ctx.Err() != nil {
+	if ctx == nil || state.refreshing || ctx.Err() != nil {
 		state.mu.Unlock()
 		return
 	}
@@ -338,6 +342,7 @@ func (m *tokocryptoBookManager) installSnapshot(state *tokocryptoBookState, snap
 		state.asks[priceKey(level.Price)] = level.Quantity
 	}
 	state.lastSeq = snapshot.SequenceID
+	state.timestamp = snapshot.Timestamp
 	pending := append([]tokocryptoDepthEvent(nil), state.buffer...)
 	state.buffer = nil
 	started := false
@@ -361,6 +366,7 @@ func (m *tokocryptoBookManager) installSnapshot(state *tokocryptoBookState, snap
 		applyTokocryptoLevels(state.bids, event.Bids)
 		applyTokocryptoLevels(state.asks, event.Asks)
 		state.lastSeq = event.Last
+		if event.Event > 0 { state.timestamp = time.UnixMilli(event.Event).UTC() }
 	}
 	state.initialized = true
 	book := tokocryptoStateBook(state)
@@ -419,12 +425,14 @@ func tokocryptoStateBook(state *tokocryptoBookState) domain.OrderBook {
 		asks = asks[:tokocryptoBookLevels]
 	}
 	now := time.Now().UTC()
+	stamp := state.timestamp
+	if stamp.IsZero() { stamp = now }
 	return domain.OrderBook{
 		Exchange:   "tokocrypto",
 		Symbol:     state.symbol,
 		Bids:       bids,
 		Asks:       asks,
-		Timestamp:  now,
+		Timestamp:  stamp,
 		ReceivedAt: now,
 		Source:     "websocket",
 	}
