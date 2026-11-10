@@ -2,6 +2,7 @@ package exchange
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -207,6 +208,10 @@ func (c *WSClient) consume(ctx context.Context, s WSStream) error {
 		}
 		book, skip, err := s.Handle(data)
 		if err != nil {
+			if errors.Is(err, errTokocryptoSubscriptionRejected) {
+				_ = conn.CloseNow()
+				return err
+			}
 			// A malformed frame must not kill a healthy stream.
 			c.log.Debug("dropping undecodable websocket frame", "stream", s.Name, "err", err)
 			continue
