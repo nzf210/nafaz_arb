@@ -211,3 +211,40 @@ func TestPublishSignalRanksByEstimatedNetProfitUSDT(t *testing.T) {
 		t.Fatalf("highest priority = %+v, want ETH at 3.75 USDT", items[0])
 	}
 }
+
+func TestGetDynamicFeeProfileRequiresFreshVerifiedExchangeSnapshot(t *testing.T) {
+    mr, rc := setupRedis(t)
+    defer mr.Close()
+    defer rc.Close()
+    ctx := context.Background()
+    profile := DynamicFeeProfile{
+        MakerFeePct: 0.02, TakerFeePct: 0.05,
+        Source: "EXCHANGE_API", Verified: true,
+        FetchedAtMS: time.Now().UnixMilli(),
+    }
+    raw, err := json.Marshal(profile)
+    if err != nil { t.Fatal(err) }
+    if err := rc.rdb.Set(ctx, "arb:fee_profile:okx:perp", raw, 5*time.Minute).Err(); err != nil {
+        t.Fatal(err)
+    }
+    got, err := rc.GetDynamicFeeProfile(ctx, "OKX", "PERP")
+    if err != nil { t.Fatal(err) }
+    if got == nil || got.TakerFeePct != 0.05 || !got.Verified {
+        t.Fatalf("unexpected fee profile: %+v", got)
+    }
+
+    profile.Verified = false
+    raw, _ = json.Marshal(profile)
+    _ = rc.rdb.Set(ctx, "arb:fee_profile:okx:perp", raw, 5*time.Minute).Err()
+    got, err = rc.GetDynamicFeeProfile(ctx, "okx", "perp")
+    if err != nil { t.Fatal(err) }
+    if got != nil { t.Fatalf("unverified profile must be ignored: %+v", got) }
+
+    profile.Verified = true
+    profile.FetchedAtMS = time.Now().Add(-6*time.Minute).UnixMilli()
+    raw, _ = json.Marshal(profile)
+    _ = rc.rdb.Set(ctx, "arb:fee_profile:okx:perp", raw, 5*time.Minute).Err()
+    got, err = rc.GetDynamicFeeProfile(ctx, "okx", "perp")
+    if err != nil { t.Fatal(err) }
+    if got != nil { t.Fatalf("stale profile must be ignored: %+v", got) }
+}
