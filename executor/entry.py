@@ -302,7 +302,8 @@ class EntryMixin:
                 current_price = float(order_info.get("price", 0.0) or 0.0)
                 tick = float(order_info.get("tick_size", 0.0) or 0.0)
                 min_spread = float(order_info.get("min_entry_spread_pct", 0.0) or 0.0)
-                if min(local_bid, local_ask, global_bid, fx_rate, current_price, tick) <= 0:
+                market_values = (local_bid, local_ask, global_bid, fx_rate, current_price, tick)
+                if not all(math.isfinite(value) and value > 0 for value in market_values):
                     return False
                 candidate = math.ceil((local_bid - 1e-12) / tick) * tick
                 if candidate <= current_price or candidate >= local_ask:
