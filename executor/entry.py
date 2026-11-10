@@ -743,6 +743,13 @@ class EntryMixin:
                     global_amount_spec=AmountSpec.from_dict(order_info.get("global_amount_spec")),
                     spot_cost_usdt=spot_cost,
                     futures_margin_usdt=fut_margin,
+                    spot_entry_fee_pct=float(order_info.get("spot_entry_fee_pct", 0.0)),
+                    spot_exit_fee_pct=float(order_info.get("spot_exit_fee_pct", 0.0)),
+                    perp_entry_fee_pct=float(order_info.get("perp_entry_fee_pct", 0.0)),
+                    perp_exit_fee_pct=float(order_info.get("perp_exit_fee_pct", 0.0)),
+                    fee_source=str(order_info.get("fee_source", "LEGACY_UNVERIFIED")),
+                    fee_verified=bool(order_info.get("fee_verified", False)),
+                    fee_fetched_at_ms=int(order_info.get("fee_fetched_at_ms", 0)),
                 )
             else:
                 self.active_positions[pair_tag].qty += qty
