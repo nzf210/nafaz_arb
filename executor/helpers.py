@@ -14,38 +14,36 @@ T = TypeVar("T")
 ARB_TRADE_HISTORY_KEY = "arb:trade_history"
 ARB_TRADE_HISTORY_MAX_LEN = 49  # ltrim keeps indices 0..49 → 50 entries
 
-# Binance Cloud venues (e.g. Tokocrypto) require client order ids to carry a
-# registered broker prefix ("x-XXXXXXXX"); anything else is rejected with
-# error 3703 "Invalid client ID". This is the broker id ccxt itself assigns
-# for Binance spot through its own generate_client_order_id(). The prefix
-# consumes 9 of the 36-char venue budget, so ids built for these venues must
-# reserve room for it here; executor.exchange_client prepends it on the wire.
+# Tokocrypto is a Binance Cloud venue. Its CCXT adapter generates broker
+# client IDs as the registered spot broker prefix plus a 22-character UUID.
+# Keep the same wire format, but derive the suffix deterministically so retries
+# of one logical NAFAZ order keep the same client ID.
 BINANCE_BROKER_PREFIX = "x-TKT5PX2F"
-BINANCE_BROKER_PREFIX_LENGTH = len(BINANCE_BROKER_PREFIX)
+TOKOCRYPTO_CLIENT_ID_SUFFIX_LENGTH = 22
 
 def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     """
     Builds a venue-safe client order id: ``{pair}-{leg}-{seq}``.
 
-    The id is deterministic for a given (pair, leg, sequence) so a retry of the
-    same logical order is recognised as a duplicate by the venue instead of
-    double-filling. Kept to lowercase alphanumerics and dashes because Binance,
-    OKX and Indodax each accept a different, partly overlapping character set.
+    The id is deterministic for a given (pair, leg, sequence), allowing NAFAZ
+    to correlate a logical order across logs and recovery. This does not imply
+    every venue enforces client-ID uniqueness (Tokocrypto explicitly does not).
+    Kept to lowercase alphanumerics and dashes for cross-venue compatibility.
     """
     clean_pair = "".join(c if c.isalnum() else "-" for c in pair_tag.lower()).strip("-")
     clean_leg = "".join(c if c.isalnum() else "-" for c in leg.lower()).strip("-")
     suffix = f"-{clean_leg}-{seq}"
+    if pair_tag.lower().startswith("tokocrypto"):
+        # Tokocrypto's broker client IDs use exactly the broker prefix plus
+        # CCXT's 22-character UUID suffix (32 chars total). A readable
+        # pair/leg suffix after the broker prefix is rejected by code 3703.
+        identity = f"{pair_tag.lower()}|{clean_leg}|{seq}".encode("utf-8")
+        token = hashlib.sha256(identity).hexdigest()[:TOKOCRYPTO_CLIENT_ID_SUFFIX_LENGTH]
+        return f"{BINANCE_BROKER_PREFIX}{token}"
+
     max_pair_length = 36 - len(suffix)
     if max_pair_length < 1:
         raise ValueError("client order ID leg and sequence exceed the 36-character limit")
-
-    # Binance Cloud venues prepend their broker id to the client order id on
-    # the wire, so ids built for those venues must reserve prefix space here
-    # to keep the final id within the venue's 36-character limit.
-    if pair_tag.lower().startswith("tokocrypto"):
-        max_pair_length -= BINANCE_BROKER_PREFIX_LENGTH
-        if max_pair_length < 1:
-            raise ValueError("client order ID exceeds the 36-character limit with broker prefix")
 
     if len(clean_pair) > max_pair_length:
         pair_hash = hashlib.sha256(pair_tag.lower().encode("utf-8")).hexdigest()[:8]
