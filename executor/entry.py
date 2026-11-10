@@ -142,6 +142,11 @@ class EntryMixin:
             """
             order_id = str(order_info["order_id"])
             local_symbol = str(order_info["symbol"])
+            order_info["last_cancel_reason"] = reason
+            order_info["cancel_requested_at_ms"] = int(time.time() * 1000)
+            # Persist intent before the network call so a crash/timeout does not
+            # erase why the venue order was being canceled.
+            await self._persist_pending_entry(pair_tag, order_info)
             try:
                 await self.client.cancel_local_order(order_id, local_symbol)
             except Exception:
@@ -200,6 +205,21 @@ class EntryMixin:
                 )
                 return False
 
+            self.supabase.event(
+                "ENTRY_ORDER_CANCELLED",
+                pair_key=pair_tag,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+                occurred_at_ms=int(time.time() * 1000),
+                payload={
+                    "order_id": order_id,
+                    "client_order_id": order_info.get("client_order_id", ""),
+                    "symbol": local_symbol,
+                    "reason": reason,
+                    "terminal_status": status,
+                    "filled_qty": float(order_info.get("filled", 0.0) or 0.0),
+                    "order_qty": float(order_info.get("qty", 0.0) or 0.0),
+                },
+            )
             await self._finalize_entry_order(pair_tag, status)
             return True
 
