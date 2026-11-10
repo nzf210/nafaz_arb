@@ -25,10 +25,10 @@ def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     """
     Builds a venue-safe client order id: ``{pair}-{leg}-{seq}``.
 
-    The id is deterministic for a given (pair, leg, sequence) so a retry of the
-    same logical order is recognised as a duplicate by the venue instead of
-    double-filling. Kept to lowercase alphanumerics and dashes because Binance,
-    OKX and Indodax each accept a different, partly overlapping character set.
+    The id is deterministic for a given (pair, leg, sequence), allowing NAFAZ
+    to correlate a logical order across logs and recovery. This does not imply
+    every venue enforces client-ID uniqueness (Tokocrypto explicitly does not).
+    Kept to lowercase alphanumerics and dashes for cross-venue compatibility.
     """
     clean_pair = "".join(c if c.isalnum() else "-" for c in pair_tag.lower()).strip("-")
     clean_leg = "".join(c if c.isalnum() else "-" for c in leg.lower()).strip("-")
