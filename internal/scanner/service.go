@@ -749,8 +749,8 @@ func (s *Service) buildOpportunity(
 	input opportunityCalculationInput, sizing opportunitySizing,
 	prices executionPrices, fees opportunityFees, profit opportunityProfit,
 ) domain.Opportunity {
-	sm, pm, sb, fr := input.spotMarket, input.perpMarket,
-		input.spotBook, input.funding
+	sm, pm, sb := input.spotMarket, input.perpMarket,
+		input.spotBook
 	execMode := s.cfg.ExecutionMode
 	if execMode == "" {
 		execMode = "TAKER_TAKER"
