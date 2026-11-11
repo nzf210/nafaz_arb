@@ -692,7 +692,8 @@ async def test_registry_survives_redis_failure(fake_redis):
     record = await registry.register(_entry_record())
 
     assert record.local_order_id
-    assert writes and writes[0]["client_order_id"] == "btc-idr-entry-7"
+    assert writes
+    assert writes[0]["client_order_id"] == "btc-idr-entry-7"
 
 @pytest.mark.asyncio
 async def test_phantom_order_recorded_but_not_open_on_venue(fake_redis):
