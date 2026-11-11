@@ -223,7 +223,7 @@ func (b *Bot) sendStartupSummary(ctx context.Context) {
 	targets := append([]int64(nil), b.cfg.Telegram.AllowedChatIDs...)
 	if b.cfg.Telegram.ChatID != 0 { targets = []int64{b.cfg.Telegram.ChatID} }
 	if problem != "" {
-		message := "🚨 <b>EXECUTOR STARTUP RECOVERY — NOT READY</b>\\n\\n• Global trading: <b>NOT READY / UNKNOWN</b>\\n• Verification: " + html.EscapeString(problem) + "\\n\\n<i>Jangan aktifkan trading sampai order, posisi, dan exchange berhasil diverifikasi.</i>"
+		message := "🚨 <b>EXECUTOR STARTUP RECOVERY — NOT READY</b>\n\n• Global trading: <b>NOT READY / UNKNOWN</b>\n• Verification: " + html.EscapeString(problem) + "\n\n<i>Jangan aktifkan trading sampai order, posisi, dan exchange berhasil diverifikasi.</i>"
 		for _, chatID := range targets { if b.isChatAllowed(chatID) { b.sendReplyWithMarkup(ctx, chatID, 0, message, nil) } }
 		return
 	}
@@ -264,8 +264,8 @@ func (b *Bot) sendStartupSummary(ctx context.Context) {
 		var value int64
 		if json.Unmarshal(raw, &value) == nil && value > 0 { started = time.UnixMilli(value).UTC().Format(time.RFC3339) }
 	}
-	message := fmt.Sprintf("🚦 <b>EXECUTOR STARTUP RECOVERY</b>\\n\\n• Startup: <code>%s</code>\\n• Recovered positions: <code>%s</code>\\n• Recovered open orders: <code>%s</code>\\n• Partial-fill orders: <code>%d</code>\\n• Orphan orders: <code>%d</code>\\n• Reconciliation mismatches: <code>%d</code>\\n• Exchanges halted / failed verification: <code>%d</code>\\n• Global trading: <b>%s</b>\\n\\n<i>READY hanya jika recovery complete, semua registry/venue terverifikasi, tidak ada orphan, mismatch, scope halt, atau risk halt.</i>",
-		html.EscapeString(started), strings.Trim(string(rawField(snapshot, "open_positions")), "\\""), strings.Trim(string(rawField(recovery, "tracked_orders")), "\\""),
+	message := fmt.Sprintf("🚦 <b>EXECUTOR STARTUP RECOVERY</b>\n\n• Startup: <code>%s</code>\n• Recovered positions: <code>%s</code>\n• Recovered open orders: <code>%s</code>\n• Partial-fill orders: <code>%d</code>\n• Orphan orders: <code>%d</code>\n• Reconciliation mismatches: <code>%d</code>\n• Exchanges halted / failed verification: <code>%d</code>\n• Global trading: <b>%s</b>\n\n<i>READY hanya jika recovery complete, semua registry/venue terverifikasi, tidak ada orphan, mismatch, scope halt, atau risk halt.</i>",
+		html.EscapeString(started), fmt.Sprint(recoveredPositions), fmt.Sprint(trackedOrders),
 		partialFillCount, orphanCount, mismatchCount, failedExchangeCount, globalStatus)
 	for _, chatID := range targets { if b.isChatAllowed(chatID) { b.sendReplyWithMarkup(ctx, chatID, 0, message, nil) } }
 }
