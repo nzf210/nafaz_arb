@@ -506,6 +506,15 @@ class _RiskStateMemoryWriter:
         self.writes.append(kwargs)
         return self.state_ok
 
+    def clear_risk_persistence_failure(self):
+        return None
+
+    def risk_persistence_failed(self):
+        return False
+
+    def mark_risk_persistence_failure(self):
+        return None
+
     def risk_pnl_event(self, event_id, **kwargs):
         if self.pnl_results:
             return self.pnl_results.pop(0)
