@@ -796,7 +796,7 @@ class ArbitrageEngine(
             )
 
     async def _exchange_reconciliation_loop(self):
-        """Periodically reconcile venue orders, futures exposure and balances.
+        """Periodically reconcile registered venue order states and cumulative fills.
 
         This complements startup recovery: an order can fill, be canceled, or
         an operator can change exposure while the process is running. The loop
