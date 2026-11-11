@@ -62,6 +62,7 @@ class EngineRuntimeMixin:
         self._tasks.append(asyncio.create_task(self._listen_force_close()))
         self._tasks.append(asyncio.create_task(self._listen_kill_switch()))
         self._tasks.append(asyncio.create_task(self._listen_balance_requests()))
+        self._tasks.append(asyncio.create_task(self._listen_recovery_requests()))
         self._tasks.append(asyncio.create_task(self._monitoring_loop()))
         self._tasks.append(asyncio.create_task(self._exchange_reconciliation_loop()))
         self._tasks.append(asyncio.create_task(self.exposure_reconciliation.run()))
@@ -241,6 +242,58 @@ class EngineRuntimeMixin:
                 await asyncio.sleep(0.01)
         finally:
             await pubsub.unsubscribe("arb:balance_request")
+            await pubsub.close()
+
+    async def _handle_recovery_request(self, raw) -> None:
+        """Execute an operator-requested read-only reconciliation retry."""
+        try:
+            request = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
+            request_id = str(request.get("request_id", "")).strip()
+            action = str(request.get("action", "")).strip().lower()
+            if (
+                not request_id
+                or len(request_id) > 64
+                or not request_id.isalnum()
+                or action != "retry"
+            ):
+                return
+            # The same distributed lease used by startup recovery prevents two
+            # executor replicas from reconciling the same orders concurrently.
+            await self._with_order_recovery_lock(self.retry_pending_order_recovery)
+            self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
+            self._refresh_entry_gate()
+            reply = {
+                "request_id": request_id,
+                "complete": not self._recovery_pending_orders and not self._recovery_scope_halts,
+                "pending_orders": self._recovery_pending_orders,
+                "scope_halts": dict(self._recovery_scope_halts),
+                "timestamp_ms": int(time.time() * 1000),
+            }
+            await self.redis.set(
+                f"arb:recovery_reply:{request_id}",
+                json.dumps(reply, default=str),
+                ex=30,
+            )
+            await self.publish_status()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("failed to process operator recovery request")
+
+    async def _listen_recovery_requests(self):
+        """Listen for Telegram requests to re-run read-only recovery."""
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe("arb:recovery_request")
+        try:
+            while self._running:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
+                if message and message.get("type") == "message":
+                    await self._handle_recovery_request(message.get("data"))
+                await asyncio.sleep(0.01)
+        finally:
+            await pubsub.unsubscribe("arb:recovery_request")
             await pubsub.close()
 
     async def _listen_kill_switch(self):
