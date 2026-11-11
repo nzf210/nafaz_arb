@@ -112,6 +112,7 @@ class TradeFillReconciliationWorker:
                         "average_fill_price": record.average_fill_price,
                         "reduce_only": record.reduce_only,
                         "submitted_at": record.created_at,
+                        "completed_at": record.updated_at if record.is_terminal else None,
                         "local_amount_spec": record.local_amount_spec,
                         "global_amount_spec": record.global_amount_spec,
                         "is_mock": record.is_mock,
@@ -233,6 +234,7 @@ class TradeFillReconciliationWorker:
                     since=submitted,
                     client_order_id=client_order_id or None,
                     order_id=exchange_order_id or None,
+                    until=_timestamp_ms(row.get("completed_at")) if row.get("completed_at") else None,
                     amount_spec=amount_spec,
                 )
                 if not isinstance(trades, list):
