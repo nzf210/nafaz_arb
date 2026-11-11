@@ -8,6 +8,7 @@ from executor.quantity import AmountSpec
 from executor.order_models import PositionState
 
 
+@dataclass
 class ActivePosition:
     local_exchange: str
     global_exchange: str
@@ -151,4 +152,3 @@ class ActivePosition:
         )
 
 
-@dataclass
