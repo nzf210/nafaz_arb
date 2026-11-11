@@ -125,9 +125,8 @@ async def _find_order_by_client_id(
 ) -> Optional[Dict[str, Any]]:
     """Find an acknowledged order by exact client id without submitting again.
 
-    Open orders cover resting limits; closed-order history and private trade
-    history cover market orders that filled before the process received its
-    acknowledgement. An unsupported or failed lookup is never proof of absence.
+    Prefer venue-native direct lookup, then open/terminal order history, and
+    finally private trades. A failed history read is never proof of absence.
     """
     if not client_order_id:
         raise ValueError("client order id is required for acknowledgement recovery")
@@ -138,17 +137,47 @@ async def _find_order_by_client_id(
         info = order.get("info") if isinstance(order.get("info"), dict) else {}
         candidates = (
             order.get("clientOrderId"), order.get("client_order_id"),
-            order.get("clOrdId"), order.get("orderLinkId"),
+            order.get("clientId"), order.get("clOrdId"), order.get("orderLinkId"),
             order.get("origClientOrderId"), order.get("clientOid"),
             info.get("clientOrderId"), info.get("client_order_id"),
-            info.get("clOrdId"), info.get("orderLinkId"),
+            info.get("clientId"), info.get("clOrdId"), info.get("orderLinkId"),
             info.get("origClientOrderId"), info.get("clientOid"),
             info.get("newClientOrderId"),
         )
         return any(str(value) == client_order_id for value in candidates if value)
 
-    historical_queries = 0
+    def unique_order(rows: list) -> Optional[Dict[str, Any]]:
+        matched = {}
+        for row in rows:
+            if not matches(row):
+                continue
+            order_id = str(row.get("id") or row.get("orderId") or "")
+            identity = order_id or repr(sorted(row.items(), key=lambda item: item[0]))
+            matched[identity] = row
+        if len(matched) > 1:
+            raise RuntimeError(
+                "multiple exchange orders share client order id "
+                f"{client_order_id}; manual reconciliation is required"
+            )
+        if not matched:
+            return None
+        return _expose_client_order_id(dict(next(iter(matched.values()))))
+
     failures = []
+    direct_lookup = getattr(exchange, "fetch_order_by_client_id", None)
+    if callable(direct_lookup):
+        try:
+            direct = await direct_lookup(client_order_id, symbol)
+            if direct is not None:
+                if not isinstance(direct, dict) or not matches(direct):
+                    raise ValueError(
+                        "fetch_order_by_client_id returned a mismatched client id"
+                    )
+                return _expose_client_order_id(dict(direct))
+        except Exception as exc:
+            failures.append(f"fetch_order_by_client_id: {type(exc).__name__}: {exc}")
+
+    historical_queries = 0
     for method_name in (
         "fetch_open_orders", "fetch_closed_orders", "fetch_canceled_orders"
     ):
@@ -167,9 +196,9 @@ async def _find_order_by_client_id(
                 raise ValueError(f"{method_name} returned a malformed order collection")
             if method_name != "fetch_open_orders":
                 historical_queries += 1
-            for row in rows:
-                if matches(row):
-                    return _expose_client_order_id(dict(row))
+            found = unique_order(list(rows))
+            if found is not None:
+                return found
         except Exception as exc:
             if type(exc).__name__ not in ("NotSupported", "NotImplementedError"):
                 failures.append(f"{method_name}: {type(exc).__name__}: {exc}")
@@ -184,16 +213,22 @@ async def _find_order_by_client_id(
             if trades is None or not isinstance(trades, (list, tuple)):
                 raise ValueError("fetch_my_trades returned a malformed trade collection")
             historical_queries += 1
-            matching_trade = next((trade for trade in trades if matches(trade)), None)
-            if matching_trade is not None:
-                info = (
-                    matching_trade.get("info")
-                    if isinstance(matching_trade.get("info"), dict)
-                    else {}
-                )
+            matching_trades = [trade for trade in trades if matches(trade)]
+            if matching_trades:
+                trade_order_ids = {
+                    str(trade.get("order") or trade.get("orderId") or "")
+                    for trade in matching_trades
+                }
+                trade_order_ids.discard("")
+                if len(trade_order_ids) > 1:
+                    raise RuntimeError(
+                        "multiple exchange orders share client order id "
+                        f"{client_order_id}; manual reconciliation is required"
+                    )
+                trade = matching_trades[0]
+                info = trade.get("info") if isinstance(trade.get("info"), dict) else {}
                 order_id = str(
-                    matching_trade.get("order") or matching_trade.get("orderId")
-                    or info.get("orderId") or ""
+                    trade.get("order") or trade.get("orderId") or info.get("orderId") or ""
                 )
                 if not order_id:
                     raise ValueError("matching private trade has no exchange order id")
