@@ -1373,6 +1373,19 @@ class OrderRecoveryMixin:
 
     # --------------------------------------------------------- halt plumbing
 
+    def _risk_recovery_scope(self, scope: str) -> str:
+        if scope == "*":
+            return "global"
+        venues = {
+            str(getattr(self.config, "local_exchange_name", "") or "").lower(),
+            str(getattr(self.config, "global_exchange_name", "") or "").lower(),
+        }
+        venues.update(str(name).lower() for name in (getattr(self.config, "exchanges", {}) or {}))
+        for info in (getattr(self, "_pair_infos", {}) or {}).values():
+            venues.add(str(getattr(info, "local_exchange", "") or "").lower())
+            venues.add(str(getattr(info, "global_exchange", "") or "").lower())
+        return "exchange" if str(scope).lower() in venues else "pair"
+
     def _halt_exposure_scope(self, scope: str, reason: str) -> None:
         """Halts new entries on a venue, pair or market without touching management.
 
@@ -1386,7 +1399,7 @@ class OrderRecoveryMixin:
         if halts is None:
             halts = self._recovery_scope_halts = {}
         halts[scope] = f"order recovery: {reason}"
-        state_scope = "global" if scope == "*" else "exchange" if scope in getattr(self, "_exchange_halted", {}) else "pair"
+        state_scope = self._risk_recovery_scope(scope)
         self._persist_risk_state("reconciliation_halt", scope=state_scope, exchange=scope if state_scope == "exchange" else None, pair_key=scope if state_scope == "pair" else None, reason=halts[scope], value={"source": "order_recovery"})
         self._entry_blocked = True
 
