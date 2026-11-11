@@ -10,7 +10,7 @@ import logging
 import math
 from typing import Dict, Optional
 
-from executor.models import ExecutorPayload, PairInfo
+from executor.models import ExecutorPayload, PairInfo, PositionState
 from executor.pair_registry import ExchangePairKey
 
 logger = logging.getLogger("executor.engine")
@@ -97,7 +97,7 @@ class RiskMixin:
                     "reason": reason, "message": reason, "detail": {},
                     "timestamp_ms": int(time.time() * 1000),
                 }
-                self.states[pair_key] = __import__("executor.models", fromlist=["PositionState"]).PositionState.RECONCILIATION_REQUIRED
+                restored_state = str(failure.get("state") or "RECONCILIATION_REQUIRED")\n                try:\n                    self.states[pair_key] = PositionState(restored_state)\n                except ValueError:\n                    self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
         self._risk_state_restored = True
         # A restored loss halt remains active until the same UTC day rolls over.
         self._roll_loss_day_if_needed()
