@@ -35,13 +35,7 @@ class SupabaseWorkerMixin:
                 logger.exception("Supabase durable outbox worker error")
                 await asyncio.sleep(1.0)
 
-    async def _flush(self, batch: list) -> None:
-        grouped: Dict[tuple, list] = {}
-        for item_id, table, on_conflict, row in batch:
-            grouped.setdefault((table, on_conflict, frozenset(row)), []).append(
-                (item_id, row)
-            )
-
+    async def _ensure_session(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 timeout=_TIMEOUT,
@@ -54,46 +48,68 @@ class SupabaseWorkerMixin:
                 },
             )
 
-        for (table, on_conflict, _keys), items in grouped.items():
-            # PostgREST rejects duplicate conflict keys in one upsert statement.
-            # Keep the newest row, but acknowledge all superseded journal entries
-            # only after that newest state has been accepted.
-            conflict_cols = [c.strip() for c in (on_conflict or "id").split(",")]
-            latest: Dict[tuple, Dict[str, Any]] = {}
-            for _item_id, row in items:
-                latest[tuple(str(row.get(col)) for col in conflict_cols)] = row
-            rows = list(latest.values())
-            url = f"{self.url}/rest/v1/{table}"
-            if on_conflict:
-                url = f"{url}?on_conflict={on_conflict}"
-            last_error = "Supabase request failed"
-            delivered = False
-            for attempt in range(1, _MAX_ATTEMPTS + 1):
-                try:
-                    async with self._session.post(url, json=rows) as resp:
-                        if resp.status < 300:
-                            delivered = True
-                            break
-                        body = (await resp.text())[:300]
-                        last_error = f"HTTP {resp.status}: {body}"
-                        # Keep permanent 4xx errors in the outbox as well: a
-                        # schema/permission repair must be able to replay them.
-                        if 400 <= resp.status < 500 and resp.status not in (408, 429):
-                            break
-                except Exception as exc:
-                    last_error = str(exc)[:500]
-                if attempt < _MAX_ATTEMPTS:
-                    await asyncio.sleep(0.5 * attempt)
+    @staticmethod
+    def _group_outbox_batch(batch: list) -> Dict[tuple, list]:
+        grouped: Dict[tuple, list] = {}
+        for item_id, table, on_conflict, row in batch:
+            grouped.setdefault((table, on_conflict, frozenset(row)), []).append(
+                (item_id, row)
+            )
+        return grouped
 
-            item_ids = [item_id for item_id, _row in items]
-            if delivered:
-                await asyncio.to_thread(self._outbox.ack, item_ids)
-            else:
-                await asyncio.to_thread(self._outbox.retry, item_ids, last_error)
-                logger.error(
-                    "Supabase delivery deferred table=%s rows=%d: %s",
-                    table, len(rows), last_error,
-                )
+    @staticmethod
+    def _deduplicate_upsert_rows(on_conflict: str, items: list) -> list:
+        conflict_cols = [column.strip() for column in (on_conflict or "id").split(",")]
+        latest: Dict[tuple, Dict[str, Any]] = {}
+        for _item_id, row in items:
+            key = tuple(str(row.get(column)) for column in conflict_cols)
+            latest[key] = row
+        return list(latest.values())
+
+    async def _deliver_outbox_group(
+        self, table: str, on_conflict: str, items: list
+    ) -> None:
+        # PostgREST rejects duplicate conflict keys in one upsert statement.
+        # Keep the newest row, but acknowledge superseded journal entries only
+        # after that newest state has been accepted.
+        rows = self._deduplicate_upsert_rows(on_conflict, items)
+        url = f"{self.url}/rest/v1/{table}"
+        if on_conflict:
+            url = f"{url}?on_conflict={on_conflict}"
+        last_error = "Supabase request failed"
+        delivered = False
+        for attempt in range(1, _MAX_ATTEMPTS + 1):
+            try:
+                async with self._session.post(url, json=rows) as resp:
+                    if resp.status < 300:
+                        delivered = True
+                        break
+                    body = (await resp.text())[:300]
+                    last_error = f"HTTP {resp.status}: {body}"
+                    # Permanent 4xx errors remain replayable after schema or
+                    # permission repairs; 408 and 429 remain retryable.
+                    if 400 <= resp.status < 500 and resp.status not in (408, 429):
+                        break
+            except Exception as exc:
+                last_error = str(exc)[:500]
+            if attempt < _MAX_ATTEMPTS:
+                await asyncio.sleep(0.5 * attempt)
+
+        item_ids = [item_id for item_id, _row in items]
+        if delivered:
+            await asyncio.to_thread(self._outbox.ack, item_ids)
+            return
+        await asyncio.to_thread(self._outbox.retry, item_ids, last_error)
+        logger.error(
+            "Supabase delivery deferred table=%s rows=%d: %s",
+            table, len(rows), last_error,
+        )
+
+    async def _flush(self, batch: list) -> None:
+        grouped = self._group_outbox_batch(batch)
+        await self._ensure_session()
+        for (table, on_conflict, _keys), items in grouped.items():
+            await self._deliver_outbox_group(table, on_conflict, items)
 
 
     # ---------------------------------------------------------- durable risk state
