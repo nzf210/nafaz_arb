@@ -151,6 +151,91 @@ func (b *Bot) handleUnmuteCommand(ctx context.Context, msg *Message) {
 	)
 }
 
+func (b *Bot) handleReconcileCommand(ctx context.Context, msg *Message, parts []string) {
+	if len(parts) > 1 && strings.EqualFold(parts[1], "retry") {
+		b.handleReconcileRetryCommand(ctx, msg)
+		return
+	}
+	if len(parts) > 1 && !strings.EqualFold(parts[1], "status") {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"ℹ️ Gunakan <code>/reconcile</code> untuk daftar insiden atau <code>/reconcile retry</code> untuk menjalankan verifikasi ulang read-only.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.sendMonitorSection(
+		ctx, msg.Chat.ID, msg.MessageID,
+		"RECONCILIATION INCIDENTS",
+		"reconciliation", "reconciliation_mismatches", "mismatches",
+	)
+}
+
+func (b *Bot) handleReconcileRetryCommand(ctx context.Context, msg *Message) {
+	userID := int64(0)
+	if msg.From != nil {
+		userID = msg.From.ID
+	}
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"⛔ <b>Akses ditolak:</b> User tidak diizinkan menjalankan recovery operator.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"❌ Redis tidak terhubung; permintaan reconciliation tidak dapat dikirim.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		"⏳ <b>Reconciliation retry dimulai.</b> Executor akan memeriksa ulang order, fill, posisi, dan exposure. Tidak ada order trading yang dikirim atau dibatalkan.",
+		nil,
+	)
+	reply, err := rc.RequestRecoveryRetry(ctx)
+	if err != nil {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, 0,
+			"⚠️ <b>Reconciliation belum terkonfirmasi:</b> "+html.EscapeString(err.Error())+
+				"\nPeriksa <code>/reconcile</code> dan <code>/recovery</code>; jangan menganggap insiden sudah selesai.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	status := "⚠️ <b>MASIH ADA INSIDEN</b>"
+	if reply.Complete {
+		status = "🟢 <b>SEMUA CHECK RECOVERY SELESAI</b>"
+	}
+	message := fmt.Sprintf(
+		"🧾 <b>HASIL RECONCILIATION RETRY</b>\n\n%s\n• Pending order: <code>%d</code>\n• Scope halt: <code>%d</code>\n• Waktu: <code>%s</code>\n\n<i>Read-only: tidak ada order yang dibuat, diubah, atau dibatalkan.</i>",
+		status, len(reply.PendingOrders), len(reply.ScopeHalts),
+		time.UnixMilli(reply.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC"),
+	)
+	if len(reply.PendingOrders) > 0 {
+		message += "\n\n<b>Pending:</b> <code>" + html.EscapeString(prettyJSON(mustJSONRaw(reply.PendingOrders))) + "</code>"
+	}
+	if len(reply.ScopeHalts) > 0 {
+		message += "\n\n<b>Halt:</b> <code>" + html.EscapeString(prettyJSON(mustJSONRaw(reply.ScopeHalts))) + "</code>"
+	}
+	b.sendReplyWithMarkup(ctx, msg.Chat.ID, 0, message, b.defaultKeyboard())
+}
+
+func mustJSONRaw(value interface{}) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return encoded
+}
+
 func (b *Bot) handleCommand(
 	ctx context.Context, msg *Message, cmd string, parts []string,
 ) {
@@ -176,7 +261,7 @@ func (b *Bot) handleCommand(
 	case "/orphans":
 		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "ORPHAN ORDERS", "orphans", "orphan_orders", "orphan_order_details")
 	case "/reconcile":
-		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "RECONCILIATION MISMATCHES", "reconciliation", "reconciliation_mismatches", "mismatches")
+		b.handleReconcileCommand(ctx, msg, parts)
 	case "/risk":
 		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "RISK HALT", "risk", "risk_status", "risk_halt")
 	case "/order":
