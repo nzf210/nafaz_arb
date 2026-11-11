@@ -596,3 +596,15 @@ class TestBalanceSnapshots:
             exchange="indodax", market_type="spot", asset="idr",
             total=1, free=1, used=0,
         ) is False
+
+
+class TestFillSyncWatermark:
+    def test_fill_sync_watermark_survives_outbox_restart(self, tmp_path):
+        path = str(tmp_path / "fill-sync.sqlite3")
+        first = DurableOutbox(path)
+        first.set_numeric_state("fill-sync:exchange:spot:order-1", 2.5)
+        first.close()
+
+        reopened = DurableOutbox(path)
+        assert reopened.get_numeric_state("fill-sync:exchange:spot:order-1") == pytest.approx(2.5)
+        reopened.close()
