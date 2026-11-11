@@ -147,6 +147,15 @@ func (b *Bot) SetOpportunityHistoryReader(reader interface {
 	b.opportunityReader = reader
 }
 
+// SetPositionLedgerReader wires the read-only durable order/fill ledger.
+func (b *Bot) SetPositionLedgerReader(reader interface {
+	PositionOrderFills(context.Context, string) (map[string][]json.RawMessage, error)
+}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.positionLedgerReader = reader
+}
+
 // SetBaseURL allows overriding Telegram API URL (useful for testing with mock server).
 func (b *Bot) SetBaseURL(url string) {
 	b.mu.Lock()
