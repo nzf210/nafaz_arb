@@ -317,11 +317,13 @@ class RecoveryDiscoveryMixin:
         for pair_tag, order_info in list(self.pending_entry_orders.items()):
             stored_id = str(order_info.get("order_id") or "")
             stored_coid = str(order_info.get("client_order_id") or "")
-            if exchange_order_id and stored_id == exchange_order_id:
-                pass
-            elif client_order_id and stored_coid == client_order_id:
-                pass
-            else:
+            matches_exchange_id = bool(
+                exchange_order_id and stored_id == exchange_order_id
+            )
+            matches_client_id = bool(
+                client_order_id and stored_coid == client_order_id
+            )
+            if not (matches_exchange_id or matches_client_id):
                 continue
             record = OrderRecord(
                 local_order_id=OrderRecord.local_id_for(exchange, stored_coid, stored_id),
