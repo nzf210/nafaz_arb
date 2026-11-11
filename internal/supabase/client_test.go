@@ -257,3 +257,37 @@ func TestLatestOpportunityScansRejectsUnavailableReader(t *testing.T) {
 		t.Fatal("expected missing Supabase reader error")
 	}
 }
+
+func TestPositionOrderFillsReadsOrdersAndImmutableFills(t *testing.T) {
+	const orderID = "11111111-1111-4111-8111-111111111111"
+	var ordersRead, fillsRead atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("apikey") != "service-role-test" || r.Header.Get("Authorization") != "Bearer service-role-test" {
+			t.Errorf("unexpected position ledger request: %s %s", r.Method, r.URL.String())
+		}
+		switch r.URL.Path {
+		case "/rest/v1/orders":
+			ordersRead.Store(true)
+			if r.URL.Query().Get("position_id") != "eq.position-123" { t.Errorf("wrong position filter: %s", r.URL.RawQuery) }
+			_, _ = w.Write([]byte("[{\"id\":\""+orderID+"\",\"position_id\":\"position-123\",\"exchange_name\":\"okx\"}]"))
+		case "/rest/v1/order_fills":
+			fillsRead.Store(true)
+			if !strings.Contains(r.URL.Query().Get("order_id"), orderID) { t.Errorf("fill query missing order ID: %s", r.URL.RawQuery) }
+			_, _ = w.Write([]byte("[{\"id\":\"fill-1\",\"order_id\":\""+orderID+"\",\"qty\":0.25,\"price\":100}]"))
+		default:
+			t.Errorf("unexpected table path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := &Client{baseURL: server.URL, serviceRoleKey: "service-role-test", httpClient: server.Client()}
+	result, err := client.PositionOrderFills(context.Background(), "position-123")
+	if err != nil { t.Fatal(err) }
+	if !ordersRead.Load() || !fillsRead.Load() { t.Fatalf("expected both orders and fills reads, got %#v", result) }
+	if len(result["orders"]) != 1 || len(result["fills"]) != 1 { t.Fatalf("unexpected ledger rows: %#v", result) }
+}
+
+func TestPositionOrderFillsRequiresConfiguredSupabase(t *testing.T) {
+	if _, err := (*Client)(nil).PositionOrderFills(context.Background(), "position-123"); err == nil {
+		t.Fatal("expected missing Supabase configuration error")
+	}
+}
