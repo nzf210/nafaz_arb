@@ -15,15 +15,35 @@ class RecoveryRegistryMixin:
     """Focused order-recovery responsibilities."""
 
     async def _run_order_recovery(self) -> None:
-        """Run recovery under a Redis lease shared by every executor instance.
+        """Run periodic order reconciliation under the shared Redis lease."""
+        await self._with_order_recovery_lock(
+            self._run_order_recovery_with_lock
+        )
+
+    async def _run_startup_recovery(self) -> bool:
+        """Restore all startup state while holding one cross-instance lease."""
+        return await self._with_order_recovery_lock(
+            self._run_startup_recovery_with_lock
+        )
+
+    async def _run_startup_recovery_with_lock(self) -> None:
+        """Restore positions, pending entries and orders as one exclusive pass."""
+        await self._recover_active_positions()
+        await self._recover_pending_entry_orders()
+        await self._run_order_recovery_with_lock()
+        if not getattr(self.config, "mock_mode", False):
+            await self._verify_recovered_active_positions()
+
+    async def _with_order_recovery_lock(self, recovery_callback) -> bool:
+        """Run a recovery callback under an owner-token Redis lease.
 
         A process-local asyncio lock is insufficient: two replicas can otherwise
-        reconcile and adopt the same venue orders concurrently. Redis' lock uses
-        an owner token and compare-and-delete release, while the heartbeat keeps
+        restore or reconcile the same venue orders concurrently. Redis' lock
+        uses an owner token and compare-and-delete release; the heartbeat keeps
         the lease alive during slow venue/API reconciliation.
         """
         if self.redis is None or self.order_registry is None:
-            return
+            return False
 
         lock = self.redis.lock(
             "arb:executor:order-recovery:lock",
@@ -42,7 +62,7 @@ class RecoveryRegistryMixin:
                 "*", f"distributed recovery lock unavailable: {type(exc).__name__}"
             )
             self._refresh_entry_gate()
-            return
+            return False
 
         if not acquired:
             logger.warning(
@@ -53,14 +73,16 @@ class RecoveryRegistryMixin:
                 "*", "distributed recovery is owned by another executor"
             )
             self._refresh_entry_gate()
-            return
+            return False
 
         owner_task = asyncio.current_task()
         heartbeat = asyncio.create_task(
             self._renew_order_recovery_lock(lock, owner_task)
         )
+        completed = False
         try:
-            await self._run_order_recovery_with_lock()
+            await recovery_callback()
+            completed = True
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
@@ -78,6 +100,8 @@ class RecoveryRegistryMixin:
                     "*", "distributed recovery lock release could not be verified"
                 )
                 self._refresh_entry_gate()
+                completed = False
+        return completed
 
     async def _renew_order_recovery_lock(self, lock, owner_task) -> None:
         """Renew the recovery lease and abort work if ownership is lost."""
