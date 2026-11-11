@@ -76,6 +76,25 @@ class DurableOutbox:
                 self._db.execute("ROLLBACK")
                 raise
 
+    def get_numeric_state(self, state_key: str) -> Optional[float]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT numeric_value FROM writer_state WHERE state_key=?", (state_key,)
+            ).fetchone()
+        return float(row[0]) if row else None
+
+    def set_numeric_state(self, state_key: str, value: float) -> None:
+        number = float(value)
+        with self._lock:
+            self._db.execute(
+                """INSERT INTO writer_state(state_key, numeric_value, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(state_key) DO UPDATE SET
+                     numeric_value=excluded.numeric_value,
+                     updated_at=excluded.updated_at""",
+                (state_key, number, time.time()),
+            )
+
     def enqueue_once(
         self,
         table: str,
