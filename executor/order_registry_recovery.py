@@ -18,6 +18,42 @@ from executor.order_registry_common import logger
 class OrderRegistryRecoveryMixin:
     """Focused persistence and recovery operations for order ownership."""
 
+    @staticmethod
+    def _merge_durable_order_record(
+        cached: OrderRecord, durable_record: OrderRecord
+    ) -> OrderRecord:
+        """Merge durable facts without moving cumulative recovery watermarks back."""
+        cached.filled_quantity = max(
+            float(cached.filled_quantity or 0.0),
+            float(durable_record.filled_quantity or 0.0),
+        )
+        cached.hedged_quantity = max(
+            float(cached.hedged_quantity or 0.0),
+            float(durable_record.hedged_quantity or 0.0),
+        )
+        cached.original_quantity = max(
+            float(cached.original_quantity or 0.0),
+            float(durable_record.original_quantity or 0.0),
+        )
+        cached.remaining_quantity = max(
+            0.0, cached.original_quantity - cached.filled_quantity
+        )
+        for field in (
+            "exchange_order_id", "client_order_id", "pair_key", "position_id",
+            "exchange", "market_type", "symbol", "side", "order_type",
+        ):
+            if not getattr(cached, field, None):
+                setattr(cached, field, getattr(durable_record, field, None))
+        for field in (
+            "local_amount_spec", "global_amount_spec", "recovery_context",
+            "price", "average_fill_price",
+        ):
+            if not getattr(cached, field, None):
+                setattr(cached, field, getattr(durable_record, field, None))
+        if durable_record.recovery_status == RecoveryStatus.UNVERIFIED.value:
+            cached.recovery_status = RecoveryStatus.UNVERIFIED.value
+        return cached
+
     async def active_records(self) -> Dict[str, OrderRecord]:
         """Merge the Redis cache with the durable registry on every recovery.
 
@@ -40,46 +76,11 @@ class OrderRegistryRecoveryMixin:
             ) from redis_error
         for local_id, durable_record in durable.items():
             cached = records.get(local_id)
-            if cached is None:
-                records[local_id] = durable_record
-                continue
-
-            # Preserve the freshest available facts without ever moving a
-            # cumulative quantity or hedge watermark backwards.
-            cached.filled_quantity = max(
-                float(cached.filled_quantity or 0.0),
-                float(durable_record.filled_quantity or 0.0),
+            records[local_id] = (
+                durable_record
+                if cached is None
+                else self._merge_durable_order_record(cached, durable_record)
             )
-            cached.hedged_quantity = max(
-                float(cached.hedged_quantity or 0.0),
-                float(durable_record.hedged_quantity or 0.0),
-            )
-            cached.original_quantity = max(
-                float(cached.original_quantity or 0.0),
-                float(durable_record.original_quantity or 0.0),
-            )
-            cached.remaining_quantity = max(
-                0.0, cached.original_quantity - cached.filled_quantity
-            )
-            for field in (
-                "exchange_order_id", "client_order_id", "pair_key", "position_id",
-                "exchange", "market_type", "symbol", "side", "order_type",
-            ):
-                if not getattr(cached, field, None):
-                    setattr(cached, field, getattr(durable_record, field, None))
-            if not cached.local_amount_spec:
-                cached.local_amount_spec = durable_record.local_amount_spec
-            if not cached.global_amount_spec:
-                cached.global_amount_spec = durable_record.global_amount_spec
-            if not cached.recovery_context:
-                cached.recovery_context = durable_record.recovery_context
-            if not cached.price:
-                cached.price = durable_record.price
-            if not cached.average_fill_price:
-                cached.average_fill_price = durable_record.average_fill_price
-            if durable_record.recovery_status == RecoveryStatus.UNVERIFIED.value:
-                cached.recovery_status = RecoveryStatus.UNVERIFIED.value
-            records[local_id] = cached
 
         # Rebuild the cache and both lookup indexes for records recovered from
         # durable storage, as well as repairing incomplete Redis entries.
