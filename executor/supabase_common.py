@@ -14,6 +14,8 @@ logger = logging.getLogger("executor.supabase")
 _MAX_ATTEMPTS = 3
 _BATCH_MAX = 50
 _TIMEOUT = aiohttp.ClientTimeout(total=8, connect=3)
+_JSON_CONTENT_TYPE = "application/json"
+_AUTHORIZATION_BEARER_PREFIX = "Bearer "
 _SIDE_BY_LEG = {
     "spot_entry": "buy",
     "spot_exit": "sell",
