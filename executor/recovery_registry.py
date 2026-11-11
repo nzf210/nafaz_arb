@@ -47,63 +47,6 @@ class RecoveryRegistryMixin:
 
     # ------------------------------------------- durable registry reconciliation
 
-    def _group_registered_orders(self, records: Dict[str, OrderRecord]) -> Dict[tuple, list]:
-        groups: Dict[tuple, list] = {}
-        for record in records.values():
-            exchange = (
-                record.exchange or self.config.local_exchange_name or ""
-            ).lower()
-            groups.setdefault(
-                (exchange, record.symbol, record.pair_key, record.market_type), []
-            ).append(record)
-        return groups
-
-    async def _reconcile_registered_group(
-        self, exchange: str, symbol: str, pair_tag: str, group: list
-    ) -> None:
-        token = None
-        try:
-            if not getattr(self.config, "mock_mode", False) and pair_tag:
-                try:
-                    token = self._bind_pair_client(
-                        self._pair_info_for_tag(pair_tag)
-                    )
-                except LookupError as exc:
-                    logger.warning(
-                        "[Recovery] no pair client for %s (%s); verifying with the default client",
-                        pair_tag, exc,
-                    )
-            for record in group:
-                await self._reconcile_registered_order(
-                    record, exchange, symbol
-                )
-        except Exception as exc:
-            logger.critical(
-                "[Recovery] cannot verify registry records for %s/%s: %s",
-                exchange, symbol, exc,
-            )
-            for record in group:
-                record.recovery_status = RecoveryStatus.UNVERIFIED.value
-                await self.order_registry.register(record)
-                await self.order_registry.mark_pending_recovery(
-                    record.local_order_id, f"venue verification failed: {exc}"
-                )
-        finally:
-            if token is not None:
-                self._reset_pair_client(token)
-
-    async def _reconcile_registered_orders(
-        self, records: Dict[str, OrderRecord]
-    ) -> None:
-        """Verify non-terminal registry records against their exact venues."""
-        if not records:
-            return
-        groups = self._group_registered_orders(records)
-        for (exchange, symbol, pair_tag, _market_type), group in groups.items():
-            await self._reconcile_registered_group(
-                exchange, symbol, pair_tag, group
-            )
-
     async def _reconcile_registered_orders(self, records: Dict[str, OrderRecord]) -> None:
         """Verifies each non-terminal registry record against the exact venue.
 
