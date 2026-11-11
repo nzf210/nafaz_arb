@@ -718,7 +718,9 @@ class SupabaseWriter:
                 orders = await read_table(
                     "orders",
                     "id,pair_key,exchange_name,market_type,leg,exchange_order_id,"
-                    "client_order_id,symbol,side,filled_qty,submitted_at,updated_at,is_mock",
+                    "client_order_id,symbol,side,status,requested_qty,filled_qty,"
+                    "remaining_qty,limit_price,average_fill_price,reduce_only,"
+                    "submitted_at,updated_at,is_mock",
                 )
             except Exception as exc:
                 errors.append(f"orders: {exc}")
@@ -768,9 +770,15 @@ class SupabaseWriter:
                     "client_order_id": row.get("client_order_id") or existing.get("client_order_id"),
                     "symbol": row.get("symbol") or existing.get("symbol"),
                     "side": row.get("side") or existing.get("side"),
+                    "status": row.get("status") or existing.get("status"),
+                    "requested_qty": _num(row.get("requested_qty"), _num(existing.get("requested_qty"))),
                     "filled_qty": max(
                         _num(row.get("filled_qty")), _num(existing.get("filled_qty"))
                     ),
+                    "remaining_qty": _num(row.get("remaining_qty"), _num(existing.get("remaining_qty"))),
+                    "limit_price": row.get("limit_price") or existing.get("limit_price"),
+                    "average_fill_price": row.get("average_fill_price") or existing.get("average_fill_price"),
+                    "reduce_only": bool(row.get("reduce_only", existing.get("reduce_only", False))),
                     "submitted_at": existing.get("submitted_at") or _ms_to_iso(row.get("created_at")),
                     "local_amount_spec": raw.get("local_amount_spec"),
                     "global_amount_spec": raw.get("global_amount_spec"),
