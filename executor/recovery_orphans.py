@@ -30,7 +30,8 @@ class RecoveryOrphanMixin:
         return ""
 
     async def _orphan(
-        self, order: Dict[str, Any], exchange: str, symbol: str, pair_tag: str, reason: str
+        self, order: Dict[str, Any], exchange: str, symbol: str, pair_tag: str,
+        reason: str, market_type: str = "spot",
     ) -> None:
         """Registers an orphan: never adopted, replaced or auto-cancelled.
 
@@ -40,7 +41,8 @@ class RecoveryOrphanMixin:
         """
         scope = pair_tag or self._market_scope(exchange, symbol) or exchange or "unknown"
         orphan_id = await self.order_registry.register_orphan(
-            order, scope, reason, exchange=exchange, symbol=symbol
+            order, scope, reason, exchange=exchange, symbol=symbol,
+            market_type=market_type,
         )
         self._recovered_orphans[orphan_id] = {
             "orphan_id": orphan_id, "scope": scope, "exchange": exchange, "symbol": symbol,
