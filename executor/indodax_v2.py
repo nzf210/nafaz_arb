@@ -301,6 +301,57 @@ class IndodaxTAPIv2:
         )
         return self._order(order, symbol)
 
+    async def fetch_my_trades(
+        self,
+        symbol: str,
+        since: Optional[int] = None,
+        limit: Optional[int] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch authenticated, individual fills from the TAPI v2 myTrades API.
+
+        The API's time window is limited to seven days. Callers may supply
+        startTime/endTime chunks and an order/client-order filter so a restart
+        can replay fills without relying on cumulative order averages.
+        """
+        if not symbol:
+            raise ValueError("fetch_my_trades requires a symbol")
+        query = dict(params or {})
+        query["symbol"] = normalize_symbol(symbol)
+        if since is not None:
+            query.setdefault("startTime", int(since))
+        query.setdefault("endTime", int(time.time() * 1000))
+        query["limit"] = min(1000, max(10, int(limit or 500)))
+        query.setdefault("sort", "asc")
+        payload = await self._request("GET", "/api/v2/myTrades", query)
+        rows = payload.get("data") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            raise ValueError("indodax v2 returned a malformed myTrades payload")
+        trades = []
+        for raw in rows:
+            if not isinstance(raw, dict):
+                raise ValueError("indodax v2 returned a malformed trade row")
+            fee_cost = raw.get("commission")
+            fee_asset = raw.get("commissionAsset")
+            trades.append({
+                "id": str(raw.get("tradeId") or ""),
+                "order": str(raw.get("orderId") or ""),
+                "clientOrderId": str(raw.get("clientOrderId") or ""),
+                "symbol": str(raw.get("symbol") or query["symbol"]),
+                "side": "buy" if raw.get("isBuyer") is True else "sell" if raw.get("isBuyer") is False else None,
+                "amount": _to_float(raw.get("qty")),
+                "price": _to_float(raw.get("price")),
+                "cost": _to_float(raw.get("quoteQty")),
+                "fee": (
+                    {"cost": _to_float(fee_cost), "currency": str(fee_asset or "").upper()}
+                    if fee_cost is not None else None
+                ),
+                "timestamp": int(raw.get("time") or 0) or None,
+                "takerOrMaker": "maker" if raw.get("isMaker") is True else "taker" if raw.get("isMaker") is False else None,
+                "info": raw,
+            })
+        return trades
+
     async def fetch_balance(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         account = await self._request("GET", "/api/v2/account")
         free: Dict[str, float] = {}
