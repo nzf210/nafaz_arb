@@ -11,88 +11,118 @@ from executor.exchange_common import _fetch_exchange_balance
 class ExchangeFeeBalanceMixin:
     """Focused asynchronous exchange adapter operations."""
 
-    async def fetch_pair_fee_rates(self, pair_info: Any, cached_profiles: Optional[Dict[str, Dict[str, float]]] = None) -> Dict[str, Any]:
-        """Fetch account-specific rates where the venue exposes a supported endpoint.
-
-        CCXT rates are fractions and are converted to percentage points. Indodax
-        currently has no CCXT fetchTradingFee implementation; its explicit
-        scanner fee profile is retained while the perpetual venue can still
-        refresh independently. Tokocrypto's account endpoint reports bips.
-        """
-        async def read(exchange: Any, symbol: str, market_kind: str):
-            exchange_id = str(getattr(exchange, "id", "") or "").lower()
-            resolved = await self._resolve_symbol(exchange, symbol, market_kind)
-            cache_key = (exchange_id, market_kind, resolved)
-            cached = (cached_profiles or {}).get("spot" if market_kind == "spot" else "perp")
-            if cached and cached.get("fetched_at_ms", 0) > 0:
-                return cached
-            cached = self._fee_cache.get(cache_key)
-            if cached and time.time() - cached[0] < 300:
-                return cached[1]
-            fetcher = getattr(exchange, "fetch_trading_fee", None)
-            if exchange_id == "tokocrypto" and market_kind == "spot":
-                endpoint = (
-                    getattr(exchange, "privateGetOpenV1AccountSpot", None)
-                    or getattr(exchange, "private_get_open_v1_account_spot", None)
+    async def _read_tokocrypto_spot_fee(self, exchange, resolved: str):
+        endpoint = (
+            getattr(exchange, "privateGetOpenV1AccountSpot", None)
+            or getattr(exchange, "private_get_open_v1_account_spot", None)
+        )
+        if callable(endpoint):
+            raw = await endpoint()
+            account = raw.get("data", {}) if isinstance(raw, dict) else {}
+            if not isinstance(account, dict):
+                raise ValueError("invalid Tokocrypto account fee response")
+            maker_bips = account.get("makerCommission")
+            taker_bips = account.get("takerCommission")
+            if maker_bips is None or taker_bips is None:
+                raise ValueError(
+                    "Tokocrypto account response omitted commission rates"
                 )
-                if callable(endpoint):
-                    raw = await endpoint()
-                    account = raw.get("data", {}) if isinstance(raw, dict) else {}
-                    if not isinstance(account, dict):
-                        raise ValueError("invalid Tokocrypto account fee response")
-                    maker_bips = account.get("makerCommission")
-                    taker_bips = account.get("takerCommission")
-                    if maker_bips is None or taker_bips is None:
-                        raise ValueError("Tokocrypto account response omitted commission rates")
-                    # Tokocrypto account commission values are basis points (1 bp = 0.01%).
-                    maker_pct, taker_pct = float(maker_bips) / 100.0, float(taker_bips) / 100.0
-                elif callable(fetcher):
-                    raw = await fetcher(resolved)
-                    maker, taker = raw.get("maker"), raw.get("taker")
-                    if maker is None or taker is None:
-                        raise ValueError("incomplete Tokocrypto spot trading fee response")
-                    maker_pct, taker_pct = float(maker) * 100.0, float(taker) * 100.0
-                else:
-                    return None
-            elif callable(fetcher):
-                raw = await fetcher(resolved)
-                if not isinstance(raw, dict):
-                    raise ValueError(f"invalid {market_kind} trading fee response")
-                maker, taker = raw.get("maker"), raw.get("taker")
-                if maker is None or taker is None:
-                    raise ValueError(f"incomplete {market_kind} trading fee response")
-                maker_pct, taker_pct = float(maker) * 100.0, float(taker) * 100.0
-            else:
-                return None
-            if not all(math.isfinite(v) and 0 <= v <= 100 for v in (maker_pct, taker_pct)):
-                raise ValueError(f"invalid {market_kind} fee rates")
-            rates = {
-                "maker": maker_pct,
-                "taker": taker_pct,
-                "fetched_at_ms": int(time.time() * 1000),
-            }
-            self._fee_cache[cache_key] = (time.time(), rates)
-            return rates
+            return float(maker_bips) / 100.0, float(taker_bips) / 100.0
+        fetcher = getattr(exchange, "fetch_trading_fee", None)
+        if not callable(fetcher):
+            return None
+        raw = await fetcher(resolved)
+        maker, taker = raw.get("maker"), raw.get("taker")
+        if maker is None or taker is None:
+            raise ValueError(
+                "incomplete Tokocrypto spot trading fee response"
+            )
+        return float(maker) * 100.0, float(taker) * 100.0
 
+    async def _read_ccxt_fee(self, exchange, resolved: str, market_kind: str):
+        fetcher = getattr(exchange, "fetch_trading_fee", None)
+        if not callable(fetcher):
+            return None
+        raw = await fetcher(resolved)
+        if not isinstance(raw, dict):
+            raise ValueError(f"invalid {market_kind} trading fee response")
+        maker, taker = raw.get("maker"), raw.get("taker")
+        if maker is None or taker is None:
+            raise ValueError(f"incomplete {market_kind} trading fee response")
+        return float(maker) * 100.0, float(taker) * 100.0
+
+    async def _read_exchange_fee_profile(
+        self, exchange: Any, symbol: str, market_kind: str,
+        cached_profiles: Optional[Dict[str, Dict[str, float]]],
+    ):
+        exchange_id = str(getattr(exchange, "id", "") or "").lower()
+        resolved = await self._resolve_symbol(exchange, symbol, market_kind)
+        cache_key = (exchange_id, market_kind, resolved)
+        cached = (cached_profiles or {}).get(
+            "spot" if market_kind == "spot" else "perp"
+        )
+        if cached and cached.get("fetched_at_ms", 0) > 0:
+            return cached
+        cached = self._fee_cache.get(cache_key)
+        if cached and time.time() - cached[0] < 300:
+            return cached[1]
+
+        if exchange_id == "tokocrypto" and market_kind == "spot":
+            rates = await self._read_tokocrypto_spot_fee(exchange, resolved)
+        else:
+            rates = await self._read_ccxt_fee(exchange, resolved, market_kind)
+        if rates is None:
+            return None
+        maker_pct, taker_pct = rates
+        if not all(
+            math.isfinite(value) and 0 <= value <= 100
+            for value in (maker_pct, taker_pct)
+        ):
+            raise ValueError(f"invalid {market_kind} fee rates")
+        profile = {
+            "maker": maker_pct,
+            "taker": taker_pct,
+            "fetched_at_ms": int(time.time() * 1000),
+        }
+        self._fee_cache[cache_key] = (time.time(), profile)
+        return profile
+
+    async def fetch_pair_fee_rates(
+        self, pair_info: Any,
+        cached_profiles: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> Dict[str, Any]:
+        """Fetch account-specific fee rates independently for spot and perpetual."""
         errors = {}
         profiles = {}
-        for key, exchange, symbol, market_kind in (
+        venues = (
             ("spot", self.local, pair_info.local_symbol, "spot"),
             ("perp", self.global_fut, pair_info.global_symbol, "futures"),
-        ):
+        )
+        for key, exchange, symbol, market_kind in venues:
             try:
-                profiles[key] = await read(exchange, symbol, market_kind)
+                profiles[key] = await self._read_exchange_fee_profile(
+                    exchange, symbol, market_kind, cached_profiles
+                )
             except Exception as exc:
                 profiles[key] = None
                 errors[key] = f"{type(exc).__name__}: {exc}"
-
-        available = [profile for profile in profiles.values() if profile is not None]
+        available = [
+            profile for profile in profiles.values() if profile is not None
+        ]
+        source = "CONFIG"
+        if len(available) == 2:
+            source = "EXCHANGE_API"
+        elif available:
+            source = "PARTIAL_EXCHANGE_API"
         return {
             "spot": profiles["spot"],
             "perp": profiles["perp"],
-            "source": "EXCHANGE_API" if len(available) == 2 else ("PARTIAL_EXCHANGE_API" if available else "CONFIG"),
+            "source": source,
             "verified": len(available) == 2,
-            "fetched_at_ms": max((int(profile.get("fetched_at_ms", 0)) for profile in available), default=0),
+            "fetched_at_ms": max(
+                (int(profile.get("fetched_at_ms", 0)) for profile in available),
+                default=0,
+            ),
             "errors": errors,
         }
 
