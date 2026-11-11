@@ -176,7 +176,13 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 }
 
 func (b *Bot) sendStartupSummary(ctx context.Context) {
-	snapshot, problem := b.readMonitorSnapshot(ctx)
+	var snapshot monitorSnapshot
+	var problem string
+	for attempt := 0; attempt < 30; attempt++ {
+		snapshot, problem = b.readMonitorSnapshot(ctx)
+		if problem == "" { break }
+		select { case <-ctx.Done(): return; case <-time.After(time.Second): }
+	}
 	if problem != "" { return }
 	started := time.Now().UTC().Format(time.RFC3339)
 	if raw := rawField(snapshot, "startup_time", "executor_startup_time"); len(raw) > 0 {
