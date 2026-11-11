@@ -602,14 +602,13 @@ func (s *Service) calculateOpportunitySizing(
 	}, nil
 }
 
-func (s *Service) resolveOpportunityFees(
-	input opportunityCalculationInput,
-) opportunityFees {
-	sm, pm := input.spotMarket, input.perpMarket
+func (s *Service) configuredOpportunityFeeRates(
+	spotMarket, perpMarket domain.Market,
+) (float64, float64, float64) {
 	spotMakerPct := s.cfg.SpotMakerFeePct
 	spotTakerPct := s.cfg.SpotTakerFeePct
 	perpTakerPct := s.cfg.PerpTakerFeePct
-	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(sm.Exchange)]; ok {
+	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(spotMarket.Exchange)]; ok {
 		if profile.SpotMakerFeePct != nil {
 			spotMakerPct = *profile.SpotMakerFeePct
 		}
@@ -617,42 +616,59 @@ func (s *Service) resolveOpportunityFees(
 			spotTakerPct = *profile.SpotTakerFeePct
 		}
 	}
-	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(pm.Exchange)]; ok &&
+	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(perpMarket.Exchange)]; ok &&
 		profile.PerpTakerFeePct != nil {
 		perpTakerPct = *profile.PerpTakerFeePct
 	}
+	return spotMakerPct, spotTakerPct, perpTakerPct
+}
 
-	feeSource := "CONFIG"
-	feeVerified := false
-	var fetchedAtMS int64
+func applyDynamicOpportunityFeeProfiles(
+	input opportunityCalculationInput,
+	spotMakerPct, spotTakerPct, perpTakerPct *float64,
+) (string, bool, int64) {
 	spotDynamic := len(input.dynamicProfiles) > 0 &&
 		input.dynamicProfiles[0] != nil
 	perpDynamic := len(input.dynamicProfiles) > 1 &&
 		input.dynamicProfiles[1] != nil
+	var fetchedAtMS int64
 	if spotDynamic {
-		spotMakerPct = input.dynamicProfiles[0].MakerFeePct
-		spotTakerPct = input.dynamicProfiles[0].TakerFeePct
+		*spotMakerPct = input.dynamicProfiles[0].MakerFeePct
+		*spotTakerPct = input.dynamicProfiles[0].TakerFeePct
 		fetchedAtMS = input.dynamicProfiles[0].FetchedAtMS
 	}
 	if perpDynamic {
-		perpTakerPct = input.dynamicProfiles[1].TakerFeePct
+		*perpTakerPct = input.dynamicProfiles[1].TakerFeePct
 		if input.dynamicProfiles[1].FetchedAtMS > fetchedAtMS {
 			fetchedAtMS = input.dynamicProfiles[1].FetchedAtMS
 		}
 	}
 	if spotDynamic && perpDynamic {
-		feeSource, feeVerified = "EXCHANGE_API", true
-	} else if spotDynamic || perpDynamic {
-		feeSource = "PARTIAL_EXCHANGE_API"
+		return "EXCHANGE_API", true, fetchedAtMS
 	}
+	if spotDynamic || perpDynamic {
+		return "PARTIAL_EXCHANGE_API", false, fetchedAtMS
+	}
+	return "CONFIG", false, fetchedAtMS
+}
+
+func (s *Service) resolveOpportunityFees(
+	input opportunityCalculationInput,
+) opportunityFees {
+	spotMakerPct, spotTakerPct, perpTakerPct := s.configuredOpportunityFeeRates(
+		input.spotMarket, input.perpMarket,
+	)
+	feeSource, feeVerified, fetchedAtMS := applyDynamicOpportunityFeeProfiles(
+		input, &spotMakerPct, &spotTakerPct, &perpTakerPct,
+	)
 	hundred := decimal.NewFromInt(100)
 	fees := opportunityFees{
-		spotMakerPct: spotMakerPct,
-		spotTakerPct: spotTakerPct,
-		perpTakerPct: perpTakerPct,
-		source:       feeSource,
-		verified:     feeVerified,
-		fetchedAtMS:  fetchedAtMS,
+		spotMakerPct:  spotMakerPct,
+		spotTakerPct:  spotTakerPct,
+		perpTakerPct:  perpTakerPct,
+		source:        feeSource,
+		verified:      feeVerified,
+		fetchedAtMS:   fetchedAtMS,
 		spotTakerRate: decimal.NewFromFloat(spotTakerPct).Div(hundred),
 		perpTakerRate: decimal.NewFromFloat(perpTakerPct).Div(hundred),
 	}
