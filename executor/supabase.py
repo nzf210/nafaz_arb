@@ -673,21 +673,17 @@ class SupabaseWriter:
     # ------------------------------------------------------------------- flush
 
     async def fetch_recent_order_fill_candidates(self, days: int = 90, limit: int = 2000) -> list:
-        """Read recent live order rows to replay immutable fills after a restart."""
+        """Read recent live orders and registry metadata for restart-safe fill replay."""
         if not self.enabled or not self.url or not self.key:
             return []
         cutoff = datetime.fromtimestamp(
             time.time() - max(1, int(days)) * 86400, tz=timezone.utc
         ).isoformat()
-        params = {
-            "select": (
-                "id,pair_key,exchange_name,market_type,leg,exchange_order_id,"
-                "client_order_id,symbol,side,filled_qty,submitted_at,updated_at,is_mock"
-            ),
-            "is_mock": "eq.false",
-            "updated_at": f"gte.{cutoff}",
-            "order": "updated_at.desc",
-            "limit": str(max(1, min(int(limit), 10000))),
+        headers = {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Accept": "application/json",
+            "Accept-Encoding": "identity",
         }
         session = self._session
         created = False
@@ -695,21 +691,92 @@ class SupabaseWriter:
             if session is None or session.closed:
                 session = aiohttp.ClientSession(timeout=_TIMEOUT)
                 created = True
-            headers = {
-                "apikey": self.key,
-                "Authorization": f"Bearer {self.key}",
-                "Accept": "application/json",
-                "Accept-Encoding": "identity",
-            }
-            async with session.get(
-                f"{self.url}/rest/v1/orders", params=params, headers=headers
-            ) as resp:
-                if resp.status >= 300:
-                    body = (await resp.text())[:500]
-                    raise RuntimeError(
-                        f"recent order fill candidate read failed with HTTP {resp.status}: {body}"
-                    )
-                rows = await resp.json()
+
+            async def read_table(table: str, select: str) -> list:
+                params = {
+                    "select": select,
+                    "is_mock": "eq.false",
+                    "updated_at": f"gte.{cutoff}",
+                    "order": "updated_at.desc",
+                    "limit": str(max(1, min(int(limit), 10000))),
+                }
+                async with session.get(
+                    f"{self.url}/rest/v1/{table}", params=params, headers=headers
+                ) as resp:
+                    if resp.status >= 300:
+                        body = (await resp.text())[:500]
+                        raise RuntimeError(f"{table} read failed with HTTP {resp.status}: {body}")
+                    rows = await resp.json()
+                if not isinstance(rows, list):
+                    raise RuntimeError(f"{table} read returned a malformed payload")
+                return [row for row in rows if isinstance(row, dict)]
+
+            orders = []
+            registry = []
+            errors = []
+            try:
+                orders = await read_table(
+                    "orders",
+                    "id,pair_key,exchange_name,market_type,leg,exchange_order_id,"
+                    "client_order_id,symbol,side,filled_qty,submitted_at,updated_at,is_mock",
+                )
+            except Exception as exc:
+                errors.append(f"orders: {exc}")
+            try:
+                registry = await read_table(
+                    "order_registry",
+                    "local_order_id,client_order_id,exchange_order_id,pair_key,"
+                    "exchange_name,market_type,leg,order_role,symbol,side,order_type,"
+                    "status,requested_qty,filled_qty,remaining_qty,limit_price,"
+                    "average_fill_price,reduce_only,recovery_status,is_mock,raw_payload,updated_at",
+                )
+            except Exception as exc:
+                errors.append(f"order_registry: {exc}")
+            if not orders and not registry and errors:
+                raise RuntimeError("; ".join(errors))
+
+            candidates: Dict[str, Dict[str, Any]] = {}
+            for row in orders:
+                exchange = str(row.get("exchange_name") or "").lower()
+                market = str(row.get("market_type") or "").lower()
+                key = str(row.get("exchange_order_id") or row.get("client_order_id") or "")
+                if exchange and market and key:
+                    candidates[f"{exchange}:{market}:{key}"] = dict(row)
+
+            for row in registry:
+                exchange = str(row.get("exchange_name") or "").lower()
+                market = str(row.get("market_type") or "").lower()
+                key = str(row.get("exchange_order_id") or row.get("client_order_id") or "")
+                if not exchange or not market or not key:
+                    continue
+                identity = f"{exchange}:{market}:{key}"
+                existing = candidates.get(identity, {})
+                raw = row.get("raw_payload")
+                if isinstance(raw, str):
+                    try:
+                        raw = json.loads(raw)
+                    except (TypeError, ValueError):
+                        raw = {}
+                raw = raw if isinstance(raw, dict) else {}
+                candidates[identity] = {
+                    **existing,
+                    "pair_key": row.get("pair_key") or existing.get("pair_key"),
+                    "exchange_name": row.get("exchange_name") or existing.get("exchange_name"),
+                    "market_type": row.get("market_type") or existing.get("market_type"),
+                    "leg": row.get("leg") or existing.get("leg"),
+                    "exchange_order_id": row.get("exchange_order_id") or existing.get("exchange_order_id"),
+                    "client_order_id": row.get("client_order_id") or existing.get("client_order_id"),
+                    "symbol": row.get("symbol") or existing.get("symbol"),
+                    "side": row.get("side") or existing.get("side"),
+                    "filled_qty": max(
+                        _num(row.get("filled_qty")), _num(existing.get("filled_qty"))
+                    ),
+                    "submitted_at": existing.get("submitted_at") or _ms_to_iso(row.get("created_at")),
+                    "local_amount_spec": raw.get("local_amount_spec"),
+                    "global_amount_spec": raw.get("global_amount_spec"),
+                    "is_mock": row.get("is_mock", False),
+                }
+            return list(candidates.values())
         except Exception as exc:
             logger.error("recent order fill candidate read failed: %s", exc)
             raise RuntimeError("recent order fill candidates could not be read") from exc
@@ -719,9 +786,6 @@ class SupabaseWriter:
                     await session.close()
                 except Exception:
                     pass
-        if not isinstance(rows, list):
-            raise RuntimeError("recent order fill candidates returned a malformed payload")
-        return [row for row in rows if isinstance(row, dict)]
 
     async def fetch_open_order_records(self, limit: int = 500) -> list:
         """Reads non-terminal order-registry rows for startup recovery.
