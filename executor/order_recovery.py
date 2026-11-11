@@ -1386,6 +1386,8 @@ class OrderRecoveryMixin:
         if halts is None:
             halts = self._recovery_scope_halts = {}
         halts[scope] = f"order recovery: {reason}"
+        state_scope = "global" if scope == "*" else "exchange" if scope in getattr(self, "_exchange_halted", {}) else "pair"
+        self._persist_risk_state("reconciliation_halt", scope=state_scope, exchange=scope if state_scope == "exchange" else None, pair_key=scope if state_scope == "pair" else None, reason=halts[scope], value={"source": "order_recovery"})
         self._entry_blocked = True
 
     async def _clear_exposure_halt(self, scope: str, reason: str) -> None:
@@ -1394,6 +1396,8 @@ class OrderRecoveryMixin:
             halts = self._recovery_scope_halts = {}
         if halts.pop(scope, None) is None:
             return
+        state_scope = "global" if scope == "*" else "exchange" if scope in getattr(self, "_exchange_halted", {}) else "pair"
+        self._persist_risk_state("reconciliation_halt", scope=state_scope, exchange=scope if state_scope == "exchange" else None, pair_key=scope if state_scope == "pair" else None, resolved=True)
         self._refresh_entry_gate()
         logger.warning("[Recovery] entry halt cleared for %s (%s)", scope, reason)
 
@@ -1401,6 +1405,7 @@ class OrderRecoveryMixin:
         """Recomputes the entry gate from every recovery reason currently known."""
         self._entry_blocked = bool(
             self._recovery_pending_orders or self._recovery_scope_halts
+            or getattr(self, "_risk_persistence_failed", False)
         )
 
 
