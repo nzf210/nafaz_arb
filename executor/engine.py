@@ -48,6 +48,7 @@ from executor.risk import RiskMixin
 from executor.rollback import RollbackMixin
 from executor.supabase import SupabaseWriter
 from executor.exposure_reconciliation import ExposureReconciliationWorker
+from executor.trade_fill_reconciliation import TradeFillReconciliationWorker
 
 logger = logging.getLogger("executor.engine")
 
@@ -154,6 +155,7 @@ class ArbitrageEngine(
         # order monitor remains independent so risk management is never paused.
         self._exchange_reconciliation_lock = asyncio.Lock()
         self.exposure_reconciliation = ExposureReconciliationWorker(self)
+        self.trade_fill_reconciliation = TradeFillReconciliationWorker(self)
 
     @property
     def client(self):
@@ -830,6 +832,7 @@ class ArbitrageEngine(
         # Verify spot inventory coverage and futures short exposure before
         # listeners can accept a new entry signal after startup.
         if not getattr(self.config, "mock_mode", False):
+            await self.trade_fill_reconciliation.reconcile_once()
             await self.exposure_reconciliation.reconcile_once()
         self._running = True
 
@@ -842,6 +845,7 @@ class ArbitrageEngine(
         self._tasks.append(asyncio.create_task(self._monitoring_loop()))
         self._tasks.append(asyncio.create_task(self._exchange_reconciliation_loop()))
         self._tasks.append(asyncio.create_task(self.exposure_reconciliation.run()))
+        self._tasks.append(asyncio.create_task(self.trade_fill_reconciliation.run()))
         logger.info("Hybrid Arbitrage Engine started")
 
     async def stop(self):
