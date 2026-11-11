@@ -263,3 +263,44 @@ func TestGetDynamicFeeProfileRequiresFreshVerifiedExchangeSnapshot(t *testing.T)
 		t.Fatalf("stale profile must be ignored: %+v", got)
 	}
 }
+
+
+func TestRequestRecoveryRetryWaitsForExecutorResult(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	sub := client.rdb.Subscribe(ctx, ChannelRecoveryRequest)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil {
+		t.Fatalf("subscribe recovery requests: %v", err)
+	}
+	go func() {
+		message := <-sub.Channel()
+		if message == nil {
+			return
+		}
+		var request map[string]string
+		if json.Unmarshal([]byte(message.Payload), &request) != nil {
+			return
+		}
+		reply, _ := json.Marshal(RecoveryRetryReply{
+			RequestID: request["request_id"],
+			Complete: true,
+			PendingOrders: map[string]string{},
+			ScopeHalts: map[string]string{},
+			TimestampMS: time.Now().UnixMilli(),
+		})
+		_ = client.rdb.Set(ctx, KeyPrefixRecoveryReply+request["request_id"], reply, 30*time.Second).Err()
+	}()
+
+	result, err := client.RequestRecoveryRetry(ctx)
+	if err != nil {
+		t.Fatalf("RequestRecoveryRetry: %v", err)
+	}
+	if !result.Complete || result.RequestID == "" {
+		t.Fatalf("unexpected recovery result: %+v", result)
+	}
+}
