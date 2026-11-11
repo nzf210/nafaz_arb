@@ -33,6 +33,9 @@ class EngineEntrySubmissionMixin:
             "fee_verified": directives.fee_verified,
             "fee_fetched_at_ms": directives.fee_fetched_at_ms,
             "fee_asset_surcharge_pct": directives.fee_asset_surcharge_pct,
+            "adaptive_max_buy_price_idr": float(
+                getattr(directives, "adaptive_max_buy_price_idr", 0.0) or 0.0
+            ),
             "spot_cost_usdt": actual_cost,
             "futures_margin_usdt": actual_cost,
         }
