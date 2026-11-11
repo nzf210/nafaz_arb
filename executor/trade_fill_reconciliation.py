@@ -179,7 +179,15 @@ class TradeFillReconciliationWorker:
                 await self._clear(identity)
                 continue
             watermark_reader = getattr(writer, "fill_sync_watermark", None)
-            previous_verified = watermark_reader(identity) if callable(watermark_reader) else None
+            try:
+                previous_verified = watermark_reader(identity) if callable(watermark_reader) else None
+            except Exception as exc:
+                await self._halt(
+                    identity, str(row.get("pair_key") or row.get("exchange_name") or "unknown"),
+                    f"Local fill reconciliation journal is unavailable: {exc}",
+                    {"order": row, "error": str(exc)},
+                )
+                continue
             if (
                 previous_verified is not None
                 and abs(float(previous_verified) - filled_qty)
