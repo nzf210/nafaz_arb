@@ -95,12 +95,19 @@ class SupabaseWriter(
         if worker is not None:
             worker.cancel()
             try:
-                await worker
-            except asyncio.CancelledError:
-                # This is the worker cancellation initiated immediately above.
-                pass
-            except Exception:
-                logger.exception("Supabase outbox worker failed during shutdown")
+                results = await asyncio.gather(worker, return_exceptions=True)
+                worker_result = results[0] if results else None
+                if isinstance(worker_result, BaseException) and not isinstance(
+                    worker_result, asyncio.CancelledError
+                ):
+                    logger.error(
+                        "Supabase outbox worker failed during shutdown",
+                        exc_info=(
+                            type(worker_result),
+                            worker_result,
+                            worker_result.__traceback__,
+                        ),
+                    )
             finally:
                 self._task = None
 
