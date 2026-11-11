@@ -126,37 +126,77 @@ class ExchangeFeeBalanceMixin:
             "errors": errors,
         }
 
+    @staticmethod
+    def _balance_report_assets(raw: Dict[str, Any]) -> list:
+        free_map = raw.get("free") or {}
+        used_map = raw.get("used") or {}
+        total_map = raw.get("total") or {}
+        assets = []
+        for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
+            free_raw = free_map.get(asset)
+            used_raw = used_map.get(asset)
+            total_raw = total_map.get(asset)
+            free = float(free_raw or 0.0)
+            total = float(total_raw) if total_raw is not None else 0.0
+            used = (
+                float(used_raw)
+                if used_raw is not None
+                else max(0.0, total - free)
+            )
+            if total_raw is None:
+                total = free + used
+            if not all(
+                math.isfinite(value) and value >= 0
+                for value in (free, used, total)
+            ):
+                raise ValueError(f"invalid balance value for {asset}")
+            if free or used or total:
+                assets.append({
+                    "asset": str(asset),
+                    "free": free,
+                    "used": used,
+                    "total": total,
+                })
+        return assets
+
+    async def _fetch_balance_report_for_exchange(
+        self, name: str, entry: dict
+    ) -> dict:
+        market = str(entry.get("market") or "unknown")
+        exchange = entry.get("client")
+        init_error = str(entry.get("error") or "")
+        if exchange is None:
+            status = (
+                "not_configured"
+                if "not configured" in init_error.lower()
+                else "error"
+            )
+            return {
+                "name": name,
+                "market": market,
+                "status": status,
+                "error": init_error or "exchange client is unavailable",
+                "assets": [],
+            }
+        try:
+            raw = await _fetch_exchange_balance(exchange, market)
+            assets = self._balance_report_assets(raw)
+            return {
+                "name": name, "market": market, "status": "ok", "assets": assets
+            }
+        except Exception as exc:
+            return {
+                "name": name, "market": market, "status": "error",
+                "error": str(exc), "assets": [],
+            }
+
     async def fetch_balance_report(self) -> list:
         """Fetch read-only balances for every configured venue independently."""
         reports = []
         for name, entry in sorted(self.balance_exchanges.items()):
-            market = str(entry.get("market") or "unknown")
-            exchange = entry.get("client")
-            init_error = str(entry.get("error") or "")
-            if exchange is None:
-                reports.append({
-                    "name": name, "market": market,
-                    "status": "not_configured" if "not configured" in init_error.lower() else "error",
-                    "error": init_error or "exchange client is unavailable", "assets": [],
-                })
-                continue
-            try:
-                raw = await _fetch_exchange_balance(exchange, market)
-                free_map, used_map, total_map = raw.get("free") or {}, raw.get("used") or {}, raw.get("total") or {}
-                assets = []
-                for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
-                    free_raw, used_raw, total_raw = free_map.get(asset), used_map.get(asset), total_map.get(asset)
-                    free = float(free_raw or 0.0)
-                    total = float(total_raw) if total_raw is not None else 0.0
-                    used = float(used_raw) if used_raw is not None else max(0.0, total - free)
-                    if total_raw is None: total = free + used
-                    if not all(math.isfinite(v) and v >= 0 for v in (free, used, total)):
-                        raise ValueError(f"invalid balance value for {asset}")
-                    if free or used or total:
-                        assets.append({"asset": str(asset), "free": free, "used": used, "total": total})
-                reports.append({"name": name, "market": market, "status": "ok", "assets": assets})
-            except Exception as exc:
-                reports.append({"name": name, "market": market, "status": "error", "error": str(exc), "assets": []})
+            reports.append(
+                await self._fetch_balance_report_for_exchange(name, entry)
+            )
         return reports
 
     async def get_balances(
