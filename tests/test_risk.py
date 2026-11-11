@@ -495,6 +495,13 @@ class _RiskStateMemoryWriter:
     async def fetch_active_risk_states(self, *, is_mock=True):
         return list(self.rows)
 
+    async def fetch_daily_realized_loss_usdt(self, loss_day, *, is_mock=True):
+        for row in self.rows:
+            value = row.get("value") or {}
+            if row.get("state_type") == "daily_loss" and value.get("loss_day") == loss_day:
+                return float(value.get("loss_usdt", 0.0))
+        return 0.0
+
     def risk_state(self, **kwargs):
         self.writes.append(kwargs)
         return self.state_ok
