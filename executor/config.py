@@ -28,8 +28,10 @@ class ExecutorConfig:
     exit_price_move_threshold: float = 0.0015  # 0.15%
     max_order_ttl_seconds: int = 120  # Max TTL for pending maker entry orders before cancel
     # Refresh stale, unfilled maker quotes by canceling them and waiting for a fresh scanner signal.
-    maker_refresh_after_seconds: int = 45
-    maker_refresh_cooldown_seconds: int = 300
+    maker_refresh_after_seconds: int = 15
+    maker_refresh_cooldown_seconds: int = 15
+    # Minimum projected net return retained by Indodax IDR adaptive maker quotes.
+    adaptive_maker_min_net_profit_pct: float = 0.10
     mock_mode: bool = True  # Paper trading / simulation by default
     initial_exchange_balance_usdt: float = 100.0  # $100 per exchange
     allocation_per_pair: float = 0.5  # Max 50% capital per pair
@@ -119,6 +121,7 @@ class ExecutorConfig:
                 ("max_order_ttl_seconds", int),
                 ("maker_refresh_after_seconds", int),
                 ("maker_refresh_cooldown_seconds", int),
+                ("adaptive_maker_min_net_profit_pct", float),
                 ("initial_exchange_balance_usdt", float),
                 ("allocation_per_pair", float),
                 ("min_allocated_capital", float),
@@ -227,6 +230,12 @@ class ExecutorConfig:
         if refresh_cooldown_env := os.getenv("MAKER_REFRESH_COOLDOWN_SECONDS"):
             try:
                 self.maker_refresh_cooldown_seconds = int(refresh_cooldown_env)
+            except ValueError:
+                pass
+
+        if adaptive_profit_env := os.getenv("ADAPTIVE_MAKER_MIN_NET_PROFIT_PCT"):
+            try:
+                self.adaptive_maker_min_net_profit_pct = float(adaptive_profit_env)
             except ValueError:
                 pass
 
@@ -348,7 +357,8 @@ class ExecutorConfig:
         "max_stale_latency_ms": (1, 60000, 500),
         "max_order_ttl_seconds": (1, 86400, 120),
         "maker_refresh_after_seconds": (0, 86400, 45),
-        "maker_refresh_cooldown_seconds": (1, 86400, 300),
+        "maker_refresh_cooldown_seconds": (1, 86400, 15),
+        "adaptive_maker_min_net_profit_pct": (0.0, 10.0, 0.10),
         "min_partial_fill_usd": (0.0, None, 10.0),
         "exit_price_move_threshold": (0.0, 1.0, 0.0015),
         "initial_exchange_balance_usdt": (0.01, None, 100.0),
