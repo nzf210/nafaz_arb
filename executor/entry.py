@@ -659,6 +659,7 @@ class EntryMixin:
                     price=expected_short_price,
                     quantity=unhedged_delta,
                     global_amount_spec=order_info.get("global_amount_spec"),
+                    required=False,
                 )
                 short_order = await self.client.open_global_short_market(
                     global_symbol,
