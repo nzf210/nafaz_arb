@@ -165,214 +165,302 @@ class TradeFillReconciliationWorker:
                         await result
         self._verified_scopes.clear()
 
+    @staticmethod
+    def _filled_quantity(row: Dict[str, Any]) -> float:
+        try:
+            return float(row.get("filled_qty") or row.get("filled_quantity") or 0.0)
+        except (TypeError, ValueError):
+            return float("nan")
+
+    async def _watermark_is_current(
+        self, writer, identity: str, scope: str, filled_qty: float
+    ) -> Optional[bool]:
+        reader = getattr(writer, "fill_sync_watermark", None)
+        try:
+            previous_verified = reader(identity) if callable(reader) else None
+        except Exception as exc:
+            await self._halt(
+                identity,
+                scope,
+                f"Local fill reconciliation journal is unavailable: {exc}",
+                {"error": str(exc)},
+            )
+            return None
+        if previous_verified is None:
+            return False
+        tolerance = max(
+            self.absolute_tolerance, abs(filled_qty) * self.relative_tolerance
+        )
+        return abs(float(previous_verified) - filled_qty) <= tolerance
+
+    async def _fetch_candidate_trades(
+        self, client, row: Dict[str, Any], exchange: str, market_type: str,
+        symbol: str, client_order_id: str, exchange_order_id: str,
+    ):
+        fetch = getattr(client, "fetch_order_trades", None)
+        if not callable(fetch):
+            raise NotImplementedError(
+                f"no bound trade-history client for {exchange}"
+            )
+        now_ms = int(time.time() * 1000)
+        submitted = max(
+            _timestamp_ms(row.get("submitted_at"), now_ms - 7 * 86400 * 1000),
+            now_ms - 90 * 86400 * 1000,
+        )
+        amount_spec = (
+            row.get("global_amount_spec")
+            if market_type == "perpetual"
+            else row.get("local_amount_spec")
+        )
+        if exchange == "indodax":
+            # INDODAX rate limits are shared by account/IP across pair adapters.
+            delay = 0.21 - (time.monotonic() - self._last_indodax_request_at)
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._last_indodax_request_at = time.monotonic()
+        trades = await fetch(
+            market_type,
+            symbol,
+            since=submitted,
+            client_order_id=client_order_id or None,
+            order_id=exchange_order_id or None,
+            until=(
+                _timestamp_ms(row.get("completed_at"))
+                if row.get("completed_at") else None
+            ),
+            amount_spec=amount_spec,
+        )
+        if not isinstance(trades, list):
+            raise ValueError("venue trade-history response is malformed")
+        return trades, submitted
+
+    def _ensure_fill_order_parent(
+        self, writer, row: Dict[str, Any], pair_key: str, exchange: str,
+        market_type: str, symbol: str, client_order_id: str,
+        exchange_order_id: str, filled_qty: float, submitted: int,
+    ) -> str:
+        order_row_id = str(row.get("id") or "")
+        if order_row_id:
+            return order_row_id
+        # Registry-only orders need a public.orders parent because the fill FK
+        # references that table, not order_registry.
+        leg = str(row.get("leg") or "")
+        if leg not in (
+            "spot_entry", "futures_entry", "spot_exit",
+            "futures_exit", "rollback", "force_close",
+        ):
+            raise RuntimeError("filled registry order has no valid analytics leg")
+        order_key = client_order_id or exchange_order_id
+        parent_ok = writer.order(
+            pair_key,
+            leg,
+            exchange,
+            market_type,
+            symbol,
+            {
+                "id": exchange_order_id,
+                "amount": float(row.get("requested_qty") or filled_qty),
+                "filled": filled_qty,
+                "average": row.get("average_fill_price"),
+                "price": row.get("limit_price"),
+                "status": row.get("status") or "closed",
+            },
+            client_order_id=client_order_id or None,
+            reduce_only=bool(row.get("reduce_only", False)),
+            is_mock=False,
+            submitted_at_ms=submitted,
+        )
+        if parent_ok is False:
+            raise RuntimeError(
+                "could not durably create parent order row for exchange fills"
+            )
+        order_id_fn = getattr(writer, "order_id_for", None)
+        if not callable(order_id_fn):
+            raise RuntimeError(
+                "cannot resolve stable analytics order id for exchange fills"
+            )
+        return order_id_fn(pair_key, exchange, order_key)
+
+    @staticmethod
+    def _persist_exchange_fills(
+        writer, trades: list, order_row_id: str, exchange: str
+    ):
+        total_qty = 0.0
+        unverified_fee_ids = []
+        for trade in trades:
+            if not isinstance(trade, dict):
+                raise ValueError("venue returned a malformed individual fill")
+            total_qty += float(trade["amount"])
+            fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
+            fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
+            if (
+                fee.get("cost") is None
+                or not str(fee.get("currency") or "").strip()
+                or len(fee_rows) > 1
+            ):
+                unverified_fee_ids.append(str(trade.get("id") or "unknown"))
+            if writer.order_fill(
+                order_id=order_row_id,
+                exchange=exchange,
+                fill=trade,
+                is_mock=False,
+            ) is False:
+                raise RuntimeError(
+                    f"exchange fill {trade.get('id')} could not be durably journaled"
+                )
+        return total_qty, unverified_fee_ids
+
+    async def _verify_candidate_fills(
+        self, writer, identity: str, scope: str, exchange: str, symbol: str,
+        exchange_order_id: str, client_order_id: str, filled_qty: float,
+        trades: list, total_qty: float, unverified_fee_ids: list,
+    ) -> None:
+        tolerance = max(
+            self.absolute_tolerance, abs(filled_qty) * self.relative_tolerance
+        )
+        if not trades or abs(total_qty - filled_qty) > tolerance:
+            await self._halt(
+                identity,
+                scope,
+                "Individual exchange fills do not match the order's cumulative filled quantity.",
+                {
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "order_id": exchange_order_id,
+                    "client_order_id": client_order_id,
+                    "order_filled_qty": filled_qty,
+                    "trade_fill_qty": total_qty,
+                    "fill_count": len(trades),
+                    "tolerance": tolerance,
+                },
+            )
+            return
+        if unverified_fee_ids:
+            await self._halt(
+                identity,
+                scope,
+                "One or more exchange fills are missing a verifiable fee amount/currency.",
+                {
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "order_id": exchange_order_id,
+                    "client_order_id": client_order_id,
+                    "unverified_fee_trade_ids": unverified_fee_ids,
+                },
+            )
+            return
+        marker = getattr(writer, "mark_fill_sync", None)
+        if not callable(marker) or marker(identity, filled_qty) is False:
+            raise RuntimeError(
+                "could not persist verified fill reconciliation watermark"
+            )
+        self._clear(identity, scope)
+
+    async def _reconcile_candidate(
+        self, writer, identity: str, row: Dict[str, Any]
+    ) -> None:
+        scope = str(row.get("pair_key") or row.get("exchange_name") or "unknown")
+        filled_qty = self._filled_quantity(row)
+        if not math.isfinite(filled_qty) or filled_qty < 0:
+            await self._halt(
+                identity,
+                scope,
+                "Order has an invalid cumulative filled quantity; individual fills cannot be reconciled.",
+                {"order": row},
+            )
+            return
+        if filled_qty <= self.absolute_tolerance:
+            self._clear(identity, scope)
+            return
+        watermark_current = await self._watermark_is_current(
+            writer, identity, scope, filled_qty
+        )
+        if watermark_current is not False:
+            if watermark_current is True:
+                self._clear(identity, scope)
+            return
+
+        exchange = str(row.get("exchange_name") or "").lower()
+        market_type = str(row.get("market_type") or "").lower()
+        pair_key = str(row.get("pair_key") or "")
+        symbol = str(row.get("symbol") or "")
+        client_order_id = str(row.get("client_order_id") or "")
+        exchange_order_id = str(row.get("exchange_order_id") or "")
+        scope = pair_key or exchange
+        if (
+            not exchange
+            or market_type not in ("spot", "perpetual")
+            or not symbol
+            or not (client_order_id or exchange_order_id)
+        ):
+            await self._halt(
+                identity,
+                scope or "unknown",
+                "Filled order is missing exchange, market, symbol, or order identity.",
+                {"order": row},
+            )
+            return
+
+        token = None
+        try:
+            if pair_key and not getattr(self.engine.config, "mock_mode", False):
+                try:
+                    token = self.engine._bind_pair_client(
+                        self.engine._pair_info_for_tag(pair_key)
+                    )
+                except (LookupError, KeyError, ValueError):
+                    token = None
+            client = (
+                self.engine.client
+                if token is not None
+                else self.engine._client_for_exchange(exchange)
+            )
+            trades, submitted = await self._fetch_candidate_trades(
+                client, row, exchange, market_type, symbol,
+                client_order_id, exchange_order_id,
+            )
+            order_row_id = self._ensure_fill_order_parent(
+                writer, row, pair_key, exchange, market_type, symbol,
+                client_order_id, exchange_order_id, filled_qty, submitted,
+            )
+            total_qty, unverified_fee_ids = self._persist_exchange_fills(
+                writer, trades, order_row_id, exchange
+            )
+            await self._verify_candidate_fills(
+                writer, identity, scope, exchange, symbol, exchange_order_id,
+                client_order_id, filled_qty, trades, total_qty, unverified_fee_ids,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._halt(
+                identity,
+                scope,
+                f"Cannot verify individual fills for order {exchange_order_id or client_order_id}: {exc}",
+                {
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "order_id": exchange_order_id,
+                    "client_order_id": client_order_id,
+                    "filled_qty": filled_qty,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+        finally:
+            if token is not None:
+                self.engine._reset_pair_client(token)
+
     async def reconcile_once(self) -> None:
         if getattr(self.engine.config, "mock_mode", False):
             return
         writer = getattr(self.engine, "supabase", None)
         if writer is None or not getattr(writer, "enabled", False):
-            logger.warning("trade-fill reconciliation skipped: durable fill writer is disabled")
+            logger.warning(
+                "trade-fill reconciliation skipped: durable fill writer is disabled"
+            )
             return
-
         candidates = await self._load_candidates()
         self._verified_scopes.clear()
         for identity, row in candidates.items():
-            scope = str(row.get("pair_key") or row.get("exchange_name") or "unknown")
-            try:
-                filled_qty = float(row.get("filled_qty") or row.get("filled_quantity") or 0.0)
-            except (TypeError, ValueError):
-                filled_qty = float("nan")
-            if not math.isfinite(filled_qty) or filled_qty < 0:
-                await self._halt(
-                    identity, scope,
-                    "Order has an invalid cumulative filled quantity; individual fills cannot be reconciled.",
-                    {"order": row},
-                )
-                continue
-            if filled_qty <= self.absolute_tolerance:
-                self._clear(identity, scope)
-                continue
-            watermark_reader = getattr(writer, "fill_sync_watermark", None)
-            try:
-                previous_verified = watermark_reader(identity) if callable(watermark_reader) else None
-            except Exception as exc:
-                await self._halt(
-                    identity, str(row.get("pair_key") or row.get("exchange_name") or "unknown"),
-                    f"Local fill reconciliation journal is unavailable: {exc}",
-                    {"order": row, "error": str(exc)},
-                )
-                continue
-            if (
-                previous_verified is not None
-                and abs(float(previous_verified) - filled_qty)
-                <= max(self.absolute_tolerance, abs(filled_qty) * self.relative_tolerance)
-            ):
-                self._clear(identity, scope)
-                continue
-
-            exchange = str(row.get("exchange_name") or "").lower()
-            market_type = str(row.get("market_type") or "").lower()
-            pair_key = str(row.get("pair_key") or "")
-            symbol = str(row.get("symbol") or "")
-            client_order_id = str(row.get("client_order_id") or "")
-            exchange_order_id = str(row.get("exchange_order_id") or "")
-            scope = pair_key or exchange
-            if not exchange or market_type not in ("spot", "perpetual") or not symbol or not (client_order_id or exchange_order_id):
-                await self._halt(
-                    identity, scope or "unknown",
-                    "Filled order is missing exchange, market, symbol, or order identity.",
-                    {"order": row},
-                )
-                continue
-
-            token = None
-            try:
-                if pair_key and not getattr(self.engine.config, "mock_mode", False):
-                    try:
-                        token = self.engine._bind_pair_client(self.engine._pair_info_for_tag(pair_key))
-                    except (LookupError, KeyError, ValueError):
-                        token = None
-                client = self.engine.client if token is not None else self.engine._client_for_exchange(exchange)
-                fetch = getattr(client, "fetch_order_trades", None)
-                if not callable(fetch):
-                    raise NotImplementedError(f"no bound trade-history client for {exchange}")
-                now_ms = int(time.time() * 1000)
-                submitted = max(
-                    _timestamp_ms(row.get("submitted_at"), now_ms - 7 * 86400 * 1000),
-                    now_ms - 90 * 86400 * 1000,
-                )
-                amount_spec = (
-                    row.get("global_amount_spec") if market_type == "perpetual"
-                    else row.get("local_amount_spec")
-                )
-                if exchange == "indodax":
-                    # PairClientRegistry can hold one adapter per pair, while
-                    # INDODAX rate limits are shared by account/IP. Throttle
-                    # across the worker, not just within one adapter instance.
-                    delay = 0.21 - (time.monotonic() - self._last_indodax_request_at)
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-                    self._last_indodax_request_at = time.monotonic()
-                trades = await fetch(
-                    market_type,
-                    symbol,
-                    since=submitted,
-                    client_order_id=client_order_id or None,
-                    order_id=exchange_order_id or None,
-                    until=_timestamp_ms(row.get("completed_at")) if row.get("completed_at") else None,
-                    amount_spec=amount_spec,
-                )
-                if not isinstance(trades, list):
-                    raise ValueError("venue trade-history response is malformed")
-                total_qty = 0.0
-                unverified_fee_ids = []
-                order_key = client_order_id or exchange_order_id
-                order_row_id = str(row.get("id") or "")
-                if not order_row_id:
-                    # Older deployments may have a durable order_registry row
-                    # but no matching public.orders analytics parent. Recreate
-                    # that parent before inserting fills (the fill FK targets
-                    # public.orders, not order_registry).
-                    leg = str(row.get("leg") or "")
-                    if leg not in (
-                        "spot_entry", "futures_entry", "spot_exit",
-                        "futures_exit", "rollback", "force_close",
-                    ):
-                        raise RuntimeError("filled registry order has no valid analytics leg")
-                    parent_ok = writer.order(
-                        pair_key,
-                        leg,
-                        exchange,
-                        market_type,
-                        symbol,
-                        {
-                            "id": exchange_order_id,
-                            "amount": float(row.get("requested_qty") or filled_qty),
-                            "filled": filled_qty,
-                            "average": row.get("average_fill_price"),
-                            "price": row.get("limit_price"),
-                            "status": row.get("status") or "closed",
-                        },
-                        client_order_id=client_order_id or None,
-                        reduce_only=bool(row.get("reduce_only", False)),
-                        is_mock=False,
-                        submitted_at_ms=submitted,
-                    )
-                    if parent_ok is False:
-                        raise RuntimeError("could not durably create parent order row for exchange fills")
-                    order_id_fn = getattr(writer, "order_id_for", None)
-                    if not callable(order_id_fn):
-                        raise RuntimeError("cannot resolve stable analytics order id for exchange fills")
-                    order_row_id = order_id_fn(pair_key, exchange, order_key)
-                for trade in trades:
-                    if not isinstance(trade, dict):
-                        raise ValueError("venue returned a malformed individual fill")
-                    total_qty += float(trade["amount"])
-                    fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
-                    fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
-                    if (
-                        fee.get("cost") is None
-                        or not str(fee.get("currency") or "").strip()
-                        or len(fee_rows) > 1
-                    ):
-                        unverified_fee_ids.append(str(trade.get("id") or "unknown"))
-                    if writer.order_fill(
-                        order_id=order_row_id,
-                        exchange=exchange,
-                        fill=trade,
-                        is_mock=False,
-                    ) is False:
-                        raise RuntimeError(
-                            f"exchange fill {trade.get('id')} could not be durably journaled"
-                        )
-                tolerance = max(self.absolute_tolerance, abs(filled_qty) * self.relative_tolerance)
-                if not trades or abs(total_qty - filled_qty) > tolerance:
-                    await self._halt(
-                        identity, scope,
-                        "Individual exchange fills do not match the order's cumulative filled quantity.",
-                        {
-                            "exchange": exchange,
-                            "symbol": symbol,
-                            "order_id": exchange_order_id,
-                            "client_order_id": client_order_id,
-                            "order_filled_qty": filled_qty,
-                            "trade_fill_qty": total_qty,
-                            "fill_count": len(trades),
-                            "tolerance": tolerance,
-                        },
-                    )
-                    continue
-                if unverified_fee_ids:
-                    await self._halt(
-                        identity, scope,
-                        "One or more exchange fills are missing a verifiable fee amount/currency.",
-                        {
-                            "exchange": exchange,
-                            "symbol": symbol,
-                            "order_id": exchange_order_id,
-                            "client_order_id": client_order_id,
-                            "unverified_fee_trade_ids": unverified_fee_ids,
-                        },
-                    )
-                    continue
-                marker = getattr(writer, "mark_fill_sync", None)
-                if not callable(marker) or marker(identity, filled_qty) is False:
-                    raise RuntimeError("could not persist verified fill reconciliation watermark")
-                self._clear(identity, scope)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                await self._halt(
-                    identity, scope,
-                    f"Cannot verify individual fills for order {exchange_order_id or client_order_id}: {exc}",
-                    {
-                        "exchange": exchange, "symbol": symbol,
-                        "order_id": exchange_order_id,
-                        "client_order_id": client_order_id,
-                        "filled_qty": filled_qty,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    },
-                )
-            finally:
-                if token is not None:
-                    self.engine._reset_pair_client(token)
+            await self._reconcile_candidate(writer, identity, row)
         await self._flush_clears()
