@@ -48,6 +48,30 @@ class ExchangeClient(
             getattr(global_exchange, "id", "global"): {"market": "futures", "client": global_exchange},
         }
 
+    def for_venue(self, exchange: str) -> Optional["ExchangeClient"]:
+        """Return a facade bound to one venue, independent of a registered pair.
+
+        Recovery reads an order back from the venue that owns it, and that venue
+        need not be the configured base pair or a pair bound earlier in this
+        process (``for_pair`` only covers pairs already seen). The balance
+        registry is built at startup from the configured credentials, so it can
+        always answer "who owns venue X" -- or say None when X is not configured,
+        which keeps a wrong-venue lookup from silently falling through.
+        """
+        name = str(exchange or "").strip().lower()
+        if not name:
+            return None
+        entry = self.balance_exchanges.get(name)
+        if not entry or entry.get("client") is None:
+            return None
+        if entry.get("market") == "futures":
+            return ExchangeClient(
+                self.local, entry["client"], self.balance_exchanges
+            )
+        return ExchangeClient(
+            entry["client"], self.global_fut, self.balance_exchanges
+        )
+
     def for_pair(self, pair_info: Any) -> "ExchangeClient":
         """Return an immutable facade bound to the exact spot/futures venue pair."""
         local_name = str(getattr(pair_info, "local_exchange", "") or "").strip().lower()

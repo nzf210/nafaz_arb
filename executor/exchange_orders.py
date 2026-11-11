@@ -20,12 +20,23 @@ class ExchangeOrderMixin:
     """Focused asynchronous exchange adapter operations."""
 
     @staticmethod
-    def _normalized_market_id(symbol: str, exchange_id: str) -> str:
+    def _strip_venue_prefix(symbol: str) -> str:
+        """Drop a scanner venue tag ("toko:ATH_USDT" -> "ATH_USDT").
+
+        The Go scanner prefixes non-Indodax spot markets with their venue, and
+        the tag is carried inside order records. Venue APIs take the bare market
+        id, so the tag must never reach the wire.
+        """
         raw_id = str(symbol or "").strip()
-        if ":" in raw_id and raw_id.split(":", 1)[0].lower() in {
-            exchange_id, "toko", "okx", "mexc",
-        }:
-            raw_id = raw_id.split(":", 1)[1]
+        if ":" in raw_id:
+            prefix, remainder = raw_id.split(":", 1)
+            if prefix.strip().lower() in {"toko", "okx", "mexc", "indodax"}:
+                return remainder
+        return raw_id
+
+    @staticmethod
+    def _normalized_market_id(symbol: str, exchange_id: str) -> str:
+        raw_id = ExchangeOrderMixin._strip_venue_prefix(symbol)
         return "".join(char for char in raw_id.upper() if char.isalnum())
 
     @staticmethod
@@ -61,7 +72,11 @@ class ExchangeOrderMixin:
     ) -> str:
         """Resolve scanner market IDs to the venue's CCXT unified symbol."""
         if isinstance(exchange, IndodaxTAPIv2):
-            return symbol
+            # The scanner tags non-Indodax spot markets with a venue prefix
+            # ("toko:ATH_USDT"), and its order records carry that tag through to
+            # recovery. Indodax's API rejects it with -1121 Invalid symbol, so
+            # the tag is stripped before the id reaches the wire.
+            return self._strip_venue_prefix(symbol)
         markets = getattr(exchange, "markets", None)
         if not markets:
             loader = getattr(exchange, "load_markets", None)

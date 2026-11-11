@@ -393,8 +393,15 @@ class RecoveryRegistryMixin:
         client_id = str(record.client_order_id or "")
         if not client_id:
             raise ValueError("unacknowledged order has no client order id")
+        # The record names the venue that owns the order. ``self.client`` is only
+        # the configured base pair (e.g. indodax/okx), so a record submitted on a
+        # different spot venue (tokocrypto) would otherwise be looked up on the
+        # wrong exchange and fail with that venue's "invalid symbol" error.
+        owner = self._client_for_exchange(getattr(record, "exchange", "") or "")
+        if owner is None:
+            owner = self.client
         if record.market_type == "perpetual":
-            fetcher = getattr(self.client, "fetch_global_order_by_client_id", None)
+            fetcher = getattr(owner, "fetch_global_order_by_client_id", None)
             if fetcher is None:
                 raise NotImplementedError(
                     "client cannot search futures order history by client order id"
@@ -402,7 +409,7 @@ class RecoveryRegistryMixin:
             return await fetcher(
                 client_id, record.symbol, record.global_amount_spec
             )
-        fetcher = getattr(self.client, "fetch_local_order_by_client_id", None)
+        fetcher = getattr(owner, "fetch_local_order_by_client_id", None)
         if fetcher is None:
             raise NotImplementedError(
                 "client cannot search spot order history by client order id"
@@ -420,14 +427,17 @@ class RecoveryRegistryMixin:
         same id would either miss it or, worse, return an unrelated spot order.
         """
         spec = record.global_amount_spec if record.market_type == "perpetual" else record.local_amount_spec
+        owner = self._client_for_exchange(getattr(record, "exchange", "") or "")
+        if owner is None:
+            owner = self.client
         if record.market_type == "perpetual":
-            fetcher = getattr(self.client, "fetch_global_order", None)
+            fetcher = getattr(owner, "fetch_global_order", None)
             if fetcher is None:
                 raise NotImplementedError(
                     "client cannot fetch a futures order; perpetual record cannot be verified"
                 )
             return await fetcher(order_id, symbol, spec)
-        return await self.client.fetch_local_order(order_id, symbol)
+        return await owner.fetch_local_order(order_id, symbol)
 
     @staticmethod
     def _apply_venue_state(record: OrderRecord, order: Dict[str, Any]) -> None:

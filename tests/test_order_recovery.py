@@ -1757,3 +1757,122 @@ async def test_dangling_orphan_index_is_not_reported_as_clean(fake_redis):
 
     with pytest.raises(RuntimeError, match="missing record"):
         await registry.orphans()
+
+@pytest.mark.asyncio
+async def test_recovery_looks_up_a_record_on_the_venue_that_owns_it(fake_redis):
+    """A tokocrypto record must not be searched on the configured indodax client.
+
+    The scanner tags non-Indodax spot markets ("toko:ATH_USDT"). Looking that
+    symbol up on the indodax client returned -1121 Invalid symbol and pinned the
+    order as ORDER_RECOVERY_UNVERIFIED even though the venue never held it.
+    """
+    asked = {}
+
+    class RecordingClient(MockExchangeClient):
+        async def fetch_local_order_by_client_id(self, client_order_id, symbol, amount_spec=None):
+            asked["symbol"] = symbol
+            asked["client_order_id"] = client_order_id
+            return None
+
+    owner = RecordingClient()
+    engine = _engine(fake_redis, client=owner)
+
+    def _client_for_exchange(exchange):
+        return owner if str(exchange).lower() == "tokocrypto" else None
+
+    engine._client_for_exchange = _client_for_exchange
+    record = _entry_record(
+        exchange="tokocrypto",
+        symbol="toko:ATH_USDT",
+        client_order_id="tokocrypto-6aff40ba-entry-794411778",
+    )
+
+    result = await engine._fetch_order_by_client_id(record)
+
+    assert result is None
+    assert asked["symbol"] == "toko:ATH_USDT"
+    assert asked["client_order_id"] == "tokocrypto-6aff40ba-entry-794411778"
+
+
+@pytest.mark.asyncio
+async def test_venue_resolver_binds_configured_venue_without_a_registered_pair(fake_redis):
+    """A tokocrypto record must never be verified on the configured indodax leg.
+
+    The pair registry only holds pairs bound in this process; a spot order
+    restored from the durable registry at startup names its own venue, which is
+    configured but unbound. Resolving it via ``balance_exchanges`` is what keeps
+    the lookup off the base (indodax) client and its -1121 invalid symbol.
+    """
+    from executor.exchange_client import ExchangeClient
+
+    engine = _engine(fake_redis, mock_mode=False)
+
+    toko, okx = object(), object()
+    engine._base_client = ExchangeClient(
+        object(),
+        object(),
+        {
+            "tokocrypto": {"market": "spot", "client": toko},
+            "okx": {"market": "futures", "client": okx},
+            "indodax": {"market": "spot", "client": None, "error": "unbound"},
+        },
+    )
+
+    resolved = engine._client_for_exchange("tokocrypto")
+
+    assert resolved is not None
+    assert resolved.local is toko
+    # An unconfigured venue resolves to nothing rather than to the base client.
+    assert engine._client_for_exchange("bitmart") is None
+
+
+@pytest.mark.asyncio
+async def test_tokocrypto_record_lookup_never_touches_the_indodax_leg(fake_redis):
+    """The exact production failure: the order is read from tokocrypto, not indodax.
+
+    A restored spot record names tokocrypto while the configured base pair is
+    indodax/okx. Resolving through the pair registry alone fell back to the base
+    client, so indodax answered "-1121 Invalid symbol" for a Tokocrypto market and
+    the order was reported unverifiable.
+    """
+    from executor.exchange_client import ExchangeClient
+
+    engine = _engine(fake_redis, mock_mode=False)
+
+    seen = []
+
+    class Venue:
+        def __init__(self, name):
+            self.id = name
+            self.options = {}
+            self.markets = {
+                "ATH/USDT": {"id": "ATHUSDT", "symbol": "ATH/USDT", "spot": True},
+            }
+
+        async def fetch_order(self, order_id, symbol, *params):
+            seen.append(self.id)
+            return {"id": order_id, "symbol": symbol, "amount": 1.0, "filled": 1.0}
+
+    toko, okx = Venue("tokocrypto"), Venue("okx")
+    engine._base_client = ExchangeClient(
+        Venue("indodax"),
+        okx,
+        {
+            "tokocrypto": {"market": "spot", "client": toko},
+            "okx": {"market": "futures", "client": okx},
+        },
+    )
+
+    record = _entry_record(
+        local_order_id="tokocrypto-6aff40ba-entry-794411778",
+        exchange="tokocrypto",
+        symbol="toko:ATH_USDT",
+        client_order_id="tokocrypto-6aff40ba-entry-794411778",
+        exchange_order_id="",
+    )
+    order = await engine._fetch_order_by_role(record, "795", "toko:ATH_USDT")
+
+    assert order is not None
+    assert seen == ["tokocrypto"], f"lookup hit {seen}, not the owning venue"
+    # The scanner venue tag must never reach the wire.
+    assert order["symbol"] == "ATH/USDT"

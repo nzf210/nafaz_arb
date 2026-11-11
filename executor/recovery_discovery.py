@@ -158,6 +158,18 @@ class RecoveryDiscoveryMixin:
                     continue
         if exchange in (configured_local, configured_global):
             return self._base_client
+        # Last resort: an order may name a venue that is configured but whose
+        # pair was never bound in this process (e.g. a tokocrypto spot order
+        # restored from the registry at startup). Looking it up on the base
+        # client would query indodax and fail with that venue's invalid symbol.
+        resolver = getattr(self._base_client, "for_venue", None)
+        if callable(resolver):
+            try:
+                return resolver(exchange)
+            except Exception:
+                logger.exception(
+                    "[Recovery] could not resolve a client for venue %s", exchange
+                )
         return None
 
     @staticmethod

@@ -16,6 +16,24 @@ def test_symbol_normalization_matches_v2_form():
     assert normalize_symbol("usdt/idr") == "USDTIDR"
     assert normalize_symbol("BTCIDR") == "BTCIDR"
 
+def test_scanner_venue_prefix_is_stripped_before_reaching_indodax():
+    """The scanner tags non-Indodax spot markets; the venue rejects the tag."""
+    from executor.exchange_orders import ExchangeOrderMixin
+
+    assert ExchangeOrderMixin._strip_venue_prefix("toko:ATH_USDT") == "ATH_USDT"
+    assert ExchangeOrderMixin._strip_venue_prefix("toko:ath_usdt") == "ath_usdt"
+    assert ExchangeOrderMixin._strip_venue_prefix("indodax:btc_idr") == "btc_idr"
+    assert ExchangeOrderMixin._strip_venue_prefix("ATHIDR") == "ATHIDR"
+    # A colon in a genuine symbol must survive.
+    assert ExchangeOrderMixin._strip_venue_prefix("BTC/USDT:USDT") == "BTC/USDT:USDT"
+
+    assert ExchangeOrderMixin._normalized_market_id("toko:ATH_USDT", "tokocrypto") == "ATHUSDT"
+    assert ExchangeOrderMixin._normalized_market_id("indodax:btc_idr", "indodax") == "BTCIDR"
+    # -1121 Invalid symbol came from the untrimmed tag reaching v2.
+    assert normalize_symbol(
+        ExchangeOrderMixin._strip_venue_prefix("toko:ATH_USDT")
+    ) == "ATHUSDT"
+
 def test_signature_is_hmac_sha256_of_query_string():
     ex = _adapter()
     payload = "symbol=BTCIDR&side=BUY&timestamp=1578304294000&recvWindow=5000"
