@@ -303,6 +303,11 @@ class SupabaseOrderMixin:
             return False
         fee_asset = str(fee.get("currency") or "").strip().upper() or None
         fee_rows = fill.get("fees") if isinstance(fill.get("fees"), list) else []
+        raw_payload = fill.get("raw_payload")
+        if not isinstance(raw_payload, dict):
+            raw_payload = fill.get("info")
+        if not isinstance(raw_payload, dict):
+            raw_payload = fill
         row = {
             "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
             "order_id": order_id,
@@ -318,11 +323,7 @@ class SupabaseOrderMixin:
                 fee_amount is not None and bool(fee_asset) and len(fee_rows) <= 1
             ),
             "filled_at": datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).isoformat(),
-            "raw_payload": (
-                fill.get("raw_payload") if isinstance(fill.get("raw_payload"), dict)
-                else fill.get("info") if isinstance(fill.get("info"), dict)
-                else fill
-            ),
+            "raw_payload": raw_payload,
         }
         if not self.enabled or self._outbox is None:
             return False
