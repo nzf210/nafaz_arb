@@ -1,0 +1,146 @@
+"""exchange futures methods for the exchange facade."""
+
+import time
+from typing import Optional, Dict, Any
+
+from executor.quantity import AmountSpec, base_to_order_amount
+from executor.exchange_common import (
+    _base_order_result, _client_order_params, _expose_client_order_id,
+    _normalize_open_order, _require_amount_spec,
+)
+
+
+
+class ExchangeFuturesMixin:
+    """Focused asynchronous exchange adapter operations."""
+
+    async def fetch_positions(self, symbol: str) -> list:
+        """Fetches open futures positions for a symbol (global exchange).
+
+        A malformed position response must never be converted into an empty list:
+        callers use an empty list as proof that the futures leg is flat.
+        """
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError("requested futures symbol is missing; flat state cannot be verified")
+        symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        try:
+            positions = await self.global_fut.fetch_positions([symbol])
+        except (TypeError, AttributeError):
+            positions = await self.global_fut.fetch_positions()
+
+        if positions is None or not isinstance(positions, (list, tuple)):
+            raise ValueError("exchange returned an invalid futures positions payload")
+
+        def normalize_symbol(value: str) -> str:
+            # CCXT may represent the same linear contract as BTCUSDT or
+            # BTC/USDT:USDT depending on venue/version.
+            return value.split(":")[0].replace("/", "").replace("-", "").replace("_", "").upper()
+
+        target_symbol = normalize_symbol(symbol)
+        matched = []
+        for position in positions:
+            if not isinstance(position, dict):
+                raise ValueError("exchange returned a malformed futures position")
+            position_symbol = position.get("symbol")
+            if not isinstance(position_symbol, str) or not position_symbol:
+                raise ValueError(
+                    "exchange futures position is missing its symbol; flat state cannot be verified"
+                )
+            if normalize_symbol(position_symbol) == target_symbol:
+                matched.append(position)
+        return matched
+
+    async def open_global_short_market(
+        self, symbol: str, amount: float, client_order_id: Optional[str] = None,
+        amount_spec: Any = None,
+    ) -> Dict[str, Any]:
+        """
+        Executes an instant Short 1x Market Hedge on Global Futures.
+        STRICT: Only executes Market SELL. Never buy/long to open.
+        """
+        if amount <= 0:
+            raise ValueError(f"invalid short amount: {amount}")
+        spec = _require_amount_spec(amount_spec)
+        order_amount = base_to_order_amount(amount, spec)
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        # Market Sell on Futures opens a Short position
+        order = await self.global_fut.create_market_sell_order(
+            order_symbol, order_amount, *_client_order_params(client_order_id),
+            {"reduceOnly": False},
+        )
+        return _base_order_result(order, spec)
+
+    async def close_global_short_market(
+        self, symbol: str, amount: float, client_order_id: Optional[str] = None,
+        amount_spec: Any = None,
+    ) -> Dict[str, Any]:
+        """
+        Closes Global Short position by buying back sold coins with reduceOnly=True.
+        STRICT: Must have reduceOnly=True so it can never inadvertently open a Long.
+        """
+        if amount <= 0:
+            raise ValueError(f"invalid close amount: {amount}")
+        spec = _require_amount_spec(amount_spec)
+        order_amount = base_to_order_amount(amount, spec)
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        params = {"reduceOnly": True}
+        if client_order_id:
+            params["clientOrderId"] = client_order_id
+        order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)
+        return _base_order_result(order, spec)
+
+    async def fetch_global_order(
+        self, order_id: str, symbol: str, amount_spec: Any = None
+    ) -> Dict[str, Any]:
+        """Fetches a futures order by id (hedge or close leg)."""
+        spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        order = await self.global_fut.fetch_order(order_id, order_symbol)
+        if not isinstance(order, dict):
+            raise ValueError("global futures venue returned a malformed order payload")
+        normalized = _base_order_result(order, spec) if spec is not None else dict(order)
+        return _expose_client_order_id(normalized)
+
+    async def fetch_global_open_orders(
+        self, symbol: Optional[str] = None, amount_spec: Any = None
+    ) -> list:
+        """Open orders on the global futures venue (short hedge legs).
+
+        The open global short legs are the highest-risk orders to lose across a
+        restart: they carry margin and are invisible in the local spot book.
+        """
+        spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
+        resolved_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures") if symbol else None
+        raw = await self.global_fut.fetch_open_orders(resolved_symbol)
+        if raw is None or not isinstance(raw, list):
+            raise ValueError("global futures venue returned a malformed open orders payload")
+        return [_normalize_open_order(order, symbol or "", spec) for order in raw]
+
+    async def fetch_funding_history(
+        self, symbol: str, since: Optional[int] = None, limit: int = 100
+    ) -> list:
+        """Fetches actual settled funding payments for a perpetual contract."""
+        fetcher = getattr(self.global_fut, "fetch_funding_history", None)
+        if fetcher is None:
+            raise NotImplementedError(
+                f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_history"
+            )
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        return await fetcher(order_symbol, since, limit)
+
+    async def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
+        """Fetches current funding rate and the venue's next settlement timestamp."""
+        fetcher = getattr(self.global_fut, "fetch_funding_rate", None)
+        if fetcher is None:
+            raise NotImplementedError(
+                f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_rate"
+            )
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        return await fetcher(order_symbol)
+
+    async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
+        """Fetches ticker from global futures exchange."""
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        return await self.global_fut.fetch_ticker(order_symbol)
+
+    async def close(self):
