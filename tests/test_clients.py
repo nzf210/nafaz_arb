@@ -781,3 +781,64 @@ async def test_tokocrypto_broker_prefixed_client_id_is_normalized_for_recovery()
     assert recovered["id"] == "toko-closed-1"
     assert recovered["client_order_id"] == logical_id
     assert opened[0]["client_order_id"] == logical_id
+
+
+@pytest.mark.asyncio
+async def test_tokocrypto_client_id_alias_is_matched_and_duplicate_ids_fail_closed():
+    from executor.exchange_client import ExchangeClient
+
+    logical_id = "pair-entry-duplicate"
+    class TokoSpot:
+        id = "tokocrypto"
+        async def fetch_open_orders(self, symbol):
+            return []
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            return [{
+                "id": "toko-1", "info": {"clientId": logical_id}, "symbol": symbol,
+                "side": "buy", "type": "limit", "amount": 1, "filled": 1,
+                "remaining": 0, "status": "closed",
+            }]
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            return []
+
+    client = ExchangeClient(TokoSpot(), object())
+    recovered = await client.fetch_local_order_by_client_id(logical_id, "BTC/IDR")
+    assert recovered["id"] == "toko-1"
+    assert recovered["client_order_id"] == logical_id
+
+    async def duplicate_closed(symbol, since=None, limit=None):
+        return [
+            {"id": "toko-1", "clientId": logical_id, "symbol": symbol, "status": "closed"},
+            {"id": "toko-2", "clientId": logical_id, "symbol": symbol, "status": "closed"},
+        ]
+    client.local.fetch_closed_orders = duplicate_closed
+    with pytest.raises(RuntimeError, match="multiple exchange orders share client order id"):
+        await client.fetch_local_order_by_client_id(logical_id, "BTC/IDR")
+
+
+@pytest.mark.asyncio
+async def test_binance_usdm_recovery_uses_all_order_history_and_exact_client_id():
+    from executor.exchange_client import ExchangeClient
+
+    class BinanceUsdm:
+        id = "binanceusdm"
+        def __init__(self):
+            self.history_called = False
+        async def fetch_open_orders(self, symbol):
+            return []
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            self.history_called = True
+            return [{
+                "id": "binance-futures-order-1", "symbol": symbol, "side": "sell",
+                "type": "market", "amount": 0.02, "filled": 0.02, "remaining": 0,
+                "status": "closed", "info": {"clientOrderId": "hedge-binance-1"},
+            }]
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            return []
+
+    venue = BinanceUsdm()
+    client = ExchangeClient(object(), venue)
+    order = await client.fetch_global_order_by_client_id("hedge-binance-1", "BTC/USDT")
+    assert venue.history_called is True
+    assert order["id"] == "binance-futures-order-1"
+    assert order["client_order_id"] == "hedge-binance-1"
