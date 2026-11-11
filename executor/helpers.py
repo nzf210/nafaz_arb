@@ -144,6 +144,35 @@ def floor_to_tick(price: float, tick_size: float) -> float:
 BALANCES_KEY = "arb:balances"
 PENDING_ENTRY_KEY_PREFIX = "arb:pending_entry:"
 
+# --- Universal order registry keys -------------------------------------------
+# Redis is the fast, restart-surviving cache; Supabase is the durable record.
+# Every key here must be reconstructible after a Redis flush by rebuilding from
+# the exchange (see UniversalOrderRegistry.startup_recovery).
+ORDER_RECORD_KEY_PREFIX = "arb:order:"            # -> order registry JSON by local id
+ORDER_RECOVERY_INDEX_KEY = "arb:order_recovery_idx"  # hash: local_id -> "1"
+ORDER_BY_EXCHANGE_ID_KEY = "arb:order_xid"        # hash: "{exchange}:{exchange_order_id}" -> local_id
+ORDER_BY_CLIENT_ID_KEY = "arb:order_cid"          # hash: "{exchange}:{client_order_id}" -> local_id
+ORDER_PENDING_RECOVERY_KEY = "arb:order_pending_recovery"  # hash: local_id -> reason
+ORPHAN_ORDER_KEY_PREFIX = "arb:orphan_order:"     # -> orphan registry JSON
+ORPHAN_INDEX_KEY = "arb:orphan_idx"               # hash: orphan_id -> "1"
+
+def order_record_key(local_order_id: str) -> str:
+    return ORDER_RECORD_KEY_PREFIX + local_order_id
+
+def orphan_order_key(orphan_id: str) -> str:
+    return ORPHAN_ORDER_KEY_PREFIX + orphan_id
+
+def order_xid_field(exchange: str, exchange_order_id: str) -> str:
+    """Idempotency key for an exchange order id, scoped per venue.
+
+    The same numeric id is reused across venues (indodax 301 and okx 301 are
+    different orders), so the venue must be part of the field name.
+    """
+    return f"{str(exchange or '').lower()}:{exchange_order_id}"
+
+def order_cid_field(exchange: str, client_order_id: str) -> str:
+    return f"{str(exchange or '').lower()}:{client_order_id}"
+
 
 # Last-resort IDR<->USDT rate for bookkeeping when no live rate is available.
 FALLBACK_USDT_IDR_RATE = 16000.0

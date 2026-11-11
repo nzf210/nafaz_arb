@@ -440,3 +440,52 @@ class TestOutboxDelivery:
         assert writer._outbox.pending() == []
         writer._outbox.close()
 
+
+
+class TestOrderRegistryWriter:
+    """The registry row must describe the real order, not just its role."""
+
+    def test_force_close_futures_buy_keeps_its_side(self):
+        writer = _writer()
+        writer.order_record(
+            {
+                "local_order_id": "11111111-1111-1111-1111-111111111111",
+                "exchange_name": "binance",
+                "market_type": "perpetual",
+                "order_role": "FORCE_CLOSE",
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "order_type": "market",
+                "status": "closed",
+                "original_quantity": 1.0,
+                "filled_quantity": 1.0,
+                "pair_key": "indodax:btc_idr__binance:btc_usdt",
+                "position_key": "position:indodax:btc_idr__binance:btc_usdt",
+                "recovery_context": {"usdt_idr_rate": 16000.0},
+            }
+        )
+        row = [r for t, _, r in _drain(writer) if t == "order_registry"][0]
+        assert row["side"] == "buy"
+        assert row["market_type"] == "perpetual"
+        assert row["leg"] == "futures_exit"
+        assert row["pair_key"].startswith("indodax:btc_idr")
+        assert row["position_key"] == "position:indodax:btc_idr__binance:btc_usdt"
+        assert "usdt_idr_rate" in row["raw_payload"]
+
+    def test_unlinked_orphan_row_omits_pair_and_position(self):
+        writer = _writer()
+        writer.order_record(
+            {
+                "local_order_id": "22222222-2222-2222-2222-222222222222",
+                "exchange_name": "indodax",
+                "order_role": "ENTRY",
+                "symbol": "eth_idr",
+                "side": "buy",
+                "status": "open",
+                "recovery_status": "ORPHAN_ORDER",
+            }
+        )
+        row = [r for t, _, r in _drain(writer) if t == "order_registry"][0]
+        assert "pair_key" not in row
+        assert "position_key" not in row
+        assert row["recovery_status"] == "ORPHAN_ORDER"

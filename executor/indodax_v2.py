@@ -346,7 +346,15 @@ class IndodaxTAPIv2:
         orders = await self._request("GET", "/api/v2/openOrders", query)
         if not isinstance(orders, list):
             raise ValueError("indodax v2 returned a malformed open orders payload")
-        return [self._order(o, symbol or o.get("symbol", "")) for o in orders]
+        # Without a symbol filter the venue returns every resting order on the
+        # account, and each row carries its own symbol. Mapping them all to the
+        # requested symbol (empty) would make the payload unmatchable at recovery.
+        requested = normalize_symbol(symbol) if symbol else ""
+        mapped = []
+        for order in orders:
+            row_symbol = requested or str(order.get("symbol") or "")
+            mapped.append(self._order(order, row_symbol))
+        return mapped
 
     async def close(self) -> None:
         if self._session is not None and self._owns_session and not self._session.closed:

@@ -16,6 +16,12 @@ The initial migration creates:
 - `scanner_opportunities`: time-series snapshots of evaluated opportunities.
 - `positions` and `position_legs`: lifecycle and each exchange leg.
 - `orders` and `order_fills`: order lifecycle and immutable fill records.
+- `order_registry`: durable universal order registry (one row per submitted order,
+  keyed by a deterministic local id derived from the client order id). It is the
+  recovery authority after a restart and carries `order_role` (ENTRY / HEDGE /
+  EXIT_SPOT / EXIT_FUTURES / EMERGENCY / FORCE_CLOSE / ROLLBACK) and
+  `recovery_status` (MANAGED / ADOPTED / UNVERIFIED / ORPHAN_ORDER / PHANTOM).
+  `orders` stays the per-leg analytics view.
 - `funding_payments`: exchange funding settlements, with estimated and confirmed
   records explicitly distinguished and exchange payment IDs deduplicated.
 - `closed_trades`: realized PnL snapshots.

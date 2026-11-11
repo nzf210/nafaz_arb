@@ -91,6 +91,35 @@ def _base_order_result(order: Dict[str, Any], spec: AmountSpec) -> Dict[str, Any
             normalized[key] = order_amount_to_base(float(normalized[key]), spec)
     return normalized
 
+def _expose_client_order_id(order: Dict[str, Any]) -> Dict[str, Any]:
+    """Adds a snake_case ``client_order_id`` alias.
+
+    Every venue except indodax answers with ccxt's ``clientOrderId``; normalizing
+    here means the recovery matcher never has to know which venue produced the
+    payload.
+    """
+    if isinstance(order, dict) and order.get("client_order_id") is None:
+        alias = order.get("clientOrderId")
+        if alias:
+            order = dict(order)
+            order["client_order_id"] = alias
+    return order
+
+def _normalize_open_order(order: Dict[str, Any], symbol: str, spec: Optional[AmountSpec]) -> Dict[str, Any]:
+    """Canonical shape for an open order discovered directly on the venue.
+
+    ``symbol`` is the bot's own symbol when the caller asked for one, because the
+    whole point of reading the venue is to match against bot state.
+    """
+    normalized = dict(order)
+    if spec is not None:
+        normalized = _base_order_result(normalized, spec)
+    normalized.setdefault("symbol", symbol)
+    if not normalized.get("symbol"):
+        normalized["symbol"] = symbol
+    normalized.pop("info", None)
+    return _expose_client_order_id(normalized)
+
 
 class ExchangeClient:
     """
@@ -254,7 +283,24 @@ class ExchangeClient:
     async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Fetches status of an order on local spot exchange."""
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
-        return await self.local.fetch_order(order_id, order_symbol)
+        order = await self.local.fetch_order(order_id, order_symbol)
+        return _expose_client_order_id(order)
+
+    async def fetch_local_open_orders(
+        self, symbol: Optional[str] = None, amount_spec: Any = None
+    ) -> list:
+        """Opens orders resting on the local spot venue.
+
+        Raises when the venue cannot answer, so a caller can never mistake
+        "unknown" for "nothing is resting" and release funds that are still
+        committed. ``amount_spec`` normalizes venue units back to base units.
+        """
+        spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
+        resolved_symbol = await self._resolve_symbol(self.local, symbol, "spot") if symbol else None
+        raw = await self.local.fetch_open_orders(resolved_symbol)
+        if raw is None or not isinstance(raw, list):
+            raise ValueError("local venue returned a malformed open orders payload")
+        return [_normalize_open_order(order, symbol or "", spec) for order in raw]
 
 
     async def fetch_pair_fee_rates(self, pair_info: Any, cached_profiles: Optional[Dict[str, Dict[str, float]]] = None) -> Dict[str, Any]:
@@ -506,7 +552,8 @@ class ExchangeClient:
         order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
         # Market Sell on Futures opens a Short position
         order = await self.global_fut.create_market_sell_order(
-            order_symbol, order_amount, *_client_order_params(client_order_id)
+            order_symbol, order_amount, *_client_order_params(client_order_id),
+            {"reduceOnly": False},
         )
         return _base_order_result(order, spec)
 
@@ -528,6 +575,33 @@ class ExchangeClient:
             params["clientOrderId"] = client_order_id
         order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)
         return _base_order_result(order, spec)
+
+    async def fetch_global_order(
+        self, order_id: str, symbol: str, amount_spec: Any = None
+    ) -> Dict[str, Any]:
+        """Fetches a futures order by id (hedge or close leg)."""
+        spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        order = await self.global_fut.fetch_order(order_id, order_symbol)
+        if not isinstance(order, dict):
+            raise ValueError("global futures venue returned a malformed order payload")
+        normalized = _base_order_result(order, spec) if spec is not None else dict(order)
+        return _expose_client_order_id(normalized)
+
+    async def fetch_global_open_orders(
+        self, symbol: Optional[str] = None, amount_spec: Any = None
+    ) -> list:
+        """Open orders on the global futures venue (short hedge legs).
+
+        The open global short legs are the highest-risk orders to lose across a
+        restart: they carry margin and are invisible in the local spot book.
+        """
+        spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
+        resolved_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures") if symbol else None
+        raw = await self.global_fut.fetch_open_orders(resolved_symbol)
+        if raw is None or not isinstance(raw, list):
+            raise ValueError("global futures venue returned a malformed open orders payload")
+        return [_normalize_open_order(order, symbol or "", spec) for order in raw]
 
     async def fetch_funding_history(
         self, symbol: str, since: Optional[int] = None, limit: int = 100
@@ -807,6 +881,45 @@ class PaperTradingExchangeClient:
             if order.get("client_order_id") == client_order_id:
                 return order
         return None
+
+    async def fetch_local_open_orders(
+        self, symbol: Optional[str] = None, amount_spec: Any = None
+    ) -> list:
+        """Resting spot orders in the simulated book, in venue payload shape.
+
+        The paper venue applies the same open-order completion rules as
+        ``fetch_local_order`` so a simulated restart sees exactly the orders the
+        venue would still be holding.
+        """
+        open_orders = []
+        for order_id, order in list(self.orders.items()):
+            if str(order.get("status", "")).lower() != "open":
+                continue
+            if symbol and str(order.get("symbol", "")) != symbol:
+                continue
+            current = await self.fetch_local_order(order_id, str(order.get("symbol", symbol or "")))
+            if str(current.get("status", "")).lower() == "open":
+                open_orders.append(dict(current))
+        return open_orders
+
+    async def fetch_global_open_orders(
+        self, symbol: Optional[str] = None, amount_spec: Any = None
+    ) -> list:
+        """Resting futures orders in the simulated book.
+
+        Hedge and unwound legs are market orders and therefore terminal, so a
+        correct simulation returns nothing resting here.
+        """
+        open_orders = []
+        for order in self.orders.values():
+            if str(order.get("status", "")).lower() != "open":
+                continue
+            if str(order.get("market", "spot")) != "futures":
+                continue
+            if symbol and str(order.get("symbol", "")) != symbol:
+                continue
+            open_orders.append(dict(order))
+        return open_orders
 
     def _global_fill_price(self, symbol: str, price: float = 0.0) -> float:
         """Best available futures price for a market fill in paper mode."""

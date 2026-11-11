@@ -121,6 +121,26 @@ class MockExchangeClient:
         # Default mock: no futures positions open anywhere.
         return []
 
+    async def fetch_global_order(self, order_id: str, symbol: str, amount_spec=None):
+        if order_id in self.orders:
+            return self.orders[order_id]
+        return {"id": order_id, "symbol": symbol, "status": "open", "filled": 0.0}
+
+    async def fetch_local_open_orders(self, symbol=None, amount_spec=None):
+        return [
+            dict(order) for order in self.orders.values()
+            if str(order.get("status", "")).lower() == "open"
+            and (not symbol or order.get("symbol") == symbol)
+        ]
+
+    async def fetch_global_open_orders(self, symbol=None, amount_spec=None):
+        return [
+            dict(order) for order in self.orders.values()
+            if str(order.get("status", "")).lower() == "open"
+            and order.get("market") == "futures"
+            and (not symbol or order.get("symbol") == symbol)
+        ]
+
     async def open_global_short_market(self, symbol: str, amount: float, price: float = 0.0, client_order_id=None, amount_spec=None):
         record = {
             "symbol": symbol,

@@ -11,6 +11,7 @@ import math
 from typing import Dict, Optional
 
 from executor.models import ExecutorPayload, PairInfo
+from executor.pair_registry import ExchangePairKey
 
 logger = logging.getLogger("executor.engine")
 
@@ -364,8 +365,41 @@ class RiskMixin:
                 global_exposure += float(info.get("futures_margin_usdt", 0.0))
         return local_exposure, global_exposure
 
+    def _recovery_scope_keys(self, pair_tag: str) -> list:
+        """Candidate recovery gate keys for a pair, most specific first.
+
+        Recovery gates exposure at whatever granularity it could prove: the pair,
+        then the market, then the venue. Every level is checked so an unrelated
+        symbol's orphan does not block trading on a healthy market.
+        """
+        keys = [pair_tag] if pair_tag else []
+        pair_info = getattr(self, "_pair_infos", {}).get(pair_tag) if pair_tag else None
+        # Recovery keys pair gates by the venue-qualified tag while an incoming
+        # signal carries the local-only tag, so both must be checked.
+        if pair_info is not None:
+            try:
+                keys.append(ExchangePairKey.from_pair_info(pair_info).tag.lower())
+            except Exception:
+                pass
+        local_ex, global_ex = self._pair_venues(pair_tag)
+        local_symbol = str(getattr(pair_info, "local_symbol", "") or "")
+        global_symbol = str(getattr(pair_info, "global_symbol", "") or "")
+        if not local_symbol and pair_tag and ":" in pair_tag:
+            local_symbol = pair_tag.split(":", 1)[1]
+        for venue, symbol in ((local_ex, local_symbol), (global_ex, global_symbol)):
+            if venue and symbol:
+                keys.append(f"{venue}:{symbol}")
+        keys.extend(venue for venue in (local_ex, global_ex) if venue)
+        return keys
+
     def _venue_halted_reason(self, pair_tag: str) -> str:
         """Returns the venue pair halted, or '' when clear."""
+        # Recovery-installed gates first: an unresolved orphan or unverifiable
+        # order blocks the pair/market/venue it affects, never the whole bot.
+        recovery_halts = getattr(self, "_recovery_scope_halts", None) or {}
+        for key in self._recovery_scope_keys(pair_tag):
+            if key in recovery_halts:
+                return f"{key}: {recovery_halts[key]}"
         local_ex, global_ex = self._pair_venues(pair_tag)
         if local_ex and local_ex in self._exchange_halted:
             return f"{local_ex}: {self._exchange_halted[local_ex]}"

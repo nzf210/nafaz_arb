@@ -11,7 +11,7 @@ import math
 import time
 from typing import Optional
 
-from executor.models import ActivePosition, PositionState
+from executor.models import ActivePosition, OrderRole, PositionState
 from executor import helpers
 from executor.helpers import (
     ARB_TRADE_HISTORY_KEY,
@@ -285,6 +285,20 @@ class ExitMixin:
                     order,
                     client_order_id=exit_coid,
                     is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
+                await self._register_order(
+                    pair_tag,
+                    exit_coid,
+                    order,
+                    exchange=pos.local_exchange,
+                    market_type="spot",
+                    symbol=pos.symbol,
+                    role=OrderRole.EXIT_SPOT.value,
+                    side="sell",
+                    order_type="limit",
+                    price=limit_sell_idr,
+                    quantity=pos.qty,
+                    local_amount_spec=pos.local_amount_spec,
                 )
                 self.pending_exit_orders[pair_tag] = {
                     "order_id": order_id,
@@ -578,6 +592,21 @@ class ExitMixin:
                     client_order_id=unwind_coid,
                     reduce_only=True,
                     is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
+                await self._register_order(
+                    pair_tag,
+                    unwind_coid,
+                    close_order,
+                    exchange=pos.global_exchange,
+                    market_type="perpetual",
+                    symbol=global_sym,
+                    role=OrderRole.EXIT_FUTURES.value,
+                    side="buy",
+                    order_type="market",
+                    price=helpers.extract_fill_price(close_order),
+                    quantity=unclosed_delta,
+                    reduce_only=True,
+                    global_amount_spec=pos.global_amount_spec,
                 )
 
                 # Snapshot qty before mutation so PnL fractions stay consistent.

@@ -6,6 +6,7 @@ rollback, or force-close operation on a remote request.
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -30,6 +31,57 @@ _SIDE_BY_LEG = {
     "rollback": "sell",
     "force_close": "sell",
 }
+
+# Order role -> (leg per market, side, market) for the universal order registry.
+# Sides are canonical because the schema stores `side` in ('buy','sell') while
+# the bot describes the futures leg as "short". A role maps to different legs per
+# market: FORCE_CLOSE buys on perpetual (close the short) but sells on spot, and
+# the schema's leg vocabulary distinguishes them.
+_ROLE_CATALOGUE = {
+    "ENTRY": ({"spot": "spot_entry"}, "buy", "spot"),
+    "HEDGE": ({"perpetual": "futures_entry"}, "sell", "perpetual"),
+    "EXIT_SPOT": ({"spot": "spot_exit"}, "sell", "spot"),
+    "EXIT_FUTURES": ({"perpetual": "futures_exit"}, "buy", "perpetual"),
+    "EMERGENCY": ({"spot": "rollback"}, "sell", "spot"),
+    "ROLLBACK": ({"spot": "rollback"}, "sell", "spot"),
+    "FORCE_CLOSE": ({"spot": "force_close", "perpetual": "futures_exit"}, "sell", "spot"),
+}
+
+_LEG_TO_ROLE = {
+    "spot_entry": "ENTRY",
+    "futures_entry": "HEDGE",
+    "spot_exit": "EXIT_SPOT",
+    "futures_exit": "EXIT_FUTURES",
+    "rollback": "ROLLBACK",
+    "force_close": "FORCE_CLOSE",
+}
+
+def _role_catalogue(role: Any, leg: Optional[str], market: Any = "") -> tuple:
+    """Returns (side, leg, market_type) for a registry row, filling gaps only."""
+    key = str(role or "").upper()
+    legs, side, default_market = _ROLE_CATALOGUE.get(
+        key, ({"spot": "spot_entry"}, "sell", "spot")
+    )
+    resolved_market = "perpetual" if str(market or "").lower() in ("perpetual", "futures", "swap") else default_market
+    if leg:
+        resolved_leg = str(leg)
+        resolved_market = "perpetual" if resolved_leg in ("futures_entry", "futures_exit") else "spot"
+    else:
+        resolved_leg = legs.get(resolved_market) or next(iter(legs.values()))
+    return side, resolved_leg, resolved_market
+
+def _canonical_side(value: Any) -> Optional[str]:
+    """Maps a direction onto the schema's buy/sell vocabulary, or None.
+
+    A FORCE_CLOSE role covers both a spot sell and a futures buy, so the role
+    alone cannot state the side; the caller's own direction is authoritative.
+    """
+    side = str(value or "").strip().lower()
+    if side in ("buy", "long"):
+        return "buy"
+    if side in ("sell", "short"):
+        return "sell"
+    return None
 # Positions are keyed deterministically by pair so a restart reuses the same row.
 # The schema allows only one active position per (pair_key, is_mock); a random id
 # per process would collide with the previous process's row instead of updating it.
@@ -258,6 +310,82 @@ class SupabaseWriter:
 
     # ------------------------------------------------------------------ orders
 
+    def order_record(
+        self,
+        row: Dict[str, Any],
+        leg: Optional[str] = None,
+        market_type: Optional[str] = None,
+        limit_price: Optional[float] = None,
+    ) -> None:
+        """Upserts one universal order-registry row.
+
+        ``local_order_id`` is the primary key and is derived from the client
+        order id, so a re-submitted or re-adopted order updates its own row
+        instead of inserting a duplicate. ``pair_key`` and ``position_key`` are
+        only sent when they are non-null, keeping the newest known linkage
+        instead of erasing it with a null.
+        """
+        local_order_id = str(row.get("local_order_id") or "")
+        if not local_order_id:
+            return
+        role = str(row.get("order_role") or "ENTRY")
+        fallback_side, resolved_leg, resolved_market = _role_catalogue(
+            role, leg, market_type or row.get("market_type")
+        )
+        payload = {
+            "local_order_id": local_order_id,
+            "exchange_name": str(row.get("exchange_name") or ""),
+            "market_type": resolved_market,
+            "leg": resolved_leg,
+            "order_role": role,
+            "symbol": str(row.get("symbol") or ""),
+            "side": _canonical_side(row.get("side")) or fallback_side,
+            "order_type": str(row.get("order_type") or "limit"),
+            "status": str(row.get("status") or "open"),
+            "requested_qty": _num(row.get("original_quantity")),
+            "filled_qty": _num(row.get("filled_quantity")),
+            "remaining_qty": max(
+                0.0,
+                _num(row.get("remaining_quantity"), _num(row.get("original_quantity")) - _num(row.get("filled_quantity"))),
+            ),
+            "average_fill_price": _num(row.get("average_fill_price")) or None,
+            "limit_price": limit_price if limit_price is not None else (_num(row.get("price")) or None),
+            "reduce_only": bool(row.get("reduce_only", False)),
+            "recovery_status": str(row.get("recovery_status") or "MANAGED"),
+            "is_mock": bool(row.get("is_mock", True)),
+            "last_reconciled_at": datetime.now(timezone.utc).isoformat(),
+            # Carries the entry lifecycle context (FX snapshot, fee profile,
+            # amount rules) that a post-restart hedge cannot re-derive.
+            "raw_payload": json.dumps(
+                {
+                    key: row.get(key)
+                    for key in (
+                        "local_amount_spec", "global_amount_spec", "recovery_context",
+                        "orphan_id", "scope", "reason", "detected_at",
+                    )
+                    if row.get(key) is not None
+                },
+                default=str,
+            ),
+        }
+        exchange_order_id = str(row.get("exchange_order_id") or "")
+        if exchange_order_id:
+            payload["exchange_order_id"] = exchange_order_id
+        client_order_id = str(row.get("client_order_id") or "")
+        if client_order_id:
+            payload["client_order_id"] = client_order_id
+        # Kept distinct: a position key ("position:<pair>") is not a pair key, and
+        # writing one into the other would corrupt every recovery lookup.
+        pair_key = str(row.get("pair_key") or "")
+        if pair_key:
+            payload["pair_key"] = pair_key
+        position_key = str(row.get("position_key") or "")
+        if position_key:
+            payload["position_key"] = position_key
+        if isinstance(row.get("raw_payload"), str):
+            payload["raw_payload"] = row["raw_payload"]
+        self._emit("order_registry", payload, on_conflict="local_order_id")
+
     def order(
         self,
         pair_key: str,
@@ -273,6 +401,10 @@ class SupabaseWriter:
         submitted_at_ms: Optional[int] = None,
     ) -> None:
         """Upserts an order and appends any newly observed fill quantity.
+
+        This writes the pair-scoped analytics view. The universal order registry
+        is written separately by the call site that knows the order's role, so the
+        recovery identity is never inferred from a leg name.
 
         ``submitted_at_ms`` is the executor-side submission timestamp. It must
         remain stable across polling updates so DB timestamps describe order
@@ -356,6 +488,7 @@ class SupabaseWriter:
                 self._dropped += 1
                 logger.exception("CRITICAL: failed to journal cumulative fill for %s", key)
 
+
     # ------------------------------------------------------------ closed trades
 
     def trade_closed(self, pair_key: str, trade: Dict[str, Any], pos: Any = None) -> None:
@@ -409,6 +542,65 @@ class SupabaseWriter:
             occurred_at_ms=trade.get("closed_at_ms"),
             payload=trade,
         )
+
+    # ------------------------------------------------------------------- flush
+
+    async def fetch_open_order_records(self, limit: int = 500) -> list:
+        """Reads non-terminal order-registry rows for startup recovery.
+
+        The outbox is write-only, so a flushed Redis cache needs a read path back
+        into the durable record. Failures return an empty list: recovery must
+        degrade to venue-truth detection rather than abort, and the caller marks
+        unverifiable orders instead of assuming they are gone.
+        """
+        if not self.enabled or not self.url or not self.key:
+            return []
+        params = {
+            "select": (
+                "local_order_id,client_order_id,exchange_order_id,pair_key,position_key,"
+                "exchange_name,market_type,leg,order_role,symbol,side,order_type,status,"
+                "requested_qty,filled_qty,remaining_qty,limit_price,average_fill_price,"
+                "reduce_only,recovery_status,is_mock,raw_payload"
+            ),
+            "recovery_status": "in.(MANAGED,ADOPTED,UNVERIFIED)",
+            "status": "not.in.(closed,filled,canceled,cancelled,rejected,expired)",
+            "order": "updated_at.desc",
+            "limit": str(max(1, int(limit))),
+        }
+        session = self._session
+        created = False
+        try:
+            if session is None or session.closed:
+                session = aiohttp.ClientSession(timeout=_TIMEOUT)
+                created = True
+            headers = {
+                "apikey": self.key,
+                "Authorization": f"Bearer {self.key}",
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+            }
+            async with session.get(
+                f"{self.url}/rest/v1/order_registry", params=params, headers=headers
+            ) as resp:
+                if resp.status >= 300:
+                    logger.error(
+                        "order registry read failed with status %s", resp.status
+                    )
+                    return []
+                rows = await resp.json()
+        except Exception as exc:
+            logger.error("order registry read failed: %s", exc)
+            return []
+        finally:
+            if created and session is not None:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+        if not isinstance(rows, list):
+            logger.error("order registry read returned a malformed payload")
+            return []
+        return [row for row in rows if isinstance(row, dict)]
 
     # ------------------------------------------------------------------- flush
 

@@ -12,7 +12,7 @@ import math
 import time
 from typing import Any, Dict, Optional
 
-from executor.models import ActivePosition, PairInfo, PositionState
+from executor.models import ActivePosition, OrderRole, PairInfo, PositionState
 from executor import helpers
 from executor.quantity import AmountSpec
 from executor.helpers import (
@@ -648,6 +648,20 @@ class EntryMixin:
                     client_order_id=hedge_coid,
                     reduce_only=False,
                     is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
+                await self._register_order(
+                    pair_tag,
+                    hedge_coid,
+                    short_order,
+                    exchange=order_info.get("global_exchange", ""),
+                    market_type="perpetual",
+                    symbol=global_symbol,
+                    role=OrderRole.HEDGE.value,
+                    side="sell",
+                    order_type="market",
+                    price=expected_short_price,
+                    quantity=unhedged_delta,
+                    global_amount_spec=order_info.get("global_amount_spec"),
                 )
                 self.supabase.position_opened(
                     pair_tag,

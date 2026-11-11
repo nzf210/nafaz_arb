@@ -41,18 +41,21 @@ from executor.cancel import CancelMixin
 from executor.entry import EntryMixin
 from executor.exits import ExitMixin
 from executor.force_close import ForceCloseMixin
+from executor.order_recovery import OrderRecoveryMixin
+from executor.order_registry import UniversalOrderRegistry
+from executor.models import OrderRecord, OrderRole
 from executor.risk import RiskMixin
 from executor.rollback import RollbackMixin
 from executor.supabase import SupabaseWriter
 
 logger = logging.getLogger("executor.engine")
 
-
 class ArbitrageEngine(
     CancelMixin,
     EntryMixin,
     ExitMixin,
     ForceCloseMixin,
+    OrderRecoveryMixin,
     RollbackMixin,
     RiskMixin,
 ):
@@ -135,6 +138,18 @@ class ArbitrageEngine(
         # background task, so an unreachable database can never delay a hedge.
         self.supabase = SupabaseWriter(getattr(config, "supabase", None))
 
+        # Universal order registry: durable identity for every order the bot
+        # submits, so a restart can re-attach venue orders to their positions.
+        self.order_registry = UniversalOrderRegistry(self.redis, self.supabase)
+        self._recovered_order_records: Dict[str, Any] = {}
+        self._recovered_orphans: Dict[str, Any] = {}
+        self._recovery_pending_orders: Dict[str, str] = {}
+        # Entry gates installed by recovery. Monitoring, exits and emergency
+        # de-risking stay available while these are set.
+        self._recovery_scope_halts: Dict[str, str] = {}
+        self._entry_blocked = False
+        self._recovery_complete = False
+
     @property
     def client(self):
         """Task-local exchange facade; concurrent pairs never switch shared clients."""
@@ -173,19 +188,33 @@ class ArbitrageEngine(
         self._client_context.reset(token)
 
     async def initialize(self):
-        """Initializes Redis connection and restores in-flight state from Redis."""
+        """Initializes Redis and restores in-flight state before trading.
+
+        Startup safety sequence:
+        1. Redis, 2. Supabase, 3. exchange adapters (already constructed by
+        ``main``), 4. durable order registry, 5. active positions, 6. venue open
+        orders, 7. reconciliation, 8/9 handled by position verification and the
+        exposure worker, 10. ``READY`` only when nothing is left unclassified.
+        """
         if self.redis is None:
             self.redis = aioredis.from_url(
                 self.config.redis_url,
                 decode_responses=True,
             )
-        # Start the writer before recovery so positions restored from Redis are
-        # re-registered in Supabase instead of only existing in Redis.
+        self.order_registry.redis = self.redis
+        # Start the writer before recovery so positions and orders restored from
+        # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
         await self._recover_active_positions()
         await self._recover_pending_entry_orders()
+        await self._run_order_recovery()
         if not getattr(self.config, "mock_mode", False):
             await self._verify_recovered_active_positions()
+        self._recovery_complete = True
+        logger.info(
+            "[Recovery] startup reconciliation finished: ready=%s, pending=%d, orphans=%d",
+            not self._entry_blocked, len(self._recovery_pending_orders), len(self._recovered_orphans),
+        )
 
     async def _verify_recovered_active_positions(self) -> None:
         """
@@ -318,6 +347,81 @@ class ArbitrageEngine(
             )
         except Exception:
             logger.exception(f"[Recovery] failed to persist pending entry for {pair_tag}")
+
+    async def _register_order(
+        self,
+        pair_tag: str,
+        client_order_id: str,
+        order: dict,
+        *,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        role: str,
+        side: str,
+        order_type: str,
+        price: float,
+        quantity: float,
+        reduce_only: bool = False,
+        local_amount_spec: Any = None,
+        global_amount_spec: Any = None,
+        recovery_context: Any = None,
+    ) -> Any:
+        """Records one submitted order in the universal registry.
+
+        Registration is best-effort and never raises: an unreachable Redis or
+        Supabase must not turn an accepted order into a failed placement (which
+        would make the caller retry and double-fill). The order remains visible
+        to the next startup sweep through the venue itself.
+        """
+        if self.order_registry is None:
+            return None
+        try:
+            record = OrderRecord(
+                local_order_id=OrderRecord.local_id_for(
+                    exchange, client_order_id, str(order.get("id") or "")
+                ),
+                client_order_id=client_order_id or "",
+                exchange_order_id=str(order.get("id") or ""),
+                pair_key=pair_tag,
+                position_id=f"position:{pair_tag}" if pair_tag else "",
+                exchange=str(exchange or "").lower(),
+                market_type=market_type,
+                symbol=symbol,
+                side=side,
+                order_type=order_type,
+                order_role=role,
+                price=float(price or 0.0),
+                original_quantity=float(quantity or order.get("amount") or 0.0),
+                filled_quantity=float(order.get("filled") or 0.0),
+                remaining_quantity=max(
+                    0.0,
+                    float(quantity or order.get("amount") or 0.0)
+                    - float(order.get("filled") or 0.0),
+                ),
+                average_fill_price=float(order.get("average") or 0.0),
+                status=str(order.get("status") or "open"),
+                reduce_only=bool(reduce_only),
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+                recovery_context=recovery_context,
+                local_amount_spec=(
+                    local_amount_spec.to_dict()
+                    if hasattr(local_amount_spec, "to_dict")
+                    else local_amount_spec
+                ),
+                global_amount_spec=(
+                    global_amount_spec.to_dict()
+                    if hasattr(global_amount_spec, "to_dict")
+                    else global_amount_spec
+                ),
+            )
+            return await self.order_registry.register(record)
+        except Exception:
+            logger.exception(
+                "[OrderRegistry] failed to register %s order %s for %s",
+                role, client_order_id or order.get("id"), pair_tag,
+            )
+            return None
 
     async def _clear_pending_entry(self, pair_tag: str) -> None:
         """Removes the persisted pending-entry record once the order is resolved."""
@@ -1362,6 +1466,47 @@ class ArbitrageEngine(
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
                 submitted_at_ms=int(placed_time * 1000),
             )
+            await self._register_order(
+                pair_tag,
+                entry_coid,
+                order,
+                exchange=pair_info.local_exchange,
+                market_type="spot",
+                symbol=pair_info.local_symbol,
+                role=OrderRole.ENTRY.value,
+                side="buy",
+                order_type="limit",
+                price=buy_price_idr,
+                quantity=buy_qty,
+                local_amount_spec=pair_info.local_amount_spec,
+                global_amount_spec=pair_info.global_amount_spec,
+                # A fill must never be priced from a guessed FX rate or fee tier.
+                # Persisting the exact snapshot makes a post-restart hedge
+                # reproducible instead of requiring manual reconciliation.
+                recovery_context={
+                    "usdt_idr_rate": snapshot.usdt_idr_rate,
+                    "fx_rate_timestamp_ms": snapshot.timestamp_ms,
+                    "global_ask_usdt": snapshot.global_best_ask_usdt,
+                    "global_symbol": pair_info.global_symbol,
+                    "base_asset": pair_info.base_asset,
+                    "quote_asset": pair_info.quote_asset,
+                    "cancel_threshold_usdt": directives.cancel_if_global_bid_drops_below_usdt,
+                    "min_entry_spread_pct": directives.min_entry_spread_pct,
+                    "base_target_exit_spread_pct": directives.base_target_exit_spread_pct,
+                    "current_funding_rate": payload.funding_metrics.current_funding_rate,
+                    "next_funding_time_ms": payload.funding_metrics.next_funding_time_ms,
+                    "spot_entry_fee_pct": directives.spot_entry_fee_pct,
+                    "spot_exit_fee_pct": directives.spot_exit_fee_pct,
+                    "perp_entry_fee_pct": directives.perp_entry_fee_pct,
+                    "perp_exit_fee_pct": directives.perp_exit_fee_pct,
+                    "fee_source": directives.fee_source,
+                    "fee_verified": directives.fee_verified,
+                    "fee_fetched_at_ms": directives.fee_fetched_at_ms,
+                    "fee_asset_surcharge_pct": directives.fee_asset_surcharge_pct,
+                    "spot_cost_usdt": actual_cost_usdt,
+                    "futures_margin_usdt": actual_cost_usdt,
+                },
+            )
             self.states[pair_tag] = PositionState.ENTRY_PENDING
             self.pending_entry_orders[pair_tag] = {
                 "order_id": order_id,
@@ -1704,6 +1849,14 @@ class ArbitrageEngine(
                 for pair, state in self.states.items()
             },
             "failures": dict(self._failure_reasons),
+            "recovery": {
+                "complete": bool(getattr(self, "_recovery_complete", False)),
+                "ready": not bool(getattr(self, "_entry_blocked", False)),
+                "pending_orders": dict(getattr(self, "_recovery_pending_orders", {}) or {}),
+                "scope_halts": dict(getattr(self, "_recovery_scope_halts", {}) or {}),
+                "tracked_orders": len(getattr(self, "_recovered_order_records", {}) or {}),
+                "orphan_orders": list((getattr(self, "_recovered_orphans", {}) or {}).values()),
+            },
             "timestamp_ms": int(time.time() * 1000),
         }
 

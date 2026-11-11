@@ -10,7 +10,7 @@ import math
 import time
 from typing import Tuple
 
-from executor.models import PositionState
+from executor.models import OrderRole, PositionState
 from executor.fee_engine import (
     rates_for_position,
     round_trip_fee_breakdown_usdt,
@@ -203,6 +203,20 @@ class ForceCloseMixin:
                     reduce_only=True,
                     is_mock=bool(getattr(self.config, "mock_mode", False)),
                 )
+                await self._register_order(
+                    pair_key,
+                    force_coid,
+                    res,
+                    exchange=pos.global_exchange,
+                    market_type="perpetual",
+                    symbol=global_sym,
+                    role=OrderRole.FORCE_CLOSE.value,
+                    side="buy",
+                    order_type="market",
+                    price=helpers.extract_fill_price(res),
+                    quantity=pos.qty,
+                    reduce_only=True,
+                )
 
                 # Order acknowledgement is not proof that the short is flat.
                 # The authoritative position endpoint must confirm zero exposure.
@@ -294,6 +308,19 @@ class ForceCloseMixin:
                         spot_order,
                         client_order_id=build_client_order_id(pair_key, "force-liq", seq),
                         is_mock=bool(getattr(self.config, "mock_mode", False)),
+                    )
+                    await self._register_order(
+                        pair_key,
+                        build_client_order_id(pair_key, "force-liq", seq),
+                        spot_order,
+                        exchange=pos.local_exchange,
+                        market_type="spot",
+                        symbol=pos.symbol,
+                        role=OrderRole.FORCE_CLOSE.value,
+                        side="sell",
+                        order_type="market",
+                        price=helpers.extract_fill_price(spot_order),
+                        quantity=pos.qty,
                     )
                     filled_qty = float(spot_order.get("filled", 0.0) or 0.0)
                     spot_exit_price_idr = helpers.extract_fill_price(spot_order)

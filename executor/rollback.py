@@ -16,7 +16,7 @@ from executor.helpers import (
     build_client_order_id,
     retry_with_backoff,
 )
-from executor.models import PositionState
+from executor.models import OrderRole, PositionState
 from executor.quantity import AmountSpec
 
 logger = logging.getLogger("executor.engine")
@@ -84,6 +84,19 @@ class RollbackMixin:
             emergency_order,
             client_order_id=build_client_order_id(pair_tag, "rollback", seq),
             is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
+        await self._register_order(
+            pair_tag,
+            build_client_order_id(pair_tag, "rollback", seq),
+            emergency_order,
+            exchange=getattr(self.config, "local_exchange_name", ""),
+            market_type="spot",
+            symbol=symbol,
+            role=OrderRole.ROLLBACK.value,
+            side="sell",
+            order_type="market",
+            price=helpers.extract_fill_price(emergency_order),
+            quantity=unhedged_delta,
         )
         status = str(emergency_order.get("status", "")).lower()
         if status not in ("closed", "filled"):

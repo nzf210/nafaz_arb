@@ -6,7 +6,7 @@ declare
         'exchange_accounts','strategy_configs','risk_limits','market_pairs',
         'positions','orders','order_fills','position_legs','funding_payments',
         'closed_trades','balance_snapshots','risk_events','executor_events',
-        'executor_status_snapshots','scanner_opportunities'
+        'executor_status_snapshots','scanner_opportunities','order_registry'
     ];
 begin
     foreach tbl in array mutable_tables loop
@@ -169,3 +169,57 @@ end $$;
 
 delete from public.scanner_opportunities
 where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt';
+
+-- Universal order registry: idempotent upsert on the deterministic local id and
+-- partial unique indexes that keep orphan rows (no ids) insertable.
+insert into public.order_registry (
+    local_order_id, client_order_id, exchange_order_id, pair_key, position_key,
+    exchange_name, market_type, leg, order_role, symbol, side, order_type,
+    status, requested_qty, filled_qty, remaining_qty, recovery_status, is_mock
+) values (
+    '11111111-1111-1111-1111-111111111111', 'smoke-entry-1', '9001',
+    'indodax:btc_idr', 'position:indodax:btc_idr', 'indodax', 'spot',
+    'spot_entry', 'ENTRY', 'btc_idr', 'buy', 'limit', 'open', 1, 0, 1, 'ADOPTED', true
+)
+on conflict (local_order_id) do update
+set status = excluded.status, filled_qty = excluded.filled_qty,
+    remaining_qty = excluded.remaining_qty;
+
+insert into public.order_registry (
+    local_order_id, client_order_id, exchange_order_id, pair_key, position_key,
+    exchange_name, market_type, leg, order_role, symbol, side, order_type,
+    status, requested_qty, filled_qty, remaining_qty, recovery_status, is_mock
+) values (
+    '11111111-1111-1111-1111-111111111111', 'smoke-entry-1', '9001',
+    'indodax:btc_idr', 'position:indodax:btc_idr', 'indodax', 'spot',
+    'spot_entry', 'ENTRY', 'btc_idr', 'buy', 'limit', 'closed', 1, 1, 0, 'ADOPTED', true
+)
+on conflict (local_order_id) do update
+set status = excluded.status, filled_qty = excluded.filled_qty,
+    remaining_qty = excluded.remaining_qty;
+
+do $$
+begin
+    if (select count(*) from public.order_registry where client_order_id = 'smoke-entry-1') <> 1 then
+        raise exception 'order registry upsert created a duplicate row';
+    end if;
+    if (select status from public.order_registry where client_order_id = 'smoke-entry-1') <> 'closed' then
+        raise exception 'order registry upsert did not advance status';
+    end if;
+    -- Two orphans with no ids must both be insertable (partial unique indexes).
+    insert into public.order_registry (
+        local_order_id, exchange_name, market_type, order_role, symbol, side,
+        order_type, status, recovery_status, is_mock
+    ) values
+        ('22222222-2222-2222-2222-222222222221', 'indodax', 'spot', 'ENTRY',
+         'eth_idr', 'buy', 'limit', 'open', 'ORPHAN_ORDER', false),
+        ('22222222-2222-2222-2222-222222222222', 'indodax', 'spot', 'ENTRY',
+         'eth_idr', 'buy', 'limit', 'open', 'ORPHAN_ORDER', false);
+end $$;
+
+delete from public.order_registry
+where client_order_id = 'smoke-entry-1'
+   or local_order_id in (
+        '22222222-2222-2222-2222-222222222221',
+        '22222222-2222-2222-2222-222222222222'
+   );
