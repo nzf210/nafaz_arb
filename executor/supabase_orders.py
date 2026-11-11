@@ -276,47 +276,52 @@ class SupabaseOrderMixin:
             logger.exception("CRITICAL: failed to persist fill reconciliation watermark for %s", identity)
             return False
 
-    def order_fill(
-        self,
-        *,
-        order_id: str,
-        exchange: str,
-        fill: Dict[str, Any],
-    ) -> bool:
-        """Journals one exchange execution by its immutable venue trade id."""
-        if not isinstance(fill, dict) or not order_id:
-            return False
-        fill_id = str(fill.get("id") or fill.get("trade_id") or "").strip()
-        if not fill_id:
-            return False
+    @staticmethod
+    def _order_fill_quantities(fill: Dict[str, Any]):
         try:
             qty = float(fill.get("amount"))
             price = float(fill.get("price"))
-            quote_qty = float(fill.get("cost") if fill.get("cost") is not None else qty * price)
+            quote_qty = float(
+                fill.get("cost") if fill.get("cost") is not None else qty * price
+            )
             timestamp = int(fill.get("timestamp") or 0)
         except (TypeError, ValueError):
-            return False
+            return None
         if (
             not all(math.isfinite(value) for value in (qty, price, quote_qty))
             or qty <= 0 or price <= 0 or quote_qty < 0 or timestamp <= 0
         ):
-            return False
+            return None
+        return qty, price, quote_qty, timestamp
+
+    @staticmethod
+    def _order_fill_fee_details(fill: Dict[str, Any]):
         fee = fill.get("fee") if isinstance(fill.get("fee"), dict) else {}
         fee_cost = fee.get("cost")
         try:
             fee_amount = float(fee_cost) if fee_cost is not None else None
         except (TypeError, ValueError):
-            return False
+            return None
         if fee_amount is not None and not math.isfinite(fee_amount):
-            return False
+            return None
         fee_asset = str(fee.get("currency") or "").strip().upper() or None
         fee_rows = fill.get("fees") if isinstance(fill.get("fees"), list) else []
+        return fee_amount, fee_asset, fee_rows
+
+    @staticmethod
+    def _order_fill_raw_payload(fill: Dict[str, Any]) -> Dict[str, Any]:
         raw_payload = fill.get("raw_payload")
         if not isinstance(raw_payload, dict):
             raw_payload = fill.get("info")
-        if not isinstance(raw_payload, dict):
-            raw_payload = fill
-        row = {
+        return raw_payload if isinstance(raw_payload, dict) else fill
+
+    def _build_order_fill_row(
+        self, order_id: str, exchange: str, fill: Dict[str, Any],
+        fill_id: str, quantities: tuple, fee_details: tuple,
+    ) -> Dict[str, Any]:
+        qty, price, quote_qty, timestamp = quantities
+        fee_amount, fee_asset, fee_rows = fee_details
+        return {
             "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
             "order_id": order_id,
             "exchange_name": str(exchange).strip().lower(),
@@ -330,17 +335,39 @@ class SupabaseOrderMixin:
             "fee_verified": (
                 fee_amount is not None and bool(fee_asset) and len(fee_rows) <= 1
             ),
-            "filled_at": datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).isoformat(),
-            "raw_payload": raw_payload,
+            "filled_at": datetime.fromtimestamp(
+                timestamp / 1000, tz=timezone.utc
+            ).isoformat(),
+            "raw_payload": self._order_fill_raw_payload(fill),
         }
-        if not self.enabled or self._outbox is None:
+
+    def order_fill(
+        self,
+        *,
+        order_id: str,
+        exchange: str,
+        fill: Dict[str, Any],
+    ) -> bool:
+        """Journal one exchange execution by its immutable venue trade id."""
+        if not isinstance(fill, dict) or not order_id:
             return False
+        fill_id = str(fill.get("id") or fill.get("trade_id") or "").strip()
+        if not fill_id:
+            return False
+        quantities = self._order_fill_quantities(fill)
+        if quantities is None:
+            return False
+        fee_details = self._order_fill_fee_details(fill)
+        if fee_details is None or not self.enabled or self._outbox is None:
+            return False
+        row = self._build_order_fill_row(
+            order_id, exchange, fill, fill_id, quantities, fee_details
+        )
         try:
             self._outbox.enqueue_once(
                 "order_fills", "id", row, f"exchange-fill:{exchange}:{fill_id}"
             )
-            # False from enqueue_once means this immutable fill was already
-            # journaled (or delivered) by an earlier reconciliation pass.
+            # Duplicate immutable fills are already safely journaled.
             return True
         except Exception:
             self._dropped += 1
