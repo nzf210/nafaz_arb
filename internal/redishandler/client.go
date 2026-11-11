@@ -38,6 +38,8 @@ const (
 	KeyExecutorStatus      = "arb:executor:status"
 	ChannelBalanceRequest  = "arb:balance_request"
 	KeyPrefixBalanceReply  = "arb:balance_reply:"
+	ChannelRecoveryRequest = "arb:recovery_request"
+	KeyPrefixRecoveryReply = "arb:recovery_reply:"
 	KeyOrderRecoveryIndex   = "arb:order_recovery_idx"
 	KeyOrphanOrderIndex     = "arb:orphan_idx"
 	KeyPendingOrderRecovery = "arb:order_pending_recovery"
@@ -595,6 +597,66 @@ func (c *Client) Close() error {
 	return nil
 }
 
+
+type RecoveryRetryReply struct {
+	RequestID    string            `json:"request_id"`
+	Complete     bool              `json:"complete"`
+	PendingOrders map[string]string `json:"pending_orders"`
+	ScopeHalts   map[string]string `json:"scope_halts"`
+	TimestampMS  int64             `json:"timestamp_ms"`
+}
+
+// RequestRecoveryRetry asks the executor to re-run read-only order, fill,
+// position, and exposure reconciliation. It never places or cancels orders.
+func (c *Client) RequestRecoveryRetry(ctx context.Context) (RecoveryRetryReply, error) {
+	if c == nil || c.rdb == nil {
+		return RecoveryRetryReply{}, errors.New("redis is not connected")
+	}
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return RecoveryRetryReply{}, fmt.Errorf("generate recovery request id: %w", err)
+	}
+	requestID := hex.EncodeToString(idBytes)
+	payload, err := json.Marshal(map[string]string{
+		"request_id": requestID,
+		"action": "retry",
+	})
+	if err != nil {
+		return RecoveryRetryReply{}, fmt.Errorf("marshal recovery request: %w", err)
+	}
+	if err := c.rdb.Publish(ctx, ChannelRecoveryRequest, payload).Err(); err != nil {
+		return RecoveryRetryReply{}, fmt.Errorf("publish recovery request: %w", err)
+	}
+	key := KeyPrefixRecoveryReply + requestID
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(25 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return RecoveryRetryReply{}, ctx.Err()
+		case <-timeout.C:
+			return RecoveryRetryReply{}, errors.New("executor tidak merespons permintaan reconciliation dalam 25 detik")
+		case <-ticker.C:
+			raw, err := c.rdb.Get(ctx, key).Result()
+			if err == redis.Nil {
+				continue
+			}
+			if err != nil {
+				return RecoveryRetryReply{}, fmt.Errorf("read recovery response: %w", err)
+			}
+			var reply RecoveryRetryReply
+			if err := json.Unmarshal([]byte(raw), &reply); err != nil {
+				return RecoveryRetryReply{}, fmt.Errorf("decode recovery response: %w", err)
+			}
+			if reply.RequestID != requestID {
+				return RecoveryRetryReply{}, errors.New("recovery response request id mismatch")
+			}
+			return reply, nil
+		}
+	}
+}
 
 // RequestLiveBalances asks the running Executor to fetch fresh balances from both exchanges.
 func (c *Client) RequestLiveBalances(ctx context.Context) (string, error) {
