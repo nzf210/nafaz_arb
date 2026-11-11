@@ -124,6 +124,46 @@ async def test_create_limit_buy_posts_signed_body_with_client_order_id():
     assert call["headers"]["Sign"] == ex.sign(body)
     assert order["status"] == "open"
 
+
+@pytest.mark.asyncio
+async def test_indodax_v2_fetch_order_book_uses_unsigned_public_depth_endpoint(monkeypatch):
+    adapter = _adapter()
+    captured = {}
+
+    async def fake_request(method, path, params=None, signed=True):
+        captured.update({"method": method, "path": path, "params": params, "signed": signed})
+        return {
+            "timestamp": 1723442692520,
+            "bids": [["100", "2"], ["101", "1"]],
+            "asks": [["103", "3"], ["102", "4"]],
+        }
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    book = await adapter.fetch_order_book("btc_idr", limit=20)
+
+    assert captured == {
+        "method": "GET", "path": "/api/v2/depth",
+        "params": {"symbol": "BTCIDR", "limit": 20}, "signed": False,
+    }
+    assert book["bids"] == [[101.0, 1.0], [100.0, 2.0]]
+    assert book["asks"] == [[102.0, 4.0], [103.0, 3.0]]
+    assert book["timestamp"] == 1723442692520
+
+
+@pytest.mark.asyncio
+async def test_exchange_client_exposes_indodax_local_order_book():
+    adapter = _adapter()
+    async def fake_book(symbol, limit=None):
+        return {"symbol": symbol, "bids": [[100.0, 1.0]], "asks": [[101.0, 1.0]]}
+    adapter.fetch_order_book = fake_book
+    client = ExchangeClient(adapter, object())
+
+    book = await client.fetch_local_order_book("btc_idr", limit=5)
+
+    assert book["bids"][0][0] == 100.0
+    assert book["asks"][0][0] == 101.0
+
+
 @pytest.mark.asyncio
 async def test_indodax_order_quantity_is_floored_to_market_increment():
     session = _StubSession(
