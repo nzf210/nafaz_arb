@@ -1,13 +1,14 @@
 """supabase order operations for the durable Supabase writer."""
 
 import json
+import uuid
 import math
 import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from executor.supabase_common import _SIDE_BY_LEG, _canonical_side, _ms_to_iso, _num, _role_catalogue, logger
+from executor.supabase_common import _POSITION_NS, _SIDE_BY_LEG, _canonical_side, _ms_to_iso, _num, _role_catalogue, logger
 
 
 
