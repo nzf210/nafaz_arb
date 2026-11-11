@@ -17,6 +17,7 @@ logger = logging.getLogger("executor.engine")
 class ForceCloseLifecycleMixin:
     """Focused emergency close leg or lifecycle operations."""
 
+    @staticmethod
     def _parse_force_close_pair_key(message_data: str):
         """Extracts the pair_key from a FORCE_CLOSE directive (JSON or plain text)."""
         if not message_data:
