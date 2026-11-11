@@ -127,3 +127,15 @@ func TestMonitorSectionTruncatesLongTelegramMessages(t *testing.T) {
 	bot.sendMonitorSection(context.Background(), -100123456789, 0, "RECONCILIATION MISMATCHES", "reconciliation")
 	if len([]rune(sent.Text)) > 4096 { t.Fatalf("Telegram message exceeds 4096 characters: %d", len([]rune(sent.Text))) }
 }
+
+func TestPositionDetailExplainsMissingSupabaseFillLedger(t *testing.T) {
+	mr, err := miniredis.Run(); if err != nil { t.Fatal(err) }; defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()}); defer rdb.Close()
+	if err := rdb.Set(context.Background(), redishandler.KeyPrefixActivePos+"okx:btc_usdt", `{"local_exchange":"okx","global_exchange":"okx","symbol":"BTC/USDT","qty":0.25,"state":"HEDGED_ACTIVE"}`, 0).Err(); err != nil { t.Fatal(err) }
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) { if r.URL.Path == "/sendMessage" { _ = json.NewDecoder(r.Body).Decode(&sent); _ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true}) } }
+	bot, _, ts := setupTestBot(t, tsHandler); defer ts.Close()
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.handlePositionDetail(context.Background(), -100123456789, 0, "BTC/USDT")
+	if !strings.Contains(sent.Text, "Supabase belum terhubung") { t.Fatalf("expected explicit fill-ledger limitation, got: %s", sent.Text) }
+}
