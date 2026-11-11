@@ -133,21 +133,30 @@ func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) 
 }
 
 func (b *Bot) sendOrderList(ctx context.Context, chatID, replyToID int64, items []json.RawMessage) {
-	var out strings.Builder
-	out.WriteString(fmt.Sprintf("📋 <b>ACTIVE BOT ORDERS (%d)</b>\n\n", len(items)))
-	if len(items) == 0 { out.WriteString("<i>Tidak ada active order pada snapshot.</i>\n") }
-	for i, item := range items {
-		if i >= 20 { out.WriteString("\n<i>Daftar dibatasi 20 order.</i>"); break }
-		var m map[string]interface{}
-		_ = json.Unmarshal(item, &m)
-		id := firstMapValue(m, "local_order_id", "internal_order_id", "order_id", "id")
-		pair := firstMapValue(m, "pair", "pair_key", "pair_tag", "symbol", "pair_id")
-		exchange := firstMapValue(m, "exchange", "local_exchange", "venue")
-		status := firstMapValue(m, "status", "state")
-		out.WriteString(fmt.Sprintf("<b>[%d] %s</b>\n• Pair: <code>%s</code>\n• Exchange: <code>%s</code>\n• Status: <code>%s</code>\n\n",
-			i+1, html.EscapeString(id), html.EscapeString(pair), html.EscapeString(exchange), html.EscapeString(status)))
+	if len(items) == 0 {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "📋 <b>ACTIVE BOT ORDERS (0)</b>\\n\\n<i>Tidak ada active order pada registry setelah recovery terverifikasi.</i>", b.defaultKeyboard())
+		return
 	}
-	b.sendReplyWithMarkup(ctx, chatID, replyTo, out.String()+"<i>Read-only; tidak ada order yang diubah.</i>", b.defaultKeyboard())
+	const pageSize = 20
+	pages := (len(items) + pageSize - 1) / pageSize
+	for page, start := 0, 0; start < len(items); page, start = page+1, start+pageSize {
+		end := start + pageSize
+		if end > len(items) { end = len(items) }
+		var out strings.Builder
+		out.WriteString(fmt.Sprintf("📋 <b>ACTIVE BOT ORDERS (%d) — %d/%d</b>\\n\\n", len(items), page+1, pages))
+		for i, item := range items[start:end] {
+			var m map[string]interface{}
+			_ = json.Unmarshal(item, &m)
+			id := firstMapValue(m, "local_order_id", "internal_order_id", "order_id", "id")
+			pair := firstMapValue(m, "pair", "pair_key", "pair_tag", "symbol", "pair_id")
+			exchange := firstMapValue(m, "exchange", "exchange_name", "local_exchange", "venue")
+			status := firstMapValue(m, "status", "state")
+			out.WriteString(fmt.Sprintf("<b>[%d] %s</b>\\n• Pair: <code>%s</code>\\n• Exchange: <code>%s</code>\\n• Status: <code>%s</code>\\n\\n",
+				start+i+1, html.EscapeString(id), html.EscapeString(pair), html.EscapeString(exchange), html.EscapeString(status)))
+		}
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String()+"<i>Read-only; tidak ada order yang diubah.</i>", b.defaultKeyboard())
+		replyToID = 0
+	}
 }
 
 func firstMapValue(m map[string]interface{}, keys ...string) string {
