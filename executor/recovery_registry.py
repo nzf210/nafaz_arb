@@ -89,9 +89,9 @@ class RecoveryRegistryMixin:
                 record.exchange or self.config.local_exchange_name or ""
             ).lower()
             groups.setdefault(
-                (exchange, record.symbol, record.pair_key), []
+                (exchange, record.symbol, record.pair_key, record.market_type), []
             ).append(record)
-        for (exchange, symbol, pair_tag), group in groups.items():
+        for (exchange, symbol, pair_tag, _market_type), group in groups.items():
             await self._reconcile_registered_group(
                 exchange, symbol, pair_tag, group
             )
