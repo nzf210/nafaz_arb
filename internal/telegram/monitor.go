@@ -212,7 +212,7 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 		var err error
 		ledger, err = ledgerReader.PositionOrderFills(ctx, id)
 		if err != nil {
-			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Supabase order/fill ledger tidak dapat dibaca: "+html.EscapeString(err.Error())+"\\nData Redis tetap tersedia, tetapi fills historis belum terverifikasi.", b.defaultKeyboard())
+			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Supabase order/fill ledger tidak dapat dibaca: "+html.EscapeString(err.Error())+"\nData Redis tetap tersedia, tetapi fills historis belum terverifikasi.", b.defaultKeyboard())
 			return
 		}
 	}
@@ -222,29 +222,29 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 		return
 	}
 	var out strings.Builder
-	out.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\\n\\n")
+	out.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\n\n")
 	if matched != nil {
 		raw, _ := json.Marshal(matched)
-		out.WriteString("<b>Active position snapshot</b>\\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>\\n")
+		out.WriteString("<b>Active position snapshot</b>\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>\n")
 	}
-	out.WriteString(fmt.Sprintf("<b>Redis active orders terkait (%d)</b>\\n", len(related)))
+	out.WriteString(fmt.Sprintf("<b>Redis active orders terkait (%d)</b>\n", len(related)))
 	for i, item := range related {
 		if i >= 5 { out.WriteString("<i>Redis order list dibatasi 5.</i>"); break }
-		out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\\n")
+		out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\n")
 	}
 	if ledgerAvailable {
-		out.WriteString(fmt.Sprintf("<b>Supabase durable orders (%d)</b>\\n", len(ledgerOrders)))
+		out.WriteString(fmt.Sprintf("<b>Supabase durable orders (%d)</b>\n", len(ledgerOrders)))
 		for i, item := range ledgerOrders {
 			if i >= 5 { out.WriteString("<i>Durable order list dibatasi 5.</i>"); break }
-			out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\\n")
+			out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\n")
 		}
-		out.WriteString(fmt.Sprintf("<b>Immutable exchange fills (%d)</b>\\n", len(ledgerFills)))
+		out.WriteString(fmt.Sprintf("<b>Immutable exchange fills (%d)</b>\n", len(ledgerFills)))
 		for i, item := range ledgerFills {
 			if i >= 10 { out.WriteString("<i>Fill list dibatasi 10.</i>"); break }
-			out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\\n")
+			out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\n")
 		}
 	} else {
-		out.WriteString("<b>Fills historis:</b> <i>Supabase belum terhubung; fill ledger tidak dapat diverifikasi.</i>\\n")
+		out.WriteString("<b>Fills historis:</b> <i>Supabase belum terhubung; fill ledger tidak dapat diverifikasi.</i>\n")
 	}
 	out.WriteString("<i>Read-only: tidak ada order atau posisi yang diubah.</i>")
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
