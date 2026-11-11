@@ -5,6 +5,7 @@ from typing import Dict, Any
 import time
 
 
+@dataclass
 class ClosedTrade:
     trade_id: str
     local_exchange: str
