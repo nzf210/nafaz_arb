@@ -297,7 +297,7 @@ class RecoveryDiscoveryMixin:
         pair_tag = self._match_position_by_catalogue(exchange, symbol)
         if not pair_tag:
             return None, ""
-        role = self._infer_role(symbol, pair_tag, market)
+        role = self._infer_role(pair_tag, market)
         return self._record_from_order(
             order, exchange, symbol, pair_tag, market, role,
             exchange_order_id, client_order_id,
