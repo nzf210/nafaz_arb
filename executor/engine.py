@@ -149,6 +149,9 @@ class ArbitrageEngine(
         self._recovery_scope_halts: Dict[str, str] = {}
         self._entry_blocked = False
         self._recovery_complete = False
+        # Serializes periodic exchange reconciliation with itself; the normal
+        # order monitor remains independent so risk management is never paused.
+        self._exchange_reconciliation_lock = asyncio.Lock()
 
     @property
     def client(self):
@@ -790,6 +793,109 @@ class ArbitrageEngine(
                 f"[Recovery] {recovered} active position(s) restored - resuming management"
             )
 
+    async def _exchange_reconciliation_loop(self):
+        """Periodically reconcile venue orders, futures exposure and balances.
+
+        This complements startup recovery: an order can fill, be canceled, or
+        an operator can change exposure while the process is running. The loop
+        deliberately reuses the existing recovery and position-verification
+        paths rather than introducing a second order lifecycle implementation.
+        """
+        interval = max(
+            15.0,
+            float(getattr(self.config, "exchange_reconciliation_interval_seconds", 60.0) or 60.0),
+        )
+        while self._running:
+            try:
+                async with self._exchange_reconciliation_lock:
+                    await self._run_order_recovery()
+                    if not getattr(self.config, "mock_mode", False):
+                        await self._verify_recovered_active_positions()
+                    await self._persist_exchange_balance_snapshots()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("[Reconciliation] periodic exchange reconciliation failed")
+                self._halt_exposure_scope(
+                    "*", f"exchange reconciliation failed: {type(exc).__name__}: {exc}"
+                )
+                self._refresh_entry_gate()
+            await asyncio.sleep(interval)
+
+    async def _persist_exchange_balance_snapshots(self) -> None:
+        """Persist read-only spot/perpetual balance observations for audit.
+
+        Balance snapshots are observations, not position ownership: unrelated
+        wallet funds are never attributed to a bot position. A failed balance
+        read is surfaced and blocks new entries on that venue rather than
+        being recorded as a zero balance.
+        """
+        if not callable(getattr(self.client, "fetch_balance_report", None)):
+            logger.warning("[Reconciliation] exchange client has no balance report API")
+            return
+
+        pair_tags = set(self._pair_infos) | set(self.active_positions) | set(self.pending_entry_orders) | set(self.pending_exit_orders)
+        if not pair_tags:
+            return
+        seen = set()
+        for pair_tag in sorted(pair_tags):
+            token = None
+            try:
+                if not getattr(self.config, "mock_mode", False):
+                    token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
+                reports = await self.client.fetch_balance_report()
+                if not isinstance(reports, list):
+                    raise ValueError("fetch_balance_report returned a malformed payload")
+                for report in reports:
+                    if not isinstance(report, dict):
+                        raise ValueError("invalid balance report entry")
+                    exchange = str(report.get("name") or "").lower()
+                    market = str(report.get("market") or "").lower()
+                    if not exchange or market not in ("spot", "futures"):
+                        continue
+                    scope_key = (exchange, market, str(report.get("status") or ""))
+                    if scope_key in seen:
+                        continue
+                    seen.add(scope_key)
+                    if report.get("status") != "ok":
+                        reason = str(report.get("error") or report.get("status") or "balance unavailable")
+                        self._halt_exposure_scope(exchange, f"balance reconciliation failed: {reason}")
+                        await self._publish_execution_failure(
+                            f"balance-reconciliation:{exchange}:{market}",
+                            "EXCHANGE_BALANCE_UNVERIFIED",
+                            f"Cannot verify {market} balance on {exchange}: {reason}",
+                            detail={"exchange": exchange, "market_type": market, "error": reason},
+                            state=PositionState.RECONCILIATION_REQUIRED,
+                        )
+                        continue
+                    if exchange in self._recovery_scope_halts and "balance reconciliation failed" in self._recovery_scope_halts[exchange]:
+                        await self._clear_exposure_halt(exchange, "balance reconciliation succeeded")
+                    assets = report.get("assets")
+                    if not isinstance(assets, list):
+                        raise ValueError(f"{exchange} returned malformed balance assets")
+                    for item in assets:
+                        if not isinstance(item, dict) or not item.get("asset"):
+                            continue
+                        self.supabase.balance_snapshot(
+                            exchange=exchange,
+                            market_type="perpetual" if market == "futures" else "spot",
+                            asset=str(item["asset"]),
+                            total=item.get("total", 0.0),
+                            free=item.get("free", 0.0),
+                            used=item.get("used", 0.0),
+                            is_mock=bool(getattr(self.config, "mock_mode", False)),
+                            raw_payload=item,
+                        )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("[Reconciliation] balance snapshot failed for %s", pair_tag)
+                self._halt_exposure_scope(pair_tag, f"balance reconciliation failed: {exc}")
+                self._refresh_entry_gate()
+            finally:
+                if token is not None:
+                    self._reset_pair_client(token)
+
     async def start(self):
         """Starts listeners and monitoring loops."""
         await self.initialize()
@@ -802,6 +908,7 @@ class ArbitrageEngine(
         self._tasks.append(asyncio.create_task(self._listen_kill_switch()))
         self._tasks.append(asyncio.create_task(self._listen_balance_requests()))
         self._tasks.append(asyncio.create_task(self._monitoring_loop()))
+        self._tasks.append(asyncio.create_task(self._exchange_reconciliation_loop()))
         logger.info("Hybrid Arbitrage Engine started")
 
     async def stop(self):
