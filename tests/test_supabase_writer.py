@@ -106,6 +106,56 @@ class TestEventQueue:
         assert risk["is_mock"] is False
         assert risk["details"]["reason"] == "HEDGE_STATE_UNKNOWN"
 
+    def test_reconciliation_event_is_journaled_once_with_transition_context(self):
+        writer = _writer()
+        payload = {
+            "local_order_id": "local-order-1",
+            "exchange": "indodax",
+            "market_type": "spot",
+            "previous_state": "OPEN",
+            "state": "RECONCILIATION_REQUIRED",
+            "reason": "exchange acknowledgement is ambiguous",
+            "actor": "recovery-worker",
+        }
+        writer.event(
+            "ORDER_RECONCILIATION_REQUIRED",
+            pair_key="indodax:btc_idr",
+            payload=payload,
+            is_mock=False,
+            occurred_at_ms=1234,
+            event_id="reconcile-event-1",
+        )
+        writer.event(
+            "ORDER_RECONCILIATION_REQUIRED",
+            pair_key="indodax:btc_idr",
+            payload=payload,
+            is_mock=False,
+            occurred_at_ms=1234,
+            event_id="reconcile-event-1",
+        )
+
+        rows = _drain(writer)
+        audit_rows = [row for table, _, row in rows if table == "reconciliation_audit"]
+        assert len(audit_rows) == 1
+        audit = audit_rows[0]
+        assert audit["event_id"] == "reconcile-event-1"
+        assert audit["pair_key"] == "indodax:btc_idr"
+        assert audit["exchange_name"] == "indodax"
+        assert audit["market_type"] == "spot"
+        assert audit["entity_id"] == "local-order-1"
+        assert audit["from_state"] == "OPEN"
+        assert audit["to_state"] == "RECONCILIATION_REQUIRED"
+        assert audit["reason"] == "exchange acknowledgement is ambiguous"
+        assert audit["actor"] == "recovery-worker"
+        assert audit["is_mock"] is False
+        assert audit["payload"] == payload
+
+    def test_non_reconciliation_event_does_not_pollute_reconciliation_audit(self):
+        writer = _writer()
+        writer.event("SCANNER_HEARTBEAT", event_id="heartbeat-1")
+        rows = _drain(writer)
+        assert not [row for table, _, row in rows if table == "reconciliation_audit"]
+
     def test_multiple_events_are_durably_journaled(self):
         writer = _writer()
         writer.event("A", occurred_at_ms=1)
