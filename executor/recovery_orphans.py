@@ -285,6 +285,8 @@ class RecoveryOrphanMixin:
         except Exception:
             position.state = previous_position_state
             logger.exception("[Recovery] failed to persist reconciled position state for %s", pair_tag)
+            self._halt_exposure_scope(pair_tag, "resolved position state could not be persisted")
+            self._refresh_entry_gate()
             return False
 
         position_status = getattr(self.supabase, "position_status", None)
