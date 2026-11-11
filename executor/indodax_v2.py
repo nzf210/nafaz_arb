@@ -301,6 +301,72 @@ class IndodaxTAPIv2:
         )
         return self._order(order, symbol)
 
+    async def fetch_order_by_client_id(
+        self, client_order_id: str, symbol: str
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch one order by the venue's origClientOrderId lookup parameter."""
+        if not client_order_id:
+            raise ValueError("fetch_order_by_client_id requires a client order id")
+        if not symbol:
+            raise ValueError("fetch_order_by_client_id requires a symbol")
+        order = await self._request(
+            "GET", "/api/v2/order",
+            {"symbol": normalize_symbol(symbol), "origClientOrderId": str(client_order_id)},
+        )
+        if not isinstance(order, dict):
+            raise ValueError("indodax v2 returned a malformed client-id order payload")
+        mapped = self._order(order, symbol)
+        if str(mapped.get("clientOrderId") or "") != str(client_order_id):
+            raise ValueError("indodax v2 client-id lookup returned a different client id")
+        return mapped
+
+    async def _fetch_order_histories(
+        self, symbol: str, since: Optional[int] = None, limit: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """Fetch terminal-order history within the venue's seven-day query window."""
+        if not symbol:
+            raise ValueError("fetch_order_histories requires a symbol")
+        now_ms = int(time.time() * 1000)
+        start_ms = int(since) if since is not None else now_ms - 24 * 60 * 60 * 1000
+        max_window_ms = 7 * 24 * 60 * 60 * 1000
+        if start_ms < now_ms - max_window_ms:
+            raise ValueError(
+                "Indodax order history supports at most a seven-day window; "
+                "use exact origClientOrderId lookup for older orders"
+            )
+        query = {
+            "symbol": normalize_symbol(symbol),
+            "startTime": start_ms,
+            "endTime": now_ms,
+            "limit": min(1000, max(1, int(limit or 500))),
+        }
+        payload = await self._request("GET", "/api/v2/order/histories", query)
+        rows = payload.get("data") if isinstance(payload, dict) else payload
+        if rows is None and isinstance(payload, dict):
+            rows = payload.get("orders")
+        if not isinstance(rows, list):
+            raise ValueError("indodax v2 returned a malformed order histories payload")
+        return [self._order(row, symbol) for row in rows]
+
+    async def fetch_closed_orders(
+        self, symbol: Optional[str] = None, since: Optional[int] = None,
+        limit: Optional[int] = None, params: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch filled orders from authenticated terminal-order history."""
+        rows = await self._fetch_order_histories(symbol, since, limit)
+        return [row for row in rows if row.get("status") == "closed"]
+
+    async def fetch_canceled_orders(
+        self, symbol: Optional[str] = None, since: Optional[int] = None,
+        limit: Optional[int] = None, params: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch canceled/rejected/expired orders from authenticated history."""
+        rows = await self._fetch_order_histories(symbol, since, limit)
+        return [
+            row for row in rows
+            if row.get("status") in {"canceled", "rejected", "expired"}
+        ]
+
     @staticmethod
     def _normalize_my_trade(raw: dict, default_symbol: str) -> Dict[str, Any]:
         if not isinstance(raw, dict):
