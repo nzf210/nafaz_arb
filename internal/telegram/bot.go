@@ -198,6 +198,7 @@ func (b *Bot) Start(ctx context.Context) error {
 		{Command: "order", Description: "🔎 Detail order berdasarkan internal ID"},
 		{Command: "position", Description: "🔎 Detail posisi berdasarkan ID"},
 		{Command: "pending", Description: "🕒 Lihat pending order Spot yang belum selesai"},
+        {Command: "spotmax", Description: "⚙️ Atur batas open order Spot per CEX"},
 		{Command: "balance", Description: "💰 Cek saldo live Spot & Futures semua aset"},
 		{Command: "history", Description: "📜 Riwayat transaksi yang berhasil ditutup"},
 		{Command: "scan", Description: "🔍 Jalankan scan pasar & cari peluang baru"},
