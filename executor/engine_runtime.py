@@ -29,7 +29,18 @@ class EngineRuntimeMixin:
         while self._running:
             try:
                 async with self._exchange_reconciliation_lock:
-                    await self._run_order_recovery()
+                    if not self._recovery_complete:
+                        # A replica that started while another owner held the
+                        # lease must retry the full startup restore, not only
+                        # order polling, before it can become READY.
+                        self._recovery_complete = await self._run_startup_recovery()
+                        if not self._recovery_complete:
+                            self._halt_exposure_scope(
+                                "*", "startup recovery is waiting for distributed ownership"
+                            )
+                            self._refresh_entry_gate()
+                    else:
+                        await self._run_order_recovery()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
