@@ -18,10 +18,22 @@ class RecoveryRegistryMixin:
     """Focused order-recovery responsibilities."""
 
     async def _run_order_recovery(self) -> None:
-        """Run periodic order reconciliation under the shared Redis lease."""
+        """Run order reconciliation and safe incident cleanup under one lease."""
         await self._with_order_recovery_lock(
-            self._run_order_recovery_with_lock
+            self._run_order_recovery_lifecycle_with_lock
         )
+
+    async def _run_order_recovery_lifecycle_with_lock(self) -> None:
+        await self._run_order_recovery_with_lock()
+        if (
+            self._recovery_pending_orders
+            or self._recovery_scope_halts
+            or any(
+                state == PositionState.RECONCILIATION_REQUIRED
+                for state in self.states.values()
+            )
+        ):
+            await self.retry_pending_order_recovery()
 
     async def _run_startup_recovery(self) -> bool:
         """Restore all startup state while holding one cross-instance lease."""
