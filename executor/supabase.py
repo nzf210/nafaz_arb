@@ -554,6 +554,24 @@ class SupabaseWriter:
             order_state_key, str(uuid.uuid5(_POSITION_NS, f"order:{order_state_key}"))
         )
 
+    def fill_sync_watermark(self, identity: str) -> Optional[float]:
+        if self._outbox is None:
+            return None
+        return self._outbox.get_numeric_state(f"fill-sync:{identity}")
+
+    def mark_fill_sync(self, identity: str, cumulative_filled: float) -> bool:
+        if self._outbox is None or not self.enabled:
+            return False
+        try:
+            self._outbox.set_numeric_state(
+                f"fill-sync:{identity}", float(cumulative_filled)
+            )
+            return True
+        except Exception:
+            self._dropped += 1
+            logger.exception("CRITICAL: failed to persist fill reconciliation watermark for %s", identity)
+            return False
+
     def order_fill(
         self,
         *,
