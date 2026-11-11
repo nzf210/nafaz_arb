@@ -231,3 +231,16 @@ class DurableOutbox:
     def close(self) -> None:
         with self._lock:
             self._db.close()
+
+
+    def pending_table(self, table: str, limit: int = 50000) -> List[Tuple[int, str, Optional[str], Dict[str, Any]]]:
+        """Read pending rows for one table, including rows waiting for retry."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT id, table_name, conflict_target, row_json
+                   FROM pending_outbox WHERE table_name=?
+                   ORDER BY id LIMIT ?""",
+                (str(table), max(1, int(limit))),
+            ).fetchall()
+        return [(int(i), name, conflict, json.loads(payload))
+                for i, name, conflict, payload in rows]
