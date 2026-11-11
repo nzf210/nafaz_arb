@@ -44,83 +44,96 @@ class RiskStateMixin:
             logger.critical("LIVE entry blocked: risk state could not be journaled")
         return bool(ok)
 
-    async def _restore_risk_state(self) -> None:
-        """Restore unresolved durable halts before recovery/listeners can accept signals."""
-        writer = getattr(self, "supabase", None)
-        if writer is None or not getattr(writer, "enabled", False):
-            self._risk_state_restored = True
-            if not getattr(self.config, "mock_mode", False):
-                self._trading_halted = True
-                self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
-                self._entry_blocked = True
-                self._risk_persistence_failed = True
-                logger.critical("LIVE startup fail-closed: configure durable Supabase risk-state storage")
+    def _restore_daily_loss_record(self, value) -> None:
+        state = value if isinstance(value, dict) else {}
+        current_day = self._utc_day()
+        if state.get("loss_day") == current_day:
+            self._loss_day = str(state["loss_day"])
+            self._daily_realized_loss_usdt = max(
+                0.0, float(state.get("loss_usdt", 0.0))
+            )
             return
-        rows = await writer.fetch_active_risk_states(
-            is_mock=bool(getattr(self.config, "mock_mode", False))
-        )
-        for row in rows:
-            kind = str(row.get("state_type") or "")
-            scope = str(row.get("scope") or "")
-            exchange = str(row.get("exchange") or "").lower()
-            pair_key = str(row.get("pair_key") or "")
-            value = row.get("value")
-            reason = str(row.get("reason") or "")
-            if isinstance(value, str):
-                try:
-                    value = json.loads(value)
-                except (TypeError, ValueError):
-                    pass
-            if kind == "trading_halt" and scope == "global":
-                self._trading_halted = True
-                self._halt_reason = str((value or {}).get("halt_reason") or reason or "RESTORED_MANUAL_HALT")
-            elif kind == "trading_resume" and scope == "global":
-                self._manual_resume_day = str((value or {}).get("loss_day") or self._utc_day())
-            elif kind == "daily_loss" and scope == "global":
-                state = value if isinstance(value, dict) else {}
-                if state.get("loss_day") == self._utc_day():
-                    self._loss_day = str(state["loss_day"])
-                    self._daily_realized_loss_usdt = max(0.0, float(state.get("loss_usdt", 0.0)))
-                else:
-                    self._loss_day = self._utc_day()
-                    self._daily_realized_loss_usdt = 0.0
-            elif kind == "exchange_halt" and scope == "exchange" and exchange:
-                if isinstance(value, dict) and value.get("source") == "rate_limit_cooldown":
-                    remaining = float(value.get("expires_at", 0.0)) - time.time()
-                    if remaining > 0:
-                        self._pause_venue_for_cooldown(exchange, remaining)
-                    else:
-                        self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, resolved=True)
-                else:
-                    self._exchange_halted[exchange] = reason
-            elif kind == "consecutive_order_failures" and scope == "exchange" and exchange:
-                self._consecutive_order_failures[exchange] = max(0, int((value or {}).get("count", 0)))
-            elif kind == "reconciliation_halt":
-                key = "*" if scope == "global" else exchange if scope == "exchange" else pair_key
-                if key:
-                    self._recovery_scope_halts[key] = reason
-                    if key == "*":
-                        self._entry_blocked = True
-            elif kind == "position_failure" and pair_key:
-                failure = value if isinstance(value, dict) else {}
-                self._failure_reasons[pair_key] = failure or {
-                    "reason": reason, "message": reason, "detail": {},
-                    "timestamp_ms": int(time.time() * 1000),
-                }
-                restored_state = str(failure.get("state") or "RECONCILIATION_REQUIRED")
-                try:
-                    self.states[pair_key] = PositionState(restored_state)
-                except ValueError:
-                    self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
-                if self.states[pair_key] == PositionState.RECONCILIATION_REQUIRED:
-                    self._recovery_scope_halts[pair_key] = reason or "restored unresolved position failure"
-        if getattr(writer, "risk_persistence_failed", lambda: False)():
-            self._risk_persistence_failed = True
+        self._loss_day = current_day
+        self._daily_realized_loss_usdt = 0.0
+
+    def _restore_exchange_halt_record(self, exchange: str, reason: str, value) -> None:
+        if isinstance(value, dict) and value.get("source") == "rate_limit_cooldown":
+            remaining = float(value.get("expires_at", 0.0)) - time.time()
+            if remaining > 0:
+                self._pause_venue_for_cooldown(exchange, remaining)
+            else:
+                self._persist_risk_state(
+                    "exchange_halt", scope="exchange", exchange=exchange, resolved=True
+                )
+            return
+        self._exchange_halted[exchange] = reason
+
+    def _restore_position_failure_record(self, pair_key: str, reason: str, value) -> None:
+        failure = value if isinstance(value, dict) else {}
+        self._failure_reasons[pair_key] = failure or {
+            "reason": reason,
+            "message": reason,
+            "detail": {},
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        restored_state = str(failure.get("state") or "RECONCILIATION_REQUIRED")
+        try:
+            self.states[pair_key] = PositionState(restored_state)
+        except ValueError:
+            self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
+        if self.states[pair_key] == PositionState.RECONCILIATION_REQUIRED:
+            self._recovery_scope_halts[pair_key] = reason or (
+                "restored unresolved position failure"
+            )
+
+    def _restore_risk_record(self, row: dict) -> None:
+        kind = str(row.get("state_type") or "")
+        scope = str(row.get("scope") or "")
+        exchange = str(row.get("exchange") or "").lower()
+        pair_key = str(row.get("pair_key") or "")
+        value = row.get("value")
+        reason = str(row.get("reason") or "")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                pass
+
+        if kind == "trading_halt" and scope == "global":
             self._trading_halted = True
-            self._halt_reason = "RISK_STATE_PERSISTENCE_FAILED"
-            self._entry_blocked = True
-        # The immutable verified PnL ledger is authoritative; the mutable
-        # accumulator above is only a fast snapshot/cache.
+            self._halt_reason = str(
+                (value or {}).get("halt_reason") or reason or "RESTORED_MANUAL_HALT"
+            )
+        elif kind == "trading_resume" and scope == "global":
+            self._manual_resume_day = str((value or {}).get("loss_day") or self._utc_day())
+        elif kind == "daily_loss" and scope == "global":
+            self._restore_daily_loss_record(value)
+        elif kind == "exchange_halt" and scope == "exchange" and exchange:
+            self._restore_exchange_halt_record(exchange, reason, value)
+        elif kind == "consecutive_order_failures" and scope == "exchange" and exchange:
+            self._consecutive_order_failures[exchange] = max(
+                0, int((value or {}).get("count", 0))
+            )
+        elif kind == "reconciliation_halt":
+            key = "*" if scope == "global" else (
+                exchange if scope == "exchange" else pair_key
+            )
+            if key:
+                self._recovery_scope_halts[key] = reason
+                if key == "*":
+                    self._entry_blocked = True
+        elif kind == "position_failure" and pair_key:
+            self._restore_position_failure_record(pair_key, reason, value)
+
+    def _restore_risk_persistence_failure(self, writer) -> None:
+        if not getattr(writer, "risk_persistence_failed", lambda: False)():
+            return
+        self._risk_persistence_failed = True
+        self._trading_halted = True
+        self._halt_reason = "RISK_STATE_PERSISTENCE_FAILED"
+        self._entry_blocked = True
+
+    async def _restore_daily_loss_ledger(self, writer) -> None:
         self._daily_realized_loss_usdt = await writer.fetch_daily_realized_loss_usdt(
             self._utc_day(), is_mock=bool(getattr(self.config, "mock_mode", False))
         )
@@ -133,12 +146,45 @@ class RiskStateMixin:
             self._trading_halted = False
             self._halt_reason = ""
             self._persist_risk_state("trading_halt", scope="global", resolved=True)
-        if limit > 0 and self._daily_realized_loss_usdt >= limit and not self._trading_halted and getattr(self, "_manual_resume_day", None) != self._loss_day:
+        manual_resume_today = getattr(self, "_manual_resume_day", None) == self._loss_day
+        if limit > 0 and self._daily_realized_loss_usdt >= limit and (
+            not self._trading_halted and not manual_resume_today
+        ):
             self._trading_halted = True
             self._halt_reason = "DAILY_LOSS_LIMIT"
-            self._persist_risk_state("trading_halt", scope="global", reason="DAILY_LOSS_LIMIT", value={"halt_reason": "DAILY_LOSS_LIMIT", "loss_usdt": self._daily_realized_loss_usdt, "loss_day": self._loss_day})
-        # A restored loss halt remains active until the same UTC day rolls over.
+            self._persist_risk_state(
+                "trading_halt",
+                scope="global",
+                reason="DAILY_LOSS_LIMIT",
+                value={
+                    "halt_reason": "DAILY_LOSS_LIMIT",
+                    "loss_usdt": self._daily_realized_loss_usdt,
+                    "loss_day": self._loss_day,
+                },
+            )
         self._roll_loss_day_if_needed()
+
+    async def _restore_risk_state(self) -> None:
+        """Restore unresolved durable halts before recovery/listeners can accept signals."""
+        writer = getattr(self, "supabase", None)
+        if writer is None or not getattr(writer, "enabled", False):
+            self._risk_state_restored = True
+            if not getattr(self.config, "mock_mode", False):
+                self._trading_halted = True
+                self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
+                self._entry_blocked = True
+                self._risk_persistence_failed = True
+                logger.critical(
+                    "LIVE startup fail-closed: configure durable Supabase risk-state storage"
+                )
+            return
+        rows = await writer.fetch_active_risk_states(
+            is_mock=bool(getattr(self.config, "mock_mode", False))
+        )
+        for row in rows:
+            self._restore_risk_record(row)
+        self._restore_risk_persistence_failure(writer)
+        await self._restore_daily_loss_ledger(writer)
         logger.warning("Restored %d unresolved durable risk-state records", len(rows))
 
     def _record_order_success(self, exchange: str) -> None:
@@ -224,18 +270,16 @@ class RiskStateMixin:
         token = self._venue_cooldown_epoch = getattr(self, "_venue_cooldown_epoch", 0) + 1
 
         async def _clear_after_cooldown():
-            try:
-                await asyncio.sleep(seconds)
-            except asyncio.CancelledError:
-                # Cancellation is a lifecycle signal; never convert it into success.
-                raise
+            await asyncio.sleep(seconds)
             # Only clear the halt this task installed; a newer cooldown or a
             # manual halt must not be undone by a stale timer.
             if getattr(self, "_venue_cooldown_epoch", 0) != token:
                 return
             if self._exchange_halted.get(exchange, "").startswith("rate limited"):
                 del self._exchange_halted[exchange]
-                self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, resolved=True)
+                self._persist_risk_state(
+                    "exchange_halt", scope="exchange", exchange=exchange, resolved=True
+                )
                 logger.warning(
                     f"[Risk Control] Exchange {exchange} rate-limit cooldown elapsed; "
                     "entries re-enabled"
