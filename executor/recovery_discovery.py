@@ -271,7 +271,7 @@ class RecoveryDiscoveryMixin:
         record.exchange = record.exchange or exchange
         record.symbol = record.symbol or symbol
         if not record.order_role:
-            record.order_role = self._infer_role(symbol, pair_tag, market)
+            record.order_role = self._infer_role(pair_tag, market)
         if not pair_tag:
             return None, ""
         return record, pair_tag
@@ -404,7 +404,7 @@ class RecoveryDiscoveryMixin:
                 return cleaned[: -len(quote)], quote
         return "", ""
 
-    def _infer_role(self, symbol: str, pair_tag: str, market: str) -> str:
+    def _infer_role(self, pair_tag: str, market: str) -> str:
         """Classifies a discovered order from the state that already tracks it.
 
         Every order the bot intentionally leaves resting is an entry or an exit;
