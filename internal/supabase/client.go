@@ -19,6 +19,8 @@ import (
 
 // Client writes durable scanner history through the Supabase PostgREST API.
 // Redis remains the low-latency signal, cache and coordination layer.
+const authorizationBearerPrefix = "Bearer "
+
 type Client struct {
 	baseURL        string
 	serviceRoleKey string
@@ -196,7 +198,7 @@ func (c *Client) saveBatch(ctx context.Context, rows []opportunityRow) error {
 			return reqErr
 		}
 		req.Header.Set("apikey", c.serviceRoleKey)
-		req.Header.Set("Authorization", "Bearer "+c.serviceRoleKey)
+		req.Header.Set("Authorization", authorizationBearerPrefix+c.serviceRoleKey)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Prefer", "resolution=merge-duplicates,return=minimal")
 
@@ -250,7 +252,7 @@ func (c *Client) readScannerHistory(ctx context.Context, endpoint string) ([]byt
 			return nil, fmt.Errorf("create scanner history request: %w", err)
 		}
 		req.Header.Set("apikey", c.serviceRoleKey)
-		req.Header.Set("Authorization", "Bearer "+c.serviceRoleKey)
+		req.Header.Set("Authorization", authorizationBearerPrefix+c.serviceRoleKey)
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("read scanner opportunity history: %w", err)
@@ -391,7 +393,7 @@ func (c *Client) PositionOrderFills(ctx context.Context, positionID string) (map
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil { return nil, err }
 		req.Header.Set("apikey", c.serviceRoleKey)
-		req.Header.Set("Authorization", "Bearer "+c.serviceRoleKey)
+		req.Header.Set("Authorization", authorizationBearerPrefix+c.serviceRoleKey)
 		req.Header.Set("Accept", "application/json")
 		resp, err := c.httpClient.Do(req)
 		if err != nil { return nil, fmt.Errorf("read %s: %w", table, err) }
