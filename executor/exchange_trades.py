@@ -167,11 +167,12 @@ class ExchangeTradeMixin:
         if spec is not None and spec.unit == "CONTRACT":
             fill["cost"] = qty * price
         else:
-            fill["cost"] = float(
-                trade.get("cost") if trade.get("cost") is not None
-                else trade.get("quoteQty") if trade.get("quoteQty") is not None
-                else qty * price
-            )
+            quote_cost = trade.get("cost")
+            if quote_cost is None:
+                quote_cost = trade.get("quoteQty")
+            if quote_cost is None:
+                quote_cost = qty * price
+            fill["cost"] = float(quote_cost)
         fill["fee"] = self._trade_fee_payload(trade, info)
         fill["raw_payload"] = {
             "info": info,
