@@ -51,6 +51,27 @@ func decodeList(raw json.RawMessage) []json.RawMessage {
 	return items
 }
 
+func safeRecordJSON(raw json.RawMessage) json.RawMessage {
+	var record map[string]json.RawMessage
+	if json.Unmarshal(raw, &record) != nil { return json.RawMessage("{}") }
+	allowed := []string{
+		"local_order_id", "internal_order_id", "exchange_order_id", "client_order_id",
+		"position_id", "pair_key", "exchange", "exchange_name", "market_type", "leg",
+		"order_role", "symbol", "side", "order_type", "status", "original_quantity",
+		"requested_qty", "filled_quantity", "filled_qty", "remaining_quantity",
+		"remaining_qty", "price", "limit_price", "average_fill_price", "hedged_quantity",
+		"recovery_status", "reduce_only", "created_at", "updated_at", "submitted_at",
+		"completed_at", "id", "order_id", "exchange_fill_id", "fill_source", "qty",
+		"quote_qty", "fee_amount", "fee_asset", "fee_verified", "filled_at",
+		"orphan_id", "reason", "scope",
+	}
+	view := make(map[string]json.RawMessage, len(allowed))
+	for _, key := range allowed { if value, ok := record[key]; ok { view[key] = value } }
+	encoded, err := json.Marshal(view)
+	if err != nil { return json.RawMessage("{}") }
+	return encoded
+}
+
 func prettyJSON(raw json.RawMessage) string {
 	if len(raw) == 0 { return "Data belum dipublikasikan oleh executor." }
 	var value interface{}
@@ -188,7 +209,7 @@ func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id
 		return
 	}
 	if found {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\n<pre>"+html.EscapeString(prettyJSON(record))+"</pre>", b.defaultKeyboard())
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\n<pre>"+html.EscapeString(prettyJSON(safeRecordJSON(record)))+"</pre>", b.defaultKeyboard())
 		return
 	}
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Internal order ID tidak ditemukan pada registry Redis. Jika order sudah retired, periksa Supabase order_registry; ketiadaan record bukan bukti order exchange tidak ada.", b.defaultKeyboard())
@@ -207,7 +228,7 @@ func (b *Bot) sendJSONPages(ctx context.Context, chatID, replyToID int64, title 
 		var out strings.Builder
 		out.WriteString(fmt.Sprintf("<b>%s (%d) — %d/%d</b>\n\n", html.EscapeString(title), len(rows), page+1, pages))
 		for _, row := range rows[start:end] {
-			value := prettyJSON(row)
+			value := prettyJSON(safeRecordJSON(row))
 			if len([]rune(value)) > 1000 { value = string([]rune(value)[:950]) + "\n... record dipotong" }
 			out.WriteString("<pre>"+html.EscapeString(value)+"</pre>\n")
 		}
