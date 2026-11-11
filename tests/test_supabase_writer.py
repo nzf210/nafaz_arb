@@ -142,7 +142,8 @@ class TestPositions:
         writer.position_opened("p", _pos(), None)
         writer.position_status("p", "CLOSED", _pos(qty=0.0))
         rows = _drain(writer)
-        row = next(row for table, _, row in rows if table == "positions")
+        position_rows = [row for table, _, row in rows if table == "positions"]
+        row = position_rows[-1]
         legs = [row for table, _, row in rows if table == "position_legs"]
         assert row["status"] == "CLOSED"
         assert row["closed_at"]
@@ -185,8 +186,8 @@ class TestPositions:
             "symbol": "BTC/USDT:USDT",
             "rate": 0.0001,
         }
-        assert writer.funding_payment("p", pos, payment, is_mock=False)
-        assert writer.funding_payment("p", pos, payment, is_mock=False)
+        assert writer.funding_payment("p", pos, payment, is_mock=False) is True
+        assert writer.funding_payment("p", pos, payment, is_mock=False) is False
         rows = _drain(writer)
         funding = [row for table, _, row in rows if table == "funding_payments"]
         assert len(funding) == 1
