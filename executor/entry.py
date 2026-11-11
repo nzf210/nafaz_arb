@@ -693,7 +693,7 @@ class EntryMixin:
                     quantity=unhedged_delta,
                     global_amount_spec=order_info.get("global_amount_spec"),
                     recovery_context=hedge_recovery_context,
-                    required=False,
+                    required=True,
                 )
                 short_order = await self.client.open_global_short_market(
                     global_symbol,
@@ -735,7 +735,7 @@ class EntryMixin:
                 # exchange id and reconcile its fill against the parent spot leg.
                 recovery_order = dict(short_order)
                 recovery_order["status"] = "open"
-                await self._register_order(
+                hedge_journal = await self._register_order(
                     pair_tag,
                     hedge_coid,
                     recovery_order,
@@ -750,6 +750,11 @@ class EntryMixin:
                     global_amount_spec=order_info.get("global_amount_spec"),
                     recovery_context=hedge_recovery_context,
                 )
+                if hedge_journal is None:
+                    raise RuntimeError(
+                        "futures hedge was accepted but its fill could not be journaled; "
+                        "rollback/reconciliation is required"
+                    )
                 order_info["hedged_short_qty"] += actual_hedged_qty
                 # Persist the entry's cumulative hedge watermark and the unique
                 # futures order id together on the originating spot record.
