@@ -140,10 +140,19 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 		dynamicSpotFee, _ = feeRedis.GetDynamicFeeProfile(ctx, sm.Exchange, "spot", sm.Symbol)
 		dynamicPerpFee, _ = feeRedis.GetDynamicFeeProfile(ctx, pm.Exchange, "perp", pm.Symbol)
 	}
-	op, err := s.calculate(
-		sm, pm, sb, pb, fr, evaluationTime, positionReason, isSynthetic,
-		fxRate, requiredNotional, dynamicSpotFee, dynamicPerpFee,
-	)
+	op, err := s.calculate(opportunityCalculationInput{
+		spotMarket:       sm,
+		perpMarket:       pm,
+		spotBook:         sb,
+		perpBook:         pb,
+		funding:          fr,
+		now:              evaluationTime,
+		positionReason:   positionReason,
+		isSynthetic:      isSynthetic,
+		fxRate:           fxRate,
+		requiredNotional: requiredNotional,
+		dynamicProfiles:  []*redishandler.DynamicFeeProfile{dynamicSpotFee, dynamicPerpFee},
+	})
 	if err != nil {
 		if strings.Contains(err.Error(), "empty order book") {
 			s.recordEmptyBook(pairKey, started)
