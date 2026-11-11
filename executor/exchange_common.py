@@ -178,6 +178,7 @@ async def _find_order_by_client_id(
             failures.append(f"fetch_order_by_client_id: {type(exc).__name__}: {exc}")
 
     historical_queries = 0
+    discovered_orders = []
     for method_name in (
         "fetch_open_orders", "fetch_closed_orders", "fetch_canceled_orders"
     ):
@@ -196,12 +197,14 @@ async def _find_order_by_client_id(
                 raise ValueError(f"{method_name} returned a malformed order collection")
             if method_name != "fetch_open_orders":
                 historical_queries += 1
-            found = unique_order(list(rows))
-            if found is not None:
-                return found
+            discovered_orders.extend(row for row in rows if matches(row))
         except Exception as exc:
             if type(exc).__name__ not in ("NotSupported", "NotImplementedError"):
                 failures.append(f"{method_name}: {type(exc).__name__}: {exc}")
+
+    found = unique_order(discovered_orders)
+    if found is not None:
+        return found
 
     trades_method = getattr(exchange, "fetch_my_trades", None)
     if callable(trades_method):
