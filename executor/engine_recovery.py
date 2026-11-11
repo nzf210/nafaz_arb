@@ -14,126 +14,139 @@ from executor.engine_common import logger
 class EngineRecoveryMixin:
     """Focused orchestration responsibilities, composed by ArbitrageEngine."""
 
+    def _group_recovered_positions(self):
+        groups = {}
+        for pair_tag, pos in self.active_positions.items():
+            symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
+            groups.setdefault((pos.global_exchange, symbol), []).append((pair_tag, pos))
+        return groups
+
+    async def _mark_recovered_group_unverified(self, global_symbol: str, items) -> None:
+        reason = "Live futures position API is unavailable after restart."
+        for pair_tag, pos in items:
+            pos.state = "RECONCILIATION_REQUIRED"
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            await self.redis.set(
+                f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+            )
+            self._mark_failed(
+                pair_tag,
+                "RECOVERY_POSITION_STATE_UNKNOWN",
+                reason,
+                detail={"global_symbol": global_symbol, "expected_qty": pos.qty},
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+
+    async def _fetch_recovered_short_quantity(self, global_symbol: str, items):
+        """Return (exchange short quantity, mismatch reason) for one venue symbol."""
+        token = None
+        try:
+            token = self._bind_pair_client(self._pair_info_for_tag(items[0][0]))
+            positions = await self.client.fetch_positions(global_symbol)
+            if positions is None:
+                raise ValueError("fetch_positions returned None")
+            actual_short_qty = 0.0
+            for position in positions:
+                if not isinstance(position, dict):
+                    raise ValueError("invalid position payload")
+                info = position.get("info") or {}
+                side = str(
+                    position.get("side")
+                    or position.get("positionSide")
+                    or info.get("posSide")
+                    or info.get("positionSide")
+                    or ""
+                ).lower()
+                raw_contracts = position.get("contracts")
+                if raw_contracts is not None:
+                    size = abs(float(raw_contracts)) * abs(
+                        float(position.get("contractSize") or 1.0)
+                    )
+                    if size <= 1e-12:
+                        continue
+                    if side != "short":
+                        raise ValueError(
+                            f"unexpected non-short futures exposure (side={side or 'unknown'})"
+                        )
+                    actual_short_qty += size
+                    continue
+
+                raw_amount = position.get("positionAmt", info.get("positionAmt"))
+                if raw_amount is None:
+                    raise ValueError("position size unavailable")
+                signed_amount = float(raw_amount)
+                if abs(signed_amount) <= 1e-12:
+                    continue
+                if signed_amount >= 0:
+                    raise ValueError("unexpected long or unsigned futures exposure")
+                actual_short_qty += abs(signed_amount)
+        except Exception as exc:
+            return None, f"cannot verify futures position after restart: {exc}"
+        finally:
+            if token is not None:
+                self._reset_pair_client(token)
+
+        expected_qty = sum(pos.qty for _, pos in items)
+        tolerance = max(1e-10, expected_qty * 1e-4)
+        if abs(actual_short_qty - expected_qty) <= tolerance:
+            return actual_short_qty, None
+        return actual_short_qty, (
+            f"futures quantity mismatch after restart: expected={expected_qty}, "
+            f"exchange={actual_short_qty}"
+        )
+
+    async def _mark_recovered_group_mismatch(
+        self, global_symbol: str, items, reason: str, actual_short_qty
+    ) -> None:
+        logger.critical(
+            f"[Recovery] {global_symbol}: {reason}; restored positions blocked"
+        )
+        for pair_tag, pos in items:
+            pos.state = "RECONCILIATION_REQUIRED"
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            await self.redis.set(
+                f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+            )
+            self._mark_failed(
+                pair_tag,
+                "RECOVERY_POSITION_MISMATCH",
+                reason,
+                detail={
+                    "global_symbol": global_symbol,
+                    "expected_qty": pos.qty,
+                    "exchange_total_short_qty": actual_short_qty,
+                },
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+
     async def _verify_recovered_active_positions(self) -> None:
-        """
-        Verifies persisted live positions against the exchange after restart.
-        Any unknown or mismatched exposure is retained and blocked for manual
-        reconciliation; Redis snapshots alone are not proof of an open hedge.
-        """
+        """Verify restored live positions against authoritative exchange exposure."""
         if not self.active_positions:
             return
+        groups = self._group_recovered_positions()
         if not hasattr(self.client, "fetch_positions"):
             logger.critical(
                 "[Recovery] live client cannot fetch futures positions; "
                 "all restored positions require manual reconciliation"
             )
-            groups = {}
-            for pair_tag, pos in self.active_positions.items():
-                symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
-                groups.setdefault((pos.global_exchange, symbol), []).append((pair_tag, pos))
             for (_, symbol), items in groups.items():
-                for pair_tag, pos in items:
-                    pos.state = "RECONCILIATION_REQUIRED"
-                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                    await self.redis.set(
-                        f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
-                    )
-                    self._mark_failed(
-                        pair_tag,
-                        "RECOVERY_POSITION_STATE_UNKNOWN",
-                        "Live futures position API is unavailable after restart.",
-                        detail={"global_symbol": symbol, "expected_qty": pos.qty},
-                        state=PositionState.RECONCILIATION_REQUIRED,
-                    )
+                await self._mark_recovered_group_unverified(symbol, items)
             return
 
-        groups = {}
-        for pair_tag, pos in self.active_positions.items():
-            global_symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
-            groups.setdefault((pos.global_exchange, global_symbol), []).append((pair_tag, pos))
-
-        for (global_exchange, global_symbol), items in groups.items():
-            expected_qty = sum(pos.qty for _, pos in items)
-            token = None
-            try:
-                token = self._bind_pair_client(self._pair_info_for_tag(items[0][0]))
-                positions = await self.client.fetch_positions(global_symbol)
-                if positions is None:
-                    raise ValueError("fetch_positions returned None")
-                actual_short_qty = 0.0
-                for position in positions:
-                    if not isinstance(position, dict):
-                        raise ValueError("invalid position payload")
-                    info = position.get("info") or {}
-                    side = str(
-                        position.get("side")
-                        or position.get("positionSide")
-                        or info.get("posSide")
-                        or info.get("positionSide")
-                        or ""
-                    ).lower()
-                    raw_contracts = position.get("contracts")
-                    if raw_contracts is not None:
-                        size = abs(float(raw_contracts)) * abs(
-                            float(position.get("contractSize") or 1.0)
-                        )
-                        if size <= 1e-12:
-                            continue
-                        if side != "short":
-                            raise ValueError(
-                                f"unexpected non-short futures exposure (side={side or 'unknown'})"
-                            )
-                        actual_short_qty += size
-                        continue
-
-                    raw_amount = position.get("positionAmt", info.get("positionAmt"))
-                    if raw_amount is None:
-                        raise ValueError("position size unavailable")
-                    signed_amount = float(raw_amount)
-                    if abs(signed_amount) <= 1e-12:
-                        continue
-                    if signed_amount >= 0:
-                        raise ValueError("unexpected long or unsigned futures exposure")
-                    actual_short_qty += abs(signed_amount)
-            except Exception as exc:
-                actual_short_qty = None
-                reason = f"cannot verify futures position after restart: {exc}"
-            else:
-                tolerance = max(1e-10, expected_qty * 1e-4)
-                if abs(actual_short_qty - expected_qty) <= tolerance:
-                    logger.info(
-                        f"[Recovery] verified {global_symbol} short quantity "
-                        f"{actual_short_qty} against Redis snapshot {expected_qty}"
-                    )
-                    continue
-                reason = (
-                    f"futures quantity mismatch after restart: expected={expected_qty}, "
-                    f"exchange={actual_short_qty}"
-                )
-            finally:
-                if token is not None:
-                    self._reset_pair_client(token)
-
-            logger.critical(
-                f"[Recovery] {global_symbol}: {reason}; restored positions blocked"
+        for (_, global_symbol), items in groups.items():
+            actual_qty, reason = await self._fetch_recovered_short_quantity(
+                global_symbol, items
             )
-            for pair_tag, pos in items:
-                pos.state = "RECONCILIATION_REQUIRED"
-                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                await self.redis.set(
-                    f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+            if reason is None:
+                logger.info(
+                    f"[Recovery] verified {global_symbol} short quantity "
+                    f"{actual_qty} against Redis snapshot "
+                    f"{sum(pos.qty for _, pos in items)}"
                 )
-                self._mark_failed(
-                    pair_tag,
-                    "RECOVERY_POSITION_MISMATCH",
-                    reason,
-                    detail={
-                        "global_symbol": global_symbol,
-                        "expected_qty": pos.qty,
-                        "exchange_total_short_qty": actual_short_qty,
-                    },
-                    state=PositionState.RECONCILIATION_REQUIRED,
-                )
+                continue
+            await self._mark_recovered_group_mismatch(
+                global_symbol, items, reason, actual_qty
+            )
 
     async def _persist_pending_entry(self, pair_tag: str, order_info: dict) -> None:
         """Persists a pending entry order so a restart can adopt or cancel it."""
