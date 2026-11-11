@@ -218,6 +218,51 @@ class IndodaxTAPIv2:
 
     # ---------------------------------------------------------- ccxt surface
 
+    async def fetch_order_book(
+        self, symbol: str, limit: Optional[int] = None,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Fetch the public Indodax v2 level-2 book for a spot pair."""
+        if not symbol:
+            raise ValueError("fetch_order_book requires a symbol")
+        query = dict(params or {})
+        query["symbol"] = normalize_symbol(symbol)
+        if limit is not None:
+            query["limit"] = min(500, max(1, int(limit)))
+        payload = await self._request(
+            "GET", "/api/v2/depth", query, signed=False
+        )
+        if not isinstance(payload, dict):
+            raise ValueError("indodax v2 returned a malformed order book payload")
+
+        def normalize_levels(rows, side):
+            if not isinstance(rows, list):
+                raise ValueError(f"indodax v2 returned malformed {side} levels")
+            levels = []
+            for row in rows:
+                if not isinstance(row, (list, tuple)) or len(row) < 2:
+                    raise ValueError(f"indodax v2 returned malformed {side} level")
+                price, amount = float(row[0]), float(row[1])
+                if not (price > 0 and amount > 0):
+                    continue
+                levels.append([price, amount])
+            levels.sort(key=lambda level: level[0], reverse=(side == "bids"))
+            return levels
+
+        bids = normalize_levels(payload.get("bids"), "bids")
+        asks = normalize_levels(payload.get("asks"), "asks")
+        if not bids or not asks or bids[0][0] >= asks[0][0]:
+            raise ValueError("indodax v2 returned an empty or crossed order book")
+        timestamp = int(payload.get("timestamp") or time.time() * 1000)
+        return {
+            "symbol": symbol,
+            "timestamp": timestamp,
+            "datetime": None,
+            "nonce": payload.get("lastUpdateId"),
+            "bids": bids,
+            "asks": asks,
+        }
+
     async def create_limit_buy_order(
         self, symbol: str, amount: float, price: float, params: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
