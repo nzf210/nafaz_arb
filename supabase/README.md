@@ -58,9 +58,12 @@ Implemented writes:
   Transient PostgREST/network errors are retried; permanent schema/auth errors
   are logged and do not suppress Redis signal delivery.
 - Python executor: `positions`, `orders`, `order_fills`, `closed_trades`,
-  `executor_events`, and `risk_events`. Client-generated/deterministic keys
-  make retries idempotent; order-fill rows are derived from cumulative filled
-  quantity and only new deltas are emitted.
+  `executor_events`, and `risk_events`. Every universal order-registry write
+  also ensures its per-leg `orders` parent row exists. Individual fills are
+  replayed from authenticated exchange trade history and keyed by immutable
+  exchange trade IDs; quantity, price, quote value, fee amount, fee asset, and
+  venue timestamp are persisted. A durable SQLite idempotency key prevents the
+  same exchange fill from being enqueued twice across restarts.
 - Redis remains authoritative for active-position recovery, locks, live prices,
   balances, pub/sub, and fast coordination. Exchange APIs remain authoritative
   for actual balances, order state, and position exposure.
@@ -85,9 +88,11 @@ Delivery guarantees and remaining limitations:
 - The async worker retries failed PostgREST delivery with bounded exponential
   backoff. Rows are deleted only after a successful idempotent upsert; permanent
   schema/permission failures remain queued for replay after repair.
-- Order-fill cumulative watermarks and their corresponding fill rows are
-  committed in one SQLite transaction. This prevents a restart between those
-  operations from silently advancing the watermark without journaling the fill.
+- Individual exchange fills and their idempotency markers are committed in one
+  SQLite transaction. The worker compares the sum of unique venue trade fills
+  with each order's cumulative filled quantity; missing history, unsupported
+  private trade endpoints, or quantity mismatches mark the affected pair for
+  reconciliation instead of inventing synthetic fills from average order price.
 - The in-memory queue is only a wakeup hint. A full wakeup queue does not discard
   the already committed outbox row. The local outbox has a 50,000-row hard cap;
   capacity or disk errors are logged as critical and must be monitored.
@@ -110,6 +115,12 @@ Delivery guarantees and remaining limitations:
 - Both journals are local to one process/host and must not be shared by multiple
   replicas. Use persistent local volumes and back up journals before replacing
   hosts or volumes.
+- The executor trade-fill reconciliation worker reads authenticated spot and
+  perpetual trade history at startup and periodically thereafter. INDODAX uses
+  the TAPI v2 `/api/v2/myTrades` endpoint with bounded seven-day windows;
+  supported CCXT venues use `fetch_my_trades`. Unsupported or incomplete
+  history is not treated as zero fills and blocks new entries for the affected
+  pair until verified.
 - The scanner reconciliation worker is a delivery reconciler only: it replays
   scanner opportunity snapshots and confirms durable delivery. Live exchange
   exposure reconciliation is performed separately by the Python executor; it
