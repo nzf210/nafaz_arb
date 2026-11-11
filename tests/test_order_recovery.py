@@ -1706,3 +1706,54 @@ async def test_ambiguous_hedge_opposite_positions_do_not_net_to_flat(engine):
     assert await engine._hedge_may_be_open(
         PAIR_TAG, "BTCUSDT", RuntimeError("ambiguous submit")
     ) is True
+
+
+
+@pytest.mark.asyncio
+async def test_order_registry_reregister_is_idempotent_across_instances(fake_redis):
+    """A stale executor cannot move durable fill/hedge watermarks backwards."""
+    first = UniversalOrderRegistry(fake_redis)
+    record = _entry_record(
+        filled_quantity=0.006,
+        hedged_quantity=0.005,
+        status="open",
+    )
+    await first.register(record)
+
+    second = UniversalOrderRegistry(fake_redis)
+    stale = _entry_record(
+        filled_quantity=0.002,
+        hedged_quantity=0.001,
+        status="open",
+    )
+    await second.register(stale)
+    recovered = await second.load(record.local_order_id)
+
+    assert recovered is not None
+    assert recovered.filled_quantity == pytest.approx(0.006)
+    assert recovered.hedged_quantity == pytest.approx(0.005)
+    assert recovered.remaining_quantity == pytest.approx(0.004)
+    assert await fake_redis.hgetall("arb:orders:recovery:index") == {
+        record.local_order_id.encode(): b"1"
+    }
+
+
+@pytest.mark.asyncio
+async def test_pending_recovery_read_failure_is_not_reported_as_empty(fake_redis):
+    registry = UniversalOrderRegistry(fake_redis)
+
+    async def unavailable(_key):
+        raise RuntimeError("simulated Redis outage")
+
+    fake_redis.hgetall = unavailable
+    with pytest.raises(RuntimeError, match="simulated Redis outage"):
+        await registry.pending_recovery_ids()
+
+
+@pytest.mark.asyncio
+async def test_dangling_orphan_index_is_not_reported_as_clean(fake_redis):
+    registry = UniversalOrderRegistry(fake_redis)
+    await fake_redis.hset("arb:orders:orphans:index", "missing-orphan", "indodax:btc_idr")
+
+    with pytest.raises(RuntimeError, match="missing record"):
+        await registry.orphans()
