@@ -101,48 +101,62 @@ class EngineRuntimeMixin:
             await pubsub.unsubscribe("arb:signal_notify")
             await pubsub.close()
 
+    async def _coalesce_signal_batch(
+        self, quiet_window: float = 0.02, max_batch_window: float = 0.1
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max_batch_window
+        quiet_deadline = loop.time() + quiet_window
+        while loop.time() < deadline:
+            timeout = min(quiet_deadline - loop.time(), deadline - loop.time())
+            if timeout <= 0:
+                return
+            try:
+                await asyncio.wait_for(
+                    self._signal_queue_event.wait(), timeout=timeout
+                )
+                self._signal_queue_event.clear()
+                quiet_deadline = loop.time() + quiet_window
+            except asyncio.TimeoutError:
+                return
+
+    async def _claim_ranked_signals(self, queue_key: str):
+        try:
+            return await self.redis.zpopmax(queue_key, count=100)
+        except Exception:
+            logger.exception("[Signal Priority] failed to claim ranked signals")
+            return None
+
+    async def _process_ranked_signal(self, raw_tag, score) -> None:
+        pair_tag = (
+            raw_tag.decode("utf-8")
+            if isinstance(raw_tag, bytes)
+            else str(raw_tag)
+        )
+        logger.info(
+            "[Signal Priority] executing candidate pair=%s estimated_net_profit=%.8f USDT",
+            pair_tag, float(score),
+        )
+        try:
+            await self.handle_signal_notification(pair_tag)
+        except Exception:
+            logger.exception(
+                "[Signal Priority] signal handler failed for %s", pair_tag
+            )
+
     async def _process_signal_priority_queue(self):
         """Drain eligible signals in descending estimated net-profit order."""
         queue_key = "arb:signal_priority"
-        # Coalesce a short burst so ZPOPMAX can rank concurrent signals, but
-        # do not spend half the signal-freshness budget waiting for a batch.
-        quiet_window = 0.02
-        max_batch_window = 0.1
         while self._running:
             await self._signal_queue_event.wait()
             self._signal_queue_event.clear()
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + max_batch_window
-            quiet_deadline = loop.time() + quiet_window
-            while loop.time() < deadline:
-                timeout = min(quiet_deadline - loop.time(), deadline - loop.time())
-                if timeout <= 0:
-                    break
-                try:
-                    await asyncio.wait_for(self._signal_queue_event.wait(), timeout=timeout)
-                    self._signal_queue_event.clear()
-                    quiet_deadline = loop.time() + quiet_window
-                except asyncio.TimeoutError:
-                    break
-
+            await self._coalesce_signal_batch()
             while self._running:
-                try:
-                    ranked = await self.redis.zpopmax(queue_key, count=100)
-                except Exception:
-                    logger.exception("[Signal Priority] failed to claim ranked signals")
-                    break
+                ranked = await self._claim_ranked_signals(queue_key)
                 if not ranked:
                     break
                 for raw_tag, score in ranked:
-                    pair_tag = raw_tag.decode("utf-8") if isinstance(raw_tag, bytes) else str(raw_tag)
-                    logger.info(
-                        "[Signal Priority] executing candidate pair=%s estimated_net_profit=%.8f USDT",
-                        pair_tag, float(score),
-                    )
-                    try:
-                        await self.handle_signal_notification(pair_tag)
-                    except Exception:
-                        logger.exception("[Signal Priority] signal handler failed for %s", pair_tag)
+                    await self._process_ranked_signal(raw_tag, score)
 
     async def _listen_emergency_cancel(self):
         """Subscribes to arb:emergency_cancel channel."""
