@@ -278,30 +278,88 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 }
 
 
-func (b *Bot) formatPositionLegOrders(sb *strings.Builder, pos domain.ActivePosition, records []json.RawMessage) {
-	prefix := strings.ToLower(redishandler.CleanPairKey(pos.LocalExchange, pos.Symbol))
+func positionOrderRecordMatches(
+	raw json.RawMessage, prefix string,
+) (map[string]interface{}, bool) {
+	var record map[string]interface{}
+	if json.Unmarshal(raw, &record) != nil {
+		return nil, false
+	}
+	pairKey := strings.ToLower(fmt.Sprint(record["pair_key"]))
+	if pairKey == "" || pairKey == "<nil>" {
+		return nil, false
+	}
+	if !strings.HasPrefix(pairKey, prefix) && !strings.Contains(pairKey, prefix) {
+		return nil, false
+	}
+	return record, true
+}
+
+func formatPositionOrderRecord(
+	record map[string]interface{},
+) (string, string, bool) {
+	market := strings.ToLower(fmt.Sprint(record["market_type"]))
+	if market != "spot" && market != "perpetual" {
+		return "", "", false
+	}
+	id := fmt.Sprint(record["exchange_order_id"])
+	if id == "" || id == "<nil>" {
+		id = fmt.Sprint(record["local_order_id"])
+	}
+	line := fmt.Sprintf(
+		"<code>%s</code> %s (filled %s / remaining %s)",
+		html.EscapeString(id),
+		html.EscapeString(fmt.Sprint(record["status"])),
+		html.EscapeString(fmt.Sprint(record["filled_quantity"])),
+		html.EscapeString(fmt.Sprint(record["remaining_quantity"])),
+	)
+	return market, line, true
+}
+
+func writePositionLegLines(sb *strings.Builder, label string, lines []string) {
+	if len(lines) == 0 {
+		sb.WriteString(
+			"• " + label +
+				": <i>tidak ada active order record; exposure harus diverifikasi dari exchange</i>\n",
+		)
+		return
+	}
+	for i, item := range lines {
+		if i >= 3 {
+			sb.WriteString(
+				"• " + label + ": <i>additional active orders omitted</i>\n",
+			)
+			break
+		}
+		sb.WriteString("• " + label + ": " + item + "\n")
+	}
+}
+
+func (b *Bot) formatPositionLegOrders(
+	sb *strings.Builder, pos domain.ActivePosition, records []json.RawMessage,
+) {
+	prefix := strings.ToLower(
+		redishandler.CleanPairKey(pos.LocalExchange, pos.Symbol),
+	)
 	var spot, futures []string
 	for _, raw := range records {
-		var record map[string]interface{}
-		if json.Unmarshal(raw, &record) != nil { continue }
-		pairKey := strings.ToLower(fmt.Sprint(record["pair_key"]))
-		if pairKey == "" || pairKey == "<nil>" || (!strings.HasPrefix(pairKey, prefix) && !strings.Contains(pairKey, prefix)) { continue }
-		market := strings.ToLower(fmt.Sprint(record["market_type"]))
-		id := fmt.Sprint(record["exchange_order_id"])
-		if id == "" || id == "<nil>" { id = fmt.Sprint(record["local_order_id"]) }
-		status := fmt.Sprint(record["status"])
-		filled := fmt.Sprint(record["filled_quantity"])
-		remaining := fmt.Sprint(record["remaining_quantity"])
-		line := fmt.Sprintf("<code>%s</code> %s (filled %s / remaining %s)", html.EscapeString(id), html.EscapeString(status), html.EscapeString(filled), html.EscapeString(remaining))
-		if market == "spot" { spot = append(spot, line) } else if market == "perpetual" { futures = append(futures, line) }
+		record, ok := positionOrderRecordMatches(raw, prefix)
+		if !ok {
+			continue
+		}
+		market, line, ok := formatPositionOrderRecord(record)
+		if !ok {
+			continue
+		}
+		if market == "spot" {
+			spot = append(spot, line)
+		} else {
+			futures = append(futures, line)
+		}
 	}
 	sb.WriteString("<b>Active order status per leg:</b>\n")
-	if len(spot) == 0 { sb.WriteString("• Spot: <i>tidak ada active order record; exposure harus diverifikasi dari exchange</i>\n") } else {
-		for i, item := range spot { if i >= 3 { sb.WriteString("• Spot: <i>additional active orders omitted</i>\n"); break }; sb.WriteString("• Spot: "+item+"\n") }
-	}
-	if len(futures) == 0 { sb.WriteString("• Futures: <i>tidak ada active order record; exposure harus diverifikasi dari exchange</i>\n") } else {
-		for i, item := range futures { if i >= 3 { sb.WriteString("• Futures: <i>additional active orders omitted</i>\n"); break }; sb.WriteString("• Futures: "+item+"\n") }
-	}
+	writePositionLegLines(sb, "Spot", spot)
+	writePositionLegLines(sb, "Futures", futures)
 	sb.WriteString("\n")
 }
 
