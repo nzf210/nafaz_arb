@@ -6,8 +6,9 @@ attached to a position?*
 
 Order of work (matches the required startup safety sequence):
 
-1. Durable registry is loaded from Redis, falling back to the ``order_registry``
-   table in Supabase when the local cache is empty.
+1. Durable registry is loaded by merging the Redis cache with the
+   ``order_registry`` table in Supabase on every recovery pass; a partial cache
+   must never hide records that exist only in durable storage.
 2. Positions already tracked in Redis are loaded by ``initialize()``.
 3. Every active venue is asked for its resting orders (whole account, so an order
    with no local record at all is still seen).
