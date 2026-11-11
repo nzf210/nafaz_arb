@@ -23,7 +23,7 @@ class ExitExecutionMixin:
         self, pos: ActivePosition, unclosed_delta: float,
         exit_price_idr: float, entry_price_idr: float, short_entry_usdt: float,
         short_exit_usdt: float, usdt_rate: float, total_qty_before: float,
-    ) -> tuple[dict, float, float]:
+    ) -> tuple[dict, float, float, float]:
         spot_pnl_idr = unclosed_delta * (exit_price_idr - entry_price_idr)
         spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
         futures_pnl_usdt = unclosed_delta * (short_entry_usdt - short_exit_usdt)
@@ -107,7 +107,7 @@ class ExitExecutionMixin:
                 unclosed_delta * short_entry_usdt,
             ) * fill_ratio
         )
-        return closed_trade, spot_cost, futures_margin
+        return closed_trade, spot_cost, futures_margin, spot_pnl_usdt
 
     async def _persist_closed_trade(
         self, pair_tag: str, pos: ActivePosition, closed_trade: dict,
@@ -279,7 +279,7 @@ class ExitExecutionMixin:
                     "futures close fill price unavailable after spot sell; "
                     "PnL cannot be safely finalized"
                 )
-            closed_trade, spot_cost, futures_margin = (
+            closed_trade, spot_cost, futures_margin, spot_pnl_usdt = (
                 self._build_closed_trade_record(
                     pos, unclosed_delta, exit_price_idr,
                     entry_price_idr, short_entry_usdt, short_exit_usdt,
@@ -288,7 +288,7 @@ class ExitExecutionMixin:
             )
             await self._persist_closed_trade(
                 pair_tag, pos, closed_trade, spot_cost, futures_margin,
-                closed_trade["spot_pnl_usdt"], usdt_rate,
+                spot_pnl_usdt, usdt_rate,
             )
         except Exception as ee:
             pos.state = PositionState.RECONCILIATION_REQUIRED
