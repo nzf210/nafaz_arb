@@ -127,8 +127,10 @@ class TestPositions:
         writer.position_opened("indodax:usdt_idr", pos, None)
         writer.position_opened("indodax:usdt_idr", pos, None)
         rows = _drain(writer)
-        assert rows[0][2]["id"] == rows[1][2]["id"]
-        assert rows[0][1] == "id"
+        positions = [row for table, _, row in rows if table == "positions"]
+        assert len(positions) == 2
+        assert positions[0]["id"] == positions[1]["id"]
+        assert next(conflict for table, conflict, _ in rows if table == "positions") == "id"
 
     def test_status_update_requires_known_position(self):
         writer = _writer()
@@ -375,7 +377,10 @@ class TestClosedTrades:
         writer.trade_closed("p", self.TRADE, _pos(qty=0.0))
         rows = _drain(writer)
         tables = [t for t, _, _ in rows]
-        assert tables == ["closed_trades", "positions", "executor_events"]
+        assert tables == [
+            "closed_trades", "positions", "position_legs",
+            "position_legs", "executor_events",
+        ]
         assert rows[0][1] == "trade_key"
 
     def test_trade_fee_breakdown_is_saved_in_metadata(self):
