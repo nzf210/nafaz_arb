@@ -423,6 +423,48 @@ class ArbitrageEngine(
             )
             return None
 
+    async def _register_order_intent(
+        self,
+        pair_tag: str,
+        client_order_id: str,
+        *,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        role: str,
+        side: str,
+        order_type: str,
+        price: float,
+        quantity: float,
+        reduce_only: bool = False,
+        local_amount_spec: Any = None,
+        global_amount_spec: Any = None,
+        recovery_context: Any = None,
+    ) -> Any:
+        """Durably records an order intent before submitting it to a venue.
+
+        The client id is already known at this point. If the process dies after
+        the exchange accepts the order but before it returns an exchange id, the
+        startup open-order sweep can still bind the venue order to this intent.
+        """
+        return await self._register_order(
+            pair_tag,
+            client_order_id,
+            {"status": "submitting"},
+            exchange=exchange,
+            market_type=market_type,
+            symbol=symbol,
+            role=role,
+            side=side,
+            order_type=order_type,
+            price=price,
+            quantity=quantity,
+            reduce_only=reduce_only,
+            local_amount_spec=local_amount_spec,
+            global_amount_spec=global_amount_spec,
+            recovery_context=recovery_context,
+        )
+
     async def _clear_pending_entry(self, pair_tag: str) -> None:
         """Removes the persisted pending-entry record once the order is resolved."""
         if not self.redis:
