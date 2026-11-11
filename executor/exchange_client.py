@@ -574,10 +574,13 @@ class ExchangeClient:
             if not isinstance(trade, dict):
                 raise ValueError("exchange returned a malformed trade row")
             info = trade.get("info") if isinstance(trade.get("info"), dict) else {}
-            actual_order = str(trade.get("order") or trade.get("orderId") or info.get("orderId") or "")
+            actual_order = str(
+                trade.get("order") or trade.get("orderId") or info.get("orderId")
+                or info.get("ordId") or info.get("order_id") or ""
+            )
             actual_client = str(
                 trade.get("clientOrderId") or trade.get("client_order_id")
-                or info.get("clientOrderId") or ""
+                or info.get("clientOrderId") or info.get("clOrdId") or ""
             )
             if expected_order and actual_order and actual_order != expected_order:
                 continue
@@ -600,11 +603,16 @@ class ExchangeClient:
                 qty = order_amount_to_base(qty, spec)
             fill["amount"] = qty
             fill["price"] = price
-            fill["cost"] = float(
-                trade.get("cost") if trade.get("cost") is not None
-                else trade.get("quoteQty") if trade.get("quoteQty") is not None
-                else qty * price
-            )
+            if spec is not None and spec.unit == "CONTRACT":
+                # Contract-denominated venue amount is not the base quantity;
+                # compute quote notional from the normalized base amount.
+                fill["cost"] = qty * price
+            else:
+                fill["cost"] = float(
+                    trade.get("cost") if trade.get("cost") is not None
+                    else trade.get("quoteQty") if trade.get("quoteQty") is not None
+                    else qty * price
+                )
             fee = trade.get("fee")
             if not isinstance(fee, dict):
                 fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
@@ -613,6 +621,11 @@ class ExchangeClient:
                     "currency": trade.get("commissionAsset", info.get("commissionAsset")),
                 }
             fill["fee"] = fee if isinstance(fee, dict) else None
+            fill["raw_payload"] = {
+                "info": info,
+                "fee": fill["fee"],
+                "fees": trade.get("fees") if isinstance(trade.get("fees"), list) else [],
+            }
             fill["timestamp"] = int(
                 trade.get("timestamp") or trade.get("time") or info.get("time") or 0
             ) or None
