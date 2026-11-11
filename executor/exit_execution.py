@@ -13,8 +13,157 @@ logger = logging.getLogger("executor.engine")
 
 
 
+ARB_STATS_KEY = "arb:stats"
+
+
 class ExitExecutionMixin:
     """Focused exit pricing, order management, or execution responsibilities."""
+
+    def _build_closed_trade_record(
+        self, pair_tag: str, pos: ActivePosition, unclosed_delta: float,
+        exit_price_idr: float, entry_price_idr: float, short_entry_usdt: float,
+        short_exit_usdt: float, usdt_rate: float, total_qty_before: float,
+    ) -> tuple[dict, float, float]:
+        spot_pnl_idr = unclosed_delta * (exit_price_idr - entry_price_idr)
+        spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
+        futures_pnl_usdt = unclosed_delta * (short_entry_usdt - short_exit_usdt)
+        fill_ratio = (
+            unclosed_delta / total_qty_before if total_qty_before > 0 else 1.0
+        )
+        funding_usdt = float(pos.accumulated_funding_usdt) * fill_ratio
+        pos.accumulated_funding_usdt -= funding_usdt
+
+        rates = rates_for_position(pos)
+        fee_breakdown = round_trip_fee_breakdown_usdt(
+            unclosed_delta,
+            entry_price_idr / usdt_rate,
+            exit_price_idr / usdt_rate,
+            short_entry_usdt,
+            short_exit_usdt,
+            rates,
+        )
+        spot_fees_usdt = fee_breakdown["spot_fees_usdt"]
+        futures_fees_usdt = fee_breakdown["futures_fees_usdt"]
+        fees_usdt = fee_breakdown["total_fees_usdt"]
+        net_profit_usdt = (
+            spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
+        )
+        net_profit_idr = net_profit_usdt * usdt_rate
+        capital_usdt = unclosed_delta * short_entry_usdt
+        roi_pct = (
+            net_profit_usdt / capital_usdt * 100.0
+            if capital_usdt > 0 else 0.0
+        )
+        is_mock = getattr(self.config, "mock_mode", False)
+        if net_profit_usdt < 0:
+            logger.warning(
+                f"[State 4 Realized Loss] Local Limit Sell fill resulted in net negative PnL: "
+                f"{net_profit_usdt:.4f} USDT (ROI: {roi_pct:.3f}%). Spot PnL: "
+                f"{spot_pnl_usdt:+.4f} USDT, Futures Short PnL: "
+                f"{futures_pnl_usdt:+.4f} USDT, Funding: +{funding_usdt:.4f} USDT, "
+                f"Fees: -{fees_usdt:.4f} USDT. Closing Short to maintain delta-neutral "
+                "position integrity."
+            )
+        else:
+            logger.info(
+                f"[State 4 Realized Profit] Trade closed with profit: "
+                f"+{net_profit_usdt:.4f} USDT (ROI: +{roi_pct:.3f}%). "
+                f"Spot PnL: {spot_pnl_usdt:+.4f} USDT, "
+                f"Futures Short PnL: {futures_pnl_usdt:+.4f} USDT."
+            )
+        closed_trade = {
+            "trade_id": f"trade-{int(time.time()*1000)}",
+            "local_exchange": pos.local_exchange,
+            "global_exchange": pos.global_exchange,
+            "symbol": pos.symbol,
+            "qty": unclosed_delta,
+            "entry_price_idr": entry_price_idr,
+            "exit_price_idr": exit_price_idr,
+            "short_entry_usdt": short_entry_usdt,
+            "short_exit_usdt": short_exit_usdt,
+            "spot_pnl_idr": spot_pnl_idr,
+            "futures_pnl_usdt": futures_pnl_usdt,
+            "accumulated_funding_usdt": funding_usdt,
+            "spot_fees_usdt": spot_fees_usdt,
+            "futures_fees_usdt": futures_fees_usdt,
+            "fees_usdt": fees_usdt,
+            "fee_source": rates.source,
+            "fee_verified": rates.verified,
+            "net_profit_usdt": net_profit_usdt,
+            "net_profit_idr": net_profit_idr,
+            "net_roi_pct": roi_pct,
+            "is_mock": is_mock,
+            "closed_at_ms": int(time.time() * 1000),
+        }
+        spot_cost = (
+            getattr(
+                pos, "spot_cost_usdt",
+                unclosed_delta * entry_price_idr / usdt_rate,
+            ) * fill_ratio
+        )
+        futures_margin = (
+            getattr(
+                pos, "futures_margin_usdt",
+                unclosed_delta * short_entry_usdt,
+            ) * fill_ratio
+        )
+        return closed_trade, spot_cost, futures_margin
+
+    async def _persist_closed_trade(
+        self, pair_tag: str, pos: ActivePosition, closed_trade: dict,
+        spot_cost: float, futures_margin: float,
+    ) -> None:
+        await self.redis.lpush(ARB_TRADE_HISTORY_KEY, json.dumps(closed_trade))
+        await self.redis.ltrim(
+            ARB_TRADE_HISTORY_KEY, 0, ARB_TRADE_HISTORY_MAX_LEN
+        )
+        self.supabase.trade_closed(pair_tag, closed_trade, pos)
+        if hasattr(self.client, "apply_realized_trade"):
+            self.client.apply_realized_trade(
+                spot_cost_usdt=spot_cost,
+                spot_pnl_usdt=closed_trade["spot_pnl_idr"] / (
+                    float(closed_trade["spot_pnl_idr"])
+                    / float(closed_trade["spot_pnl_usdt"])
+                    if closed_trade["spot_pnl_usdt"] else 1.0
+                ) if closed_trade["spot_pnl_usdt"] else 0.0,
+                spot_fees_usdt=closed_trade["spot_fees_usdt"],
+                futures_margin_usdt=futures_margin,
+                futures_pnl_usdt=closed_trade["futures_pnl_usdt"],
+                funding_usdt=closed_trade["accumulated_funding_usdt"],
+                futures_fees_usdt=closed_trade["futures_fees_usdt"],
+            )
+            # Refresh available balances only after applying realized PnL.
+            bals = await self._get_balance_snapshot(
+                pair_tag=pair_tag,
+                symbol=pos.symbol,
+                usdt_idr_rate=(
+                    closed_trade["spot_pnl_idr"] / closed_trade["spot_pnl_usdt"]
+                    if closed_trade["spot_pnl_usdt"] else 0.0
+                ),
+            )
+            if bals is not None:
+                await self.redis.set(BALANCES_KEY, json.dumps(bals))
+
+        pipe = self.redis.pipeline()
+        pipe.hincrby(ARB_STATS_KEY, "total_closed", 1)
+        if closed_trade["net_profit_usdt"] > 0:
+            pipe.hincrby(ARB_STATS_KEY, "win_count", 1)
+        pipe.hincrbyfloat(
+            ARB_STATS_KEY, "total_pnl_usdt", closed_trade["net_profit_usdt"]
+        )
+        pipe.hincrbyfloat(
+            ARB_STATS_KEY, "total_pnl_idr", closed_trade["net_profit_idr"]
+        )
+        event_msg = {"event": "POSITION_CLOSED", **closed_trade}
+        pipe.publish(self.ARB_TRADE_EVENTS, json.dumps(event_msg))
+        await pipe.execute()
+        self.record_realized_pnl(
+            closed_trade["net_profit_usdt"],
+            event_id=closed_trade["trade_id"],
+            pair_key=pair_tag,
+        )
+        await self.publish_status()
+        await self._finalize_exit_position(pair_tag, pos)
 
     async def _execute_exit_fill(
         self,
@@ -23,19 +172,23 @@ class ExitExecutionMixin:
         pos: ActivePosition,
         unclosed_delta: float,
     ) -> None:
-        """Close global short via market buy and update position state."""
+        """Close the global short and persist realized exit accounting."""
         exit_price_idr = float(order_info.get("price", 0.0))
         entry_price_idr = float(pos.entry_price_idr)
         short_entry_usdt = float(pos.short_entry_usdt)
-
-        # Fetch FX rate and latest global ask
         usdt_rate = helpers.FALLBACK_USDT_IDR_RATE
-        live_global_ask = float(self.last_pegged_global_ask.get(pair_tag, short_entry_usdt))
+        live_global_ask = float(
+            self.last_pegged_global_ask.get(pair_tag, short_entry_usdt)
+        )
         live_price_raw = await self.redis.get(f"arb:live_price:{pair_tag}")
         if live_price_raw:
             try:
                 live_snapshot = json.loads(live_price_raw)
-                usdt_rate = float(live_snapshot.get("usdt_idr_rate", helpers.FALLBACK_USDT_IDR_RATE))
+                usdt_rate = float(
+                    live_snapshot.get(
+                        "usdt_idr_rate", helpers.FALLBACK_USDT_IDR_RATE
+                    )
+                )
                 g_ask = float(live_snapshot.get("global_best_ask_usdt", 0.0))
                 if g_ask > 0:
                     live_global_ask = g_ask
@@ -43,8 +196,9 @@ class ExitExecutionMixin:
                 pass
 
         logger.info(
-            f"[State 4 Exit Execution] Local Limit Sell fill detected: sold_delta={unclosed_delta} "
-            f"on {pair_tag}. Immediately closing Short via Market Buy (reduceOnly=True)!"
+            f"[State 4 Exit Execution] Local Limit Sell fill detected: "
+            f"sold_delta={unclosed_delta} on {pair_tag}. Immediately closing "
+            "Short via Market Buy (reduceOnly=True)!"
         )
         try:
             global_sym = self._resolve_global_symbol(pos.symbol)
@@ -118,144 +272,31 @@ class ExitExecutionMixin:
                 global_amount_spec=pos.global_amount_spec,
             )
 
-            # Snapshot qty before mutation so PnL fractions stay consistent.
             total_qty_before = pos.qty
             order_info["closed_short_qty"] += unclosed_delta
             pos.qty -= unclosed_delta
-
-            # Persist updated qty and closed_short_qty immediately so a crash before
-            # _finalize_exit_position does not cause the next poll to double-close.
             pos.updated_at = int(time.time() * 1000)
-            await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
-
-            # PnL must use the price the short actually closed at, not the last
-            # pegged quote: a market buy fills through the book and the gap is
-            # real money. Fall back to the live ask only when the venue returns
-            # no fill price at all.
+            await self.redis.set(
+                f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+            )
             short_exit_usdt = helpers.extract_fill_price(close_order)
             if short_exit_usdt <= 0:
                 raise ValueError(
                     "futures close fill price unavailable after spot sell; "
                     "PnL cannot be safely finalized"
                 )
-
-            spot_pnl_idr = unclosed_delta * (exit_price_idr - entry_price_idr)
-            spot_pnl_usdt = spot_pnl_idr / usdt_rate if usdt_rate > 0 else 0.0
-            futures_pnl_usdt = unclosed_delta * (short_entry_usdt - short_exit_usdt)
-
-            # Allocate only the pro-rata share of accumulated funding for this
-            # partial fill. Using the full accumulator per fill inflates PnL on
-            # multi-fill exits; the remainder stays on the position for later fills.
-            fill_ratio = (unclosed_delta / total_qty_before) if total_qty_before > 0 else 1.0
-            funding_usdt = float(pos.accumulated_funding_usdt) * fill_ratio
-            pos.accumulated_funding_usdt -= funding_usdt
-
-            rates = rates_for_position(pos)
-            fee_breakdown = round_trip_fee_breakdown_usdt(
-                unclosed_delta,
-                entry_price_idr / usdt_rate,
-                exit_price_idr / usdt_rate,
-                short_entry_usdt,
-                short_exit_usdt,
-                rates,
+            closed_trade, spot_cost, futures_margin = (
+                self._build_closed_trade_record(
+                    pair_tag, pos, unclosed_delta, exit_price_idr,
+                    entry_price_idr, short_entry_usdt, short_exit_usdt,
+                    usdt_rate, total_qty_before,
+                )
             )
-            spot_fees_usdt = fee_breakdown["spot_fees_usdt"]
-            futures_fees_usdt = fee_breakdown["futures_fees_usdt"]
-            fees_usdt = fee_breakdown["total_fees_usdt"]
-            net_profit_usdt = spot_pnl_usdt + futures_pnl_usdt + funding_usdt - fees_usdt
-            net_profit_idr = net_profit_usdt * usdt_rate
-
-            capital_usdt = unclosed_delta * short_entry_usdt
-            roi_pct = (net_profit_usdt / capital_usdt * 100.0) if capital_usdt > 0 else 0.0
-
-            is_mock = getattr(self.config, "mock_mode", False)
-
-            if net_profit_usdt < 0:
-                logger.warning(
-                    f"[State 4 Realized Loss] Local Limit Sell fill resulted in net negative PnL: "
-                    f"{net_profit_usdt:.4f} USDT (ROI: {roi_pct:.3f}%). Spot PnL: {spot_pnl_usdt:+.4f} USDT, "
-                    f"Futures Short PnL: {futures_pnl_usdt:+.4f} USDT, Funding: +{funding_usdt:.4f} USDT, Fees: -{fees_usdt:.4f} USDT. "
-                    f"Closing Short to maintain delta-neutral position integrity."
-                )
-            else:
-                logger.info(
-                    f"[State 4 Realized Profit] Trade closed with profit: +{net_profit_usdt:.4f} USDT (ROI: +{roi_pct:.3f}%). "
-                    f"Spot PnL: {spot_pnl_usdt:+.4f} USDT, Futures Short PnL: {futures_pnl_usdt:+.4f} USDT."
-                )
-            closed_trade = {
-                "trade_id": f"trade-{int(time.time()*1000)}",
-                "local_exchange": pos.local_exchange,
-                "global_exchange": pos.global_exchange,
-                "symbol": pos.symbol,
-                "qty": unclosed_delta,
-                "entry_price_idr": entry_price_idr,
-                "exit_price_idr": exit_price_idr,
-                "short_entry_usdt": short_entry_usdt,
-                "short_exit_usdt": short_exit_usdt,
-                "spot_pnl_idr": spot_pnl_idr,
-                "futures_pnl_usdt": futures_pnl_usdt,
-                "accumulated_funding_usdt": funding_usdt,
-                "spot_fees_usdt": spot_fees_usdt,
-                "futures_fees_usdt": futures_fees_usdt,
-                "fees_usdt": fees_usdt,
-                "fee_source": rates.source,
-                "fee_verified": rates.verified,
-                "net_profit_usdt": net_profit_usdt,
-                "net_profit_idr": net_profit_idr,
-                "net_roi_pct": roi_pct,
-                "is_mock": is_mock,
-                "closed_at_ms": int(time.time() * 1000),
-            }
-
-            await self.redis.lpush(ARB_TRADE_HISTORY_KEY, json.dumps(closed_trade))
-            await self.redis.ltrim(ARB_TRADE_HISTORY_KEY, 0, ARB_TRADE_HISTORY_MAX_LEN)
-            self.supabase.trade_closed(pair_tag, closed_trade, pos)
-
-            # Release only the pro-rata share of locked capital for this fill.
-            spot_cost = getattr(pos, "spot_cost_usdt", unclosed_delta * entry_price_idr / usdt_rate) * fill_ratio
-            fut_margin = getattr(pos, "futures_margin_usdt", unclosed_delta * short_entry_usdt) * fill_ratio
-            if hasattr(self.client, "apply_realized_trade"):
-                self.client.apply_realized_trade(
-                    spot_cost_usdt=spot_cost,
-                    spot_pnl_usdt=spot_pnl_usdt,
-                    spot_fees_usdt=spot_fees_usdt,
-                    futures_margin_usdt=fut_margin,
-                    futures_pnl_usdt=futures_pnl_usdt,
-                    funding_usdt=funding_usdt,
-                    futures_fees_usdt=futures_fees_usdt,
-                )
-                bals = await self._get_balance_snapshot(
-                    pair_tag=pair_tag,
-                    symbol=pos.symbol,
-                    usdt_idr_rate=usdt_rate,
-                )
-                if bals is not None:
-                    await self.redis.set(BALANCES_KEY, json.dumps(bals))
-
-            # Update stats in Redis
-            pipe = self.redis.pipeline()
-            pipe.hincrby("arb:stats", "total_closed", 1)
-            if net_profit_usdt > 0:
-                pipe.hincrby("arb:stats", "win_count", 1)
-            pipe.hincrbyfloat("arb:stats", "total_pnl_usdt", net_profit_usdt)
-            pipe.hincrbyfloat("arb:stats", "total_pnl_idr", net_profit_idr)
-
-            # Publish event to arb:trade_events for Telegram Bot
-            event_msg = {
-                "event": "POSITION_CLOSED",
-                **closed_trade,
-            }
-            pipe.publish(self.ARB_TRADE_EVENTS, json.dumps(event_msg))
-            await pipe.execute()
-
-            self.record_realized_pnl(net_profit_usdt, event_id=closed_trade["trade_id"], pair_key=pair_tag)
-            await self.publish_status()
-            await self._finalize_exit_position(pair_tag, pos)
+            await self._persist_closed_trade(
+                pair_tag, pos, closed_trade, spot_cost, futures_margin
+            )
         except Exception as ee:
-            # The local spot sell has already filled. Do not retry this exit
-            # automatically: the futures close may have failed, partially filled,
-            # or timed out after acceptance. Preserve state for manual reconciliation.
-            pos.state = "RECONCILIATION_REQUIRED"
+            pos.state = PositionState.RECONCILIATION_REQUIRED
             pos.updated_at = int(time.time() * 1000)
             self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
             await self.redis.set(
