@@ -1036,9 +1036,12 @@ class ArbitrageEngine(
             if self._trading_halted and self._halt_reason == "KILL_SWITCH":
                 self._trading_halted = False
                 self._halt_reason = ""
-                self._persist_risk_state("trading_halt", scope="global", resolved=True)
+                halt_saved = self._persist_risk_state("trading_halt", scope="global", resolved=True)
                 self._manual_resume_day = self._loss_day
-                self._persist_risk_state("trading_resume", scope="global", reason="manual resume", value={"loss_day": self._loss_day})
+                resume_saved = self._persist_risk_state("trading_resume", scope="global", reason="manual resume", value={"loss_day": self._loss_day})
+                if halt_saved and resume_saved:
+                    self.supabase.clear_risk_persistence_failure()
+                    self._risk_persistence_failed = False
                 logger.warning(f"[Kill Switch] Trading resumed ({reason})")
                 await self.publish_status()
             return
@@ -1963,9 +1966,12 @@ class ArbitrageEngine(
         """Clears the halt flag; used by the operator once a loss is reviewed."""
         self._trading_halted = False
         self._halt_reason = ""
-        self._persist_risk_state("trading_halt", scope="global", resolved=True)
+        halt_saved = self._persist_risk_state("trading_halt", scope="global", resolved=True)
         self._manual_resume_day = self._loss_day
-        self._persist_risk_state("trading_resume", scope="global", reason=reason, value={"loss_day": self._loss_day})
+        resume_saved = self._persist_risk_state("trading_resume", scope="global", reason=reason, value={"loss_day": self._loss_day})
+        if halt_saved and resume_saved:
+            self.supabase.clear_risk_persistence_failure()
+            self._risk_persistence_failed = False
         logger.warning(f"[Circuit Breaker] Trading resumed manually ({reason})")
         await self.publish_status()
 
