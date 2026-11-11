@@ -137,9 +137,9 @@ class RiskFundingMixin:
             # A balance probe failure must not silently pass the gate; surface it
             # and let the caller decide, matching the pre-existing fail-open on
             # unsupported clients while logging loudly.
-            logger.error(
-                f"[State 1 Funding Preflight] balance probe failed for {pair_tag}: "
-                f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "[State 1 Funding Preflight] balance probe failed for %s",
+                pair_tag,
             )
             return True
 
