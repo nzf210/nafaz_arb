@@ -513,3 +513,53 @@ class TestOrderRegistryWriter:
         row = [r for t, _, r in _drain(writer) if t == "order_registry"][0]
         payload = json.loads(row["raw_payload"])
         assert payload["hedged_quantity"] == pytest.approx(0.006)
+
+
+class TestBalanceSnapshots:
+    def test_balance_snapshot_appends_valid_spot_and_perpetual_rows(self):
+        writer = _writer()
+        assert writer.balance_snapshot(
+            exchange="Indodax",
+            market_type="spot",
+            asset="idr",
+            total=1000,
+            free=700,
+            used=300,
+            is_mock=False,
+        ) is True
+        assert writer.balance_snapshot(
+            exchange="binance",
+            market_type="perpetual",
+            asset="usdt",
+            total=10,
+            free=8,
+            used=2,
+            is_mock=False,
+        ) is True
+        rows = _drain(writer)
+        assert [row[0] for row in rows] == ["balance_snapshots", "balance_snapshots"]
+        assert rows[0][2]["exchange_name"] == "indodax"
+        assert rows[0][2]["market_type"] == "spot"
+        assert rows[0][2]["asset"] == "IDR"
+        assert rows[1][2]["market_type"] == "perpetual"
+        assert rows[1][2]["total"] == 10
+        assert "observed_at" in rows[0][2]
+
+    def test_balance_snapshot_rejects_invalid_values_and_market(self):
+        writer = _writer()
+        assert writer.balance_snapshot(
+            exchange="indodax", market_type="spot", asset="idr",
+            total=-1, free=0, used=0,
+        ) is False
+        assert writer.balance_snapshot(
+            exchange="indodax", market_type="margin", asset="idr",
+            total=1, free=1, used=0,
+        ) is False
+        assert _drain(writer) == []
+
+    def test_balance_snapshot_is_noop_when_disabled(self):
+        writer = _writer(enabled=False)
+        assert writer.balance_snapshot(
+            exchange="indodax", market_type="spot", asset="idr",
+            total=1, free=1, used=0,
+        ) is False
