@@ -31,6 +31,7 @@ class RecoveryRegistryMixin:
 
     async def _run_startup_recovery_with_lock(self) -> None:
         """Restore positions, pending entries and orders as one exclusive pass."""
+        await self._restore_risk_state()
         await self._recover_active_positions()
         await self._recover_pending_entry_orders()
         await self._run_order_recovery_with_lock()
@@ -42,7 +43,7 @@ class RecoveryRegistryMixin:
 
         A process-local asyncio lock is insufficient: two replicas can otherwise
         restore or reconcile the same venue orders concurrently. Redis' lock
-        uses an owner token and compare-and-delete release; the heartbeat keeps
+        uses an owner token and compare-and-update Redis transactions; the heartbeat keeps
         the lease alive during slow venue/API reconciliation.
         """
         if self.redis is None or self.order_registry is None:
