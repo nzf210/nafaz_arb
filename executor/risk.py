@@ -115,6 +115,12 @@ class RiskMixin:
         self._loss_day = self._utc_day()
         self._risk_state_restored = True
         limit = float(getattr(self.config, "max_daily_loss_usdt", 0.0) or 0.0)
+        if self._halt_reason == "DAILY_LOSS_LIMIT" and (
+            limit <= 0 or self._daily_realized_loss_usdt < limit
+        ):
+            self._trading_halted = False
+            self._halt_reason = ""
+            self._persist_risk_state("trading_halt", scope="global", resolved=True)
         if limit > 0 and self._daily_realized_loss_usdt >= limit and not self._trading_halted and getattr(self, "_manual_resume_day", None) != self._loss_day:
             self._trading_halted = True
             self._halt_reason = "DAILY_LOSS_LIMIT"
