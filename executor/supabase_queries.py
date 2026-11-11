@@ -51,6 +51,31 @@ class SupabaseQueryMixin:
         )
         return f"{exchange}:{market}:{key}" if exchange and market and key else ""
 
+    @staticmethod
+    def _candidate_value(row: dict, existing: dict, field: str):
+        return row.get(field) or existing.get(field)
+
+    @staticmethod
+    def _candidate_raw_payload(row: dict) -> dict:
+        raw = row.get("raw_payload")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (TypeError, ValueError):
+                raw = {}
+        return raw if isinstance(raw, dict) else {}
+
+    @staticmethod
+    def _candidate_completed_at(row: dict, existing: dict):
+        completed_at = existing.get("completed_at")
+        terminal_statuses = (
+            "closed", "filled", "canceled", "cancelled", "rejected", "expired"
+        )
+        status = str(row.get("status") or "").lower()
+        if completed_at is None and status in terminal_statuses:
+            return row.get("updated_at")
+        return completed_at
+
     def _merge_registry_fill_candidate(
         self, candidates: Dict[str, Dict[str, Any]], row: dict
     ) -> None:
@@ -58,34 +83,23 @@ class SupabaseQueryMixin:
         if not identity:
             return
         existing = candidates.get(identity, {})
-        raw = row.get("raw_payload")
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except (TypeError, ValueError):
-                raw = {}
-        raw = raw if isinstance(raw, dict) else {}
-        status = str(row.get("status") or "").lower()
-        completed_at = existing.get("completed_at")
-        if completed_at is None and status in (
-            "closed", "filled", "canceled", "cancelled", "rejected", "expired"
-        ):
-            completed_at = row.get("updated_at")
+        raw = self._candidate_raw_payload(row)
+        completed_at = self._candidate_completed_at(row, existing)
         candidates[identity] = {
             **existing,
-            "pair_key": row.get("pair_key") or existing.get("pair_key"),
-            "exchange_name": row.get("exchange_name") or existing.get("exchange_name"),
-            "market_type": row.get("market_type") or existing.get("market_type"),
-            "leg": row.get("leg") or existing.get("leg"),
-            "exchange_order_id": (
-                row.get("exchange_order_id") or existing.get("exchange_order_id")
+            "pair_key": self._candidate_value(row, existing, "pair_key"),
+            "exchange_name": self._candidate_value(row, existing, "exchange_name"),
+            "market_type": self._candidate_value(row, existing, "market_type"),
+            "leg": self._candidate_value(row, existing, "leg"),
+            "exchange_order_id": self._candidate_value(
+                row, existing, "exchange_order_id"
             ),
-            "client_order_id": (
-                row.get("client_order_id") or existing.get("client_order_id")
+            "client_order_id": self._candidate_value(
+                row, existing, "client_order_id"
             ),
-            "symbol": row.get("symbol") or existing.get("symbol"),
-            "side": row.get("side") or existing.get("side"),
-            "status": row.get("status") or existing.get("status"),
+            "symbol": self._candidate_value(row, existing, "symbol"),
+            "side": self._candidate_value(row, existing, "side"),
+            "status": self._candidate_value(row, existing, "status"),
             "requested_qty": _num(
                 row.get("requested_qty"), _num(existing.get("requested_qty"))
             ),
@@ -95,9 +109,9 @@ class SupabaseQueryMixin:
             "remaining_qty": _num(
                 row.get("remaining_qty"), _num(existing.get("remaining_qty"))
             ),
-            "limit_price": row.get("limit_price") or existing.get("limit_price"),
-            "average_fill_price": (
-                row.get("average_fill_price") or existing.get("average_fill_price")
+            "limit_price": self._candidate_value(row, existing, "limit_price"),
+            "average_fill_price": self._candidate_value(
+                row, existing, "average_fill_price"
             ),
             "reduce_only": bool(
                 row.get("reduce_only", existing.get("reduce_only", False))
