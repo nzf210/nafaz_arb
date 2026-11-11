@@ -83,47 +83,105 @@ func prettyJSON(raw json.RawMessage) string {
 	return string(encoded)
 }
 
-func (b *Bot) sendMonitorSection(ctx context.Context, chatID, replyToID int64, title string, fields ...string) {
-	snapshot, problem := b.readMonitorSnapshot(ctx)
-	if problem != "" {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>"+html.EscapeString(title)+"</b>\n\n"+html.EscapeString(problem), b.defaultKeyboard())
+func (b *Bot) sendOrphanOrderSection(
+	ctx context.Context, chatID, replyToID int64, snapshot monitorSnapshot,
+) {
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(
+			ctx, chatID, replyToID,
+			"⚠️ Redis tidak terhubung; orphan registry tidak dapat diverifikasi.",
+			b.defaultKeyboard(),
+		)
 		return
 	}
-	var raw json.RawMessage
-	if title == "ORPHAN ORDERS" {
-		b.mu.Lock(); rc := b.redisClient; b.mu.Unlock()
-		if rc == nil {
-			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Redis tidak terhubung; orphan registry tidak dapat diverifikasi.", b.defaultKeyboard()); return
-		}
-		items, err := rc.ListOrphanOrderRecords(ctx)
-		if err != nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca orphan registry: "+html.EscapeString(err.Error()), b.defaultKeyboard()); return }
-		var recovery monitorSnapshot
-		_ = json.Unmarshal(rawField(snapshot, "recovery"), &recovery)
-		reported := decodeList(rawField(recovery, "orphan_orders"))
-		if len(items) == 0 && len(reported) > 0 { items = reported }
-		if len(items) != len(reported) {
-			b.sendReplyWithMarkup(ctx, chatID, replyToID, fmt.Sprintf("⚠️ <b>ORPHAN REGISTRY MISMATCH</b>\nRedis index: <code>%d</code> | Recovery snapshot: <code>%d</code>\nGunakan daftar berikut sebagai informasi parsial; inventory belum konsisten.", len(items), len(reported)), b.defaultKeyboard())
-		}
-		b.sendJSONPages(ctx, chatID, replyToID, "ORPHAN EXCHANGE ORDERS", items)
+	items, err := rc.ListOrphanOrderRecords(ctx)
+	if err != nil {
+		b.sendReplyWithMarkup(
+			ctx, chatID, replyToID,
+			"❌ Gagal membaca orphan registry: "+html.EscapeString(err.Error()),
+			b.defaultKeyboard(),
+		)
 		return
-	} else if title == "RISK HALT" {
+	}
+	var recovery monitorSnapshot
+	_ = json.Unmarshal(rawField(snapshot, "recovery"), &recovery)
+	reported := decodeList(rawField(recovery, "orphan_orders"))
+	if len(items) == 0 && len(reported) > 0 {
+		items = reported
+	}
+	if len(items) != len(reported) {
+		b.sendReplyWithMarkup(
+			ctx, chatID, replyToID,
+			fmt.Sprintf(
+				"⚠️ <b>ORPHAN REGISTRY MISMATCH</b>\nRedis index: <code>%d</code> | Recovery snapshot: <code>%d</code>\nGunakan daftar berikut sebagai informasi parsial; inventory belum konsisten.",
+				len(items), len(reported),
+			),
+			b.defaultKeyboard(),
+		)
+	}
+	b.sendJSONPages(ctx, chatID, replyToID, "ORPHAN EXCHANGE ORDERS", items)
+}
+
+func buildMonitorSectionRaw(
+	snapshot monitorSnapshot, title string, fields []string,
+) json.RawMessage {
+	if title == "RISK HALT" {
 		view := monitorSnapshot{}
-		for _, key := range []string{"status", "trading_halted", "halt_reason", "exchange_halted", "failed_pairs"} {
-			if value := rawField(snapshot, key); len(value) > 0 { view[key] = value }
+		for _, key := range []string{
+			"status", "trading_halted", "halt_reason", "exchange_halted",
+			"failed_pairs",
+		} {
+			if value := rawField(snapshot, key); len(value) > 0 {
+				view[key] = value
+			}
 		}
-		raw, _ = json.Marshal(view)
-	} else {
-		for _, field := range fields {
-			if raw = rawField(snapshot, field); len(raw) > 0 { break }
+		raw, _ := json.Marshal(view)
+		return raw
+	}
+	for _, field := range fields {
+		if raw := rawField(snapshot, field); len(raw) > 0 {
+			return raw
 		}
 	}
-	body := prettyJSON(raw)
+	return nil
+}
+
+func formatMonitorSectionMessage(title, body string) string {
 	if len([]rune(body)) > 3300 {
 		runes := []rune(body)
 		body = string(runes[:3200]) + "\n... dipotong; gunakan detail spesifik."
 	}
-	msg := "📡 <b>" + html.EscapeString(title) + "</b>\n\n<pre>" + html.EscapeString(body) + htmlPreClose + "\n\n<i>Read-only. Sumber: snapshot executor terakhir.</i>"
-	b.sendReplyWithMarkup(ctx, chatID, replyToID, msg, b.defaultKeyboard())
+	return "📡 <b>" + html.EscapeString(title) + "</b>\n\n<pre>" +
+		html.EscapeString(body) + htmlPreClose +
+		"\n\n<i>Read-only. Sumber: snapshot executor terakhir.</i>"
+}
+
+func (b *Bot) sendMonitorSection(
+	ctx context.Context, chatID, replyToID int64, title string, fields ...string,
+) {
+	snapshot, problem := b.readMonitorSnapshot(ctx)
+	if problem != "" {
+		b.sendReplyWithMarkup(
+			ctx, chatID, replyToID,
+			"⚠️ <b>"+html.EscapeString(title)+"</b>\n\n"+html.EscapeString(problem),
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	if title == "ORPHAN ORDERS" {
+		b.sendOrphanOrderSection(ctx, chatID, replyToID, snapshot)
+		return
+	}
+	raw := buildMonitorSectionRaw(snapshot, title, fields)
+	body := prettyJSON(raw)
+	b.sendReplyWithMarkup(
+		ctx, chatID, replyToID,
+		formatMonitorSectionMessage(title, body),
+		b.defaultKeyboard(),
+	)
 }
 
 func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) {
