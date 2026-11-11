@@ -1,6 +1,5 @@
 """force close lifecycle responsibilities for emergency position closure."""
 
-import logging
 import json
 import logging
 import math
@@ -11,6 +10,7 @@ from executor.models import PositionState
 from executor.helpers import ARB_TRADE_HISTORY_KEY, ARB_TRADE_HISTORY_MAX_LEN, BALANCES_KEY
 
 logger = logging.getLogger("executor.engine")
+ARB_STATS_KEY = "arb:stats"
 
 
 
@@ -108,11 +108,11 @@ class ForceCloseLifecycleMixin:
                     await self.redis.set(BALANCES_KEY, json.dumps(bals))
 
         pipe = self.redis.pipeline()
-        pipe.hincrby("arb:stats", "total_closed", 1)
+        pipe.hincrby(ARB_STATS_KEY, "total_closed", 1)
         if pnl["net_profit_usdt"] > 0:
-            pipe.hincrby("arb:stats", "win_count", 1)
-        pipe.hincrbyfloat("arb:stats", "total_pnl_usdt", pnl["net_profit_usdt"])
-        pipe.hincrbyfloat("arb:stats", "total_pnl_idr", pnl["net_profit_idr"])
+            pipe.hincrby(ARB_STATS_KEY, "win_count", 1)
+        pipe.hincrbyfloat(ARB_STATS_KEY, "total_pnl_usdt", pnl["net_profit_usdt"])
+        pipe.hincrbyfloat(ARB_STATS_KEY, "total_pnl_idr", pnl["net_profit_idr"])
         event_msg = {
             "event": "POSITION_CLOSED",
             **closed_trade,
