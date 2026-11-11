@@ -76,3 +76,54 @@ func TestUnauthorizedChatCannotRunMonitoringCommand(t *testing.T) {
 	bot.handleTextMessage(context.Background(), &Message{Chat:Chat{ID:-999}, Text:"/orders"})
 	if sent != 0 { t.Fatalf("unauthorized chat triggered %d replies", sent) }
 }
+
+func TestOrdersCommandReportsMissingRedis(t *testing.T) {
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" { _ = json.NewDecoder(r.Body).Decode(&sent); _ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true}) }
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.handleOrdersCommand(context.Background(), -100123456789, 0)
+	if !strings.Contains(sent.Text, "Redis tidak terhubung") { t.Fatalf("expected missing Redis warning, got %s", sent.Text) }
+}
+
+func TestOrphansCommandReadsOrphanRegistry(t *testing.T) {
+	mr, err := miniredis.Run(); if err != nil { t.Fatal(err) }; defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()}); defer rdb.Close()
+	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, `{"status":"RUNNING","recovery":{"complete":true,"orphan_orders":[{"exchange_order_id":"orphan-9"}]}}`, 0).Err(); err != nil { t.Fatal(err) }
+	if err := rdb.HSet(context.Background(), redishandler.KeyOrphanOrderIndex, "orphan-9", "1").Err(); err != nil { t.Fatal(err) }
+	if err := rdb.Set(context.Background(), redishandler.KeyPrefixOrphanOrder+"orphan-9", `{"exchange_order_id":"orphan-9","exchange":"okx","symbol":"BTC/USDT","status":"ORPHAN_ORDER"}`, 0).Err(); err != nil { t.Fatal(err) }
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) { if r.URL.Path == "/sendMessage" { _ = json.NewDecoder(r.Body).Decode(&sent); _ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true}) } }
+	bot, _, ts := setupTestBot(t, tsHandler); defer ts.Close()
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.sendMonitorSection(context.Background(), -100123456789, 0, "ORPHAN ORDERS", "orphans")
+	if !strings.Contains(sent.Text, "orphan-9") { t.Fatalf("orphan detail missing: %s", sent.Text) }
+}
+
+func TestStartupRecoveryFailureNeverReportsReady(t *testing.T) {
+	mr, err := miniredis.Run(); if err != nil { t.Fatal(err) }; defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()}); defer rdb.Close()
+	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, `{"status":"RUNNING","open_positions":1,"recovery":{"complete":false,"ready":false,"tracked_orders":1,"pending_orders":{"o1":"venue unavailable"},"orphan_orders":[]},"trading_halted":true}`, 0).Err(); err != nil { t.Fatal(err) }
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) { if r.URL.Path == "/sendMessage" { _ = json.NewDecoder(r.Body).Decode(&sent); _ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true}) } }
+	bot, _, ts := setupTestBot(t, tsHandler); defer ts.Close()
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.sendStartupSummary(context.Background())
+	if !strings.Contains(sent.Text, "NOT READY") || strings.Contains(sent.Text, "Global trading: <b>READY</b>") { t.Fatalf("unsafe startup status: %s", sent.Text) }
+}
+
+func TestMonitorSectionTruncatesLongTelegramMessages(t *testing.T) {
+	mr, err := miniredis.Run(); if err != nil { t.Fatal(err) }; defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()}); defer rdb.Close()
+	large := strings.Repeat("mismatch-detail-", 1000)
+	payload, _ := json.Marshal(map[string]interface{}{"reconciliation":map[string]interface{}{"latest":large}})
+	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, payload, 0).Err(); err != nil { t.Fatal(err) }
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) { if r.URL.Path == "/sendMessage" { _ = json.NewDecoder(r.Body).Decode(&sent); _ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true}) } }
+	bot, _, ts := setupTestBot(t, tsHandler); defer ts.Close()
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.sendMonitorSection(context.Background(), -100123456789, 0, "RECONCILIATION MISMATCHES", "reconciliation")
+	if len([]rune(sent.Text)) > 4096 { t.Fatalf("Telegram message exceeds 4096 characters: %d", len([]rune(sent.Text))) }
+}
