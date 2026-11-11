@@ -133,7 +133,7 @@ async def test_reconciles_and_journals_real_trade_id_and_fee():
     assert saved["order_id"] == "00000000-0000-0000-0000-000000000001"
     assert engine.failures == []
     assert len(engine.client_for_exchange.calls) == 1
-    assert engine.supabase.watermarks["indodax:spot:order-1"] == pytest.approx(0.5)
+    assert engine.supabase.watermarks["indodax:spot:client-1"] == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
@@ -202,7 +202,7 @@ async def test_mismatch_is_retried_until_exchange_trade_history_matches():
     ]
     await worker.reconcile_once()
 
-    assert engine.supabase.watermarks["indodax:spot:order-1"] == pytest.approx(0.5)
+    assert engine.supabase.watermarks["indodax:spot:client-1"] == pytest.approx(0.5)
     assert "indodax:BTC_IDR:okx:BTC_USDT" not in engine._recovery_scope_halts
 
 
