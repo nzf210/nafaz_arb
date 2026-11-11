@@ -361,6 +361,19 @@ func (c *Client) ListActiveOrderRecords(ctx context.Context) ([]json.RawMessage,
 	return out, nil
 }
 
+// GetOrderRecord reads one canonical local order ID, including terminal
+// records retained outside the active-order index.
+func (c *Client) GetOrderRecord(ctx context.Context, localOrderID string) (json.RawMessage, bool, error) {
+	if c == nil || c.rdb == nil { return nil, false, errors.New("redis is not connected") }
+	localOrderID = strings.TrimSpace(localOrderID)
+	if localOrderID == "" { return nil, false, errors.New("local order ID is required") }
+	raw, err := c.rdb.Get(ctx, KeyPrefixOrderRecord+localOrderID).Bytes()
+	if err == redis.Nil { return nil, false, nil }
+	if err != nil { return nil, false, fmt.Errorf("read order record %s: %w", localOrderID, err) }
+	if !json.Valid(raw) { return nil, false, fmt.Errorf("order record %s contains invalid JSON", localOrderID) }
+	return json.RawMessage(raw), true, nil
+}
+
 // ListOrphanOrderRecords returns every indexed exchange order that recovery
 // could not safely identify. Redis errors are surfaced to avoid false-empty UI.
 func (c *Client) ListOrphanOrderRecords(ctx context.Context) ([]json.RawMessage, error) {
