@@ -301,10 +301,17 @@ class SupabaseWriter:
         if pos is None:
             return
         now = datetime.now(timezone.utc).isoformat()
-        local_exchange = str(getattr(pos, "local_exchange", "") or "")
-        global_exchange = str(getattr(pos, "global_exchange", "") or "")
-        local_symbol = str(getattr(pair_info, "local_symbol", "") or getattr(pos, "symbol", "") or "")
-        global_symbol = str(getattr(pair_info, "global_symbol", "") or getattr(pos, "symbol", "") or "")
+        parent = self._position_rows.get(pair_key, {})
+        local_exchange = str(getattr(pos, "local_exchange", "") or parent.get("local_exchange") or "")
+        global_exchange = str(getattr(pos, "global_exchange", "") or parent.get("global_exchange") or "")
+        local_symbol = str(
+            getattr(pair_info, "local_symbol", "") or parent.get("local_symbol")
+            or getattr(pos, "symbol", "") or ""
+        )
+        global_symbol = str(
+            getattr(pair_info, "global_symbol", "") or parent.get("global_symbol")
+            or getattr(pos, "symbol", "") or ""
+        )
         qty = max(0.0, _num(getattr(pos, "qty", 0.0)))
         spot_price = _num(getattr(pos, "entry_price_idr", 0.0)) or None
         perp_price = _num(getattr(pos, "short_entry_usdt", 0.0)) or None
@@ -384,6 +391,7 @@ class SupabaseWriter:
         return self._emit(
             "funding_payments",
             {
+                "id": str(uuid.uuid5(_POSITION_NS, f"funding:{exchange}:{payment_id}")),
                 "position_id": position_id,
                 "exchange_name": exchange,
                 "symbol": symbol,
@@ -397,7 +405,7 @@ class SupabaseWriter:
                 "settled_at": _ms_to_iso(timestamp),
                 "raw_payload": payment,
             },
-            on_conflict="exchange_name,exchange_payment_id",
+            on_conflict="id",
         )
 
     def balance_snapshot(
