@@ -32,6 +32,9 @@ def _local_order_params(
         if amount_spec.step <= 0 and require_amount_step:
             raise ValueError("Indodax orders require the market quantity increment")
         params["quantityIncrement"] = amount_spec.step
+        # Indodax TAPI v2 MOC is the exchange-side Post-Only guarantee.
+        # Apply only to limit orders; emergency market orders use a separate path.
+        params["timeInForce"] = "MOC"
     return (params,) if params else ()
 
 VENUE_CLIENT_ORDER_ID_MAX_LEN = 36
