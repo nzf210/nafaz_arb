@@ -173,7 +173,7 @@ func TestReconcileRetryRequestsReadOnlyExecutorReconciliation(t *testing.T) {
 		var request map[string]string
 		if json.Unmarshal([]byte(message.Payload), &request) != nil { return }
 		reply, _ := json.Marshal(redishandler.RecoveryRetryReply{
-			RequestID: request["request_id"], Complete: true,
+			RequestID: request["request_id"], Action: request["action"], Complete: true,
 			PendingOrders: map[string]string{}, ScopeHalts: map[string]string{},
 			TimestampMS: time.Now().UnixMilli(),
 		})
@@ -224,5 +224,52 @@ func TestReconcileRetryRejectsUnauthorizedOperator(t *testing.T) {
 	})
 	if !strings.Contains(sent.Text, "Akses ditolak") {
 		t.Fatalf("expected authorization rejection, got %s", sent.Text)
+	}
+}
+
+
+func TestReconcileResolveCommandUsesVerifiedExecutorAction(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil { t.Fatal(err) }
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	sub := rdb.Subscribe(ctx, redishandler.ChannelRecoveryRequest)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil { t.Fatalf("subscribe: %v", err) }
+	go func() {
+		message := <-sub.Channel()
+		if message == nil { return }
+		var request map[string]string
+		if json.Unmarshal([]byte(message.Payload), &request) != nil { return }
+		reply, _ := json.Marshal(redishandler.RecoveryRetryReply{
+			RequestID: request["request_id"], Action: request["action"], Resolved: true,
+			Complete: true, PendingOrders: map[string]string{}, ScopeHalts: map[string]string{},
+			TimestampMS: time.Now().UnixMilli(),
+		})
+		_ = rdb.Set(ctx, redishandler.KeyPrefixRecoveryReply+request["request_id"], reply, 30*time.Second).Err()
+	}()
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.handleReconcileCommand(ctx, &Message{
+		Chat: Chat{ID:-100123456789}, From:&User{ID:42}, MessageID:78,
+		Text:"/reconcile resolve orphan-123 indodax:btc_idr",
+	}, []string{"/reconcile", "resolve", "orphan-123", "indodax:btc_idr"})
+	if !strings.Contains(sent.Text, "ORPHAN TERVERIFIKASI") {
+		t.Fatalf("expected verified orphan resolution response, got: %s", sent.Text)
+	}
+	if !strings.Contains(sent.Text, "tidak ada order yang dikirim") {
+		t.Fatalf("response must confirm no order submission: %s", sent.Text)
 	}
 }
