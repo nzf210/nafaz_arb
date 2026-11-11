@@ -378,7 +378,7 @@ class ForceCloseLegMixin:
         usdt_rate = 0.0
         current_spot_bid = pos.entry_price_idr
 
-        price_data = await self._fetch_live_price(pair_key, pos)
+        price_data = await self._fetch_live_price(pair_key)
         if price_data:
             current_ask, usdt_rate = price_data
 
