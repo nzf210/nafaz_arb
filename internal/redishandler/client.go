@@ -599,16 +599,30 @@ func (c *Client) Close() error {
 
 
 type RecoveryRetryReply struct {
-	RequestID    string            `json:"request_id"`
-	Complete     bool              `json:"complete"`
+	RequestID string `json:"request_id"`
+	Action string `json:"action"`
+	Resolved bool `json:"resolved"`
+	Complete bool `json:"complete"`
 	PendingOrders map[string]string `json:"pending_orders"`
-	ScopeHalts   map[string]string `json:"scope_halts"`
-	TimestampMS  int64             `json:"timestamp_ms"`
+	ScopeHalts map[string]string `json:"scope_halts"`
+	TimestampMS int64 `json:"timestamp_ms"`
 }
 
-// RequestRecoveryRetry asks the executor to re-run read-only order, fill,
-// position, and exposure reconciliation. It never places or cancels orders.
+// RequestRecoveryRetry asks the executor to re-run read-only reconciliation.
 func (c *Client) RequestRecoveryRetry(ctx context.Context) (RecoveryRetryReply, error) {
+	return c.requestRecoveryAction(ctx, "retry", "", "")
+}
+
+// RequestOrphanResolution asks the executor to verify and resolve one orphan.
+func (c *Client) RequestOrphanResolution(ctx context.Context, orphanID, pairTag string) (RecoveryRetryReply, error) {
+	orphanID = strings.TrimSpace(orphanID)
+	if orphanID == "" || len(orphanID) > 256 {
+		return RecoveryRetryReply{}, errors.New("orphan id tidak valid")
+	}
+	return c.requestRecoveryAction(ctx, "resolve_orphan", orphanID, strings.TrimSpace(pairTag))
+}
+
+func (c *Client) requestRecoveryAction(ctx context.Context, action, orphanID, pairTag string) (RecoveryRetryReply, error) {
 	if c == nil || c.rdb == nil {
 		return RecoveryRetryReply{}, errors.New("redis is not connected")
 	}
@@ -617,10 +631,10 @@ func (c *Client) RequestRecoveryRetry(ctx context.Context) (RecoveryRetryReply, 
 		return RecoveryRetryReply{}, fmt.Errorf("generate recovery request id: %w", err)
 	}
 	requestID := hex.EncodeToString(idBytes)
-	payload, err := json.Marshal(map[string]string{
-		"request_id": requestID,
-		"action": "retry",
-	})
+	request := map[string]string{"request_id": requestID, "action": action}
+	if orphanID != "" { request["orphan_id"] = orphanID }
+	if pairTag != "" { request["pair_tag"] = pairTag }
+	payload, err := json.Marshal(request)
 	if err != nil {
 		return RecoveryRetryReply{}, fmt.Errorf("marshal recovery request: %w", err)
 	}
@@ -640,24 +654,19 @@ func (c *Client) RequestRecoveryRetry(ctx context.Context) (RecoveryRetryReply, 
 			return RecoveryRetryReply{}, errors.New("executor tidak merespons permintaan reconciliation dalam 25 detik")
 		case <-ticker.C:
 			raw, err := c.rdb.Get(ctx, key).Result()
-			if err == redis.Nil {
-				continue
-			}
-			if err != nil {
-				return RecoveryRetryReply{}, fmt.Errorf("read recovery response: %w", err)
-			}
+			if err == redis.Nil { continue }
+			if err != nil { return RecoveryRetryReply{}, fmt.Errorf("read recovery response: %w", err) }
 			var reply RecoveryRetryReply
 			if err := json.Unmarshal([]byte(raw), &reply); err != nil {
 				return RecoveryRetryReply{}, fmt.Errorf("decode recovery response: %w", err)
 			}
-			if reply.RequestID != requestID {
-				return RecoveryRetryReply{}, errors.New("recovery response request id mismatch")
+			if reply.RequestID != requestID || reply.Action != action {
+				return RecoveryRetryReply{}, errors.New("recovery response request identity mismatch")
 			}
 			return reply, nil
 		}
 	}
 }
-
 // RequestLiveBalances asks the running Executor to fetch fresh balances from both exchanges.
 func (c *Client) RequestLiveBalances(ctx context.Context) (string, error) {
 	if c == nil || c.rdb == nil { return "", errors.New("redis is not connected") }
