@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/alicebob/miniredis/v2"
@@ -151,4 +152,77 @@ func TestOrdersCommandEmptyRegistryAfterCompletedRecovery(t *testing.T) {
 	bot.SetRedisClient(redishandler.NewWithClient(rdb))
 	bot.handleOrdersCommand(context.Background(), -100123456789, 0)
 	if !strings.Contains(sent.Text, "ACTIVE BOT ORDERS (0)") { t.Fatalf("expected verified empty registry, got: %s", sent.Text) }
+}
+
+
+func TestReconcileRetryRequestsReadOnlyExecutorReconciliation(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil { t.Fatal(err) }
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	sub := rdb.Subscribe(ctx, redishandler.ChannelRecoveryRequest)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil { t.Fatalf("subscribe: %v", err) }
+	go func() {
+		message := <-sub.Channel()
+		if message == nil { return }
+		var request map[string]string
+		if json.Unmarshal([]byte(message.Payload), &request) != nil { return }
+		reply, _ := json.Marshal(redishandler.RecoveryRetryReply{
+			RequestID: request["request_id"], Complete: true,
+			PendingOrders: map[string]string{}, ScopeHalts: map[string]string{},
+			TimestampMS: time.Now().UnixMilli(),
+		})
+		_ = rdb.Set(ctx, redishandler.KeyPrefixRecoveryReply+request["request_id"], reply, 30*time.Second).Err()
+	}()
+
+	var sent []SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var message SendMessageReq
+			_ = json.NewDecoder(r.Body).Decode(&message)
+			sent = append(sent, message)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.handleReconcileRetryCommand(ctx, &Message{
+		Chat: Chat{ID:-100123456789},
+		From: &User{ID:42},
+		MessageID: 77,
+	})
+	if len(sent) < 2 {
+		t.Fatalf("expected progress and result messages, got %d", len(sent))
+	}
+	if !strings.Contains(sent[len(sent)-1].Text, "SEMUA CHECK RECOVERY SELESAI") {
+		t.Fatalf("unexpected reconciliation result: %s", sent[len(sent)-1].Text)
+	}
+	if !strings.Contains(sent[len(sent)-1].Text, "tidak ada order") {
+		t.Fatalf("response must state that no exchange order was changed: %s", sent[len(sent)-1].Text)
+	}
+}
+
+func TestReconcileRetryRejectsUnauthorizedOperator(t *testing.T) {
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.cfg.Telegram.AllowedUserIDs = []int64{7}
+	bot.handleReconcileRetryCommand(context.Background(), &Message{
+		Chat: Chat{ID:-100123456789}, From:&User{ID:42},
+	})
+	if !strings.Contains(sent.Text, "Akses ditolak") {
+		t.Fatalf("expected authorization rejection, got %s", sent.Text)
+	}
 }
