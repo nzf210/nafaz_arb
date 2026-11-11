@@ -127,36 +127,48 @@ class ExchangeFeeBalanceMixin:
         }
 
     @staticmethod
+    @staticmethod
+    def _balance_report_asset(
+        asset: str, free_map: dict, used_map: dict, total_map: dict
+    ):
+        free_raw = free_map.get(asset)
+        used_raw = used_map.get(asset)
+        total_raw = total_map.get(asset)
+        free = float(free_raw or 0.0)
+        total = float(total_raw) if total_raw is not None else 0.0
+        used = (
+            float(used_raw)
+            if used_raw is not None
+            else max(0.0, total - free)
+        )
+        if total_raw is None:
+            total = free + used
+        if not all(
+            math.isfinite(value) and value >= 0
+            for value in (free, used, total)
+        ):
+            raise ValueError(f"invalid balance value for {asset}")
+        if not (free or used or total):
+            return None
+        return {
+            "asset": str(asset),
+            "free": free,
+            "used": used,
+            "total": total,
+        }
+
+    @staticmethod
     def _balance_report_assets(raw: Dict[str, Any]) -> list:
         free_map = raw.get("free") or {}
         used_map = raw.get("used") or {}
         total_map = raw.get("total") or {}
         assets = []
         for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
-            free_raw = free_map.get(asset)
-            used_raw = used_map.get(asset)
-            total_raw = total_map.get(asset)
-            free = float(free_raw or 0.0)
-            total = float(total_raw) if total_raw is not None else 0.0
-            used = (
-                float(used_raw)
-                if used_raw is not None
-                else max(0.0, total - free)
+            row = ExchangeFeeBalanceMixin._balance_report_asset(
+                asset, free_map, used_map, total_map
             )
-            if total_raw is None:
-                total = free + used
-            if not all(
-                math.isfinite(value) and value >= 0
-                for value in (free, used, total)
-            ):
-                raise ValueError(f"invalid balance value for {asset}")
-            if free or used or total:
-                assets.append({
-                    "asset": str(asset),
-                    "free": free,
-                    "used": used,
-                    "total": total,
-                })
+            if row is not None:
+                assets.append(row)
         return assets
 
     async def _fetch_balance_report_for_exchange(
