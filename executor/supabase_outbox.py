@@ -76,6 +76,45 @@ class DurableOutbox:
                 self._db.execute("ROLLBACK")
                 raise
 
+    def enqueue_once(
+        self,
+        table: str,
+        conflict_target: Optional[str],
+        row: Dict[str, Any],
+        state_key: str,
+    ) -> bool:
+        """Atomically enqueue an immutable event once across retries/restarts."""
+        payload = json.dumps(row, separators=(",", ":"), ensure_ascii=False, default=str)
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                exists = self._db.execute(
+                    "SELECT 1 FROM writer_state WHERE state_key=?", (state_key,)
+                ).fetchone()
+                if exists:
+                    self._db.execute("COMMIT")
+                    return False
+                count = self._db.execute("SELECT COUNT(*) FROM pending_outbox").fetchone()[0]
+                if count >= self.max_pending:
+                    raise OutboxFull(f"durable outbox capacity reached ({self.max_pending})")
+                self._db.execute(
+                    """INSERT INTO pending_outbox
+                       (table_name, conflict_target, row_json, created_at)
+                       VALUES (?, ?, ?, ?)""",
+                    (table, conflict_target, payload, time.time()),
+                )
+                self._db.execute(
+                    """INSERT INTO writer_state(state_key, numeric_value, updated_at)
+                       VALUES (?, 1, ?)
+                       ON CONFLICT(state_key) DO NOTHING""",
+                    (state_key, time.time()),
+                )
+                self._db.execute("COMMIT")
+                return True
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+
     def enqueue_cumulative_fill(
         self,
         table: str,
