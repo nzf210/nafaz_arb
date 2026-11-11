@@ -501,6 +501,125 @@ class ExchangeClient:
             pair_info=pair_info,
         )
 
+    async def fetch_order_trades(
+        self,
+        market_type: str,
+        symbol: str,
+        *,
+        since: Optional[int] = None,
+        client_order_id: Optional[str] = None,
+        order_id: Optional[str] = None,
+        amount_spec: Any = None,
+    ) -> list:
+        """Read the venue's individual executions for exactly one bot order.
+
+        Spot and perpetual clients are selected independently. INDODAX TAPI v2
+        is queried in <=7-day windows using its clientOrderId filter; CCXT
+        venues are queried through fetch_my_trades and filtered by order id.
+        """
+        market = str(market_type or "").lower()
+        if market not in ("spot", "perpetual"):
+            raise ValueError(f"unsupported fill market type: {market_type}")
+        exchange = self.global_fut if market == "perpetual" else self.local
+        resolved = await self._resolve_symbol(
+            exchange, symbol, "futures" if market == "perpetual" else "spot"
+        )
+        fetcher = getattr(exchange, "fetch_my_trades", None)
+        if not callable(fetcher):
+            raise NotImplementedError(
+                f"{getattr(exchange, 'id', 'exchange')} does not support authenticated trade history"
+            )
+
+        raw_trades = []
+        if isinstance(exchange, IndodaxTAPIv2):
+            end_ms = int(time.time() * 1000)
+            cursor = int(since or max(0, end_ms - 7 * 24 * 60 * 60 * 1000))
+            while cursor <= end_ms:
+                window_end = min(end_ms, cursor + 7 * 24 * 60 * 60 * 1000 - 1)
+                params = {"startTime": cursor, "endTime": window_end, "sort": "asc"}
+                if client_order_id:
+                    params["clientOrderId"] = str(client_order_id)
+                elif order_id:
+                    params["orderId"] = str(order_id)
+                chunk = await fetcher(resolved, cursor, 1000, params)
+                if not isinstance(chunk, list):
+                    raise ValueError("exchange returned malformed trade history")
+                if len(chunk) >= 1000:
+                    raise RuntimeError(
+                        "INDODAX trade-history window reached its 1000-fill limit; "
+                        "cannot prove complete order fill history"
+                    )
+                raw_trades.extend(chunk)
+                cursor = window_end + 1
+        else:
+            raw_trades = await fetcher(resolved, int(since or 0) or None, 1000)
+            if not isinstance(raw_trades, list):
+                raise ValueError("exchange returned malformed trade history")
+            if len(raw_trades) >= 1000 and since:
+                oldest = min(
+                    (int(item.get("timestamp") or 0) for item in raw_trades if isinstance(item, dict)),
+                    default=0,
+                )
+                if oldest > int(since):
+                    raise RuntimeError(
+                        "exchange trade-history response reached its 1000-fill limit; "
+                        "cannot prove complete order fill history"
+                    )
+
+        expected_order = str(order_id or "")
+        expected_client = str(client_order_id or "")
+        normalized = []
+        spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
+        for trade in raw_trades:
+            if not isinstance(trade, dict):
+                raise ValueError("exchange returned a malformed trade row")
+            info = trade.get("info") if isinstance(trade.get("info"), dict) else {}
+            actual_order = str(trade.get("order") or trade.get("orderId") or info.get("orderId") or "")
+            actual_client = str(
+                trade.get("clientOrderId") or trade.get("client_order_id")
+                or info.get("clientOrderId") or ""
+            )
+            if expected_order and actual_order and actual_order != expected_order:
+                continue
+            if expected_client and actual_client and actual_client != expected_client:
+                continue
+            if (expected_order or expected_client) and not (actual_order or actual_client):
+                continue
+            fill = dict(trade)
+            fill["id"] = str(trade.get("id") or trade.get("tradeId") or info.get("tradeId") or "")
+            fill["order"] = actual_order
+            fill["clientOrderId"] = actual_client
+            try:
+                qty = float(trade.get("amount") if trade.get("amount") is not None else trade.get("qty"))
+                price = float(trade.get("price"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("exchange trade has invalid quantity or price") from exc
+            if not math.isfinite(qty) or qty <= 0 or not math.isfinite(price) or price <= 0:
+                raise ValueError("exchange trade has non-positive or non-finite quantity/price")
+            if spec is not None and spec.unit == "CONTRACT":
+                qty = order_amount_to_base(qty, spec)
+            fill["amount"] = qty
+            fill["price"] = price
+            fill["cost"] = float(
+                trade.get("cost") if trade.get("cost") is not None
+                else trade.get("quoteQty") if trade.get("quoteQty") is not None
+                else qty * price
+            )
+            fee = trade.get("fee")
+            if not isinstance(fee, dict):
+                fee = {
+                    "cost": trade.get("commission", info.get("commission")),
+                    "currency": trade.get("commissionAsset", info.get("commissionAsset")),
+                }
+            fill["fee"] = fee if isinstance(fee, dict) else None
+            fill["timestamp"] = int(
+                trade.get("timestamp") or trade.get("time") or info.get("time") or 0
+            ) or None
+            if not fill["id"]:
+                raise ValueError("exchange trade is missing its immutable trade id")
+            normalized.append(fill)
+        return normalized
+
     async def fetch_positions(self, symbol: str) -> list:
         """Fetches open futures positions for a symbol (global exchange).
 
