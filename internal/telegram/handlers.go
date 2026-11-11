@@ -490,6 +490,13 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 		if message == "" {
 			message = "Proses entry atau hedge tidak berhasil."
 		}
+		orderID, positionID, requiredAction := "n/a", "n/a", message
+		if ev.Detail != nil {
+			if value, ok := ev.Detail["order_id"]; ok { orderID = fmt.Sprint(value) }
+			if value, ok := ev.Detail["internal_order_id"]; ok && orderID == "n/a" { orderID = fmt.Sprint(value) }
+			if value, ok := ev.Detail["position_id"]; ok { positionID = fmt.Sprint(value) }
+			if value, ok := ev.Detail["required_action"]; ok { requiredAction = fmt.Sprint(value) }
+		}
 		// Avoid flooding Telegram when the same pair repeatedly rejects the
 		// same signal or balance snapshot.
 		alertKey := "failure:" + pairLabel + ":" + reason
@@ -508,7 +515,10 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 				"• Exchange: <code>%s</code> → <code>%s</code>\n"+
 				"• Alasan: <b>%s</b>\n"+
 				"• Detail: %s\n"+
-				"• State: <code>%s</code>\n\n"+
+				"• Order ID: <code>%s</code>\n"+
+				"• Position ID: <code>%s</code>\n"+
+				"• State: <code>%s</code>\n"+
+				"• Required action: %s\n\n"+
 				"<i>Entry baru untuk kondisi ini ditolak. Periksa saldo, order, dan posisi di kedua exchange sebelum mencoba lagi.</i>",
 			modeTag,
 			html.EscapeString(pairLabel),
@@ -516,7 +526,10 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			html.EscapeString(ev.GlobalExchange),
 			html.EscapeString(reason),
 			html.EscapeString(message),
+			html.EscapeString(orderID),
+			html.EscapeString(positionID),
 			html.EscapeString(ev.State),
+			html.EscapeString(requiredAction),
 		)
 	case "POSITION_CLOSED":
 		emoji := "🎉"
