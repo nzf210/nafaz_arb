@@ -25,7 +25,7 @@ declare
         'exchange_accounts','strategy_configs','risk_limits','market_pairs',
         'positions','orders','order_fills','position_legs','funding_payments',
         'closed_trades','balance_snapshots','risk_events','executor_events',
-        'executor_status_snapshots','scanner_opportunities','order_registry'
+        'executor_status_snapshots','scanner_opportunities','order_registry','reconciliation_audit'
     ];
 begin
     foreach tbl in array mutable_tables loop
@@ -243,5 +243,50 @@ where client_order_id = (select order_client_id from pg_temp._smoke_constants)
         '22222222-2222-2222-2222-222222222221',
         '22222222-2222-2222-2222-222222222222'
    );
+
+
+-- Reconciliation audit is append-only and idempotent under outbox replay.
+insert into public.reconciliation_audit (
+    event_id, event_type, pair_key, exchange_name, market_type,
+    entity_type, entity_id, from_state, to_state, reason, actor,
+    is_mock, occurred_at, payload
+) values (
+    'schema-smoke-reconcile-1', 'ORDER_RECONCILIATION_REQUIRED',
+    'indodax:btc_idr', 'indodax', 'spot', 'order',
+    'schema-smoke-order-1', 'OPEN', 'RECONCILIATION_REQUIRED',
+    'ambiguous exchange acknowledgement', 'executor', false, now(),
+    '{"source":"schema_smoke"}'::jsonb
+)
+on conflict (event_id) do nothing;
+
+insert into public.reconciliation_audit (
+    event_id, event_type, pair_key, exchange_name, market_type,
+    entity_type, entity_id, from_state, to_state, reason, actor,
+    is_mock, occurred_at, payload
+) values (
+    'schema-smoke-reconcile-1', 'ORDER_RECONCILIATION_REQUIRED',
+    'indodax:btc_idr', 'indodax', 'spot', 'order',
+    'schema-smoke-order-1', 'OPEN', 'RECONCILIATION_REQUIRED',
+    'ambiguous exchange acknowledgement', 'executor', false, now(),
+    '{"source":"schema_smoke_retry"}'::jsonb
+)
+on conflict (event_id) do nothing;
+
+do $
+begin
+    if (
+        select count(*) from public.reconciliation_audit
+        where event_id = 'schema-smoke-reconcile-1'
+    ) <> 1 then
+        raise exception 'reconciliation audit replay created a duplicate';
+    end if;
+    if has_table_privilege('service_role', 'public.reconciliation_audit', 'update')
+       or has_table_privilege('service_role', 'public.reconciliation_audit', 'delete') then
+        raise exception 'reconciliation audit is not append-only for service_role';
+    end if;
+end $;
+
+delete from public.reconciliation_audit
+where event_id = 'schema-smoke-reconcile-1';
 
 drop table pg_temp._smoke_constants;
