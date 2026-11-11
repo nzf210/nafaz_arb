@@ -163,6 +163,14 @@ class ForceCloseMixin:
                 force_coid = build_client_order_id(
                     pair_key, "force-close", self._next_order_seq()
                 )
+                await self._register_order_intent(
+                    pair_key, force_coid,
+                    exchange=pos.global_exchange, market_type="perpetual",
+                    symbol=global_sym, role=OrderRole.FORCE_CLOSE.value,
+                    side="buy", order_type="market", price=0.0,
+                    quantity=pos.qty, reduce_only=True,
+                    global_amount_spec=pos.global_amount_spec,
+                )
                 res = await self.client.close_global_short_market(
                     global_sym,
                     pos.qty,
@@ -284,11 +292,19 @@ class ForceCloseMixin:
             logger.warning(f"[Force Close] Selling {pos.qty} {pos.symbol} spot leg...")
             try:
                 seq = self._next_order_seq()
+                force_liq_coid = build_client_order_id(pair_key, "force-liq", seq)
+                await self._register_order_intent(
+                    pair_key, force_liq_coid,
+                    exchange=pos.local_exchange, market_type="spot",
+                    symbol=pos.symbol, role=OrderRole.FORCE_CLOSE.value,
+                    side="sell", order_type="market", price=0.0,
+                    quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
+                )
                 spot_order = await helpers.retry_with_backoff(
                     lambda: self.client.place_local_market_sell(
                         pos.symbol,
                         pos.qty,
-                        client_order_id=build_client_order_id(pair_key, "force-liq", seq),
+                        client_order_id=force_liq_coid,
                         amount_spec=pos.local_amount_spec,
                     ),
                     max_retries=4,  # 5 total attempts
