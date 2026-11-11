@@ -83,6 +83,7 @@ class ArbitrageEngine(
         self._pair_client_registry = PairClientRegistry()
         self.redis = redis_client
         self._running = False
+        self._startup_time_ms = int(time.time() * 1000)
         self.ARB_TRADE_EVENTS = "arb:trade_events"
         # Seeded from wall-clock so client order ids stay unique across restarts;
         # a zero-based counter could regenerate ids used by a previous process.
@@ -2030,6 +2031,7 @@ class ArbitrageEngine(
         """Point-in-time view of the executor, suitable for a JSON API."""
         return {
             "status": "RUNNING" if self._running else "STOPPED",
+            "executor_startup_time_ms": int(getattr(self, "_startup_time_ms", 0)),
             "mock_mode": bool(getattr(self.config, "mock_mode", False)),
             "local_exchange": self.config.local_exchange_name,
             "global_exchange": self.config.global_exchange_name,
@@ -2059,6 +2061,10 @@ class ArbitrageEngine(
                 "scope_halts": dict(getattr(self, "_recovery_scope_halts", {}) or {}),
                 "tracked_orders": len(getattr(self, "_recovered_order_records", {}) or {}),
                 "orphan_orders": list((getattr(self, "_recovered_orphans", {}) or {}).values()),
+            },
+            "reconciliation": {
+                "exposure_mismatches": dict(getattr(getattr(self, "exposure_reconciliation", None), "_reported", {}) or {}),
+                "trade_fill_mismatches": dict(getattr(getattr(self, "trade_fill_reconciliation", None), "_reported", {}) or {}),
             },
             "timestamp_ms": int(time.time() * 1000),
         }
