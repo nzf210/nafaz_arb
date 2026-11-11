@@ -585,7 +585,8 @@ class EntryMixin:
                     await self._maybe_publish_status()
 
         async def _persist_entry_hedge_watermark(
-            self, pair_tag: str, order_info: dict, hedged_quantity: float
+            self, pair_tag: str, order_info: dict, hedged_quantity: float,
+            hedge_order_id: str = "",
         ) -> bool:
             """Persist cumulative hedge progress on the originating spot entry."""
             persisted = False
@@ -597,6 +598,16 @@ class EntryMixin:
                     float(order_info.get("hedged_short_qty", 0.0) or 0.0),
                     quantity,
                 )
+                # Keep per-futures-order idempotency markers on the originating
+                # spot record. A restart may replay hedge reconciliation after
+                # the parent watermark was written but before the hedge record
+                # was retired; the same fill must never be counted twice.
+                if hedge_order_id:
+                    hedge_fills = order_info.setdefault("hedge_fill_orders", {})
+                    if not isinstance(hedge_fills, dict):
+                        hedge_fills = {}
+                        order_info["hedge_fill_orders"] = hedge_fills
+                    hedge_fills.setdefault(str(hedge_order_id), quantity)
                 registry = getattr(self, "order_registry", None)
                 if registry is not None:
                     exchange = str(order_info.get("local_exchange") or "").lower()
@@ -655,6 +666,12 @@ class EntryMixin:
                 hedge_coid = build_client_order_id(
                     pair_tag, "hedge", self._next_order_seq()
                 )
+                hedge_recovery_context = {
+                    "parent_spot_exchange": str(order_info.get("local_exchange", "")).lower(),
+                    "parent_spot_order_id": str(order_info.get("order_id", "")),
+                    "parent_spot_client_order_id": str(order_info.get("client_order_id", "")),
+                    "hedge_requested_for_spot_fill": float(unhedged_delta),
+                }
                 await self._register_order_intent(
                     pair_tag,
                     hedge_coid,
@@ -667,6 +684,7 @@ class EntryMixin:
                     price=expected_short_price,
                     quantity=unhedged_delta,
                     global_amount_spec=order_info.get("global_amount_spec"),
+                    recovery_context=hedge_recovery_context,
                     required=False,
                 )
                 short_order = await self.client.open_global_short_market(
@@ -703,12 +721,33 @@ class EntryMixin:
                         f"filled={actual_hedged_qty}; manual reconciliation required"
                     )
 
+                # Register the exchange acknowledgement while the hedge is
+                # deliberately non-terminal in the recovery journal. If the
+                # process dies now, startup can fetch the exact futures order by
+                # exchange id and reconcile its fill against the parent spot leg.
+                recovery_order = dict(short_order)
+                recovery_order["status"] = "open"
+                await self._register_order(
+                    pair_tag,
+                    hedge_coid,
+                    recovery_order,
+                    exchange=order_info.get("global_exchange", ""),
+                    market_type="perpetual",
+                    symbol=global_symbol,
+                    role=OrderRole.HEDGE.value,
+                    side="sell",
+                    order_type="market",
+                    price=expected_short_price,
+                    quantity=unhedged_delta,
+                    global_amount_spec=order_info.get("global_amount_spec"),
+                    recovery_context=hedge_recovery_context,
+                )
                 order_info["hedged_short_qty"] += actual_hedged_qty
-                # Persist the entry's cumulative hedge watermark, not only the
-                # separate futures order. After Redis loss the registry must
-                # know how much of this spot fill is already hedged.
+                # Persist the entry's cumulative hedge watermark and the unique
+                # futures order id together on the originating spot record.
                 watermark_persisted = await self._persist_entry_hedge_watermark(
-                    pair_tag, order_info, order_info["hedged_short_qty"]
+                    pair_tag, order_info, order_info["hedged_short_qty"],
+                    hedge_order_id=hedge_coid,
                 )
                 self._record_hedged_position(
                     pair_tag, order_info, actual_hedged_qty, short_order, price_idr, usdt_rate
@@ -737,6 +776,7 @@ class EntryMixin:
                     price=expected_short_price,
                     quantity=unhedged_delta,
                     global_amount_spec=order_info.get("global_amount_spec"),
+                    recovery_context=hedge_recovery_context,
                 )
                 self.supabase.position_opened(
                     pair_tag,
