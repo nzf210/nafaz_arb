@@ -68,7 +68,9 @@ Implemented writes:
   also ensures its per-leg `orders` parent row exists. Individual fills are
   replayed from authenticated exchange trade history and keyed by immutable
   exchange trade IDs; quantity, price, quote value, fee amount, fee asset, and
-  venue timestamp are persisted. Durable SQLite idempotency keys prevent the
+  venue timestamp are persisted with `fill_source=exchange_trade`. Historical
+  cumulative-snapshot rows are retained as `legacy_cumulative`, not deleted
+  or silently mixed into verified execution totals. Durable SQLite idempotency keys prevent the
   same exchange fill from being enqueued twice across restarts, and a per-order
   verified cumulative watermark avoids repeated private-history API calls when
   the order's filled quantity has not changed.
