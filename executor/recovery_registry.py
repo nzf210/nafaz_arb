@@ -262,13 +262,31 @@ class RecoveryRegistryMixin:
             await self.order_registry.retire(record)
             return
         order_id = record.exchange_order_id
-        if not order_id:
-            await self.order_registry.mark_pending_recovery(
-                record.local_order_id, "no exchange order id was ever acknowledged"
-            )
-            return
         try:
-            order = await self._fetch_order_by_role(record, order_id, symbol)
+            if order_id:
+                order = await self._fetch_order_by_role(record, order_id, symbol)
+            elif record.client_order_id:
+                order = await self._fetch_order_by_client_id(record)
+                if order is None:
+                    await self.order_registry.mark_pending_recovery(
+                        record.local_order_id,
+                        "client order id not found in venue history; acceptance remains ambiguous",
+                    )
+                    self._halt_exposure_scope(
+                        record.pair_key or f"{exchange}:{symbol}",
+                        "order submission acknowledgement is unresolved",
+                    )
+                    return
+            else:
+                await self.order_registry.mark_pending_recovery(
+                    record.local_order_id,
+                    "order has neither exchange id nor client order id",
+                )
+                self._halt_exposure_scope(
+                    record.pair_key or f"{exchange}:{symbol}",
+                    "order submission identity is unavailable",
+                )
+                return
         except Exception as exc:
             record.recovery_status = RecoveryStatus.UNVERIFIED.value
             await self.order_registry.register(record)
@@ -311,6 +329,31 @@ class RecoveryRegistryMixin:
             )
         if adopted:
             logger.info("[Recovery] re-adopted order %s into %s", order_id, record.pair_key)
+
+    async def _fetch_order_by_client_id(
+        self, record: OrderRecord
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve an unacknowledged submit by exact venue client-order id."""
+        client_id = str(record.client_order_id or "")
+        if not client_id:
+            raise ValueError("unacknowledged order has no client order id")
+        if record.market_type == "perpetual":
+            fetcher = getattr(self.client, "fetch_global_order_by_client_id", None)
+            if fetcher is None:
+                raise NotImplementedError(
+                    "client cannot search futures order history by client order id"
+                )
+            return await fetcher(
+                client_id, record.symbol, record.global_amount_spec
+            )
+        fetcher = getattr(self.client, "fetch_local_order_by_client_id", None)
+        if fetcher is None:
+            raise NotImplementedError(
+                "client cannot search spot order history by client order id"
+            )
+        return await fetcher(
+            client_id, record.symbol, record.local_amount_spec
+        )
 
     async def _fetch_order_by_role(
         self, record: OrderRecord, order_id: str, symbol: str
