@@ -211,6 +211,7 @@ class OrderRegistryRecoveryMixin:
         reason: str,
         exchange: str = "",
         symbol: str = "",
+        market_type: str = "spot",
     ) -> str:
         """Records an active venue order no bot position could be attached to.
 
@@ -238,6 +239,7 @@ class OrderRegistryRecoveryMixin:
             "reason": reason,
             "exchange": exchange,
             "symbol": symbol,
+            "market_type": str(market_type or "spot"),
             "exchange_order_id": exchange_order_id,
             "client_order_id": client_order_id,
             "side": str(order.get("side") or ""),
