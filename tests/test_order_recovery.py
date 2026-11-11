@@ -916,12 +916,50 @@ async def test_recovery_gate_released_after_venue_recovers(fake_redis):
     assert engine._entry_blocked is True
 
     failing["active"] = False
-    assert await engine.retry_pending_order_recovery() is True
+    # The order is now known, but there is no restored position snapshot to
+    # compare against the venue. Order resolution alone must not clear the halt.
+    assert await engine.retry_pending_order_recovery() is False
 
-    assert engine._entry_blocked is False
-    assert engine._recovery_scope_halts == {}
+    assert engine._entry_blocked is True
+    assert PAIR_TAG in engine._recovery_scope_halts
     assert await engine.order_registry.pending_recovery_ids() == {}
     assert PAIR_TAG in engine.pending_entry_orders
+
+
+@pytest.mark.asyncio
+async def test_recovery_retry_clears_pair_failure_only_after_position_verification(fake_redis):
+    """A resolved order and independently verified active exposure clear the pair halt."""
+    client = MockExchangeClient()
+    client.orders["501"] = _venue_order()
+    engine = await _build(fake_redis, client)
+    position = _position()
+    engine.active_positions[PAIR_TAG] = position
+    engine.states[PAIR_TAG] = PositionState.RECONCILIATION_REQUIRED
+    engine._failure_reasons[PAIR_TAG] = {
+        "reason": "ORDER_RECOVERY_UNVERIFIED",
+        "message": "temporary venue outage",
+        "detail": {},
+        "timestamp_ms": int(time.time() * 1000),
+    }
+    engine._recovery_scope_halts[PAIR_TAG] = "order recovery: temporary venue outage"
+    record = _entry_record()
+    await engine.order_registry.register(record)
+    await engine.order_registry.mark_pending_recovery(
+        record.local_order_id, "temporary venue outage"
+    )
+    engine._recovered_order_records[record.local_order_id] = record
+
+    async def verified_positions():
+        return {PAIR_TAG}
+
+    engine._verify_recovered_active_positions = verified_positions
+
+    assert await engine.retry_pending_order_recovery() is True
+    assert engine.states[PAIR_TAG] == PositionState.HEDGED_ACTIVE
+    assert PAIR_TAG not in engine._failure_reasons
+    assert PAIR_TAG not in engine._recovery_scope_halts
+    assert engine._entry_blocked is False
+    assert await engine.order_registry.pending_recovery_ids() == {}
 
 @pytest.mark.asyncio
 async def test_entry_without_fx_context_stays_pending(fake_redis):
