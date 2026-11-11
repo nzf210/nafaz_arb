@@ -20,12 +20,13 @@ func TestOrdersCommandUsesExecutorOrderRegistry(t *testing.T) {
 	defer rdb.Close()
 	payload := map[string]interface{}{
 		"status": "RUNNING",
-		"recovery": map[string]interface{}{"complete": true, "tracked_orders": 1},
+		"recovery": map[string]interface{}{"complete": true, "tracked_orders": 2},
 	}
 	raw, _ := json.Marshal(payload)
 	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, raw, 0).Err(); err != nil { t.Fatal(err) }
-	if err := rdb.HSet(context.Background(), redishandler.KeyOrderRecoveryIndex, "internal-42", "1").Err(); err != nil { t.Fatal(err) }
+	if err := rdb.HSet(context.Background(), redishandler.KeyOrderRecoveryIndex, "internal-42", "1", "internal-43", "1").Err(); err != nil { t.Fatal(err) }
 	if err := rdb.Set(context.Background(), redishandler.KeyPrefixOrderRecord+"internal-42", `{"local_order_id":"internal-42","exchange_order_id":"exchange-42","pair_key":"BTC/USDT","exchange":"okx","status":"PARTIALLY_FILLED","filled_quantity":1}`, 0).Err(); err != nil { t.Fatal(err) }
+	if err := rdb.Set(context.Background(), redishandler.KeyPrefixOrderRecord+"internal-43", `{"local_order_id":"internal-43","exchange_order_id":"exchange-43","pair_key":"ETH/USDT","exchange":"mexc","status":"OPEN","filled_quantity":0}`, 0).Err(); err != nil { t.Fatal(err) }
 
 	var sent SendMessageReq
 	tsHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -38,7 +39,7 @@ func TestOrdersCommandUsesExecutorOrderRegistry(t *testing.T) {
 	defer ts.Close()
 	bot.SetRedisClient(redishandler.NewWithClient(rdb))
 	bot.handleOrdersCommand(context.Background(), -100123456789, 0)
-	for _, want := range []string{"internal-42", "BTC/USDT", "okx", "PARTIALLY_FILLED"} {
+	for _, want := range []string{"internal-42", "BTC/USDT", "okx", "PARTIALLY_FILLED", "internal-43", "ETH/USDT", "mexc"} {
 		if !strings.Contains(sent.Text, want) { t.Fatalf("orders response missing %q: %s", want, sent.Text) }
 	}
 }
@@ -138,4 +139,16 @@ func TestPositionDetailExplainsMissingSupabaseFillLedger(t *testing.T) {
 	bot.SetRedisClient(redishandler.NewWithClient(rdb))
 	bot.handlePositionDetail(context.Background(), -100123456789, 0, "BTC/USDT")
 	if !strings.Contains(sent.Text, "Supabase belum terhubung") { t.Fatalf("expected explicit fill-ledger limitation, got: %s", sent.Text) }
+}
+
+func TestOrdersCommandEmptyRegistryAfterCompletedRecovery(t *testing.T) {
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) { if r.URL.Path == "/sendMessage" { _ = json.NewDecoder(r.Body).Decode(&sent); _ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true}) } }
+	bot, _, ts := setupTestBot(t, tsHandler); defer ts.Close()
+	mr, err := miniredis.Run(); if err != nil { t.Fatal(err) }; defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()}); defer rdb.Close()
+	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, `{"status":"RUNNING","recovery":{"complete":true,"tracked_orders":0}}`, 0).Err(); err != nil { t.Fatal(err) }
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.handleOrdersCommand(context.Background(), -100123456789, 0)
+	if !strings.Contains(sent.Text, "ACTIVE BOT ORDERS (0)") { t.Fatalf("expected verified empty registry, got: %s", sent.Text) }
 }
