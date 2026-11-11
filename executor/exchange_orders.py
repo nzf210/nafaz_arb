@@ -150,6 +150,7 @@ class ExchangeOrderMixin:
             *_local_order_params(
                 self.local, client_order_id, spec, require_amount_step=True,
                 broker_prefix=self._local_broker_prefix,
+                require_post_only=isinstance(self.local, IndodaxTAPIv2),
             ),
         )
         return _base_order_result(order, spec)
@@ -172,6 +173,7 @@ class ExchangeOrderMixin:
             *_local_order_params(
                 self.local, client_order_id, spec,
                 broker_prefix=self._local_broker_prefix,
+                require_post_only=isinstance(self.local, IndodaxTAPIv2),
             ),
         )
         return _base_order_result(order, spec)
