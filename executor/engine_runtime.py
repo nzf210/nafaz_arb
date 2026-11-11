@@ -344,10 +344,10 @@ class EngineRuntimeMixin:
 
     def _apply_spot_order_limit(self, exchange: str, raw_limit) -> bool:
         venue = str(exchange or "").strip().lower()
-        known = set((getattr(self.config, "exchanges", {}) or {}).keys())
-        known.add(str(getattr(self.config, "local_exchange_name", "")).strip().lower())
-        if not venue or venue not in known:
-            logger.warning("ignoring spot order limit for unconfigured exchange %r", venue)
+        if not venue or len(venue) > 64 or any(
+            not (char.isalnum() or char in "_-") for char in venue
+        ):
+            logger.warning("ignoring invalid spot order limit exchange %r", venue)
             return False
         try:
             limit = int(raw_limit)
