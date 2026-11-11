@@ -1236,6 +1236,10 @@ class SupabaseWriter:
             events = {str(row.get("event_id")): float(row.get("pnl_usdt") or 0.0)
                       for row in rows if row.get("event_id")}
             if self._outbox is not None:
+                # Seed local idempotency markers from already committed remote
+                # events, so a fresh container volume cannot count a replay twice.
+                for event_id in events:
+                    self._outbox.set_numeric_state(f"risk-pnl:{event_id}", 1.0)
                 for _item_id, _table, _conflict, row in self._outbox.pending_table("risk_pnl_events"):
                     if bool(row.get("is_mock", True)) != bool(is_mock):
                         continue
