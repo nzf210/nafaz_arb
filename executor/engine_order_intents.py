@@ -1,11 +1,33 @@
 """engine order intent methods for arbitrage engine orchestration."""
 
-import time
+from dataclasses import dataclass
 from typing import Any
 
 from executor.models import OrderRecord
 from executor.engine_common import logger
 
+
+@dataclass(frozen=True)
+class OrderRegistrationMetadata:
+    """Normalized exchange and recovery metadata shared by order registration."""
+
+    exchange: str
+    market_type: str
+    symbol: str
+    role: str
+    side: str
+    order_type: str
+    price: float
+    quantity: float
+    reduce_only: bool = False
+    local_amount_spec: Any = None
+    global_amount_spec: Any = None
+    recovery_context: Any = None
+
+
+def _serialize_amount_spec(value: Any) -> Any:
+    serializer = getattr(value, "to_dict", None)
+    return serializer() if callable(serializer) else value
 
 
 class EngineOrderIntentMixin:
@@ -16,19 +38,7 @@ class EngineOrderIntentMixin:
         pair_tag: str,
         client_order_id: str,
         order: dict,
-        *,
-        exchange: str,
-        market_type: str,
-        symbol: str,
-        role: str,
-        side: str,
-        order_type: str,
-        price: float,
-        quantity: float,
-        reduce_only: bool = False,
-        local_amount_spec: Any = None,
-        global_amount_spec: Any = None,
-        recovery_context: Any = None,
+        **metadata: Any,
     ) -> Any:
         """Records one submitted order in the universal registry.
 
@@ -40,49 +50,42 @@ class EngineOrderIntentMixin:
         if self.order_registry is None:
             return None
         try:
+            spec = OrderRegistrationMetadata(**metadata)
             record = OrderRecord(
                 local_order_id=OrderRecord.local_id_for(
-                    exchange, client_order_id, str(order.get("id") or "")
+                    spec.exchange, client_order_id, str(order.get("id") or "")
                 ),
                 client_order_id=client_order_id or "",
                 exchange_order_id=str(order.get("id") or ""),
                 pair_key=pair_tag,
                 position_id=f"position:{pair_tag}" if pair_tag else "",
-                exchange=str(exchange or "").lower(),
-                market_type=market_type,
-                symbol=symbol,
-                side=side,
-                order_type=order_type,
-                order_role=role,
-                price=float(price or 0.0),
-                original_quantity=float(quantity or order.get("amount") or 0.0),
+                exchange=str(spec.exchange or "").lower(),
+                market_type=spec.market_type,
+                symbol=spec.symbol,
+                side=spec.side,
+                order_type=spec.order_type,
+                order_role=spec.role,
+                price=float(spec.price or 0.0),
+                original_quantity=float(spec.quantity or order.get("amount") or 0.0),
                 filled_quantity=float(order.get("filled") or 0.0),
                 remaining_quantity=max(
                     0.0,
-                    float(quantity or order.get("amount") or 0.0)
+                    float(spec.quantity or order.get("amount") or 0.0)
                     - float(order.get("filled") or 0.0),
                 ),
                 average_fill_price=float(order.get("average") or 0.0),
                 status=str(order.get("status") or "open"),
-                reduce_only=bool(reduce_only),
+                reduce_only=bool(spec.reduce_only),
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
-                recovery_context=recovery_context,
-                local_amount_spec=(
-                    local_amount_spec.to_dict()
-                    if hasattr(local_amount_spec, "to_dict")
-                    else local_amount_spec
-                ),
-                global_amount_spec=(
-                    global_amount_spec.to_dict()
-                    if hasattr(global_amount_spec, "to_dict")
-                    else global_amount_spec
-                ),
+                recovery_context=spec.recovery_context,
+                local_amount_spec=_serialize_amount_spec(spec.local_amount_spec),
+                global_amount_spec=_serialize_amount_spec(spec.global_amount_spec),
             )
             return await self.order_registry.register(record)
         except Exception:
             logger.exception(
                 "[OrderRegistry] failed to register %s order %s for %s",
-                role, client_order_id or order.get("id"), pair_tag,
+                metadata.get("role"), client_order_id or order.get("id"), pair_tag,
             )
             return None
 
@@ -90,20 +93,7 @@ class EngineOrderIntentMixin:
         self,
         pair_tag: str,
         client_order_id: str,
-        *,
-        exchange: str,
-        market_type: str,
-        symbol: str,
-        role: str,
-        side: str,
-        order_type: str,
-        price: float,
-        quantity: float,
-        reduce_only: bool = False,
-        local_amount_spec: Any = None,
-        global_amount_spec: Any = None,
-        recovery_context: Any = None,
-        required: bool = True,
+        **metadata: Any,
     ) -> Any:
         """Durably records an order intent before submitting it to a venue.
 
@@ -120,22 +110,13 @@ class EngineOrderIntentMixin:
             raise RuntimeError(
                 "refusing LIVE order submission: Supabase durable order persistence is disabled"
             )
+        required = bool(metadata.pop("required", True))
+        role = metadata.get("role", "unknown")
         record = await self._register_order(
             pair_tag,
             client_order_id,
             {"status": "submitting"},
-            exchange=exchange,
-            market_type=market_type,
-            symbol=symbol,
-            role=role,
-            side=side,
-            order_type=order_type,
-            price=price,
-            quantity=quantity,
-            reduce_only=reduce_only,
-            local_amount_spec=local_amount_spec,
-            global_amount_spec=global_amount_spec,
-            recovery_context=recovery_context,
+            **metadata,
         )
         if required and record is None:
             raise RuntimeError(
