@@ -1259,3 +1259,39 @@ async def test_order_intent_is_registered_before_venue_ack(fake_redis):
     assert stored.status == "submitting"
     assert stored.pair_key == PAIR_TAG
     assert stored.recovery_context["usdt_idr_rate"] == 16_000.0
+
+
+@pytest.mark.asyncio
+async def test_crash_after_exchange_acceptance_before_ack_is_adopted_by_client_id(fake_redis):
+    """The pre-submit intent binds an open order even when no exchange id was saved."""
+    client = MockExchangeClient()
+    client_order_id = "btc-idr-entry-crash-10"
+    client.orders["510"] = _venue_order(
+        id="510", clientOrderId=client_order_id
+    )
+    engine = await _build(fake_redis, client)
+    await engine._register_order_intent(
+        PAIR_TAG,
+        client_order_id,
+        exchange="indodax",
+        market_type="spot",
+        symbol="btc_idr",
+        role=OrderRole.ENTRY.value,
+        side="buy",
+        order_type="limit",
+        price=1_000_000_000.0,
+        quantity=0.01,
+        local_amount_spec=LOCAL_SPEC,
+        global_amount_spec=GLOBAL_SPEC,
+        recovery_context=ENTRY_CONTEXT,
+    )
+
+    await engine._run_order_recovery()
+
+    adopted = await engine.order_registry.find_by_exchange_id("indodax", "510")
+    assert adopted is not None
+    assert adopted.client_order_id == client_order_id
+    assert adopted.pair_key == PAIR_TAG
+    assert PAIR_TAG in engine.pending_entry_orders
+    assert engine.pending_entry_orders[PAIR_TAG]["usdt_idr_rate"] == 16_000.0
+    assert await engine.order_registry.pending_recovery_ids() == {}
