@@ -76,60 +76,72 @@ class EntryHedgeMixin:
                 self.states[pair_tag] = PositionState.ENTRY_PARTIAL
                 await self._maybe_publish_status()
 
+    def _update_entry_hedge_markers(
+        self, order_info: dict, quantity: float, hedge_order_id: str
+    ) -> None:
+        order_info["hedged_short_qty"] = max(
+            float(order_info.get("hedged_short_qty", 0.0) or 0.0),
+            quantity,
+        )
+        if not hedge_order_id:
+            return
+        hedge_fills = order_info.setdefault("hedge_fill_orders", {})
+        if not isinstance(hedge_fills, dict):
+            hedge_fills = {}
+            order_info["hedge_fill_orders"] = hedge_fills
+        hedge_fills.setdefault(str(hedge_order_id), quantity)
+
+    async def _persist_registry_hedge_watermark(
+        self, registry, pair_tag: str, order_info: dict,
+        quantity: float, hedge_order_id: str,
+    ) -> bool:
+        exchange = str(order_info.get("local_exchange") or "").lower()
+        order_id = str(order_info.get("order_id") or "")
+        client_id = str(order_info.get("client_order_id") or "")
+        record = None
+        if exchange and order_id:
+            record = await registry.find_by_exchange_id(exchange, order_id)
+        if record is None and exchange and client_id:
+            record = await registry.find_by_client_id(exchange, client_id)
+        if record is None:
+            logger.critical(
+                "[Recovery] cannot locate originating spot order %s/%s "
+                "to persist hedge watermark for %s",
+                exchange, order_id or client_id, pair_tag,
+            )
+            return False
+        record.hedged_quantity = max(
+            float(record.hedged_quantity or 0.0), quantity
+        )
+        if hedge_order_id:
+            context = dict(record.recovery_context or {})
+            hedge_fills = context.get("hedge_fill_orders")
+            if not isinstance(hedge_fills, dict):
+                hedge_fills = {}
+            hedge_fills.setdefault(str(hedge_order_id), quantity)
+            context["hedge_fill_orders"] = hedge_fills
+            record.recovery_context = context
+        await registry.register(record)
+        return True
+
     async def _persist_entry_hedge_watermark(
         self, pair_tag: str, order_info: dict, hedged_quantity: float,
         hedge_order_id: str = "",
     ) -> bool:
         """Persist cumulative hedge progress on the originating spot entry."""
-        persisted = False
         try:
             quantity = float(hedged_quantity or 0.0)
             if not math.isfinite(quantity) or quantity < 0:
                 raise ValueError("invalid cumulative hedge quantity")
-            order_info["hedged_short_qty"] = max(
-                float(order_info.get("hedged_short_qty", 0.0) or 0.0),
-                quantity,
+            self._update_entry_hedge_markers(
+                order_info, quantity, hedge_order_id
             )
-            # Keep per-futures-order idempotency markers on the originating
-            # spot record. A restart may replay hedge reconciliation after
-            # the parent watermark was written but before the hedge record
-            # was retired; the same fill must never be counted twice.
-            if hedge_order_id:
-                hedge_fills = order_info.setdefault("hedge_fill_orders", {})
-                if not isinstance(hedge_fills, dict):
-                    hedge_fills = {}
-                    order_info["hedge_fill_orders"] = hedge_fills
-                hedge_fills.setdefault(str(hedge_order_id), quantity)
             registry = getattr(self, "order_registry", None)
+            persisted = False
             if registry is not None:
-                exchange = str(order_info.get("local_exchange") or "").lower()
-                order_id = str(order_info.get("order_id") or "")
-                client_id = str(order_info.get("client_order_id") or "")
-                record = None
-                if exchange and order_id:
-                    record = await registry.find_by_exchange_id(exchange, order_id)
-                if record is None and exchange and client_id:
-                    record = await registry.find_by_client_id(exchange, client_id)
-                if record is not None:
-                    record.hedged_quantity = max(
-                        float(record.hedged_quantity or 0.0), quantity
-                    )
-                    if hedge_order_id:
-                        context = dict(record.recovery_context or {})
-                        hedge_fills = context.get("hedge_fill_orders")
-                        if not isinstance(hedge_fills, dict):
-                            hedge_fills = {}
-                        hedge_fills.setdefault(str(hedge_order_id), quantity)
-                        context["hedge_fill_orders"] = hedge_fills
-                        record.recovery_context = context
-                    await registry.register(record)
-                    persisted = True
-                else:
-                    logger.critical(
-                        "[Recovery] cannot locate originating spot order %s/%s "
-                        "to persist hedge watermark for %s",
-                        exchange, order_id or client_id, pair_tag,
-                    )
+                persisted = await self._persist_registry_hedge_watermark(
+                    registry, pair_tag, order_info, quantity, hedge_order_id
+                )
             persist = getattr(self, "_persist_pending_entry", None)
             if callable(persist):
                 await persist(pair_tag, order_info)
