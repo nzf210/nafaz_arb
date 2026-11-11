@@ -168,7 +168,7 @@ class SupabasePositionMixin:
         )
 
     def funding_payment(
-        self, pair_key: str, pos: Any, payment: Dict[str, Any], *, is_mock: bool = False
+        self, pair_key: str, pos: Any, payment: Dict[str, Any], **_options
     ) -> bool:
         """Journal one confirmed exchange funding settlement idempotently."""
         position_id = self._position_ids.get(pair_key)
