@@ -303,53 +303,54 @@ class EngineStatusMixin:
     # Emergency Cancel Handling
     # -------------------------------------------------------------
 
-    async def handle_emergency_cancel(self, message_data: str):
-        """
-        Handles CANCEL_ALL_NEGATIVE_FUNDING from Scanner:
-        Cancels any pending local Limit Buy orders in State 1.
-        """
+    def _emergency_cancel_targets(self, message_data: str) -> list:
         target_pair_key = None
         try:
             parsed = json.loads(message_data)
             target_pair_key = parsed.get("pair_key")
         except Exception:
             target_pair_key = message_data.strip() if message_data else None
+        if not target_pair_key:
+            return list(self.pending_entry_orders.keys())
+        if target_pair_key in self.pending_entry_orders:
+            return [target_pair_key]
+        logger.debug(
+            "[Emergency Cancel] Ignored for %s: no pending entry order",
+            target_pair_key,
+        )
+        return []
 
-        to_cancel = []
-        if target_pair_key:
-            if target_pair_key in self.pending_entry_orders:
-                to_cancel.append(target_pair_key)
-            else:
-                # Target pair has negative funding but we have no pending order for it; ignore quietly
-                logger.debug(f"[Emergency Cancel] Ignored for {target_pair_key}: no pending entry order")
-                return
-        else:
-            # If no specific key or symbol given, cancel all pending entry orders
-            to_cancel = list(self.pending_entry_orders.keys())
+    async def _cancel_emergency_entry_for_pair(self, pair_key: str) -> None:
+        async with self._pair_lock(pair_key):
+            token = None
+            try:
+                if not getattr(self.config, "mock_mode", False):
+                    token = self._bind_pair_client(self._pair_info_for_tag(pair_key))
+                order_info = self.pending_entry_orders.get(pair_key)
+                if not order_info:
+                    return
+                order_id = order_info["order_id"]
+                logger.warning(
+                    f"[Emergency Cancel] Cancelling pending entry order {order_id} "
+                    f"for {pair_key} due to negative funding"
+                )
+                resolved = await self._cancel_entry_order_and_reconcile(
+                    pair_key, order_info, "Emergency Cancel"
+                )
+                if not resolved:
+                    logger.critical(
+                        f"[Emergency Cancel] order {order_id} remains unresolved; "
+                        "pending state and reserved funds are retained"
+                    )
+            except Exception:
+                logger.exception(
+                    f"[Emergency Cancel] pair routing failed for {pair_key}"
+                )
+            finally:
+                if token is not None:
+                    self._reset_pair_client(token)
 
-        for p_key in to_cancel:
-            async with self._pair_lock(p_key):
-                token = None
-                try:
-                    if not getattr(self.config, "mock_mode", False):
-                        token = self._bind_pair_client(self._pair_info_for_tag(p_key))
-                    order_info = self.pending_entry_orders.get(p_key)
-                    if not order_info:
-                        continue
-                    order_id = order_info["order_id"]
-                    logger.warning(
-                        f"[Emergency Cancel] Cancelling pending entry order {order_id} for {p_key} due to negative funding"
-                    )
-                    resolved = await self._cancel_entry_order_and_reconcile(
-                        p_key, order_info, "Emergency Cancel"
-                    )
-                    if not resolved:
-                        logger.critical(
-                            f"[Emergency Cancel] order {order_id} remains unresolved; "
-                            "pending state and reserved funds are retained"
-                        )
-                except Exception:
-                    logger.exception(f"[Emergency Cancel] pair routing failed for {p_key}")
-                finally:
-                    if token is not None:
-                        self._reset_pair_client(token)
+    async def handle_emergency_cancel(self, message_data: str):
+        """Cancel matching pending spot entries after a negative-funding signal."""
+        for pair_key in self._emergency_cancel_targets(message_data):
+            await self._cancel_emergency_entry_for_pair(pair_key)
