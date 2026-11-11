@@ -1,5 +1,6 @@
 """Signal-to-entry orchestration facade for the arbitrage engine."""
 
+import asyncio
 import math
 import time
 from typing import Optional
