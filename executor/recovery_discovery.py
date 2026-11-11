@@ -207,7 +207,7 @@ class RecoveryDiscoveryMixin:
             )
             return
 
-        adopted = await self._apply_adopted_order(record, order, pair_tag, market, amount_spec)
+        adopted = await self._apply_adopted_order(record, order, pair_tag, amount_spec)
         if adopted:
             await self.order_registry.clear_pending_recovery(record.local_order_id)
             logger.warning(
