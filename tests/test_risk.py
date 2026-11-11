@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from unittest.mock import AsyncMock
 
 from executor.models import ActivePosition, PositionState
 
@@ -396,6 +397,9 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
     engine.client = client
+    # This test isolates balance-probe behavior; order-journal durability is
+    # covered by the dedicated order-recovery tests.
+    engine._register_order_intent = AsyncMock(return_value=object())
     pair_tag = "indodax:btc_idr"
     await fake_redis.set(
         f"arb:signal:{pair_tag}",
@@ -426,6 +430,9 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
     engine.client = client
+    # Keep this test focused on mapping the venue rejection to its public
+    # failure reason; durable intent enforcement has dedicated coverage.
+    engine._register_order_intent = AsyncMock(return_value=object())
     failures = []
 
     async def capture_failure(pair_tag, reason, message, **kwargs):
