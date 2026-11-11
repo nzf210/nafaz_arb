@@ -380,8 +380,8 @@ worker runs every 120 seconds by default; configure
 `TRADE_FILL_RECONCILIATION_INTERVAL_SECONDS` to change its interval. Apply
 `supabase/migrations/20261111000100_add_live_order_fill_reconciliation.sql`
 before deploying this change; it adds both the live-order discriminator and
-the fill-source classification needed to separate legacy snapshots from
-verified exchange executions.
+the fill-source classification and fee-verification flag needed to separate
+legacy snapshots from verified exchange executions.
 `position_legs`, `funding_payments`, and `executor_status_snapshots` remain
 schema-only. Supabase history must never replace authenticated exchange-side
 exposure verification.
