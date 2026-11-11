@@ -19,6 +19,7 @@ select
 do $$
 declare
     tbl text;
+    table_label text;
     mutable_tables text[] := array[
         'exchange_accounts','strategy_configs','risk_limits','market_pairs',
         'positions','orders','order_fills','position_legs','funding_payments',
@@ -27,21 +28,22 @@ declare
     ];
 begin
     foreach tbl in array mutable_tables loop
+        table_label := format((select public_table_format from pg_temp._smoke_constants), tbl);
         if not exists (
             select 1
             from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
             where n.nspname = (select public_schema from pg_temp._smoke_constants) and c.relname = tbl and c.relrowsecurity
         ) then
-            raise exception 'RLS is not enabled on public.%', tbl;
+            raise exception 'RLS is not enabled on %', table_label;
         end if;
         if has_table_privilege('anon', format((select public_table_format from pg_temp._smoke_constants), tbl), 'select')
            or has_table_privilege('authenticated', format((select public_table_format from pg_temp._smoke_constants), tbl), 'select') then
-            raise exception 'Unexpected client SELECT privilege on public.%', tbl;
+            raise exception 'Unexpected client SELECT privilege on %', table_label;
         end if;
         if not has_table_privilege('service_role', format((select public_table_format from pg_temp._smoke_constants), tbl), 'select')
            or not has_table_privilege('service_role', format((select public_table_format from pg_temp._smoke_constants), tbl), 'insert') then
-            raise exception 'service_role missing required access on public.%', tbl;
+            raise exception 'service_role missing required access on %', table_label;
         end if;
     end loop;
 end $$;
