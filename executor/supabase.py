@@ -372,7 +372,7 @@ class SupabaseWriter:
         """
         local_order_id = str(row.get("local_order_id") or "")
         if not local_order_id:
-            return
+            return False
         role = str(row.get("order_role") or "ENTRY")
         fallback_side, resolved_leg, resolved_market = _role_catalogue(
             role, leg, market_type or row.get("market_type")
