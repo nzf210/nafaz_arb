@@ -134,7 +134,7 @@ func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id
 	if problem != "" {
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ "+html.EscapeString(problem), b.defaultKeyboard()); return
 	}
-	for _, field := := range []string{"order_registry", "all_orders", "active_orders", "orders", "pending_orders"} {
+	for _, field := range []string{"order_registry", "all_orders", "active_orders", "orders", "pending_orders"} {
 		for _, item := range decodeList(rawField(snapshot, field)) {
 			var m map[string]interface{}
 			_ = json.Unmarshal(item, &m)
