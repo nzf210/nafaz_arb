@@ -845,8 +845,8 @@ class ArbitrageEngine(
             # Each pair-bound client may represent a different exchange account.
             # Deduplicate only within that account's report, never across pairs.
             seen = set()
-            failed_balance_scopes = set()
-            healthy_balance_scopes = set()
+            failed_balance_markets = set()
+            healthy_balance_markets = set()
             try:
                 if not getattr(self.config, "mock_mode", False):
                     token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
@@ -866,7 +866,7 @@ class ArbitrageEngine(
                     seen.add(scope_key)
                     if report.get("status") != "ok":
                         reason = str(report.get("error") or report.get("status") or "balance unavailable")
-                        failed_balance_scopes.add(exchange)
+                        failed_balance_markets.add((exchange, market))
                         self._halt_exposure_scope(exchange, f"balance reconciliation failed: {reason}")
                         await self._publish_execution_failure(
                             f"balance-reconciliation:{exchange}:{market}",
@@ -876,7 +876,7 @@ class ArbitrageEngine(
                             state=PositionState.RECONCILIATION_REQUIRED,
                         )
                         continue
-                    healthy_balance_scopes.add(exchange)
+                    healthy_balance_markets.add((exchange, market))
                     assets = report.get("assets")
                     if not isinstance(assets, list):
                         raise ValueError(f"{exchange} returned malformed balance assets")
@@ -895,8 +895,14 @@ class ArbitrageEngine(
                         )
                 # Do not clear an exchange-level halt merely because one market
                 # succeeded while the other market on that same venue failed.
-                for exchange in healthy_balance_scopes - failed_balance_scopes:
-                    if exchange in self._recovery_scope_halts and "balance reconciliation failed" in self._recovery_scope_halts[exchange]:
+                exchanges = {exchange for exchange, _market in healthy_balance_markets}
+                for exchange in exchanges:
+                    all_markets_ok = all(
+                        (exchange, market) in healthy_balance_markets
+                        and (exchange, market) not in failed_balance_markets
+                        for market in ("spot", "futures")
+                    )
+                    if all_markets_ok and exchange in self._recovery_scope_halts and "balance reconciliation failed" in self._recovery_scope_halts[exchange]:
                         await self._clear_exposure_halt(exchange, "all balance markets reconciled")
             except asyncio.CancelledError:
                 raise
