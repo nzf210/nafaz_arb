@@ -53,7 +53,107 @@ func (b *Bot) handleTextMessage(ctx context.Context, msg *Message) {
 	b.handleCommand(ctx, msg, cmd, parts)
 }
 
-func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts []string) {
+func (b *Bot) handleScanCommand(ctx context.Context, msg *Message) {
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		"🔍 <i>Sedang menjalankan pemindaian pasar...</i>", nil,
+	)
+	result, err := b.server.TriggerScan(ctx)
+	if err != nil {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			fmt.Sprintf("❌ <b>Scan gagal:</b> %s", html.EscapeString(err.Error())),
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, 0,
+		b.formatScanResult(result, "Hasil Pemindaian On-Demand"),
+		b.defaultKeyboard(),
+	)
+}
+
+func (b *Bot) handlePairCommand(
+	ctx context.Context, msg *Message, parts []string,
+) {
+	if len(parts) < 2 {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"ℹ️ <i>Gunakan:</i> <code>/pair &lt;simbol&gt;</code>\n<i>Contoh:</i> <code>/pair BTC</code> atau <code>/pair ETH</code>",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		b.formatPairDetail(parts[1]), b.defaultKeyboard(),
+	)
+}
+
+func (b *Bot) handleOrderDetailCommand(
+	ctx context.Context, msg *Message, parts []string,
+) {
+	if len(parts) < 2 {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"Gunakan: <code>/order &lt;internal_order_id&gt;</code>",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.handleOrderDetail(ctx, msg.Chat.ID, msg.MessageID, parts[1])
+}
+
+func (b *Bot) handlePositionDetailCommand(
+	ctx context.Context, msg *Message, parts []string,
+) {
+	if len(parts) < 2 {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"Gunakan: <code>/position &lt;position_id&gt;</code>",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.handlePositionDetail(ctx, msg.Chat.ID, msg.MessageID, parts[1])
+}
+
+func (b *Bot) handleMuteCommand(ctx context.Context, msg *Message, parts []string) {
+	duration := time.Hour
+	if len(parts) > 1 {
+		if parsed, err := time.ParseDuration(parts[1]); err == nil && parsed > 0 {
+			duration = parsed
+		}
+	}
+	b.mu.Lock()
+	b.mutedUntil = time.Now().UTC().Add(duration)
+	mutedUntil := b.mutedUntil
+	b.mu.Unlock()
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		fmt.Sprintf(
+			"🔕 <b>Alert Dibisukan</b>\n\nNotifikasi peluang tidak akan dikirim hingga <b>%s</b> (~%s ke depan).\nGunakan /unmute untuk mengaktifkan kembali.",
+			mutedUntil.Format(TIME_FORMAT), duration.String(),
+		),
+		b.defaultKeyboard(),
+	)
+}
+
+func (b *Bot) handleUnmuteCommand(ctx context.Context, msg *Message) {
+	b.mu.Lock()
+	b.mutedUntil = time.Time{}
+	b.mu.Unlock()
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		"🔔 <b>Alert Diaktifkan Kembali</b>\n\nNotifikasi peluang baru akan dikirimkan normal sesuai konfigurasi.",
+		b.defaultKeyboard(),
+	)
+}
+
+func (b *Bot) handleCommand(
+	ctx context.Context, msg *Message, cmd string, parts []string,
+) {
 	switch cmd {
 	case "/start", "/menu":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatMenu(), b.defaultKeyboard())
@@ -62,22 +162,11 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 	case "/status":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatStatus(), b.defaultKeyboard())
 	case "/scan":
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "🔍 <i>Sedang menjalankan pemindaian pasar...</i>", nil)
-		r, err := b.server.TriggerScan(ctx)
-		if err != nil {
-			b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, fmt.Sprintf("❌ <b>Scan gagal:</b> %s", html.EscapeString(err.Error())), b.defaultKeyboard())
-			return
-		}
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, 0, b.formatScanResult(r, "Hasil Pemindaian On-Demand"), b.defaultKeyboard())
+		b.handleScanCommand(ctx, msg)
 	case "/latest":
 		b.sendLatestOpportunityScans(ctx, msg.Chat.ID, msg.MessageID)
 	case "/pair":
-		if len(parts) < 2 {
-			b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-				"ℹ️ <i>Gunakan:</i> <code>/pair &lt;simbol&gt;</code>\n<i>Contoh:</i> <code>/pair BTC</code> atau <code>/pair ETH</code>", b.defaultKeyboard())
-			return
-		}
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatPairDetail(parts[1]), b.defaultKeyboard())
+		b.handlePairCommand(ctx, msg, parts)
 	case "/active":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatActiveOpportunities(), b.defaultKeyboard())
 	case "/orders":
@@ -91,11 +180,9 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 	case "/risk":
 		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "RISK HALT", "risk", "risk_status", "risk_halt")
 	case "/order":
-		if len(parts) < 2 { b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "Gunakan: <code>/order &lt;internal_order_id&gt;</code>", b.defaultKeyboard()); return }
-		b.handleOrderDetail(ctx, msg.Chat.ID, msg.MessageID, parts[1])
+		b.handleOrderDetailCommand(ctx, msg, parts)
 	case "/position":
-		if len(parts) < 2 { b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "Gunakan: <code>/position &lt;position_id&gt;</code>", b.defaultKeyboard()); return }
-		b.handlePositionDetail(ctx, msg.Chat.ID, msg.MessageID, parts[1])
+		b.handlePositionDetailCommand(ctx, msg, parts)
 	case "/positions":
 		b.handlePositionsCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/pending":
@@ -113,25 +200,9 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 	case "/metrics":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatMetrics(), b.defaultKeyboard())
 	case "/mute":
-		dur := 1 * time.Hour
-		if len(parts) > 1 {
-			if d, err := time.ParseDuration(parts[1]); err == nil && d > 0 {
-				dur = d
-			}
-		}
-		b.mu.Lock()
-		b.mutedUntil = time.Now().UTC().Add(dur)
-		mutedUntil := b.mutedUntil
-		b.mu.Unlock()
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-			fmt.Sprintf("🔕 <b>Alert Dibisukan</b>\n\nNotifikasi peluang tidak akan dikirim hingga <b>%s</b> (~%s ke depan).\nGunakan /unmute untuk mengaktifkan kembali.",
-				mutedUntil.Format(TIME_FORMAT), dur.String()), b.defaultKeyboard())
+		b.handleMuteCommand(ctx, msg, parts)
 	case "/unmute":
-		b.mu.Lock()
-		b.mutedUntil = time.Time{}
-		b.mu.Unlock()
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-			"🔔 <b>Alert Diaktifkan Kembali</b>\n\nNotifikasi peluang baru akan dikirimkan normal sesuai konfigurasi.", b.defaultKeyboard())
+		b.handleUnmuteCommand(ctx, msg)
 	case "/killswitch":
 		userID := int64(0)
 		if msg.From != nil {
