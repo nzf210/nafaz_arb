@@ -397,6 +397,8 @@ class RiskMixin:
         # Recovery-installed gates first: an unresolved orphan or unverifiable
         # order blocks the pair/market/venue it affects, never the whole bot.
         recovery_halts = getattr(self, "_recovery_scope_halts", None) or {}
+        if "*" in recovery_halts:
+            return f"global: {recovery_halts['*']}"
         for key in self._recovery_scope_keys(pair_tag):
             if key in recovery_halts:
                 return f"{key}: {recovery_halts[key]}"
