@@ -16,7 +16,7 @@ type monitorSnapshot map[string]json.RawMessage
 
 const htmlPreClose = "</pre>"
 
-func (b *Bot) readMonitorSnapshot(ctx context.Context) (monitorSnapshot, string) {
+func (b *Bot) readMonitorSnapshot(ctx context.Context) (monitorSnapshot, string, bool) {
 	b.mu.Lock()
 	rc := b.redisClient
 	b.mu.Unlock()
@@ -34,7 +34,7 @@ func (b *Bot) readMonitorSnapshot(ctx context.Context) (monitorSnapshot, string)
 	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
 		return nil, "Snapshot executor tidak valid: " + err.Error()
 	}
-	return snapshot, ""
+	return snapshot, "", false
 }
 
 func rawField(m monitorSnapshot, names ...string) json.RawMessage {
@@ -335,11 +335,11 @@ func (b *Bot) waitForStartupRecovery(
 		}
 		select {
 		case <-ctx.Done():
-			return nil, "Startup recovery notification was cancelled."
+			return nil, "", true
 		case <-time.After(time.Second):
 		}
 	}
-	return snapshot, problem
+	return snapshot, problem, false
 }
 
 func countSnapshotMap(raw json.RawMessage) int {
@@ -443,7 +443,10 @@ func (b *Bot) sendStartupSummary(ctx context.Context) {
 	if b.cfg.Telegram.ChatID != 0 {
 		targets = []int64{b.cfg.Telegram.ChatID}
 	}
-	snapshot, problem := b.waitForStartupRecovery(ctx)
+	snapshot, problem, cancelled := b.waitForStartupRecovery(ctx)
+	if cancelled {
+		return
+	}
 	if problem != "" {
 		b.sendStartupNotReady(ctx, targets, problem)
 		return
