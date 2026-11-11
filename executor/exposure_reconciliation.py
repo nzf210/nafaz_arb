@@ -362,19 +362,15 @@ class ExposureReconciliationWorker:
                 used = _finite(asset.get("used", 0))
                 if min(total, free, used) < 0:
                     raise ValueError("negative balance")
-                self.engine.supabase._emit(
-                    "balance_snapshots",
-                    {
-                        "exchange_name": str(report.get("name", "")),
-                        "market_type": "perpetual" if market == "futures" else "spot",
-                        "asset": str(asset.get("asset", "")),
-                        "total": total,
-                        "free": free,
-                        "used": used,
-                        "is_mock": False,
-                        "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "raw_payload": {"source": "periodic_exposure_reconciliation"},
-                    },
+                self.engine.supabase.balance_snapshot(
+                    exchange=str(report.get("name", "")),
+                    market_type="perpetual" if market == "futures" else "spot",
+                    asset=str(asset.get("asset", "")),
+                    total=total,
+                    free=free,
+                    used=used,
+                    is_mock=False,
+                    raw_payload={"source": "periodic_exposure_reconciliation"},
                 )
             except (TypeError, ValueError):
                 logger.exception("invalid balance snapshot from %s", report.get("name"))
