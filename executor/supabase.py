@@ -605,9 +605,12 @@ class SupabaseWriter:
         if not self.enabled or self._outbox is None:
             return False
         try:
-            return self._outbox.enqueue_once(
+            self._outbox.enqueue_once(
                 "order_fills", "id", row, f"exchange-fill:{exchange}:{fill_id}"
             )
+            # False from enqueue_once means this immutable fill was already
+            # journaled (or delivered) by an earlier reconciliation pass.
+            return True
         except Exception:
             self._dropped += 1
             logger.exception("CRITICAL: failed to journal exchange fill %s", fill_id)
