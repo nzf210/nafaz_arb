@@ -566,6 +566,7 @@ class ExitMixin:
                     side="buy", order_type="market", price=live_global_ask,
                     quantity=unclosed_delta, reduce_only=True,
                     global_amount_spec=pos.global_amount_spec,
+                    required=False,
                 )
                 close_order = await self.client.close_global_short_market(
                     global_sym,
