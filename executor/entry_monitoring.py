@@ -73,25 +73,27 @@ class EntryMonitoringMixin:
         )
         await self._expire_unfetchable_entry_order(pair_tag, order_info)
 
+    async def _pending_entry_should_skip(
+        self, pair_tag: str, order_info: dict
+    ) -> bool:
+        """Keep stale, recovery-blocked, or adverse entries out of the poll path."""
+        if self.pending_entry_orders.get(pair_tag) is not order_info:
+            return True
+        recovery_blocked = (
+            self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED
+            or pair_tag in (getattr(self, "_recovery_scope_halts", {}) or {})
+        )
+        if recovery_blocked:
+            return True
+        return await self._check_adverse_selection(pair_tag, order_info)
+
     async def _process_pending_entry_bound(self, pair_tag: str, order_info: dict) -> None:
         """Process adverse selection check, fill tracking, and position creation for an entry order.
 
         Runs under the pair lock so the monitoring loop cannot mutate pending
         order/position state concurrently with the signal entry path."""
         async with self._pair_lock(pair_tag):
-            # The entry path may have resolved (or replaced) this order while we
-            # waited for the lock; drop the stale snapshot if so.
-            if self.pending_entry_orders.get(pair_tag) is not order_info:
-                return
-            # A pending entry must not hedge again while recovery has an
-            # unresolved order or a non-durable hedge watermark for this
-            # pair. Active-position exit monitoring remains independent.
-            if (
-                self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED
-                or pair_tag in (getattr(self, "_recovery_scope_halts", {}) or {})
-            ):
-                return
-            if await self._check_adverse_selection(pair_tag, order_info):
+            if await self._pending_entry_should_skip(pair_tag, order_info):
                 return
 
             order_id = order_info["order_id"]
