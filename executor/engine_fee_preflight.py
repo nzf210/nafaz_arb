@@ -62,8 +62,7 @@ class EngineFeePreflightMixin:
                 profiles[market_name] = profile
         return profiles
 
-    @staticmethod
-    def _apply_fee_snapshot(directives, fee_snapshot) -> None:
+    def _apply_fee_snapshot(self, directives, fee_snapshot) -> None:
         spot_rates = fee_snapshot.get("spot")
         perp_rates = fee_snapshot.get("perp")
         execution_mode = str(getattr(self.config, "execution_mode", "TAKER_TAKER")).upper()
