@@ -162,7 +162,7 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 
 	var kbRows [][]InlineKeyboardButton
 	if orderRecordsErr != nil {
-		sb.WriteString("⚠️ <i>Active order registry tidak dapat dibaca; status order per leg belum diverifikasi.</i>\\n\\n")
+		sb.WriteString("⚠️ <i>Active order registry tidak dapat dibaca; status order per leg belum diverifikasi.</i>\n\n")
 	}
 	for i, pos := range positions {
 		b.formatPositionBlock(&sb, i+1, pos, rc, ctx)
@@ -213,14 +213,14 @@ func (b *Bot) formatPositionLegOrders(sb *strings.Builder, pos domain.ActivePosi
 		line := fmt.Sprintf("<code>%s</code> %s (filled %s / remaining %s)", html.EscapeString(id), html.EscapeString(status), html.EscapeString(filled), html.EscapeString(remaining))
 		if market == "spot" { spot = append(spot, line) } else if market == "perpetual" { futures = append(futures, line) }
 	}
-	sb.WriteString("<b>Active order status per leg:</b>\\n")
-	if len(spot) == 0 { sb.WriteString("• Spot: <i>tidak ada active order record; exposure harus diverifikasi dari exchange</i>\\n") } else {
-		for i, item := range spot { if i >= 3 { sb.WriteString("• Spot: <i>additional active orders omitted</i>\\n"); break }; sb.WriteString("• Spot: "+item+"\\n") }
+	sb.WriteString("<b>Active order status per leg:</b>\n")
+	if len(spot) == 0 { sb.WriteString("• Spot: <i>tidak ada active order record; exposure harus diverifikasi dari exchange</i>\n") } else {
+		for i, item := range spot { if i >= 3 { sb.WriteString("• Spot: <i>additional active orders omitted</i>\n"); break }; sb.WriteString("• Spot: "+item+"\n") }
 	}
-	if len(futures) == 0 { sb.WriteString("• Futures: <i>tidak ada active order record; exposure harus diverifikasi dari exchange</i>\\n") } else {
-		for i, item := range futures { if i >= 3 { sb.WriteString("• Futures: <i>additional active orders omitted</i>\\n"); break }; sb.WriteString("• Futures: "+item+"\\n") }
+	if len(futures) == 0 { sb.WriteString("• Futures: <i>tidak ada active order record; exposure harus diverifikasi dari exchange</i>\n") } else {
+		for i, item := range futures { if i >= 3 { sb.WriteString("• Futures: <i>additional active orders omitted</i>\n"); break }; sb.WriteString("• Futures: "+item+"\n") }
 	}
-	sb.WriteString("\\n")
+	sb.WriteString("\n")
 }
 
 func (b *Bot) sendEmptyPositionsReply(ctx context.Context, chatID int64, replyToID int64, balances *domain.BalancesRecord, stats redishandler.TradeStats) {
