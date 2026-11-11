@@ -9,6 +9,7 @@ from executor.exchange_common import (
     VENUE_CLIENT_ORDER_ID_MAX_LEN, _base_order_result, _client_order_params,
     _expose_client_order_id, _local_order_params, _normalize_open_order,
     _require_amount_spec, venue_client_order_id,
+    _balance_fetch_params, _fetch_exchange_balance,
 )
 from executor.exchange_fee_balance import ExchangeFeeBalanceMixin
 from executor.exchange_futures import ExchangeFuturesMixin
