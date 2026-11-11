@@ -17,7 +17,7 @@ class ExchangeTradeMixin:
     """Focused asynchronous exchange adapter operations."""
 
     async def _fetch_indodax_trade_history(
-        self, exchange, fetcher, resolved: str, since: Optional[int],
+        self, fetcher, resolved: str, since: Optional[int],
         until: Optional[int], client_order_id: Optional[str],
         order_id: Optional[str],
     ) -> list:
@@ -230,7 +230,7 @@ class ExchangeTradeMixin:
 
         if isinstance(exchange, IndodaxTAPIv2):
             raw_trades = await self._fetch_indodax_trade_history(
-                exchange, fetcher, resolved, since, until, client_order_id, order_id
+                fetcher, resolved, since, until, client_order_id, order_id
             )
         else:
             raw_trades = await self._fetch_ccxt_trade_history(
