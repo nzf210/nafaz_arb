@@ -191,86 +191,100 @@ class ExitOrderManagementMixin:
             pair_tag, self._check_dynamic_exit_pair_bound, pair_tag
         )
 
+    async def _exit_live_snapshot(self, pair_tag: str, pos):
+        raw = await self.redis.get(f"arb:live_price:{pair_tag}")
+        local_bid = pos.entry_price_idr
+        local_ask = 0.0
+        snapshot = None
+        if raw:
+            try:
+                snapshot = json.loads(raw)
+                if not helpers.snapshot_is_stale(snapshot):
+                    local_bid = float(
+                        snapshot.get("local_best_bid", pos.entry_price_idr)
+                    )
+                    local_ask = float(snapshot.get("local_best_ask", 0.0))
+                if hasattr(self.client, "update_market_price"):
+                    self.client.update_market_price(
+                        pos.symbol, local_bid, local_ask
+                    )
+            except Exception:
+                pass
+        return snapshot, local_bid, local_ask
+
+    async def _persist_exit_unrealized_pnl(
+        self, pair_tag: str, pos, local_bid: float,
+        global_ask_usdt: float, usdt_idr_rate: float, now_ms: int,
+        live_snapshot,
+    ) -> None:
+        if live_snapshot is None or helpers.snapshot_is_stale(live_snapshot):
+            return
+        spot_pnl_idr = pos.qty * (local_bid - pos.entry_price_idr)
+        spot_pnl_usdt = (
+            spot_pnl_idr / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
+        )
+        futures_pnl_usdt = pos.qty * (
+            pos.short_entry_usdt - global_ask_usdt
+        )
+        rates = rates_for_position(pos)
+        est_fees_usdt = round_trip_fees_usdt(
+            pos.qty,
+            pos.entry_price_idr / usdt_idr_rate,
+            local_bid / usdt_idr_rate,
+            pos.short_entry_usdt,
+            global_ask_usdt,
+            rates,
+        )
+        net_unrealized_usdt = (
+            spot_pnl_usdt + futures_pnl_usdt
+            + pos.accumulated_funding_usdt - est_fees_usdt
+        )
+        cap_usdt = pos.qty * pos.short_entry_usdt
+        pos.current_spot_bid_idr = local_bid
+        pos.current_perp_ask_usdt = global_ask_usdt
+        pos.spot_unrealized_pnl_idr = spot_pnl_idr
+        pos.futures_unrealized_pnl_usdt = futures_pnl_usdt
+        pos.net_unrealized_pnl_usdt = net_unrealized_usdt
+        pos.net_unrealized_pnl_idr = net_unrealized_usdt * usdt_idr_rate
+        pos.net_unrealized_roi_pct = (
+            net_unrealized_usdt / cap_usdt * 100.0 if cap_usdt > 0 else 0.0
+        )
+        pos.updated_at = now_ms
+        await self.redis.set(
+            f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+        )
+
     async def _check_dynamic_exit_pair_bound(self, pair_tag: str) -> None:
         if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
             return
-
         pos = self.active_positions.get(pair_tag)
         if not pos or pos.qty <= 0:
             return
-
         price_data = await self._fetch_live_price(pair_tag)
         if not price_data:
             return
         global_ask_usdt, usdt_idr_rate = price_data
-
-        # Sync latest market prices to client and track floating mark-to-market PnL
-        live_price_raw = await self.redis.get(f"arb:live_price:{pair_tag}")
-        local_best_bid = pos.entry_price_idr
-        local_best_ask = 0.0
-        live_snapshot = None
-        if live_price_raw:
-            try:
-                live_snapshot = json.loads(live_price_raw)
-                if not helpers.snapshot_is_stale(live_snapshot):
-                    local_best_bid = float(live_snapshot.get("local_best_bid", pos.entry_price_idr))
-                    local_best_ask = float(live_snapshot.get("local_best_ask", 0.0))
-                if hasattr(self.client, "update_market_price"):
-                    self.client.update_market_price(pos.symbol, local_best_bid, local_best_ask)
-            except Exception:
-                pass
-
+        live_snapshot, local_best_bid, _local_best_ask = (
+            await self._exit_live_snapshot(pair_tag, pos)
+        )
         now_ms = int(time.time() * 1000)
         funding_passed = await self._handle_funding_rollover(
             pair_tag, pos, now_ms
         )
-
-        # Mark-to-market: when no fresh live prices exist (scanner offline,
-        # expired snapshot, halted local book), do NOT persist fabricated PnL.
-        # Leave the last known values untouched and flag the position stale so
-        # the Telegram view can hide the numbers instead of showing fakes.
-        stale = live_snapshot is None or helpers.snapshot_is_stale(live_snapshot)
-        if not stale:
-            spot_pnl_idr = pos.qty * (local_best_bid - pos.entry_price_idr)
-            spot_pnl_usdt = spot_pnl_idr / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
-            futures_pnl_usdt = pos.qty * (pos.short_entry_usdt - global_ask_usdt)
-            rates = rates_for_position(pos)
-            est_fees_usdt = round_trip_fees_usdt(
-                pos.qty,
-                pos.entry_price_idr / usdt_idr_rate,
-                local_best_bid / usdt_idr_rate,
-                pos.short_entry_usdt,
-                global_ask_usdt,
-                rates,
-            )
-            net_unrealized_usdt = (
-                spot_pnl_usdt + futures_pnl_usdt + pos.accumulated_funding_usdt - est_fees_usdt
-            )
-            net_unrealized_idr = net_unrealized_usdt * usdt_idr_rate
-            cap_usdt = pos.qty * pos.short_entry_usdt
-            unrealized_roi = (net_unrealized_usdt / cap_usdt * 100.0) if cap_usdt > 0 else 0.0
-
-            pos.current_spot_bid_idr = local_best_bid
-            pos.current_perp_ask_usdt = global_ask_usdt
-            pos.spot_unrealized_pnl_idr = spot_pnl_idr
-            pos.futures_unrealized_pnl_usdt = futures_pnl_usdt
-            pos.net_unrealized_pnl_usdt = net_unrealized_usdt
-            pos.net_unrealized_pnl_idr = net_unrealized_idr
-            pos.net_unrealized_roi_pct = unrealized_roi
-            pos.updated_at = now_ms
-
-            # Persist updated floating PnL to Redis for live position tracking
-            await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
-
-        if not self._should_repeg_exit(pair_tag, global_ask_usdt, funding_passed):
+        await self._persist_exit_unrealized_pnl(
+            pair_tag, pos, local_best_bid, global_ask_usdt,
+            usdt_idr_rate, now_ms, live_snapshot,
+        )
+        if not self._should_repeg_exit(
+            pair_tag, global_ask_usdt, funding_passed
+        ):
             return
-
         limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
             pair_tag, pos, global_ask_usdt, usdt_idr_rate
         )
         if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
             return
-        # A cancellation may have raced a fill and reduced/closed the position.
+        # Cancellation may race a fill and reduce or close the position.
         pos = self.active_positions.get(pair_tag)
         if not pos or pos.qty <= 0:
             return
