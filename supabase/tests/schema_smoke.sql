@@ -272,7 +272,7 @@ insert into public.reconciliation_audit (
 )
 on conflict (event_id) do nothing;
 
-do $
+do $audit$
 begin
     if (
         select count(*) from public.reconciliation_audit
@@ -284,7 +284,7 @@ begin
        or has_table_privilege('service_role', 'public.reconciliation_audit', 'delete') then
         raise exception 'reconciliation audit is not append-only for service_role';
     end if;
-end $;
+end $audit$;
 
 delete from public.reconciliation_audit
 where event_id = 'schema-smoke-reconcile-1';
