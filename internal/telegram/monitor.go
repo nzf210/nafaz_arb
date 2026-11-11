@@ -66,8 +66,24 @@ func (b *Bot) sendMonitorSection(ctx context.Context, chatID, replyToID int64, t
 		return
 	}
 	var raw json.RawMessage
-	for _, field := range fields {
-		if raw = rawField(snapshot, field); len(raw) > 0 { break }
+	if title == "ORPHAN ORDERS" {
+		b.mu.Lock(); rc := b.redisClient; b.mu.Unlock()
+		if rc == nil {
+			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Redis tidak terhubung; orphan registry tidak dapat diverifikasi.", b.defaultKeyboard()); return
+		}
+		items, err := rc.ListOrphanOrderRecords(ctx)
+		if err != nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca orphan registry: "+html.EscapeString(err.Error()), b.defaultKeyboard()); return }
+		raw, _ = json.Marshal(items)
+	} else if title == "RISK HALT" {
+		view := monitorSnapshot{}
+		for _, key := range []string{"status", "trading_halted", "halt_reason", "exchange_halted", "failed_pairs"} {
+			if value := rawField(snapshot, key); len(value) > 0 { view[key] = value }
+		}
+		raw, _ = json.Marshal(view)
+	} else {
+		for _, field := range fields {
+			if raw = rawField(snapshot, field); len(raw) > 0 { break }
+		}
 	}
 	body := prettyJSON(raw)
 	if len([]rune(body)) > 3300 {
