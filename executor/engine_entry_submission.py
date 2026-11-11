@@ -180,6 +180,8 @@ class EngineEntrySubmissionMixin:
         self, pair_tag, payload, pair_info, snapshot, directives,
         buy_qty, actual_cost_usdt, buy_price_idr,
     ) -> None:
+        submission_started = False
+        entry_coid = ""
         try:
             logger.info(
                 f"[State 1] Placing Maker Limit Buy on {pair_info.local_exchange} for {pair_info.local_symbol}: "
@@ -188,6 +190,9 @@ class EngineEntrySubmissionMixin:
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
             placed_time = time.time()
+            recovery_context = self._entry_recovery_context(
+                payload, pair_info, snapshot, directives, actual_cost_usdt
+            )
             await self._register_order_intent(
                 pair_tag,
                 entry_coid,
@@ -201,18 +206,53 @@ class EngineEntrySubmissionMixin:
                 quantity=buy_qty,
                 local_amount_spec=pair_info.local_amount_spec,
                 global_amount_spec=pair_info.global_amount_spec,
-                recovery_context=self._entry_recovery_context(
-                    payload, pair_info, snapshot, directives, actual_cost_usdt
-                ),
+                recovery_context=recovery_context,
             )
-            order = await self.client.place_local_limit_buy(
-                pair_info.local_symbol,
-                buy_qty,
-                buy_price_idr,
-                client_order_id=entry_coid,
-                amount_spec=pair_info.local_amount_spec,
-            )
-            order_id = str(order.get("id", ""))
+            submission_started = True
+            try:
+                order = await self.client.place_local_limit_buy(
+                    pair_info.local_symbol,
+                    buy_qty,
+                    buy_price_idr,
+                    client_order_id=entry_coid,
+                    amount_spec=pair_info.local_amount_spec,
+                )
+            except Exception as submit_error:
+                lookup = getattr(
+                    self.client, "fetch_local_order_by_client_id", None
+                )
+                order = None
+                if callable(lookup):
+                    try:
+                        order = await lookup(
+                            entry_coid, pair_info.local_symbol,
+                            pair_info.local_amount_spec,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[State 1] client-id lookup failed after ambiguous spot submit %s",
+                            entry_coid,
+                        )
+                if not isinstance(order, dict) or not order.get("id"):
+                    await self._mark_order_submission_ambiguous(
+                        pair_tag, pair_info.local_exchange, entry_coid,
+                        f"submit error: {type(submit_error).__name__}: {submit_error}; "
+                        "venue lookup did not return a verifiable order",
+                    )
+                    return
+                logger.warning(
+                    "[State 1] recovered spot order %s by client id after lost acknowledgement",
+                    entry_coid,
+                )
+
+            if not isinstance(order, dict) or not order.get("id"):
+                await self._mark_order_submission_ambiguous(
+                    pair_tag, pair_info.local_exchange, entry_coid,
+                    "venue returned an order acknowledgement without an exchange order id",
+                )
+                return
+
+            order_id = str(order["id"])
             self._record_order_success(pair_info.local_exchange)
             self.supabase.order(
                 pair_tag,
@@ -225,7 +265,7 @@ class EngineEntrySubmissionMixin:
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
                 submitted_at_ms=int(placed_time * 1000),
             )
-            await self._register_order(
+            registered = await self._register_order(
                 pair_tag,
                 entry_coid,
                 order,
@@ -239,12 +279,7 @@ class EngineEntrySubmissionMixin:
                 quantity=buy_qty,
                 local_amount_spec=pair_info.local_amount_spec,
                 global_amount_spec=pair_info.global_amount_spec,
-                # A fill must never be priced from a guessed FX rate or fee tier.
-                # Persisting the exact snapshot makes a post-restart hedge
-                # reproducible instead of requiring manual reconciliation.
-                recovery_context=self._entry_recovery_context(
-                    payload, pair_info, snapshot, directives, actual_cost_usdt
-                ),
+                recovery_context=recovery_context,
             )
             self.states[pair_tag] = PositionState.ENTRY_PENDING
             self.pending_entry_orders[pair_tag] = {
@@ -255,8 +290,23 @@ class EngineEntrySubmissionMixin:
                     buy_price_idr, buy_qty, actual_cost_usdt, placed_time,
                 ),
             }
-            await self._persist_pending_entry(pair_tag, self.pending_entry_orders[pair_tag])
+            await self._persist_pending_entry(
+                pair_tag, self.pending_entry_orders[pair_tag]
+            )
+            if registered is None:
+                await self._mark_order_submission_ambiguous(
+                    pair_tag, pair_info.local_exchange, entry_coid,
+                    "venue accepted the order but exchange acknowledgement could not "
+                    "be committed to the universal order registry",
+                )
         except Exception as exc:
+            if submission_started:
+                await self._mark_order_submission_ambiguous(
+                    pair_tag, pair_info.local_exchange, entry_coid,
+                    f"post-submit persistence or processing failed: "
+                    f"{type(exc).__name__}: {exc}",
+                )
+                return
             await self._handle_entry_submission_failure(
                 pair_tag, pair_info, actual_cost_usdt, exc
             )
