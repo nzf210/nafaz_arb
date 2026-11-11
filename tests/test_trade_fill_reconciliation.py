@@ -155,3 +155,18 @@ async def test_mock_orders_are_never_sent_to_exchange_history():
 
     assert engine.client_for_exchange.calls == []
     assert engine.supabase.fills == {}
+
+
+@pytest.mark.asyncio
+async def test_pair_halt_remains_until_all_mismatched_orders_are_verified():
+    engine = FakeEngine([], [])
+    worker = TradeFillReconciliationWorker(engine)
+    scope = "indodax:BTC_IDR:okx:BTC_USDT"
+    engine._recovery_scope_halts[scope] = "order recovery: trade-fill reconciliation: mismatch"
+    worker._reported = {"order-1": scope, "order-2": scope}
+
+    await worker._clear("order-1")
+    assert scope in engine._recovery_scope_halts
+
+    await worker._clear("order-2")
+    assert scope not in engine._recovery_scope_halts
