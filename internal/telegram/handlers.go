@@ -229,6 +229,9 @@ func (b *Bot) handleReconcileRetryCommand(ctx context.Context, msg *Message) {
 	if len(reply.ScopeHalts) > 0 {
 		message += "\n\n<b>Halt:</b> <code>" + html.EscapeString(prettyJSON(mustJSONRaw(reply.ScopeHalts))) + "</code>"
 	}
+	if reply.Error != "" {
+		message += "\n\n<b>Catatan:</b> " + html.EscapeString(reply.Error)
+	}
 	b.sendReplyWithMarkup(ctx, msg.Chat.ID, 0, message, b.defaultKeyboard())
 }
 
