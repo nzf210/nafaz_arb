@@ -169,10 +169,14 @@ class RecoveryAdoptionMixin:
             "local_amount_spec": _spec_dict(amount_spec),
         }
         await self._process_pending_exit(pair_tag, force_reconcile=True)
+        if self.states.get(pair_tag) in (
+            PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+        ):
+            return False
         pos = self.active_positions.get(pair_tag)
         if pos is not None:
             await self._finalize_exit_position(pair_tag, pos)
-        return True
+        return self.states.get(pair_tag) != PositionState.RECONCILIATION_REQUIRED
 
     async def _finalize_adopted_terminal(
         self,
