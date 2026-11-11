@@ -261,7 +261,15 @@ class EngineRuntimeMixin:
                     result["error"] = "Recovery sedang dijalankan replica lain atau lease tidak tersedia."
                 else:
                     self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
-                    result["resolved"] = not self._recovery_pending_orders and not self._recovery_scope_halts
+                    unresolved_states = any(
+                        state.value == "RECONCILIATION_REQUIRED"
+                        for state in self.states.values()
+                    )
+                    result["resolved"] = (
+                        not self._recovery_pending_orders
+                        and not self._recovery_scope_halts
+                        and not unresolved_states
+                    )
             else:
                 orphan_id = str(request.get("orphan_id", "")).strip()
                 pair_tag = str(request.get("pair_tag", "")).strip()
@@ -282,7 +290,15 @@ class EngineRuntimeMixin:
                 "action": action,
                 "resolved": bool(result["resolved"]),
                 "error": str(result.get("error") or ""),
-                "complete": not result.get("error") and not self._recovery_pending_orders and not self._recovery_scope_halts,
+                "complete": (
+                    not result.get("error")
+                    and not self._recovery_pending_orders
+                    and not self._recovery_scope_halts
+                    and not any(
+                        state.value == "RECONCILIATION_REQUIRED"
+                        for state in self.states.values()
+                    )
+                ),
                 "pending_orders": self._recovery_pending_orders,
                 "scope_halts": dict(self._recovery_scope_halts),
                 "timestamp_ms": int(time.time() * 1000),
