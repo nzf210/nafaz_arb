@@ -225,3 +225,66 @@ async def test_cancel_without_status_field_is_treated_as_terminal():
 def test_adapter_requires_credentials():
     with pytest.raises(ValueError):
         IndodaxTAPIv2("", "")
+
+
+@pytest.mark.asyncio
+async def test_indodax_fetch_my_trades_maps_real_fill_fields(monkeypatch):
+    adapter = _adapter()
+    captured = {}
+
+    async def fake_request(method, path, params=None, signed=True):
+        captured.update({"method": method, "path": path, "params": params, "signed": signed})
+        return {
+            "data": [{
+                "tradeId": "trade-1",
+                "orderId": "order-1",
+                "clientOrderId": "client-1",
+                "symbol": "BTCIDR",
+                "price": "100000",
+                "qty": "0.01",
+                "quoteQty": "1000",
+                "commission": "2",
+                "commissionAsset": "IDR",
+                "isBuyer": True,
+                "isMaker": False,
+                "time": 1723442692520,
+            }]
+        }
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    trades = await adapter.fetch_my_trades(
+        "btc_idr", 1723442690000, 100,
+        {"clientOrderId": "client-1", "endTime": 1723442700000},
+    )
+
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/api/v2/myTrades"
+    assert captured["signed"] is True
+    assert captured["params"]["clientOrderId"] == "client-1"
+    assert trades[0]["id"] == "trade-1"
+    assert trades[0]["order"] == "order-1"
+    assert trades[0]["amount"] == pytest.approx(0.01)
+    assert trades[0]["cost"] == pytest.approx(1000)
+    assert trades[0]["fee"] == {"cost": 2.0, "currency": "IDR"}
+    assert trades[0]["timestamp"] == 1723442692520
+
+
+@pytest.mark.asyncio
+async def test_exchange_client_fetch_order_trades_filters_by_client_order_id(monkeypatch):
+    adapter = _adapter()
+
+    async def fake_my_trades(symbol, since=None, limit=None, params=None):
+        return [{
+            "id": "trade-2", "order": "order-2", "clientOrderId": "client-2",
+            "amount": 0.5, "price": 10, "cost": 5, "timestamp": 1723442692520,
+            "fee": {"cost": 0.01, "currency": "BTC"},
+        }]
+
+    monkeypatch.setattr(adapter, "fetch_my_trades", fake_my_trades)
+    client = ExchangeClient(adapter, object())
+    fills = await client.fetch_order_trades(
+        "spot", "btc_idr", since=1723442690000, client_order_id="client-2",
+    )
+    assert len(fills) == 1
+    assert fills[0]["id"] == "trade-2"
+    assert fills[0]["amount"] == pytest.approx(0.5)
