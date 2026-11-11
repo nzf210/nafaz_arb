@@ -51,6 +51,9 @@ class ExecutorConfig:
     # Cap on total capital committed per exchange, across all active positions.
     # 0 disables the check.
     max_exposure_per_exchange_usdt: float = 0.0
+    # Maximum distinct open spot positions plus pending spot-entry orders per CEX.
+    # A missing venue override always falls back to the safe default of two.
+    max_open_spot_orders_per_exchange: Dict[str, int] = field(default_factory=dict)
     # Balance-mismatch guard for simulated entry snapshots. Live entries do not
     # poll balances before submission; the venue validates available funds.
     balance_mismatch_fraction: float = 0.20
@@ -146,6 +149,12 @@ class ExecutorConfig:
             ):
                 if key in exec_cfg:
                     setattr(self, key, conv(exec_cfg[key]))
+            limits = exec_cfg.get("max_open_spot_orders_per_exchange", {})
+            if isinstance(limits, dict):
+                self.max_open_spot_orders_per_exchange = {
+                    str(name).strip().lower(): int(limit)
+                    for name, limit in limits.items()
+                }
             # Load modular exchanges dictionary if provided in config
             if "exchanges" in data and isinstance(data["exchanges"], dict):
                 for ex_name, ex_data in data["exchanges"].items():
@@ -422,6 +431,19 @@ class ExecutorConfig:
             if value != raw:
                 warnings.append(f"{name}={raw!r} out of range, using {value!r}")
             setattr(self, name, value)
+
+        clean_limits = {}
+        for exchange, raw_limit in self.max_open_spot_orders_per_exchange.items():
+            name = str(exchange).strip().lower()
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 2
+            if not name or limit < 1 or limit > 100:
+                warnings.append(f"invalid spot order limit for {exchange!r}; using 2")
+                limit = 2
+            clean_limits[name] = limit
+        self.max_open_spot_orders_per_exchange = clean_limits
 
         if self.allocation_per_pair <= 0:
             warnings.append("allocation_per_pair must be > 0, using 0.5")
