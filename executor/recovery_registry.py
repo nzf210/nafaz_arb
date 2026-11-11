@@ -37,6 +37,8 @@ class RecoveryRegistryMixin:
         await self._run_order_recovery_with_lock()
         if not getattr(self.config, "mock_mode", False):
             await self._verify_recovered_active_positions()
+            await self.trade_fill_reconciliation.reconcile_once()
+            await self.exposure_reconciliation.reconcile_once()
 
     async def _with_order_recovery_lock(self, recovery_callback) -> bool:
         """Run a recovery callback under an owner-token Redis lease.
