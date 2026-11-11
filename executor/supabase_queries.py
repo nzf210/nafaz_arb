@@ -8,7 +8,9 @@ from typing import Any, Dict
 
 import aiohttp
 
-from executor.supabase_common import _TIMEOUT, _num, logger
+from executor.supabase_common import (
+    _AUTHORIZATION_BEARER_PREFIX, _JSON_CONTENT_TYPE, _TIMEOUT, _num, logger,
+)
 
 
 
@@ -118,8 +120,8 @@ class SupabaseQueryMixin:
         ).isoformat()
         headers = {
             "apikey": self.key,
-            "Authorization": f"Bearer {self.key}",
-            "Accept": "application/json",
+            "Authorization": _AUTHORIZATION_BEARER_PREFIX + self.key,
+            "Accept": _JSON_CONTENT_TYPE,
             "Accept-Encoding": "identity",
         }
         session = self._session
@@ -210,8 +212,8 @@ class SupabaseQueryMixin:
                 created = True
             headers = {
                 "apikey": self.key,
-                "Authorization": f"Bearer {self.key}",
-                "Accept": "application/json",
+                "Authorization": _AUTHORIZATION_BEARER_PREFIX + self.key,
+                "Accept": _JSON_CONTENT_TYPE,
                 "Accept-Encoding": "identity",
             }
             async with session.get(
