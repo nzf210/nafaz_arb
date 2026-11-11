@@ -105,6 +105,7 @@ class ExecutionDirectives:
     scanner_validated: bool
     scanner_validated: bool = False
     estimated_net_profit_usdt: float = 0.0
+    adaptive_max_buy_price_idr: float = 0.0
     spot_entry_fee_pct: float = 0.0
     spot_exit_fee_pct: float = 0.0
     perp_entry_fee_pct: float = 0.0
@@ -132,6 +133,7 @@ class ExecutionDirectives:
             cancel_if_global_bid_drops_below_usdt=float(d.get("cancel_if_global_bid_drops_below_usdt", 0.0)),
             scanner_validated=bool(d.get("scanner_validated", False)),
             estimated_net_profit_usdt=float(d.get("estimated_net_profit_usdt", 0.0)),
+            adaptive_max_buy_price_idr=float(d.get("adaptive_max_buy_price_idr", 0.0)),
             spot_entry_fee_pct=float(d.get("spot_entry_fee_pct", 0.0)),
             spot_exit_fee_pct=float(d.get("spot_exit_fee_pct", 0.0)),
             perp_entry_fee_pct=float(d.get("perp_entry_fee_pct", 0.0)),
