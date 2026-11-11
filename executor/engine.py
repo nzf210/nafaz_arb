@@ -440,6 +440,7 @@ class ArbitrageEngine(
         local_amount_spec: Any = None,
         global_amount_spec: Any = None,
         recovery_context: Any = None,
+        required: bool = True,
     ) -> Any:
         """Durably records an order intent before submitting it to a venue.
 
@@ -447,7 +448,7 @@ class ArbitrageEngine(
         the exchange accepts the order but before it returns an exchange id, the
         startup open-order sweep can still bind the venue order to this intent.
         """
-        return await self._register_order(
+        record = await self._register_order(
             pair_tag,
             client_order_id,
             {"status": "submitting"},
@@ -464,6 +465,11 @@ class ArbitrageEngine(
             global_amount_spec=global_amount_spec,
             recovery_context=recovery_context,
         )
+        if required and record is None:
+            raise RuntimeError(
+                f"refusing to submit {role} order: durable order intent could not be recorded"
+            )
+        return record
 
     async def _clear_pending_entry(self, pair_tag: str) -> None:
         """Removes the persisted pending-entry record once the order is resolved."""
