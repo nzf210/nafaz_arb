@@ -256,6 +256,9 @@ func (b *Bot) sendStartupSummary(ctx context.Context) {
 	globalStatus := "NOT READY"
 	if ready { globalStatus = "READY" }
 
+	var recoveredPositions, trackedOrders int
+	_ = json.Unmarshal(rawField(snapshot, "open_positions"), &recoveredPositions)
+	_ = json.Unmarshal(rawField(recovery, "tracked_orders"), &trackedOrders)
 	started := "unknown"
 	if raw := rawField(snapshot, "executor_startup_time_ms"); len(raw) > 0 {
 		var value int64
