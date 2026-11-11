@@ -100,6 +100,7 @@ type Bot struct {
 	lastOffset  int64
 	redisClient *redishandler.Client
 	opportunityReader interface { LatestOpportunityScans(context.Context, int) ([]domain.ScanResult, error) }
+	positionLedgerReader interface { PositionOrderFills(context.Context, string) (map[string][]json.RawMessage, error) }
 
 	mu          sync.Mutex
 	alertedKeys map[string]time.Time
