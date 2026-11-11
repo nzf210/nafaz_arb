@@ -140,6 +140,7 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 
 	stats, _ := rc.GetTradeStats(ctx)
 	balances, _ := rc.GetBalances(ctx)
+	orderRecords, orderRecordsErr := rc.ListActiveOrderRecords(ctx)
 
 	if len(positions) == 0 {
 		b.sendEmptyPositionsReply(ctx, chatID, replyToID, balances, stats)
@@ -160,8 +161,12 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 	}
 
 	var kbRows [][]InlineKeyboardButton
+	if orderRecordsErr != nil {
+		sb.WriteString("⚠️ <i>Active order registry tidak dapat dibaca; status order per leg belum diverifikasi.</i>\\n\\n")
+	}
 	for i, pos := range positions {
 		b.formatPositionBlock(&sb, i+1, pos, rc, ctx)
+		if orderRecordsErr == nil { b.formatPositionLegOrders(&sb, pos, orderRecords) }
 		tag := redishandler.CleanPairKey(pos.LocalExchange, pos.Symbol)
 		btnText := fmt.Sprintf("🚨 Tutup Paksa %s", strings.ToUpper(pos.Symbol))
 		kbRows = append(kbRows, []InlineKeyboardButton{
@@ -188,6 +193,34 @@ func (b *Bot) handlePositionsCommand(ctx context.Context, chatID int64, replyToI
 
 	markup := &InlineKeyboardMarkup{InlineKeyboard: kbRows}
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, sb.String(), markup)
+}
+
+
+func (b *Bot) formatPositionLegOrders(sb *strings.Builder, pos domain.ActivePosition, records []json.RawMessage) {
+	prefix := strings.ToLower(redishandler.CleanPairKey(pos.LocalExchange, pos.Symbol))
+	var spot, futures []string
+	for _, raw := range records {
+		var record map[string]interface{}
+		if json.Unmarshal(raw, &record) != nil { continue }
+		pairKey := strings.ToLower(fmt.Sprint(record["pair_key"]))
+		if pairKey == "" || pairKey == "<nil>" || (!strings.HasPrefix(pairKey, prefix) && !strings.Contains(pairKey, prefix)) { continue }
+		market := strings.ToLower(fmt.Sprint(record["market_type"]))
+		id := fmt.Sprint(record["exchange_order_id"])
+		if id == "" || id == "<nil>" { id = fmt.Sprint(record["local_order_id"]) }
+		status := fmt.Sprint(record["status"])
+		filled := fmt.Sprint(record["filled_quantity"])
+		remaining := fmt.Sprint(record["remaining_quantity"])
+		line := fmt.Sprintf("<code>%s</code> %s (filled %s / remaining %s)", html.EscapeString(id), html.EscapeString(status), html.EscapeString(filled), html.EscapeString(remaining))
+		if market == "spot" { spot = append(spot, line) } else if market == "perpetual" { futures = append(futures, line) }
+	}
+	sb.WriteString("<b>Active order status per leg:</b>\\n")
+	if len(spot) == 0 { sb.WriteString("• Spot: <i>tidak ada active order record; exposure harus diverifikasi dari exchange</i>\\n") } else {
+		for i, item := range spot { if i >= 3 { sb.WriteString("• Spot: <i>additional active orders omitted</i>\\n"); break }; sb.WriteString("• Spot: "+item+"\\n") }
+	}
+	if len(futures) == 0 { sb.WriteString("• Futures: <i>tidak ada active order record; exposure harus diverifikasi dari exchange</i>\\n") } else {
+		for i, item := range futures { if i >= 3 { sb.WriteString("• Futures: <i>additional active orders omitted</i>\\n"); break }; sb.WriteString("• Futures: "+item+"\\n") }
+	}
+	sb.WriteString("\\n")
 }
 
 func (b *Bot) sendEmptyPositionsReply(ctx context.Context, chatID int64, replyToID int64, balances *domain.BalancesRecord, stats redishandler.TradeStats) {
