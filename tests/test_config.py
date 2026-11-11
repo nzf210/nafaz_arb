@@ -50,7 +50,7 @@ def test_p3_04_sanitize_announces_disabled_safety_nets():
     assert cfg.max_entry_slippage_pct == 0.0
 
 @pytest.mark.asyncio
-async def test_modular_exchanges_config_and_env():
+async def test_modular_exchanges_config_and_env(monkeypatch):
     """Verify modular exchanges loaded from file and dynamic env vars."""
     import os
     cfg = ExecutorConfig()
@@ -86,8 +86,8 @@ async def test_modular_exchanges_config_and_env():
         assert cfg.exchanges["bybit"].api_key == "bybit_key_1"
 
         # Test dynamic env overrides: e.g. BINANCE_API_KEY
-        os.environ["BINANCE_API_KEY"] = "binance_key_env"
-        os.environ["BINANCE_API_SECRET"] = "binance_sec_env"
+        monkeypatch.setenv("BINANCE_API_KEY", "binance_key_env")
+        monkeypatch.setenv("BINANCE_API_SECRET", "binance_sec_env")
         cfg._apply_env()
         assert "binance" in cfg.exchanges
         assert cfg.exchanges["binance"].api_key == "binance_key_env"
@@ -95,9 +95,9 @@ async def test_modular_exchanges_config_and_env():
 
         # Binance Cloud broker id (Tokocrypto) comes from the environment too and
         # must reach the ccxt client options that prefix client order ids.
-        os.environ["TOKOCRYPTO_API_KEY"] = "toko_key_env"
-        os.environ["TOKOCRYPTO_API_SECRET"] = "toko_sec_env"
-        os.environ["TOKOCRYPTO_BROKER_ID"] = "x-TKT5PX2F"
+        monkeypatch.setenv("TOKOCRYPTO_API_KEY", "toko_key_env")
+        monkeypatch.setenv("TOKOCRYPTO_API_SECRET", "toko_sec_env")
+        monkeypatch.setenv("TOKOCRYPTO_BROKER_ID", "x-TKT5PX2F")
         cfg._apply_env()
         assert cfg.exchanges["tokocrypto"].options["broker_id"] == "x-TKT5PX2F"
 
