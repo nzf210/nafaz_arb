@@ -49,6 +49,53 @@ func TestDurableOutboxSurvivesRestartAndAcknowledges(t *testing.T) {
 	}
 }
 
+// PostgREST rejects a duplicate conflict key inside one upsert statement
+// (PGRST102 "All object keys must match"; ON CONFLICT DO UPDATE cannot affect
+// the same row twice). A scan whose collected rows collapse onto the same
+// idempotency_key must therefore fail locally, not poison the outbox: a record
+// that can never be accepted would block every later scan behind it.
+func TestEnqueueRejectsRowsCollidingOnIdempotencyKey(t *testing.T) {
+	outbox, err := NewDurableOutbox(filepath.Join(t.TempDir(), "outbox.jsonl"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two opportunities for the same venue route in one scan produce the same
+	// idempotency_key, which PostgREST rejects as a whole statement.
+	duplicated := sampleOpportunity()
+	err = outbox.Enqueue("scan-collide", []domain.Opportunity{duplicated, duplicated})
+	if !errors.Is(err, ErrDuplicateRows) {
+		t.Fatalf("expected ErrDuplicateRows, got %v", err)
+	}
+	if count, _ := outbox.PendingCount(); count != 0 {
+		t.Fatalf("undeliverable record was journaled; pending=%d", count)
+	}
+	if err := outbox.Enqueue("scan-collide", []domain.Opportunity{duplicated}); err != nil {
+		t.Fatalf("distinct scan must still enqueue after a rejected one: %v", err)
+	}
+	if count, _ := outbox.PendingCount(); count != 1 {
+		t.Fatalf("pending=%d, want 1", count)
+	}
+}
+
+// An identical replay of the same scan stays idempotent while pending, so the
+// duplicate guard must not turn a harmless retry into a failure.
+func TestEnqueueKeepsIdenticalScanReplayIdempotent(t *testing.T) {
+	outbox, err := NewDurableOutbox(filepath.Join(t.TempDir(), "outbox.jsonl"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op := sampleOpportunity()
+	if err := outbox.Enqueue("scan-a", []domain.Opportunity{op}); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Enqueue("scan-a", []domain.Opportunity{op}); err != nil {
+		t.Fatalf("identical replay must stay idempotent: %v", err)
+	}
+	if count, _ := outbox.PendingCount(); count != 1 {
+		t.Fatalf("pending=%d, want 1", count)
+	}
+}
+
 func TestDurableOutboxRejectsCapacityWithoutDroppingExistingRows(t *testing.T) {
 	outbox, err := NewDurableOutbox(filepath.Join(t.TempDir(), "outbox.jsonl"), 32)
 	if err != nil {

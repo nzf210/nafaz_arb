@@ -25,6 +25,12 @@ const (
 
 var ErrOutboxCapacity = errors.New("scanner durable outbox capacity reached")
 
+// ErrDuplicateRows rejects a batch whose rows collide on the upsert conflict
+// target. PostgREST fails such a statement outright, so journaling it would
+// leave a record that can never be acknowledged and would block every later
+// scan behind it in the outbox.
+var ErrDuplicateRows = errors.New("scanner outbox rows collide on idempotency_key")
+
 type outboxRecord struct {
 	ID            string            `json:"id"`
 	ScanID        string            `json:"scan_id"`
@@ -109,6 +115,9 @@ func (o *DurableOutbox) Enqueue(scanID string, opportunities []domain.Opportunit
 	if len(rows) == 0 {
 		return nil
 	}
+	if err := rejectDuplicateRows(rows); err != nil {
+		return err
+	}
 	digest, err := json.Marshal(rows)
 	if err != nil {
 		return fmt.Errorf("encode scanner outbox rows: %w", err)
@@ -155,6 +164,19 @@ func (o *DurableOutbox) Enqueue(scanID string, opportunities []domain.Opportunit
 	}
 	o.records[record.ID] = record
 	o.order = append(o.order, record.ID)
+	return nil
+}
+
+// rejectDuplicateRows mirrors the PostgREST upsert constraint: rows delivered
+// in one statement must be unique on the on_conflict target.
+func rejectDuplicateRows(rows []opportunityRow) error {
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		if _, exists := seen[row.IdempotencyKey]; exists {
+			return fmt.Errorf("%w: %s", ErrDuplicateRows, row.IdempotencyKey)
+		}
+		seen[row.IdempotencyKey] = struct{}{}
+	}
 	return nil
 }
 
