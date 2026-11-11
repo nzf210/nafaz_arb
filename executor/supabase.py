@@ -322,7 +322,7 @@ class SupabaseWriter:
             if cumulative_quote <= 0 and price > 0:
                 cumulative_quote = filled * price
             order_state_key = f"{exchange}:{pair_key}:{key}"
-            fill_id = f"{exchange_order_id or key}:{filled:.18f}"
+            fill_id = f"{exchange}:{pair_key}:{exchange_order_id or key}:{filled:.18f}"
             fill_row = {
                 # The database's account-scoped expression index cannot be used
                 # as an ON CONFLICT target. Include pair identity in our stable
