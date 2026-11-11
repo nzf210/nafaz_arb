@@ -129,12 +129,16 @@ class TradeFillReconciliationWorker:
         scope = self._reported.pop(identity, None)
         if not scope:
             return
+        # Several filled orders can belong to the same pair. Do not lift that
+        # pair's entry gate until every previously mismatched order is verified.
+        if any(other_scope == scope for other_scope in self._reported.values()):
+            return
         reasons = getattr(self.engine, "_recovery_scope_halts", {})
         reason = str(reasons.get(scope, "") or "")
         if "trade-fill reconciliation:" in reason:
             clear = getattr(self.engine, "_clear_exposure_halt", None)
             if callable(clear):
-                await clear(scope, "exchange trade fills verified")
+                await clear(scope, "all exchange trade fills verified")
 
     async def reconcile_once(self) -> None:
         if getattr(self.engine.config, "mock_mode", False):
