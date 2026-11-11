@@ -79,13 +79,17 @@ async def test_live_futures_order_converts_base_quantity_to_contracts_and_back()
     }
 
     opened = await client.open_global_short_market(
-        "BTC/USDT:USDT", 0.003, amount_spec=spec
+        "BTC/USDT:USDT", 0.003, client_order_id="hedge-123",
+        amount_spec=spec,
     )
     closed = await client.close_global_short_market(
         "BTC/USDT:USDT", 0.003, amount_spec=spec
     )
 
     assert futures.calls[0][1] == 3
+    assert futures.calls[0][2] == ({
+        "reduceOnly": False, "clientOrderId": "hedge-123"
+    },)
     assert opened["filled"] == pytest.approx(0.003)
     assert futures.calls[1][1] == 3
     assert futures.calls[1][2]["reduceOnly"] is True
