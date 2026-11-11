@@ -83,9 +83,17 @@ class DurableOutbox:
         row: Dict[str, Any],
         state_key: str,
         cumulative: float,
+        cumulative_quote: Optional[float] = None,
     ) -> float:
-        """Atomically journal a new fill delta and advance its cumulative watermark."""
+        """Atomically journal incremental quantity/notional and both watermarks."""
         value = max(0.0, float(cumulative))
+        fallback_price = max(0.0, float(row.get("price") or 0.0))
+        quote_value = (
+            max(0.0, float(cumulative_quote))
+            if cumulative_quote is not None
+            else value * fallback_price
+        )
+        quote_state_key = f"{state_key}:quote"
         with self._lock:
             self._db.execute("BEGIN IMMEDIATE")
             try:
@@ -94,16 +102,34 @@ class DurableOutbox:
                     (state_key,),
                 ).fetchone()
                 previous = float(previous_row[0]) if previous_row else 0.0
+                previous_quote_row = self._db.execute(
+                    "SELECT numeric_value FROM writer_state WHERE state_key=?",
+                    (quote_state_key,),
+                ).fetchone()
                 delta = value - previous
                 if delta <= 1e-12:
                     self._db.execute("COMMIT")
                     return 0.0
+
+                # Older outbox databases may have a quantity watermark but no
+                # notional watermark. In that case use the current price only
+                # for this first post-upgrade delta, then persist both values.
+                delta_quote = (
+                    quote_value - float(previous_quote_row[0])
+                    if previous_quote_row
+                    else delta * fallback_price
+                )
+                if delta_quote <= 0:
+                    delta_quote = delta * fallback_price
+                fill_price = delta_quote / delta if delta_quote > 0 else fallback_price
+
                 count = self._db.execute("SELECT COUNT(*) FROM pending_outbox").fetchone()[0]
                 if count >= self.max_pending:
                     raise OutboxFull(f"durable outbox capacity reached ({self.max_pending})")
                 fill_row = dict(row)
                 fill_row["qty"] = delta
-                fill_row["quote_qty"] = delta * float(fill_row.get("price") or 0.0)
+                fill_row["price"] = fill_price
+                fill_row["quote_qty"] = delta_quote
                 payload = json.dumps(fill_row, separators=(",", ":"), ensure_ascii=False, default=str)
                 self._db.execute(
                     """INSERT INTO pending_outbox
@@ -111,13 +137,17 @@ class DurableOutbox:
                        VALUES (?, ?, ?, ?)""",
                     (table, conflict_target, payload, time.time()),
                 )
-                self._db.execute(
+                now = time.time()
+                self._db.executemany(
                     """INSERT INTO writer_state(state_key, numeric_value, updated_at)
                        VALUES (?, ?, ?)
                        ON CONFLICT(state_key) DO UPDATE SET
                          numeric_value=excluded.numeric_value,
                          updated_at=excluded.updated_at""",
-                    (state_key, value, time.time()),
+                    [
+                        (state_key, value, now),
+                        (quote_state_key, quote_value, now),
+                    ],
                 )
                 self._db.execute("COMMIT")
                 return delta
