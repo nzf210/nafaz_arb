@@ -134,12 +134,14 @@ async def test_spot_open_order_cap_counts_positions_and_pending_entries_per_venu
     assert engine._spot_order_limit("tokocrypto") == 2
 
 
-def test_spot_order_limit_update_rejects_unknown_exchange_and_invalid_values(engine):
+def test_spot_order_limit_update_normalizes_exchange_and_rejects_invalid_values(engine):
     engine.config.exchanges = {"indodax": object(), "tokocrypto": object()}
     engine.config.max_open_spot_orders_per_exchange = {}
 
     assert engine._apply_spot_order_limit("TOKOCRYPTO", "4") is True
     assert engine.config.max_open_spot_orders_per_exchange["tokocrypto"] == 4
-    assert engine._apply_spot_order_limit("unknown-cex", "4") is False
+    assert engine._apply_spot_order_limit("new_cex-1", "4") is True
+    assert engine.config.max_open_spot_orders_per_exchange["new_cex-1"] == 4
+    assert engine._apply_spot_order_limit("bad cex", "4") is False
     assert engine._apply_spot_order_limit("indodax", "0") is False
     assert engine._spot_order_limit("indodax") == 2
