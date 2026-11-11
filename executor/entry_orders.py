@@ -354,8 +354,17 @@ class EntryOrderManagementMixin:
         self, pair_tag: str, order_info: dict, order: dict
     ) -> bool:
         """Cancel a stale, unfilled maker quote only when a fresh quote remains safe."""
+        is_indodax_idr = (
+            str(order_info.get("local_exchange", "")).lower() == "indodax"
+            and str(order_info.get("quote_asset", "")).upper() in ("IDR", "BIDR")
+        )
         refresh_after = int(
-            getattr(self.config, "maker_refresh_after_seconds", 0) or 0
+            getattr(
+                self.config,
+                "indodax_maker_refresh_after_seconds"
+                if is_indodax_idr else "maker_refresh_after_seconds",
+                15 if is_indodax_idr else 45,
+            ) or 0
         )
         if refresh_after <= 0 or str(order.get("status", "")).lower() != "open":
             return False
@@ -376,14 +385,19 @@ class EntryOrderManagementMixin:
         if quote is None:
             return False
         cooldown_seconds = int(
-            getattr(self.config, "maker_refresh_cooldown_seconds", 300) or 300
+            getattr(
+                self.config,
+                "indodax_maker_refresh_cooldown_seconds"
+                if is_indodax_idr else "maker_refresh_cooldown_seconds",
+                15 if is_indodax_idr else 300,
+            ) or (15 if is_indodax_idr else 300)
         )
         cooldown_key = f"arb:maker_refresh_cooldown:{pair_tag}"
         if await self.redis.exists(cooldown_key):
             return False
         await self.redis.set(cooldown_key, str(quote["now_ms"]), ex=cooldown_seconds)
         logger.info(
-            f"[Maker Refresh] {pair_tag}: 15s quote evaluation; "
+            f"[Maker Refresh] {pair_tag}: {refresh_after}s quote evaluation; "
             f"current={quote['current_price']} candidate={quote['candidate_price']} "
             f"best_bid={quote['local_bid']} best_ask={quote['local_ask']} "
             f"edge={quote['live_spread_pct']:.4f}% floor={quote['min_spread']:.4f}%. "
