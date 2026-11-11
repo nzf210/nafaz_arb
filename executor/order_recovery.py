@@ -935,14 +935,98 @@ class OrderRecoveryMixin:
                 await self._finalize_exit_position(pair_tag, pos)
             return True
 
+        if record.order_role == OrderRole.HEDGE.value:
+            return await self._reconcile_recovered_entry_hedge(record, order, pair_tag)
+
         if record.order_role in ACKNOWLEDGED_EXIT_ROLES:
             # A terminal futures close is already reflected in the position, and a
-            # terminal rollback means the spot leg was liquidated. Neither needs a
-            # replayed action; the restored position keeps the exit lifecycle.
+            # terminal rollback means the spot leg was liquidated. Neither needs
+            # a replayed action; the restored position keeps the exit lifecycle.
             logger.info(
                 "[Recovery] terminal %s order %s for %s acknowledged",
                 record.order_role, record.exchange_order_id, pair_tag,
             )
+        return True
+
+    async def _reconcile_recovered_entry_hedge(
+        self, hedge_record: OrderRecord, venue_order: Dict[str, Any], pair_tag: str
+    ) -> bool:
+        """Reconciles a futures fill independently against its originating spot order.
+
+        The hedge intent is journaled as non-terminal until the spot watermark is
+        durable. If the process dies after the futures fill, this path fetches the
+        exact futures order and advances the parent spot watermark exactly once.
+        """
+        context = hedge_record.recovery_context or {}
+        parent_exchange = str(context.get("parent_spot_exchange") or "").lower()
+        parent_order_id = str(context.get("parent_spot_order_id") or "")
+        parent_client_id = str(context.get("parent_spot_client_order_id") or "")
+        if not parent_exchange or not (parent_order_id or parent_client_id):
+            await self.order_registry.mark_pending_recovery(
+                hedge_record.local_order_id,
+                "futures hedge has no durable parent spot-order identity",
+            )
+            return False
+
+        parent = None
+        if parent_order_id:
+            parent = await self.order_registry.find_by_exchange_id(parent_exchange, parent_order_id)
+        if parent is None and parent_client_id:
+            parent = await self.order_registry.find_by_client_id(parent_exchange, parent_client_id)
+        if parent is None:
+            await self.order_registry.mark_pending_recovery(
+                hedge_record.local_order_id,
+                "originating spot order is missing; cannot reconcile the futures leg safely",
+            )
+            self._halt_exposure_scope(pair_tag or parent_exchange, "futures hedge parent missing")
+            return False
+
+        try:
+            filled = float(venue_order.get("filled", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            filled = 0.0
+        if filled <= 0:
+            await self.order_registry.mark_pending_recovery(
+                hedge_record.local_order_id,
+                "terminal futures hedge has no verifiable positive filled quantity",
+            )
+            return False
+
+        # Marker and cumulative watermark are committed in one parent record;
+        # replaying startup recovery cannot count the same futures fill twice.
+        parent_context = dict(parent.recovery_context or {})
+        hedge_fills = parent_context.get("hedge_fill_orders")
+        if not isinstance(hedge_fills, dict):
+            hedge_fills = {}
+        hedge_key = str(hedge_record.client_order_id or hedge_record.exchange_order_id)
+        if hedge_key not in hedge_fills:
+            parent.hedged_quantity = max(0.0, float(parent.hedged_quantity or 0.0)) + filled
+            hedge_fills[hedge_key] = filled
+        parent_context["hedge_fill_orders"] = hedge_fills
+        parent.recovery_context = parent_context
+        await self.order_registry.register(parent)
+
+        live = self.pending_entry_orders.get(pair_tag)
+        if isinstance(live, dict):
+            live["hedged_short_qty"] = max(
+                float(live.get("hedged_short_qty", 0.0) or 0.0),
+                float(parent.hedged_quantity or 0.0),
+            )
+            await self._persist_pending_entry(pair_tag, live)
+
+        hedge_record.status = str(venue_order.get("status") or "closed").lower()
+        hedge_record.filled_quantity = max(float(hedge_record.filled_quantity or 0.0), filled)
+        hedge_record.remaining_quantity = max(
+            0.0, hedge_record.original_quantity - hedge_record.filled_quantity
+        )
+        hedge_record.recovery_status = RecoveryStatus.ADOPTED.value
+        await self.order_registry.register(hedge_record)
+        await self.order_registry.retire(hedge_record)
+        await self.order_registry.clear_pending_recovery(hedge_record.local_order_id)
+        logger.warning(
+            "[Recovery] reconciled futures hedge %s independently: filled=%s, spot watermark=%s (%s)",
+            hedge_key, filled, parent.hedged_quantity, pair_tag,
+        )
         return True
 
     def _rebuild_entry_order_info(
