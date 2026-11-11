@@ -47,10 +47,10 @@ migration history have been checked. Do not make ad-hoc remote schema changes in
 Studio after adopting versioned migrations.
 
 Before deploying trade-fill reconciliation, ensure
-`20261111000100_add_live_order_fill_reconciliation.sql` has been applied. It adds
-the `orders.is_mock` discriminator used to prevent paper-trading rows from being
-replayed as live exchange fills. Apply it with the same reviewed `supabase db push --remote`
-workflow above.
+`20261111000100_add_live_order_fill_reconciliation.sql` has been applied. It adds the `orders.is_mock` discriminator used to prevent paper-trading rows
+from being replayed as live exchange fills, and `order_fills.fill_source` to
+distinguish retained legacy cumulative snapshots from verified exchange trades.
+Apply it with the same reviewed `supabase db push --remote` workflow above.
 
 ## Runtime persistence status
 
