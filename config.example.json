@@ -131,7 +131,6 @@
         "max_open_spot_orders_per_exchange": {
             "indodax": 2,
             "tokocrypto": 2,
-            "binance": 2,
             "okx": 2,
             "bybit": 2,
             "mexc": 2
