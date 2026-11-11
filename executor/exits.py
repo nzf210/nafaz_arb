@@ -268,6 +268,13 @@ class ExitMixin:
                 exit_coid = build_client_order_id(
                     pair_tag, "exit", self._next_order_seq()
                 )
+                await self._register_order_intent(
+                    pair_tag, exit_coid,
+                    exchange=pos.local_exchange, market_type="spot",
+                    symbol=pos.symbol, role=OrderRole.EXIT_SPOT.value,
+                    side="sell", order_type="limit", price=limit_sell_idr,
+                    quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
+                )
                 order = await self.client.place_local_limit_sell(
                     pos.symbol,
                     pos.qty,
@@ -550,6 +557,14 @@ class ExitMixin:
                 global_sym = self._resolve_global_symbol(pos.symbol)
                 unwind_coid = build_client_order_id(
                     pair_tag, "unwind", self._next_order_seq()
+                )
+                await self._register_order_intent(
+                    pair_tag, unwind_coid,
+                    exchange=pos.global_exchange, market_type="perpetual",
+                    symbol=global_sym, role=OrderRole.EXIT_FUTURES.value,
+                    side="buy", order_type="market", price=live_global_ask,
+                    quantity=unclosed_delta, reduce_only=True,
+                    global_amount_spec=pos.global_amount_spec,
                 )
                 close_order = await self.client.close_global_short_market(
                     global_sym,
