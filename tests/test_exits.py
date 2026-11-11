@@ -624,3 +624,49 @@ async def test_cancel_replace_uses_exchange_status_when_cancel_acknowledgement_t
     assert mock_client.orders[old_order_id]["status"] == "canceled"
     assert len(mock_client.placed_sells) == 2
     assert engine.pending_exit_orders[pair_tag]["order_id"] == mock_client.placed_sells[1]["id"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_replace_reconciles_racing_partial_fill_before_resizing(
+    engine, fake_redis, mock_client
+):
+    """A partial fill racing cancel is hedged before the replacement quantity is chosen."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        base_target_exit_spread_pct=0.30,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    snapshot = {
+        "local_best_bid": 1_010_000_000.0,
+        "local_best_ask": 1_011_000_000.0,
+        "global_best_bid_usdt": 65_000.0,
+        "global_best_ask_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+    await engine._check_dynamic_exits()
+
+    old_order = mock_client.placed_sells[0]
+    old_order_id = old_order["id"]
+    mock_client.orders[old_order_id]["status"] = "canceled"
+    mock_client.orders[old_order_id]["filled"] = 0.004
+    snapshot["global_best_ask_usdt"] = 65_200.0
+    snapshot["timestamp_ms"] = int(time.time() * 1000)
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+
+    await engine._check_dynamic_exits()
+
+    assert len(mock_client.global_close_buys) == 1
+    assert mock_client.global_close_buys[0]["amount"] == pytest.approx(0.004)
+    assert engine.active_positions[pair_tag].qty == pytest.approx(0.006)
+    assert len(mock_client.placed_sells) == 2
+    assert mock_client.placed_sells[1]["amount"] == pytest.approx(0.006)
