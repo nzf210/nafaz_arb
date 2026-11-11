@@ -253,6 +253,7 @@ class TradeFillReconciliationWorker:
                 if not isinstance(trades, list):
                     raise ValueError("venue trade-history response is malformed")
                 total_qty = 0.0
+                unverified_fee_ids = []
                 order_key = client_order_id or exchange_order_id
                 order_row_id = str(row.get("id") or "")
                 if not order_row_id:
@@ -295,6 +296,14 @@ class TradeFillReconciliationWorker:
                     if not isinstance(trade, dict):
                         raise ValueError("venue returned a malformed individual fill")
                     total_qty += float(trade["amount"])
+                    fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
+                    fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
+                    if (
+                        fee.get("cost") is None
+                        or not str(fee.get("currency") or "").strip()
+                        or len(fee_rows) > 1
+                    ):
+                        unverified_fee_ids.append(str(trade.get("id") or "unknown"))
                     if writer.order_fill(
                         order_id=order_row_id,
                         exchange=exchange,
@@ -318,6 +327,19 @@ class TradeFillReconciliationWorker:
                             "trade_fill_qty": total_qty,
                             "fill_count": len(trades),
                             "tolerance": tolerance,
+                        },
+                    )
+                    continue
+                if unverified_fee_ids:
+                    await self._halt(
+                        identity, scope,
+                        "One or more exchange fills are missing a verifiable fee amount/currency.",
+                        {
+                            "exchange": exchange,
+                            "symbol": symbol,
+                            "order_id": exchange_order_id,
+                            "client_order_id": client_order_id,
+                            "unverified_fee_trade_ids": unverified_fee_ids,
                         },
                     )
                     continue
