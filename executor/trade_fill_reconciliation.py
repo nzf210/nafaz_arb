@@ -356,9 +356,10 @@ class TradeFillReconciliationWorker:
             )
         self._clear(identity, scope)
 
-    async def _reconcile_candidate(
+    async def _candidate_reconciliation_context(
         self, writer, identity: str, row: Dict[str, Any]
-    ) -> None:
+    ) -> Optional[Dict[str, Any]]:
+        """Validate candidate identity and determine whether its fills need replay."""
         scope = str(row.get("pair_key") or row.get("exchange_name") or "unknown")
         filled_qty = self._filled_quantity(row)
         if not math.isfinite(filled_qty) or filled_qty < 0:
@@ -368,60 +369,78 @@ class TradeFillReconciliationWorker:
                 "Order has an invalid cumulative filled quantity; individual fills cannot be reconciled.",
                 {"order": row},
             )
-            return
+            return None
         if filled_qty <= self.absolute_tolerance:
             self._clear(identity, scope)
-            return
+            return None
         watermark_current = await self._watermark_is_current(
             writer, identity, scope, filled_qty
         )
         if watermark_current is not False:
             if watermark_current is True:
                 self._clear(identity, scope)
-            return
+            return None
 
-        exchange = str(row.get("exchange_name") or "").lower()
-        market_type = str(row.get("market_type") or "").lower()
-        pair_key = str(row.get("pair_key") or "")
-        symbol = str(row.get("symbol") or "")
-        client_order_id = str(row.get("client_order_id") or "")
-        exchange_order_id = str(row.get("exchange_order_id") or "")
-        scope = pair_key or exchange
+        context = {
+            "exchange": str(row.get("exchange_name") or "").lower(),
+            "market_type": str(row.get("market_type") or "").lower(),
+            "pair_key": str(row.get("pair_key") or ""),
+            "symbol": str(row.get("symbol") or ""),
+            "client_order_id": str(row.get("client_order_id") or ""),
+            "exchange_order_id": str(row.get("exchange_order_id") or ""),
+            "filled_qty": filled_qty,
+        }
+        context["scope"] = context["pair_key"] or context["exchange"]
         if (
-            not exchange
-            or market_type not in ("spot", "perpetual")
-            or not symbol
-            or not (client_order_id or exchange_order_id)
+            not context["exchange"]
+            or context["market_type"] not in ("spot", "perpetual")
+            or not context["symbol"]
+            or not (context["client_order_id"] or context["exchange_order_id"])
         ):
             await self._halt(
                 identity,
-                scope or "unknown",
+                context["scope"] or "unknown",
                 "Filled order is missing exchange, market, symbol, or order identity.",
                 {"order": row},
             )
-            return
+            return None
+        return context
 
+    def _bind_candidate_client(self, pair_key: str, exchange: str):
         token = None
+        if pair_key and not getattr(self.engine.config, "mock_mode", False):
+            try:
+                token = self.engine._bind_pair_client(
+                    self.engine._pair_info_for_tag(pair_key)
+                )
+            except (LookupError, KeyError, ValueError):
+                token = None
+        client = (
+            self.engine.client
+            if token is not None
+            else self.engine._client_for_exchange(exchange)
+        )
+        return token, client
+
+    async def _reconcile_candidate_trades(
+        self, writer, identity: str, row: Dict[str, Any], context: Dict[str, Any]
+    ) -> None:
+        token = None
+        exchange = context["exchange"]
+        symbol = context["symbol"]
+        client_order_id = context["client_order_id"]
+        exchange_order_id = context["exchange_order_id"]
+        filled_qty = context["filled_qty"]
+        scope = context["scope"]
         try:
-            if pair_key and not getattr(self.engine.config, "mock_mode", False):
-                try:
-                    token = self.engine._bind_pair_client(
-                        self.engine._pair_info_for_tag(pair_key)
-                    )
-                except (LookupError, KeyError, ValueError):
-                    token = None
-            client = (
-                self.engine.client
-                if token is not None
-                else self.engine._client_for_exchange(exchange)
-            )
+            token, client = self._bind_candidate_client(context["pair_key"], exchange)
             trades, submitted = await self._fetch_candidate_trades(
-                client, row, exchange, market_type, symbol,
+                client, row, exchange, context["market_type"], symbol,
                 client_order_id, exchange_order_id,
             )
             order_row_id = self._ensure_fill_order_parent(
-                writer, row, pair_key, exchange, market_type, symbol,
-                client_order_id, exchange_order_id, filled_qty, submitted,
+                writer, row, context["pair_key"], exchange, context["market_type"],
+                symbol, client_order_id, exchange_order_id, filled_qty, submitted,
             )
             total_qty, unverified_fee_ids = self._persist_exchange_fills(
                 writer, trades, order_row_id, exchange
@@ -449,6 +468,18 @@ class TradeFillReconciliationWorker:
         finally:
             if token is not None:
                 self.engine._reset_pair_client(token)
+
+    async def _reconcile_candidate(
+        self, writer, identity: str, row: Dict[str, Any]
+    ) -> None:
+        context = await self._candidate_reconciliation_context(
+            writer, identity, row
+        )
+        if context is None:
+            return
+        await self._reconcile_candidate_trades(
+            writer, identity, row, context
+        )
 
     async def reconcile_once(self) -> None:
         if getattr(self.engine.config, "mock_mode", False):
