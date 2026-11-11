@@ -208,6 +208,20 @@ class SupabaseWriter:
         # so process restarts and backpressure cannot discard accepted rows.
         return True
 
+    def _emit_once(
+        self, table: str, row: Dict[str, Any], state_key: str,
+        on_conflict: Optional[str] = None,
+    ) -> bool:
+        """Atomically enqueue an immutable row once across retries/restarts."""
+        if not self.enabled or self._outbox is None:
+            return False
+        try:
+            return bool(self._outbox.enqueue_once(table, on_conflict, row, state_key))
+        except Exception:
+            self._dropped += 1
+            logger.exception("CRITICAL: durable idempotent outbox enqueue failed for table=%s", table)
+            return False
+
     def event(
         self,
         event_type: str,
@@ -388,7 +402,7 @@ class SupabaseWriter:
         payment_id = str(raw_id or uuid.uuid5(
             _POSITION_NS, f"{exchange}:{symbol}:{timestamp}:{asset}:{amount:.18g}"
         ))
-        return self._emit(
+        return self._emit_once(
             "funding_payments",
             {
                 "id": str(uuid.uuid5(_POSITION_NS, f"funding:{exchange}:{payment_id}")),
@@ -408,6 +422,7 @@ class SupabaseWriter:
                 "settled_at": _ms_to_iso(timestamp),
                 "raw_payload": payment,
             },
+            state_key=f"funding:{exchange}:{payment_id}",
             on_conflict="id",
         )
 
