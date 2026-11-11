@@ -152,6 +152,7 @@ class UniversalOrderRegistry:
 
     async def _persist(self, record: OrderRecord) -> None:
         payload = json.dumps(record.to_dict())
+        redis_ok = False
         try:
             await self.redis.set(order_record_key(record.local_order_id), payload)
             await self.redis.hset(
@@ -169,13 +170,16 @@ class UniversalOrderRegistry:
                     order_cid_field(record.exchange, record.client_order_id),
                     record.local_order_id,
                 )
+            redis_ok = True
         except Exception:
             logger.exception(
-                "[OrderRegistry] Redis persist failed for %s; durable record continues",
+                "[OrderRegistry] Redis persist failed for %s; trying durable storage",
                 record.local_order_id,
             )
         writer = getattr(self.supabase, "order_record", None)
-        if callable(writer):
+        durable_enabled = getattr(self.supabase, "enabled", None) is not False
+        durable_ok = False
+        if callable(writer) and durable_enabled:
             writer(
                 {
                     "local_order_id": record.local_order_id,
@@ -205,6 +209,11 @@ class UniversalOrderRegistry:
                     "recovery_status": record.recovery_status,
                     "is_mock": record.is_mock,
                 }
+            )
+            durable_ok = True
+        if not redis_ok and not durable_ok:
+            raise RuntimeError(
+                f"order {record.local_order_id} could not be persisted to Redis or durable storage"
             )
 
     # ----------------------------------------------------------------- lookup
