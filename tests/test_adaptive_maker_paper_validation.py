@@ -112,3 +112,34 @@ async def test_indodax_order_fetch_rate_limit_uses_backoff_without_duplicate_pol
     assert first_retry_after > time.time()
     assert order_info["fetch_retry_after"] == first_retry_after
     assert pair_tag in engine.pending_entry_orders
+
+
+@pytest.mark.asyncio
+async def test_spot_open_order_cap_counts_positions_and_pending_entries_per_venue(engine):
+    """Open positions and pending entries share one per-spot-CEX cap."""
+    from types import SimpleNamespace
+
+    engine.config.max_open_spot_orders_per_exchange = {"indodax": 3}
+    engine.active_positions["indodax:btc_idr"] = SimpleNamespace(
+        local_exchange="indodax", qty=0.5
+    )
+    # Same pair is counted once even if its pending entry overlaps position state.
+    engine.pending_entry_orders["indodax:btc_idr"] = {"local_exchange": "indodax"}
+    engine.pending_entry_orders["indodax:eth_idr"] = {"local_exchange": "indodax"}
+    engine.pending_entry_orders["tokocrypto:sol_usdt"] = {"local_exchange": "tokocrypto"}
+
+    assert engine._spot_open_order_count("indodax") == 2
+    assert engine._spot_open_order_count("tokocrypto") == 1
+    assert engine._spot_order_limit("indodax") == 3
+    assert engine._spot_order_limit("tokocrypto") == 2
+
+
+def test_spot_order_limit_update_rejects_unknown_exchange_and_invalid_values(engine):
+    engine.config.exchanges = {"indodax": object(), "tokocrypto": object()}
+    engine.config.max_open_spot_orders_per_exchange = {}
+
+    assert engine._apply_spot_order_limit("TOKOCRYPTO", "4") is True
+    assert engine.config.max_open_spot_orders_per_exchange["tokocrypto"] == 4
+    assert engine._apply_spot_order_limit("unknown-cex", "4") is False
+    assert engine._apply_spot_order_limit("indodax", "0") is False
+    assert engine._spot_order_limit("indodax") == 2
