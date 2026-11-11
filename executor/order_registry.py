@@ -262,8 +262,18 @@ class UniversalOrderRegistry:
         The durable rows are therefore unioned by local id and monotonic fill
         facts are merged before the cache is re-seeded.
         """
-        records = await self._redis_active_records()
+        redis_error = None
+        try:
+            records = await self._redis_active_records()
+        except Exception as exc:
+            logger.exception("[OrderRegistry] Redis recovery index is unavailable")
+            records = {}
+            redis_error = exc
         durable = await self._durable_active_records()
+        if redis_error is not None and not bool(getattr(self.supabase, "enabled", False)):
+            raise RuntimeError(
+                "Redis order index is unavailable and no enabled durable registry can replace it"
+            ) from redis_error
         for local_id, durable_record in durable.items():
             cached = records.get(local_id)
             if cached is None:
@@ -314,11 +324,7 @@ class UniversalOrderRegistry:
         return records
 
     async def _redis_active_records(self) -> Dict[str, OrderRecord]:
-        try:
-            indexed = await self.redis.hkeys(ORDER_RECOVERY_INDEX_KEY)
-        except Exception:
-            logger.exception("[OrderRegistry] cannot read recovery index")
-            return {}
+        indexed = await self.redis.hkeys(ORDER_RECOVERY_INDEX_KEY)
         records: Dict[str, OrderRecord] = {}
         for raw_id in indexed or []:
             local_id = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
@@ -335,11 +341,9 @@ class UniversalOrderRegistry:
         reader = getattr(self.supabase, "fetch_open_order_records", None)
         if reader is None:
             return {}
-        try:
-            rows = await reader()
-        except Exception:
-            logger.exception("[OrderRegistry] durable registry read failed")
-            return {}
+        rows = await reader()
+        if not isinstance(rows, list):
+            raise RuntimeError("durable order registry returned a malformed row collection")
         records: Dict[str, OrderRecord] = {}
         for row in rows:
             try:
