@@ -241,9 +241,9 @@ class EntryHedgeMixin:
                 hedge_coid,
             )
             short_order = recovered
-        if not isinstance(short_order, dict):
-            raise ValueError(
-                "futures hedge returned no verifiable order payload; "
+        if not isinstance(short_order, dict) or not short_order.get("id"):
+            raise AmbiguousOrderSubmission(
+                "futures hedge acknowledgement has no exchange order id; "
                 "reconciliation required"
             )
         hedge_status = str(short_order.get("status", "")).lower()
