@@ -198,17 +198,9 @@ class SupabaseQueryMixin:
                 except Exception:
                     pass
 
-    async def fetch_open_order_records(self, limit: int = 500) -> list:
-        """Reads non-terminal order-registry rows for startup recovery.
-
-        The outbox is write-only, so a flushed or partial Redis cache needs a
-        read path back into the durable record. A disabled writer returns an
-        empty list; an enabled-but-unreadable registry raises so startup can
-        fail closed instead of mistaking a database outage for zero orders.
-        """
-        if not self.enabled or not self.url or not self.key:
-            return []
-        params = {
+    @staticmethod
+    def _open_order_record_query(limit: int) -> dict:
+        return {
             "select": (
                 "local_order_id,client_order_id,exchange_order_id,pair_key,position_key,"
                 "exchange_name,market_type,leg,order_role,symbol,side,order_type,status,"
@@ -220,6 +212,8 @@ class SupabaseQueryMixin:
             "order": "updated_at.desc",
             "limit": str(max(1, int(limit))),
         }
+
+    async def _read_open_order_registry_rows(self, params: dict) -> Any:
         session = self._session
         created = False
         try:
@@ -240,7 +234,7 @@ class SupabaseQueryMixin:
                     raise RuntimeError(
                         f"order registry read failed with HTTP {resp.status}: {body}"
                     )
-                rows = await resp.json()
+                return await resp.json()
         except Exception as exc:
             logger.error("order registry read failed: %s", exc)
             raise RuntimeError("durable order registry could not be read") from exc
@@ -250,6 +244,19 @@ class SupabaseQueryMixin:
                     await session.close()
                 except Exception:
                     pass
+
+    async def fetch_open_order_records(self, limit: int = 500) -> list:
+        """Reads non-terminal order-registry rows for startup recovery.
+
+        The outbox is write-only, so a flushed or partial Redis cache needs a
+        read path back into the durable record. A disabled writer returns an
+        empty list; an enabled-but-unreadable registry raises so startup can
+        fail closed instead of mistaking a database outage for zero orders.
+        """
+        if not self.enabled or not self.url or not self.key:
+            return []
+        params = self._open_order_record_query(limit)
+        rows = await self._read_open_order_registry_rows(params)
         if not isinstance(rows, list):
             raise RuntimeError("order registry read returned a malformed payload")
         return [row for row in rows if isinstance(row, dict)]
