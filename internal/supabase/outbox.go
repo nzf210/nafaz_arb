@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,13 +33,13 @@ var ErrOutboxCapacity = errors.New("scanner durable outbox capacity reached")
 var ErrDuplicateRows = errors.New("scanner outbox rows collide on idempotency_key")
 
 type outboxRecord struct {
-	ID            string            `json:"id"`
-	ScanID        string            `json:"scan_id"`
-	Rows          []opportunityRow  `json:"rows"`
-	CreatedAt     time.Time         `json:"created_at"`
-	Attempts      int               `json:"attempts"`
-	NextAttemptAt time.Time         `json:"next_attempt_at"`
-	LastError     string            `json:"last_error,omitempty"`
+	ID            string           `json:"id"`
+	ScanID        string           `json:"scan_id"`
+	Rows          []opportunityRow `json:"rows"`
+	CreatedAt     time.Time        `json:"created_at"`
+	Attempts      int              `json:"attempts"`
+	NextAttemptAt time.Time        `json:"next_attempt_at"`
+	LastError     string           `json:"last_error,omitempty"`
 }
 
 // DurableOutbox is a single-process, append-only JSONL journal. It uses fsync
@@ -90,7 +91,7 @@ func NewDurableOutbox(path string, maxBytes int64) (*DurableOutbox, error) {
 		path: path, maxBytes: maxBytes,
 		records: make(map[string]outboxRecord),
 	}
-	loaded, validateErr := outbox.readLocked()
+	loaded, validateErr := outbox.readRecordsLocked()
 	if validateErr != nil {
 		return nil, fmt.Errorf("validate scanner outbox: %w", validateErr)
 	}
@@ -255,13 +256,190 @@ func (o *DurableOutbox) mutate(ids []string, update func(*outboxRecord) bool) er
 	return nil
 }
 
+// OutboxEntry is a read-only view of one pending journal record for operators.
+type OutboxEntry struct {
+	ScanID        string
+	Rows          int
+	Attempts      int
+	LastError     string
+	NextAttemptAt time.Time
+}
+
+// Inspect reports the pending journal in replay order without modifying it.
+func (o *DurableOutbox) Inspect() ([]OutboxEntry, error) {
+	if o == nil {
+		return nil, fmt.Errorf("scanner outbox is not open")
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	records, err := o.readLocked()
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]OutboxEntry, 0, len(records))
+	for _, record := range records {
+		entries = append(entries, OutboxEntry{
+			ScanID:        record.ScanID,
+			Rows:          len(record.Rows),
+			Attempts:      record.Attempts,
+			LastError:     record.LastError,
+			NextAttemptAt: record.NextAttemptAt,
+		})
+	}
+	return entries, nil
+}
+
 func (o *DurableOutbox) PendingCount() (int, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return len(o.records), nil
 }
 
+// readLocked returns the in-memory journal, which is authoritative while the
+// process holds the file: Retry/Ack update records without rewriting disk, so
+// re-reading the file here would report pre-retry state and could let a prune
+// discard a record whose next attempt is still pending.
 func (o *DurableOutbox) readLocked() ([]outboxRecord, error) {
+	records := make([]outboxRecord, 0, len(o.order))
+	for _, id := range o.order {
+		records = append(records, o.records[id])
+	}
+	return records, nil
+}
+
+// recordID is the journal identity of one scan snapshot. It is recomputed when
+// a record is re-read during salvage because nothing else in the line is
+// trusted; Enqueue derives it the same way at commit time.
+func recordID(scanID string, rows []opportunityRow) string {
+	digest, err := json.Marshal(rows)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(append([]byte(scanID+":"), digest...))
+	return hex.EncodeToString(sum[:])
+}
+
+// PruneReport describes what PruneUndeliverable found and removed.
+type PruneReport struct {
+	Total        int
+	Kept         int
+	Dropped      int
+	DroppedRows  int
+	Truncated    bool
+	SampleScanID string
+	Reasons      map[string]int
+}
+
+// salvageReader strips the fields only the delivery path needs, letting a
+// recovery tool parse a journal whose retry metadata is malformed. The
+// production path uses it as soon as any single record fails to decode:
+// failing closed there turns one bad line into a scanner that will not start.
+type salvageReader struct {
+	ScanID string          `json:"scan_id"`
+	Rows   json.RawMessage `json:"rows"`
+}
+
+const (
+	// defaultPruneAttemptFloor keeps a record that has only been retried a
+	// couple of times: ordinary transient outages must not be thrown away.
+	defaultPruneAttemptFloor = 3
+	// maxPruneDropsPerRun bounds collateral damage when the match pattern is
+	// broader than intended. A human can raise it deliberately.
+	maxPruneDropsPerRun = 1000
+)
+
+// PruneUndeliverable removes records whose LastError matches pattern, after
+// first moving the untouched original file to <path>.bak. It exists for the
+// PGRST102 case: the scanner fixes its row builder at runtime, while a record
+// already journaled by the old build stays permanently undeliverable and, since
+// Due() replays the oldest record first, blocks every later scan behind it.
+//
+// The pattern must not match transient transport text; require e.g.
+// "PGRST102|All object keys must match" rather than "400".
+func (o *DurableOutbox) PruneUndeliverable(pattern string, minAttempts int, dryRun bool) (PruneReport, error) {
+	report := PruneReport{Reasons: map[string]int{}}
+	if o == nil {
+		return report, fmt.Errorf("scanner outbox is not open")
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return report, fmt.Errorf("compile prune pattern: %w", err)
+	}
+	if minAttempts <= 0 {
+		minAttempts = defaultPruneAttemptFloor
+	}
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	// Replay order is the in-memory journal: Retry() updates records without
+	// rewriting the file, so the on-disk lines can be stale.
+	records, err := o.readLocked()
+	if err != nil {
+		return report, err
+	}
+	report.Total = len(records)
+
+	kept := make([]outboxRecord, 0, len(records))
+	var droppedIDs []string
+	for _, record := range records {
+		if len(droppedIDs) < maxPruneDropsPerRun &&
+			record.Attempts >= minAttempts && compiled.MatchString(record.LastError) {
+			droppedIDs = append(droppedIDs, record.ID)
+			report.Dropped++
+			report.DroppedRows += len(record.Rows)
+			report.Reasons[record.LastError]++
+			if report.SampleScanID == "" {
+				report.SampleScanID = record.ScanID
+			}
+			continue
+		}
+		kept = append(kept, record)
+	}
+	report.Kept = len(kept)
+	report.Truncated = report.Dropped == maxPruneDropsPerRun
+
+	if report.Dropped == 0 || dryRun {
+		return report, nil
+	}
+	if err := copyFile(o.path, o.path+".bak"); err != nil {
+		return report, fmt.Errorf("back up scanner outbox before prune: %w", err)
+	}
+	if err := o.rewriteLocked(kept); err != nil {
+		return report, err
+	}
+	nextRecords := make(map[string]outboxRecord, len(kept))
+	nextOrder := make([]string, 0, len(kept))
+	for _, record := range kept {
+		nextRecords[record.ID] = record
+		nextOrder = append(nextOrder, record.ID)
+	}
+	o.records = nextRecords
+	o.order = nextOrder
+	return report, nil
+}
+
+func copyFile(source, destination string) error {
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(destination, data, 0o600); err != nil {
+		return err
+	}
+	file, err := os.Open(destination)
+	if err != nil {
+		return err
+	}
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func (o *DurableOutbox) readRecordsLocked() ([]outboxRecord, error) {
 	data, err := os.ReadFile(o.path)
 	if err != nil {
 		return nil, fmt.Errorf("read scanner outbox: %w", err)
@@ -297,7 +475,18 @@ func (o *DurableOutbox) readLocked() ([]outboxRecord, error) {
 				}
 				break
 			}
-			return nil, fmt.Errorf("scanner outbox corrupt at record %d: %w", index+1, err)
+			// Recovery mode: keep everything the delivery path can still consume
+			// rather than refusing to start over one unreadable retry field.
+			var salvage salvageReader
+			if salvageErr := json.Unmarshal([]byte(line), &salvage); salvageErr != nil ||
+				salvage.ScanID == "" || len(salvage.Rows) == 0 {
+				return nil, fmt.Errorf("scanner outbox corrupt at record %d: %w", index+1, err)
+			}
+			var rows []opportunityRow
+			if rowsErr := json.Unmarshal(salvage.Rows, &rows); rowsErr != nil {
+				return nil, fmt.Errorf("scanner outbox corrupt at record %d: %w", index+1, err)
+			}
+			record = outboxRecord{ID: recordID(salvage.ScanID, rows), ScanID: salvage.ScanID, Rows: rows}
 		}
 		if record.ID == "" || record.ScanID == "" || len(record.Rows) == 0 {
 			return nil, fmt.Errorf("scanner outbox record %d is missing required fields", index+1)

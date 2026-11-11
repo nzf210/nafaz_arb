@@ -1,10 +1,10 @@
 package supabase
 
 import (
-	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -93,6 +93,109 @@ func TestEnqueueKeepsIdenticalScanReplayIdempotent(t *testing.T) {
 	}
 	if count, _ := outbox.PendingCount(); count != 1 {
 		t.Fatalf("pending=%d, want 1", count)
+	}
+}
+
+func TestPruneUndeliverableDropsOnlyPermanentlyRejectedRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.jsonl")
+	outbox, err := NewDurableOutbox(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poisoned, healthy := sampleOpportunity(), sampleOpportunity()
+	healthy.SpotSymbol = "eth_idr"
+	if err := outbox.Enqueue("scan-poisoned", []domain.Opportunity{poisoned}); err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Enqueue("scan-healthy", []domain.Opportunity{healthy}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := outbox.Due(10)
+	if err != nil || len(records) != 2 {
+		t.Fatalf("due=%d err=%v", len(records), err)
+	}
+	for _, record := range records {
+		// Three attempts each: one below the floor, one permanent schema error.
+		for attempt := 0; attempt < 3; attempt++ {
+			cause := errors.New("Supabase scanner_opportunities returned HTTP 503: temporarily unavailable")
+			if record.ScanID == "scan-poisoned" {
+				cause = errors.New(`Supabase scanner_opportunities returned HTTP 400: {"code":"PGRST102","message":"All object keys must match"}`)
+			}
+			if err := outbox.Retry([]string{record.ID}, cause); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// The guard must not fire on transient failures, however often they repeat.
+	report, err := outbox.PruneUndeliverable(`PGRST102|All object keys must match`, 3, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Dropped != 1 || report.Kept != 1 {
+		t.Fatalf("dry run dropped=%d kept=%d, want 1/1", report.Dropped, report.Kept)
+	}
+	if count, _ := outbox.PendingCount(); count != 2 {
+		t.Fatalf("dry run modified the journal: pending=%d", count)
+	}
+
+	report, err = outbox.PruneUndeliverable(`PGRST102|All object keys must match`, 3, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Dropped != 1 {
+		t.Fatalf("dropped=%d, want 1", report.Dropped)
+	}
+	if count, _ := outbox.PendingCount(); count != 1 {
+		t.Fatalf("pending after prune=%d, want 1", count)
+	}
+	if _, err := os.Stat(path + ".bak"); err != nil {
+		t.Fatalf("prune did not back up the original journal: %v", err)
+	}
+	reopened, err := NewDurableOutbox(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := reopened.Inspect()
+	if err != nil || len(entries) != 1 || entries[0].ScanID != "scan-healthy" {
+		t.Fatalf("surviving record lost on reload: entries=%v err=%v", entries, err)
+	}
+}
+
+// A record whose retry metadata is unreadable must still be salvageable,
+// otherwise recovery is impossible for exactly the records operators need to
+// inspect. Every other field is still trusted.
+func TestPruneUndeliverableSalvagesUnreadableRetryMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.jsonl")
+	row := `{"scan_id":"scan-salvage","pair_key":"indodax:btc_idr->okx:btc/usdt:usdt",` +
+		`"idempotency_key":"scan-salvage:indodax:btc_idr->okx:btc/usdt:usdt",` +
+		`"local_exchange":"indodax","global_exchange":"okx","local_symbol":"btc_idr",` +
+		`"global_symbol":"BTC/USDT:USDT","quote_asset":"IDR","eligibility_status":"ELIGIBLE",` +
+		`"spot_price":1,"perp_price":1,"spread_pct":0,"funding_rate":0,` +
+		`"estimated_net_profit":1,"estimated_net_roi_pct":0.3,"executable_qty":1,` +
+		`"capacity_pct":90,"observed_at":"2026-11-08T01:00:00Z","payload":{}}`
+	line := `{"id":"irrelevant","scan_id":"scan-salvage","rows":[` + row + `],` +
+		`"created_at":"2026-11-08T01:00:00Z","attempts":4,"next_attempt_at":"not-a-timestamp"}`
+	if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewDurableOutbox(path, 1<<20)
+	if err != nil {
+		t.Fatalf("salvage reader refused the journal: %v", err)
+	}
+	entries, err := reopened.Inspect()
+	if err != nil || len(entries) != 1 || entries[0].ScanID != "scan-salvage" {
+		t.Fatalf("salvaged entry lost: entries=%v err=%v", entries, err)
+	}
+	// Salvaged records carry no retry metadata, so they are never pruned on
+	// error text alone; an operator re-runs the scan instead.
+	report, err := reopened.PruneUndeliverable(`.*`, 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Dropped != 0 {
+		t.Fatalf("salvaged record dropped without a recorded error: %+v", report)
 	}
 }
 
@@ -214,7 +317,7 @@ func TestDurableOutboxRetryPersistsBackoffAcrossRestart(t *testing.T) {
 		t.Fatalf("retry backoff not persisted: due=%d err=%v", len(due), err)
 	}
 	restarted.mu.Lock()
-	dueRecords, readErr := restarted.readLocked()
+	dueRecords, readErr := restarted.readRecordsLocked()
 	restarted.mu.Unlock()
 	if readErr != nil || len(dueRecords) != 1 ||
 		dueRecords[0].Attempts != 1 || !strings.Contains(dueRecords[0].LastError, "503") {
