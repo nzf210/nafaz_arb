@@ -855,7 +855,7 @@ class ExitMixin:
                 pipe.publish(self.ARB_TRADE_EVENTS, json.dumps(event_msg))
                 await pipe.execute()
 
-                self.record_realized_pnl(net_profit_usdt)
+                self.record_realized_pnl(net_profit_usdt, event_id=f"position-close:{pair_tag}:{getattr(pos, 'opened_at_ms', 0)}", pair_key=pair_tag)
                 await self.publish_status()
                 await self._finalize_exit_position(pair_tag, pos)
             except Exception as ee:
