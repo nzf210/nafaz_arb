@@ -198,7 +198,7 @@ class RecoveryDiscoveryMixin:
             return
 
         record, pair_tag = await self._link_venue_order(
-            order, exchange, symbol, requested_pair_tag, market, exchange_order_id, client_order_id
+            order, exchange, symbol, market, exchange_order_id, client_order_id
         )
         if record is None:
             await self._orphan(
@@ -238,53 +238,69 @@ class RecoveryDiscoveryMixin:
             RecoveryStatus.MANAGED.value,
         )
 
+    async def _find_existing_venue_record(
+        self, exchange: str, exchange_order_id: str,
+        client_order_id: str, symbol: str,
+    ) -> Optional[OrderRecord]:
+        record = None
+        if client_order_id:
+            record = await self.order_registry.find_by_client_id(
+                exchange, client_order_id
+            )
+        if record is None and exchange_order_id:
+            record = await self.order_registry.find_by_exchange_id(
+                exchange, exchange_order_id
+            )
+        if record is None:
+            record = await self._link_legacy_pending_record(
+                exchange, exchange_order_id, client_order_id, symbol
+            )
+        return record
+
+    def _complete_venue_record_link(
+        self, record: OrderRecord, exchange: str, symbol: str, market: str
+    ) -> tuple:
+        pair_tag = record.pair_key or self._match_position_by_catalogue(
+            exchange, symbol
+        )
+        if not pair_tag:
+            return None, ""
+        record.pair_key = pair_tag
+        record.position_id = record.position_id or self._position_id_for(pair_tag)
+        record.market_type = record.market_type or (
+            "perpetual" if market == "futures" else "spot"
+        )
+        record.exchange = record.exchange or exchange
+        record.symbol = record.symbol or symbol
+        if not record.order_role:
+            record.order_role = self._infer_role(symbol, pair_tag, market)
+        return record, pair_tag
+
     async def _link_venue_order(
         self,
         order: Dict[str, Any],
         exchange: str,
         symbol: str,
-        requested_pair_tag: str,
         market: str,
         exchange_order_id: str,
         client_order_id: str,
     ) -> tuple:
-        """Returns ``(record, pair_tag)`` for a matched order, ``(None, "")`` otherwise."""
-        record = None
-        if client_order_id:
-            record = await self.order_registry.find_by_client_id(exchange, client_order_id)
-        if record is None and exchange_order_id:
-            record = await self.order_registry.find_by_exchange_id(exchange, exchange_order_id)
-        if record is None:
-            record = await self._link_legacy_pending_record(exchange, exchange_order_id, client_order_id, symbol)
-
+        """Resolve an existing registry record or create one from a tracked market."""
+        record = await self._find_existing_venue_record(
+            exchange, exchange_order_id, client_order_id, symbol
+        )
         if record is not None:
-            # A record whose pair link was never written (crash between submit
-            # and registration) is completed from the market it belongs to.
-            pair_tag = record.pair_key or self._match_position_by_catalogue(
-                exchange, symbol
+            return self._complete_venue_record_link(
+                record, exchange, symbol, market
             )
-            record.pair_key = pair_tag
-            record.position_id = record.position_id or self._position_id_for(pair_tag)
-            record.market_type = record.market_type or ("perpetual" if market == "futures" else "spot")
-            record.exchange = record.exchange or exchange
-            record.symbol = record.symbol or symbol
-            if not record.order_role:
-                record.order_role = self._infer_role(symbol, pair_tag, market)
-            if not pair_tag:
-                return None, ""
-            return record, pair_tag
-
-        # Role depends on the pair: only after linking is it known whether this
-        # is an entry, an exit against an open position, or an unhedged hedge leg.
+        # A requested pair is only a scan hint, not proof of ownership.
         pair_tag = self._match_position_by_catalogue(exchange, symbol)
-        # requested_pair_tag is only a scan hint, not proof of ownership. When
-        # multiple tracked positions share this venue market, catalogue matching
-        # deliberately returns no owner and the order must remain an orphan.
         if not pair_tag:
             return None, ""
         role = self._infer_role(symbol, pair_tag, market)
         return self._record_from_order(
-            order, exchange, symbol, pair_tag, market, role, exchange_order_id, client_order_id
+            order, exchange, symbol, pair_tag, market, role,
+            exchange_order_id, client_order_id,
         ), pair_tag
 
     async def _link_legacy_pending_record(
