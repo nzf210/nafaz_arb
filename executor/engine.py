@@ -801,10 +801,13 @@ class ArbitrageEngine(
         deliberately reuses the existing recovery and position-verification
         paths rather than introducing a second order lifecycle implementation.
         """
-        interval = max(
-            15.0,
-            float(getattr(self.config, "exchange_reconciliation_interval_seconds", 60.0) or 60.0),
-        )
+        try:
+            interval = max(
+                15.0,
+                float(getattr(self.config, "exchange_reconciliation_interval_seconds", 60.0) or 60.0),
+            )
+        except (TypeError, ValueError):
+            interval = 60.0
         while self._running:
             try:
                 async with self._exchange_reconciliation_lock:
@@ -837,9 +840,11 @@ class ArbitrageEngine(
         pair_tags = set(self._pair_infos) | set(self.active_positions) | set(self.pending_entry_orders) | set(self.pending_exit_orders)
         if not pair_tags:
             return
-        seen = set()
         for pair_tag in sorted(pair_tags):
             token = None
+            # Each pair-bound client may represent a different exchange account.
+            # Deduplicate only within that account's report, never across pairs.
+            seen = set()
             try:
                 if not getattr(self.config, "mock_mode", False):
                     token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
