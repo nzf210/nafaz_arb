@@ -47,8 +47,7 @@ class RecoveryRegistryMixin:
 
     # ------------------------------------------- durable registry reconciliation
 
-    @staticmethod
-    def _group_registered_orders(records: Dict[str, OrderRecord]) -> Dict[tuple, list]:
+    def _group_registered_orders(self, records: Dict[str, OrderRecord]) -> Dict[tuple, list]:
         groups: Dict[tuple, list] = {}
         for record in records.values():
             exchange = (
