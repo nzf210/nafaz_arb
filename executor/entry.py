@@ -644,6 +644,19 @@ class EntryMixin:
                 hedge_coid = build_client_order_id(
                     pair_tag, "hedge", self._next_order_seq()
                 )
+                await self._register_order_intent(
+                    pair_tag,
+                    hedge_coid,
+                    exchange=order_info.get("global_exchange", ""),
+                    market_type="perpetual",
+                    symbol=global_symbol,
+                    role=OrderRole.HEDGE.value,
+                    side="sell",
+                    order_type="market",
+                    price=expected_short_price,
+                    quantity=unhedged_delta,
+                    global_amount_spec=order_info.get("global_amount_spec"),
+                )
                 short_order = await self.client.open_global_short_market(
                     global_symbol,
                     unhedged_delta,
