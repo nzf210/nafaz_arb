@@ -315,27 +315,28 @@ class TestDurableOutbox:
         first = DurableOutbox(path)
         first.enqueue_cumulative_fill(
             "order_fills", "id",
-            {"id": "fill-4", "qty": 0, "price": 2.0, "quote_qty": 0},
-            "okx:order-1", 4.0,
+            {"id": "fill-4", "qty": 0, "price": 100.0, "quote_qty": 0},
+            "okx:order-1", 4.0, 400.0,
         )
         first.close()
 
         reopened = DurableOutbox(path)
         delta = reopened.enqueue_cumulative_fill(
             "order_fills", "id",
-            {"id": "fill-7", "qty": 0, "price": 2.0, "quote_qty": 0},
-            "okx:order-1", 7.0,
+            {"id": "fill-7", "qty": 0, "price": 105.0, "quote_qty": 0},
+            "okx:order-1", 7.0, 735.0,
         )
         duplicate = reopened.enqueue_cumulative_fill(
             "order_fills", "id",
-            {"id": "fill-7", "qty": 0, "price": 2.0, "quote_qty": 0},
-            "okx:order-1", 7.0,
+            {"id": "fill-7", "qty": 0, "price": 105.0, "quote_qty": 0},
+            "okx:order-1", 7.0, 735.0,
         )
         pending = reopened.pending()
         assert delta == 3.0
         assert duplicate == 0.0
         assert [item[3]["qty"] for item in pending] == [4.0, 3.0]
-        assert [item[3]["quote_qty"] for item in pending] == [8.0, 6.0]
+        assert [item[3]["quote_qty"] for item in pending] == [400.0, 335.0]
+        assert [item[3]["price"] for item in pending] == [100.0, pytest.approx(335.0 / 3.0)]
         reopened.close()
 
     def test_partial_fill_uses_incremental_cumulative_notional(self):
@@ -366,6 +367,7 @@ class TestDurableOutbox:
         fills = [row for table, _, row in _drain(writer) if table == "order_fills"]
         assert len(fills) == 2
         assert fills[0]["id"] != fills[1]["id"]
+        assert fills[0]["exchange_fill_id"] != fills[1]["exchange_fill_id"]
 
 class _FakeResponse:
     def __init__(self, status: int):
