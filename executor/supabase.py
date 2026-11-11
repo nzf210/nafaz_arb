@@ -548,10 +548,10 @@ class SupabaseWriter:
     async def fetch_open_order_records(self, limit: int = 500) -> list:
         """Reads non-terminal order-registry rows for startup recovery.
 
-        The outbox is write-only, so a flushed Redis cache needs a read path back
-        into the durable record. Failures return an empty list: recovery must
-        degrade to venue-truth detection rather than abort, and the caller marks
-        unverifiable orders instead of assuming they are gone.
+        The outbox is write-only, so a flushed or partial Redis cache needs a
+        read path back into the durable record. A disabled writer returns an
+        empty list; an enabled-but-unreadable registry raises so startup can
+        fail closed instead of mistaking a database outage for zero orders.
         """
         if not self.enabled or not self.url or not self.key:
             return []
