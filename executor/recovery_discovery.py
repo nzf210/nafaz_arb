@@ -263,8 +263,6 @@ class RecoveryDiscoveryMixin:
         pair_tag = record.pair_key or self._match_position_by_catalogue(
             exchange, symbol
         )
-        if not pair_tag:
-            return None, ""
         record.pair_key = pair_tag
         record.position_id = record.position_id or self._position_id_for(pair_tag)
         record.market_type = record.market_type or (
@@ -274,6 +272,8 @@ class RecoveryDiscoveryMixin:
         record.symbol = record.symbol or symbol
         if not record.order_role:
             record.order_role = self._infer_role(symbol, pair_tag, market)
+        if not pair_tag:
+            return None, ""
         return record, pair_tag
 
     async def _link_venue_order(
