@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"sort"
 	"strings"
 	"time"
 
@@ -65,8 +66,14 @@ func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID 
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Executor belum mengirim rincian pending order.</b>\n\nPerbarui image executor agar menu ini dapat menampilkan ID order, CEX, harga, dan kuantitas. Jumlah tercatat: "+fmt.Sprintf("%d entry / %d exit", snapshot.PendingEntries, snapshot.PendingExits), b.defaultKeyboard())
 		return
 	}
+	orders := append([]pendingOrderSnapshot(nil), snapshot.PendingOrders...)
+	sort.SliceStable(orders, func(i, j int) bool {
+		left := strings.ToLower(orders[i].LocalExchange + "|" + orders[i].Symbol)
+		right := strings.ToLower(orders[j].LocalExchange + "|" + orders[j].Symbol)
+		return left < right
+	})
 	var out strings.Builder
-	out.WriteString(fmt.Sprintf("🕒 <b>PENDING ORDERS (%d)</b>\n", len(snapshot.PendingOrders)))
+	out.WriteString(fmt.Sprintf("🕒 <b>PENDING ORDERS (%d)</b> — grouped by exchange / pair\n", len(orders)))
 	if snapshot.MockMode {
 		out.WriteString("⚠️ <b>MODE SIMULASI</b>\n")
 	} else {
@@ -76,14 +83,17 @@ func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID 
 		out.WriteString("🕓 Snapshot: "+time.UnixMilli(snapshot.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC")+"\n")
 	}
 	out.WriteString("\n")
-	if len(snapshot.PendingOrders) == 0 {
+	if len(orders) == 0 {
 		out.WriteString("<i>Tidak ada order Spot yang masih pending.</i>\n")
 	} else {
-		for i, order := range snapshot.PendingOrders {
+		lastGroup := ""
+		for i, order := range orders {
 			if i >= 20 {
 				out.WriteString("\n<i>Daftar dibatasi hingga 20 order.</i>")
 				break
 			}
+			group := strings.ToUpper(order.LocalExchange) + " / " + strings.ToUpper(order.Symbol)
+			if group != lastGroup { out.WriteString("<b>🏦 " + html.EscapeString(group) + "</b>\n"); lastGroup = group }
 			status := order.Status
 			if status == "" { status = "UNKNOWN" }
 			out.WriteString(fmt.Sprintf("<b>[%d] %s — %s</b>\n", i+1, html.EscapeString(strings.ToUpper(order.Symbol)), html.EscapeString(status)))
@@ -293,11 +303,16 @@ func (b *Bot) formatPositionBlock(sb *strings.Builder, idx int, pos domain.Activ
 		sb.WriteString(fmt.Sprintf("• Estimasi Floating PnL: <b>%+.4f USDT</b> (Rp %+.2f)\n", pnl.floatingUSDT, pnl.floatingIDR))
 	}
 
-	statusStr := "HEDGED (Delta Neutral 100%)"
-	if pos.State == "RECONCILIATION_REQUIRED" {
-		statusStr = "⚠️ RECONCILIATION REQUIRED (Unhedged / Leg Failed)"
+	statusStr := "UNKNOWN — status kedua leg belum dipublikasikan secara independen"
+	if pos.State == "HEDGED_ACTIVE" || pos.State == "HEDGED" {
+		statusStr = "HEDGED_ACTIVE (state agregat executor; bukan verifikasi live kedua exchange)"
+	} else if pos.State == "RECONCILIATION_REQUIRED" {
+		statusStr = "RECONCILIATION_REQUIRED"
+	} else if pos.State != "" {
+		statusStr = pos.State
 	}
-	sb.WriteString(fmt.Sprintf("• Status: <code>%s</code>\n\n", statusStr))
+	sb.WriteString(fmt.Sprintf("• Status agregat: <code>%s</code>\n", html.EscapeString(statusStr)))
+	sb.WriteString("• Status leg Spot: <i>tidak tersedia pada schema posisi Redis</i>\n• Status leg Futures: <i>tidak tersedia pada schema posisi Redis</i>\n\n")
 }
 
 func (b *Bot) handleHistoryCommand(ctx context.Context, chatID int64, replyToID int64) {
