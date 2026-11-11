@@ -2,6 +2,7 @@
 
 import logging
 import json
+import math
 from typing import Any, Dict
 
 from executor.models import OrderRecord, OrderRole, PositionState
@@ -74,20 +75,81 @@ class RecoveryOrphanMixin:
 
     # --------------------------------------------------------- manual resolve
 
+    async def _orphan_is_terminal_zero_fill(self, orphan: Dict[str, Any]) -> bool:
+        """Require exact venue proof that an orphan can no longer create exposure."""
+        exchange = str(orphan.get("exchange") or "").lower()
+        symbol = str(orphan.get("symbol") or "")
+        market_type = str(orphan.get("market_type") or "spot").lower()
+        order_id = str(orphan.get("exchange_order_id") or "")
+        client_id = str(orphan.get("client_order_id") or "")
+        client = self._client_for_exchange(exchange)
+        if client is None or not symbol or not (order_id or client_id):
+            return False
+        try:
+            if market_type == "perpetual":
+                fetch = getattr(client, "fetch_global_order", None)
+                by_client = getattr(client, "fetch_global_order_by_client_id", None)
+            else:
+                fetch = getattr(client, "fetch_local_order", None)
+                by_client = getattr(client, "fetch_local_order_by_client_id", None)
+            if order_id and callable(fetch):
+                venue_order = await fetch(order_id, symbol)
+            elif client_id and callable(by_client):
+                venue_order = await by_client(client_id, symbol)
+            else:
+                return False
+        except Exception:
+            logger.exception("[Orphan] venue verification failed for %s", orphan.get("orphan_id"))
+            return False
+        if not isinstance(venue_order, dict):
+            return False
+        if order_id and str(venue_order.get("id") or "") != order_id:
+            return False
+        observed_client_id = str(venue_order.get("clientOrderId") or venue_order.get("client_order_id") or "")
+        if client_id and observed_client_id != client_id:
+            return False
+        status = str(venue_order.get("status") or "").lower()
+        if status not in ("closed", "filled", "canceled", "cancelled", "rejected", "expired"):
+            return False
+        try:
+            filled = float(venue_order.get("filled", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(filled) and filled <= 1e-12
+
+    async def _scope_has_unresolved_recovery(self, scope: str) -> bool:
+        """Do not clear a shared halt while another incident still owns its scope."""
+        for orphan in (await self.order_registry.orphans()).values():
+            if str(orphan.get("scope") or "") == scope:
+                return True
+        pending = await self.order_registry.pending_recovery_ids()
+        for local_id in pending:
+            record = self._recovered_order_records.get(local_id)
+            if record is None:
+                record = await self.order_registry.load(local_id)
+            if record is None:
+                return True
+            record_scope = record.pair_key or self._market_scope(record.exchange, record.symbol) or record.exchange
+            if record_scope == scope or record.exchange == scope:
+                return True
+        if self.states.get(scope) == PositionState.RECONCILIATION_REQUIRED:
+            return True
+        return False
+
     async def resolve_orphan_order(
         self, orphan_id: str, pair_tag: str = "", reason: str = "MANUAL"
     ) -> bool:
-        """Operator-only reconciliation of an orphan order.
-
-        Attaches the order to a pair when ``pair_tag`` is given, otherwise
-        acknowledges it as external. Either way the entry halt on its scope is
-        released. Recovery never calls this: only a human can decide that an
-        unlinkable order is safe.
-        """
+        """Resolve only after exact venue lookup proves a terminal zero-fill order."""
         orphans = await self.order_registry.orphans()
         orphan = orphans.get(orphan_id)
         if orphan is None:
             logger.warning("[Orphan] %s is not registered", orphan_id)
+            return False
+        if not await self._orphan_is_terminal_zero_fill(orphan):
+            logger.critical(
+                "[Orphan] refusing to resolve %s: venue has not proven terminal zero-fill state",
+                orphan_id,
+            )
             return False
         scope = str(orphan.get("scope") or "")
         if pair_tag:
@@ -110,23 +172,24 @@ class RecoveryOrphanMixin:
                     order_role=OrderRole.EXIT_SPOT.value,
                     price=float(orphan.get("price") or 0.0),
                     original_quantity=float(orphan.get("amount") or 0.0),
-                    filled_quantity=float(orphan.get("filled") or 0.0),
+                    filled_quantity=0.0,
+                    status="canceled",
                 )
             )
-        self._recovered_orphans.pop(orphan_id, None)
         await self.order_registry.remove_orphan(orphan_id)
-        self._clear_exposure_halt(scope, "orphan resolved")
+        self._recovered_orphans.pop(orphan_id, None)
+        if not await self._scope_has_unresolved_recovery(scope):
+            self._clear_exposure_halt(scope, "orphan venue state verified terminal with zero fill")
         await self._publish_execution_failure(
             f"orphan:{orphan_id}",
             "ORPHAN_ORDER_RESOLVED",
             f"Orphan order {orphan_id} resolved manually ({reason})"
             + (f" onto {pair_tag}" if pair_tag else " as external"),
-            detail={"orphan_id": orphan_id, "pair_key": pair_tag, "reason": reason},
+            detail={"orphan_id": orphan_id, "pair_key": pair_tag, "reason": reason, "venue_verified": True},
             state=PositionState.IDLE,
         )
         logger.warning("[Orphan] %s resolved manually (%s)", orphan_id, reason)
         return True
-
 
     async def retry_pending_order_recovery(self) -> bool:
         """Re-run read-only recovery; never submit, cancel, or replace orders.
