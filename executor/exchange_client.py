@@ -65,6 +65,12 @@ class ExchangeClient(
         )
 
 
+
+def create_exchange_client(config: Any) -> Any:
+    """Factory creating the active live or paper-trading client."""
+    if getattr(config, "mock_mode", False):
+        return PaperTradingExchangeClient(
+            local_name=config.local_exchange_name,
             global_name=config.global_exchange_name,
             initial_balance_usdt=getattr(config, "initial_exchange_balance_usdt", 100.0),
         )
