@@ -288,3 +288,37 @@ async def test_exchange_client_fetch_order_trades_filters_by_client_order_id(mon
     assert len(fills) == 1
     assert fills[0]["id"] == "trade-2"
     assert fills[0]["amount"] == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_exchange_client_converts_contract_fill_quantity_to_base_units():
+    class FuturesVenue:
+        id = "okx"
+
+        async def fetch_my_trades(self, symbol, since=None, limit=None):
+            return [{
+                "id": "futures-trade-1",
+                "order": "futures-order-1",
+                "symbol": symbol,
+                "amount": 2,
+                "price": 100,
+                "cost": 200,
+                "timestamp": 1723442692520,
+                "fee": {"cost": 0.02, "currency": "USDT"},
+            }]
+
+    client = ExchangeClient(_adapter(), FuturesVenue())
+    fills = await client.fetch_order_trades(
+        "perpetual",
+        "BTC/USDT:USDT",
+        order_id="futures-order-1",
+        amount_spec={
+            "unit": "CONTRACT",
+            "step": 1,
+            "min": 1,
+            "base_per_unit": 0.01,
+        },
+    )
+
+    assert fills[0]["amount"] == pytest.approx(0.02)
+    assert fills[0]["cost"] == pytest.approx(200)
