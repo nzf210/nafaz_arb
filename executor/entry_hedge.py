@@ -198,7 +198,6 @@ class EntryHedgeMixin:
             short_order = await self.client.open_global_short_market(
                 global_symbol,
                 unhedged_delta,
-                price=expected_short_price,
                 client_order_id=hedge_coid,
                 amount_spec=AmountSpec.from_dict(
                     order_info.get("global_amount_spec")
