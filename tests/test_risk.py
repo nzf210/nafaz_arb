@@ -570,3 +570,21 @@ def test_risk_persistence_failure_blocks_live_entries(engine):
     assert engine._persist_risk_state("trading_halt", reason="test") is False
     assert engine._risk_persistence_failed is True
     assert engine._entry_blocked is True
+
+
+def test_position_reconciliation_halt_is_pair_scoped(engine):
+    engine._mark_failed(
+        "indodax:btc_idr", "LEG_MISMATCH", "spot/futures exposure mismatch",
+        state=PositionState.RECONCILIATION_REQUIRED,
+    )
+    assert engine._venue_halted_reason("indodax:btc_idr")
+    assert engine._venue_halted_reason("indodax:eth_idr") == ""
+
+
+@pytest.mark.asyncio
+async def test_operator_kill_switch_overrides_daily_loss_halt(engine):
+    engine._trading_halted = True
+    engine._halt_reason = "DAILY_LOSS_LIMIT"
+    await engine.handle_kill_switch(json.dumps({"action": "on"}))
+    assert engine._trading_halted is True
+    assert engine._halt_reason == "KILL_SWITCH"
