@@ -152,7 +152,7 @@ class RollbackMixin:
             return True
         if not positions:
             return False
-        total = 0.0
+        exposure = 0.0
         for position in positions:
             if not isinstance(position, dict):
                 logger.critical(
@@ -180,12 +180,9 @@ class RollbackMixin:
                     or info.get("positionSide")
                     or ""
                 ).lower()
-                if side == "short":
-                    total += qty
-                elif side == "long":
-                    total -= qty
-                else:
+                if side not in {"short", "long"}:
                     return True
+                exposure += qty
                 continue
 
             raw_amount = position.get("positionAmt", info.get("positionAmt"))
@@ -198,15 +195,64 @@ class RollbackMixin:
             if not math.isfinite(signed_amount):
                 return True
             # Binance-style positionAmt is signed: negative is short, positive long.
-            total -= signed_amount
-        if abs(total) > 1e-12:
+            exposure += abs(signed_amount)
+        if exposure > 1e-12:
             logger.critical(
                 f"[Hedge Ambiguity] {pair_tag}: venue reports non-flat futures exposure "
-                f"(net short {total}) on {global_symbol} despite hedge error "
+                f"(gross exposure {exposure}) on {global_symbol} despite hedge error "
                 f"({error}) - spot NOT rolled back"
             )
             return True
         return False
+
+    async def _verify_ambiguous_hedge_absent(
+        self, pair_tag: str, order_info: dict, client_order_id: str,
+        error: Exception, requested_quantity: float,
+    ) -> tuple[bool, str]:
+        """Prove both hedge order absence and flat futures exposure before unwind."""
+        global_symbol = str(order_info.get("global_symbol") or "")
+        lookup = getattr(self.client, "fetch_global_order_by_client_id", None)
+        if not global_symbol or not client_order_id or not callable(lookup):
+            return False, "futures order lookup is unavailable"
+        try:
+            order = await lookup(client_order_id, global_symbol, order_info.get("global_amount_spec"))
+        except Exception as exc:
+            return False, f"futures order lookup failed: {type(exc).__name__}: {exc}"
+        if order is not None:
+            if not isinstance(order, dict) or not order.get("id"):
+                return False, "futures order lookup returned a malformed order"
+            returned_client_id = str(order.get("client_order_id") or order.get("clientOrderId") or "")
+            if returned_client_id != client_order_id:
+                return False, "futures order lookup returned a different client order id"
+            status = str(order.get("status") or "").lower()
+            if status not in {"closed", "filled", "canceled", "cancelled", "rejected", "expired"}:
+                return False, f"futures hedge order is still non-terminal (status={status or 'unknown'})"
+            try:
+                filled = float(order.get("filled") or 0.0)
+            except (TypeError, ValueError):
+                return False, "futures hedge order has an invalid filled quantity"
+            if not math.isfinite(filled) or filled < 0:
+                return False, "futures hedge order has a non-finite/negative filled quantity"
+            tolerance = max(1e-12, requested_quantity * 1e-8)
+            if filled > tolerance:
+                return False, f"futures hedge order has fills ({filled}); rollback is unsafe"
+        if await self._hedge_may_be_open(pair_tag, global_symbol, error):
+            return False, "futures position is non-flat or could not be verified"
+        await self._resolve_zero_fill_hedge_intent(str(order_info.get("global_exchange") or ""), client_order_id)
+        return True, "no hedge order/fill and futures position confirmed flat"
+
+    async def _resolve_zero_fill_hedge_intent(self, exchange: str, client_order_id: str) -> None:
+        """Close the durable submit intent after venue absence is independently proven."""
+        registry = getattr(self, "order_registry", None)
+        if registry is None or not exchange or not client_order_id:
+            return
+        record = await registry.find_by_client_id(exchange, client_order_id)
+        if record is None:
+            return
+        record.status = "canceled"
+        record.recovery_status = "MANAGED"
+        await registry.register(record)
+        await registry.clear_pending_recovery(record.local_order_id)
 
     async def _release_unhedged_reserve(
         self,
