@@ -1042,6 +1042,7 @@ class ArbitrageEngine(
                 if halt_saved and resume_saved:
                     self.supabase.clear_risk_persistence_failure()
                     self._risk_persistence_failed = False
+                    self._refresh_entry_gate()
                 logger.warning(f"[Kill Switch] Trading resumed ({reason})")
                 await self.publish_status()
             return
