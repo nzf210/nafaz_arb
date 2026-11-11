@@ -397,7 +397,10 @@ class SupabaseWriter:
                 "symbol": symbol,
                 "exchange_payment_id": payment_id,
                 "funding_rate": _num(payment.get("rate", info.get("fundingRate")), 0.0) or None,
-                "position_qty": _num(payment.get("contracts", payment.get("amount"))),
+                "position_qty": (
+                    _num(payment.get("contracts", info.get("positionAmt")))
+                    if payment.get("contracts", info.get("positionAmt")) is not None else None
+                ),
                 "mark_price": _num(payment.get("price", info.get("markPrice"))) or None,
                 "amount": amount,
                 "asset": asset,
