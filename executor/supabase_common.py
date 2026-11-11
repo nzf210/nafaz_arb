@@ -7,6 +7,8 @@ from typing import Any, Optional
 
 import aiohttp
 
+logger = logging.getLogger("executor.supabase")
+
 
 _MAX_ATTEMPTS = 3
 _BATCH_MAX = 50
