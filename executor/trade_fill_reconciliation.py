@@ -54,25 +54,6 @@ class TradeFillReconciliationWorker:
             except Exception:
                 logger.exception("periodic trade-fill reconciliation failed")
 
-    def _candidates(self) -> Dict[str, Dict[str, Any]]:
-        """Merge durable analytics rows with the live Redis order registry."""
-        candidates: Dict[str, Dict[str, Any]] = {}
-        writer = self.engine.supabase
-        reader = getattr(writer, "fetch_recent_order_fill_candidates", None)
-        if callable(reader):
-            try:
-                rows = asyncio.get_running_loop().run_until_complete(reader())
-            except RuntimeError:
-                # Called from an active async task; the coroutine is awaited by
-                # reconcile_once below instead of blocking this helper.
-                rows = []
-            for row in rows or []:
-                if isinstance(row, dict) and row.get("is_mock") is False:
-                    identity = self._identity(row)
-                    if identity:
-                        candidates[identity] = dict(row)
-        return candidates
-
     @staticmethod
     def _identity(row: Dict[str, Any]) -> str:
         exchange = str(row.get("exchange_name") or row.get("exchange") or "").lower()
@@ -115,6 +96,8 @@ class TradeFillReconciliationWorker:
                         "side": record.side,
                         "filled_qty": record.filled_quantity,
                         "submitted_at": record.created_at,
+                        "local_amount_spec": record.local_amount_spec,
+                        "global_amount_spec": record.global_amount_spec,
                         "is_mock": record.is_mock,
                     }
                     identity = self._identity(row)
