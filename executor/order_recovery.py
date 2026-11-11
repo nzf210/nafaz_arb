@@ -351,7 +351,7 @@ class OrderRecoveryMixin:
         """Lifts the gate a failed open-order sweep installed for this venue."""
         halts = getattr(self, "_recovery_scope_halts", None) or {}
         if exchange in halts and "open-order sweep" in halts[exchange]:
-            await self._clear_exposure_halt(exchange, "open-order sweep succeeded")
+            self._clear_exposure_halt(exchange, "open-order sweep succeeded")
 
     def _recovery_venue_targets(self) -> list:
         """Exchange/symbol pairs whose orders must be swept at startup.
@@ -1308,7 +1308,7 @@ class OrderRecoveryMixin:
             )
         self._recovered_orphans.pop(orphan_id, None)
         await self.order_registry.remove_orphan(orphan_id)
-        await self._clear_exposure_halt(scope, "orphan resolved")
+        self._clear_exposure_halt(scope, "orphan resolved")
         await self._publish_execution_failure(
             f"orphan:{orphan_id}",
             "ORPHAN_ORDER_RESOLVED",
@@ -1344,7 +1344,7 @@ class OrderRecoveryMixin:
                     for other_id in remaining
                 ):
                     self.states[record.pair_key] = PositionState.IDLE
-                    await self._clear_exposure_halt(record.pair_key, "pending order verified")
+                    self._clear_exposure_halt(record.pair_key, "pending order verified")
 
         # A venue-scope gate from a failed open-order sweep is released by
         # re-running the sweep: the venue may be answering again now.
@@ -1403,7 +1403,7 @@ class OrderRecoveryMixin:
         self._persist_risk_state("reconciliation_halt", scope=state_scope, exchange=scope if state_scope == "exchange" else None, pair_key=scope if state_scope == "pair" else None, reason=halts[scope], value={"source": "order_recovery"})
         self._entry_blocked = True
 
-    async def _clear_exposure_halt(self, scope: str, reason: str) -> None:
+    def _clear_exposure_halt(self, scope: str, reason: str) -> None:
         halts = getattr(self, "_recovery_scope_halts", None)
         if halts is None:
             halts = self._recovery_scope_halts = {}
