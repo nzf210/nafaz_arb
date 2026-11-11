@@ -81,7 +81,8 @@ func (b *Bot) sendMonitorSection(ctx context.Context, chatID, replyToID int64, t
 		if len(items) != len(reported) {
 			b.sendReplyWithMarkup(ctx, chatID, replyToID, fmt.Sprintf("⚠️ <b>ORPHAN REGISTRY MISMATCH</b>\nRedis index: <code>%d</code> | Recovery snapshot: <code>%d</code>\nGunakan daftar berikut sebagai informasi parsial; inventory belum konsisten.", len(items), len(reported)), b.defaultKeyboard())
 		}
-		raw, _ = json.Marshal(items)
+		b.sendJSONPages(ctx, chatID, replyToID, "ORPHAN EXCHANGE ORDERS", items)
+		return
 	} else if title == "RISK HALT" {
 		view := monitorSnapshot{}
 		for _, key := range []string{"status", "trading_halted", "halt_reason", "exchange_halted", "failed_pairs"} {
