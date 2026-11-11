@@ -275,10 +275,10 @@ class TestOrdersAndFills:
             "info": {"tradeId": "venue-trade-99"},
         }
         assert writer.order_fill(
-            order_id=order_id, exchange="indodax", fill=fill, is_mock=False
+            order_id=order_id, exchange="indodax", fill=fill
         ) is True
         assert writer.order_fill(
-            order_id=order_id, exchange="indodax", fill=fill, is_mock=False
+            order_id=order_id, exchange="indodax", fill=fill
         ) is True
         rows = _drain(writer)
         fills = [row for table, _, row in rows if table == "order_fills"]
