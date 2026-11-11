@@ -1,4 +1,21 @@
 -- Runs after the initial migration against a clean PostgreSQL instance.
+-- Shared test fixtures keep repeated schema-smoke literals in one place.
+create temporary table _smoke_constants as
+select
+    'public'::text as public_schema,
+    'public.%I'::text as public_table_format,
+    'schema-smoke-test'::text as smoke_config_name,
+    'indodax'::text as local_exchange,
+    'schema-smoke-idempotency'::text as idempotency_scan_id,
+    'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt'::text as idempotency_key,
+    '11111111-1111-1111-1111-111111111111'::text as order_local_id,
+    'smoke-entry-1'::text as order_client_id,
+    'btc_idr'::text as local_symbol,
+    'spot'::text as spot_market,
+    'ENTRY'::text as entry_role,
+    'buy'::text as buy_side,
+    'limit'::text as limit_order_type;
+
 do $$
 declare
     tbl text;
@@ -14,23 +31,23 @@ begin
             select 1
             from pg_class c
             join pg_namespace n on n.oid = c.relnamespace
-            where n.nspname = 'public' and c.relname = tbl and c.relrowsecurity
+            where n.nspname = (select public_schema from pg_temp._smoke_constants) and c.relname = tbl and c.relrowsecurity
         ) then
             raise exception 'RLS is not enabled on public.%', tbl;
         end if;
-        if has_table_privilege('anon', format('public.%I', tbl), 'select')
-           or has_table_privilege('authenticated', format('public.%I', tbl), 'select') then
+        if has_table_privilege('anon', format((select public_table_format from pg_temp._smoke_constants), tbl), 'select')
+           or has_table_privilege('authenticated', format((select public_table_format from pg_temp._smoke_constants), tbl), 'select') then
             raise exception 'Unexpected client SELECT privilege on public.%', tbl;
         end if;
-        if not has_table_privilege('service_role', format('public.%I', tbl), 'select')
-           or not has_table_privilege('service_role', format('public.%I', tbl), 'insert') then
+        if not has_table_privilege('service_role', format((select public_table_format from pg_temp._smoke_constants), tbl), 'select')
+           or not has_table_privilege('service_role', format((select public_table_format from pg_temp._smoke_constants), tbl), 'insert') then
             raise exception 'service_role missing required access on public.%', tbl;
         end if;
     end loop;
 end $$;
 
 insert into public.strategy_configs (name, config)
-values ('schema-smoke-test', '{"source":"ci"}'::jsonb);
+values ((select smoke_config_name from pg_temp._smoke_constants), '{"source":"ci"}'::jsonb);
 
 do $$
 declare
@@ -38,34 +55,34 @@ declare
     after_update timestamptz;
 begin
     select updated_at into before_update
-    from public.strategy_configs where name = 'schema-smoke-test';
+    from public.strategy_configs where name = (select smoke_config_name from pg_temp._smoke_constants);
     perform pg_sleep(0.02);
     update public.strategy_configs
     set config = '{"source":"ci-updated"}'::jsonb
-    where name = 'schema-smoke-test';
+    where name = (select smoke_config_name from pg_temp._smoke_constants);
     select updated_at into after_update
-    from public.strategy_configs where name = 'schema-smoke-test';
+    from public.strategy_configs where name = (select smoke_config_name from pg_temp._smoke_constants);
     if after_update <= before_update then
         raise exception 'updated_at trigger did not advance timestamp';
     end if;
 end $$;
 
-delete from public.strategy_configs where name = 'schema-smoke-test';
+delete from public.strategy_configs where name = (select smoke_config_name from pg_temp._smoke_constants);
 
 
 do $$
 begin
     if not exists (
         select 1 from information_schema.columns
-        where table_schema = 'public' and table_name = 'closed_trades'
+        where table_schema = (select public_schema from pg_temp._smoke_constants) and table_name = 'closed_trades'
           and column_name = 'spot_pnl_asset'
     ) or not exists (
         select 1 from information_schema.columns
-        where table_schema = 'public' and table_name = 'closed_trades'
+        where table_schema = (select public_schema from pg_temp._smoke_constants) and table_name = 'closed_trades'
           and column_name = 'entry_usdt_idr_rate'
     ) or not exists (
         select 1 from information_schema.columns
-        where table_schema = 'public' and table_name = 'positions'
+        where table_schema = (select public_schema from pg_temp._smoke_constants) and table_name = 'positions'
           and column_name = 'futures_quote_asset'
     ) then
         raise exception 'trade currency / FX audit columns are missing';
@@ -91,7 +108,7 @@ insert into public.scanner_opportunities (
     observed_at, payload
 ) values (
     'legacy-null-key-second', 'indodax:legacy_idr',
-    'indodax', 'okx', 'legacy_idr', 'LEGACY/USDT:USDT',
+    (select local_exchange from pg_temp._smoke_constants), 'okx', 'legacy_idr', 'LEGACY/USDT:USDT',
     'IDR', 'EXCLUDED', now(), '{}'::jsonb
 );
 
@@ -114,7 +131,7 @@ do $$
 begin
     if not exists (
         select 1 from information_schema.columns
-        where table_schema = 'public' and table_name = 'scanner_opportunities'
+        where table_schema = (select public_schema from pg_temp._smoke_constants) and table_name = 'scanner_opportunities'
           and column_name = 'idempotency_key'
     ) then
         raise exception 'scanner opportunity idempotency_key column is missing';
@@ -133,9 +150,9 @@ insert into public.scanner_opportunities (
     scan_id, pair_key, idempotency_key, local_exchange, global_exchange,
     local_symbol, global_symbol, quote_asset, eligibility_status, observed_at, payload
 ) values (
-    'schema-smoke-idempotency', 'indodax:btc_idr->okx:btc/usdt:usdt',
-    'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt', 'indodax', 'okx',
-    'btc_idr', 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":1}'::jsonb
+    (select idempotency_scan_id from pg_temp._smoke_constants), 'indodax:btc_idr->okx:btc/usdt:usdt',
+    (select idempotency_key from pg_temp._smoke_constants), (select local_exchange from pg_temp._smoke_constants), 'okx',
+    (select local_symbol from pg_temp._smoke_constants), 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":1}'::jsonb
 )
 on conflict (idempotency_key) do update
 set payload = excluded.payload;
@@ -144,9 +161,9 @@ insert into public.scanner_opportunities (
     scan_id, pair_key, idempotency_key, local_exchange, global_exchange,
     local_symbol, global_symbol, quote_asset, eligibility_status, observed_at, payload
 ) values (
-    'schema-smoke-idempotency', 'indodax:btc_idr->okx:btc/usdt:usdt',
-    'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt', 'indodax', 'okx',
-    'btc_idr', 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":2}'::jsonb
+    (select idempotency_scan_id from pg_temp._smoke_constants), 'indodax:btc_idr->okx:btc/usdt:usdt',
+    (select idempotency_key from pg_temp._smoke_constants), (select local_exchange from pg_temp._smoke_constants), 'okx',
+    (select local_symbol from pg_temp._smoke_constants), 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":2}'::jsonb
 )
 on conflict (idempotency_key) do update
 set payload = excluded.payload;
@@ -155,20 +172,20 @@ do $$
 begin
     if (
         select count(*) from public.scanner_opportunities
-        where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt'
+        where idempotency_key = (select idempotency_key from pg_temp._smoke_constants)
     ) <> 1 then
         raise exception 'scanner opportunity retry created duplicate rows';
     end if;
     if (
         select payload ->> 'attempt' from public.scanner_opportunities
-        where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt'
+        where idempotency_key = (select idempotency_key from pg_temp._smoke_constants)
     ) <> '2' then
         raise exception 'scanner opportunity upsert did not update the existing row';
     end if;
 end $$;
 
 delete from public.scanner_opportunities
-where idempotency_key = 'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt';
+where idempotency_key = (select idempotency_key from pg_temp._smoke_constants);
 
 -- Universal order registry: idempotent upsert on the deterministic local id and
 -- partial unique indexes that keep orphan rows (no ids) insertable.
@@ -177,9 +194,9 @@ insert into public.order_registry (
     exchange_name, market_type, leg, order_role, symbol, side, order_type,
     status, requested_qty, filled_qty, remaining_qty, recovery_status, is_mock
 ) values (
-    '11111111-1111-1111-1111-111111111111', 'smoke-entry-1', '9001',
-    'indodax:btc_idr', 'position:indodax:btc_idr', 'indodax', 'spot',
-    'spot_entry', 'ENTRY', 'btc_idr', 'buy', 'limit', 'open', 1, 0, 1, 'ADOPTED', true
+    (select order_local_id from pg_temp._smoke_constants), (select order_client_id from pg_temp._smoke_constants), '9001',
+    'indodax:btc_idr', 'position:indodax:btc_idr', (select local_exchange from pg_temp._smoke_constants), (select spot_market from pg_temp._smoke_constants),
+    'spot_entry', (select entry_role from pg_temp._smoke_constants), (select local_symbol from pg_temp._smoke_constants), (select buy_side from pg_temp._smoke_constants), (select limit_order_type from pg_temp._smoke_constants), 'open', 1, 0, 1, 'ADOPTED', true
 )
 on conflict (local_order_id) do update
 set status = excluded.status, filled_qty = excluded.filled_qty,
@@ -190,9 +207,9 @@ insert into public.order_registry (
     exchange_name, market_type, leg, order_role, symbol, side, order_type,
     status, requested_qty, filled_qty, remaining_qty, recovery_status, is_mock
 ) values (
-    '11111111-1111-1111-1111-111111111111', 'smoke-entry-1', '9001',
-    'indodax:btc_idr', 'position:indodax:btc_idr', 'indodax', 'spot',
-    'spot_entry', 'ENTRY', 'btc_idr', 'buy', 'limit', 'closed', 1, 1, 0, 'ADOPTED', true
+    (select order_local_id from pg_temp._smoke_constants), (select order_client_id from pg_temp._smoke_constants), '9001',
+    'indodax:btc_idr', 'position:indodax:btc_idr', (select local_exchange from pg_temp._smoke_constants), (select spot_market from pg_temp._smoke_constants),
+    'spot_entry', (select entry_role from pg_temp._smoke_constants), (select local_symbol from pg_temp._smoke_constants), (select buy_side from pg_temp._smoke_constants), (select limit_order_type from pg_temp._smoke_constants), 'closed', 1, 1, 0, 'ADOPTED', true
 )
 on conflict (local_order_id) do update
 set status = excluded.status, filled_qty = excluded.filled_qty,
@@ -200,10 +217,10 @@ set status = excluded.status, filled_qty = excluded.filled_qty,
 
 do $$
 begin
-    if (select count(*) from public.order_registry where client_order_id = 'smoke-entry-1') <> 1 then
+    if (select count(*) from public.order_registry where client_order_id = (select order_client_id from pg_temp._smoke_constants)) <> 1 then
         raise exception 'order registry upsert created a duplicate row';
     end if;
-    if (select status from public.order_registry where client_order_id = 'smoke-entry-1') <> 'closed' then
+    if (select status from public.order_registry where client_order_id = (select order_client_id from pg_temp._smoke_constants)) <> 'closed' then
         raise exception 'order registry upsert did not advance status';
     end if;
     -- Two orphans with no ids must both be insertable (partial unique indexes).
@@ -211,15 +228,17 @@ begin
         local_order_id, exchange_name, market_type, order_role, symbol, side,
         order_type, status, recovery_status, is_mock
     ) values
-        ('22222222-2222-2222-2222-222222222221', 'indodax', 'spot', 'ENTRY',
-         'eth_idr', 'buy', 'limit', 'open', 'ORPHAN_ORDER', false),
-        ('22222222-2222-2222-2222-222222222222', 'indodax', 'spot', 'ENTRY',
-         'eth_idr', 'buy', 'limit', 'open', 'ORPHAN_ORDER', false);
+        ('22222222-2222-2222-2222-222222222221', (select local_exchange from pg_temp._smoke_constants), (select spot_market from pg_temp._smoke_constants), (select entry_role from pg_temp._smoke_constants),
+         'eth_idr', (select buy_side from pg_temp._smoke_constants), (select limit_order_type from pg_temp._smoke_constants), 'open', 'ORPHAN_ORDER', false),
+        ('22222222-2222-2222-2222-222222222222', (select local_exchange from pg_temp._smoke_constants), (select spot_market from pg_temp._smoke_constants), (select entry_role from pg_temp._smoke_constants),
+         'eth_idr', (select buy_side from pg_temp._smoke_constants), (select limit_order_type from pg_temp._smoke_constants), 'open', 'ORPHAN_ORDER', false);
 end $$;
 
 delete from public.order_registry
-where client_order_id = 'smoke-entry-1'
+where client_order_id = (select order_client_id from pg_temp._smoke_constants)
    or local_order_id in (
         '22222222-2222-2222-2222-222222222221',
         '22222222-2222-2222-2222-222222222222'
    );
+
+drop table pg_temp._smoke_constants;
