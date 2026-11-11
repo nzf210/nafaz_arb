@@ -17,58 +17,65 @@ logger = logging.getLogger("executor.engine")
 class ForceCloseLegMixin:
     """Focused emergency close leg or lifecycle operations."""
 
+    @staticmethod
+    def _retry_position_short_quantity(
+        pair_key: str, position: dict
+    ) -> Optional[float]:
+        if not isinstance(position, dict):
+            return None
+        info = position.get("info") or {}
+        side = str(
+            position.get("side")
+            or position.get("positionSide")
+            or info.get("posSide")
+            or info.get("positionSide")
+            or ""
+        ).lower()
+        contracts = position.get("contracts")
+        raw_size = contracts
+        if raw_size is None:
+            raw_size = position.get("positionAmt", info.get("positionAmt"))
+        if raw_size is None:
+            logger.critical(
+                f"[Force Close] retry position size unavailable for {pair_key}"
+            )
+            return None
+        try:
+            signed_size = float(raw_size)
+            contract_size = float(position.get("contractSize") or 1.0)
+        except (TypeError, ValueError):
+            return None
+        if (
+            not math.isfinite(signed_size)
+            or not math.isfinite(contract_size)
+            or contract_size <= 0
+        ):
+            return None
+        if abs(signed_size) <= 1e-12:
+            return 0.0
+        if side and side != "short":
+            logger.critical(
+                f"[Force Close] refusing retry for {pair_key}: "
+                f"unexpected futures side={side}"
+            )
+            return None
+        if not side and (contracts is not None or signed_size >= 0):
+            logger.critical(
+                f"[Force Close] refusing retry for {pair_key}: "
+                "position side cannot be verified"
+            )
+            return None
+        multiplier = contract_size if contracts is not None else 1.0
+        return abs(signed_size) * multiplier
+
     def _retry_short_quantity(self, pair_key: str, positions) -> Optional[float]:
         """Return verified short quantity, or None for ambiguous venue data."""
         actual_short_qty = 0.0
         for position in positions:
-            if not isinstance(position, dict):
+            quantity = self._retry_position_short_quantity(pair_key, position)
+            if quantity is None:
                 return None
-            info = position.get("info") or {}
-            side = str(
-                position.get("side")
-                or position.get("positionSide")
-                or info.get("posSide")
-                or info.get("positionSide")
-                or ""
-            ).lower()
-            contracts = position.get("contracts")
-            raw_size = contracts
-            if raw_size is None:
-                raw_size = position.get("positionAmt", info.get("positionAmt"))
-            if raw_size is None:
-                logger.critical(
-                    f"[Force Close] retry position size unavailable for {pair_key}"
-                )
-                return None
-            try:
-                signed_size = float(raw_size)
-                contract_size = float(position.get("contractSize") or 1.0)
-            except (TypeError, ValueError):
-                return None
-            if (
-                not math.isfinite(signed_size)
-                or not math.isfinite(contract_size)
-                or contract_size <= 0
-            ):
-                return None
-            if abs(signed_size) <= 1e-12:
-                continue
-            if side:
-                if side != "short":
-                    logger.critical(
-                        f"[Force Close] refusing retry for {pair_key}: "
-                        f"unexpected futures side={side}"
-                    )
-                    return None
-            elif contracts is not None or signed_size >= 0:
-                logger.critical(
-                    f"[Force Close] refusing retry for {pair_key}: "
-                    "position side cannot be verified"
-                )
-                return None
-            actual_short_qty += abs(signed_size) * (
-                contract_size if contracts is not None else 1.0
-            )
+            actual_short_qty += quantity
         return actual_short_qty
 
     async def _retry_short_is_flat(self, pair_key: str, pos, global_sym: str) -> bool:
