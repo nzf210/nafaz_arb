@@ -331,8 +331,10 @@ class EntryOrderManagementMixin:
                 (live_global_idr - candidate) / live_global_idr
             ) * 100.0 if candidate > 0 else 0.0
             if candidate > 0 and live_spread_pct < values["min_spread"]:
-                candidate = 0.0
-                live_spread_pct = 0.0
+                # A quote below the required edge is not a safe replacement.
+                # Keep the existing order; do not cancel it merely because a
+                # fresh replacement would currently be uneconomic.
+                return None
             if (
                 candidate > 0
                 and abs(candidate - values["current_price"]) < values["tick"]
