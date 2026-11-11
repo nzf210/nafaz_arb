@@ -1834,7 +1834,7 @@ class ArbitrageEngine(
             "timestamp_ms": int(time.time() * 1000),
         }
         self._failure_reasons[pair_tag] = entry
-        self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, reason=reason, value=entry)
+        self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, reason=reason, value={**entry, "state": state.value})
         logger.critical(f"[{state.value}] {pair_tag}: {reason} - {message}")
         if reason != "HEDGE_FAILED":
             try:
@@ -1957,6 +1957,7 @@ class ArbitrageEngine(
     def clear_failure(self, pair_tag: str) -> None:
         """Clears a recorded failure so the pair can trade again."""
         if self._failure_reasons.pop(pair_tag, None) is not None:
+            self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, resolved=True)
             if self.states.get(pair_tag) == PositionState.FAILED:
                 self.states[pair_tag] = PositionState.IDLE
 
