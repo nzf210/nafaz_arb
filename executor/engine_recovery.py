@@ -168,170 +168,206 @@ class EngineRecoveryMixin:
         except Exception:
             logger.exception(f"[Recovery] failed to clear pending entry for {pair_tag}")
 
-    async def _recover_pending_entry_orders(self) -> None:
-        """
-        Reconciles persisted pending entry orders against the local exchange.
+    async def _migrate_pending_entry_key(
+        self, pair_tag: str, key: str, order_info: dict, symbol: str
+    ):
+        if (
+            "__" in pair_tag
+            or not order_info.get("local_exchange")
+            or not order_info.get("global_exchange")
+            or not order_info.get("global_symbol")
+        ):
+            return pair_tag, key
+        migrated_tag = ExchangePairKey.from_pair_info({
+            "local_exchange": order_info["local_exchange"],
+            "local_symbol": symbol,
+            "global_exchange": order_info["global_exchange"],
+            "global_symbol": order_info["global_symbol"],
+        }).tag.lower()
+        if migrated_tag == pair_tag:
+            return pair_tag, key
+        migrated_key = PENDING_ENTRY_KEY_PREFIX + migrated_tag
+        if await self.redis.exists(migrated_key):
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            self._mark_failed(
+                pair_tag,
+                "LEGACY_PENDING_KEY_COLLISION",
+                "Legacy pending entry cannot be migrated because its venue-qualified key already exists.",
+                detail={"legacy_key": key, "target_key": migrated_key},
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+            return None
+        await self.redis.set(migrated_key, json.dumps(order_info))
+        await self.redis.delete(key)
+        return migrated_tag, migrated_key
 
-        A crash between placing the limit buy and registering it in memory
-        forgets the resting order: it can fill with no hedge ever placed. On
-        startup, orders still open on the venue are re-adopted; records whose
-        order no longer exists are cleared.
-        """
+    def _retain_invalid_pending_entry(
+        self, pair_tag: str, order_info: dict, order_id: str, symbol: str
+    ) -> None:
+        self.pending_entry_orders[pair_tag] = order_info
+        self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+        self._mark_failed(
+            pair_tag,
+            "ENTRY_ORDER_RECORD_INVALID",
+            "Persisted pending entry is missing order_id or symbol; record retained.",
+            detail={"order_id": order_id, "symbol": symbol},
+            state=PositionState.RECONCILIATION_REQUIRED,
+        )
+        logger.critical(
+            f"[Recovery] malformed pending entry record for {pair_tag}; "
+            "Redis record retained for manual reconciliation"
+        )
+
+    def _retain_unknown_pending_entry(
+        self, pair_tag: str, order_info: dict, order_id: str, symbol: str
+    ) -> None:
+        self.pending_entry_orders[pair_tag] = order_info
+        self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+        self._mark_failed(
+            pair_tag,
+            "ENTRY_ORDER_STATE_UNKNOWN",
+            f"Cannot verify local order {order_id}; pending record retained.",
+            detail={"order_id": order_id, "symbol": symbol},
+            state=PositionState.RECONCILIATION_REQUIRED,
+        )
+        logger.critical(
+            f"[Recovery] cannot verify venue state of order {order_id} "
+            f"({pair_tag}) - MANUAL CHECK REQUIRED"
+        )
+
+    async def _adopt_open_pending_entry(
+        self, pair_tag: str, order_info: dict, order_id: str, filled: float
+    ) -> None:
+        order_info["filled"] = float(filled or 0.0)
+        self.pending_entry_orders[pair_tag] = order_info
+        self.states[pair_tag] = (
+            PositionState.ENTRY_PARTIAL
+            if order_info["filled"] > 0
+            else PositionState.ENTRY_PENDING
+        )
+        await self._persist_pending_entry(pair_tag, order_info)
+        logger.warning(
+            f"[Recovery] re-adopted pending entry order {order_id} "
+            f"for {pair_tag} (filled={filled})"
+        )
+
+    async def _reconcile_terminal_pending_entry(
+        self, pair_tag: str, order_info: dict, order_id: str,
+        symbol: str, status: str,
+    ) -> None:
+        token = None
+        try:
+            if not getattr(self.config, "mock_mode", False):
+                token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
+            self.pending_entry_orders[pair_tag] = order_info
+            self.states[pair_tag] = PositionState.ENTRY_PENDING
+            if not await self._reconcile_pending_entry_hedges(pair_tag, order_info):
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                self._mark_failed(
+                    pair_tag,
+                    "HEDGE_RECOVERY_UNVERIFIED",
+                    "A previously submitted futures hedge could not be verified; "
+                    "the spot fill was retained without submitting a duplicate hedge.",
+                    detail={"order_id": order_id, "symbol": symbol},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                return
+            await self._handle_entry_fills(
+                pair_tag,
+                order_info,
+                {"id": order_id, "status": status, "filled": order_info["filled"]},
+            )
+            if self.states.get(pair_tag) in (
+                PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+            ):
+                logger.critical(
+                    f"[Recovery] fill reconciliation failed for {pair_tag}; "
+                    "pending record retained"
+                )
+                return
+            await self._finalize_entry_order(pair_tag, status)
+            logger.info(
+                f"[Recovery] reconciled terminal order {order_id} for "
+                f"{pair_tag} (status={status}, filled={order_info['filled']})"
+            )
+        finally:
+            if token is not None:
+                self._reset_pair_client(token)
+
+    def _retain_unsupported_pending_entry(
+        self, pair_tag: str, order_info: dict, order_id: str,
+        symbol: str, status: str,
+    ) -> None:
+        self.pending_entry_orders[pair_tag] = order_info
+        self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+        self._mark_failed(
+            pair_tag,
+            "ENTRY_ORDER_STATE_UNSUPPORTED",
+            f"Unsupported exchange order status '{status}' for {order_id}.",
+            detail={"order_id": order_id, "symbol": symbol, "status": status},
+            state=PositionState.RECONCILIATION_REQUIRED,
+        )
+        logger.critical(
+            f"[Recovery] unsupported order status '{status}' for {order_id}; "
+            "pending record retained"
+        )
+
+    async def _recover_pending_entry_record(self, key: str) -> None:
+        pair_tag = key.split(PENDING_ENTRY_KEY_PREFIX, 1)[-1]
+        raw = await self.redis.get(key)
+        if not raw:
+            return
+        order_info = json.loads(raw)
+        order_id = str(order_info.get("order_id", ""))
+        symbol = str(order_info.get("symbol", ""))
+        migrated = await self._migrate_pending_entry_key(
+            pair_tag, key, order_info, symbol
+        )
+        if migrated is None:
+            return
+        pair_tag, _ = migrated
+        self.pending_entry_orders[pair_tag] = order_info
+        if not order_id or not symbol:
+            self._retain_invalid_pending_entry(pair_tag, order_info, order_id, symbol)
+            return
+
+        status, filled = await self._resolve_venue_order_state(
+            order_id, symbol, pair_tag
+        )
+        if status == "unknown":
+            self._retain_unknown_pending_entry(
+                pair_tag, order_info, order_id, symbol
+            )
+            return
+        if status == "open":
+            await self._adopt_open_pending_entry(
+                pair_tag, order_info, order_id, filled
+            )
+            return
+        if status in ("closed", "canceled", "cancelled", "rejected", "expired"):
+            order_info["filled"] = float(filled or 0.0)
+            await self._reconcile_terminal_pending_entry(
+                pair_tag, order_info, order_id, symbol, status
+            )
+            return
+        self._retain_unsupported_pending_entry(
+            pair_tag, order_info, order_id, symbol, status
+        )
+
+    async def _recover_pending_entry_orders(self) -> None:
+        """Restore persisted pending entries against their exact local venues."""
         try:
             keys = await self.redis.keys(PENDING_ENTRY_KEY_PREFIX + "*")
         except Exception:
             logger.exception("[Recovery] failed to scan arb:pending_entry:* keys")
             return
         for key in keys or []:
-            pair_tag = key.split(PENDING_ENTRY_KEY_PREFIX, 1)[-1]
             try:
-                raw = await self.redis.get(key)
-                if not raw:
-                    continue
-                order_info = json.loads(raw)
-                order_id = str(order_info.get("order_id", ""))
-                symbol = str(order_info.get("symbol", ""))
-                if (
-                    "__" not in pair_tag
-                    and order_info.get("local_exchange")
-                    and order_info.get("global_exchange")
-                    and order_info.get("global_symbol")
-                ):
-                    migrated_tag = ExchangePairKey.from_pair_info({
-                        "local_exchange": order_info["local_exchange"],
-                        "local_symbol": symbol,
-                        "global_exchange": order_info["global_exchange"],
-                        "global_symbol": order_info["global_symbol"],
-                    }).tag.lower()
-                    if migrated_tag != pair_tag:
-                        migrated_key = PENDING_ENTRY_KEY_PREFIX + migrated_tag
-                        if await self.redis.exists(migrated_key):
-                            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                            self._mark_failed(
-                                pair_tag,
-                                "LEGACY_PENDING_KEY_COLLISION",
-                                "Legacy pending entry cannot be migrated because its venue-qualified key already exists.",
-                                detail={"legacy_key": key, "target_key": migrated_key},
-                                state=PositionState.RECONCILIATION_REQUIRED,
-                            )
-                            continue
-                        await self.redis.set(migrated_key, json.dumps(order_info))
-                        await self.redis.delete(key)
-                        pair_tag, key = migrated_tag, migrated_key
-                self.pending_entry_orders[pair_tag] = order_info
-                if not order_id or not symbol:
-                    self.pending_entry_orders[pair_tag] = order_info
-                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                    self._mark_failed(
-                        pair_tag,
-                        "ENTRY_ORDER_RECORD_INVALID",
-                        "Persisted pending entry is missing order_id or symbol; record retained.",
-                        detail={"order_id": order_id, "symbol": symbol},
-                        state=PositionState.RECONCILIATION_REQUIRED,
-                    )
-                    logger.critical(
-                        f"[Recovery] malformed pending entry record for {pair_tag}; "
-                        "Redis record retained for manual reconciliation"
-                    )
-                    continue
-                status, filled = await self._resolve_venue_order_state(order_id, symbol, pair_tag)
-                terminal_statuses = ("closed", "canceled", "cancelled", "rejected", "expired")
-                if status == "unknown":
-                    # Missing/ambiguous venue state is not proof that an order is gone.
-                    # Keep both durable and in-memory records so force-close cannot
-                    # silently skip an order whose venue state is unknown.
-                    self.pending_entry_orders[pair_tag] = order_info
-                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                    self._mark_failed(
-                        pair_tag,
-                        "ENTRY_ORDER_STATE_UNKNOWN",
-                        f"Cannot verify local order {order_id}; pending record retained.",
-                        detail={"order_id": order_id, "symbol": symbol},
-                        state=PositionState.RECONCILIATION_REQUIRED,
-                    )
-                    logger.critical(
-                        f"[Recovery] cannot verify venue state of order {order_id} "
-                        f"({pair_tag}) - MANUAL CHECK REQUIRED"
-                    )
-                    continue
-
-                order_info["filled"] = float(filled or 0.0)
-                if status == "open":
-                    self.pending_entry_orders[pair_tag] = order_info
-                    self.states[pair_tag] = (
-                        PositionState.ENTRY_PARTIAL
-                        if order_info["filled"] > 0
-                        else PositionState.ENTRY_PENDING
-                    )
-                    # Keep the Redis key: in-memory adoption alone is not restart-safe.
-                    await self._persist_pending_entry(pair_tag, order_info)
-                    logger.warning(
-                        f"[Recovery] re-adopted pending entry order {order_id} "
-                        f"for {pair_tag} (filled={filled})"
-                    )
-                    continue
-
-                if status in terminal_statuses:
-                    # Hedge any final fill on the exact venue before releasing reserves.
-                    token = None
-                    try:
-                        if not getattr(self.config, "mock_mode", False):
-                            token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
-                        self.pending_entry_orders[pair_tag] = order_info
-                        self.states[pair_tag] = PositionState.ENTRY_PENDING
-                        # Resolve any already-submitted futures leg before
-                        # the spot fill handler considers placing another hedge.
-                        # This prevents a restart between futures fill and spot
-                        # watermark persistence from doubling the short position.
-                        if not await self._reconcile_pending_entry_hedges(pair_tag, order_info):
-                            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                            self._mark_failed(
-                                pair_tag,
-                                "HEDGE_RECOVERY_UNVERIFIED",
-                                "A previously submitted futures hedge could not be verified; "
-                                "the spot fill was retained without submitting a duplicate hedge.",
-                                detail={"order_id": order_id, "symbol": symbol},
-                                state=PositionState.RECONCILIATION_REQUIRED,
-                            )
-                            continue
-                        await self._handle_entry_fills(
-                            pair_tag,
-                            order_info,
-                            {"id": order_id, "status": status, "filled": order_info["filled"]},
-                        )
-                        if self.states.get(pair_tag) in (
-                            PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
-                        ):
-                            logger.critical(
-                                f"[Recovery] fill reconciliation failed for {pair_tag}; "
-                                "pending record retained"
-                            )
-                            continue
-                        await self._finalize_entry_order(pair_tag, status)
-                        logger.info(
-                            f"[Recovery] reconciled terminal order {order_id} for "
-                            f"{pair_tag} (status={status}, filled={filled})"
-                        )
-                    finally:
-                        if token is not None:
-                            self._reset_pair_client(token)
-                    continue
-
-                self.pending_entry_orders[pair_tag] = order_info
-                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                self._mark_failed(
-                    pair_tag,
-                    "ENTRY_ORDER_STATE_UNSUPPORTED",
-                    f"Unsupported exchange order status '{status}' for {order_id}.",
-                    detail={"order_id": order_id, "symbol": symbol, "status": status},
-                    state=PositionState.RECONCILIATION_REQUIRED,
-                )
-                logger.critical(
-                    f"[Recovery] unsupported order status '{status}' for {order_id}; "
-                    "pending record retained"
-                )
+                await self._recover_pending_entry_record(key)
             except Exception:
-                logger.exception(f"[Recovery] failed to restore pending entry from {key}")
+                logger.exception(
+                    f"[Recovery] failed to restore pending entry from {key}"
+                )
 
     async def _resolve_venue_order_state(
         self, order_id: str, symbol: str, pair_tag: Optional[str] = None
