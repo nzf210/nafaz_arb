@@ -725,6 +725,7 @@ class SupabaseWriter:
                     "select": select,
                     "is_mock": "eq.false",
                     "updated_at": f"gte.{cutoff}",
+                    "filled_qty": "gt.0",
                     "order": "updated_at.desc",
                     "limit": str(max(1, min(int(limit), 10000))),
                 }
