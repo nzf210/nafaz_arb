@@ -1,5 +1,6 @@
 """Entry sizing and dual-leg funding checks."""
 
+import json
 from decimal import Decimal
 
 from executor.models import PositionState
