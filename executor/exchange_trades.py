@@ -1,9 +1,13 @@
 """exchange trade methods for the exchange facade."""
 
+import asyncio
 import math
 import time
 from typing import Optional, Any
 
+import ccxt.async_support as ccxt
+
+from executor.indodax_v2 import IndodaxTAPIv2
 from executor.quantity import AmountSpec, order_amount_to_base
 from executor.exchange_common import venue_client_order_id
 
