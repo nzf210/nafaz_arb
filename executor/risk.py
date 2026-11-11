@@ -105,6 +105,8 @@ class RiskMixin:
                     self.states[pair_key] = PositionState(restored_state)
                 except ValueError:
                     self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
+                if self.states[pair_key] == PositionState.RECONCILIATION_REQUIRED:
+                    self._recovery_scope_halts[pair_key] = reason or "restored unresolved position failure"
         # The immutable verified PnL ledger is authoritative; the mutable
         # accumulator above is only a fast snapshot/cache.
         self._daily_realized_loss_usdt = await writer.fetch_daily_realized_loss_usdt(
