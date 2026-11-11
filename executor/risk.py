@@ -85,7 +85,14 @@ class RiskMixin:
                     self._loss_day = self._utc_day()
                     self._daily_realized_loss_usdt = 0.0
             elif kind == "exchange_halt" and scope == "exchange" and exchange:
-                self._exchange_halted[exchange] = reason
+                if isinstance(value, dict) and value.get("source") == "rate_limit_cooldown":
+                    remaining = float(value.get("expires_at", 0.0)) - time.time()
+                    if remaining > 0:
+                        self._pause_venue_for_cooldown(exchange, remaining)
+                    else:
+                        self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, resolved=True)
+                else:
+                    self._exchange_halted[exchange] = reason
             elif kind == "consecutive_order_failures" and scope == "exchange" and exchange:
                 self._consecutive_order_failures[exchange] = max(0, int((value or {}).get("count", 0)))
             elif kind == "reconciliation_halt":
@@ -207,7 +214,7 @@ class RiskMixin:
             return
         seconds = max(1.0, float(seconds))
         self._exchange_halted[exchange] = f"rate limited ({seconds:.0f}s cooldown)"
-        self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, reason=self._exchange_halted[exchange], value={"source": "rate_limit_cooldown", "seconds": seconds})
+        self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, reason=self._exchange_halted[exchange], value={"source": "rate_limit_cooldown", "seconds": seconds, "expires_at": time.time() + seconds})
         token = self._venue_cooldown_epoch = getattr(self, "_venue_cooldown_epoch", 0) + 1
 
         async def _clear_after_cooldown():
