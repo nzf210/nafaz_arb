@@ -55,24 +55,28 @@ class ExchangeTradeMixin:
             cursor = window_end + 1
         return raw_trades
 
+    @staticmethod
+    async def _request_ccxt_trade_history(
+        exchange, fetcher, resolved: str, since: Optional[int],
+        order_id: Optional[str],
+    ) -> list:
+        order_trade_fetcher = getattr(exchange, "fetch_order_trades", None)
+        if not callable(order_trade_fetcher) or not order_id:
+            return await fetcher(resolved, int(since or 0) or None, 1000)
+        try:
+            return await order_trade_fetcher(
+                str(order_id), resolved, int(since or 0) or None, 1000
+            )
+        except (NotImplementedError, ccxt.NotSupported):
+            return await fetcher(resolved, int(since or 0) or None, 1000)
+
     async def _fetch_ccxt_trade_history(
         self, exchange, fetcher, resolved: str, since: Optional[int],
         until: Optional[int], order_id: Optional[str],
     ) -> list:
-        order_trade_fetcher = getattr(exchange, "fetch_order_trades", None)
-        if callable(order_trade_fetcher) and order_id:
-            try:
-                raw_trades = await order_trade_fetcher(
-                    str(order_id), resolved, int(since or 0) or None, 1000
-                )
-            except (NotImplementedError, ccxt.NotSupported):
-                raw_trades = await fetcher(
-                    resolved, int(since or 0) or None, 1000
-                )
-        else:
-            raw_trades = await fetcher(
-                resolved, int(since or 0) or None, 1000
-            )
+        raw_trades = await self._request_ccxt_trade_history(
+            exchange, fetcher, resolved, since, order_id
+        )
         if not isinstance(raw_trades, list):
             raise ValueError("exchange returned malformed trade history")
         if len(raw_trades) >= 1000:
