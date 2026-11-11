@@ -211,6 +211,14 @@ class UniversalOrderRegistry:
                 }
             )
             durable_ok = write_result is not False
+        # When Supabase is enabled it is the durable system of record, not
+        # an optional mirror. Redis may be flushed, evicted, or rebuilt; a
+        # successful Redis write must never hide a failed local SQLite journal.
+        if callable(writer) and durable_enabled and not durable_ok:
+            raise RuntimeError(
+                f"order {record.local_order_id} was cached in Redis but could not "
+                "be committed to the durable Supabase outbox"
+            )
         if not redis_ok and not durable_ok:
             raise RuntimeError(
                 f"order {record.local_order_id} could not be persisted to Redis or durable storage"
