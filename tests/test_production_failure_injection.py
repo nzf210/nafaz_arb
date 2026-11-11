@@ -168,6 +168,6 @@ async def test_cancelled_partial_fill_is_hedged_once_across_repeated_restarts(fa
 
     assert len(client.global_short_sells) == 1
     assert client.global_short_sells[0]["amount"] == pytest.approx(0.004)
-    recovered = await first.order_registry.load(record.local_order_id)
+    recovered = await UniversalOrderRegistry(fake_redis).load(record.local_order_id)
     assert recovered.filled_quantity == pytest.approx(0.004)
     assert recovered.hedged_quantity == pytest.approx(0.004)
