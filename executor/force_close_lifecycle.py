@@ -31,7 +31,7 @@ class ForceCloseLifecycleMixin:
     """Focused emergency close leg or lifecycle operations."""
 
     @staticmethod
-    def _parse_force_close_directive_pair_key(message_data: str):
+    def _parse_force_close_pair_key(message_data: str):
         """Compatibility alias for the module-level directive parser."""
         return _parse_force_close_directive_pair_key(message_data)
 
