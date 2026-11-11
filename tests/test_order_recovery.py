@@ -1390,3 +1390,96 @@ async def test_unresolved_client_id_intent_stays_pending_and_entry_halted(fake_r
     assert engine._entry_blocked is True
     assert PAIR_TAG in engine._recovery_scope_halts
     assert client.order_counter == submissions_before
+
+@pytest.mark.asyncio
+async def test_futures_hedge_timeout_recovers_exact_order_by_client_id(fake_redis):
+    """A lost market-order acknowledgement is resolved without a second submit."""
+    client = MockExchangeClient()
+    submit_calls = []
+    lookup_calls = []
+
+    async def submit_short(symbol, amount, **kwargs):
+        submit_calls.append(kwargs["client_order_id"])
+        raise TimeoutError("response lost after exchange accepted the hedge")
+
+    async def lookup_short(client_order_id, symbol, amount_spec=None):
+        lookup_calls.append(client_order_id)
+        return {
+            "id": "902",
+            "clientOrderId": client_order_id,
+            "symbol": symbol,
+            "side": "sell",
+            "type": "market",
+            "amount": 0.01,
+            "filled": 0.01,
+            "remaining": 0.0,
+            "average": 65_000.0,
+            "status": "closed",
+        }
+
+    client.open_global_short_market = submit_short
+    client.fetch_global_order_by_client_id = lookup_short
+    engine = await _build(fake_redis, client)
+    order_info = {
+        "order_id": "501",
+        "client_order_id": "btc-idr-entry-7",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "global_symbol": "BTCUSDT",
+        "global_amount_spec": GLOBAL_SPEC,
+    }
+
+    hedge_id, _context, order, filled = await engine._submit_entry_hedge_order(
+        PAIR_TAG, order_info, "BTCUSDT", 0.01, 65_000.0
+    )
+
+    assert len(submit_calls) == 1
+    assert lookup_calls == [hedge_id]
+    assert order["id"] == "902"
+    assert filled == pytest.approx(0.01)
+    assert order_info["pending_hedge_client_order_id"] == hedge_id
+
+
+@pytest.mark.asyncio
+async def test_unresolved_futures_acknowledgement_blocks_without_spot_rollback(fake_redis):
+    """An inconclusive hedge lookup must not trigger a potentially unsafe spot sell."""
+    client = MockExchangeClient()
+    submit_calls = []
+    rollback_calls = []
+
+    async def submit_short(symbol, amount, **kwargs):
+        submit_calls.append(kwargs["client_order_id"])
+        raise TimeoutError("futures response lost")
+
+    async def missing_short(client_order_id, symbol, amount_spec=None):
+        return None
+
+    async def no_slippage_check(*_args, **_kwargs):
+        return None
+
+    async def rollback(*_args, **_kwargs):
+        rollback_calls.append(True)
+
+    client.open_global_short_market = submit_short
+    client.fetch_global_order_by_client_id = missing_short
+    engine = await _build(fake_redis, client)
+    engine._assert_hedge_slippage_within_limit = no_slippage_check
+    engine._rollback_hedge_failure = rollback
+    order_info = {
+        "order_id": "501",
+        "client_order_id": "btc-idr-entry-7",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "global_symbol": "BTCUSDT",
+        "global_amount_spec": GLOBAL_SPEC,
+    }
+
+    await engine._execute_entry_hedge(
+        PAIR_TAG, order_info, 0.01, 1_000_000_000.0, 16_000.0
+    )
+
+    assert len(submit_calls) == 1
+    assert rollback_calls == []
+    assert engine._entry_blocked is True
+    assert engine.states[PAIR_TAG] == PositionState.RECONCILIATION_REQUIRED
+    assert await engine.order_registry.pending_recovery_ids()
