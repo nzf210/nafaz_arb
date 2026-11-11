@@ -1324,3 +1324,69 @@ async def test_reconciliation_required_entry_cannot_submit_duplicate_hedge(fake_
     await engine._process_pending_entry_bound(PAIR_TAG, order_info)
 
     assert client.global_short_sells == []
+
+@pytest.mark.asyncio
+async def test_unacknowledged_spot_intent_is_recovered_by_client_id(fake_redis):
+    """A crash after venue acceptance but before the exchange id is saved is recoverable."""
+    client = MockExchangeClient()
+    venue_order = _venue_order(
+        id="901", clientOrderId="btc-idr-entry-ack-1", filled=0.004,
+        status="open",
+    )
+    lookups = []
+
+    async def fetch_local_order_by_client_id(client_order_id, symbol, amount_spec=None):
+        lookups.append((client_order_id, symbol))
+        assert client_order_id == "btc-idr-entry-ack-1"
+        return dict(venue_order)
+
+    client.fetch_local_order_by_client_id = fetch_local_order_by_client_id
+    engine = await _build(fake_redis, client)
+    intent = _entry_record(
+        client_order_id="btc-idr-entry-ack-1",
+        exchange_order_id="",
+        status="submitting",
+        filled_quantity=0.0,
+    )
+    await engine.order_registry.register(intent)
+
+    await engine._run_order_recovery()
+
+    recovered = await engine.order_registry.find_by_client_id(
+        "indodax", "btc-idr-entry-ack-1"
+    )
+    assert lookups == [("btc-idr-entry-ack-1", "btc_idr")]
+    assert recovered.exchange_order_id == "901"
+    assert recovered.filled_quantity == pytest.approx(0.004)
+    assert engine.pending_entry_orders[PAIR_TAG]["order_id"] == "901"
+    assert await engine.order_registry.pending_recovery_ids() == {}
+
+
+@pytest.mark.asyncio
+async def test_unresolved_client_id_intent_stays_pending_and_entry_halted(fake_redis):
+    """An inconclusive lookup must never trigger a second exchange submission."""
+    client = MockExchangeClient()
+    submissions_before = client.order_counter
+    lookups = []
+
+    async def missing_order(client_order_id, symbol, amount_spec=None):
+        lookups.append(client_order_id)
+        return None
+
+    client.fetch_local_order_by_client_id = missing_order
+    engine = await _build(fake_redis, client)
+    intent = _entry_record(
+        client_order_id="btc-idr-entry-ack-2",
+        exchange_order_id="",
+        status="submitting",
+    )
+    await engine.order_registry.register(intent)
+
+    await engine._run_order_recovery()
+
+    pending = await engine.order_registry.pending_recovery_ids()
+    assert lookups == ["btc-idr-entry-ack-2"]
+    assert intent.local_order_id in pending
+    assert engine._entry_blocked is True
+    assert PAIR_TAG in engine._recovery_scope_halts
+    assert client.order_counter == submissions_before
