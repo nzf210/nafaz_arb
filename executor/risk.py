@@ -34,11 +34,15 @@ class RiskMixin:
                 self._risk_persistence_failed = True
                 logger.critical("LIVE entry blocked: durable risk-state storage is unavailable")
             return False
-        ok = writer.risk_state(
-            state_type=state_type, scope=scope, exchange=exchange,
-            pair_key=pair_key, reason=reason, value=value, resolved=resolved,
-            is_mock=bool(getattr(self.config, "mock_mode", False)),
-        )
+        try:
+            ok = writer.risk_state(
+                state_type=state_type, scope=scope, exchange=exchange,
+                pair_key=pair_key, reason=reason, value=value, resolved=resolved,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+            )
+        except Exception:
+            logger.exception("Durable risk-state write raised for %s", state_type)
+            ok = False
         if not ok and not getattr(self.config, "mock_mode", False):
             try:
                 writer.mark_risk_persistence_failure()
