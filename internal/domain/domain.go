@@ -2,6 +2,15 @@ package domain
 
 import "time"
 
+// AmountSpec normalizes venue quantity rules. Step and Min are expressed in
+// the venue's order amount unit; BasePerUnit converts that unit to base asset.
+type AmountSpec struct {
+	Unit        string  `json:"unit"` // BASE for spot/base-amount markets; CONTRACT for derivatives.
+	Step        float64 `json:"step"`
+	Min         float64 `json:"min"`
+	BasePerUnit float64 `json:"base_per_unit"`
+}
+
 type Market struct {
 	Exchange     string  `json:"exchange"`
 	Symbol       string  `json:"symbol"`
@@ -11,8 +20,9 @@ type Market struct {
 	Active       bool    `json:"active"`
 	ContractSize float64 `json:"contract_size,omitempty"`
 	TickSize     float64 `json:"tick_size,omitempty"`
-	LotSize      float64 `json:"lot_size,omitempty"`
+	LotSize      float64 `json:"lot_size,omitempty"` // Minimum valid quantity increment.
 	MinOrder     float64 `json:"min_order,omitempty"`
+	AmountSpec   *AmountSpec `json:"amount_spec,omitempty"`
 }
 
 type PriceLevel struct {
@@ -74,6 +84,8 @@ type Opportunity struct {
 	NetROIPct              float64   `json:"net_roi_pct"`
 	ProfitabilityStatus    string    `json:"profitability_status"`
 	TradingEligible        bool      `json:"trading_eligible"`
+	// ExecutionSignalStatus describes signal delivery independently of strategy eligibility.
+	ExecutionSignalStatus  string    `json:"execution_signal_status,omitempty"`
 	ExclusionReasons       []string  `json:"exclusion_reasons,omitempty"`
 	LastScannedAt          time.Time `json:"last_scanned_at"`
 	SpotTargetLimitPrice   float64   `json:"spot_target_limit_price,omitempty"`
@@ -146,14 +158,17 @@ type FundingMetrics struct {
 }
 
 type PairInfo struct {
-	LocalExchange  string  `json:"local_exchange"`
-	GlobalExchange string  `json:"global_exchange"`
-	LocalSymbol    string  `json:"local_symbol"`
-	GlobalSymbol   string  `json:"global_symbol"`
-	BaseAsset      string  `json:"base_asset"`
-	QuoteAsset     string  `json:"quote_asset"`
-	LocalPriceTick float64 `json:"local_price_tick"`
-	LocalLotSize   float64 `json:"local_lot_size,omitempty"`
+	LocalExchange    string      `json:"local_exchange"`
+	GlobalExchange   string      `json:"global_exchange"`
+	LocalSymbol      string      `json:"local_symbol"`
+	GlobalSymbol     string      `json:"global_symbol"`
+	BaseAsset        string      `json:"base_asset"`
+	QuoteAsset       string      `json:"quote_asset"`
+	LocalPriceTick   float64     `json:"local_price_tick"`
+	LocalLotSize     float64     `json:"local_lot_size,omitempty"` // Deprecated; use LocalAmountSpec.
+	LocalAmountSpec  *AmountSpec `json:"local_amount_spec,omitempty"`
+	GlobalAmountSpec *AmountSpec `json:"global_amount_spec,omitempty"`
+	GlobalQuoteAsset string      `json:"global_quote_asset,omitempty"`
 }
 
 type ExecutionDirectives struct {
@@ -168,6 +183,7 @@ type ExecutionDirectives struct {
 	// scan that published it. Lets the executor distinguish a fresh quote from
 	// a replayed Redis key.
 	ScannerValidated                bool    `json:"scanner_validated"`
+	EstimatedNetProfitUSDT           float64 `json:"estimated_net_profit_usdt"`
 }
 
 type ExecutorPayload struct {
@@ -208,4 +224,3 @@ type BalancesRecord struct {
 	FuturesLocked    float64 `json:"futures_locked"`
 	TotalEquity      float64 `json:"total_equity"`
 }
-

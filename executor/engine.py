@@ -1,4 +1,6 @@
 import asyncio
+from contextvars import ContextVar
+from decimal import Decimal, ROUND_DOWN
 import json
 import logging
 import math
@@ -12,8 +14,10 @@ from executor.models import (
     ActivePosition,
 )
 from executor.exchange_client import ExchangeClient
+from executor.pair_registry import ExchangePairKey, PairClientRegistry
 from executor.config import ExecutorConfig
 from executor.private_stream import PrivateStreamCache
+from executor.quantity import quantize_base_quantity
 
 # Module-level helpers live in executor.helpers; re-exported here so existing
 # callers (tests, simulator, main) keep importing them from executor.engine.
@@ -68,7 +72,9 @@ class ArbitrageEngine(
         redis_client: Optional[aioredis.Redis] = None,
     ):
         self.config = config
-        self.client = client
+        self._base_client = client
+        self._client_context: ContextVar[Any] = ContextVar(f"executor_client_{id(self)}", default=None)
+        self._pair_client_registry = PairClientRegistry()
         self.redis = redis_client
         self._running = False
         self.ARB_TRADE_EVENTS = "arb:trade_events"
@@ -122,10 +128,48 @@ class ArbitrageEngine(
 
         # Tasks
         self._tasks = []
+        self._signal_queue_event = asyncio.Event()
 
         # Best-effort audit persistence. Writes are queued and flushed by a
         # background task, so an unreachable database can never delay a hedge.
         self.supabase = SupabaseWriter(getattr(config, "supabase", None))
+
+    @property
+    def client(self):
+        """Task-local exchange facade; concurrent pairs never switch shared clients."""
+        return self._client_context.get() or self._base_client
+
+    @client.setter
+    def client(self, value):
+        self._base_client = value
+
+    def _bind_pair_client(self, pair_info):
+        key = ExchangePairKey.from_pair_info(pair_info)
+        if getattr(self.config, "mock_mode", False):
+            local_name = getattr(self._base_client, "local_name", None)
+            global_name = getattr(self._base_client, "global_name", None)
+            if local_name is not None and global_name is not None:
+                configured = (str(local_name).lower(), str(global_name).lower())
+                if configured != (key.local_exchange, key.global_exchange):
+                    raise LookupError("paper client is configured for a different exchange pair")
+            return self._client_context.set(self._base_client)
+        resolver = getattr(self._base_client, "for_pair", None)
+        if not callable(resolver):
+            configured = (
+                str(getattr(self.config, "local_exchange_name", "")).lower(),
+                str(getattr(self.config, "global_exchange_name", "")).lower(),
+            )
+            if configured != (key.local_exchange, key.global_exchange):
+                raise LookupError("client does not support pair-bound routing for this venue")
+            if not self._pair_client_registry.contains(key):
+                self._pair_client_registry.register(key, self._base_client)
+            return self._client_context.set(self._pair_client_registry.resolve(key))
+        if not self._pair_client_registry.contains(key):
+            self._pair_client_registry.register(key, resolver(pair_info))
+        return self._client_context.set(self._pair_client_registry.resolve(key))
+
+    def _reset_pair_client(self, token) -> None:
+        self._client_context.reset(token)
 
     async def initialize(self):
         """Initializes Redis connection and restores in-flight state from Redis."""
@@ -157,8 +201,9 @@ class ArbitrageEngine(
             )
             groups = {}
             for pair_tag, pos in self.active_positions.items():
-                groups.setdefault(self._resolve_global_symbol(pos.symbol), []).append((pair_tag, pos))
-            for symbol, items in groups.items():
+                symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
+                groups.setdefault((pos.global_exchange, symbol), []).append((pair_tag, pos))
+            for (_, symbol), items in groups.items():
                 for pair_tag, pos in items:
                     pos.state = "RECONCILIATION_REQUIRED"
                     self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
@@ -176,12 +221,14 @@ class ArbitrageEngine(
 
         groups = {}
         for pair_tag, pos in self.active_positions.items():
-            global_symbol = self._resolve_global_symbol(pos.symbol)
-            groups.setdefault(global_symbol, []).append((pair_tag, pos))
+            global_symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
+            groups.setdefault((pos.global_exchange, global_symbol), []).append((pair_tag, pos))
 
-        for global_symbol, items in groups.items():
+        for (global_exchange, global_symbol), items in groups.items():
             expected_qty = sum(pos.qty for _, pos in items)
+            token = None
             try:
+                token = self._bind_pair_client(self._pair_info_for_tag(items[0][0]))
                 positions = await self.client.fetch_positions(global_symbol)
                 if positions is None:
                     raise ValueError("fetch_positions returned None")
@@ -235,6 +282,9 @@ class ArbitrageEngine(
                     f"futures quantity mismatch after restart: expected={expected_qty}, "
                     f"exchange={actual_short_qty}"
                 )
+            finally:
+                if token is not None:
+                    self._reset_pair_client(token)
 
             logger.critical(
                 f"[Recovery] {global_symbol}: {reason}; restored positions blocked"
@@ -300,6 +350,34 @@ class ArbitrageEngine(
                 order_info = json.loads(raw)
                 order_id = str(order_info.get("order_id", ""))
                 symbol = str(order_info.get("symbol", ""))
+                if (
+                    "__" not in pair_tag
+                    and order_info.get("local_exchange")
+                    and order_info.get("global_exchange")
+                    and order_info.get("global_symbol")
+                ):
+                    migrated_tag = ExchangePairKey.from_pair_info({
+                        "local_exchange": order_info["local_exchange"],
+                        "local_symbol": symbol,
+                        "global_exchange": order_info["global_exchange"],
+                        "global_symbol": order_info["global_symbol"],
+                    }).tag.lower()
+                    if migrated_tag != pair_tag:
+                        migrated_key = PENDING_ENTRY_KEY_PREFIX + migrated_tag
+                        if await self.redis.exists(migrated_key):
+                            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                            self._mark_failed(
+                                pair_tag,
+                                "LEGACY_PENDING_KEY_COLLISION",
+                                "Legacy pending entry cannot be migrated because its venue-qualified key already exists.",
+                                detail={"legacy_key": key, "target_key": migrated_key},
+                                state=PositionState.RECONCILIATION_REQUIRED,
+                            )
+                            continue
+                        await self.redis.set(migrated_key, json.dumps(order_info))
+                        await self.redis.delete(key)
+                        pair_tag, key = migrated_tag, migrated_key
+                self.pending_entry_orders[pair_tag] = order_info
                 if not order_id or not symbol:
                     self.pending_entry_orders[pair_tag] = order_info
                     self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
@@ -315,7 +393,7 @@ class ArbitrageEngine(
                         "Redis record retained for manual reconciliation"
                     )
                     continue
-                status, filled = await self._resolve_venue_order_state(order_id, symbol)
+                status, filled = await self._resolve_venue_order_state(order_id, symbol, pair_tag)
                 terminal_statuses = ("closed", "canceled", "cancelled", "rejected", "expired")
                 if status == "unknown":
                     # Missing/ambiguous venue state is not proof that an order is gone.
@@ -353,29 +431,34 @@ class ArbitrageEngine(
                     continue
 
                 if status in terminal_statuses:
-                    # A terminal order can still contain fills that occurred before
-                    # cancellation or before the process crashed. Hedge that final
-                    # cumulative fill before releasing the unused reservation.
-                    self.pending_entry_orders[pair_tag] = order_info
-                    self.states[pair_tag] = PositionState.ENTRY_PENDING
-                    await self._handle_entry_fills(
-                        pair_tag,
-                        order_info,
-                        {"id": order_id, "status": status, "filled": order_info["filled"]},
-                    )
-                    if self.states.get(pair_tag) in (
-                        PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
-                    ):
-                        logger.critical(
-                            f"[Recovery] fill reconciliation failed for {pair_tag}; "
-                            "pending record retained"
+                    # Hedge any final fill on the exact venue before releasing reserves.
+                    token = None
+                    try:
+                        if not getattr(self.config, "mock_mode", False):
+                            token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
+                        self.pending_entry_orders[pair_tag] = order_info
+                        self.states[pair_tag] = PositionState.ENTRY_PENDING
+                        await self._handle_entry_fills(
+                            pair_tag,
+                            order_info,
+                            {"id": order_id, "status": status, "filled": order_info["filled"]},
                         )
-                        continue
-                    await self._finalize_entry_order(pair_tag, status)
-                    logger.info(
-                        f"[Recovery] reconciled terminal order {order_id} for "
-                        f"{pair_tag} (status={status}, filled={filled})"
-                    )
+                        if self.states.get(pair_tag) in (
+                            PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+                        ):
+                            logger.critical(
+                                f"[Recovery] fill reconciliation failed for {pair_tag}; "
+                                "pending record retained"
+                            )
+                            continue
+                        await self._finalize_entry_order(pair_tag, status)
+                        logger.info(
+                            f"[Recovery] reconciled terminal order {order_id} for "
+                            f"{pair_tag} (status={status}, filled={filled})"
+                        )
+                    finally:
+                        if token is not None:
+                            self._reset_pair_client(token)
                     continue
 
                 self.pending_entry_orders[pair_tag] = order_info
@@ -394,13 +477,21 @@ class ArbitrageEngine(
             except Exception:
                 logger.exception(f"[Recovery] failed to restore pending entry from {key}")
 
-    async def _resolve_venue_order_state(self, order_id: str, symbol: str) -> tuple:
-        """Returns (status, filled) for a venue order; ('unknown', None) if it cannot be fetched."""
+    async def _resolve_venue_order_state(
+        self, order_id: str, symbol: str, pair_tag: Optional[str] = None
+    ) -> tuple:
+        """Returns (status, filled) using the exact local venue when known."""
+        token = None
         try:
+            if pair_tag and not getattr(self.config, "mock_mode", False):
+                token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
             order = await self.client.fetch_local_order(order_id, symbol)
         except Exception as exc:
             logger.warning(f"[Recovery] fetch order {order_id} failed: {exc}")
             return "unknown", None
+        finally:
+            if token is not None:
+                self._reset_pair_client(token)
         if not isinstance(order, dict) or not order.get("id") and order_id not in str(order):
             # A missing response is ambiguous (history retention, API lag, or
             # wrong symbol); never interpret it as a safely canceled order.
@@ -430,6 +521,32 @@ class ArbitrageEngine(
                 if not raw:
                     continue
                 pos = ActivePosition.from_dict(json.loads(raw))
+                if "__" not in pair_tag and pos.global_exchange and pos.global_symbol:
+                    migrated_tag = ExchangePairKey.from_pair_info({
+                        "local_exchange": pos.local_exchange,
+                        "local_symbol": pos.symbol,
+                        "global_exchange": pos.global_exchange,
+                        "global_symbol": pos.global_symbol,
+                    }).tag.lower()
+                    if migrated_tag != pair_tag:
+                        migrated_key = f"arb:active_pos:{migrated_tag}"
+                        existing = await self.redis.get(migrated_key)
+                        if existing:
+                            pos.state = "RECONCILIATION_REQUIRED"
+                            self.active_positions[pair_tag] = pos
+                            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                            await self.redis.set(key, json.dumps(pos.to_dict()))
+                            self._mark_failed(
+                                pair_tag,
+                                "LEGACY_POSITION_KEY_COLLISION",
+                                "Legacy position cannot be migrated because the venue-qualified key already exists.",
+                                detail={"legacy_key": key, "target_key": migrated_key},
+                                state=PositionState.RECONCILIATION_REQUIRED,
+                            )
+                            continue
+                        await self.redis.set(migrated_key, json.dumps(pos.to_dict()))
+                        await self.redis.delete(key)
+                        pair_tag, key = migrated_tag, migrated_key
                 if pos.qty <= 0:
                     # A zero/invalid Redis quantity is not proof that the exchange
                     # is flat. Retain the record and require explicit reconciliation.
@@ -502,6 +619,7 @@ class ArbitrageEngine(
         self._running = True
 
         self._tasks.append(asyncio.create_task(self._listen_signals()))
+        self._tasks.append(asyncio.create_task(self._process_signal_priority_queue()))
         self._tasks.append(asyncio.create_task(self._listen_emergency_cancel()))
         self._tasks.append(asyncio.create_task(self._listen_force_close()))
         self._tasks.append(asyncio.create_task(self._listen_kill_switch()))
@@ -542,11 +660,54 @@ class ArbitrageEngine(
                     if isinstance(pair_tag, bytes):
                         pair_tag = pair_tag.decode("utf-8")
                     if pair_tag:
-                        await self.handle_signal_notification(pair_tag)
+                        self._signal_queue_event.set()
                 await asyncio.sleep(0.01)
         finally:
             await pubsub.unsubscribe("arb:signal_notify")
             await pubsub.close()
+
+    async def _process_signal_priority_queue(self):
+        """Drain eligible signals in descending estimated net-profit order."""
+        queue_key = "arb:signal_priority"
+        # Coalesce a short burst so ZPOPMAX can rank concurrent signals, but
+        # do not spend half the signal-freshness budget waiting for a batch.
+        quiet_window = 0.02
+        max_batch_window = 0.1
+        while self._running:
+            await self._signal_queue_event.wait()
+            self._signal_queue_event.clear()
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + max_batch_window
+            quiet_deadline = loop.time() + quiet_window
+            while loop.time() < deadline:
+                timeout = min(quiet_deadline - loop.time(), deadline - loop.time())
+                if timeout <= 0:
+                    break
+                try:
+                    await asyncio.wait_for(self._signal_queue_event.wait(), timeout=timeout)
+                    self._signal_queue_event.clear()
+                    quiet_deadline = loop.time() + quiet_window
+                except asyncio.TimeoutError:
+                    break
+
+            while self._running:
+                try:
+                    ranked = await self.redis.zpopmax(queue_key, count=100)
+                except Exception:
+                    logger.exception("[Signal Priority] failed to claim ranked signals")
+                    break
+                if not ranked:
+                    break
+                for raw_tag, score in ranked:
+                    pair_tag = raw_tag.decode("utf-8") if isinstance(raw_tag, bytes) else str(raw_tag)
+                    logger.info(
+                        "[Signal Priority] executing candidate pair=%s estimated_net_profit=%.8f USDT",
+                        pair_tag, float(score),
+                    )
+                    try:
+                        await self.handle_signal_notification(pair_tag)
+                    except Exception:
+                        logger.exception("[Signal Priority] signal handler failed for %s", pair_tag)
 
     async def _listen_emergency_cancel(self):
         """Subscribes to arb:emergency_cancel channel."""
@@ -673,6 +834,44 @@ class ArbitrageEngine(
             self._pair_locks[pair_tag] = lock
         return lock
 
+    def _pair_info_for_tag(self, pair_tag: str):
+        info = self._pair_infos.get(pair_tag)
+        if info is not None:
+            return info
+        pending = self.pending_entry_orders.get(pair_tag) or self.pending_exit_orders.get(pair_tag) or {}
+        pos = self.active_positions.get(pair_tag)
+        if pos is not None:
+            local_symbol = pos.symbol
+            global_symbol = pos.global_symbol
+            return type("RecoveredPairInfo", (), {
+                "local_exchange": pos.local_exchange,
+                "global_exchange": pos.global_exchange,
+                "local_symbol": local_symbol,
+                "global_symbol": global_symbol or self._resolve_global_symbol(local_symbol),
+                "base_asset": pos.base_asset or local_symbol.split("/")[0],
+                "quote_asset": local_symbol.split("/")[-1] if "/" in local_symbol else "IDR",
+            })()
+        if pending.get("local_exchange") and pending.get("global_exchange"):
+            return type("PendingPairInfo", (), {
+                "local_exchange": pending["local_exchange"],
+                "global_exchange": pending["global_exchange"],
+                "local_symbol": pending.get("symbol", ""),
+                "global_symbol": pending.get("global_symbol", ""),
+                "base_asset": pending.get("base_asset", ""),
+                "quote_asset": pending.get("quote_asset", "IDR"),
+            })()
+        raise LookupError(f"exchange pair metadata unavailable for {pair_tag}")
+
+    async def _run_pair_bound(self, pair_tag: str, operation, *args, **kwargs):
+        if getattr(self.config, "mock_mode", False):
+            return await operation(*args, **kwargs)
+        pair_info = self._pair_info_for_tag(pair_tag)
+        token = self._bind_pair_client(pair_info)
+        try:
+            return await operation(*args, **kwargs)
+        finally:
+            self._reset_pair_client(token)
+
     def _pair_venues(self, pair_tag: str) -> tuple[str, str]:
         """Best-effort (local_exchange, global_exchange) names for a pair tag."""
         pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
@@ -687,6 +886,36 @@ class ArbitrageEngine(
         return "", ""
 
     async def handle_signal_notification(self, pair_tag: str):
+        """Bind the signal to its immutable venue pair before any exchange call."""
+        payload = await self._load_signal_payload(pair_tag)
+        if payload is None:
+            return
+        if getattr(self.config, "mock_mode", False):
+            await self._handle_signal_notification_bound(pair_tag, payload)
+            return
+        try:
+            token = self._bind_pair_client(payload.pair_info)
+        except Exception as exc:
+            self._pair_infos[pair_tag] = payload.pair_info
+            self._mark_failed(
+                pair_tag,
+                "EXECUTOR_VENUE_MISMATCH",
+                f"Signal rejected: {exc}",
+                detail={
+                    "local_exchange": payload.pair_info.local_exchange,
+                    "global_exchange": payload.pair_info.global_exchange,
+                },
+            )
+            await self.publish_status()
+            return
+        try:
+            await self._handle_signal_notification_bound(pair_tag, payload)
+        finally:
+            self._reset_pair_client(token)
+
+    async def _handle_signal_notification_bound(
+        self, pair_tag: str, payload: Optional[ExecutorPayload] = None
+    ):
         """
         State 1 (Entry Order Pegging):
         1. GET arb:signal:{local_ex}:{symbol}
@@ -695,16 +924,18 @@ class ArbitrageEngine(
         """
         async with self._pair_lock(pair_tag):
             self._roll_loss_day_if_needed()
-            payload = await self._load_signal_payload(pair_tag)
+            if payload is None:
+                payload = await self._load_signal_payload(pair_tag)
             if payload is None:
                 return
             configured_local = str(self.config.local_exchange_name or "").strip().lower()
             configured_global = str(self.config.global_exchange_name or "").strip().lower()
             signal_local = str(payload.pair_info.local_exchange or "").strip().lower()
             signal_global = str(payload.pair_info.global_exchange or "").strip().lower()
+            pair_key = ExchangePairKey.from_pair_info(payload.pair_info)
             if (
                 not getattr(self.config, "mock_mode", False)
-                and (signal_local != configured_local or signal_global != configured_global)
+                and not self._pair_client_registry.contains(pair_key)
             ):
                 reason = "EXECUTOR_VENUE_MISMATCH"
                 message = (
@@ -726,13 +957,13 @@ class ArbitrageEngine(
                 await self.publish_status()
                 return
             self._pair_infos[pair_tag] = payload.pair_info
-            balances = await self._check_balance_mismatch(
-                payload.pair_info,
-                payload.pricing_snapshot.usdt_idr_rate,
-                pair_tag,
-            )
-            if balances is None and not getattr(self.config, "mock_mode", False):
-                return
+            mock_mode = bool(getattr(self.config, "mock_mode", False))
+            if mock_mode:
+                await self._check_balance_mismatch(
+                    payload.pair_info,
+                    payload.pricing_snapshot.usdt_idr_rate,
+                    pair_tag,
+                )
             if self._trading_halted:
                 logger.warning(
                     f"[Circuit Breaker] rejecting entry for {pair_tag}: "
@@ -878,6 +1109,27 @@ class ArbitrageEngine(
         directives = payload.execution_directives
         pair_info = payload.pair_info
         snapshot = payload.pricing_snapshot
+        if pair_info.local_amount_spec is None or pair_info.global_amount_spec is None:
+            self._mark_failed(
+                pair_tag,
+                "MARKET_AMOUNT_RULES_MISSING",
+                "Spot and perpetual market amount rules are required; entry was not submitted.",
+                detail={
+                    "local_symbol": pair_info.local_symbol,
+                    "global_symbol": pair_info.global_symbol,
+                },
+            )
+            await self.publish_status()
+            return
+        if pair_info.local_amount_spec.unit != "BASE":
+            self._mark_failed(
+                pair_tag,
+                "LOCAL_AMOUNT_UNIT_UNSUPPORTED",
+                "Spot market amount rules must be expressed in base-asset units.",
+                detail={"local_symbol": pair_info.local_symbol},
+            )
+            await self.publish_status()
+            return
 
         # Target Limit Buy price in IDR
         buy_price_idr = directives.recommended_limit_buy_idr
@@ -889,18 +1141,32 @@ class ArbitrageEngine(
             return
         max_pos_usdt, _ = sizing
 
-        capital_idr = max_pos_usdt * snapshot.usdt_idr_rate
-        buy_qty = capital_idr / buy_price_idr
-        if pair_info.local_lot_size > 0:
-            buy_qty = math.floor(buy_qty / pair_info.local_lot_size) * pair_info.local_lot_size
+        capital_idr = Decimal(str(max_pos_usdt)) * Decimal(str(snapshot.usdt_idr_rate))
+        desired_qty = float(capital_idr / Decimal(str(buy_price_idr)))
+        try:
+            buy_qty = quantize_base_quantity(
+                desired_qty,
+                pair_info.local_amount_spec,
+                pair_info.global_amount_spec,
+            )
+        except ValueError as exc:
+            self._mark_failed(
+                pair_tag,
+                "MARKET_AMOUNT_RULES_REJECT_SIZE",
+                "Requested position cannot satisfy both market amount rules.",
+                detail={"requested_base_qty": desired_qty, "error": str(exc)},
+            )
+            await self.publish_status()
+            return
 
         if buy_qty <= 0:
             return
 
         actual_cost_usdt = (buy_qty * buy_price_idr) / snapshot.usdt_idr_rate
 
-        # Lock funds in exchange client
-        if hasattr(self.client, "lock_funds"):
+        # Paper trading reserves simulated funds locally. Live orders are sent
+        # directly to the venue so its response is authoritative for availability.
+        if getattr(self.config, "mock_mode", False) and hasattr(self.client, "lock_funds"):
             if not self.client.lock_funds(actual_cost_usdt, actual_cost_usdt):
                 logger.warning(
                     f"[State 1 Balance Check] Failed to lock funds for {actual_cost_usdt:.2f} USDT on {pair_tag}"
@@ -929,7 +1195,11 @@ class ArbitrageEngine(
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
             order = await self.client.place_local_limit_buy(
-                pair_info.local_symbol, buy_qty, buy_price_idr, client_order_id=entry_coid
+                pair_info.local_symbol,
+                buy_qty,
+                buy_price_idr,
+                client_order_id=entry_coid,
+                amount_spec=pair_info.local_amount_spec,
             )
             order_id = str(order.get("id", ""))
             self._record_order_success(pair_info.local_exchange)
@@ -949,6 +1219,10 @@ class ArbitrageEngine(
                 "client_order_id": entry_coid,
                 "symbol": pair_info.local_symbol,
                 "global_symbol": pair_info.global_symbol,
+                "base_asset": pair_info.base_asset,
+                "local_lot_size": pair_info.local_lot_size,
+                "local_amount_spec": pair_info.local_amount_spec.to_dict(),
+                "global_amount_spec": pair_info.global_amount_spec.to_dict(),
                 "local_exchange": pair_info.local_exchange,
                 "global_exchange": pair_info.global_exchange,
                 "price": buy_price_idr,
@@ -956,6 +1230,11 @@ class ArbitrageEngine(
                 "filled": 0.0,
                 "hedged_short_qty": 0.0,
                 "cancel_threshold_usdt": directives.cancel_if_global_bid_drops_below_usdt,
+                "min_entry_spread_pct": (
+                    float(self.config.entry_revalidation_min_spread_pct)
+                    if float(getattr(self.config, "entry_revalidation_min_spread_pct", 0.0) or 0.0) > 0
+                    else float(directives.min_entry_spread_pct or 0.0)
+                ),
                 "tick_size": pair_info.local_price_tick,
                 "quote_asset": pair_info.quote_asset,
                 "usdt_idr_rate": snapshot.usdt_idr_rate,
@@ -969,16 +1248,74 @@ class ArbitrageEngine(
                 "futures_margin_usdt": actual_cost_usdt,
             }
             await self._persist_pending_entry(pair_tag, self.pending_entry_orders[pair_tag])
-        except Exception:
-            if hasattr(self.client, "unlock_funds"):
+        except Exception as exc:
+            if (
+                getattr(self.config, "mock_mode", False)
+                and hasattr(self.client, "unlock_funds")
+            ):
                 self.client.unlock_funds(actual_cost_usdt, actual_cost_usdt)
-            self._record_order_failure(pair_info.local_exchange, "entry order placement failed")
+            exchange_error = str(exc).strip() or type(exc).__name__
+            normalized_error = f"{type(exc).__name__} {exchange_error}".lower()
+            insufficient_balance = any(
+                marker in normalized_error
+                for marker in (
+                    "insufficientfunds",
+                    "insufficient balance",
+                    "insufficient funds",
+                    "insufficient margin",
+                    "not enough balance",
+                    "not enough funds",
+                    "saldo tidak cukup",
+                    "saldo tidak mencukupi",
+                )
+            )
+            min_notional = any(
+                marker in normalized_error
+                for marker in (
+                    "min_notional",
+                    "min notional",
+                    "minimum notional",
+                    "notional too small",
+                    "cost.min",
+                )
+            )
+            invalid_symbol = any(
+                marker in normalized_error
+                for marker in (
+                    "invalid_symbol",
+                    "invalid symbol",
+                    "unknown symbol",
+                    "market is not available",
+                    "symbol not found",
+                )
+            )
+            if insufficient_balance:
+                reason = "INSUFFICIENT_BALANCE"
+            elif min_notional:
+                reason = "MIN_NOTIONAL"
+            elif invalid_symbol:
+                reason = "INVALID_SYMBOL"
+            else:
+                reason = "SPOT_ORDER_OPEN_FAILED"
+
+            # Business rejections reject this opportunity, but do not count as
+            # exchange-health failures. Transport/API/internal errors still count.
+            failure_category = (
+                reason if reason in ("INSUFFICIENT_BALANCE", "MIN_NOTIONAL", "INVALID_SYMBOL")
+                else "entry order placement failed"
+            )
+            self._record_order_failure(pair_info.local_exchange, failure_category)
             logger.exception(f"[State 1] failed to place limit buy for {pair_tag}")
             await self._publish_execution_failure(
                 pair_tag,
-                "SPOT_ORDER_OPEN_FAILED",
-                "Gagal membuka order Spot; periksa error exchange dan saldo.",
-                detail={"exchange": pair_info.local_exchange, "symbol": pair_info.local_symbol},
+                reason,
+                f"Exchange menolak order Spot: {exchange_error[:500]}",
+                detail={
+                    "exchange": pair_info.local_exchange,
+                    "symbol": pair_info.local_symbol,
+                    "error_type": type(exc).__name__,
+                    "exchange_error": exchange_error[:1000],
+                },
             )
     # -------------------------------------------------------------
     # Failure tracking & status reporting
@@ -1108,6 +1445,46 @@ class ArbitrageEngine(
             if self.states.get(pair_tag) == PositionState.FAILED:
                 self.states[pair_tag] = PositionState.IDLE
 
+    def _pending_order_snapshots(self) -> list:
+        """Returns read-only metadata for managed spot orders awaiting resolution."""
+        orders = []
+        for leg, source in (("SPOT_ENTRY", self.pending_entry_orders), ("SPOT_EXIT", self.pending_exit_orders)):
+            for pair_tag, order in source.items():
+                if not isinstance(order, dict):
+                    continue
+                position = self.active_positions.get(pair_tag)
+                state = self.states.get(pair_tag)
+                if state == PositionState.RECONCILIATION_REQUIRED:
+                    status = "RECONCILIATION_REQUIRED"
+                else:
+                    filled = max(0.0, float(order.get("filled", 0.0) or 0.0))
+                    status = "PARTIALLY_FILLED" if filled > 0 else "OPEN"
+                quantity = max(0.0, float(order.get("qty", 0.0) or 0.0))
+                filled = max(0.0, float(order.get("filled", 0.0) or 0.0))
+                placed_at = order.get("placed_time", 0) or order.get("created_at", 0) or 0
+                try:
+                    created_at_ms = int(float(placed_at) * 1000) if float(placed_at) < 100000000000 else int(float(placed_at))
+                except (TypeError, ValueError):
+                    created_at_ms = 0
+                symbol = str(order.get("symbol", ""))
+                inferred_quote = symbol.replace("_", "/").split("/")[-1] if "/" in symbol or "_" in symbol else ""
+                orders.append({
+                    "pair_tag": pair_tag,
+                    "leg": leg,
+                    "order_id": str(order.get("order_id", "")),
+                    "symbol": symbol,
+                    "quote_asset": str(order.get("quote_asset") or inferred_quote),
+                    "local_exchange": str(order.get("local_exchange") or getattr(position, "local_exchange", "") or self.config.local_exchange_name),
+                    "global_exchange": str(order.get("global_exchange") or getattr(position, "global_exchange", "") or self.config.global_exchange_name),
+                    "price": float(order.get("price", 0.0) or 0.0),
+                    "qty": quantity,
+                    "filled": filled,
+                    "remaining": max(0.0, quantity - filled),
+                    "status": status,
+                    "created_at_ms": created_at_ms,
+                })
+        return sorted(orders, key=lambda item: (item["created_at_ms"], item["pair_tag"]))
+
     def status_snapshot(self) -> Dict[str, Any]:
         """Point-in-time view of the executor, suitable for a JSON API."""
         return {
@@ -1118,6 +1495,7 @@ class ArbitrageEngine(
             "open_positions": len(self.active_positions),
             "pending_entries": len(self.pending_entry_orders),
             "pending_exits": len(self.pending_exit_orders),
+            "pending_orders": self._pending_order_snapshots(),
             "failed_pairs": len(self._failure_reasons),
             "trading_halted": self._trading_halted,
             "halt_reason": self._halt_reason,
@@ -1176,18 +1554,27 @@ class ArbitrageEngine(
 
         for p_key in to_cancel:
             async with self._pair_lock(p_key):
-                order_info = self.pending_entry_orders.get(p_key)
-                if not order_info:
-                    continue
-                order_id = order_info["order_id"]
-                logger.warning(
-                    f"[Emergency Cancel] Cancelling pending entry order {order_id} for {p_key} due to negative funding"
-                )
-                resolved = await self._cancel_entry_order_and_reconcile(
-                    p_key, order_info, "Emergency Cancel"
-                )
-                if not resolved:
-                    logger.critical(
-                        f"[Emergency Cancel] order {order_id} remains unresolved; "
-                        "pending state and reserved funds are retained"
+                token = None
+                try:
+                    if not getattr(self.config, "mock_mode", False):
+                        token = self._bind_pair_client(self._pair_info_for_tag(p_key))
+                    order_info = self.pending_entry_orders.get(p_key)
+                    if not order_info:
+                        continue
+                    order_id = order_info["order_id"]
+                    logger.warning(
+                        f"[Emergency Cancel] Cancelling pending entry order {order_id} for {p_key} due to negative funding"
                     )
+                    resolved = await self._cancel_entry_order_and_reconcile(
+                        p_key, order_info, "Emergency Cancel"
+                    )
+                    if not resolved:
+                        logger.critical(
+                            f"[Emergency Cancel] order {order_id} remains unresolved; "
+                            "pending state and reserved funds are retained"
+                        )
+                except Exception:
+                    logger.exception(f"[Emergency Cancel] pair routing failed for {p_key}")
+                finally:
+                    if token is not None:
+                        self._reset_pair_client(token)

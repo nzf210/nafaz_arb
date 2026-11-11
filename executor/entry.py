@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 
 from executor.models import ActivePosition, PairInfo, PositionState
 from executor import helpers
+from executor.quantity import AmountSpec
 from executor.helpers import (
     BALANCES_KEY,
     HedgeSlippageExceeded,
@@ -61,6 +62,12 @@ class EntryMixin:
                 await self._process_pending_entry(pair_tag, order_info)
 
         async def _process_pending_entry(self, pair_tag: str, order_info: dict) -> None:
+            """Route pending entry lifecycle calls through the pair-bound clients."""
+            await self._run_pair_bound(
+                pair_tag, self._process_pending_entry_bound, pair_tag, order_info
+            )
+
+        async def _process_pending_entry_bound(self, pair_tag: str, order_info: dict) -> None:
             """Process adverse selection check, fill tracking, and position creation for an entry order.
 
             Runs under the pair lock so the monitoring loop cannot mutate pending
@@ -92,6 +99,9 @@ class EntryMixin:
                 if await self._expire_stale_entry_order(pair_tag, order_info, order):
                     return
 
+                if await self._refresh_stale_maker_quote(pair_tag, order_info, order):
+                    return
+
                 self.supabase.order(
                     pair_tag,
                     "spot_entry",
@@ -103,6 +113,10 @@ class EntryMixin:
                     is_mock=bool(getattr(self.config, "mock_mode", False)),
                 )
                 await self._handle_entry_fills(pair_tag, order_info, order)
+                # Persist cumulative fill/hedge progress before the next poll or
+                # restart. This prevents an already-hedged partial fill being
+                # interpreted as unhedged after recovery.
+                await self._persist_pending_entry(pair_tag, order_info)
                 await self._finalize_entry_order(pair_tag, order.get("status", ""))
 
         async def _sync_live_price_for_client(
@@ -131,6 +145,11 @@ class EntryMixin:
             """
             order_id = str(order_info["order_id"])
             local_symbol = str(order_info["symbol"])
+            order_info["last_cancel_reason"] = reason
+            order_info["cancel_requested_at_ms"] = int(time.time() * 1000)
+            # Persist intent before the network call so a crash/timeout does not
+            # erase why the venue order was being canceled.
+            await self._persist_pending_entry(pair_tag, order_info)
             try:
                 await self.client.cancel_local_order(order_id, local_symbol)
             except Exception:
@@ -179,6 +198,7 @@ class EntryMixin:
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
             )
             await self._handle_entry_fills(pair_tag, order_info, order)
+            await self._persist_pending_entry(pair_tag, order_info)
             if self.states.get(pair_tag) in (
                 PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
             ):
@@ -188,6 +208,21 @@ class EntryMixin:
                 )
                 return False
 
+            self.supabase.event(
+                "ENTRY_ORDER_CANCELLED",
+                pair_key=pair_tag,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+                occurred_at_ms=int(time.time() * 1000),
+                payload={
+                    "order_id": order_id,
+                    "client_order_id": order_info.get("client_order_id", ""),
+                    "symbol": local_symbol,
+                    "reason": reason,
+                    "terminal_status": status,
+                    "filled_qty": float(order_info.get("filled", 0.0) or 0.0),
+                    "order_qty": float(order_info.get("qty", 0.0) or 0.0),
+                },
+            )
             await self._finalize_entry_order(pair_tag, status)
             return True
 
@@ -195,7 +230,7 @@ class EntryMixin:
             self, pair_tag: str, order_info: dict, order: dict
         ) -> bool:
             """Cancel an unfilled entry past TTL; resolve only after venue verification."""
-            if order.get("status") != "open" or not math.isclose(float(order.get("filled", 0.0)), 0.0, abs_tol=1e-12):
+            if str(order.get("status", "")).lower() != "open":
                 return False
 
             order_id = order_info["order_id"]
@@ -205,12 +240,102 @@ class EntryMixin:
             if placed_time <= 0 or age < max_ttl:
                 return False
 
+            filled = float(order.get("filled", 0.0) or 0.0)
             logger.info(
                 f"[State 1 Order Expired] Maker Limit Buy {order_id} for {pair_tag} "
-                f"expired after {age:.1f}s without market fill. Cancelling."
+                f"expired after {age:.1f}s (filled={filled}). Cancelling remainder "
+                "and reconciling the final cumulative fill."
             )
             return await self._cancel_entry_order_and_reconcile(
                 pair_tag, order_info, "Order Expired"
+            )
+
+        async def _refresh_stale_maker_quote(
+            self, pair_tag: str, order_info: dict, order: dict
+        ) -> bool:
+            """
+            Safely refresh a stale, completely unfilled maker quote.
+
+            This deliberately cancels and reconciles the old order, then waits for
+            the scanner's next fresh signal to submit a new quote. It never places
+            a replacement from the executor, avoiding a cancel/replace crash window
+            that cannot yet be recovered by clientOrderId on every supported venue.
+            """
+            refresh_after = int(getattr(self.config, "maker_refresh_after_seconds", 0) or 0)
+            if refresh_after <= 0 or str(order.get("status", "")).lower() != "open":
+                return False
+
+            # Any observed fill makes this order ineligible for repricing. The
+            # normal fill/hedge path remains the only owner of partial fills.
+            try:
+                current_filled = float(order.get("filled", 0.0) or 0.0)
+                known_filled = float(order_info.get("filled", 0.0) or 0.0)
+                hedged = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
+                quantities = (current_filled, known_filled, hedged)
+                if not all(math.isfinite(value) and value >= 0 for value in quantities):
+                    return False
+            except (TypeError, ValueError):
+                return False
+            if current_filled > 0 or known_filled > 0 or hedged > 0:
+                return False
+
+            placed_time = float(order_info.get("placed_time", 0.0) or 0.0)
+            age = time.time() - placed_time
+            if not math.isfinite(placed_time) or placed_time <= 0 or not math.isfinite(age) or age < refresh_after:
+                return False
+
+            # A refresh is useful only when the best bid has moved above our
+            # resting price and a fresh quote still satisfies the scanner's edge
+            # floor. Never cross the ask or improve beyond the current best bid.
+            try:
+                raw = await self.redis.get(f"arb:live_price:{pair_tag}")
+                if not raw:
+                    return False
+                snapshot = json.loads(raw)
+                timestamp_ms = int(snapshot.get("timestamp_ms", 0) or 0)
+                now_ms = int(time.time() * 1000)
+                if timestamp_ms <= 0 or now_ms - timestamp_ms < 0 or now_ms - timestamp_ms > 3000:
+                    return False
+                local_bid = float(snapshot.get("local_best_bid", 0.0) or 0.0)
+                local_ask = float(snapshot.get("local_best_ask", 0.0) or 0.0)
+                global_bid = float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0)
+                fx_rate = float(snapshot.get("usdt_idr_rate", 0.0) or order_info.get("usdt_idr_rate", 0.0))
+                current_price = float(order_info.get("price", 0.0) or 0.0)
+                tick = float(order_info.get("tick_size", 0.0) or 0.0)
+                min_spread = float(order_info.get("min_entry_spread_pct", 0.0) or 0.0)
+                market_values = (local_bid, local_ask, global_bid, fx_rate, current_price, tick)
+                if not all(math.isfinite(value) and value > 0 for value in market_values):
+                    return False
+                if not math.isfinite(min_spread) or min_spread < 0:
+                    return False
+                candidate = math.floor((local_bid + 1e-12) / tick) * tick
+                if candidate <= current_price or candidate >= local_ask:
+                    return False
+                live_global_idr = global_bid * fx_rate
+                live_spread_pct = ((live_global_idr - candidate) / live_global_idr) * 100.0
+                if live_spread_pct < min_spread:
+                    return False
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                return False
+
+            cooldown_seconds = int(
+                getattr(self.config, "maker_refresh_cooldown_seconds", 300) or 300
+            )
+            cooldown_key = f"arb:maker_refresh_cooldown:{pair_tag}"
+            if await self.redis.exists(cooldown_key):
+                return False
+
+            # Record cooldown before cancellation. If the process crashes or the
+            # cancel is ambiguous, this prevents rapid repeated cancel attempts.
+            await self.redis.set(cooldown_key, str(now_ms), ex=cooldown_seconds)
+            logger.info(
+                f"[Maker Refresh] {pair_tag}: quote aged {age:.1f}s; "
+                f"best bid {local_bid} is above order {current_price}, "
+                f"fresh edge {live_spread_pct:.4f}% meets floor {min_spread:.4f}%. "
+                "Canceling and waiting for the next scanner signal."
+            )
+            return await self._cancel_entry_order_and_reconcile(
+                pair_tag, order_info, "Maker Quote Refresh"
             )
 
         async def _check_adverse_selection(self, pair_tag: str, order_info: dict) -> bool:
@@ -250,7 +375,10 @@ class EntryMixin:
         ) -> None:
             """Check order fill delta and trigger short hedge if threshold is met."""
             status = order.get("status", "")
-            current_filled = float(order.get("filled", 0.0))
+            current_filled = float(order.get("filled", 0.0) or 0.0)
+            order_info["filled"] = max(
+                float(order_info.get("filled", 0.0) or 0.0), current_filled
+            )
             hedged_qty = float(order_info.get("hedged_short_qty", 0.0))
             unhedged_delta = current_filled - hedged_qty
 
@@ -331,6 +459,7 @@ class EntryMixin:
                     unhedged_delta,
                     price=expected_short_price,
                     client_order_id=hedge_coid,
+                    amount_spec=AmountSpec.from_dict(order_info.get("global_amount_spec")),
                 )
                 if not isinstance(short_order, dict):
                     raise ValueError(
@@ -517,6 +646,8 @@ class EntryMixin:
                     local_exchange=order_info["local_exchange"],
                     global_exchange=order_info["global_exchange"],
                     symbol=order_info["symbol"],
+                    base_asset=order_info.get("base_asset", ""),
+                    global_symbol=order_info.get("global_symbol", ""),
                     entry_price_idr=price_idr,
                     short_entry_usdt=short_entry_usdt,
                     qty=qty,
@@ -525,6 +656,9 @@ class EntryMixin:
                     base_target_exit_spread_pct=order_info["base_target_exit_spread_pct"],
                     current_funding_rate=order_info["current_funding_rate"],
                     local_price_tick=float(order_info.get("tick_size", 1.0)),
+                    local_lot_size=float(order_info.get("local_lot_size", 0.0)),
+                    local_amount_spec=AmountSpec.from_dict(order_info.get("local_amount_spec")),
+                    global_amount_spec=AmountSpec.from_dict(order_info.get("global_amount_spec")),
                     spot_cost_usdt=spot_cost,
                     futures_margin_usdt=fut_margin,
                 )

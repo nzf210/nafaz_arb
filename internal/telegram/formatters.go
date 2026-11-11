@@ -21,9 +21,10 @@ func (b *Bot) formatHelp() string {
 <b>Perintah Keyboard:</b>
 /menu - <i>Buka menu tombol interaktif</i>
 /positions - <i>Lihat posisi aktif Executor & opsi tutup paksa</i>
+/pending - <i>Lihat pending order Spot yang belum selesai</i>
 /balance - <i>Cek saldo live seluruh aset Spot & Futures</i>
 /scan - <i>Jalankan scan pasar on-demand</i>
-/latest - <i>Lihat hasil scan & peluang ROI tertinggi</i>
+/latest - <i>Lihat peluang dari 10 scan terakhir</i>
 /pair [simbol] - <i>Cek rincian koin tertentu (misal: /pair BTC)</i>
 /active - <i>Lihat peluang yang sedang aktif berkelanjutan</i>
 /frozen - <i>Lihat daftar pasangan yang sedang dibekukan</i>
@@ -206,6 +207,9 @@ func formatScanOpportunity(i int, op domain.Opportunity) string {
 		html.EscapeString(op.ProfitabilityStatus),
 	))
 
+	if op.LocalExchange != "" || op.GlobalExchange != "" {
+		sb.WriteString(fmt.Sprintf("   • CEX: <b>%s Spot</b> vs <b>%s Futures</b>\n", html.EscapeString(strings.ToUpper(op.LocalExchange)), html.EscapeString(strings.ToUpper(op.GlobalExchange))))
+	}
 	if op.ExecutionMode == "MAKER_TAKER" {
 		sb.WriteString(fmt.Sprintf("   • Spot Limit (Maker): <code>%.4f</code> (%s) [Antrean: %.2f]\n", op.SpotEntryPrice, html.EscapeString(op.SpotSymbol), op.SpotQueueDepth))
 		sb.WriteString(fmt.Sprintf("   • Perp Short: <code>%.4f</code> (%s)\n", op.PerpEntryPrice, html.EscapeString(op.PerpSymbol)))
@@ -258,16 +262,31 @@ func (b *Bot) formatOpportunityAlert(op domain.Opportunity) string {
 	if op.CapacityPct > 0 && op.CapacityPct < 99.9 {
 		capacityInfo = fmt.Sprintf(" (Kapasitas: %.1f%%)", op.CapacityPct)
 	}
+	executionInfo := ""
+	switch op.ExecutionSignalStatus {
+	case "published":
+		executionInfo = "\n🟢 <b>Signal Executor:</b> berhasil dipublikasikan ke Redis"
+	case "disabled":
+		executionInfo = "\n⚪ <b>Signal Executor:</b> dinonaktifkan pada konfigurasi scanner"
+	case "redis_unavailable":
+		executionInfo = "\n🔴 <b>Signal Executor:</b> Redis tidak tersedia; posisi tidak dikirim"
+	case "live_price_publish_failed":
+		executionInfo = "\n🔴 <b>Signal Executor:</b> gagal memperbarui live price; posisi tidak dikirim"
+	case "publish_failed":
+		executionInfo = "\n🔴 <b>Signal Executor:</b> gagal dipublikasikan; periksa error scan"
+	}
 
 	return fmt.Sprintf(`🚨 <b>PROFITABLE ARBITRAGE OPPORTUNITY%s</b> 🚨
 
 Pair: <b>%s/%s</b>
+🏦 <b>Spot CEX:</b> %s
+🏦 <b>Futures CEX:</b> %s
 Net ROI: <b>%+.2f%%</b> | Net Profit: <b>%+.4f %s</b>
 
 📈 <b>%s:</b> <code>%.4f</code> (%s)
 📉 <b>Short Perp:</b> <code>%.4f</code> (%s)%s
 📦 <b>Quantity:</b> %.4f %s
-💼 <b>Allocated Capital:</b> %.2f %s%s
+💼 <b>Allocated Capital:</b> %.2f %s%s%s
 
 ⚡ <b>Rincian:</b>
 • Spread PnL: %+.4f %s
@@ -279,12 +298,13 @@ Net ROI: <b>%+.2f%%</b> | Net Profit: <b>%+.4f %s</b>
 🕒 <i>Terdeteksi: %s</i>`,
 		modeBadge,
 		html.EscapeString(op.BaseAsset), html.EscapeString(op.QuoteAsset),
+		html.EscapeString(strings.ToUpper(op.LocalExchange)), html.EscapeString(strings.ToUpper(op.GlobalExchange)),
 		op.NetROIPct, op.NetProfit, html.EscapeString(op.QuoteAsset),
 		spotEntryLabel, op.SpotEntryPrice, html.EscapeString(op.SpotSymbol),
 		op.PerpEntryPrice, html.EscapeString(op.PerpSymbol),
 		extraGuardrail,
 		op.Quantity, html.EscapeString(op.BaseAsset),
-		op.AllocatedCapital, html.EscapeString(op.QuoteAsset), capacityInfo,
+		op.AllocatedCapital, html.EscapeString(op.QuoteAsset), capacityInfo, executionInfo,
 		op.SpreadPnL, html.EscapeString(op.QuoteAsset),
 		op.FundingPnL, html.EscapeString(op.QuoteAsset),
 		op.CurrentFundingRate*100, op.CurrentFundingRate,

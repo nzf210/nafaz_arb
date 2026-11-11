@@ -9,6 +9,26 @@ Starter Go project for the **read-only** Scanner described in the PRD: discover/
 - Go 1.22+
 - Uses `github.com/shopspring/decimal` for fixed-point financial arithmetic
 
+## CEX amount rules
+
+The scanner and executor use **base-asset quantity** as the shared quantity contract.
+Each market publishes an `amount_spec` describing how its venue accepts order amounts:
+
+- `unit`: `BASE` for spot/base-denominated orders or `CONTRACT` for futures contracts.
+- `step`: the venue's order-amount increment, expressed in `unit`.
+- `min`: the minimum order amount, expressed in `unit`.
+- `base_per_unit`: base-asset quantity represented by one `unit` (1 for `BASE`; contract
+  size for `CONTRACT`).
+
+Before opening a position, the scanner requires valid rules for both legs and the
+executor rounds the shared base quantity down to a value representable by both markets.
+An order below either venue minimum is rejected rather than sent with a guessed amount.
+New venues must therefore expose authoritative step, minimum, and contract-size metadata
+from their market metadata/API; add parser and regression coverage for spot and/or futures
+as applicable. Keep scanner pair IDs separate from the CCXT unified market symbols used
+for execution: the executor resolves IDs against loaded venue markets and fails closed
+when the match is missing or ambiguous.
+
 ## Run
 
 ```sh
@@ -17,13 +37,15 @@ go test ./...
 go run ./cmd/nafaz-scanner -config config.json
 ```
 
-### Container security
+### Live trading behavior and safeguards
 
-The live executor reads spot/futures balances through CCXT. For IDR-quoted spot pairs,
-it converts the available IDR balance to a USDT-equivalent amount using the fresh
-USDT/IDR rate from the scanner signal; missing FX or balance data blocks new entries.
-USDT/USDC quote balances are treated at a 1:1 stablecoin assumption for sizing, so
-USDC depeg risk is not eliminated.
+Live entry sizing uses the signal budget, exposure cap, and fee reserve; it does not
+poll private balance endpoints before submitting an order. The exchange validates
+available spot funds when the limit order is sent and validates futures margin when
+the hedge is submitted. Rejection alerts include the exchange error. A spot fill can
+still occur before a futures-margin rejection, so the executor attempts its guarded
+spot rollback and reports any unresolved exposure. Simulated entries continue to use
+the paper account's balance snapshot.
 
 INDODAX is the exception: its keys are issued on `indodax.com/trade_api` and are
 TAPIv2-only. The legacy `/tapi` endpoint that CCXT still signs rejects them with
@@ -243,27 +265,38 @@ existing deployment keeps working unchanged unless it opts in.
 | Key | Env | Default | Effect |
 |---|---|---|---|
 | `min_top_of_book_quote_usdt` | `MIN_TOP_OF_BOOK_QUOTE_USDT` | `0` (off) | Rejects pairs whose **best price level** holds less than this notional on the spot ask or perp bid. The threshold is capped at the per-pair allocation budget, so a small account is never asked for liquidity it does not need. A weak proxy for the "24h volume" idea: it costs no extra REST calls and measures exactly what a taker order will walk into. |
-| `enable_websocket_feed` | `ENABLE_WEBSOCKET_FEED` | `false` | Streams order books over websocket and serves them from cache instead of REST. Misses and stale books fall back to REST, so coverage never shrinks. See the caveat below. |
-| `websocket_book_max_age_seconds` | `WEBSOCKET_BOOK_MAX_AGE_SECONDS` | `2` | How old a websocket book may be before REST is used again. |
+| `okx_ws_enabled` | `OKX_WS_ENABLED` | `true` in LIVE, `false` in MOCK | Starts one persistent OKX public WebSocket connection and subscribes to active SWAP instruments on the `books` channel. A connected socket is not considered ready until a valid snapshot is received. |
+| `okx_ws_url` | `OKX_WS_URL` | `wss://ws.okx.com/ws/v5/public` | Public endpoint. Override with the regional WebSocket host required by the OKX account region. |
+| `okx_ws_stale_after` | `OKX_WS_STALE_AFTER` | `65s` | Maximum age since the last instrument-specific book frame. OKX may send an empty heartbeat after 60 seconds without book changes; connection ping/pong refreshes receive-time freshness separately. Stale or not-yet-snapshotted books use REST. Accepts Go durations such as `65s`. |
+| `okx_ws_reconnect_interval` | `OKX_WS_RECONNECT_INTERVAL` | `1s` | Initial reconnect delay after disconnect or subscription failure. |
+| `okx_ws_max_reconnect_backoff` | `OKX_WS_MAX_RECONNECT_BACKOFF` | `30s` | Maximum exponential reconnect delay. Must be at least the initial reconnect interval. |
+| `enable_websocket_feed` | `ENABLE_WEBSOCKET_FEED` | `false` | Legacy best-effort feed switch for non-OKX streams. It does not control the OKX books manager. |
+| `websocket_book_max_age_seconds` | `WEBSOCKET_BOOK_MAX_AGE_SECONDS` | `2` | Maximum age for the legacy non-OKX websocket cache. |
 | `exchange_error_window_seconds` | — | `300` | Maintenance-detection window (P2-05). |
 | `exchange_error_rate_threshold` | — | `0.5` | Error ratio that marks a venue unavailable for the rest of the window. |
 | `exchange_error_min_requests` | — | `5` | Minimum observations before the ratio is trusted. |
 
-**Websocket caveat:** only the OKX public `books5` channel is fully covered today.
-Indodax and MEXC spot need per-symbol subscriptions that the scanner does not yet
-issue, so those venues stay on REST even when the feed is enabled. The venue
-payloads are verified against unit-test fixtures only, not against live feeds —
-which is why the feature ships off by default.
+**OKX order-book integrity:** the OKX manager subscribes per instrument to
+`books`, replaces local state on `snapshot`, and applies `update` price-level
+deltas only when `prevSeqId` matches the cached `seqId`. Duplicate updates are
+ignored. A sequence gap, malformed update, disconnect, or stale receive time
+invalidates the cache; the scanner then uses a per-instrument single-flight REST
+recovery request through the shared OKX REST limiter. It never serves a partial
+or pre-snapshot WebSocket book. The mock WebSocket tests verify this behavior;
+they do not constitute a live OKX/VPS soak test. Indodax and MEXC spot feeds
+remain outside this OKX-specific change.
 
-### Executor (`executor` block in `config.json` / environment)
+### Executor (`executor` block in `config.json` / environment)\n\nPending maker entry orders default to a 120-second TTL (`max_order_ttl_seconds` / `MAX_ORDER_TTL_SECONDS`). TTL applies to both unfilled and partially filled orders: the executor cancels the remaining quantity, reconciles the venue's final cumulative fill, and hedges that fill before releasing unused reserves. Fill/hedge progress is persisted for restart recovery. The independent adverse-selection guard can still cancel sooner when the global bid crosses the signal's cancellation threshold; this safety guard is intentionally retained.
+
+Unfilled maker quotes can be refreshed after 45 seconds (`maker_refresh_after_seconds` / `MAKER_REFRESH_AFTER_SECONDS`; set `0` to disable), with a 300-second per-pair cooldown (`maker_refresh_cooldown_seconds` / `MAKER_REFRESH_COOLDOWN_SECONDS`). Refresh is deliberately cancel-and-re-signal, not blind cancel/replace: it requires a fresh live snapshot, a higher local best bid below the ask, and the candidate price to preserve the configured/scanner minimum entry spread. It only applies when the order has zero filled and zero hedged quantity. The executor confirms cancellation and reconciles any fill race, then waits for the scanner's next fresh signal to submit a new order. It does not submit a replacement itself, so there is no untracked replacement-order window. TTL and adverse-selection cancellation remain higher-priority guards.
 
 | Key | Env | Default | Effect |
 |---|---|---|---|
 | `max_entry_slippage_pct` | `MAX_ENTRY_SLIPPAGE_PCT` | `0.003` | Aborts the hedge if the futures ask moved more than this fraction past the expected short price. **Fail-open**: an unreadable ticker logs and proceeds, because refusing to hedge leaves spot naked. `0` disables. |
 | `entry_revalidation_min_spread_pct` | `ENTRY_REVALIDATION_MIN_SPREAD_PCT` | `0` (use payload floor) | Before placing the maker buy, re-quotes the global futures bid and rejects the signal when the live entry spread fell below this floor. When `0`, the payload's `min_entry_spread_pct` from the scanner is used instead. **Fail-open** on an unreadable ticker. |
 | `max_exposure_per_exchange_usdt` | `MAX_EXPOSURE_PER_EXCHANGE_USDT` | `0` (off) | Caps total committed capital per venue across open positions *and* pending entries. Left at `0` because no per-venue limit has been agreed. |
-| `balance_mismatch_fraction` | `BALANCE_MISMATCH_FRACTION` | `0.20` | Halts a venue for new entries when its available balance drops more than this fraction below the last observed value, beyond what committed capital can explain (withdrawal/liquidation detection). `0` disables. |
-| `max_consecutive_order_failures` | `MAX_CONSECUTIVE_ORDER_FAILURES` | `3` | Halts a venue for new entries after this many consecutive order-placement failures. `0` disables. Clear via `resume_exchange()` or restart. |
+| `balance_mismatch_fraction` | `BALANCE_MISMATCH_FRACTION` | `0.20` | Simulated-entry balance drift threshold; live entries do not poll balances for this guard. `0` disables mismatch comparison. |
+| `max_consecutive_order_failures` | `MAX_CONSECUTIVE_ORDER_FAILURES` | `50` | Halts only the affected venue for new entries after 50 consecutive system/order-transport failures. Business rejections such as insufficient balance, minimum notional, and invalid symbol do not count. `0` disables. Clear via `resume_exchange()` or restart. |
 
 **Kill switch:** publish `{"action": "on"}` to the `arb:kill_switch` Redis channel (or use the Telegram `/killswitch on` / `/killswitch off` commands). ON halts *all* new entries globally until an explicit OFF — it never auto-resets on a UTC rollover. Open positions continue to be managed.
 | `estimated_round_trip_fee_pct` | `ESTIMATED_ROUND_TRIP_FEE_PCT` | `0.001` | Shrinks the position so both legs' fees are still covered by the exit. If that drops the size below `min_allocated_capital` the entry is **rejected** rather than silently undersized. |
@@ -278,7 +311,11 @@ buffer) is called out explicitly so it is a visible choice rather than an accide
 Order placement sends a deterministic `clientOrderId` (`{pair}-{leg}-{seq}`) on
 every leg so a retried submit is rejected by the venue instead of double-filling.
 The sequence is seeded from wall-clock time at startup, so ids never collide
-across process restarts.
+across process restarts. Binance Cloud venues such as Tokocrypto require the
+registered Binance broker prefix (`x-TKT5PX2F`) on every client order id —
+without it the venue rejects orders with error `3703 Invalid client ID` — so
+ids built for those venues reserve prefix room and the executor prepends the
+prefix at submission time.
 
 
 ## Supabase Database

@@ -31,6 +31,9 @@ async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, moc
             "base_asset": "BTC",
             "quote_asset": "IDR",
             "local_price_tick": 1000.0,
+            "local_lot_size": 0.00000001,
+            "local_amount_spec": {"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
+            "global_amount_spec": {"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
         },
         "pricing_snapshot": {
             "local_best_bid": 1000000000.0,
@@ -65,6 +68,7 @@ async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, moc
     placed = mock_client.placed_buys[0]
     assert placed["symbol"] == "btc_idr"
     assert placed["price"] == 1000001000.0
+    assert placed["amount"] == pytest.approx(0.00799999)
     assert engine.states[pair_tag] == PositionState.ENTRY_PENDING
 
     # 2. Stale signal test (> 500ms)
@@ -72,6 +76,7 @@ async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, moc
     stale_payload = dict(fresh_payload)
     stale_payload["pair_info"] = dict(fresh_payload["pair_info"])
     stale_payload["pair_info"]["local_symbol"] = "eth_idr"
+    stale_payload["pair_info"]["global_symbol"] = "ETHUSDT"
     stale_payload["pricing_snapshot"] = dict(fresh_payload["pricing_snapshot"])
     stale_payload["pricing_snapshot"]["timestamp_ms"] = now_ms - 800  # 800ms old!
 
@@ -80,6 +85,41 @@ async def test_state1_entry_order_pegging_fresh_vs_stale(engine, fake_redis, moc
 
     # No new buy placed
     assert len(mock_client.placed_buys) == 1
+
+
+@pytest.mark.asyncio
+async def test_entry_quantity_is_floored_to_market_increment(engine, fake_redis, mock_client):
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    payload = _fresh_signal_payload(now_ms)
+    payload["pair_info"]["local_lot_size"] = 0.0005
+    payload["pair_info"]["local_amount_spec"] = {
+        "unit": "BASE", "step": 0.0005, "min": 0.0005, "base_per_unit": 1.0
+    }
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(mock_client.placed_buys) == 1
+    # Sizing yields 0.0016 BTC; floor to the venue's 0.0005 increment.
+    assert mock_client.placed_buys[0]["amount"] == pytest.approx(0.0015)
+    assert mock_client.placed_buys[0]["amount"] / 0.0005 == pytest.approx(3.0)
+
+
+@pytest.mark.asyncio
+async def test_entry_without_market_increment_is_rejected(engine, fake_redis, mock_client):
+    pair_tag = "indodax:btc_idr"
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    payload["pair_info"].pop("local_lot_size")
+    payload["pair_info"].pop("local_amount_spec")
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert mock_client.placed_buys == []
+    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == (
+        "MARKET_AMOUNT_RULES_MISSING"
+    )
 
 @pytest.mark.asyncio
 async def test_state1_adverse_selection_cancellation(engine, fake_redis, mock_client):
@@ -212,6 +252,145 @@ async def test_entry_order_ttl_expiration(engine, fake_redis, mock_client):
     assert ("701", "btc_idr") in mock_client.cancelled_orders
     assert pair_tag not in engine.pending_entry_orders
     assert engine.states[pair_tag] == PositionState.IDLE
+
+@pytest.mark.asyncio
+async def test_entry_order_ttl_cancels_remainder_and_hedges_partial_fill(engine, fake_redis, mock_client):
+    """An aged partially-filled maker order must cancel its remainder and hedge the final fill."""
+    pair_tag = "indodax:btc_idr"
+    engine.config.max_order_ttl_seconds = 10
+    order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
+    order_info["placed_time"] = time.time() - 15
+    order_info["qty"] = 0.01
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.000048,
+    }
+
+    await engine._check_entry_orders()
+
+    assert ("301", "btc_idr") in mock_client.cancelled_orders
+    assert len(mock_client.global_short_sells) == 1
+    assert mock_client.global_short_sells[0]["amount"] == pytest.approx(0.000048)
+    assert pair_tag in engine.active_positions
+    assert engine.active_positions[pair_tag].qty == pytest.approx(0.000048)
+    assert pair_tag not in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.HEDGED_ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_pending_partial_fill_progress_is_persisted_for_restart(engine, fake_redis, mock_client):
+    """A below-threshold partial fill is durably recorded before the next monitoring cycle."""
+    pair_tag = "indodax:btc_idr"
+    order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
+    order_info["qty"] = 0.1
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.000048,
+    }
+
+    await engine._check_entry_orders()
+
+    persisted = json.loads(await fake_redis.get("arb:pending_entry:" + pair_tag))
+    assert persisted["filled"] == pytest.approx(0.000048)
+    assert persisted["hedged_short_qty"] == pytest.approx(0.0)
+    assert engine.states[pair_tag] == PositionState.ENTRY_PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_stale_unfilled_maker_quote_is_cancelled_for_fresh_scanner_reentry(
+    engine, fake_redis, mock_client
+):
+    """Refresh only cancels a stale quote; it never submits a replacement itself."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    engine.config.maker_refresh_after_seconds = 45
+    engine.config.maker_refresh_cooldown_seconds = 300
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 60
+    order_info["min_entry_spread_pct"] = 0.10
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.0,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps({
+        "local_best_bid": 1_000_001_000.0,
+        "local_best_ask": 1_002_000_000.0,
+        "global_best_bid_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }))
+
+    await engine._check_entry_orders()
+
+    assert ("301", "btc_idr") in mock_client.cancelled_orders
+    assert mock_client.placed_buys == []
+    assert pair_tag not in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.IDLE
+    assert await fake_redis.exists(f"arb:maker_refresh_cooldown:{pair_tag}")
+
+
+@pytest.mark.asyncio
+async def test_stale_maker_quote_with_any_partial_fill_is_never_refreshed(
+    engine, fake_redis, mock_client
+):
+    """A partial spot fill remains on the fill/hedge path, never the refresh path."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    engine.config.maker_refresh_after_seconds = 1
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 60
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.000048,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps({
+        "local_best_bid": 1_000_001_000.0,
+        "local_best_ask": 1_002_000_000.0,
+        "global_best_bid_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }))
+
+    await engine._check_entry_orders()
+
+    assert mock_client.cancelled_orders == []
+    assert pair_tag in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.ENTRY_PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_stale_maker_quote_is_not_refreshed_when_live_edge_is_below_floor(
+    engine, fake_redis, mock_client
+):
+    """Refresh is denied if the best-bid candidate no longer meets the edge floor."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    engine.config.maker_refresh_after_seconds = 1
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 60
+    order_info["min_entry_spread_pct"] = 4.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.0,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps({
+        "local_best_bid": 1_000_001_000.0,
+        "local_best_ask": 1_002_000_000.0,
+        "global_best_bid_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }))
+
+    await engine._check_entry_orders()
+
+    assert mock_client.cancelled_orders == []
+    assert pair_tag in engine.pending_entry_orders
+
 
 @pytest.mark.asyncio
 async def test_p2_01_partial_fill_below_threshold_sets_entry_partial(engine, fake_redis, mock_client):
@@ -374,7 +553,7 @@ async def test_p0_04_missing_futures_price_aborts_and_rolls_back(fake_redis):
     now_ms = int(time.time() * 1000)
 
     class NoPriceShortClient(MockExchangeClient):
-        async def open_global_short_market(self, symbol, amount, price=0.0, client_order_id=None):
+        async def open_global_short_market(self, symbol, amount, price=0.0, client_order_id=None, amount_spec=None):
             record = {
                 "id": "no-price-hedge",
                 "symbol": symbol,

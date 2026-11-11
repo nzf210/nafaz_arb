@@ -66,6 +66,18 @@ def _fmt(value: Any) -> str:
         text = text.rstrip("0").rstrip(".")
     return text or "0"
 
+def _fmt_to_increment(value: Any, increment: Any) -> str:
+    """Rounds a quantity down to the exact market increment without float noise."""
+    quantity = Decimal(str(value))
+    step = Decimal(str(increment))
+    if not quantity.is_finite() or not step.is_finite() or step <= 0:
+        raise ValueError(f"invalid quantity or increment: quantity={value}, increment={increment}")
+    rounded = (quantity / step).to_integral_value(rounding=ROUND_DOWN) * step
+    text = format(rounded, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
 class IndodaxTAPIv2:
     """Minimal ccxt-compatible async client for INDODAX Trade API 2.0."""
 
@@ -209,8 +221,17 @@ class IndodaxTAPIv2:
             "symbol": normalize_symbol(symbol),
             "side": side,
             "type": order_type,
-            "quantity": _fmt(amount),
         }
+        quantity_increment = (params or {}).get("quantityIncrement")
+        payload["quantity"] = (
+            _fmt_to_increment(amount, quantity_increment)
+            if quantity_increment is not None
+            else _fmt(amount)
+        )
+        if Decimal(payload["quantity"]) <= 0:
+            raise ValueError(
+                f"order amount {amount} rounds to zero for quantity increment {quantity_increment}"
+            )
         if price is not None:
             payload["price"] = _fmt(price)
         client_order_id = (params or {}).get("clientOrderId")

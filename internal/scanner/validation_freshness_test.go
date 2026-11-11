@@ -45,8 +45,12 @@ func TestValidateOrderBookAgeRejectsMissingAndFutureTimestamp(t *testing.T) {
 	}
 	future := valid
 	future.Timestamp = now.Add(2 * time.Second)
+	if err := validateOrderBookAge(future, valid, now, 5); err != nil {
+		t.Fatalf("small venue clock drift should use local receive time: %v", err)
+	}
+	future.Timestamp = now.Add(6 * time.Second)
 	if err := validateOrderBookAge(future, valid, now, 5); err == nil {
-		t.Fatal("future timestamp beyond clock-skew tolerance must be rejected")
+		t.Fatal("materially future exchange timestamp must be rejected")
 	}
 }
 

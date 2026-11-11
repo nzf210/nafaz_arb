@@ -63,6 +63,9 @@ async def test_balance_constraint_and_realized_trade_updates(fake_redis):
             "base_asset": "BTC",
             "quote_asset": "IDR",
             "local_price_tick": 1000.0,
+            "local_lot_size": 0.00000001,
+            "local_amount_spec": {"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
+            "global_amount_spec": {"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
         },
         "pricing_snapshot": {
             "local_best_bid": 1000000000.0,
@@ -93,10 +96,10 @@ async def test_balance_constraint_and_realized_trade_updates(fake_redis):
 
     # Order 1 placed -> Funds locked
     bals1 = client.get_balances()
-    assert bals1["spot_locked"] == 50.0
-    assert bals1["futures_locked"] == 50.0
-    assert bals1["spot_available"] == 50.0
-    assert bals1["futures_available"] == 50.0
+    assert 0 < bals1["spot_locked"] <= 50.0
+    assert 0 < bals1["futures_locked"] <= 50.0
+    assert bals1["spot_available"] == pytest.approx(100.0 - bals1["spot_locked"])
+    assert bals1["futures_available"] == pytest.approx(100.0 - bals1["futures_locked"])
 
     # 3. Second Signal for eth_idr ($50 position)
     sig2 = dict(sig1)
@@ -111,10 +114,10 @@ async def test_balance_constraint_and_realized_trade_updates(fake_redis):
     await engine.handle_signal_notification("indodax:eth_idr")
 
     bals2 = client.get_balances()
-    assert bals2["spot_locked"] == 100.0
-    assert bals2["futures_locked"] == 100.0
-    assert bals2["spot_available"] == 0.0
-    assert bals2["futures_available"] == 0.0
+    assert 99.0 < bals2["spot_locked"] <= 100.0
+    assert 99.0 < bals2["futures_locked"] <= 100.0
+    assert bals2["spot_available"] == pytest.approx(100.0 - bals2["spot_locked"])
+    assert bals2["futures_available"] == pytest.approx(100.0 - bals2["futures_locked"])
 
     # 4. Third Signal for sol_idr ($50 position) -> MUST BE REJECTED!
     sig3 = dict(sig1)
@@ -171,7 +174,7 @@ async def test_balance_constraint_and_realized_trade_updates(fake_redis):
     # 6. Check updated balances after trade completion:
     # Locked funds for btc_idr (50 USDT) were released, spot & futures received realized gains
     final_bals = client.get_balances()
-    assert final_bals["spot_locked"] == 50.0  # Only eth_idr still locked
+    assert 0 < final_bals["spot_locked"] <= 50.0  # Only eth_idr still locked
     assert final_bals["spot_available"] > 50.0  # Spot gained profit!
     assert final_bals["futures_available"] > 40.0  # Futures unlocked 50 USDT minus basis delta
     assert final_bals["total_equity"] > 200.0  # Overall portfolio equity grew!

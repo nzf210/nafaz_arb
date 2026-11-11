@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -287,6 +288,35 @@ func TestAlertOnScan(t *testing.T) {
 
 	if alertsCount != 1 {
 		t.Fatalf("expected 1 alert sent, got %d", alertsCount)
+	}
+}
+
+func TestScanRejectionSummaryNotification(t *testing.T) {
+	alerts := make(chan SendMessageReq, 2)
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var req SendMessageReq
+			if err := json.NewDecoder(r.Body).Decode(&req); err == nil { alerts <- req }
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.cfg.Telegram.AlertCooldownMinutes = 15
+	bot.onScanCompleted(context.Background(), domain.ScanResult{
+		ScanID: "rejected-scan", TotalMarkets: 1800, MatchedPairs: 416,
+		ActivePairs: 416, ExcludedPairs: 416,
+		Opportunities: []domain.Opportunity{{
+			BaseAsset: "BTC", TradingEligible: false,
+			ExclusionReasons: []string{"ENTRY_SPREAD_BELOW_MINIMUM", "NEGATIVE_FUNDING_RATE"},
+		}},
+	})
+	select {
+	case alert := <-alerts:
+		if !strings.Contains(alert.Text, "ENTRY_SPREAD_BELOW_MINIMUM") { t.Fatalf("missing rejection reason: %s", alert.Text) }
+		if !strings.Contains(alert.Text, "416") { t.Fatalf("missing matched count: %s", alert.Text) }
+	case <-time.After(time.Second):
+		t.Fatal("expected Telegram rejection summary")
 	}
 }
 
@@ -636,5 +666,125 @@ func TestBroadcastExecutionFailureCooldown(t *testing.T) {
 	bot.broadcastTradeEvent(context.Background(), ev)
 	if received != 1 {
 		t.Fatalf("expected cooldown to suppress duplicate alert, got %d messages", received)
+	}
+}
+
+type fakeOpportunityHistoryReader struct {
+	scans []domain.ScanResult
+	err error
+	limit int
+}
+
+func (f *fakeOpportunityHistoryReader) LatestOpportunityScans(_ context.Context, limit int) ([]domain.ScanResult, error) {
+	f.limit = limit
+	return f.scans, f.err
+}
+
+func TestLatestCommandLoadsTenRecentScansFromHistoryReader(t *testing.T) {
+	messages := make(chan SendMessageReq, 12)
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var req SendMessageReq
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			messages <- req
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	reader := &fakeOpportunityHistoryReader{}
+	for i := 0; i < 10; i++ {
+		reader.scans = append(reader.scans, domain.ScanResult{
+			ScanID: fmt.Sprintf("scan-%02d", 10-i),
+			CompletedAt: time.Date(2026, 11, 9, 0, i, 0, 0, time.UTC),
+			Opportunities: []domain.Opportunity{{
+				BaseAsset: "BTC", QuoteAsset: "IDR", SpotSymbol: "btc_idr",
+				PerpSymbol: "BTC/USDT:USDT", NetROIPct: float64(i),
+				LastScannedAt: time.Date(2026, 11, 9, 0, i, 0, 0, time.UTC),
+			}},
+		})
+	}
+	bot.SetOpportunityHistoryReader(reader)
+	bot.handleCommand(context.Background(),
+		&Message{Chat: Chat{ID: -100123456789}, MessageID: 21},
+		"/latest", []string{"/latest"})
+
+	if reader.limit != 10 {
+		t.Fatalf("reader limit=%d, want 10", reader.limit)
+	}
+	for i := 0; i < 10; i++ {
+		select {
+		case msg := <-messages:
+			if !strings.Contains(msg.Text, fmt.Sprintf("Scan Peluang Terbaru %d/10", i+1)) {
+				t.Fatalf("message %d missing scan sequence: %s", i+1, msg.Text)
+			}
+			if !strings.Contains(msg.Text, fmt.Sprintf("scan-%02d", 10-i)) {
+				t.Fatalf("message %d missing scan ID: %s", i+1, msg.Text)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("only received %d of 10 scan messages", i)
+		}
+	}
+}
+
+func TestLatestCommandReportsHistoryReadFailure(t *testing.T) {
+	messages := make(chan SendMessageReq, 1)
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var req SendMessageReq
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			messages <- req
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.SetOpportunityHistoryReader(&fakeOpportunityHistoryReader{err: fmt.Errorf("database unavailable")})
+	bot.handleCommand(context.Background(),
+		&Message{Chat: Chat{ID: -100123456789}, MessageID: 22},
+		"/latest", []string{"/latest"})
+	msg := <-messages
+	if !strings.Contains(msg.Text, "Gagal mengambil 10 scan") {
+		t.Fatalf("unexpected history failure message: %s", msg.Text)
+	}
+}
+
+
+func TestOpportunityAlertShowsSpotAndFuturesCEX(t *testing.T) {
+	bot := New(config.Config{}, nil)
+	message := bot.formatOpportunityAlert(domain.Opportunity{
+		BaseAsset: "ATH", QuoteAsset: "USDT", LocalExchange: "tokocrypto", GlobalExchange: "okx",
+		ExecutionMode: "MAKER_TAKER", SpotSymbol: "ATH/USDT", PerpSymbol: "ATH-USDT-SWAP",
+	})
+	if !strings.Contains(message, "Spot CEX:</b> TOKOCRYPTO") {
+		t.Fatalf("spot CEX missing from opportunity alert: %s", message)
+	}
+	if !strings.Contains(message, "Futures CEX:</b> OKX") {
+		t.Fatalf("futures CEX missing from opportunity alert: %s", message)
+	}
+}
+
+func TestPendingOrdersCommandShowsExecutorSnapshot(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil { t.Fatal(err) }
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	payload := `{"status":"RUNNING","mock_mode":false,"timestamp_ms":1794220000000,"pending_entries":1,"pending_exits":0,"pending_orders":[{"pair_tag":"toko:ath_usdt","leg":"SPOT_ENTRY","order_id":"order-123","symbol":"ATH/USDT","local_exchange":"tokocrypto","global_exchange":"okx","price":0.0044,"qty":2200,"filled":200,"remaining":2000,"status":"PARTIALLY_FILLED","created_at_ms":1794219900000}]}`
+	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, payload, time.Minute).Err(); err != nil { t.Fatal(err) }
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.handlePendingOrdersCommand(context.Background(), -100123456789, 0)
+	if !strings.Contains(sent.Text, "PARTIALLY_FILLED") || !strings.Contains(sent.Text, "TOKOCRYPTO") || !strings.Contains(sent.Text, "OKX") || !strings.Contains(sent.Text, "order-123") {
+		t.Fatalf("pending order details missing: %s", sent.Text)
 	}
 }

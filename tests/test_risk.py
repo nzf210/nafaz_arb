@@ -382,3 +382,95 @@ async def test_balance_feed_failure_halts_new_entries(engine, fake_redis):
     assert "indodax" in engine._exchange_halted
     assert "binance" in engine._exchange_halted
     assert "balance feed unavailable" in engine._exchange_halted["indodax"]
+
+
+@pytest.mark.asyncio
+async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis):
+    """Live order submission, not a balance endpoint, decides whether funds suffice."""
+    client = BalancesMockClient()
+
+    def fail_balances():
+        raise TimeoutError("balance endpoint rate limited")
+
+    client.get_balances = fail_balances
+    engine.config.mock_mode = False
+    engine.config.global_exchange_name = "binance"
+    engine.client = client
+    pair_tag = "indodax:btc_idr"
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}",
+        json.dumps(_fresh_signal_payload(int(time.time() * 1000))),
+    )
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(client.placed_buys) == 1
+    assert engine._exchange_halted == {}
+
+
+@pytest.mark.asyncio
+async def test_live_order_rejection_notifies_exchange_insufficient_balance(
+    engine, fake_redis
+):
+    """An insufficient-funds rejection is reported with the venue's reason."""
+    client = BalancesMockClient()
+
+    def fail_balances():
+        raise TimeoutError("balance endpoint rate limited")
+
+    async def reject_order(*args, **kwargs):
+        raise RuntimeError("InsufficientFunds: insufficient balance")
+
+    client.get_balances = fail_balances
+    client.place_local_limit_buy = reject_order
+    engine.config.mock_mode = False
+    engine.config.global_exchange_name = "binance"
+    engine.client = client
+    failures = []
+
+    async def capture_failure(pair_tag, reason, message, **kwargs):
+        failures.append((reason, message, kwargs.get("detail", {})))
+
+    engine._publish_execution_failure = capture_failure
+    pair_tag = "indodax:btc_idr"
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}",
+        json.dumps(_fresh_signal_payload(int(time.time() * 1000))),
+    )
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(failures) == 1
+    reason, message, detail = failures[0]
+    assert reason == "INSUFFICIENT_BALANCE"
+    assert "InsufficientFunds: insufficient balance" in message
+    assert detail["exchange_error"] == "InsufficientFunds: insufficient balance"
+    assert engine._exchange_halted == {}
+
+
+def test_business_rejections_do_not_count_toward_exchange_failure_breaker(engine):
+    engine.config.max_consecutive_order_failures = 50
+    engine._record_order_failure("indodax", "insufficient balance")
+    engine._record_order_failure("okx", "MIN_NOTIONAL")
+    engine._record_order_failure("mexc", "INVALID_SYMBOL")
+
+    assert engine._consecutive_order_failures == {}
+    assert engine._exchange_halted == {}
+
+
+def test_failure_breaker_isolated_per_exchange_and_trips_at_50(engine):
+    engine.config.max_consecutive_order_failures = 50
+    for _ in range(49):
+        engine._record_order_failure("indodax", "network timeout")
+    for _ in range(20):
+        engine._record_order_failure("okx", "temporary API error")
+
+    assert engine._consecutive_order_failures["indodax"] == 49
+    assert engine._consecutive_order_failures["okx"] == 20
+    assert "indodax" not in engine._exchange_halted
+    assert "okx" not in engine._exchange_halted
+
+    engine._record_order_failure("indodax", "network timeout")
+    assert engine._consecutive_order_failures["indodax"] == 50
+    assert "indodax" in engine._exchange_halted
+    assert "okx" not in engine._exchange_halted

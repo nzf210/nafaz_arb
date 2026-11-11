@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"os"
 	"strings"
 	"time"
@@ -48,7 +49,7 @@ func NewFromEnv() (*Client, error) {
 	return &Client{
 		baseURL:        baseURL,
 		serviceRoleKey: key,
-		httpClient:     &http.Client{Timeout: 3 * time.Second},
+		httpClient:     &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
 
@@ -235,6 +236,143 @@ func (c *Client) saveBatch(ctx context.Context, rows []opportunityRow) error {
 		}
 	}
 	return lastErr
+}
+
+
+// readScannerHistory performs one GET against scanner_opportunities with a
+// bounded retry: transient network stalls previously surfaced as Telegram
+// history failures even though writes kept flowing through the outbox.
+func (c *Client) readScannerHistory(ctx context.Context, endpoint string) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create scanner history request: %w", err)
+		}
+		req.Header.Set("apikey", c.serviceRoleKey)
+		req.Header.Set("Authorization", "Bearer "+c.serviceRoleKey)
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("read scanner opportunity history: %w", err)
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		} else {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+			_ = resp.Body.Close()
+			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				if readErr != nil {
+					return nil, fmt.Errorf("read scanner opportunity history body: %w", readErr)
+				}
+				return body, nil
+			}
+			lastErr = fmt.Errorf("read scanner opportunity history returned HTTP %d", resp.StatusCode)
+			retryable := resp.StatusCode == http.StatusRequestTimeout ||
+				resp.StatusCode == http.StatusTooManyRequests ||
+				resp.StatusCode >= http.StatusInternalServerError
+			if !retryable {
+				return nil, lastErr
+			}
+		}
+		if attempt < 2 {
+			timer := time.NewTimer(time.Duration(100*(1<<attempt)) * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+// LatestOpportunityScans returns opportunities grouped by the newest distinct
+// scan IDs. It pages through PostgREST so the project's max-rows setting does
+// not silently reduce the requested scan history to a single page.
+func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]domain.ScanResult, error) {
+	if c == nil || c.httpClient == nil {
+		return nil, fmt.Errorf("Supabase opportunity history is not configured")
+	}
+	if scanLimit <= 0 {
+		scanLimit = 10
+	}
+	const pageSize = 1000
+	const maxPages = 100
+	type storedRow struct {
+		ScanID     string             `json:"scan_id"`
+		ObservedAt time.Time          `json:"observed_at"`
+		Payload    domain.Opportunity `json:"payload"`
+	}
+	byScan := make(map[string]*domain.ScanResult, scanLimit+1)
+	order := make([]string, 0, scanLimit+1)
+	windowComplete := false
+	for page := 0; page < maxPages && !windowComplete; page++ {
+		query := url.Values{}
+		query.Set("select", "scan_id,observed_at,payload")
+		query.Set("scan_id", "not.is.null")
+		query.Set("order", "observed_at.desc,scan_id.desc")
+		query.Set("limit", fmt.Sprint(pageSize))
+		query.Set("offset", fmt.Sprint(page*pageSize))
+		endpoint := c.baseURL + "/rest/v1/scanner_opportunities?" + query.Encode()
+		body, err := c.readScannerHistory(ctx, endpoint)
+		if err != nil {
+			return nil, err
+		}
+		var rows []storedRow
+		if err := json.Unmarshal(body, &rows); err != nil {
+			return nil, fmt.Errorf("decode scanner opportunity history: %w", err)
+		}
+		for _, row := range rows {
+			if strings.TrimSpace(row.ScanID) == "" {
+				continue
+			}
+			result, exists := byScan[row.ScanID]
+			if !exists {
+				if len(order) == scanLimit {
+					// The first row of the next scan proves the requested
+					// window is complete; all rows for the prior scan were read.
+					windowComplete = true
+					break
+				}
+				result = &domain.ScanResult{
+					ScanID: row.ScanID, StartedAt: row.ObservedAt,
+					CompletedAt: row.ObservedAt, Opportunities: []domain.Opportunity{},
+				}
+				byScan[row.ScanID] = result
+				order = append(order, row.ScanID)
+			}
+			if row.ObservedAt.After(result.CompletedAt) {
+				result.CompletedAt = row.ObservedAt
+			}
+			if row.Payload.LastScannedAt.IsZero() {
+				row.Payload.LastScannedAt = row.ObservedAt
+			}
+			result.Opportunities = append(result.Opportunities, row.Payload)
+		}
+		if len(rows) < pageSize {
+			break
+		}
+	}
+	out := make([]domain.ScanResult, 0, len(order))
+	for _, scanID := range order {
+		result := *byScan[scanID]
+		sort.Slice(result.Opportunities, func(i, j int) bool {
+			return result.Opportunities[i].NetROIPct > result.Opportunities[j].NetROIPct
+		})
+		result.MatchedPairs = len(result.Opportunities)
+		result.EligiblePairs = 0
+		result.ExcludedPairs = 0
+		for _, op := range result.Opportunities {
+			if op.TradingEligible {
+				result.EligiblePairs++
+			} else {
+				result.ExcludedPairs++
+			}
+		}
+		out = append(out, result)
+	}
+	return out, nil
 }
 
 // Close releases idle connections when the scanner shuts down.

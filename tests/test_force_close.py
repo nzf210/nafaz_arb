@@ -303,7 +303,7 @@ async def test_force_close_still_sells_spot_when_futures_fill_price_is_missing(f
     """Flat futures exposure must not leave spot unhedged merely because PnL price is absent."""
     client = MockExchangeClient()
 
-    async def close_without_price(symbol, amount, client_order_id=None):
+    async def close_without_price(symbol, amount, client_order_id=None, amount_spec=None):
         return {
             "id": "close-no-price",
             "symbol": symbol,
@@ -343,7 +343,7 @@ async def test_force_close_retry_skips_already_flat_futures_and_retries_spot(fak
     client = MockExchangeClient()
     futures_close_calls = {"count": 0}
 
-    async def unexpected_futures_close(symbol, amount, client_order_id=None):
+    async def unexpected_futures_close(symbol, amount, client_order_id=None, amount_spec=None):
         futures_close_calls["count"] += 1
         raise AssertionError("must not submit a second futures close when already flat")
 
@@ -380,7 +380,7 @@ async def test_force_close_retry_does_not_resubmit_when_short_remains_open(fake_
     client = MockExchangeClient()
     close_calls = {"count": 0}
 
-    async def unexpected_futures_close(symbol, amount, client_order_id=None):
+    async def unexpected_futures_close(symbol, amount, client_order_id=None, amount_spec=None):
         close_calls["count"] += 1
         raise AssertionError("duplicate futures close must be blocked")
 

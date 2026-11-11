@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"errors"
+	"math"
 	"fmt"
 	"log"
 	"sort"
@@ -127,7 +128,10 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 		fxRate = s.lastKnownFXRate()
 	}
 	requiredNotional := s.requiredNotionalUsdt()
-	op, err := s.calculate(sm, pm, sb, pb, fr, started, positionReason, isSynthetic, fxRate, requiredNotional)
+	// Evaluate freshness against the time after both order books were received,
+	// not the beginning of the full scan (which can be seconds earlier).
+	evaluationTime := time.Now().UTC()
+	op, err := s.calculate(sm, pm, sb, pb, fr, evaluationTime, positionReason, isSynthetic, fxRate, requiredNotional)
 	if err != nil {
 		if strings.Contains(err.Error(), "empty order book") {
 			s.recordEmptyBook(pairKey, started)
@@ -137,6 +141,13 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 			err:             err,
 		}
 	}
+	// Preserve the exact venue pairing used for this evaluation so alerts and history
+	// never infer an exchange from a venue-specific symbol format.
+	op.LocalExchange = sm.Exchange
+	op.GlobalExchange = pm.Exchange
+
+	// Executor active-position state is resolved inside applyHybridMakerTakerRules
+	// (which owns the Redis client); there is no prior knowledge here.
 	if !fxLive && isIDRQuote {
 		// Defense in depth: unreachable in normal flow (the skip above fires
 		// first), but kept as a hard gate so a fallback-rate opportunity can
@@ -146,7 +157,7 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 	s.clearEmptyBook(pairKey)
 
 	// Lapis 1 & 2 Filter Evaluation & Redis Directives
-	publishErr := s.applyHybridMakerTakerRules(ctx, &op, sm, pm, rawSB, pb, fr, fxRate, isIDRQuote, started)
+	publishErr := s.applyHybridMakerTakerRules(ctx, &op, sm, pm, rawSB, pb, fr, fxRate, isIDRQuote, evaluationTime)
 
 	return evalResult{
 		op:              op,
@@ -266,7 +277,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	if lastFundingRate < 0 {
 		op.ExclusionReasons = append(op.ExclusionReasons, "NEGATIVE_FUNDING_RATE")
 		if rc != nil {
-			_ = rc.PublishEmergencyCancel(ctx, sm.Exchange, sm.Symbol, "CANCEL_ALL_NEGATIVE_FUNDING", lastFundingRate)
+			_ = rc.PublishEmergencyCancel(ctx, sm.Exchange, sm.Symbol, "CANCEL_ALL_NEGATIVE_FUNDING", lastFundingRate, pm.Exchange, pm.Symbol)
 		}
 	} else if s.cfg.MinFundingRate > 0 && lastFundingRate < s.cfg.MinFundingRate {
 		op.ExclusionReasons = append(op.ExclusionReasons, "FUNDING_RATE_BELOW_MINIMUM")
@@ -281,7 +292,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	// publishing without knowing the executor state risks a doubled position.
 	hasActive := false
 	if rc != nil {
-		posExists, errPos := rc.HasActivePosition(ctx, sm.Exchange, sm.Symbol)
+		posExists, errPos := rc.HasActivePosition(ctx, sm.Exchange, sm.Symbol, pm.Exchange, pm.Symbol)
 		switch {
 		case errPos == nil && posExists:
 			hasActive = true
@@ -292,6 +303,16 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	}
 
 	op.TradingEligible = len(op.ExclusionReasons) == 0
+	if op.TradingEligible && s.cfg.EnableExecutorSignals && !hasActive &&
+		(!validAmountSpec(sm.AmountSpec) || !validAmountSpec(pm.AmountSpec)) {
+		op.TradingEligible = false
+		op.ExecutionSignalStatus = "amount_rules_missing"
+		op.ExclusionReasons = append(op.ExclusionReasons, "AMOUNT_RULES_MISSING")
+		log.Printf(
+			"execution signal suppressed for %s/%s: spot or perpetual amount rules are missing or invalid",
+			sm.Exchange+":"+sm.Symbol, pm.Exchange+":"+pm.Symbol,
+		)
+	}
 
 	// Populate metadata fields
 	op.LocalPriceTick = tickIDR
@@ -320,13 +341,40 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		TimestampMS:       time.Now().UnixMilli(),
 	}
 
-	if rc != nil {
-		if err := rc.UpdateLivePrice(ctx, sm.Exchange, sm.Symbol, pricingSnapshot); err != nil {
-			op.ExclusionReasons = append(op.ExclusionReasons, "LIVE_PRICE_PUBLISH_FAILED")
+	if op.TradingEligible {
+		switch {
+		case rc == nil:
+			op.ExecutionSignalStatus = "redis_unavailable"
+		case !s.cfg.EnableExecutorSignals:
+			op.ExecutionSignalStatus = "disabled"
+		default:
+			op.ExecutionSignalStatus = "pending"
 		}
+	}
+	if rc != nil {
+		if err := rc.UpdateLivePrice(ctx, sm.Exchange, sm.Symbol, pricingSnapshot, pm.Exchange, pm.Symbol); err != nil {
+			if op.TradingEligible {
+				op.ExecutionSignalStatus = "live_price_publish_failed"
+			}
+		}
+	}
 
-		if op.TradingEligible && !hasActive && s.cfg.EnableExecutorSignals {
+	if rc != nil {
+		if op.TradingEligible && !hasActive && s.cfg.EnableExecutorSignals && op.ExecutionSignalStatus != "live_price_publish_failed" {
 			maxPosUSDT := s.cfg.CapitalTotal * s.cfg.AllocationPerPair
+			netProfitUSDT := op.NetProfit
+			quote := strings.ToUpper(op.QuoteAsset)
+			if quote == "IDR" || quote == "BIDR" {
+				if fxRate <= 0 || math.IsNaN(fxRate) || math.IsInf(fxRate, 0) {
+					return fmt.Errorf("cannot rank %s: valid live USDT/IDR conversion unavailable", sm.Symbol)
+				}
+				netProfitUSDT /= fxRate
+			} else if quote != "USDT" {
+				return fmt.Errorf("cannot rank %s: unsupported profit quote asset %s", sm.Symbol, quote)
+			}
+			if netProfitUSDT <= 0 || math.IsNaN(netProfitUSDT) || math.IsInf(netProfitUSDT, 0) {
+				return fmt.Errorf("cannot rank %s: estimated net profit is not finite and positive", sm.Symbol)
+			}
 			payload := domain.ExecutorPayload{
 				PairInfo: domain.PairInfo{
 					LocalExchange:  sm.Exchange,
@@ -337,6 +385,9 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					QuoteAsset:     sm.QuoteAsset,
 					LocalPriceTick: tickIDR,
 					LocalLotSize:   sm.LotSize,
+					LocalAmountSpec:  sm.AmountSpec,
+					GlobalAmountSpec: pm.AmountSpec,
+					GlobalQuoteAsset: pm.QuoteAsset,
 				},
 				PricingSnapshot: pricingSnapshot,
 				FundingMetrics: domain.FundingMetrics{
@@ -354,16 +405,32 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					MaxPositionUSDT:                 maxPosUSDT,
 					CancelIfGlobalBidDropsBelowUSDT: cancelIfGlobalBidDropsBelowUSDT,
 					ScannerValidated:                true,
+					EstimatedNetProfitUSDT:           netProfitUSDT,
 				},
 			}
+
 			if err := rc.PublishSignal(ctx, payload); err != nil {
 				// A signal that never reached Redis would be silently lost:
 				// surface it as a fatal error so the scan is not "complete".
+				op.ExecutionSignalStatus = "publish_failed"
 				return fmt.Errorf("publish signal %s: %w", sm.Symbol, err)
 			}
+			op.ExecutionSignalStatus = "published"
 		}
 	}
 	return nil
+}
+
+func validAmountSpec(spec *domain.AmountSpec) bool {
+	if spec == nil || spec.Step <= 0 || spec.Min < 0 || spec.BasePerUnit <= 0 {
+		return false
+	}
+	if math.IsNaN(spec.Step) || math.IsInf(spec.Step, 0) ||
+		math.IsNaN(spec.Min) || math.IsInf(spec.Min, 0) ||
+		math.IsNaN(spec.BasePerUnit) || math.IsInf(spec.BasePerUnit, 0) {
+		return false
+	}
+	return spec.Unit == "BASE" || spec.Unit == "CONTRACT"
 }
 
 func (s *Service) evaluateActivePairs(ctx context.Context, pairs [][2]domain.Market, exposures []domain.OpenExposure, positionStateKnown bool, started time.Time) []evalResult {

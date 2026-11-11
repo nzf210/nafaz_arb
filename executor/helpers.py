@@ -1,6 +1,7 @@
 """Shared helpers: client order ids, tick rounding, retry, key builders."""
 
 import asyncio
+import hashlib
 import logging
 import math
 from typing import Awaitable, Callable, Optional, TypeVar
@@ -13,6 +14,15 @@ T = TypeVar("T")
 ARB_TRADE_HISTORY_KEY = "arb:trade_history"
 ARB_TRADE_HISTORY_MAX_LEN = 49  # ltrim keeps indices 0..49 → 50 entries
 
+# Binance Cloud venues (e.g. Tokocrypto) require client order ids to carry a
+# registered broker prefix ("x-XXXXXXXX"); anything else is rejected with
+# error 3703 "Invalid client ID". This is the broker id ccxt itself assigns
+# for Binance spot through its own generate_client_order_id(). The prefix
+# consumes 9 of the 36-char venue budget, so ids built for these venues must
+# reserve room for it here; executor.exchange_client prepends it on the wire.
+BINANCE_BROKER_PREFIX = "x-TKT5PX2F"
+BINANCE_BROKER_PREFIX_LENGTH = len(BINANCE_BROKER_PREFIX)
+
 def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     """
     Builds a venue-safe client order id: ``{pair}-{leg}-{seq}``.
@@ -22,8 +32,29 @@ def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     double-filling. Kept to lowercase alphanumerics and dashes because Binance,
     OKX and Indodax each accept a different, partly overlapping character set.
     """
-    clean_pair = "".join(c if c.isalnum() else "-" for c in pair_tag.lower())[:24]
-    return f"{clean_pair}-{leg.lower()}-{seq}"[:36]
+    clean_pair = "".join(c if c.isalnum() else "-" for c in pair_tag.lower()).strip("-")
+    clean_leg = "".join(c if c.isalnum() else "-" for c in leg.lower()).strip("-")
+    suffix = f"-{clean_leg}-{seq}"
+    max_pair_length = 36 - len(suffix)
+    if max_pair_length < 1:
+        raise ValueError("client order ID leg and sequence exceed the 36-character limit")
+
+    # Binance Cloud venues prepend their broker id to the client order id on
+    # the wire, so ids built for those venues must reserve prefix space here
+    # to keep the final id within the venue's 36-character limit.
+    if pair_tag.lower().startswith("tokocrypto"):
+        max_pair_length -= BINANCE_BROKER_PREFIX_LENGTH
+        if max_pair_length < 1:
+            raise ValueError("client order ID exceeds the 36-character limit with broker prefix")
+
+    if len(clean_pair) > max_pair_length:
+        pair_hash = hashlib.sha256(pair_tag.lower().encode("utf-8")).hexdigest()[:8]
+        visible_length = max_pair_length - len(pair_hash) - 1
+        if visible_length < 1:
+            clean_pair = pair_hash[:max_pair_length]
+        else:
+            clean_pair = f"{clean_pair[:visible_length].rstrip('-')}-{pair_hash}"
+    return f"{clean_pair}{suffix}"
 
 
 class HedgeSlippageExceeded(Exception):

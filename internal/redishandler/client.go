@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"encoding/json"
+	"math"
 	"fmt"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ const (
 	ChannelKillSwitch      = "arb:kill_switch"
 	ChannelTradeEvents     = "arb:trade_events"
 	KeyPrefixSignal        = "arb:signal:"
+	KeySignalPriority      = "arb:signal_priority"
 	KeyPrefixLivePrice     = "arb:live_price:"
 	KeyPrefixActivePos     = "arb:active_pos:"
 	KeyTradeHistory        = "arb:trade_history"
@@ -88,10 +90,12 @@ type TradeEvent struct {
 }
 
 type PairUpdate struct {
-	LocalEx   string
-	Symbol    string
-	LivePrice domain.PricingSnapshot
-	Payload   *domain.ExecutorPayload // non-nil if eligible for entry signal
+	LocalEx       string
+	Symbol        string
+	GlobalEx      string
+	GlobalSymbol  string
+	LivePrice     domain.PricingSnapshot
+	Payload       *domain.ExecutorPayload // non-nil if eligible for entry signal
 }
 
 type Client struct {
@@ -120,33 +124,48 @@ func NewWithClient(rdb *redis.Client) *Client {
 }
 
 // CleanPairKey formats local exchange and symbol into a normalized {local_ex}:{symbol} tag.
-func CleanPairKey(localEx, symbol string) string {
-	cleanEx := strings.ToLower(strings.TrimSpace(localEx))
-	cleanSym := strings.ToLower(strings.TrimSpace(symbol))
-	cleanSym = strings.ReplaceAll(cleanSym, "/", "_")
-	cleanSym = strings.ReplaceAll(cleanSym, "-", "_")
-	return cleanEx + ":" + cleanSym
+func CleanPairKey(localEx, symbol string, globalPair ...string) string {
+	clean := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		value = strings.ReplaceAll(value, "/", "_")
+		return strings.ReplaceAll(value, "-", "_")
+	}
+	tag := clean(localEx) + ":" + clean(symbol)
+	if len(globalPair) >= 2 && strings.TrimSpace(globalPair[0]) != "" && strings.TrimSpace(globalPair[1]) != "" {
+		tag += "__" + clean(globalPair[0]) + ":" + clean(globalPair[1])
+	}
+	return tag
 }
 
 // HasActivePosition checks if arb:active_pos:{local_ex}:{symbol} exists.
-func (c *Client) HasActivePosition(ctx context.Context, localEx, symbol string) (bool, error) {
+func (c *Client) HasActivePosition(ctx context.Context, localEx, symbol string, globalPair ...string) (bool, error) {
 	if c == nil || c.rdb == nil {
 		return false, nil
 	}
-	key := KeyPrefixActivePos + CleanPairKey(localEx, symbol)
+	key := KeyPrefixActivePos + CleanPairKey(localEx, symbol, globalPair...)
 	val, err := c.rdb.Exists(ctx, key).Result()
 	if err != nil {
 		return false, fmt.Errorf("redis exists %s: %w", key, err)
 	}
-	return val > 0, nil
+	if val > 0 || len(globalPair) < 2 {
+		return val > 0, nil
+	}
+	// Legacy keys do not identify the futures venue. Treat one as active for
+	// every matching spot pair until the executor migrates its stored metadata.
+	legacyKey := KeyPrefixActivePos + CleanPairKey(localEx, symbol)
+	legacy, err := c.rdb.Exists(ctx, legacyKey).Result()
+	if err != nil {
+		return false, fmt.Errorf("redis exists legacy %s: %w", legacyKey, err)
+	}
+	return legacy > 0, nil
 }
 
 // GetActivePosition retrieves active position info if present.
-func (c *Client) GetActivePosition(ctx context.Context, localEx, symbol string) (*domain.ActivePosition, error) {
+func (c *Client) GetActivePosition(ctx context.Context, localEx, symbol string, globalPair ...string) (*domain.ActivePosition, error) {
 	if c == nil || c.rdb == nil {
 		return nil, nil
 	}
-	key := KeyPrefixActivePos + CleanPairKey(localEx, symbol)
+	key := KeyPrefixActivePos + CleanPairKey(localEx, symbol, globalPair...)
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, nil
@@ -162,11 +181,11 @@ func (c *Client) GetActivePosition(ctx context.Context, localEx, symbol string) 
 }
 
 // UpdateLivePrice sets arb:live_price:{local_ex}:{symbol} with TTL 3s.
-func (c *Client) UpdateLivePrice(ctx context.Context, localEx, symbol string, snapshot domain.PricingSnapshot) error {
+func (c *Client) UpdateLivePrice(ctx context.Context, localEx, symbol string, snapshot domain.PricingSnapshot, globalPair ...string) error {
 	if c == nil || c.rdb == nil {
 		return nil
 	}
-	key := KeyPrefixLivePrice + CleanPairKey(localEx, symbol)
+	key := KeyPrefixLivePrice + CleanPairKey(localEx, symbol, globalPair...)
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return fmt.Errorf("marshal live price: %w", err)
@@ -179,7 +198,7 @@ func (c *Client) PublishSignal(ctx context.Context, payload domain.ExecutorPaylo
 	if c == nil || c.rdb == nil {
 		return nil
 	}
-	tag := CleanPairKey(payload.PairInfo.LocalExchange, payload.PairInfo.LocalSymbol)
+	tag := CleanPairKey(payload.PairInfo.LocalExchange, payload.PairInfo.LocalSymbol, payload.PairInfo.GlobalExchange, payload.PairInfo.GlobalSymbol)
 	signalKey := KeyPrefixSignal + tag
 	liveKey := KeyPrefixLivePrice + tag
 
@@ -194,6 +213,11 @@ func (c *Client) PublishSignal(ctx context.Context, payload domain.ExecutorPaylo
 
 	pipe := c.rdb.Pipeline()
 	pipe.Set(ctx, liveKey, liveData, DefaultTTL)
+	profit := payload.ExecutionDirectives.EstimatedNetProfitUSDT
+	if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
+		pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
+		pipe.Expire(ctx, KeySignalPriority, SignalTTL+2*time.Second)
+	}
 	pipe.Set(ctx, signalKey, signalData, SignalTTL)
 	pipe.Publish(ctx, ChannelSignalNotify, tag)
 	_, err = pipe.Exec(ctx)
@@ -204,11 +228,11 @@ func (c *Client) PublishSignal(ctx context.Context, payload domain.ExecutorPaylo
 }
 
 // PublishEmergencyCancel publishes cancel directive to arb:emergency_cancel.
-func (c *Client) PublishEmergencyCancel(ctx context.Context, localEx, symbol, reason string, fundingRate float64) error {
+func (c *Client) PublishEmergencyCancel(ctx context.Context, localEx, symbol, reason string, fundingRate float64, globalPair ...string) error {
 	if c == nil || c.rdb == nil {
 		return nil
 	}
-	tag := CleanPairKey(localEx, symbol)
+	tag := CleanPairKey(localEx, symbol, globalPair...)
 	payload := map[string]interface{}{
 		"action":         "CANCEL_ALL_NEGATIVE_FUNDING",
 		"local_exchange": localEx,
@@ -233,7 +257,12 @@ func (c *Client) ExecuteBatchUpdates(ctx context.Context, updates []PairUpdate) 
 
 	pipe := c.rdb.Pipeline()
 	for _, u := range updates {
-		tag := CleanPairKey(u.LocalEx, u.Symbol)
+		globalEx, globalSymbol := u.GlobalEx, u.GlobalSymbol
+		if u.Payload != nil {
+			globalEx = u.Payload.PairInfo.GlobalExchange
+			globalSymbol = u.Payload.PairInfo.GlobalSymbol
+		}
+		tag := CleanPairKey(u.LocalEx, u.Symbol, globalEx, globalSymbol)
 		liveKey := KeyPrefixLivePrice + tag
 		liveData, err := json.Marshal(u.LivePrice)
 		if err == nil {
@@ -244,6 +273,11 @@ func (c *Client) ExecuteBatchUpdates(ctx context.Context, updates []PairUpdate) 
 			signalKey := KeyPrefixSignal + tag
 			signalData, err := json.Marshal(u.Payload)
 			if err == nil {
+				profit := u.Payload.ExecutionDirectives.EstimatedNetProfitUSDT
+				if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
+					pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
+					pipe.Expire(ctx, KeySignalPriority, SignalTTL+2*time.Second)
+				}
 				pipe.Set(ctx, signalKey, signalData, SignalTTL)
 				pipe.Publish(ctx, ChannelSignalNotify, tag)
 			}
@@ -350,11 +384,11 @@ func (c *Client) PublishKillSwitch(ctx context.Context, action, reason string) e
 }
 
 // GetLivePrice retrieves the latest PricingSnapshot for a pair.
-func (c *Client) GetLivePrice(ctx context.Context, localEx, symbol string) (*domain.PricingSnapshot, error) {
+func (c *Client) GetLivePrice(ctx context.Context, localEx, symbol string, globalPair ...string) (*domain.PricingSnapshot, error) {
 	if c == nil || c.rdb == nil {
 		return nil, nil
 	}
-	key := KeyPrefixLivePrice + CleanPairKey(localEx, symbol)
+	key := KeyPrefixLivePrice + CleanPairKey(localEx, symbol, globalPair...)
 	data, err := c.rdb.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, nil

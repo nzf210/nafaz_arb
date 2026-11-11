@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 )
 
@@ -69,12 +70,7 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 		}
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, 0, b.formatScanResult(r, "Hasil Pemindaian On-Demand"), b.defaultKeyboard())
 	case "/latest":
-		latest := b.server.LatestScan()
-		if latest.ScanID == "" {
-			b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "ℹ️ <i>Belum ada hasil scan. Tekan tombol Scan untuk mulai.</i>", b.defaultKeyboard())
-			return
-		}
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatScanResult(latest, "Hasil Pemindaian Terakhir"), b.defaultKeyboard())
+		b.sendLatestOpportunityScans(ctx, msg.Chat.ID, msg.MessageID)
 	case "/pair":
 		if len(parts) < 2 {
 			b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
@@ -86,6 +82,8 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatActiveOpportunities(), b.defaultKeyboard())
 	case "/positions":
 		b.handlePositionsCommand(ctx, msg.Chat.ID, msg.MessageID)
+	case "/pending":
+		b.handlePendingOrdersCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/balance":
 		userID := int64(0)
 		if msg.From != nil {
@@ -149,12 +147,7 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 		}
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatScanResult(r, "Hasil Pemindaian On-Demand"), b.defaultKeyboard())
 	case "latest":
-		latest := b.server.LatestScan()
-		if latest.ScanID == "" {
-			b.sendReplyWithMarkup(ctx, chatID, 0, "ℹ️ <i>Belum ada hasil scan. Tekan tombol Scan untuk mulai.</i>", b.defaultKeyboard())
-			return
-		}
-		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatScanResult(latest, "Hasil Pemindaian Terakhir"), b.defaultKeyboard())
+		b.sendLatestOpportunityScans(ctx, chatID, 0)
 	case "status":
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatStatus(), b.defaultKeyboard())
 	case "metrics":
@@ -163,6 +156,8 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatActiveOpportunities(), b.defaultKeyboard())
 	case "positions":
 		b.handlePositionsCommand(ctx, chatID, 0)
+	case "pending_orders":
+		b.handlePendingOrdersCommand(ctx, chatID, 0)
 	case "balance":
 		b.handleBalanceCommand(ctx, chatID, 0, cb.From.ID)
 	case "history":
@@ -175,6 +170,52 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatHelp(), b.defaultKeyboard())
 	default:
 		b.handleExtendedCallback(ctx, chatID, cb)
+	}
+}
+
+
+const latestOpportunityScanLimit = 10
+
+func (b *Bot) sendLatestOpportunityScans(ctx context.Context, chatID, replyToID int64) {
+	b.mu.Lock()
+	reader := b.opportunityReader
+	b.mu.Unlock()
+	if reader == nil {
+		latest := b.server.LatestScan()
+		if latest.ScanID == "" {
+			b.sendReplyWithMarkup(ctx, chatID, replyToID,
+				"ℹ️ <i>Histori peluang Supabase belum terhubung dan belum ada hasil scan di memori.</i>", b.defaultKeyboard())
+			return
+		}
+		b.sendReplyWithMarkup(ctx, chatID, replyToID,
+			"⚠️ <i>Histori Supabase belum terhubung. Menampilkan satu scan terakhir dari memori proses.</i>\n\n"+
+				b.formatScanResult(latest, "Hasil Pemindaian Terakhir"), b.defaultKeyboard())
+		return
+	}
+	scans, err := reader.LatestOpportunityScans(ctx, latestOpportunityScanLimit)
+	if err != nil {
+		log.Printf("telegram latest opportunity history failed: %v", err)
+		b.sendReplyWithMarkup(ctx, chatID, replyToID,
+			"❌ <b>Gagal mengambil 10 scan peluang terakhir dari Supabase.</b>\n"+
+				"<i>Data tidak diganti dengan cache satu scan agar hasil tidak menyesatkan.</i>", b.defaultKeyboard())
+		return
+	}
+	if len(scans) == 0 {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID,
+			"ℹ️ <i>Belum ada peluang yang tersimpan di histori scan Supabase.</i>", b.defaultKeyboard())
+		return
+	}
+	for i, scan := range scans {
+		scanTime := scan.CompletedAt
+		if scanTime.IsZero() && len(scan.Opportunities) > 0 {
+			scanTime = scan.Opportunities[0].LastScannedAt
+		}
+		title := fmt.Sprintf("Scan Peluang Terbaru %d/%d", i+1, len(scans))
+		if !scanTime.IsZero() {
+			title += " • " + scanTime.UTC().Format(TIME_FORMAT)
+		}
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, b.formatScanResult(scan, title), b.defaultKeyboard())
+		replyToID = 0
 	}
 }
 

@@ -6,6 +6,7 @@ import hmac
 import pytest
 
 from executor.indodax_v2 import IndodaxTAPIv2, _fmt, normalize_symbol
+from executor.exchange_client import ExchangeClient
 
 def _adapter():
     return IndodaxTAPIv2("TEST-KEY", "TEST-SECRET")
@@ -102,8 +103,11 @@ async def test_create_limit_buy_posts_signed_body_with_client_order_id():
         }
     )
     ex = IndodaxTAPIv2("K", "S", session=session)
-    order = await ex.create_limit_buy_order(
-        "btc_idr", 0.01, 1_000_000.0, {"clientOrderId": "btcidr-entry-1"}
+    client = ExchangeClient(ex, object())
+    order = await client.place_local_limit_buy(
+        "btc_idr", 0.01, 1_000_000.0,
+        client_order_id="btcidr-entry-1",
+        amount_spec={"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
     )
 
     call = session.calls[0]
@@ -119,6 +123,82 @@ async def test_create_limit_buy_posts_signed_body_with_client_order_id():
     assert call["headers"]["X-APIKEY"] == "K"
     assert call["headers"]["Sign"] == ex.sign(body)
     assert order["status"] == "open"
+
+@pytest.mark.asyncio
+async def test_indodax_order_quantity_is_floored_to_market_increment():
+    session = _StubSession(
+        {
+            "symbol": "BTCIDR",
+            "orderId": 10,
+            "side": "BUY",
+            "type": "LIMIT",
+            "price": "1000000",
+            "origQty": "0.12345678",
+            "executedQty": "0",
+        }
+    )
+    ex = IndodaxTAPIv2("K", "S", session=session)
+    client = ExchangeClient(ex, object())
+
+    await client.place_local_limit_buy(
+        "btc_idr", 0.123456789012, 1_000_000.0,
+        amount_spec={"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
+    )
+
+    assert "quantity=0.12345678" in session.calls[0]["data"]
+
+@pytest.mark.asyncio
+async def test_indodax_order_respects_whole_unit_increment():
+    session = _StubSession(
+        {
+            "symbol": "BTCIDR",
+            "orderId": 11,
+            "side": "BUY",
+            "type": "LIMIT",
+            "price": "1000000",
+            "origQty": "1",
+            "executedQty": "0",
+        }
+    )
+    ex = IndodaxTAPIv2("K", "S", session=session)
+    client = ExchangeClient(ex, object())
+
+    await client.place_local_limit_buy(
+        "btc_idr", 1.999999, 1_000_000.0,
+        amount_spec={"unit": "BASE", "step": 1.0, "min": 1.0, "base_per_unit": 1.0},
+    )
+
+    assert "quantity=1" in session.calls[0]["data"]
+
+@pytest.mark.asyncio
+async def test_indodax_order_requires_market_increment():
+    ex = IndodaxTAPIv2("K", "S", session=_StubSession({}))
+    client = ExchangeClient(ex, object())
+
+    with pytest.raises(ValueError, match="market amount rules"):
+        await client.place_local_limit_buy("btc_idr", 0.1, 1_000_000.0)
+
+@pytest.mark.asyncio
+async def test_indodax_emergency_market_sell_remains_available_for_legacy_positions():
+    session = _StubSession(
+        {
+            "symbol": "BTCIDR",
+            "orderId": 12,
+            "side": "SELL",
+            "type": "MARKET",
+            "origQty": "0.1",
+            "executedQty": "0.1",
+        }
+    )
+    ex = IndodaxTAPIv2("K", "S", session=session)
+    client = ExchangeClient(ex, object())
+
+    await client.place_local_market_sell(
+        "btc_idr", 0.1,
+        amount_spec={"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
+    )
+
+    assert "quantity=0.1" in session.calls[0]["data"]
 
 @pytest.mark.asyncio
 async def test_cancel_without_status_field_is_treated_as_terminal():

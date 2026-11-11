@@ -70,10 +70,12 @@ async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_
     attempts = 0
     original = client.place_local_market_sell
 
-    async def counting_sell(symbol, amount, client_order_id=None):
+    async def counting_sell(symbol, amount, client_order_id=None, amount_spec=None):
         nonlocal attempts
         attempts += 1
-        return await original(symbol, amount, client_order_id=client_order_id)
+        return await original(
+            symbol, amount, client_order_id=client_order_id, amount_spec=amount_spec
+        )
 
     client.place_local_market_sell = counting_sell
 
@@ -173,7 +175,9 @@ async def test_hedge_ambiguity_binance_position_amt_blocks_rollback(engine, fake
 async def test_partial_spot_rollback_does_not_release_reserve_or_close(engine, fake_redis):
     """A partial market sell is not a completed rollback and must remain FAILED."""
     class PartialRollbackClient(FailingHedgeClient):
-        async def place_local_market_sell(self, symbol, amount, client_order_id=None):
+        async def place_local_market_sell(
+            self, symbol, amount, client_order_id=None, amount_spec=None
+        ):
             return {
                 "id": "partial-1",
                 "symbol": symbol,
@@ -353,10 +357,10 @@ async def test_p0_pending_entry_adopted_on_startup(engine, fake_redis, mock_clie
 
     await engine._recover_pending_entry_orders()
 
-    assert "indodax:btc_idr" in engine.pending_entry_orders
-    assert engine.states["indodax:btc_idr"] == PositionState.ENTRY_PENDING
+    assert "indodax:btc_idr__binance:btc_usdt" in engine.pending_entry_orders
+    assert engine.states["indodax:btc_idr__binance:btc_usdt"] == PositionState.ENTRY_PENDING
     # Re-adoption must remain durable across another process restart.
-    persisted = await fake_redis.get("arb:pending_entry:indodax:btc_idr")
+    persisted = await fake_redis.get("arb:pending_entry:indodax:btc_idr__binance:btc_usdt")
     assert persisted is not None
     assert json.loads(persisted)["order_id"] == "777"
 
@@ -416,7 +420,7 @@ async def test_engine_lifecycle_start_stop(engine):
     """Test engine start and stop coroutine lifecycle to prevent TypeError."""
     await engine.start()
     assert engine._running is True
-    assert len(engine._tasks) == 6
+    assert len(engine._tasks) == 7
     await engine.stop()
     assert engine._running is False
 
@@ -459,7 +463,7 @@ async def test_p2_03_retry_with_backoff_raises_after_exhaustion():
 @pytest.mark.asyncio
 async def test_p0_pending_entry_terminal_partial_fill_is_hedged_on_recovery(engine, fake_redis, mock_client):
     """A canceled order with a final partial fill must hedge that fill before clearing state."""
-    pair_tag = "indodax:btc_idr"
+    pair_tag = "indodax:btc_idr__binance:btc_usdt"
     order_info = {
         "order_id": "889",
         "symbol": "btc_idr",

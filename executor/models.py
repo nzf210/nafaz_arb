@@ -3,6 +3,8 @@ from enum import Enum
 from typing import Optional, Dict, Any
 import time
 
+from executor.quantity import AmountSpec
+
 
 class PositionState(Enum):
     IDLE = "IDLE"
@@ -28,9 +30,21 @@ class PairInfo:
     quote_asset: str
     local_price_tick: float = 1.0
     local_lot_size: float = 0.0
+    local_amount_spec: Optional[AmountSpec] = None
+    global_amount_spec: Optional[AmountSpec] = None
+    global_quote_asset: str = ""
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "PairInfo":
+        local_lot_size = float(d.get("local_lot_size", 0.0))
+        local_amount_spec = AmountSpec.from_dict(d.get("local_amount_spec"))
+        if local_amount_spec is None and local_lot_size > 0:
+            local_amount_spec = AmountSpec(
+                unit="BASE",
+                step=local_lot_size,
+                minimum=local_lot_size,
+                base_per_unit=1.0,
+            )
         return cls(
             local_exchange=d.get("local_exchange", ""),
             global_exchange=d.get("global_exchange", ""),
@@ -39,7 +53,10 @@ class PairInfo:
             base_asset=d.get("base_asset", ""),
             quote_asset=d.get("quote_asset", ""),
             local_price_tick=float(d.get("local_price_tick", 1.0)),
-            local_lot_size=float(d.get("local_lot_size", 0.0)),
+            local_lot_size=local_lot_size,
+            local_amount_spec=local_amount_spec,
+            global_amount_spec=AmountSpec.from_dict(d.get("global_amount_spec")),
+            global_quote_asset=d.get("global_quote_asset", ""),
         )
 
 
@@ -99,6 +116,7 @@ class ExecutionDirectives:
     # live orderbook within the same scan. When False the executor must do its
     scanner_validated: bool
     scanner_validated: bool = False
+    estimated_net_profit_usdt: float = 0.0
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ExecutionDirectives":
@@ -111,6 +129,7 @@ class ExecutionDirectives:
             max_position_usdt=float(d.get("max_position_usdt", 0.0)),
             cancel_if_global_bid_drops_below_usdt=float(d.get("cancel_if_global_bid_drops_below_usdt", 0.0)),
             scanner_validated=bool(d.get("scanner_validated", False)),
+            estimated_net_profit_usdt=float(d.get("estimated_net_profit_usdt", 0.0)),
         )
 
 
@@ -158,12 +177,22 @@ class ActivePosition:
     spot_cost_usdt: float = 0.0
     futures_margin_usdt: float = 0.0
     state: str = "HEDGED_ACTIVE"
+    base_asset: str = ""
+    global_symbol: str = ""
+    local_lot_size: float = 0.0
+    local_amount_spec: Optional[AmountSpec] = None
+    global_amount_spec: Optional[AmountSpec] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "local_exchange": self.local_exchange,
             "global_exchange": self.global_exchange,
             "symbol": self.symbol,
+            "base_asset": self.base_asset,
+            "global_symbol": self.global_symbol,
+            "local_lot_size": self.local_lot_size,
+            "local_amount_spec": self.local_amount_spec.to_dict() if self.local_amount_spec else None,
+            "global_amount_spec": self.global_amount_spec.to_dict() if self.global_amount_spec else None,
             "entry_price_idr": self.entry_price_idr,
             "short_entry_usdt": self.short_entry_usdt,
             "qty": self.qty,
@@ -190,10 +219,32 @@ class ActivePosition:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ActivePosition":
+        local_lot_size = float(d.get("local_lot_size", 0.0))
+        local_amount_spec = AmountSpec.from_dict(d.get("local_amount_spec"))
+        if local_amount_spec is None and local_lot_size > 0:
+            local_amount_spec = AmountSpec(
+                unit="BASE",
+                step=local_lot_size,
+                minimum=local_lot_size,
+                base_per_unit=1.0,
+            )
+        if local_amount_spec is None:
+            local_amount_spec = AmountSpec("BASE", 1e-12, 0.0, 1.0)
+        global_amount_spec = AmountSpec.from_dict(d.get("global_amount_spec"))
+        if global_amount_spec is None:
+            # Existing positions were submitted in the amount units CCXT accepted
+            # before normalized specs were persisted. Keep their de-risk path
+            # compatible; new entries still require explicit rules.
+            global_amount_spec = AmountSpec("BASE", 1e-12, 0.0, 1.0)
         return cls(
             local_exchange=d.get("local_exchange", ""),
             global_exchange=d.get("global_exchange", ""),
             symbol=d.get("symbol", ""),
+            base_asset=d.get("base_asset", ""),
+            global_symbol=d.get("global_symbol", ""),
+            local_lot_size=local_lot_size,
+            local_amount_spec=local_amount_spec,
+            global_amount_spec=global_amount_spec,
             entry_price_idr=float(d.get("entry_price_idr", 0.0)),
             short_entry_usdt=float(d.get("short_entry_usdt", 0.0)),
             qty=float(d.get("qty", 0.0)),

@@ -2,7 +2,6 @@ package exchange
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -233,7 +232,7 @@ func jsonFrame(v any) ([]byte, error) {
 func wsHTTPClient() *http.Client {
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		ResponseHeaderTimeout: 10 * time.Second,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(addr)
 			if err != nil {
@@ -244,7 +243,10 @@ func wsHTTPClient() *http.Client {
 	}
 	return &http.Client{
 		Transport: tr,
-		Timeout:   15 * time.Second,
+		// Do not set http.Client.Timeout: it applies to the lifetime of the
+		// upgraded response body and can terminate a persistent WebSocket.
+		// The dialer's Timeout bounds TCP establishment; the parent context
+		// controls the lifetime of the socket.
 		// websocket.Dial performs the upgrade itself; a redirect handler that
 		// rewrites the User-Agent keeps the handshake looking like the REST calls.
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {

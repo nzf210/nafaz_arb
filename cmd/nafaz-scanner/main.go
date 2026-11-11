@@ -37,6 +37,13 @@ func main(){
 		if cfg.EnableWebSocketFeed {
 			live.EnableWebSocketFeed(context.Background(), time.Duration(cfg.WebSocketBookMaxAgeSeconds)*time.Second)
 		}
+		if cfg.OKXWebSocketEnabled != nil && *cfg.OKXWebSocketEnabled {
+			staleAfter, _ := time.ParseDuration(cfg.OKXWSStaleAfter)
+			reconnect, _ := time.ParseDuration(cfg.OKXWSReconnectInterval)
+			maxBackoff, _ := time.ParseDuration(cfg.OKXWSMaxReconnectBackoff)
+			live.EnableOKXBookWebSocket(context.Background(), cfg.OKXWSURL, staleAfter, reconnect, maxBackoff)
+		}
+		defer live.Close()
 		adapter = live
 	case "MOCK":
 		adapter = exchange.NewMockAdapter()
@@ -116,6 +123,9 @@ func main(){
 	go server.RunPeriodic(ctx)
 
 	tgBot:=telegram.New(cfg,server)
+	if remoteStore != nil {
+		tgBot.SetOpportunityHistoryReader(remoteStore)
+	}
 	if redisClient != nil {
 		tgBot.SetRedisClient(redisClient)
 	}

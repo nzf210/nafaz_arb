@@ -330,7 +330,7 @@ async def test_bug10_short_exit_uses_actual_close_fill(fake_redis):
 
     # The short actually closes 200 USDT higher than the pegged ask; the old code
     # booked the PnL against 65_000 and understated the loss.
-    async def close_at_65200(symbol, amount, client_order_id=None):
+    async def close_at_65200(symbol, amount, client_order_id=None, amount_spec=None):
         return {"id": "close-1", "status": "closed", "average": 65_200.0, "filled": amount}
 
     client.close_global_short_market = close_at_65200
@@ -460,7 +460,7 @@ async def test_partial_futures_close_after_spot_fill_requires_reconciliation(eng
         "id": "992", "symbol": "btc_idr", "status": "closed", "filled": 0.005
     }
 
-    async def partial_close(symbol, amount, client_order_id=None):
+    async def partial_close(symbol, amount, client_order_id=None, amount_spec=None):
         return {
             "id": "partial-close",
             "symbol": symbol,
@@ -492,3 +492,23 @@ async def test_exit_price_snapshot_without_live_fx_is_rejected(engine, fake_redi
     await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
 
     assert await engine._fetch_live_price(pair_tag) is None
+
+
+@pytest.mark.asyncio
+async def test_status_snapshot_exposes_managed_pending_orders(engine):
+    pair_tag = "tokocrypto:ath_usdt"
+    engine.pending_entry_orders[pair_tag] = {
+        "order_id": "entry-1", "symbol": "ATH/USDT", "price": 0.0044,
+        "qty": 2200.0, "filled": 200.0, "placed_time": time.time(), "quote_asset": "USDT",
+        "local_exchange": "tokocrypto", "global_exchange": "okx",
+    }
+    snapshot = engine.status_snapshot()
+    assert snapshot["pending_entries"] == 1
+    assert len(snapshot["pending_orders"]) == 1
+    order = snapshot["pending_orders"][0]
+    assert order["leg"] == "SPOT_ENTRY"
+    assert order["status"] == "PARTIALLY_FILLED"
+    assert order["local_exchange"] == "tokocrypto"
+    assert order["global_exchange"] == "okx"
+    assert order["quote_asset"] == "USDT"
+    assert order["remaining"] == 2000.0

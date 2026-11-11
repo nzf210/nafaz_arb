@@ -15,8 +15,9 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 		if r.URL.Path == "/api/pairs" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`[
-				{"id":"btcusdt","symbol":"BTCUSDT","base_currency":"usdt","traded_currency":"btc"},
-				{"id":"ethusdt","symbol":"ETHUSDT","base_currency":"usdt","traded_currency":"eth"}
+				{"id":"btcusdt","symbol":"BTCUSDT","base_currency":"usdt","traded_currency":"btc","quantity_increment":0.00000001},
+				{"id":"ethusdt","symbol":"ETHUSDT","base_currency":"usdt","traded_currency":"eth","quantity_increment":0.001},
+				{"id":"missingincrement","symbol":"MISSINGINCREMENT","base_currency":"usdt","traded_currency":"missing"}
 			]`))
 			return
 		}
@@ -31,8 +32,8 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 				"code": 0,
 				"data": {
 					"list": [
-						{"symbol":"BTC_USDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1},
-						{"symbol":"ETH_USDT","baseAsset":"ETH","quoteAsset":"USDT","spotTradingEnable":1}
+						{"symbol":"BTC_USDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.00001","minQty":"0.0001"}]},
+						{"symbol":"ETH_USDT","baseAsset":"ETH","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.01"}]}
 					]
 				}
 			}`))
@@ -64,6 +65,31 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	}
 	if len(markets) != 4 {
 		t.Fatalf("expected 4 local spot markets (2 toko + 2 indodax), got %d", len(markets))
+	}
+	for _, market := range markets {
+		if market.Exchange == "indodax" {
+			want := 0.00000001
+			if market.Symbol == "ethusdt" {
+				want = 0.001
+			}
+			if market.LotSize != want {
+				t.Errorf("Indodax %s quantity increment = %g, want %g", market.Symbol, market.LotSize, want)
+			}
+			if market.AmountSpec == nil || market.AmountSpec.Unit != "BASE" ||
+				market.AmountSpec.Step != want || market.AmountSpec.BasePerUnit != 1 {
+				t.Errorf("Indodax %s amount spec = %+v, want BASE step %g", market.Symbol, market.AmountSpec, want)
+			}
+		}
+		if market.Exchange == "tokocrypto" {
+			wantStep, wantMin := 0.00001, 0.0001
+			if strings.Contains(market.Symbol, "ETH") {
+				wantStep, wantMin = 0.001, 0.01
+			}
+			if market.AmountSpec == nil || market.AmountSpec.Unit != "BASE" ||
+				market.AmountSpec.Step != wantStep || market.AmountSpec.Min != wantMin {
+				t.Errorf("Tokocrypto %s amount spec = %+v, want step=%g min=%g", market.Symbol, market.AmountSpec, wantStep, wantMin)
+			}
+		}
 	}
 	for _, market := range markets {
 		if market.Exchange == "mexc" || strings.HasPrefix(market.Symbol, "mexc_spot:") {
@@ -190,6 +216,16 @@ func TestLiveAdapterPerpetualMarketsAndDepth(t *testing.T) {
 	}
 	if len(perps) != 2 {
 		t.Fatalf("expected 2 perps (OKX + MEXC), got %d", len(perps))
+	}
+	if perps[0].AmountSpec == nil || perps[0].AmountSpec.Unit != "CONTRACT" ||
+		perps[0].AmountSpec.Step != 0.01 || perps[0].AmountSpec.Min != 0.01 ||
+		perps[0].AmountSpec.BasePerUnit != 0.01 {
+		t.Errorf("OKX amount spec = %+v, want contract step/min 0.01 and base multiplier 0.01", perps[0].AmountSpec)
+	}
+	if perps[1].AmountSpec == nil || perps[1].AmountSpec.Unit != "CONTRACT" ||
+		perps[1].AmountSpec.Step != 1 || perps[1].AmountSpec.Min != 1 ||
+		perps[1].AmountSpec.BasePerUnit != 0.0001 {
+		t.Errorf("MEXC amount spec = %+v, want contract step/min 1 and base multiplier 0.0001", perps[1].AmountSpec)
 	}
 
 	// OKX Order book (100 * 0.01 = 1.0 BTC)

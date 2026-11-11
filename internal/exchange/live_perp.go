@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -52,17 +54,11 @@ func (l *LiveAdapter) processOKXInstrument(inst okxInstrumentData) (domain.Marke
 	baseAsset := extractOKXBaseAsset(inst.InstID, inst.CtValCcy)
 
 	ctVal, _ := strconv.ParseFloat(inst.CtVal, 64)
-	if ctVal <= 0 {
-		ctVal = 1
-	}
-	l.contractSizes[inst.InstID] = ctVal
-	l.contractSizes["okx:"+inst.InstID] = ctVal
-
 	tickSz, _ := strconv.ParseFloat(inst.TickSz, 64)
 	lotSz, _ := strconv.ParseFloat(inst.LotSz, 64)
 	minSz, _ := strconv.ParseFloat(inst.MinSz, 64)
 
-	return domain.Market{
+	market := domain.Market{
 		Exchange:     "okx",
 		Symbol:       inst.InstID,
 		BaseAsset:    strings.ToUpper(baseAsset),
@@ -73,7 +69,24 @@ func (l *LiveAdapter) processOKXInstrument(inst okxInstrumentData) (domain.Marke
 		TickSize:     tickSz,
 		LotSize:      lotSz,
 		MinOrder:     minSz,
-	}, true
+	}
+	if ctVal > 0 && lotSz > 0 && minSz >= 0 &&
+		!math.IsNaN(ctVal) && !math.IsInf(ctVal, 0) &&
+		!math.IsNaN(lotSz) && !math.IsInf(lotSz, 0) &&
+		!math.IsNaN(minSz) && !math.IsInf(minSz, 0) &&
+		strings.EqualFold(inst.CtValCcy, baseAsset) {
+		market.AmountSpec = &domain.AmountSpec{
+			Unit:        "CONTRACT",
+			Step:        lotSz,
+			Min:         minSz,
+			BasePerUnit: ctVal,
+		}
+		l.contractSizes[inst.InstID] = ctVal
+		l.contractSizes["okx:"+inst.InstID] = ctVal
+	} else {
+		log.Printf("okx: instrument %s has incomplete or unsupported amount rules; execution disabled for market", inst.InstID)
+	}
+	return market, true
 }
 
 // PerpetualMarkets discovers active perpetual SWAP instruments on OKX and MEXC, respecting targetPerpExchange filter if set.
@@ -92,6 +105,7 @@ func (l *LiveAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, er
 		okxMarkets, err := l.fetchOKXPerpetualMarkets(ctx)
 		if err == nil {
 			allMarkets = append(allMarkets, okxMarkets...)
+			l.SubscribeOKXBooks(okxMarkets)
 		} else {
 			errs = append(errs, fmt.Sprintf("okx: %v", err))
 		}
@@ -118,14 +132,11 @@ func (l *LiveAdapter) fetchOKXPerpetualMarkets(ctx context.Context) ([]domain.Ma
 		return cached, nil
 	}
 
-	endpoint := l.okxBaseURL + "/api/v5/public/instruments?instType=SWAP"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return l.getFallbackOKXPerp(err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
+	endpoint := "/api/v5/public/instruments?instType=SWAP"
 
-	resp, err := l.client.Do(req)
+	resp, err := l.okxDo(ctx, endpoint, func() (*http.Request, error) {
+		return l.newOKXRequest(ctx, endpoint)
+	})
 	if err != nil {
 		return l.getFallbackOKXPerp(err)
 	}
@@ -224,25 +235,35 @@ func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.M
 			continue
 		}
 
-		ctVal := c.ContractSize
-		if ctVal <= 0 {
-			ctVal = 1
-		}
-		l.contractSizes[c.Symbol] = ctVal
-		l.contractSizes["mexc:"+c.Symbol] = ctVal
-
-		markets = append(markets, domain.Market{
+		market := domain.Market{
 			Exchange:     "mexc",
 			Symbol:       "mexc:" + c.Symbol,
 			BaseAsset:    strings.ToUpper(c.BaseCoin),
 			QuoteAsset:   strings.ToUpper(c.QuoteCoin),
 			MarketType:   "PERPETUAL",
 			Active:       true,
-			ContractSize: ctVal,
+			ContractSize: c.ContractSize,
 			TickSize:     c.PriceUnit,
 			LotSize:      c.VolUnit,
 			MinOrder:     c.MinVol,
-		})
+		}
+		if c.ContractSize > 0 && c.VolUnit > 0 && c.MinVol >= 0 &&
+			!math.IsNaN(c.ContractSize) && !math.IsInf(c.ContractSize, 0) &&
+			!math.IsNaN(c.VolUnit) && !math.IsInf(c.VolUnit, 0) &&
+			!math.IsNaN(c.MinVol) && !math.IsInf(c.MinVol, 0) &&
+			c.BaseCoin != "" {
+			market.AmountSpec = &domain.AmountSpec{
+				Unit:        "CONTRACT",
+				Step:        c.VolUnit,
+				Min:         c.MinVol,
+				BasePerUnit: c.ContractSize,
+			}
+			l.contractSizes[c.Symbol] = c.ContractSize
+			l.contractSizes["mexc:"+c.Symbol] = c.ContractSize
+		} else {
+			log.Printf("mexc: contract %s has incomplete amount rules; execution disabled for market", c.Symbol)
+		}
+		markets = append(markets, market)
 	}
 	return markets, nil
 }

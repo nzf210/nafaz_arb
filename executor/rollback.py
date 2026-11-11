@@ -17,6 +17,7 @@ from executor.helpers import (
     retry_with_backoff,
 )
 from executor.models import PositionState
+from executor.quantity import AmountSpec
 
 logger = logging.getLogger("executor.engine")
 
@@ -25,7 +26,12 @@ class RollbackMixin:
     """Emergency unwind when the global futures short cannot be opened."""
 
     async def _liquidate_unhedged_spot(
-        self, pair_tag: str, symbol: str, unhedged_delta: float
+        self,
+        pair_tag: str,
+        symbol: str,
+        unhedged_delta: float,
+        amount_spec: Any = None,
+        legacy_amount_step: float = 0.0,
     ) -> tuple[Optional[Dict[str, Any]], Optional[Exception]]:
         """
         Market-sells the unhedged spot quantity back to quote.
@@ -44,6 +50,17 @@ class RollbackMixin:
                     symbol,
                     unhedged_delta,
                     client_order_id=build_client_order_id(pair_tag, "rollback", seq),
+                    amount_spec=amount_spec
+                    or (
+                        AmountSpec(
+                            unit="BASE",
+                            step=legacy_amount_step,
+                            minimum=legacy_amount_step,
+                            base_per_unit=1.0,
+                        )
+                        if legacy_amount_step > 0
+                        else None
+                    ),
                 ),
                 max_retries=max_retries,
                 base_delay=0.5,
@@ -261,7 +278,11 @@ class RollbackMixin:
             return
 
         emergency_order, emergency_error = await self._liquidate_unhedged_spot(
-            pair_tag, symbol, unhedged_delta
+            pair_tag,
+            symbol,
+            unhedged_delta,
+            order_info.get("local_amount_spec"),
+            float(order_info.get("local_lot_size", 0.0)),
         )
 
         exit_price_idr = (
