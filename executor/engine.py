@@ -1151,6 +1151,9 @@ class ArbitrageEngine(
         3. If no active position, place Maker Limit Buy at recommended_limit_buy_idr.
         """
         async with self._pair_lock(pair_tag):
+            if getattr(self, "_risk_persistence_failed", False):
+                logger.critical("[Risk] rejecting %s: durable risk-state persistence is not trustworthy", pair_tag)
+                return
             self._roll_loss_day_if_needed()
             if payload is None:
                 payload = await self._load_signal_payload(pair_tag)
