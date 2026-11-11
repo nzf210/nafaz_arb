@@ -62,6 +62,8 @@ class _HttpSession:
     def post(self, *_args, **_kwargs):
         self.calls += 1
         status = self.statuses.pop(0) if self.statuses else 201
+        if isinstance(status, BaseException):
+            raise status
         return _HttpResponse(status)
 
 
@@ -123,7 +125,9 @@ async def test_supabase_timeout_and_server_failure_retain_outbox_for_retry(tmp_p
         return None
 
     monkeypatch.setattr(asyncio, "sleep", no_wait)
-    writer._session = _HttpSession([503, 503, 503])
+    writer._session = _HttpSession([
+        asyncio.TimeoutError("injected Supabase request timeout"), 503, 503
+    ])
     await writer._deliver_outbox_group(
         "reconciliation_audit", "event_id", [(audit[0][0], audit[0][3])]
     )
