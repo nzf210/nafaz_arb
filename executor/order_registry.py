@@ -180,7 +180,7 @@ class UniversalOrderRegistry:
         durable_enabled = getattr(self.supabase, "enabled", None) is not False
         durable_ok = False
         if callable(writer) and durable_enabled:
-            writer(
+            write_result = writer(
                 {
                     "local_order_id": record.local_order_id,
                     "pair_key": record.pair_key or None,
@@ -210,7 +210,7 @@ class UniversalOrderRegistry:
                     "is_mock": record.is_mock,
                 }
             )
-            durable_ok = True
+            durable_ok = write_result is not False
         if not redis_ok and not durable_ok:
             raise RuntimeError(
                 f"order {record.local_order_id} could not be persisted to Redis or durable storage"
