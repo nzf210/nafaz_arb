@@ -515,7 +515,7 @@ class SupabaseWriter:
             self._order_completed_at.setdefault(order_state_key, now_iso)
             if terminal_status else self._order_completed_at.get(order_state_key)
         )
-        self._emit(
+        return self._emit(
             "orders",
             {
                 "id": order_id,
@@ -586,7 +586,7 @@ class SupabaseWriter:
             fee_amount = float(fee_cost) if fee_cost is not None else None
         except (TypeError, ValueError):
             return False
-        if fee_amount is not None and (not math.isfinite(fee_amount) or fee_amount < 0):
+        if fee_amount is not None and not math.isfinite(fee_amount):
             return False
         fee_asset = str(fee.get("currency") or "").strip().upper() or None
         row = {
