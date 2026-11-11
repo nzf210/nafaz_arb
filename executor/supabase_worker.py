@@ -8,7 +8,10 @@ from typing import Any, Dict
 
 import aiohttp
 
-from executor.supabase_common import _BATCH_MAX, _MAX_ATTEMPTS, _TIMEOUT, logger
+from executor.supabase_common import (
+    _AUTHORIZATION_BEARER_PREFIX, _BATCH_MAX, _JSON_CONTENT_TYPE,
+    _MAX_ATTEMPTS, _TIMEOUT, logger,
+)
 
 
 
@@ -44,8 +47,8 @@ class SupabaseWorkerMixin:
                 timeout=_TIMEOUT,
                 headers={
                     "apikey": self.key,
-                    "Authorization": f"Bearer {self.key}",
-                    "Content-Type": "application/json",
+                    "Authorization": _AUTHORIZATION_BEARER_PREFIX + self.key,
+                    "Content-Type": _JSON_CONTENT_TYPE,
                     "Prefer": "resolution=merge-duplicates,return=minimal",
                     "Accept-Encoding": "identity",
                 },
