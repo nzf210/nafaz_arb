@@ -38,6 +38,11 @@ const (
 	KeyExecutorStatus      = "arb:executor:status"
 	ChannelBalanceRequest  = "arb:balance_request"
 	KeyPrefixBalanceReply  = "arb:balance_reply:"
+	KeyOrderRecoveryIndex   = "arb:order_recovery_idx"
+	KeyOrphanOrderIndex     = "arb:orphan_idx"
+	KeyPendingOrderRecovery = "arb:order_pending_recovery"
+	KeyPrefixOrderRecord    = "arb:order:"
+	KeyPrefixOrphanOrder    = "arb:orphan_order:"
 )
 
 type TradeStats struct {
@@ -332,6 +337,56 @@ func (c *Client) ListActivePositions(ctx context.Context) ([]domain.ActivePositi
 		}
 	}
 	return out, nil
+}
+
+
+ 
+// ListActiveOrderRecords reads the executor's durable-in-Redis active order
+// registry. The index is maintained by UniversalOrderRegistry and excludes
+// terminal orders. An unavailable index is an error, never an empty registry.
+func (c *Client) ListActiveOrderRecords(ctx context.Context) ([]json.RawMessage, error) {
+	if c == nil || c.rdb == nil { return nil, errors.New("redis is not connected") }
+	ids, err := c.rdb.HKeys(ctx, KeyOrderRecoveryIndex).Result()
+	if err != nil { return nil, fmt.Errorf("read active order registry index: %w", err) }
+	out := make([]json.RawMessage, 0, len(ids))
+	for _, id := range ids {
+		raw, getErr := c.rdb.Get(ctx, KeyPrefixOrderRecord+id).Bytes()
+		if getErr != nil {
+			if getErr == redis.Nil { continue }
+			return nil, fmt.Errorf("read order record %s: %w", id, getErr)
+		}
+		if !json.Valid(raw) { return nil, fmt.Errorf("order record %s contains invalid JSON", id) }
+		out = append(out, json.RawMessage(raw))
+	}
+	return out, nil
+}
+
+// ListOrphanOrderRecords returns every indexed exchange order that recovery
+// could not safely identify. Redis errors are surfaced to avoid false-empty UI.
+func (c *Client) ListOrphanOrderRecords(ctx context.Context) ([]json.RawMessage, error) {
+	if c == nil || c.rdb == nil { return nil, errors.New("redis is not connected") }
+	ids, err := c.rdb.HKeys(ctx, KeyOrphanOrderIndex).Result()
+	if err != nil { return nil, fmt.Errorf("read orphan order index: %w", err) }
+	out := make([]json.RawMessage, 0, len(ids))
+	for _, id := range ids {
+		raw, getErr := c.rdb.Get(ctx, KeyPrefixOrphanOrder+id).Bytes()
+		if getErr != nil {
+			if getErr == redis.Nil { continue }
+			return nil, fmt.Errorf("read orphan order %s: %w", id, getErr)
+		}
+		if !json.Valid(raw) { return nil, fmt.Errorf("orphan order %s contains invalid JSON", id) }
+		out = append(out, json.RawMessage(raw))
+	}
+	return out, nil
+}
+
+// GetPendingOrderRecovery returns order IDs and reasons currently blocked by
+// recovery. It is read-only and does not change the recovery gate.
+func (c *Client) GetPendingOrderRecovery(ctx context.Context) (map[string]string, error) {
+	if c == nil || c.rdb == nil { return nil, errors.New("redis is not connected") }
+	values, err := c.rdb.HGetAll(ctx, KeyPendingOrderRecovery).Result()
+	if err != nil { return nil, fmt.Errorf("read pending order recovery: %w", err) }
+	return values, nil
 }
 
 // PublishForceClose broadcasts a force-close command to the Executor via Redis Pub/Sub.
