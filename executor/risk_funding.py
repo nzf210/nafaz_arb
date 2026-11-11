@@ -12,104 +12,134 @@ logger = logging.getLogger("executor.engine")
 class RiskFundingMixin:
     """Sizing and funding validation before submitting either order leg."""
 
+    async def _entry_sizing_balance_snapshot(
+        self, pair_tag: str, pair_info: PairInfo, usdt_idr_rate: float,
+        mock_mode: bool,
+    ):
+        balances = self._balance_snapshots.pop(pair_tag, None)
+        if balances is not None:
+            return balances
+        if mock_mode:
+            return await self._check_balance_mismatch(
+                pair_info, usdt_idr_rate, pair_tag
+            )
+        try:
+            return await self._get_balance_snapshot(
+                pair_tag=pair_tag,
+                pair_info=pair_info,
+                usdt_idr_rate=usdt_idr_rate,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[State 1 Balance Check] balance probe failed for %s; "
+                "sizing uncapped and deferred to funding preflight: %s",
+                pair_tag, exc,
+            )
+            return None
+
+    async def _reject_insufficient_entry_balance(
+        self, pair_tag: str, spot_available: float,
+        futures_available: float, min_cap: float,
+    ) -> None:
+        logger.warning(
+            "[State 1 Balance Check] insufficient balance for %s: "
+            "spot=$%.2f futures=$%.2f minimum=$%.2f",
+            pair_tag, spot_available, futures_available, min_cap,
+        )
+        await self._publish_execution_failure(
+            pair_tag,
+            "INSUFFICIENT_OR_UNBALANCED_BALANCE",
+            "Saldo Spot/Futures tidak mencukupi atau tidak seimbang untuk membuka posisi.",
+            detail={
+                "spot_available_usdt": spot_available,
+                "futures_available_usdt": futures_available,
+                "minimum_required_usdt": min_cap,
+            },
+        )
+
+    async def _reject_entry_exposure_limit(
+        self, pair_tag: str, planned_usdt: float
+    ) -> None:
+        await self._publish_execution_failure(
+            pair_tag,
+            "EXPOSURE_LIMIT_REACHED",
+            "Entry ditolak karena batas exposure exchange akan terlampaui.",
+            detail={
+                "planned_usdt": planned_usdt,
+                "limit_usdt": getattr(
+                    self.config, "max_exposure_per_exchange_usdt", 0.0
+                ),
+            },
+        )
+
+    def _reserve_entry_fee_buffer(self, pair_tag: str, amount_usdt: float) -> float:
+        fee_pct = float(
+            getattr(self.config, "estimated_round_trip_fee_pct", 0.0) or 0.0
+        )
+        if fee_pct <= 0:
+            return amount_usdt
+        fee_buffer_usdt = amount_usdt * fee_pct
+        logger.debug(
+            "[State 1 Fee Buffer] %s reserved $%.4f (%.3f%%) for fees",
+            pair_tag, fee_buffer_usdt, fee_pct * 100,
+        )
+        return amount_usdt - fee_buffer_usdt
+
+    async def _reject_entry_below_minimum(
+        self, pair_tag: str, amount_usdt: float, min_cap: float
+    ) -> None:
+        logger.warning(
+            "[State 1 Balance Check] position size $%.2f < minimum $%.2f for %s",
+            amount_usdt, min_cap, pair_tag,
+        )
+        await self._publish_execution_failure(
+            pair_tag,
+            "INSUFFICIENT_AFTER_FEE_RESERVE",
+            "Ukuran posisi setelah cadangan fee berada di bawah minimum exchange.",
+            detail={
+                "position_usdt": amount_usdt,
+                "minimum_required_usdt": min_cap,
+            },
+        )
+
     async def _compute_entry_sizing(
         self, pair_tag: str, payload: ExecutorPayload
     ) -> Optional[tuple[float, float]]:
-        """
-        Sizes an entry from the signal budget, exposure cap and fee reserve.
-        Both legs commit the same USDT notional, so the budget is capped to
-        min(spot, futures) available on every venue mode; when the balance is
-        unreadable the size is left uncapped and the funding preflight decides.
-        """
+        """Size entry from budget, exposure cap, and the fee reserve."""
         directives = payload.execution_directives
         pair_info = payload.pair_info
-
         max_pos_usdt = directives.max_position_usdt
         if max_pos_usdt <= 0:
-            max_pos_usdt = 100.0  # fallback budget
-
+            max_pos_usdt = 100.0
         min_cap = getattr(self.config, "min_allocated_capital", 10.0)
         mock_mode = bool(getattr(self.config, "mock_mode", False))
-
-        # Both legs commit the same USDT notional, so the entry must be capped to
-        # min(spot, futures) for live venues too, not just simulated ones: a
-        # directive that outruns the thinner leg would otherwise reach the
-        # funding preflight and be rejected as underfunded instead of sized down.
-        balances = self._balance_snapshots.pop(pair_tag, None)
-        if balances is None and mock_mode:
-            balances = await self._check_balance_mismatch(
-                pair_info,
-                payload.pricing_snapshot.usdt_idr_rate,
-                pair_tag,
-            )
-        if balances is None and not mock_mode:
-            # Live uses its own probe rather than _check_balance_mismatch: a
-            # transient read failure must not halt the venues, and the funding
-            # preflight downstream already fails open on an unreadable balance.
-            try:
-                balances = await self._get_balance_snapshot(
-                    pair_tag=pair_tag,
-                    pair_info=pair_info,
-                    usdt_idr_rate=payload.pricing_snapshot.usdt_idr_rate,
-                )
-            except Exception as exc:
-                logger.warning(
-                    f"[State 1 Balance Check] balance probe failed for {pair_tag}; "
-                    f"sizing uncapped and deferred to the funding preflight: {exc}"
-                )
+        balances = await self._entry_sizing_balance_snapshot(
+            pair_tag, pair_info, payload.pricing_snapshot.usdt_idr_rate,
+            mock_mode,
+        )
         if balances is not None:
             avail_spot = float(balances["spot_available"])
             avail_fut = float(balances["futures_available"])
             usable_capital = min(avail_spot, avail_fut)
-
             if usable_capital < min_cap:
-                logger.warning(
-                    f"[State 1 Balance Check] Insufficient available balance for {pair_tag}: "
-                    f"Spot Avail=${avail_spot:.2f}, Futures Avail=${avail_fut:.2f}, "
-                    f"Min Required=${min_cap:.2f}. Rejecting entry signal."
-                )
-                await self._publish_execution_failure(
-                    pair_tag,
-                    "INSUFFICIENT_OR_UNBALANCED_BALANCE",
-                    "Saldo Spot/Futures tidak mencukupi atau tidak seimbang untuk membuka posisi.",
-                    detail={"spot_available_usdt": avail_spot, "futures_available_usdt": avail_fut, "minimum_required_usdt": min_cap},
+                await self._reject_insufficient_entry_balance(
+                    pair_tag, avail_spot, avail_fut, min_cap
                 )
                 return None
-
             max_pos_usdt = min(max_pos_usdt, usable_capital)
 
         if not mock_mode or balances is not None:
             if not self._exposure_allows(pair_tag, pair_info, max_pos_usdt):
-                await self._publish_execution_failure(
-                    pair_tag,
-                    "EXPOSURE_LIMIT_REACHED",
-                    "Entry ditolak karena batas exposure exchange akan terlampaui.",
-                    detail={"planned_usdt": max_pos_usdt, "limit_usdt": getattr(self.config, "max_exposure_per_exchange_usdt", 0.0)},
-                )
+                await self._reject_entry_exposure_limit(pair_tag, max_pos_usdt)
                 return None
-
-            fee_pct = float(getattr(self.config, "estimated_round_trip_fee_pct", 0.0) or 0.0)
-            if fee_pct > 0:
-                fee_buffer_usdt = max_pos_usdt * fee_pct
-                max_pos_usdt -= fee_buffer_usdt
-                logger.debug(
-                    f"[State 1 Fee Buffer] {pair_tag} reserved ${fee_buffer_usdt:.4f} "
-                    f"({fee_pct * 100:.3f}%) for fees"
-                )
-
+            max_pos_usdt = self._reserve_entry_fee_buffer(
+                pair_tag, max_pos_usdt
+            )
             if max_pos_usdt < min_cap:
-                logger.warning(
-                    f"[State 1 Balance Check] Position size ${max_pos_usdt:.2f} "
-                    f"< min required ${min_cap:.2f} for {pair_tag}"
-                )
-                await self._publish_execution_failure(
-                    pair_tag,
-                    "INSUFFICIENT_AFTER_FEE_RESERVE",
-                    "Ukuran posisi setelah cadangan fee berada di bawah minimum exchange.",
-                    detail={"position_usdt": max_pos_usdt, "minimum_required_usdt": min_cap},
+                await self._reject_entry_below_minimum(
+                    pair_tag, max_pos_usdt, min_cap
                 )
                 return None
-
         return max_pos_usdt, min_cap
 
     async def _verify_dual_leg_funding(
