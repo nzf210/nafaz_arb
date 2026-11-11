@@ -106,7 +106,7 @@ func TestOrphansCommandReadsOrphanRegistry(t *testing.T) {
 func TestStartupRecoveryFailureNeverReportsReady(t *testing.T) {
 	mr, err := miniredis.Run(); if err != nil { t.Fatal(err) }; defer mr.Close()
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()}); defer rdb.Close()
-	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, `{"status":"RUNNING","open_positions":1,"recovery":{"complete":false,"ready":false,"tracked_orders":1,"pending_orders":{"o1":"venue unavailable"},"orphan_orders":[]},"trading_halted":true}`, 0).Err(); err != nil { t.Fatal(err) }
+	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, `{"status":"RUNNING","open_positions":1,"recovery":{"complete":true,"ready":false,"tracked_orders":1,"pending_orders":{"o1":"venue unavailable"},"orphan_orders":[]},"trading_halted":true}`, 0).Err(); err != nil { t.Fatal(err) }
 	var sent SendMessageReq
 	tsHandler := func(w http.ResponseWriter, r *http.Request) { if r.URL.Path == "/sendMessage" { _ = json.NewDecoder(r.Body).Decode(&sent); _ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true}) } }
 	bot, _, ts := setupTestBot(t, tsHandler); defer ts.Close()
