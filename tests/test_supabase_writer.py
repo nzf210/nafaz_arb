@@ -338,6 +338,35 @@ class TestDurableOutbox:
         assert [item[3]["quote_qty"] for item in pending] == [8.0, 6.0]
         reopened.close()
 
+    def test_partial_fill_uses_incremental_cumulative_notional(self):
+        writer = _writer()
+        first = {
+            "id": "order-1", "amount": 10.0, "filled": 4.0,
+            "average": 100.0, "cost": 400.0, "status": "open",
+        }
+        second = {
+            "id": "order-1", "amount": 10.0, "filled": 7.0,
+            "average": 105.0, "cost": 735.0, "status": "open",
+        }
+        writer.order("pair-a", "spot_entry", "indodax", "spot", "btc_idr", first)
+        writer.order("pair-a", "spot_entry", "indodax", "spot", "btc_idr", second)
+        fills = [row for table, _, row in _drain(writer) if table == "order_fills"]
+        assert [row["qty"] for row in fills] == [4.0, 3.0]
+        assert [row["quote_qty"] for row in fills] == [400.0, 335.0]
+        assert [row["price"] for row in fills] == [100.0, pytest.approx(335.0 / 3.0)]
+
+    def test_fill_primary_keys_are_scoped_to_pair(self):
+        writer = _writer()
+        order = {
+            "id": "reused-order-id", "amount": 1.0, "filled": 1.0,
+            "average": 10.0, "cost": 10.0, "status": "closed",
+        }
+        writer.order("pair-a", "spot_entry", "indodax", "spot", "btc_idr", order)
+        writer.order("pair-b", "spot_entry", "indodax", "spot", "eth_idr", order)
+        fills = [row for table, _, row in _drain(writer) if table == "order_fills"]
+        assert len(fills) == 2
+        assert fills[0]["id"] != fills[1]["id"]
+
 class _FakeResponse:
     def __init__(self, status: int):
         self.status = status
