@@ -545,6 +545,10 @@ class ExchangeClient:
                     params["clientOrderId"] = str(client_order_id)
                 elif order_id:
                     params["orderId"] = str(order_id)
+                if raw_trades:
+                    # INDODAX documents 300 requests/minute for myTrades;
+                    # keep historical chunk replay below that per-IP ceiling.
+                    await asyncio.sleep(0.25)
                 chunk = await fetcher(resolved, cursor, 1000, params)
                 if not isinstance(chunk, list):
                     raise ValueError("exchange returned malformed trade history")
