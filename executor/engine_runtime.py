@@ -55,6 +55,7 @@ class EngineRuntimeMixin:
         """Starts listeners and monitoring loops."""
         await self.initialize()
         await self._load_spot_order_limits()
+        await self.publish_status()
         self._running = True
 
         self._tasks.append(asyncio.create_task(self._listen_signals()))
