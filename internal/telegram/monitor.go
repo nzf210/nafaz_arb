@@ -154,7 +154,8 @@ func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) 
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Gagal membaca active order registry:</b> "+html.EscapeString(err.Error()), b.defaultKeyboard())
 		return
 	}
-	if !recoveryComplete || expected != len(items) {
+	inventoryKnown := len(rawField(recovery, "tracked_orders")) > 0
+	if !recoveryComplete || !inventoryKnown || expected != len(items) {
 		warning := fmt.Sprintf("⚠️ <b>INVENTORY BELUM TERVERIFIKASI</b>\nRecovery complete: <code>%t</code> | Snapshot tracked: <code>%d</code> | Registry terbaca: <code>%d</code>\nDaftar di bawah hanya order yang berhasil dibaca; jangan menganggapnya sebagai seluruh order exchange.", recoveryComplete, expected, len(items))
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, warning, nil)
 	}
@@ -349,7 +350,8 @@ func (b *Bot) sendStartupSummary(ctx context.Context) {
 	_ = json.Unmarshal(rawField(recovery, "complete"), &recoveryComplete)
 	_ = json.Unmarshal(rawField(recovery, "ready"), &recoveryReady)
 	_ = json.Unmarshal(rawField(snapshot, "trading_halted"), &tradingHalted)
-	ready = recoveryComplete && recoveryReady && !tradingHalted && orphanCount == 0 && pendingRecoveryCount == 0 && scopeHaltCount == 0 && failedExchangeCount == 0 && mismatchCount == 0
+	safetySchemaComplete := len(rawField(recovery, "complete")) > 0 && len(rawField(recovery, "ready")) > 0 && len(rawField(recovery, "pending_orders")) > 0 && len(rawField(recovery, "scope_halts")) > 0 && len(rawField(recovery, "orphan_orders")) > 0 && len(rawField(snapshot, "exchange_halted")) > 0 && len(rawField(snapshot, "reconciliation")) > 0
+	ready = safetySchemaComplete && recoveryComplete && recoveryReady && !tradingHalted && orphanCount == 0 && pendingRecoveryCount == 0 && scopeHaltCount == 0 && failedExchangeCount == 0 && mismatchCount == 0
 	globalStatus := "NOT READY"
 	if ready { globalStatus = "READY" }
 
