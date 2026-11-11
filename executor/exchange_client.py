@@ -538,6 +538,7 @@ class ExchangeClient:
                 int(until) if until is not None else int(time.time() * 1000),
             )
             cursor = int(since or max(0, end_ms - 7 * 24 * 60 * 60 * 1000))
+            first_window = True
             while cursor <= end_ms:
                 window_end = min(end_ms, cursor + 7 * 24 * 60 * 60 * 1000 - 1)
                 params = {"startTime": cursor, "endTime": window_end, "sort": "asc"}
@@ -545,10 +546,11 @@ class ExchangeClient:
                     params["clientOrderId"] = str(client_order_id)
                 elif order_id:
                     params["orderId"] = str(order_id)
-                if raw_trades:
+                if not first_window:
                     # INDODAX documents 300 requests/minute for myTrades;
                     # keep historical chunk replay below that per-IP ceiling.
                     await asyncio.sleep(0.25)
+                first_window = False
                 chunk = await fetcher(resolved, cursor, 1000, params)
                 if not isinstance(chunk, list):
                     raise ValueError("exchange returned malformed trade history")
