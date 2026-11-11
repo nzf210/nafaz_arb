@@ -179,7 +179,14 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Register bot commands with Telegram so typing "/" pops up all commands
 	commands := []BotCommand{
 		{Command: "menu", Description: "📱 Buka menu tombol interaktif"},
-		{Command: "positions", Description: "💼 Status posisi terbuka & opsi tutup paksa"},
+		{Command: "orders", Description: "📋 Semua active bot orders"},
+		{Command: "positions", Description: "💼 Status posisi terbuka"},
+		{Command: "recovery", Description: "🔄 Status recovery setelah restart"},
+		{Command: "orphans", Description: "👻 Order exchange yang belum teridentifikasi"},
+		{Command: "reconcile", Description: "🧾 Mismatch reconciliation terbaru"},
+		{Command: "risk", Description: "🛡️ Status risk halt"},
+		{Command: "order", Description: "🔎 Detail order berdasarkan internal ID"},
+		{Command: "position", Description: "🔎 Detail posisi berdasarkan ID"},
 		{Command: "pending", Description: "🕒 Lihat pending order Spot yang belum selesai"},
 		{Command: "balance", Description: "💰 Cek saldo live Spot & Futures semua aset"},
 		{Command: "history", Description: "📜 Riwayat transaksi yang berhasil ditutup"},
@@ -208,6 +215,7 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	go b.pollLoop(ctx)
 	go b.listenTradeEvents(ctx)
+	go b.sendStartupSummary(ctx)
 	return nil
 }
 
