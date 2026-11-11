@@ -422,10 +422,36 @@ class EntryHedgeMixin:
                     global_exchange, "hedge order placement failed"
                 )
             if order_info.get("hedge_submit_started"):
+                hedge_client_id = str(
+                    order_info.get("pending_hedge_client_order_id") or ""
+                )
+                verified_absent = False
+                verification_reason = "hedge absence has not been verified"
+                verifier = getattr(self, "_verify_ambiguous_hedge_absent", None)
+                if callable(verifier):
+                    try:
+                        verified_absent, verification_reason = await verifier(
+                            pair_tag, order_info, hedge_client_id, he, unhedged_delta
+                        )
+                    except Exception as verification_error:
+                        verification_reason = (
+                            "hedge reconciliation failed: "
+                            f"{type(verification_error).__name__}: {verification_error}"
+                        )
+                if verified_absent:
+                    logger.critical(
+                        "[Hedge Reconciliation] %s: %s; proceeding with guarded spot rollback",
+                        pair_tag, verification_reason,
+                    )
+                    order_info["hedge_submit_started"] = False
+                    await self._rollback_hedge_failure(
+                        pair_tag, order_info, unhedged_delta,
+                        price_idr, usdt_rate, he,
+                    )
+                    return
                 await self._mark_order_submission_ambiguous(
-                    pair_tag, global_exchange,
-                    str(order_info.get("pending_hedge_client_order_id") or ""),
-                    f"{type(he).__name__}: {he}",
+                    pair_tag, global_exchange, hedge_client_id,
+                    f"{type(he).__name__}: {he}; {verification_reason}",
                 )
                 return
             await self._rollback_hedge_failure(
