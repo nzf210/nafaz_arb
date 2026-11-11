@@ -508,8 +508,8 @@ func (s *Service) validateCalculationInput(input opportunityCalculationInput) er
 
 func (s *Service) opportunitySpotEntryReference(
 	input opportunityCalculationInput,
-	sm Market,
-	sb, pb OrderBook,
+	sm domain.Market,
+	sb, pb domain.OrderBook,
 	spotBid, spotAsk decimal.Decimal,
 	makerTaker bool,
 ) decimal.Decimal {
@@ -535,7 +535,7 @@ func (s *Service) opportunitySpotEntryReference(
 }
 
 func (s *Service) opportunityExecutableDepth(
-	spotBook, perpBook OrderBook, makerTaker bool,
+	spotBook, perpBook domain.OrderBook, makerTaker bool,
 ) decimal.Decimal {
 	depth := decimal.Zero
 	if makerTaker {
