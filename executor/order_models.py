@@ -70,6 +70,23 @@ def _as_spec_dict(value: Any) -> Optional[Dict[str, Any]]:
     return None
 
 @dataclass
+def _record_string(data: Dict[str, Any], key: str, default: str = "") -> str:
+    return str(data.get(key) or default)
+
+
+def _record_float(data: Dict[str, Any], key: str) -> float:
+    return float(data.get(key) or 0.0)
+
+
+def _record_int(data: Dict[str, Any], key: str) -> int:
+    return int(data.get(key) or 0)
+
+
+def _record_context(data: Dict[str, Any]):
+    context = data.get("recovery_context")
+    return context if isinstance(context, dict) else None
+
+
 class OrderRecord:
     """One row of the universal order registry.
 
@@ -146,44 +163,45 @@ class OrderRecord:
             "average_fill_price": self.average_fill_price,
             "status": self.status,
             "reduce_only": self.reduce_only,
-            "is_mock": self.is_mock,
-            "recovery_status": self.recovery_status,
-            "local_amount_spec": self.local_amount_spec,
-            "global_amount_spec": self.global_amount_spec,
-            "recovery_context": self.recovery_context,
-            "hedged_quantity": self.hedged_quantity,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "last_reconciled_at": self.last_reconciled_at,
-        }
-
-    @classmethod
+             @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "OrderRecord":
         record = cls(
-            local_order_id=str(d.get("local_order_id") or ""),
-            client_order_id=str(d.get("client_order_id") or ""),
-            exchange_order_id=str(d.get("exchange_order_id") or ""),
-            position_id=str(d.get("position_id") or ""),
-            pair_key=str(d.get("pair_key") or ""),
-            exchange=str(d.get("exchange") or ""),
-            market_type=str(d.get("market_type") or ""),
-            symbol=str(d.get("symbol") or ""),
-            side=str(d.get("side") or ""),
-            order_type=str(d.get("order_type") or ""),
-            order_role=str(d.get("order_role") or OrderRole.ENTRY.value),
-            price=float(d.get("price") or 0.0),
-            original_quantity=float(d.get("original_quantity") or 0.0),
-            filled_quantity=float(d.get("filled_quantity") or 0.0),
-            remaining_quantity=float(d.get("remaining_quantity") or 0.0),
-            average_fill_price=float(d.get("average_fill_price") or 0.0),
-            status=str(d.get("status") or "open"),
+            local_order_id=_record_string(d, "local_order_id"),
+            client_order_id=_record_string(d, "client_order_id"),
+            exchange_order_id=_record_string(d, "exchange_order_id"),
+            position_id=_record_string(d, "position_id"),
+            pair_key=_record_string(d, "pair_key"),
+            exchange=_record_string(d, "exchange"),
+            market_type=_record_string(d, "market_type"),
+            symbol=_record_string(d, "symbol"),
+            side=_record_string(d, "side"),
+            order_type=_record_string(d, "order_type"),
+            order_role=_record_string(d, "order_role", OrderRole.ENTRY.value),
+            price=_record_float(d, "price"),
+            original_quantity=_record_float(d, "original_quantity"),
+            filled_quantity=_record_float(d, "filled_quantity"),
+            remaining_quantity=_record_float(d, "remaining_quantity"),
+            average_fill_price=_record_float(d, "average_fill_price"),
+            status=_record_string(d, "status", "open"),
             reduce_only=bool(d.get("reduce_only", False)),
             is_mock=bool(d.get("is_mock", True)),
-            recovery_status=str(d.get("recovery_status") or RecoveryStatus.MANAGED.value),
+            recovery_status=_record_string(
+                d, "recovery_status", RecoveryStatus.MANAGED.value
+            ),
             local_amount_spec=_as_spec_dict(d.get("local_amount_spec")),
             global_amount_spec=_as_spec_dict(d.get("global_amount_spec")),
-            recovery_context=d.get("recovery_context") if isinstance(d.get("recovery_context"), dict) else None,
-            hedged_quantity=float(d.get("hedged_quantity") or 0.0),
+            recovery_context=_record_context(d),
+            hedged_quantity=_record_float(d, "hedged_quantity"),
+            created_at=_record_int(d, "created_at"),
+            updated_at=_record_int(d, "updated_at"),
+            last_reconciled_at=_record_int(d, "last_reconciled_at"),
+        )
+        if not record.local_order_id and record.client_order_id:
+            record.local_order_id = cls.local_id_for(
+                record.exchange, record.client_order_id, record.exchange_order_id
+            )
+        return record
+t(d.get("hedged_quantity") or 0.0),
             created_at=int(d.get("created_at") or 0),
             updated_at=int(d.get("updated_at") or 0),
             last_reconciled_at=int(d.get("last_reconciled_at") or 0),
