@@ -509,7 +509,6 @@ func (s *Service) validateCalculationInput(input opportunityCalculationInput) er
 func (s *Service) opportunitySpotEntryReference(
 	input opportunityCalculationInput,
 	sm domain.Market,
-	sb, pb domain.OrderBook,
 	spotBid, spotAsk decimal.Decimal,
 	makerTaker bool,
 ) decimal.Decimal {
@@ -566,7 +565,7 @@ func (s *Service) calculateOpportunitySizing(
 	spotBid := decimal.NewFromFloat(sb.Bids[0].Price)
 	perpBid := decimal.NewFromFloat(pb.Bids[0].Price)
 	spotEntryRef := s.opportunitySpotEntryReference(
-		input, sm, sb, spotBid, spotAsk, makerTaker,
+		input, sm, spotBid, spotAsk, makerTaker,
 	)
 	denom := spotEntryRef.Add(perpBid.Div(perpLev))
 	if denom.IsZero() {
