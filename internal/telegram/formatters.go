@@ -29,6 +29,7 @@ func (b *Bot) formatHelp() string {
 /position [position_id] - <i>Detail posisi</i>
 /positions - <i>Lihat posisi aktif Executor</i>
 /pending - <i>Lihat pending order Spot yang belum selesai</i>
+/spotmax [cex] [jumlah] - <i>Atur maksimum open order/posisi Spot per CEX (default 2)</i>
 /balance - <i>Cek saldo live seluruh aset Spot & Futures</i>
 /scan - <i>Jalankan scan pasar on-demand</i>
 /latest - <i>Lihat peluang dari 10 scan terakhir</i>
