@@ -1,5 +1,6 @@
 """Shared venue order normalization and client-id helpers."""
 
+import hashlib
 from typing import Optional, Dict, Any
 
 from executor.indodax_v2 import IndodaxTAPIv2
@@ -40,41 +41,72 @@ def _local_order_params(
 
 VENUE_CLIENT_ORDER_ID_MAX_LEN = 36
 
+# Tokocrypto validates client order ids far more strictly than its ccxt
+# defaults suggest: the venue rejects anything longer than 32 characters and
+# anything containing a non-alphanumeric character with error 3703
+# "Invalid client ID" (verified against the live venue). Indodax, Binance and
+# OKX all accept the dashed ``{pair}-{leg}-{seq}`` ids, so the tightening is
+# applied only to this exchange.
+TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN = 32
+
+def _tokocrypto_client_order_id(
+    client_order_id: str, broker_prefix: str = ""
+) -> str:
+    """Rewrites a logical client id into the form Tokocrypto accepts.
+
+    A dashed ``{pair}-{leg}-{seq}`` id is both too long and wrongly
+    punctuated, so the venue answers 3703 and the order is never accepted.
+    The pair slug is the only free-form part, so it is replaced by a short
+    hash; the ``{leg}{seq}`` tail is kept verbatim so a retried submit still
+    presents the same id and the venue can drop the duplicate instead of
+    double-filling.
+    """
+    parts = client_order_id.rsplit("-", 2)
+    if len(parts) == 3:
+        leg, seq = parts[1], parts[2]
+    else:
+        leg, seq = "", ""
+    tail = "".join(c for c in f"{leg}{seq}" if c.isalnum())
+    prefix = "".join(c for c in broker_prefix if c.isalnum())
+    digest = hashlib.sha256(client_order_id.encode("utf-8")).hexdigest()
+    room = TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - len(tail)
+    if room < 1:
+        # Keep the tail: it carries the idempotency guarantee.
+        tail = tail[: TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - 1]
+        room = TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - len(tail)
+        if room < 1:
+            raise ValueError(
+                "broker prefix leaves no room for a Tokocrypto client order id"
+            )
+    return f"{prefix}{digest[:room]}{tail}"
+
 def venue_client_order_id(
     exchange: Any, client_order_id: Optional[str], broker_prefix: str = ""
 ) -> Optional[str]:
-    """Prefixes a broker id for Binance Cloud venues when the id has none.
+    """Adapts a logical client id to the exact form its venue accepts.
 
-    ``broker_prefix`` is the account's registered broker id. With no prefix the
-    id is sent unchanged; ccxt then mints its own venue-native client id, which
-    the venue accepts, rather than rejecting a guessed prefix with error 3703.
-
-    The prefix is prepended here, so the pair slug -- the only free-form part --
-    is trimmed to keep the final id within the venue's 36-character limit.
-    Callers therefore need not know the prefix when building the id.
+    Tokocrypto (Binance Cloud) rejects ids that are longer than 32 characters
+    or contain anything but alphanumerics, so those ids are rewritten instead
+    of being sent unchanged and bouncing with error 3703. Every other venue
+    keeps the id verbatim: a broker prefix is prepended only when the account
+    actually has one registered, because a fabricated prefix is rejected even
+    more reliably than a malformed id.
     """
     if not client_order_id:
         return client_order_id
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
-    if exchange_id != "tokocrypto" or not broker_prefix:
+    if exchange_id != "tokocrypto":
         return client_order_id
-    if client_order_id.startswith(broker_prefix):
-        return client_order_id[:VENUE_CLIENT_ORDER_ID_MAX_LEN]
-    # Trim the free-form pair slug, never the trailing "-{leg}-{seq}" that keeps
-    # a retried submit idempotent at the venue.
-    room = VENUE_CLIENT_ORDER_ID_MAX_LEN - len(broker_prefix)
-    if room < 1:
-        raise ValueError("broker prefix leaves no room for a client order id")
-    if len(client_order_id) > room:
-        leg_tail = ""
-        parts = client_order_id.rsplit("-", 2)
-        if len(parts) == 3:
-            leg_tail = f"-{parts[1]}-{parts[2]}"
-        keep = room - len(leg_tail)
-        if keep < 1:
-            raise ValueError("client order ID leaves no room for the pair slug")
-        client_order_id = f"{client_order_id[:keep]}{leg_tail}"
-    return f"{broker_prefix}{client_order_id}"
+    already_charset_safe = all(c.isalnum() for c in client_order_id)
+    if already_charset_safe and len(client_order_id) <= TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN:
+        return client_order_id
+    if broker_prefix and client_order_id.startswith(broker_prefix):
+        stripped = client_order_id[len(broker_prefix):]
+        if all(c.isalnum() for c in stripped) and len(stripped) <= (
+            TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(broker_prefix)
+        ):
+            return client_order_id
+    return _tokocrypto_client_order_id(client_order_id, broker_prefix)
 
 
 def _require_amount_spec(value: Any) -> AmountSpec:
@@ -136,8 +168,29 @@ def _normalize_open_order(order: Dict[str, Any], symbol: str, spec: Optional[Amo
 
 
 
+def _accepted_client_order_ids(
+    exchange: Any, client_order_id: str, broker_prefix: str = ""
+) -> set:
+    """Every id spelling that may legitimately appear on the venue.
+
+    Tokocrypto rewrites the logical id (see ``venue_client_order_id``), so a
+    venue response carries the rewritten form rather than the logical one.
+    Accepting both keeps recovery working without loosening the exact-match
+    guarantee: only ids derived from this one logical id are admitted.
+    """
+    accepted = {client_order_id}
+    exchange_id = str(getattr(exchange, "id", "") or "").lower()
+    if exchange_id != "tokocrypto":
+        return accepted
+    accepted.add(venue_client_order_id(exchange, client_order_id, broker_prefix))
+    accepted.add(_tokocrypto_client_order_id(client_order_id, broker_prefix))
+    if broker_prefix:
+        accepted.add(f"{broker_prefix}{client_order_id}")
+    accepted.discard(None)
+    return accepted
+
 async def _find_order_by_client_id(
-    exchange: Any, symbol: str, client_order_id: str
+    exchange: Any, symbol: str, client_order_id: str, broker_prefix: str = ""
 ) -> Optional[Dict[str, Any]]:
     """Find an acknowledged order by exact client id without submitting again.
 
@@ -146,6 +199,7 @@ async def _find_order_by_client_id(
     """
     if not client_order_id:
         raise ValueError("client order id is required for acknowledgement recovery")
+    accepted_ids = _accepted_client_order_ids(exchange, client_order_id, broker_prefix)
 
     def matches(order: Any) -> bool:
         if not isinstance(order, dict):
@@ -160,7 +214,7 @@ async def _find_order_by_client_id(
             info.get("origClientOrderId"), info.get("clientOid"),
             info.get("newClientOrderId"),
         )
-        return any(str(value) == client_order_id for value in candidates if value)
+        return any(str(value) in accepted_ids for value in candidates if value)
 
     def unique_order(rows: list) -> Optional[Dict[str, Any]]:
         matched = {}

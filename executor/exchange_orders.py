@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any
 from executor.indodax_v2 import IndodaxTAPIv2
 from executor.quantity import AmountSpec, base_to_order_amount
 from executor.exchange_common import (
+    _accepted_client_order_ids,
     _base_order_result, _expose_client_order_id, _local_order_params,
     _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
     venue_client_order_id,
@@ -95,19 +96,35 @@ class ExchangeOrderMixin:
             f"on {exchange_id or 'exchange'}"
         )
 
-    def _normalize_local_client_order_id(self, order: Dict[str, Any]) -> Dict[str, Any]:
-        """Translate a broker-prefixed wire id back to the durable logical id."""
+    def _normalize_local_client_order_id(
+        self, order: Dict[str, Any], logical_client_order_id: str = ""
+    ) -> Dict[str, Any]:
+        """Translate a venue wire id back to the durable logical client id.
+
+        Tokocrypto rewrites the id into a hash-based alphanumeric form, so the
+        wire value cannot be mapped back by reversing the transform. The caller
+        already knows which logical id it searched for, and that is exactly the
+        id the registry is keyed on, so it is adopted when supplied.
+        """
         normalized = _expose_client_order_id(order)
         prefix = str(getattr(self, "_local_broker_prefix", "") or "")
-        if not prefix or not isinstance(normalized, dict):
+        if not isinstance(normalized, dict):
             return normalized
         client_id = str(
             normalized.get("client_order_id")
             or normalized.get("clientOrderId")
             or ""
         )
-        if client_id.startswith(prefix):
+        logical_id = ""
+        if logical_client_order_id and client_id != logical_client_order_id:
+            exchange_id = str(getattr(self.local, "id", "") or "").lower()
+            if exchange_id == "tokocrypto" and client_id in _accepted_client_order_ids(
+                self.local, logical_client_order_id
+            ):
+                logical_id = logical_client_order_id
+        if not logical_id and prefix and client_id.startswith(prefix):
             logical_id = client_id[len(prefix):]
+        if logical_id and logical_id != client_id:
             normalized = dict(normalized)
             normalized["clientOrderId"] = logical_id
             normalized["client_order_id"] = logical_id
@@ -215,16 +232,15 @@ class ExchangeOrderMixin:
         """Finds an order acknowledged by the spot venue using its client id."""
         spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
-        wire_client_order_id = venue_client_order_id(
-            self.local, client_order_id, self._local_broker_prefix
-        )
+        # The finder derives every accepted wire spelling from the logical id;
+        # passing an already-rewritten id would make it rewrite a second time.
         order = await _find_order_by_client_id(
-            self.local, order_symbol, wire_client_order_id
+            self.local, order_symbol, client_order_id, self._local_broker_prefix
         )
         if order is None:
             return None
         normalized = _base_order_result(order, spec) if spec is not None else dict(order)
-        return self._normalize_local_client_order_id(normalized)
+        return self._normalize_local_client_order_id(normalized, client_order_id)
 
     async def fetch_local_open_orders(
         self, symbol: Optional[str] = None, amount_spec: Any = None

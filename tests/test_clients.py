@@ -197,17 +197,19 @@ async def test_tokocrypto_order_carries_registered_broker_prefix():
 
     params = spot.calls[0][1][0]
     sent_id = params["clientOrderId"]
-    assert sent_id.startswith(BROKER_ID)
-    # The deterministic "-{leg}-{seq}" tail survives trimming, so a retried
-    # submit is still recognised as a duplicate by the venue.
-    assert sent_id.endswith("-entry-1")
-    # The final on-the-wire id must fit the venue's 36-character limit even
-    # with the broker prefix.
-    assert len(sent_id) <= 36
+    # Tokocrypto rejects any non-alphanumeric character with error 3703, so the
+    # broker id and the pair slug are stripped of punctuation on the wire.
+    assert sent_id.startswith("xTKT5PX2F")
+    # The deterministic "{leg}{seq}" tail survives, so a retried submit presents
+    # the same id and the venue drops the duplicate instead of double-filling.
+    assert sent_id.endswith("entry1")
+    # The venue rejects anything longer than 32 characters.
+    assert len(sent_id) <= 32
+    assert all(c.isalnum() for c in sent_id)
 
-    # Venues outside Binance Cloud keep the plain id; ids that already carry
-    # the prefix are left untouched.
-    assert venue_client_order_id(spot, f"{BROKER_ID}abc", BROKER_ID) == f"{BROKER_ID}abc"
+    # Venues outside Binance Cloud keep the plain id; ids that are already
+    # within the Tokocrypto constraints are left untouched.
+    assert venue_client_order_id(spot, "xTKT5PX2Fabc") == "xTKT5PX2Fabc"
 
     class IndodaxSpot:
         id = "indodax"
@@ -216,14 +218,17 @@ async def test_tokocrypto_order_carries_registered_broker_prefix():
         "indodax-btc-idr-entry-1"
     )
 
-    # With no registered broker id, no prefix is fabricated: the id is sent
-    # unchanged so ccxt mints a venue-native one instead of guessing a prefix
-    # the venue rejects with error 3703.
+    # With no registered broker id the id is still rewritten: sending the raw
+    # dashed id must never happen, because the venue rejects it with 3703.
     class UnregisteredTokoSpot:
         id = "tokocrypto"
         options = {}
 
-    assert venue_client_order_id(UnregisteredTokoSpot(), raw_id) == raw_id
+    rewritten = venue_client_order_id(UnregisteredTokoSpot(), raw_id)
+    assert rewritten != raw_id
+    assert len(rewritten) <= 32
+    assert all(c.isalnum() for c in rewritten)
+    assert rewritten.endswith("entry1")
 
 @pytest.mark.asyncio
 async def test_tokocrypto_broker_prefix_travels_from_credentials_to_wire():
@@ -257,9 +262,10 @@ async def test_tokocrypto_broker_prefix_travels_from_credentials_to_wire():
         amount_spec=AmountSpec(unit="BASE", step=0.001, minimum=0.0, base_per_unit=1.0),
     )
     sent_id = sent["params"]["clientOrderId"]
-    assert sent_id.startswith("x-TKT5PX2F")
-    assert sent_id.endswith("-entry-1")
-    assert len(sent_id) <= 36
+    assert sent_id.startswith("xTKT5PX2F")
+    assert sent_id.endswith("entry1")
+    assert len(sent_id) <= 32
+    assert all(c.isalnum() for c in sent_id)
 
 
 @pytest.mark.asyncio
