@@ -18,9 +18,10 @@ class ForceCloseLegMixin:
     """Focused emergency close leg or lifecycle operations."""
 
     @staticmethod
-    def _retry_position_short_quantity(
+    def _retry_position_details(
         pair_key: str, position: dict
-    ) -> Optional[float]:
+    ) -> Optional[Tuple[str, Optional[float], float, float]]:
+        """Normalize a venue position row before deciding whether it is a short."""
         if not isinstance(position, dict):
             return None
         info = position.get("info") or {}
@@ -51,19 +52,39 @@ class ForceCloseLegMixin:
             or contract_size <= 0
         ):
             return None
-        if abs(signed_size) <= 1e-12:
-            return 0.0
+        return side, contracts, signed_size, contract_size
+
+    @staticmethod
+    def _retry_position_side_is_valid(
+        pair_key: str, side: str, contracts: Optional[float], signed_size: float
+    ) -> bool:
         if side and side != "short":
             logger.critical(
                 f"[Force Close] refusing retry for {pair_key}: "
                 f"unexpected futures side={side}"
             )
-            return None
+            return False
         if not side and (contracts is not None or signed_size >= 0):
             logger.critical(
                 f"[Force Close] refusing retry for {pair_key}: "
                 "position side cannot be verified"
             )
+            return False
+        return True
+
+    @staticmethod
+    def _retry_position_short_quantity(
+        pair_key: str, position: dict
+    ) -> Optional[float]:
+        details = ForceCloseLegMixin._retry_position_details(pair_key, position)
+        if details is None:
+            return None
+        side, contracts, signed_size, contract_size = details
+        if abs(signed_size) <= 1e-12:
+            return 0.0
+        if not ForceCloseLegMixin._retry_position_side_is_valid(
+            pair_key, side, contracts, signed_size
+        ):
             return None
         multiplier = contract_size if contracts is not None else 1.0
         return abs(signed_size) * multiplier
