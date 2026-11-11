@@ -172,31 +172,18 @@ class OrderRegistryRecoveryMixin:
         The record itself is kept: it is the lifecycle history and the audit
         trail for anything that filled.
         """
-        try:
-            await self.redis.hdel(ORDER_RECOVERY_INDEX_KEY, record.local_order_id)
-        except Exception:
-            logger.exception("[OrderRegistry] cannot retire %s", record.local_order_id)
+        await self.redis.hdel(ORDER_RECOVERY_INDEX_KEY, record.local_order_id)
 
     # ---------------------------------------------- pending recovery / orphans
 
     async def mark_pending_recovery(self, local_order_id: str, reason: str) -> None:
-        try:
-            await self.redis.hset(ORDER_PENDING_RECOVERY_KEY, local_order_id, reason)
-        except Exception:
-            logger.exception("[OrderRegistry] cannot mark %s pending", local_order_id)
+        await self.redis.hset(ORDER_PENDING_RECOVERY_KEY, local_order_id, reason)
 
     async def clear_pending_recovery(self, local_order_id: str) -> None:
-        try:
-            await self.redis.hdel(ORDER_PENDING_RECOVERY_KEY, local_order_id)
-        except Exception:
-            logger.exception("[OrderRegistry] cannot clear %s pending", local_order_id)
+        await self.redis.hdel(ORDER_PENDING_RECOVERY_KEY, local_order_id)
 
     async def pending_recovery_ids(self) -> Dict[str, str]:
-        try:
-            raw = await self.redis.hgetall(ORDER_PENDING_RECOVERY_KEY)
-        except Exception:
-            logger.exception("[OrderRegistry] cannot read pending recovery state")
-            return {}
+        raw = await self.redis.hgetall(ORDER_PENDING_RECOVERY_KEY)
         return {
             (k.decode() if isinstance(k, bytes) else str(k)): (
                 v.decode() if isinstance(v, bytes) else str(v)
@@ -251,11 +238,10 @@ class OrderRegistryRecoveryMixin:
             "detected_at": int(time.time() * 1000),
             "raw": {k: v for k, v in order.items() if k != "info"},
         }
-        try:
-            await self.redis.set(orphan_order_key(orphan_id), json.dumps(record, default=str))
-            await self.redis.hset(ORPHAN_INDEX_KEY, orphan_id, scope)
-        except Exception:
-            logger.exception("[OrderRegistry] cannot persist orphan %s", orphan_id)
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.set(orphan_order_key(orphan_id), json.dumps(record, default=str))
+            pipe.hset(ORPHAN_INDEX_KEY, orphan_id, scope)
+            await pipe.execute()
         emitter = getattr(self.supabase, "event", None)
         if callable(emitter):
             emitter(
@@ -268,27 +254,30 @@ class OrderRegistryRecoveryMixin:
 
     async def remove_orphan(self, orphan_id: str) -> None:
         """Drops a resolved orphan so it is not re-detected on the next startup."""
-        try:
-            await self.redis.hdel(ORPHAN_INDEX_KEY, orphan_id)
-            await self.redis.delete(orphan_order_key(orphan_id))
-        except Exception:
-            logger.exception("[OrderRegistry] cannot remove orphan %s", orphan_id)
+        async with self.redis.pipeline(transaction=True) as pipe:
+            pipe.hdel(ORPHAN_INDEX_KEY, orphan_id)
+            pipe.delete(orphan_order_key(orphan_id))
+            await pipe.execute()
 
     async def orphans(self) -> Dict[str, Dict[str, Any]]:
-        try:
-            raw = await self.redis.hgetall(ORPHAN_INDEX_KEY)
-        except Exception:
-            logger.exception("[OrderRegistry] cannot read orphan index")
-            return {}
+        raw = await self.redis.hgetall(ORPHAN_INDEX_KEY)
         result: Dict[str, Dict[str, Any]] = {}
         for key in raw or {}:
             orphan_id = key.decode() if isinstance(key, bytes) else str(key)
+            payload = await self.redis.get(orphan_order_key(orphan_id))
+            if not payload:
+                raise RuntimeError(
+                    f"orphan index references missing record {orphan_id}"
+                )
             try:
-                payload = await self.redis.get(orphan_order_key(orphan_id))
-                if payload:
-                    result[orphan_id] = json.loads(payload)
-            except Exception:
-                logger.exception("[OrderRegistry] cannot read orphan %s", orphan_id)
+                record = json.loads(payload)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"orphan record {orphan_id} is malformed"
+                ) from exc
+            if not isinstance(record, dict):
+                raise RuntimeError(f"orphan record {orphan_id} is not an object")
+            result[orphan_id] = record
         return result
 
     # --------------------------------------------------------- reconciliation
