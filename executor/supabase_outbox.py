@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-_BEGIN_IMMEDIATE_SQL = _BEGIN_IMMEDIATE_SQL
-_PENDING_COUNT_SQL = _PENDING_COUNT_SQL
+_BEGIN_IMMEDIATE_SQL = "BEGIN IMMEDIATE"
+_PENDING_COUNT_SQL = "SELECT COUNT(*) FROM pending_outbox"
 _ENQUEUE_PENDING_SQL = """INSERT INTO pending_outbox
    (table_name, conflict_target, row_json, created_at)
    VALUES (?, ?, ?, ?)"""
