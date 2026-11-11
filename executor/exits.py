@@ -245,16 +245,77 @@ class ExitMixin:
             )
             return limit_sell_idr, tick_size
 
-        async def _cancel_existing_exit_order(self, pair_tag: str, symbol: str) -> None:
-            if pair_tag not in self.pending_exit_orders:
-                return
-            old_order = self.pending_exit_orders[pair_tag]
-            old_order_id = old_order.get("order_id")
-            if old_order_id:
-                try:
-                    await self.client.cancel_local_order(old_order_id, symbol)
-                except Exception as e:
-                    logger.debug(f"error cancelling old exit order {old_order_id}: {e}")
+        async def _cancel_existing_exit_order(self, pair_tag: str, symbol: str) -> bool:
+            """Cancel and reconcile the current spot exit before any replacement is submitted.
+
+            A cancel acknowledgement alone is not sufficient: exchanges may reject,
+            time out, or race a fill against the cancel request. Only a fetched
+            terminal order status permits the replacement path to continue.
+            """
+            old_order = self.pending_exit_orders.get(pair_tag)
+            if old_order is None:
+                return True
+
+            old_order_id = str(old_order.get("order_id") or "")
+            if not old_order_id:
+                logger.critical(
+                    "[Cancel & Replace] refusing replacement for %s: existing exit has no exchange order id",
+                    pair_tag,
+                )
+                return False
+
+            try:
+                await self.client.cancel_local_order(old_order_id, symbol)
+            except Exception as exc:
+                # A timeout can mean the exchange accepted the cancel. Always
+                # query the venue before deciding whether it is safe to replace.
+                logger.warning(
+                    "[Cancel & Replace] cancel request for %s (%s) was inconclusive: %s",
+                    pair_tag, old_order_id, exc,
+                )
+
+            try:
+                final_order = await self.client.fetch_local_order(old_order_id, symbol)
+            except Exception:
+                logger.exception(
+                    "[Cancel & Replace] cannot verify terminal status for old exit %s (%s); replacement blocked",
+                    pair_tag, old_order_id,
+                )
+                return False
+
+            if not isinstance(final_order, dict):
+                logger.error(
+                    "[Cancel & Replace] malformed status for old exit %s (%s); replacement blocked",
+                    pair_tag, old_order_id,
+                )
+                return False
+
+            status = str(final_order.get("status") or "").strip().lower()
+            terminal_statuses = {
+                "canceled", "cancelled", "closed", "filled", "expired", "rejected",
+            }
+            if status not in terminal_statuses:
+                logger.warning(
+                    "[Cancel & Replace] old exit %s for %s is still non-terminal (%s); replacement blocked",
+                    old_order_id, pair_tag, status or "unknown",
+                )
+                return False
+
+            # A cancel can race a partial/full fill. Reconcile the final cumulative
+            # fill (and close the matching futures quantity) before sizing a new
+            # spot order, otherwise the replacement could oversell the position.
+            await self._process_pending_exit_bound(pair_tag)
+            if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+                return False
+            if pair_tag not in self.active_positions:
+                return False
+
+            # The old order is terminal and all of its fills have been handled.
+            # Remove only this exact pending record; never discard a newer order.
+            if self.pending_exit_orders.get(pair_tag) is old_order:
+                self.pending_exit_orders.pop(pair_tag, None)
+            self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+            return True
 
         async def _place_dynamic_limit_sell(
             self,
@@ -407,7 +468,12 @@ class ExitMixin:
             limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
                 pair_tag, pos, global_ask_usdt, usdt_idr_rate
             )
-            await self._cancel_existing_exit_order(pair_tag, pos.symbol)
+            if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
+                return
+            # A cancellation may have raced a fill and reduced/closed the position.
+            pos = self.active_positions.get(pair_tag)
+            if not pos or pos.qty <= 0:
+                return
             await self._place_dynamic_limit_sell(
                 pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt
             )
