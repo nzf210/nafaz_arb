@@ -383,9 +383,11 @@ class UniversalOrderRegistry:
                         "hedged_quantity": raw_payload.get("hedged_quantity", 0.0),
                     }
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception("[OrderRegistry] malformed durable row %r", row)
-                continue
+                raise RuntimeError(
+                    f"durable order registry contains an unreadable row: {row.get('local_order_id')}"
+                ) from exc
             if record.is_terminal:
                 continue
             # Cache/index re-seeding happens after Redis and durable rows
