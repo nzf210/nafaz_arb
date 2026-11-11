@@ -28,10 +28,12 @@ class ExecutorConfig:
     exit_price_move_threshold: float = 0.0015  # 0.15%
     max_order_ttl_seconds: int = 120  # Max TTL for pending maker entry orders before cancel
     # Refresh stale, unfilled maker quotes by canceling them and waiting for a fresh scanner signal.
-    maker_refresh_after_seconds: int = 15
-    maker_refresh_cooldown_seconds: int = 15
+    maker_refresh_after_seconds: int = 45
+    maker_refresh_cooldown_seconds: int = 300
     # Minimum projected net return retained by Indodax IDR adaptive maker quotes.
     adaptive_maker_min_net_profit_pct: float = 0.10
+    indodax_maker_refresh_after_seconds: int = 15
+    indodax_maker_refresh_cooldown_seconds: int = 15
     mock_mode: bool = True  # Paper trading / simulation by default
     initial_exchange_balance_usdt: float = 100.0  # $100 per exchange
     allocation_per_pair: float = 0.5  # Max 50% capital per pair
@@ -122,6 +124,8 @@ class ExecutorConfig:
                 ("maker_refresh_after_seconds", int),
                 ("maker_refresh_cooldown_seconds", int),
                 ("adaptive_maker_min_net_profit_pct", float),
+                ("indodax_maker_refresh_after_seconds", int),
+                ("indodax_maker_refresh_cooldown_seconds", int),
                 ("initial_exchange_balance_usdt", float),
                 ("allocation_per_pair", float),
                 ("min_allocated_capital", float),
@@ -236,6 +240,18 @@ class ExecutorConfig:
         if adaptive_profit_env := os.getenv("ADAPTIVE_MAKER_MIN_NET_PROFIT_PCT"):
             try:
                 self.adaptive_maker_min_net_profit_pct = float(adaptive_profit_env)
+            except ValueError:
+                pass
+
+        if indodax_refresh_env := os.getenv("INDODAX_MAKER_REFRESH_AFTER_SECONDS"):
+            try:
+                self.indodax_maker_refresh_after_seconds = int(indodax_refresh_env)
+            except ValueError:
+                pass
+
+        if indodax_cooldown_env := os.getenv("INDODAX_MAKER_REFRESH_COOLDOWN_SECONDS"):
+            try:
+                self.indodax_maker_refresh_cooldown_seconds = int(indodax_cooldown_env)
             except ValueError:
                 pass
 
@@ -356,8 +372,10 @@ class ExecutorConfig:
     _NUMERIC_BOUNDS = {
         "max_stale_latency_ms": (1, 60000, 500),
         "max_order_ttl_seconds": (1, 86400, 120),
-        "maker_refresh_after_seconds": (0, 86400, 15),
-        "maker_refresh_cooldown_seconds": (1, 86400, 15),
+        "maker_refresh_after_seconds": (0, 86400, 45),
+        "maker_refresh_cooldown_seconds": (1, 86400, 300),
+        "indodax_maker_refresh_after_seconds": (0, 86400, 15),
+        "indodax_maker_refresh_cooldown_seconds": (1, 86400, 15),
         "adaptive_maker_min_net_profit_pct": (0.0, 10.0, 0.10),
         "min_partial_fill_usd": (0.0, None, 10.0),
         "exit_price_move_threshold": (0.0, 1.0, 0.0015),
