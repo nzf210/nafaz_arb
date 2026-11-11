@@ -208,6 +208,7 @@ class UniversalOrderRegistry:
                     "reduce_only": record.reduce_only,
                     "recovery_status": record.recovery_status,
                     "is_mock": record.is_mock,
+                    "created_at": record.created_at,
                 }
             )
             durable_ok = write_result is not False
