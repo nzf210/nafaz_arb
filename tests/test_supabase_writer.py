@@ -490,7 +490,15 @@ class TestOrderRegistryWriter:
                 "recovery_context": {"usdt_idr_rate": 16000.0},
             }
         )
-        row = [r for t, _, r in _drain(writer) if t == "order_registry"][0]
+        queued = _drain(writer)
+        row = [r for table, _, r in queued if table == "order_registry"][0]
+        analytics = [r for table, _, r in queued if table == "orders"][0]
+        assert analytics["id"] == writer.order_id_for(
+            "indodax:btc_idr__binance:btc_usdt", "binance", "11111111-1111-1111-1111-111111111111"
+        )
+        assert analytics["leg"] == "futures_exit"
+        assert analytics["market_type"] == "perpetual"
+        assert analytics["is_mock"] is True
         assert row["side"] == "buy"
         assert row["market_type"] == "perpetual"
         assert row["leg"] == "futures_exit"
