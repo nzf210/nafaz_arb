@@ -79,27 +79,17 @@ func (b *Bot) sendMonitorSection(ctx context.Context, chatID, replyToID int64, t
 }
 
 func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) {
-	snapshot, problem := b.readMonitorSnapshot(ctx)
-	if problem != "" {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders</b>\n\n"+html.EscapeString(problem), b.defaultKeyboard())
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders</b>\\n\\nRedis tidak terhubung; registry order tidak dapat diverifikasi.", b.defaultKeyboard())
 		return
 	}
-	raw := rawField(snapshot, "order_registry", "all_orders", "active_orders", "orders")
-	items := decodeList(raw)
-	if len(items) == 0 && len(raw) > 0 {
-		var object monitorSnapshot
-		if json.Unmarshal(raw, &object) == nil {
-			items = decodeList(rawField(object, "items", "orders", "active"))
-		}
-	}
-	if len(items) == 0 {
-		// Pending order data is not the same as a durable all-order registry.
-		registry := rawField(snapshot, "order_registry", "all_orders")
-		if len(registry) == 0 {
-			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders</b>\n\nExecutor belum mempublikasikan all-order registry. Pending order snapshot saja tidak cukup untuk membuktikan bahwa semua order aktif telah teridentifikasi.", b.defaultKeyboard())
-			return
-		}
-		items = decodeList(registry)
+	items, err := rc.ListActiveOrderRecords(ctx)
+	if err != nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Gagal membaca active order registry:</b> "+html.EscapeString(err.Error()), b.defaultKeyboard())
+		return
 	}
 	b.sendOrderList(ctx, chatID, replyToID, items)
 }
