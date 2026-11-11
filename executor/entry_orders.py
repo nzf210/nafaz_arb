@@ -264,49 +264,66 @@ class EntryOrderManagementMixin:
             return False
         return all(math.isfinite(value) and value == 0 for value in quantities)
 
+    @staticmethod
+    def _maker_quote_snapshot_values(snapshot: dict, order_info: dict):
+        timestamp_ms = int(snapshot.get("timestamp_ms", 0) or 0)
+        now_ms = int(time.time() * 1000)
+        values = {
+            "local_bid": float(snapshot.get("local_best_bid", 0.0) or 0.0),
+            "local_ask": float(snapshot.get("local_best_ask", 0.0) or 0.0),
+            "global_bid": float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0),
+            "fx_rate": float(
+                snapshot.get("usdt_idr_rate", 0.0)
+                or order_info.get("usdt_idr_rate", 0.0)
+            ),
+            "current_price": float(order_info.get("price", 0.0) or 0.0),
+            "tick": float(order_info.get("tick_size", 0.0) or 0.0),
+            "min_spread": float(
+                order_info.get("min_entry_spread_pct", 0.0) or 0.0
+            ),
+        }
+        if timestamp_ms <= 0 or not 0 <= now_ms - timestamp_ms <= 3000:
+            return None
+        positive_values = (
+            values["local_bid"], values["local_ask"], values["global_bid"],
+            values["fx_rate"], values["current_price"], values["tick"],
+        )
+        if not all(math.isfinite(value) and value > 0 for value in positive_values):
+            return None
+        if not math.isfinite(values["min_spread"]) or values["min_spread"] < 0:
+            return None
+        values["now_ms"] = now_ms
+        return values
+
     async def _fresh_maker_quote(self, pair_tag: str, order_info: dict):
         raw = await self.redis.get(f"arb:live_price:{pair_tag}")
         if not raw:
             return None
         try:
             snapshot = json.loads(raw)
-            timestamp_ms = int(snapshot.get("timestamp_ms", 0) or 0)
-            now_ms = int(time.time() * 1000)
-            age_ms = now_ms - timestamp_ms
-            if timestamp_ms <= 0 or age_ms < 0 or age_ms > 3000:
+            values = self._maker_quote_snapshot_values(snapshot, order_info)
+            if values is None:
                 return None
-            local_bid = float(snapshot.get("local_best_bid", 0.0) or 0.0)
-            local_ask = float(snapshot.get("local_best_ask", 0.0) or 0.0)
-            global_bid = float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0)
-            fx_rate = float(
-                snapshot.get("usdt_idr_rate", 0.0)
-                or order_info.get("usdt_idr_rate", 0.0)
-            )
-            current_price = float(order_info.get("price", 0.0) or 0.0)
-            tick = float(order_info.get("tick_size", 0.0) or 0.0)
-            min_spread = float(order_info.get("min_entry_spread_pct", 0.0) or 0.0)
-            market_values = (
-                local_bid, local_ask, global_bid, fx_rate, current_price, tick
-            )
-            if not all(math.isfinite(value) and value > 0 for value in market_values):
+            candidate = math.floor(
+                (values["local_bid"] + 1e-12) / values["tick"]
+            ) * values["tick"]
+            if (
+                candidate <= values["current_price"]
+                or candidate >= values["local_ask"]
+            ):
                 return None
-            if not math.isfinite(min_spread) or min_spread < 0:
-                return None
-            candidate = math.floor((local_bid + 1e-12) / tick) * tick
-            if candidate <= current_price or candidate >= local_ask:
-                return None
-            live_global_idr = global_bid * fx_rate
+            live_global_idr = values["global_bid"] * values["fx_rate"]
             live_spread_pct = (
                 (live_global_idr - candidate) / live_global_idr
             ) * 100.0
-            if live_spread_pct < min_spread:
+            if live_spread_pct < values["min_spread"]:
                 return None
             return {
-                "local_bid": local_bid,
-                "current_price": current_price,
+                "local_bid": values["local_bid"],
+                "current_price": values["current_price"],
                 "live_spread_pct": live_spread_pct,
-                "min_spread": min_spread,
-                "now_ms": now_ms,
+                "min_spread": values["min_spread"],
+                "now_ms": values["now_ms"],
             }
         except (TypeError, ValueError, KeyError):
             return None
