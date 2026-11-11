@@ -724,3 +724,52 @@ async def test_futures_order_history_lookup_resolves_client_id_through_private_t
     assert order["id"] == "ack-hedge-1"
     assert order["client_order_id"] == "pair-hedge-78"
     assert order["filled"] == pytest.approx(0.01)
+
+@pytest.mark.asyncio
+async def test_tokocrypto_broker_prefixed_client_id_is_normalized_for_recovery():
+    """The logical registry id must match the broker-prefixed id returned by venue APIs."""
+    from executor.exchange_client import ExchangeClient
+
+    broker_prefix = "x-TKT5PX2F"
+    logical_id = "pair-entry-91"
+    wire_id = broker_prefix + logical_id
+
+    class TokoSpot:
+        id = "tokocrypto"
+        options = {"broker": {"marketType": broker_prefix}}
+
+        async def fetch_open_orders(self, symbol):
+            return [{
+                "id": "toko-open-1",
+                "clientOrderId": wire_id,
+                "symbol": symbol,
+                "side": "buy",
+                "type": "limit",
+                "amount": 0.01,
+                "filled": 0.0,
+                "remaining": 0.01,
+                "status": "open",
+            }]
+
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            return [{
+                "id": "toko-closed-1",
+                "clientOrderId": wire_id,
+                "symbol": symbol,
+                "side": "buy",
+                "type": "limit",
+                "amount": 0.01,
+                "filled": 0.01,
+                "remaining": 0.0,
+                "status": "closed",
+            }]
+
+    client = ExchangeClient(TokoSpot(), object())
+    recovered = await client.fetch_local_order_by_client_id(
+        logical_id, "FLOKI/IDR"
+    )
+    opened = await client.fetch_local_open_orders("FLOKI/IDR")
+
+    assert recovered["id"] == "toko-closed-1"
+    assert recovered["client_order_id"] == logical_id
+    assert opened[0]["client_order_id"] == logical_id
