@@ -20,7 +20,9 @@ from executor.order_registry_common import logger
 class OrderRegistryStorageMixin:
     """Focused persistence and recovery operations for order ownership."""
 
-    async def fetch_open_orders(self, client: Any, symbol: Optional[str] = None) -> list:
+    async def fetch_open_orders(
+        self, client: Any, symbol: Optional[str] = None
+    ) -> tuple[Optional[list], Optional[str]]:
         """Reads resting orders for a symbol from the exchange client.
 
         Returns ``(orders, None)`` on success, ``(None, error)`` on failure. The
