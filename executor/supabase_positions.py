@@ -97,11 +97,11 @@ class SupabasePositionMixin:
         }
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
-        self._position_legs(pair_key, position_id, pos, pair_info, status=row["status"], is_mock=is_mock)
+        self._position_legs(pair_key, position_id, pos, pair_info, status=row["status"])
 
     def _position_legs(
         self, pair_key: str, position_id: str, pos: Any, pair_info: Any,
-        *, status: str, is_mock: bool,
+        *, status: str,
     ) -> None:
         """Upsert spot and perpetual legs independently from the parent position."""
         if pos is None:
@@ -164,7 +164,6 @@ class SupabasePositionMixin:
         self._emit("positions", row, on_conflict="id")
         self._position_legs(
             pair_key, position_id, pos, None, status=status,
-            is_mock=bool(row.get("is_mock", True)),
         )
 
     def funding_payment(
