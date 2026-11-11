@@ -54,6 +54,7 @@ class EngineRuntimeMixin:
     async def start(self):
         """Starts listeners and monitoring loops."""
         await self.initialize()
+        await self._load_spot_order_limits()
         self._running = True
 
         self._tasks.append(asyncio.create_task(self._listen_signals()))
@@ -61,6 +62,7 @@ class EngineRuntimeMixin:
         self._tasks.append(asyncio.create_task(self._listen_emergency_cancel()))
         self._tasks.append(asyncio.create_task(self._listen_force_close()))
         self._tasks.append(asyncio.create_task(self._listen_kill_switch()))
+        self._tasks.append(asyncio.create_task(self._listen_spot_order_limits()))
         self._tasks.append(asyncio.create_task(self._listen_balance_requests()))
         self._tasks.append(asyncio.create_task(self._listen_recovery_requests()))
         self._tasks.append(asyncio.create_task(self._monitoring_loop()))
@@ -325,6 +327,66 @@ class EngineRuntimeMixin:
                 await asyncio.sleep(0.01)
         finally:
             await pubsub.unsubscribe("arb:recovery_request")
+            await pubsub.close()
+
+    async def _load_spot_order_limits(self) -> None:
+        """Restore Telegram-managed per-venue limits from durable Redis hash."""
+        if self.redis is None:
+            return
+        try:
+            stored = await self.redis.hgetall("arb:executor:spot_order_limits")
+            for raw_exchange, raw_limit in (stored or {}).items():
+                exchange = raw_exchange.decode() if isinstance(raw_exchange, bytes) else str(raw_exchange)
+                value = raw_limit.decode() if isinstance(raw_limit, bytes) else str(raw_limit)
+                self._apply_spot_order_limit(exchange, value)
+        except Exception:
+            logger.exception("failed to restore per-exchange spot order limits from Redis")
+
+    def _apply_spot_order_limit(self, exchange: str, raw_limit) -> bool:
+        venue = str(exchange or "").strip().lower()
+        known = set((getattr(self.config, "exchanges", {}) or {}).keys())
+        known.add(str(getattr(self.config, "local_exchange_name", "")).strip().lower())
+        if not venue or venue not in known:
+            logger.warning("ignoring spot order limit for unconfigured exchange %r", venue)
+            return False
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            logger.warning("ignoring invalid spot order limit for %s: %r", venue, raw_limit)
+            return False
+        if limit < 1 or limit > 100:
+            logger.warning("ignoring out-of-range spot order limit for %s: %r", venue, raw_limit)
+            return False
+        limits = getattr(self.config, "max_open_spot_orders_per_exchange", None)
+        if limits is None:
+            limits = {}
+            self.config.max_open_spot_orders_per_exchange = limits
+        limits[venue] = limit
+        logger.warning("[Risk Control] %s max open spot orders set to %d", venue, limit)
+        return True
+
+    async def _listen_spot_order_limits(self):
+        """Apply Telegram limit changes immediately without restarting executor."""
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe("arb:executor:spot_order_limit_update")
+        try:
+            while self._running:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message and message.get("type") == "message":
+                    data = message.get("data")
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8")
+                    try:
+                        update = json.loads(data or "{}")
+                        if isinstance(update, dict) and self._apply_spot_order_limit(
+                            update.get("exchange"), update.get("max_open_spot_orders")
+                        ):
+                            await self.publish_status()
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        logger.warning("ignoring malformed spot order limit update")
+                await asyncio.sleep(0.01)
+        finally:
+            await pubsub.unsubscribe("arb:executor:spot_order_limit_update")
             await pubsub.close()
 
     async def _listen_kill_switch(self):
