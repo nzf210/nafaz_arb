@@ -70,6 +70,9 @@ async def test_recovery_lease_is_released_when_reconciliation_raises(fake_redis)
     with pytest.raises(RuntimeError, match="simulated recovery failure"):
         await first._run_order_recovery()
 
+    assert first._entry_blocked is True
+    assert first._recovery_scope_halts["*"]
+
     await second._run_order_recovery()
 
     assert second_called is True
