@@ -199,59 +199,66 @@ class ExchangeFeeBalanceMixin:
             )
         return reports
 
+    @staticmethod
+    def _balance_amount(
+        balance: Dict[str, Any], asset: str, bucket: str
+    ) -> float:
+        section = balance.get(bucket)
+        if isinstance(section, dict) and asset in section:
+            value = float(section.get(asset) or 0.0)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(
+                    f"exchange returned invalid {asset} {bucket} balance"
+                )
+            return value
+        per_asset = balance.get(asset)
+        if isinstance(per_asset, dict):
+            value = float(per_asset.get(bucket) or 0.0)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(
+                    f"exchange returned invalid {asset} {bucket} balance"
+                )
+            return value
+        value = (
+            float(section.get(asset) or 0.0)
+            if isinstance(section, dict) else 0.0
+        )
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(
+                f"exchange returned invalid {asset} {bucket} balance"
+            )
+        return value
+
     async def get_balances(
         self,
         local_quote_asset: str = "IDR",
         global_quote_asset: str = "USDT",
         usdt_idr_rate: float = 0.0,
     ) -> Dict[str, Any]:
-        """
-        Fetches normalized available balances for entry sizing and risk checks.
-
-        Local IDR is converted using the live USDT/IDR rate supplied by the
-        scanner snapshot. USDT and USDC are treated as stable quote units for
-        sizing; unsupported quote assets fail closed rather than guessing.
-        """
+        """Fetch normalized balances using only supported quote conversions."""
         local_quote = str(local_quote_asset or "").upper()
         global_quote = str(global_quote_asset or "").upper()
-        supported = ("IDR", "USDT", "USDC")
-        if local_quote not in supported or global_quote not in ("USDT", "USDC"):
+        if local_quote not in ("IDR", "USDT", "USDC") or global_quote not in (
+            "USDT", "USDC"
+        ):
             raise ValueError(
                 f"unsupported balance quote conversion: local={local_quote}, global={global_quote}"
             )
 
         spot_raw = await self.local.fetch_balance()
         futures_raw = await _fetch_exchange_balance(self.global_fut, "futures")
-
-        def amount(balance: Dict[str, Any], asset: str, bucket: str) -> float:
-            section = balance.get(bucket)
-            if isinstance(section, dict) and asset in section:
-                value = float(section.get(asset) or 0.0)
-                if not math.isfinite(value) or value < 0:
-                    raise ValueError(f"exchange returned invalid {asset} {bucket} balance")
-                return value
-            per_asset = balance.get(asset)
-            if isinstance(per_asset, dict):
-                value = float(per_asset.get(bucket) or 0.0)
-                if not math.isfinite(value) or value < 0:
-                    raise ValueError(f"exchange returned invalid {asset} {bucket} balance")
-                return value
-            value = float(section.get(asset) or 0.0) if isinstance(section, dict) else 0.0
-            if not math.isfinite(value) or value < 0:
-                raise ValueError(f"exchange returned invalid {asset} {bucket} balance")
-            return value
-
-        spot_free = amount(spot_raw, local_quote, "free")
-        spot_total = amount(spot_raw, local_quote, "total")
+        spot_free = self._balance_amount(spot_raw, local_quote, "free")
+        spot_total = self._balance_amount(spot_raw, local_quote, "total")
         if local_quote == "IDR":
             if not math.isfinite(float(usdt_idr_rate)) or usdt_idr_rate <= 0:
-                raise ValueError("live USDT/IDR rate is required to normalize IDR spot balance")
+                raise ValueError(
+                    "live USDT/IDR rate is required to normalize IDR spot balance"
+                )
             spot_free /= usdt_idr_rate
             spot_total /= usdt_idr_rate
 
-        futures_free = amount(futures_raw, global_quote, "free")
-        futures_total = amount(futures_raw, global_quote, "total")
-
+        futures_free = self._balance_amount(futures_raw, global_quote, "free")
+        futures_total = self._balance_amount(futures_raw, global_quote, "total")
         return {
             "spot_available": spot_free,
             "futures_available": futures_free,
@@ -259,5 +266,7 @@ class ExchangeFeeBalanceMixin:
             "futures_total": futures_total,
             "spot_quote_asset": local_quote,
             "futures_quote_asset": global_quote,
-            "stablecoin_peg_assumed": local_quote == "USDC" or global_quote == "USDC",
+            "stablecoin_peg_assumed": (
+                local_quote == "USDC" or global_quote == "USDC"
+            ),
         }
