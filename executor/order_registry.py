@@ -191,6 +191,7 @@ class UniversalOrderRegistry:
                     "local_amount_spec": record.local_amount_spec,
                     "global_amount_spec": record.global_amount_spec,
                     "recovery_context": record.recovery_context,
+                    "hedged_quantity": record.hedged_quantity,
                     "symbol": record.symbol,
                     "side": record.side,
                     "order_type": record.order_type,
@@ -254,16 +255,63 @@ class UniversalOrderRegistry:
         return record
 
     async def active_records(self) -> Dict[str, OrderRecord]:
-        """Loads every non-terminal record from the durable registry.
+        """Merge the Redis cache with the durable registry on every recovery.
 
-        Redis is tried first because it is local. When it has nothing (cache
-        flushed, new container, new VPS) the durable Supabase registry is read
-        back, so a restart cannot silently lose the order trail.
+        Redis may be only partially populated after a crash, eviction or failed
+        write. Treating any non-empty cache as complete silently loses orders.
+        The durable rows are therefore unioned by local id and monotonic fill
+        facts are merged before the cache is re-seeded.
         """
         records = await self._redis_active_records()
-        if records:
-            return records
-        return await self._durable_active_records()
+        durable = await self._durable_active_records()
+        for local_id, durable_record in durable.items():
+            cached = records.get(local_id)
+            if cached is None:
+                records[local_id] = durable_record
+                continue
+
+            # Preserve the freshest available facts without ever moving a
+            # cumulative quantity or hedge watermark backwards.
+            cached.filled_quantity = max(
+                float(cached.filled_quantity or 0.0),
+                float(durable_record.filled_quantity or 0.0),
+            )
+            cached.hedged_quantity = max(
+                float(cached.hedged_quantity or 0.0),
+                float(durable_record.hedged_quantity or 0.0),
+            )
+            cached.original_quantity = max(
+                float(cached.original_quantity or 0.0),
+                float(durable_record.original_quantity or 0.0),
+            )
+            cached.remaining_quantity = max(
+                0.0, cached.original_quantity - cached.filled_quantity
+            )
+            for field in (
+                "exchange_order_id", "client_order_id", "pair_key", "position_id",
+                "exchange", "market_type", "symbol", "side", "order_type",
+            ):
+                if not getattr(cached, field, None):
+                    setattr(cached, field, getattr(durable_record, field, None))
+            if not cached.local_amount_spec:
+                cached.local_amount_spec = durable_record.local_amount_spec
+            if not cached.global_amount_spec:
+                cached.global_amount_spec = durable_record.global_amount_spec
+            if not cached.recovery_context:
+                cached.recovery_context = durable_record.recovery_context
+            if not cached.price:
+                cached.price = durable_record.price
+            if not cached.average_fill_price:
+                cached.average_fill_price = durable_record.average_fill_price
+            if durable_record.recovery_status == RecoveryStatus.UNVERIFIED.value:
+                cached.recovery_status = RecoveryStatus.UNVERIFIED.value
+            records[local_id] = cached
+
+        # Rebuild the cache and both lookup indexes for records recovered from
+        # durable storage, as well as repairing incomplete Redis entries.
+        for record in records.values():
+            await self._persist(record)
+        return records
 
     async def _redis_active_records(self) -> Dict[str, OrderRecord]:
         try:
@@ -328,6 +376,7 @@ class UniversalOrderRegistry:
                         "local_amount_spec": row.get("local_amount_spec"),
                         "global_amount_spec": row.get("global_amount_spec"),
                         "recovery_context": raw_payload.get("recovery_context"),
+                        "hedged_quantity": raw_payload.get("hedged_quantity", 0.0),
                     }
                 )
             except Exception:
@@ -335,8 +384,9 @@ class UniversalOrderRegistry:
                 continue
             if record.is_terminal:
                 continue
-            # Re-seed the local cache so the venue sweep can match by id.
-            await self._persist(record)
+            # Cache/index re-seeding happens after Redis and durable rows
+            # have been merged in active_records(); never overwrite a richer
+            # cache record with this potentially older durable snapshot here.
             records[record.local_order_id] = record
         if records:
             logger.warning(
