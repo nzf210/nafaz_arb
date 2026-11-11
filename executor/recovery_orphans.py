@@ -131,8 +131,12 @@ class RecoveryOrphanMixin:
                 record = await self.order_registry.load(local_id)
             if record is None:
                 return True
-            record_scope = record.pair_key or self._market_scope(record.exchange, record.symbol) or record.exchange
-            if record_scope == scope or record.exchange == scope:
+            market_scope = self._market_scope(record.exchange, record.symbol)
+            if (
+                record.pair_key == scope
+                or market_scope == scope
+                or record.exchange == scope
+            ):
                 return True
         if self.states.get(scope) == PositionState.RECONCILIATION_REQUIRED:
             return True
