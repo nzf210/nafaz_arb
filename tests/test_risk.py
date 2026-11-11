@@ -481,3 +481,85 @@ def test_failure_breaker_isolated_per_exchange_and_trips_at_50(engine):
     assert engine._consecutive_order_failures["indodax"] == 50
     assert "indodax" in engine._exchange_halted
     assert "okx" not in engine._exchange_halted
+
+
+class _RiskStateMemoryWriter:
+    enabled = True
+
+    def __init__(self, rows=None, pnl_results=None, state_ok=True):
+        self.rows = list(rows or [])
+        self.pnl_results = list(pnl_results or [])
+        self.state_ok = state_ok
+        self.writes = []
+
+    async def fetch_active_risk_states(self, *, is_mock=True):
+        return list(self.rows)
+
+    def risk_state(self, **kwargs):
+        self.writes.append(kwargs)
+        return self.state_ok
+
+    def risk_pnl_event(self, event_id, **kwargs):
+        if self.pnl_results:
+            return self.pnl_results.pop(0)
+        return "inserted"
+
+
+@pytest.mark.asyncio
+async def test_durable_risk_state_restores_global_exchange_daily_and_position_halts(engine):
+    engine.supabase = _RiskStateMemoryWriter([
+        {"state_type": "trading_halt", "scope": "global", "reason": "KILL_SWITCH", "value": {"halt_reason": "KILL_SWITCH"}},
+        {"state_type": "daily_loss", "scope": "global", "reason": "", "value": {"loss_usdt": 12.5, "loss_day": engine._utc_day()}},
+        {"state_type": "exchange_halt", "scope": "exchange", "exchange": "okx", "reason": "venue breaker", "value": {}},
+        {"state_type": "consecutive_order_failures", "scope": "exchange", "exchange": "okx", "reason": "", "value": {"count": 7}},
+        {"state_type": "reconciliation_halt", "scope": "pair", "pair_key": "indodax:btc_idr", "reason": "unresolved order", "value": {}},
+        {"state_type": "position_failure", "scope": "position", "pair_key": "indodax:eth_idr", "reason": "leg mismatch", "value": {"reason": "leg mismatch", "state": "RECONCILIATION_REQUIRED"}},
+    ])
+    await engine._restore_risk_state()
+
+    assert engine._trading_halted is True
+    assert engine._halt_reason == "KILL_SWITCH"
+    assert engine._daily_realized_loss_usdt == pytest.approx(12.5)
+    assert engine._exchange_halted["okx"] == "venue breaker"
+    assert engine._consecutive_order_failures["okx"] == 7
+    assert engine._recovery_scope_halts["indodax:btc_idr"] == "unresolved order"
+    assert engine.states["indodax:eth_idr"] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_manual_resume_survives_restart_without_daily_halt_reappearing(engine):
+    engine.supabase = _RiskStateMemoryWriter()
+    engine._daily_realized_loss_usdt = 15.0
+    engine._trading_halted = True
+    engine._halt_reason = "DAILY_LOSS_LIMIT"
+
+    await engine.resume_trading("operator reviewed")
+    assert engine._trading_halted is False
+    assert any(w["state_type"] == "trading_resume" for w in engine.supabase.writes)
+
+    restored = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True, max_daily_loss_usdt=10.0),
+        client=MockExchangeClient(),
+        redis_client=fake_redis,
+    )
+    restored.supabase = _RiskStateMemoryWriter([
+        {"state_type": "daily_loss", "scope": "global", "value": {"loss_usdt": 15.0, "loss_day": restored._utc_day()}},
+        {"state_type": "trading_resume", "scope": "global", "value": {"loss_day": restored._utc_day()}},
+    ])
+    await restored._restore_risk_state()
+    assert restored._trading_halted is False
+
+
+def test_duplicate_realized_pnl_event_is_not_counted_twice(engine):
+    engine.supabase = _RiskStateMemoryWriter(pnl_results=["inserted", "duplicate"])
+    engine.record_realized_pnl(-4.0, event_id="position-close:btc:1", pair_key="btc")
+    engine.record_realized_pnl(-4.0, event_id="position-close:btc:1", pair_key="btc")
+    assert engine._daily_realized_loss_usdt == pytest.approx(4.0)
+
+
+def test_risk_persistence_failure_blocks_live_entries(engine):
+    engine.config.mock_mode = False
+    engine.supabase = _RiskStateMemoryWriter(state_ok=False)
+    assert engine._persist_risk_state("trading_halt", reason="test") is False
+    assert engine._risk_persistence_failed is True
+    assert engine._entry_blocked is True
