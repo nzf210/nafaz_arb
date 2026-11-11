@@ -73,7 +73,7 @@ func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID 
 		return left < right
 	})
 	if len(orders) == 0 {
-		message := "🕒 <b>PENDING ORDERS (0)</b>\\n<i>Tidak ada pending order pada snapshot executor.</i>"
+		message := "🕒 <b>PENDING ORDERS (0)</b>\n<i>Tidak ada pending order pada snapshot executor.</i>"
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, message, b.defaultKeyboard())
 		return
 	}
@@ -83,26 +83,26 @@ func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID 
 		end := start + pageSize
 		if end > len(orders) { end = len(orders) }
 		var out strings.Builder
-		out.WriteString(fmt.Sprintf("🕒 <b>PENDING ORDERS (%d) — %d/%d</b> — grouped by exchange / pair\\n", len(orders), page+1, pages))
-		if snapshot.MockMode { out.WriteString("⚠️ <b>MODE SIMULASI</b>\\n") } else { out.WriteString("🟢 <b>EXECUTOR LIVE</b>\\n") }
-		if snapshot.TimestampMS > 0 { out.WriteString("🕓 Snapshot: "+time.UnixMilli(snapshot.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC")+"\\n") }
-		out.WriteString("\\n")
+		out.WriteString(fmt.Sprintf("🕒 <b>PENDING ORDERS (%d) — %d/%d</b> — grouped by exchange / pair\n", len(orders), page+1, pages))
+		if snapshot.MockMode { out.WriteString("⚠️ <b>MODE SIMULASI</b>\n") } else { out.WriteString("🟢 <b>EXECUTOR LIVE</b>\n") }
+		if snapshot.TimestampMS > 0 { out.WriteString("🕓 Snapshot: "+time.UnixMilli(snapshot.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC")+"\n") }
+		out.WriteString("\n")
 		lastGroup := ""
 		for i, order := range orders[start:end] {
 			group := strings.ToUpper(order.LocalExchange) + " / " + strings.ToUpper(order.Symbol)
-			if group != lastGroup { out.WriteString("<b>🏦 "+html.EscapeString(group)+"</b>\\n"); lastGroup = group }
+			if group != lastGroup { out.WriteString("<b>🏦 "+html.EscapeString(group)+"</b>\n"); lastGroup = group }
 			status := order.Status
 			if status == "" { status = "UNKNOWN" }
-			out.WriteString(fmt.Sprintf("<b>[%d] %s — %s</b>\\n", start+i+1, html.EscapeString(strings.ToUpper(order.Symbol)), html.EscapeString(status)))
-			out.WriteString(fmt.Sprintf("• Leg: <code>%s</code> | Order ID: <code>%s</code>\\n", html.EscapeString(order.Leg), html.EscapeString(order.OrderID)))
-			out.WriteString(fmt.Sprintf("• CEX Spot: <b>%s</b> | CEX Futures: <b>%s</b>\\n", html.EscapeString(strings.ToUpper(order.LocalExchange)), html.EscapeString(strings.ToUpper(order.GlobalExchange))))
-			out.WriteString(fmt.Sprintf("• Harga: <code>%.10g %s</code> | Qty: <code>%.8g</code>\\n", order.Price, html.EscapeString(order.QuoteAsset), order.Qty))
-			out.WriteString(fmt.Sprintf("• Filled: <code>%.8g</code> | Sisa: <code>%.8g</code>\\n", order.Filled, order.Remaining))
+			out.WriteString(fmt.Sprintf("<b>[%d] %s — %s</b>\n", start+i+1, html.EscapeString(strings.ToUpper(order.Symbol)), html.EscapeString(status)))
+			out.WriteString(fmt.Sprintf("• Leg: <code>%s</code> | Order ID: <code>%s</code>\n", html.EscapeString(order.Leg), html.EscapeString(order.OrderID)))
+			out.WriteString(fmt.Sprintf("• CEX Spot: <b>%s</b> | CEX Futures: <b>%s</b>\n", html.EscapeString(strings.ToUpper(order.LocalExchange)), html.EscapeString(strings.ToUpper(order.GlobalExchange))))
+			out.WriteString(fmt.Sprintf("• Harga: <code>%.10g %s</code> | Qty: <code>%.8g</code>\n", order.Price, html.EscapeString(order.QuoteAsset), order.Qty))
+			out.WriteString(fmt.Sprintf("• Filled: <code>%.8g</code> | Sisa: <code>%.8g</code>\n", order.Filled, order.Remaining))
 			if order.CreatedAtMS > 0 {
 				age := time.Since(time.UnixMilli(order.CreatedAtMS)); if age < 0 { age = 0 }
-				out.WriteString(fmt.Sprintf("• Dibuka: %s (umur %s)\\n", time.UnixMilli(order.CreatedAtMS).UTC().Format(TIME_FORMAT), age.Round(time.Second)))
-			} else { out.WriteString("• Waktu pembukaan: <i>tidak tersedia</i>\\n") }
-			out.WriteString("\\n")
+				out.WriteString(fmt.Sprintf("• Dibuka: %s (umur %s)\n", time.UnixMilli(order.CreatedAtMS).UTC().Format(TIME_FORMAT), age.Round(time.Second)))
+			} else { out.WriteString("• Waktu pembukaan: <i>tidak tersedia</i>\n") }
+			out.WriteString("\n")
 		}
 		out.WriteString("<i>Read-only: status berasal dari snapshot executor NAFAZ.</i>")
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
