@@ -291,7 +291,7 @@ class ExitExecutionMixin:
                 spot_pnl_usdt, usdt_rate,
             )
         except Exception as ee:
-            pos.state = PositionState.RECONCILIATION_REQUIRED
+            pos.state = "RECONCILIATION_REQUIRED"
             pos.updated_at = int(time.time() * 1000)
             self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
             await self.redis.set(
