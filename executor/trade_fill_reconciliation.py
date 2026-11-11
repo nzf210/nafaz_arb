@@ -161,8 +161,8 @@ class TradeFillReconciliationWorker:
                 reason = str(reasons.get(scope, "") or "")
                 if "trade-fill reconciliation:" in reason:
                     result = clear(scope, "all exchange trade fills verified")
-                if inspect.isawaitable(result):
-                    await result
+                    if inspect.isawaitable(result):
+                        await result
         self._verified_scopes.clear()
 
     async def reconcile_once(self) -> None:
