@@ -985,6 +985,12 @@ async def test_recovery_retry_clears_pair_failure_only_after_position_verificati
 
     engine._verify_recovered_active_positions = verified_positions
 
+    async def resolve_order(record):
+        await engine.order_registry.clear_pending_recovery(record.local_order_id)
+        return True
+
+    engine._retry_one_pending_order = resolve_order
+
     assert await engine.retry_pending_order_recovery() is True
     assert engine.states[PAIR_TAG] == PositionState.HEDGED_ACTIVE
     assert PAIR_TAG not in engine._failure_reasons
@@ -1122,6 +1128,8 @@ async def test_orphan_can_be_attached_to_pair_manually(fake_redis):
     await engine._run_order_recovery()
     orphan_id = next(iter(await engine.order_registry.orphans()))
 
+    # The order must be terminal and zero-fill before an operator can attach it.
+    client.orders["999"]["status"] = "canceled"
     assert await engine.resolve_orphan_order(orphan_id, pair_tag="indodax:eth_idr") is True
 
     attached = await engine.order_registry.find_by_exchange_id("indodax", "999")
