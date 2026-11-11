@@ -7,6 +7,7 @@ from executor.quantity import AmountSpec, base_to_order_amount
 from executor.exchange_common import (
     _base_order_result, _expose_client_order_id, _local_order_params,
     _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
+    venue_client_order_id,
 )
 
 
@@ -94,6 +95,24 @@ class ExchangeOrderMixin:
             f"on {exchange_id or 'exchange'}"
         )
 
+    def _normalize_local_client_order_id(self, order: Dict[str, Any]) -> Dict[str, Any]:
+        """Translate a broker-prefixed wire id back to the durable logical id."""
+        normalized = _expose_client_order_id(order)
+        prefix = str(getattr(self, "_local_broker_prefix", "") or "")
+        if not prefix or not isinstance(normalized, dict):
+            return normalized
+        client_id = str(
+            normalized.get("client_order_id")
+            or normalized.get("clientOrderId")
+            or ""
+        )
+        if client_id.startswith(prefix):
+            logical_id = client_id[len(prefix):]
+            normalized = dict(normalized)
+            normalized["clientOrderId"] = logical_id
+            normalized["client_order_id"] = logical_id
+        return normalized
+
     async def place_local_limit_buy(
         self, symbol: str, amount: float, price: float,
         client_order_id: Optional[str] = None, amount_spec: Any = None,
@@ -168,7 +187,7 @@ class ExchangeOrderMixin:
         """Fetches status of an order on local spot exchange."""
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
         order = await self.local.fetch_order(order_id, order_symbol)
-        return _expose_client_order_id(order)
+        return self._normalize_local_client_order_id(order)
 
     async def fetch_local_order_by_client_id(
         self, client_order_id: str, symbol: str, amount_spec: Any = None
@@ -176,13 +195,16 @@ class ExchangeOrderMixin:
         """Finds an order acknowledged by the spot venue using its client id."""
         spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
+        wire_client_order_id = venue_client_order_id(
+            self.local, client_order_id, self._local_broker_prefix
+        )
         order = await _find_order_by_client_id(
-            self.local, order_symbol, client_order_id
+            self.local, order_symbol, wire_client_order_id
         )
         if order is None:
             return None
         normalized = _base_order_result(order, spec) if spec is not None else dict(order)
-        return _expose_client_order_id(normalized)
+        return self._normalize_local_client_order_id(normalized)
 
     async def fetch_local_open_orders(
         self, symbol: Optional[str] = None, amount_spec: Any = None
@@ -198,4 +220,9 @@ class ExchangeOrderMixin:
         raw = await self.local.fetch_open_orders(resolved_symbol)
         if raw is None or not isinstance(raw, list):
             raise ValueError("local venue returned a malformed open orders payload")
-        return [_normalize_open_order(order, symbol or "", spec) for order in raw]
+        return [
+            self._normalize_local_client_order_id(
+                _normalize_open_order(order, symbol or "", spec)
+            )
+            for order in raw
+        ]
