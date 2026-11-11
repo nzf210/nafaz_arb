@@ -576,6 +576,50 @@ class EntryMixin:
                     self.states[pair_tag] = PositionState.ENTRY_PARTIAL
                     await self._maybe_publish_status()
 
+        async def _persist_entry_hedge_watermark(
+            self, pair_tag: str, order_info: dict, hedged_quantity: float
+        ) -> None:
+            """Persist cumulative hedge progress on the originating spot entry."""
+            try:
+                quantity = float(hedged_quantity or 0.0)
+                if not math.isfinite(quantity) or quantity < 0:
+                    raise ValueError("invalid cumulative hedge quantity")
+                order_info["hedged_short_qty"] = max(
+                    float(order_info.get("hedged_short_qty", 0.0) or 0.0),
+                    quantity,
+                )
+                registry = getattr(self, "order_registry", None)
+                if registry is not None:
+                    exchange = str(order_info.get("local_exchange") or "").lower()
+                    order_id = str(order_info.get("order_id") or "")
+                    client_id = str(order_info.get("client_order_id") or "")
+                    record = None
+                    if exchange and order_id:
+                        record = await registry.find_by_exchange_id(exchange, order_id)
+                    if record is None and exchange and client_id:
+                        record = await registry.find_by_client_id(exchange, client_id)
+                    if record is not None:
+                        record.hedged_quantity = max(
+                            float(record.hedged_quantity or 0.0), quantity
+                        )
+                        await registry.register(record)
+                    else:
+                        logger.critical(
+                            "[Recovery] cannot locate originating spot order %s/%s "
+                            "to persist hedge watermark for %s",
+                            exchange, order_id or client_id, pair_tag,
+                        )
+                persist = getattr(self, "_persist_pending_entry", None)
+                if callable(persist):
+                    await persist(pair_tag, order_info)
+            except Exception:
+                # The hedge has already executed. Do not retry it here; surface
+                # the persistence failure and let recovery/operator checks gate
+                # further exposure rather than risking a duplicate market order.
+                logger.exception(
+                    "[Recovery] failed to persist hedge watermark for %s", pair_tag
+                )
+
         async def _execute_entry_hedge(
             self,
             pair_tag: str,
@@ -635,6 +679,12 @@ class EntryMixin:
                     )
 
                 order_info["hedged_short_qty"] += actual_hedged_qty
+                # Persist the entry's cumulative hedge watermark, not only the
+                # separate futures order. After Redis loss the registry must
+                # know how much of this spot fill is already hedged.
+                await self._persist_entry_hedge_watermark(
+                    pair_tag, order_info, order_info["hedged_short_qty"]
+                )
                 self._record_hedged_position(
                     pair_tag, order_info, actual_hedged_qty, short_order, price_idr, usdt_rate
                 )
