@@ -322,3 +322,81 @@ async def test_exchange_client_converts_contract_fill_quantity_to_base_units():
 
     assert fills[0]["amount"] == pytest.approx(0.02)
     assert fills[0]["cost"] == pytest.approx(2)
+
+
+@pytest.mark.asyncio
+async def test_indodax_direct_client_id_lookup_uses_orig_client_order_id(monkeypatch):
+    adapter = _adapter()
+    captured = {}
+
+    async def fake_request(method, path, params=None, signed=True):
+        captured.update({"method": method, "path": path, "params": params})
+        return {
+            "symbol": "BTCIDR", "orderId": 902, "clientOrderId": "recover-me",
+            "side": "BUY", "type": "LIMIT", "origQty": "0.02",
+            "executedQty": "0.02", "status": "FILLED", "time": 1723442692520,
+        }
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    order = await adapter.fetch_order_by_client_id("recover-me", "btc_idr")
+
+    assert captured["method"] == "GET"
+    assert captured["path"] == "/api/v2/order"
+    assert captured["params"] == {"symbol": "BTCIDR", "origClientOrderId": "recover-me"}
+    assert order["id"] == "902"
+    assert order["clientOrderId"] == "recover-me"
+    assert order["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_indodax_terminal_history_maps_filled_and_canceled_orders(monkeypatch):
+    adapter = _adapter()
+    captured = []
+
+    async def fake_request(method, path, params=None, signed=True):
+        captured.append((method, path, params))
+        return {"data": [
+            {"symbol": "BTCIDR", "orderId": 11, "clientOrderId": "filled-1",
+             "side": "BUY", "type": "LIMIT", "origQty": "1", "executedQty": "1",
+             "status": "FILLED", "time": 1723442692520},
+            {"symbol": "BTCIDR", "orderId": 12, "clientOrderId": "cancel-1",
+             "side": "BUY", "type": "LIMIT", "origQty": "2", "executedQty": "0.5",
+             "status": "CANCELLED", "time": 1723442692521},
+        ]}
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    closed = await adapter.fetch_closed_orders("btc_idr")
+    canceled = await adapter.fetch_canceled_orders("btc_idr")
+
+    assert closed[0]["clientOrderId"] == "filled-1"
+    assert closed[0]["status"] == "closed"
+    assert canceled[0]["clientOrderId"] == "cancel-1"
+    assert canceled[0]["status"] == "canceled"
+    assert all(call[1] == "/api/v2/order/histories" for call in captured)
+    assert all(call[2]["symbol"] == "BTCIDR" for call in captured)
+    assert all(call[2]["endTime"] >= call[2]["startTime"] for call in captured)
+
+
+@pytest.mark.asyncio
+async def test_indodax_client_id_recovery_prefers_direct_order_lookup(monkeypatch):
+    adapter = _adapter()
+
+    async def fake_lookup(client_order_id, symbol):
+        return {
+            "id": "77", "clientOrderId": client_order_id, "symbol": symbol,
+            "side": "buy", "type": "limit", "amount": 0.1,
+            "filled": 0.1, "remaining": 0.0, "status": "closed",
+        }
+
+    async def forbidden_history(*args, **kwargs):
+        raise AssertionError("direct lookup should avoid broad history queries")
+
+    monkeypatch.setattr(adapter, "fetch_order_by_client_id", fake_lookup)
+    monkeypatch.setattr(adapter, "fetch_open_orders", forbidden_history)
+    monkeypatch.setattr(adapter, "fetch_closed_orders", forbidden_history)
+    monkeypatch.setattr(adapter, "fetch_canceled_orders", forbidden_history)
+
+    client = ExchangeClient(adapter, object())
+    recovered = await client.fetch_local_order_by_client_id("recover-77", "btc_idr")
+    assert recovered["id"] == "77"
+    assert recovered["client_order_id"] == "recover-77"
