@@ -66,8 +66,16 @@ class OrderRegistryStorageMixin:
         await self._merge_existing(record)
         if record.recovery_status == RecoveryStatus.MANAGED.value:
             record.recovery_status = RecoveryStatus.ADOPTED.value
+        previous = self.records.get(record.local_order_id)
+        try:
+            await self._persist(record)
+        except Exception:
+            if previous is None:
+                self.records.pop(record.local_order_id, None)
+            else:
+                self.records[record.local_order_id] = previous
+            raise
         self.records[record.local_order_id] = record
-        await self._persist(record)
         return record
 
     async def _merge_existing(self, record: OrderRecord) -> None:
@@ -102,41 +110,40 @@ class OrderRegistryStorageMixin:
     async def _load_cached(self, local_order_id: str) -> Optional[OrderRecord]:
         if not local_order_id:
             return None
-        try:
-            raw = await self.redis.get(order_record_key(local_order_id))
-        except Exception:
-            return None
+        raw = await self.redis.get(order_record_key(local_order_id))
         if not raw:
             return None
         try:
             return OrderRecord.from_dict(json.loads(raw))
-        except Exception:
-            return None
+        except Exception as exc:
+            raise RuntimeError(
+                f"order registry record {local_order_id} is malformed"
+            ) from exc
 
     async def _persist(self, record: OrderRecord) -> None:
         payload = json.dumps(record.to_dict())
         redis_ok = False
         try:
-            await self.redis.set(order_record_key(record.local_order_id), payload)
-            await self.redis.hset(
-                ORDER_RECOVERY_INDEX_KEY, record.local_order_id, "1"
-            )
-            if record.exchange_order_id:
-                await self.redis.hset(
-                    ORDER_BY_EXCHANGE_ID_KEY,
-                    order_xid_field(record.exchange, record.exchange_order_id),
-                    record.local_order_id,
-                )
-            if record.client_order_id:
-                await self.redis.hset(
-                    ORDER_BY_CLIENT_ID_KEY,
-                    order_cid_field(record.exchange, record.client_order_id),
-                    record.local_order_id,
-                )
+            async with self.redis.pipeline(transaction=True) as pipe:
+                pipe.set(order_record_key(record.local_order_id), payload)
+                pipe.hset(ORDER_RECOVERY_INDEX_KEY, record.local_order_id, "1")
+                if record.exchange_order_id:
+                    pipe.hset(
+                        ORDER_BY_EXCHANGE_ID_KEY,
+                        order_xid_field(record.exchange, record.exchange_order_id),
+                        record.local_order_id,
+                    )
+                if record.client_order_id:
+                    pipe.hset(
+                        ORDER_BY_CLIENT_ID_KEY,
+                        order_cid_field(record.exchange, record.client_order_id),
+                        record.local_order_id,
+                    )
+                await pipe.execute()
             redis_ok = True
         except Exception:
             logger.exception(
-                "[OrderRegistry] Redis persist failed for %s; trying durable storage",
+                "[OrderRegistry] atomic Redis persist failed for %s; trying durable storage",
                 record.local_order_id,
             )
         writer = getattr(self.supabase, "order_record", None)
