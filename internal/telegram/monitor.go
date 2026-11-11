@@ -103,10 +103,31 @@ func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) 
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders</b>\\n\\nRedis tidak terhubung; registry order tidak dapat diverifikasi.", b.defaultKeyboard())
 		return
 	}
+	statusRaw, found, statusErr := rc.GetExecutorStatus(ctx)
+	if statusErr != nil || !found {
+		problem := "Executor status snapshot tidak tersedia; registry saja tidak cukup untuk membuktikan seluruh exchange order telah direkonsiliasi."
+		if statusErr != nil { problem = statusErr.Error() }
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders — verifikasi belum lengkap</b>\\n\\n"+html.EscapeString(problem), b.defaultKeyboard())
+		return
+	}
+	var status monitorSnapshot
+	if err := json.Unmarshal([]byte(statusRaw), &status); err != nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Snapshot executor tidak valid: "+html.EscapeString(err.Error()), b.defaultKeyboard()); return
+	}
+	var recovery monitorSnapshot
+	_ = json.Unmarshal(rawField(status, "recovery"), &recovery)
+	var recoveryComplete bool
+	_ = json.Unmarshal(rawField(recovery, "complete"), &recoveryComplete)
+	var expected int
+	_ = json.Unmarshal(rawField(recovery, "tracked_orders"), &expected)
 	items, err := rc.ListActiveOrderRecords(ctx)
 	if err != nil {
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Gagal membaca active order registry:</b> "+html.EscapeString(err.Error()), b.defaultKeyboard())
 		return
+	}
+	if !recoveryComplete || expected != len(items) {
+		warning := fmt.Sprintf("⚠️ <b>INVENTORY BELUM TERVERIFIKASI</b>\\nRecovery complete: <code>%t</code> | Snapshot tracked: <code>%d</code> | Registry terbaca: <code>%d</code>\\nDaftar di bawah hanya order yang berhasil dibaca; jangan menganggapnya sebagai seluruh order exchange.", recoveryComplete, expected, len(items))
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, warning, nil)
 	}
 	b.sendOrderList(ctx, chatID, replyToID, items)
 }
