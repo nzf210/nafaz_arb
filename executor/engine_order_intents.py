@@ -124,6 +124,26 @@ class EngineOrderIntentMixin:
             )
         return record
 
+    async def _mark_order_submission_rejected(
+        self, exchange: str, client_order_id: str
+    ) -> None:
+        """Retire a durable intent only after an explicit venue rejection."""
+        registry = getattr(self, "order_registry", None)
+        if registry is None or not client_order_id:
+            return
+        try:
+            record = await registry.find_by_client_id(exchange, client_order_id)
+            if record is None:
+                return
+            record.status = "rejected"
+            await registry.register(record)
+            await registry.retire(record)
+        except Exception:
+            logger.exception(
+                "[OrderRegistry] could not retire rejected intent %s",
+                client_order_id,
+            )
+
     async def _mark_order_submission_ambiguous(
         self, pair_tag: str, exchange: str, client_order_id: str, reason: str
     ) -> None:
