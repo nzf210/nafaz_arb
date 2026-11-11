@@ -193,18 +193,19 @@ class SupabaseWriter:
 
     # ------------------------------------------------------------------- emit
 
-    def _emit(self, table: str, row: Dict[str, Any], on_conflict: Optional[str] = None) -> None:
-        """Queues one row. Never blocks, never raises."""
+    def _emit(self, table: str, row: Dict[str, Any], on_conflict: Optional[str] = None) -> bool:
+        """Queues one row. Never blocks, never raises; reports journal success."""
         if not self.enabled or self._outbox is None:
-            return
+            return False
         try:
             self._outbox.enqueue(table, on_conflict, row)
         except Exception:
             self._dropped += 1
             logger.exception("CRITICAL: durable Supabase outbox enqueue failed for table=%s", table)
-            return
+            return False
         # The worker polls the durable journal. No in-memory queue is needed,
         # so process restarts and backpressure cannot discard accepted rows.
+        return True
 
     def event(
         self,
@@ -384,7 +385,7 @@ class SupabaseWriter:
             payload["position_key"] = position_key
         if isinstance(row.get("raw_payload"), str):
             payload["raw_payload"] = row["raw_payload"]
-        self._emit("order_registry", payload, on_conflict="local_order_id")
+        return self._emit("order_registry", payload, on_conflict="local_order_id")
 
     def order(
         self,
