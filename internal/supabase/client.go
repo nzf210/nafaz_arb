@@ -382,60 +382,105 @@ func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]d
 // PositionOrderFills reads the order and immutable fill ledger associated with
 // one position. It is intentionally read-only and returns raw JSON rows so the
 // Telegram layer can display schema fields without inventing financial values.
-func (c *Client) PositionOrderFills(ctx context.Context, positionID string) (map[string][]json.RawMessage, error) {
-	if c == nil || c.httpClient == nil || c.baseURL == "" || c.serviceRoleKey == "" {
+func (c *Client) readTableRows(
+	ctx context.Context, table string, query url.Values,
+) ([]json.RawMessage, error) {
+	endpoint := c.baseURL + "/rest/v1/" + table + "?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", c.serviceRoleKey)
+	req.Header.Set("Authorization", authorizationBearerPrefix+c.serviceRoleKey)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", table, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read %s response: %w", table, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf(
+			"read %s returned HTTP %d: %s",
+			table, resp.StatusCode, strings.TrimSpace(string(body)),
+		)
+	}
+	var rows []json.RawMessage
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("decode %s rows: %w", table, err)
+	}
+	return rows, nil
+}
+
+func safeOrderRowID(row json.RawMessage) string {
+	var order struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(row, &order) != nil || order.ID == "" {
+		return ""
+	}
+	for _, ch := range order.ID {
+		if !(ch >= '0' && ch <= '9' ||
+			ch >= 'a' && ch <= 'f' ||
+			ch >= 'A' && ch <= 'F' ||
+			ch == '-') {
+			return ""
+		}
+	}
+	return order.ID
+}
+
+func (c *Client) PositionOrderFills(
+	ctx context.Context, positionID string,
+) (map[string][]json.RawMessage, error) {
+	if c == nil || c.httpClient == nil || c.baseURL == "" ||
+		c.serviceRoleKey == "" {
 		return nil, fmt.Errorf("Supabase order/fill ledger is not configured")
 	}
 	positionID = strings.TrimSpace(positionID)
-	if positionID == "" { return nil, fmt.Errorf("position_id is required") }
-	readRows := func(table string, query url.Values) ([]json.RawMessage, error) {
-		endpoint := c.baseURL + "/rest/v1/" + table + "?" + query.Encode()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-		if err != nil { return nil, err }
-		req.Header.Set("apikey", c.serviceRoleKey)
-		req.Header.Set("Authorization", authorizationBearerPrefix+c.serviceRoleKey)
-		req.Header.Set("Accept", "application/json")
-		resp, err := c.httpClient.Do(req)
-		if err != nil { return nil, fmt.Errorf("read %s: %w", table, err) }
-		defer resp.Body.Close()
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-		if err != nil { return nil, fmt.Errorf("read %s response: %w", table, err) }
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return nil, fmt.Errorf("read %s returned HTTP %d: %s", table, resp.StatusCode, strings.TrimSpace(string(body)))
-		}
-		var rows []json.RawMessage
-		if err := json.Unmarshal(body, &rows); err != nil { return nil, fmt.Errorf("decode %s rows: %w", table, err) }
-		return rows, nil
+	if positionID == "" {
+		return nil, fmt.Errorf("position_id is required")
 	}
 	orderQuery := url.Values{}
-	orderQuery.Set("select", "id,position_id,pair_key,exchange_name,market_type,leg,exchange_order_id,client_order_id,symbol,side,status,requested_qty,filled_qty,remaining_qty,limit_price,average_fill_price,reduce_only,submitted_at,completed_at")
+	orderQuery.Set(
+		"select",
+		"id,position_id,pair_key,exchange_name,market_type,leg,exchange_order_id,client_order_id,symbol,side,status,requested_qty,filled_qty,remaining_qty,limit_price,average_fill_price,reduce_only,submitted_at,completed_at",
+	)
 	orderQuery.Set("position_id", "eq."+positionID)
 	orderQuery.Set("order", "submitted_at.asc")
 	orderQuery.Set("limit", "500")
-	orders, err := readRows("orders", orderQuery)
-	if err != nil { return nil, err }
-	result := map[string][]json.RawMessage{"orders": orders, "fills": []json.RawMessage{}}
+	orders, err := c.readTableRows(ctx, "orders", orderQuery)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string][]json.RawMessage{
+		"orders": orders,
+		"fills":  []json.RawMessage{},
+	}
 	ids := make([]string, 0, len(orders))
 	for _, row := range orders {
-		var order struct { ID string `json:"id"` }
-		if json.Unmarshal(row, &order) == nil && order.ID != "" {
-			// IDs are generated UUIDs by the executor; reject unexpected values
-			// before interpolating them into PostgREST's in.(...) filter.
-			valid := true
-			for _, ch := range order.ID {
-				if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f' || ch >= 'A' && ch <= 'F' || ch == '-') { valid = false; break }
-			}
-			if valid { ids = append(ids, order.ID) }
+		if id := safeOrderRowID(row); id != "" {
+			ids = append(ids, id)
 		}
 	}
-	if len(ids) == 0 { return result, nil }
+	if len(ids) == 0 {
+		return result, nil
+	}
 	fillQuery := url.Values{}
-	fillQuery.Set("select", "id,order_id,exchange_name,exchange_fill_id,qty,price,quote_qty,fee_amount,fee_asset,fee_verified,filled_at")
+	fillQuery.Set(
+		"select",
+		"id,order_id,exchange_name,exchange_fill_id,qty,price,quote_qty,fee_amount,fee_asset,fee_verified,filled_at",
+	)
 	fillQuery.Set("order_id", "in.("+strings.Join(ids, ",")+")")
 	fillQuery.Set("order", "filled_at.asc")
 	fillQuery.Set("limit", "2000")
-	fills, err := readRows("order_fills", fillQuery)
-	if err != nil { return nil, err }
+	fills, err := c.readTableRows(ctx, "order_fills", fillQuery)
+	if err != nil {
+		return nil, err
+	}
 	result["fills"] = fills
 	return result, nil
 }
