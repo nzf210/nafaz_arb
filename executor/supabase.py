@@ -1200,3 +1200,51 @@ class SupabaseWriter:
             self._dropped += 1
             logger.exception("CRITICAL: failed to journal realized PnL event %s", event_id)
             return "failed"
+
+
+    async def fetch_daily_realized_loss_usdt(self, loss_day: str, *, is_mock: bool = True) -> float:
+        """Rebuild the UTC loss accumulator from immutable, deduplicated PnL events."""
+        if not self.enabled or not self.url or not self.key:
+            raise RuntimeError("durable realized-PnL ledger is unavailable")
+        params = {
+            "select": "event_id,pnl_usdt",
+            "loss_day_utc": f"eq.{loss_day}",
+            "is_mock": f"eq.{str(bool(is_mock)).lower()}",
+            "limit": "10000",
+        }
+        session = self._session
+        created = False
+        try:
+            if session is None or session.closed:
+                session = aiohttp.ClientSession(timeout=_TIMEOUT)
+                created = True
+            headers = {
+                "apikey": self.key,
+                "Authorization": f"Bearer {self.key}",
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+            }
+            async with session.get(
+                f"{self.url}/rest/v1/risk_pnl_events", params=params, headers=headers
+            ) as resp:
+                if resp.status >= 300:
+                    body = (await resp.text())[:500]
+                    raise RuntimeError(f"realized PnL read failed with HTTP {resp.status}: {body}")
+                rows = await resp.json()
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise RuntimeError("realized PnL ledger returned malformed payload")
+            events = {str(row.get("event_id")): float(row.get("pnl_usdt") or 0.0)
+                      for row in rows if row.get("event_id")}
+            if self._outbox is not None:
+                for _item_id, _table, _conflict, row in self._outbox.pending_table("risk_pnl_events"):
+                    if bool(row.get("is_mock", True)) != bool(is_mock):
+                        continue
+                    if str(row.get("loss_day_utc") or "") == str(loss_day) and row.get("event_id"):
+                        events[str(row["event_id"])] = float(row.get("pnl_usdt") or 0.0)
+            return sum(-pnl for pnl in events.values() if pnl < 0)
+        except Exception as exc:
+            logger.error("daily realized PnL restoration failed: %s", exc)
+            raise RuntimeError("verified daily realized PnL could not be restored") from exc
+        finally:
+            if created and session is not None:
+                await session.close()
