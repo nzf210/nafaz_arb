@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 
 from executor.quantity import AmountSpec, base_to_order_amount
 from executor.exchange_common import (
-    _base_order_result, _client_order_params, _expose_client_order_id,
+    _base_order_result, _expose_client_order_id,
     _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
 )
 
@@ -63,10 +63,14 @@ class ExchangeFuturesMixin:
         spec = _require_amount_spec(amount_spec)
         order_amount = base_to_order_amount(amount, spec)
         order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
-        # Market Sell on Futures opens a Short position
+        # Market Sell on Futures opens a Short position. CCXT accepts one
+        # params mapping; merge the id and reduceOnly flag rather than passing
+        # two positional mappings (which raises before the venue request).
+        params = {"reduceOnly": False}
+        if client_order_id:
+            params["clientOrderId"] = client_order_id
         order = await self.global_fut.create_market_sell_order(
-            order_symbol, order_amount, *_client_order_params(client_order_id),
-            {"reduceOnly": False},
+            order_symbol, order_amount, params
         )
         return _base_order_result(order, spec)
 
