@@ -200,6 +200,7 @@ class RiskMixin:
             del self._exchange_halted[exchange]
             self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, resolved=True)
             self._consecutive_order_failures.pop(exchange, None)
+            self._persist_risk_state("consecutive_order_failures", scope="exchange", exchange=exchange, resolved=True)
             logger.warning(f"[Risk Control] Exchange {exchange} resumed ({reason})")
             return True
         return False
