@@ -618,6 +618,7 @@ class SupabaseWriter:
             "order_id": order_id,
             "exchange_name": str(exchange).strip().lower(),
             "exchange_fill_id": fill_id,
+            "fill_source": "exchange_trade",
             "qty": qty,
             "price": price,
             "quote_qty": quote_qty,
