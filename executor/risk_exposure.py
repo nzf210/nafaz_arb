@@ -4,7 +4,7 @@ import inspect
 import logging
 import math
 import time
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from executor.models import PairInfo, PositionState
 from executor.pair_registry import ExchangePairKey
