@@ -35,6 +35,7 @@ class TradeFillReconciliationWorker:
         self.relative_tolerance = 0.005
         self.absolute_tolerance = 1e-8
         self._reported: Dict[str, str] = {}
+        self._last_indodax_request_at = 0.0
 
     @staticmethod
     def _interval() -> float:
@@ -232,6 +233,14 @@ class TradeFillReconciliationWorker:
                     row.get("global_amount_spec") if market_type == "perpetual"
                     else row.get("local_amount_spec")
                 )
+                if exchange == "indodax":
+                    # PairClientRegistry can hold one adapter per pair, while
+                    # INDODAX rate limits are shared by account/IP. Throttle
+                    # across the worker, not just within one adapter instance.
+                    delay = 0.21 - (time.monotonic() - self._last_indodax_request_at)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    self._last_indodax_request_at = time.monotonic()
                 trades = await fetch(
                     market_type,
                     symbol,
