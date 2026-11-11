@@ -21,44 +21,60 @@ jobs:
         with:
           python-version: "3.12"
       - name: Identify changed source files
-        id: changed
         shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            BASE="origin/${{ github.base_ref }}"
             git fetch origin "${{ github.base_ref }}" --depth=1
-            git diff --name-only "$BASE"...HEAD > changed-files.txt
+            git diff --name-only "origin/${{ github.base_ref }}"...HEAD > changed-files.txt
           else
             git diff-tree --no-commit-id --name-only -r HEAD > changed-files.txt
           fi
           cat changed-files.txt
       - name: Enforce maximum 500 lines
         run: |
-          mapfile -t files < changed-files.txt
+          mapfile -t files < <(grep -E '\.(go|py|sql)$' changed-files.txt || true)
           python scripts/check_file_length.py "${files[@]}"
 
   sonarqube:
     name: SonarQube analysis
     runs-on: ubuntu-latest
-    if: ${{ secrets.SONAR_TOKEN != '' && vars.SONAR_HOST_URL != '' }}
+    if: ${{ vars.SONAR_HOST_URL != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Check SonarQube credentials
+        id: sonar-config
+        shell: bash
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        run: |
+          if [[ -n "$SONAR_TOKEN" && -n "$SONAR_HOST_URL" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "SonarQube scan skipped: configure SONAR_TOKEN and SONAR_HOST_URL."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-python@v5
+        if: ${{ steps.sonar-config.outputs.enabled == 'true' }}
         with:
           python-version: "3.12"
       - uses: actions/setup-go@v5
+        if: ${{ steps.sonar-config.outputs.enabled == 'true' }}
         with:
           go-version-file: go.mod
       - name: Run Go tests with coverage
+        if: ${{ steps.sonar-config.outputs.enabled == 'true' }}
         run: go test ./... -coverprofile=coverage.out
       - name: Run Python tests with coverage
+        if: ${{ steps.sonar-config.outputs.enabled == 'true' }}
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest-cov
           pytest -q --cov=executor --cov-report=xml:coverage.xml
       - name: SonarQube Scan
+        if: ${{ steps.sonar-config.outputs.enabled == 'true' }}
         uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
