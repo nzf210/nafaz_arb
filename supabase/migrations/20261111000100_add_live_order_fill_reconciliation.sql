@@ -16,3 +16,6 @@ alter table public.order_fills
 
 create index if not exists idx_order_fills_source_order_time
     on public.order_fills (fill_source, order_id, filled_at);
+
+alter table public.order_fills
+    add column if not exists fee_verified boolean not null default false;
