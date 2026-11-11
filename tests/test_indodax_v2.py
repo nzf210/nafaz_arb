@@ -283,7 +283,7 @@ async def test_exchange_client_fetch_order_trades_filters_by_client_order_id(mon
     monkeypatch.setattr(adapter, "fetch_my_trades", fake_my_trades)
     client = ExchangeClient(adapter, object())
     fills = await client.fetch_order_trades(
-        "spot", "btc_idr", client_order_id="client-2",
+        "spot", "btc_idr", client_order_id="client-2", order_id="numeric-order",
     )
     assert len(fills) == 1
     assert fills[0]["id"] == "trade-2"
