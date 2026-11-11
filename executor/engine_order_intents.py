@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from executor.models import OrderRecord
+from executor.models import OrderRecord, PositionState
 from executor.engine_common import logger
 
 
@@ -123,3 +123,41 @@ class EngineOrderIntentMixin:
                 f"refusing to submit {role} order: durable order intent could not be recorded"
             )
         return record
+
+    async def _mark_order_submission_ambiguous(
+        self, pair_tag: str, exchange: str, client_order_id: str, reason: str
+    ) -> None:
+        """Fail closed when a venue may have accepted an unacknowledged submit."""
+        registry = getattr(self, "order_registry", None)
+        if registry is not None and client_order_id:
+            try:
+                record = await registry.find_by_client_id(exchange, client_order_id)
+                if record is not None:
+                    record.recovery_status = "UNVERIFIED"
+                    await registry.register(record)
+                    await registry.mark_pending_recovery(
+                        record.local_order_id, reason
+                    )
+            except Exception:
+                logger.exception(
+                    "[OrderRegistry] could not mark ambiguous submission %s pending",
+                    client_order_id,
+                )
+        self._halt_exposure_scope(
+            pair_tag, "exchange order submission acknowledgement is ambiguous"
+        )
+        self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+        await self._publish_execution_failure(
+            pair_tag,
+            "ORDER_SUBMISSION_UNCERTAIN",
+            "Exchange mungkin telah menerima order, tetapi acknowledgement belum "
+            "dapat diverifikasi. Tidak ada retry submit otomatis; pair diblokir "
+            "sampai order ditemukan melalui client order ID atau direkonsiliasi operator.",
+            detail={
+                "exchange": exchange,
+                "client_order_id": client_order_id,
+                "reason": str(reason)[:1000],
+            },
+            state=PositionState.RECONCILIATION_REQUIRED,
+        )
+        self._refresh_entry_gate()
