@@ -668,7 +668,24 @@ class ExchangeClient:
             if not fill["id"]:
                 raise ValueError("exchange trade is missing its immutable trade id")
             normalized.append(fill)
-        return normalized
+        # Some venue adapters can return the same execution through both
+        # their order-specific and general trade-history paths. De-duplicate
+        # by immutable exchange trade ID before quantity reconciliation.
+        unique = {}
+        for fill in normalized:
+            fill_id = str(fill.get("id") or "")
+            previous = unique.get(fill_id)
+            if previous is not None:
+                if (
+                    float(previous.get("amount", 0.0)) != float(fill.get("amount", 0.0))
+                    or float(previous.get("price", 0.0)) != float(fill.get("price", 0.0))
+                ):
+                    raise ValueError(
+                        f"exchange returned conflicting payloads for trade id {fill_id}"
+                    )
+                continue
+            unique[fill_id] = fill
+        return list(unique.values())
 
     async def fetch_positions(self, symbol: str) -> list:
         """Fetches open futures positions for a symbol (global exchange).
