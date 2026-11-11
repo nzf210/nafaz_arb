@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from redis.exceptions import WatchError
 
@@ -303,7 +303,7 @@ class RecoveryRegistryMixin:
                 record.local_order_id, "venue returned a malformed order payload"
             )
             return
-        if not order.get("id") and order_id not in str(order):
+        if not order.get("id") and (not order_id or order_id not in str(order)):
             # Venue history retention or API lag: absence is not proof of cancellation.
             record.recovery_status = RecoveryStatus.UNVERIFIED.value
             await self.order_registry.register(record)
