@@ -256,9 +256,12 @@ class EngineRuntimeMixin:
                 return
             result = {"resolved": False}
             if action == "retry":
-                await self._with_order_recovery_lock(self.retry_pending_order_recovery)
-                self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
-                result["resolved"] = not self._recovery_pending_orders and not self._recovery_scope_halts
+                acquired = await self._with_order_recovery_lock(self.retry_pending_order_recovery)
+                if not acquired:
+                    result["error"] = "Recovery sedang dijalankan replica lain atau lease tidak tersedia."
+                else:
+                    self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
+                    result["resolved"] = not self._recovery_pending_orders and not self._recovery_scope_halts
             else:
                 orphan_id = str(request.get("orphan_id", "")).strip()
                 pair_tag = str(request.get("pair_tag", "")).strip()
@@ -268,13 +271,17 @@ class EngineRuntimeMixin:
                     result["resolved"] = await self.resolve_orphan_order(
                         orphan_id, pair_tag=pair_tag, reason="TELEGRAM_OPERATOR"
                     )
-                await self._with_order_recovery_lock(resolve)
+                acquired = await self._with_order_recovery_lock(resolve)
+                if not acquired:
+                    result["error"] = "Recovery lease sedang dimiliki replica lain; orphan tidak diubah."
+                    result["resolved"] = False
             self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
             self._refresh_entry_gate()
             reply = {
                 "request_id": request_id,
                 "action": action,
                 "resolved": bool(result["resolved"]),
+                "error": str(result.get("error") or ""),
                 "complete": not self._recovery_pending_orders and not self._recovery_scope_halts,
                 "pending_orders": self._recovery_pending_orders,
                 "scope_halts": dict(self._recovery_scope_halts),
