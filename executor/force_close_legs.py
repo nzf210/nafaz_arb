@@ -17,122 +17,176 @@ logger = logging.getLogger("executor.engine")
 class ForceCloseLegMixin:
     """Focused emergency close leg or lifecycle operations."""
 
+    def _retry_short_quantity(self, pair_key: str, positions) -> Optional[float]:
+        """Return verified short quantity, or None for ambiguous venue data."""
+        actual_short_qty = 0.0
+        for position in positions:
+            if not isinstance(position, dict):
+                return None
+            info = position.get("info") or {}
+            side = str(
+                position.get("side")
+                or position.get("positionSide")
+                or info.get("posSide")
+                or info.get("positionSide")
+                or ""
+            ).lower()
+            contracts = position.get("contracts")
+            raw_size = contracts
+            if raw_size is None:
+                raw_size = position.get("positionAmt", info.get("positionAmt"))
+            if raw_size is None:
+                logger.critical(
+                    f"[Force Close] retry position size unavailable for {pair_key}"
+                )
+                return None
+            try:
+                signed_size = float(raw_size)
+                contract_size = float(position.get("contractSize") or 1.0)
+            except (TypeError, ValueError):
+                return None
+            if (
+                not math.isfinite(signed_size)
+                or not math.isfinite(contract_size)
+                or contract_size <= 0
+            ):
+                return None
+            if abs(signed_size) <= 1e-12:
+                continue
+            if side:
+                if side != "short":
+                    logger.critical(
+                        f"[Force Close] refusing retry for {pair_key}: "
+                        f"unexpected futures side={side}"
+                    )
+                    return None
+            elif contracts is not None or signed_size >= 0:
+                logger.critical(
+                    f"[Force Close] refusing retry for {pair_key}: "
+                    "position side cannot be verified"
+                )
+                return None
+            actual_short_qty += abs(signed_size) * (
+                contract_size if contracts is not None else 1.0
+            )
+        return actual_short_qty
+
+    async def _retry_short_is_flat(self, pair_key: str, pos, global_sym: str) -> bool:
+        """Require authoritative proof of flat exposure before retrying spot liquidation."""
+        if not hasattr(self.client, "fetch_positions"):
+            logger.critical(
+                f"[Force Close] cannot retry {pair_key}: futures position API unavailable"
+            )
+            return False
+        try:
+            current_positions = await self.client.fetch_positions(global_sym)
+        except Exception:
+            logger.exception(
+                f"[Force Close] cannot verify existing futures exposure for retry {pair_key}"
+            )
+            return False
+        if current_positions is None:
+            logger.critical(
+                f"[Force Close] retry position lookup returned None for {pair_key}"
+            )
+            return False
+        if not current_positions:
+            logger.warning(
+                f"[Force Close] futures leg for {pair_key} is already flat; "
+                "skipping duplicate futures close and retrying spot liquidation"
+            )
+            return True
+
+        actual_short_qty = self._retry_short_quantity(pair_key, current_positions)
+        if actual_short_qty is None:
+            return False
+        tolerance = max(1e-10, pos.qty * 1e-4)
+        if actual_short_qty <= tolerance:
+            logger.warning(
+                f"[Force Close] futures leg for {pair_key} is already flat; "
+                "skipping duplicate futures close and retrying spot liquidation"
+            )
+            return True
+        logger.critical(
+            f"[Force Close] retry for {pair_key} found residual short "
+            f"{actual_short_qty} (expected {pos.qty}); refusing duplicate "
+            "futures close submission"
+        )
+        return False
+
+    async def _sync_force_close_market_price(self, pair_key: str, global_sym: str) -> None:
+        """Refresh paper-mode futures pricing from the latest non-stale market snapshot."""
+        if not hasattr(self.client, "update_market_price"):
+            return
+        try:
+            raw = await self.redis.get(f"arb:live_price:{pair_key}")
+            if not raw:
+                return
+            snapshot = json.loads(raw)
+            if not helpers.snapshot_is_stale(snapshot):
+                self.client.update_market_price(
+                    symbol=global_sym,
+                    best_bid=float(snapshot.get("global_best_bid_usdt", 0.0)),
+                    best_ask=float(snapshot.get("global_best_ask_usdt", 0.0)),
+                )
+        except Exception:
+            logger.exception(
+                f"[Force Close] failed to sync futures quote for {pair_key}"
+            )
+
+    async def _verify_force_close_futures_flat(self, pair_key: str, global_sym: str) -> bool:
+        """Verify that the authoritative futures position endpoint reports zero exposure."""
+        if not hasattr(self.client, "fetch_positions"):
+            logger.critical(
+                f"[Force Close] cannot verify futures position for {pair_key}: "
+                "client has no fetch_positions method"
+            )
+            return False
+        positions = await self.client.fetch_positions(global_sym)
+        if positions is None:
+            logger.critical(
+                f"[Force Close] futures position lookup returned None for {pair_key}"
+            )
+            return False
+        for position in positions:
+            if not isinstance(position, dict):
+                logger.critical(
+                    f"[Force Close] invalid position payload for {pair_key}: {position!r}"
+                )
+                return False
+            info = position.get("info") or {}
+            raw_size = position.get("contracts")
+            if raw_size is None:
+                raw_size = position.get("positionAmt", info.get("positionAmt"))
+            if raw_size is None:
+                logger.critical(
+                    f"[Force Close] position size unavailable for {pair_key}: {position}"
+                )
+                return False
+            try:
+                remaining = abs(float(raw_size))
+            except (TypeError, ValueError):
+                return False
+            if remaining > 1e-12:
+                logger.critical(
+                    f"[Force Close] residual futures exposure for {pair_key}: "
+                    f"{remaining} contracts/units remain"
+                )
+                return False
+        return True
+
     async def _close_global_short_leg(
         self, pair_key: str, pos, allow_already_flat: bool = False
     ) -> Tuple[bool, float]:
-        """Closes the futures short; returns its actual fill price only after flat verification.
-
-        When retrying a previously reconciliation-required force close, first
-        inspect the exchange. If futures are already flat, skip a duplicate
-        reduce-only close and continue with the remaining spot liquidation.
-        """
+        """Close the futures short and return its fill price only after flat verification."""
         global_sym = self._resolve_global_symbol(pos.symbol)
-        if allow_already_flat:
-            if not hasattr(self.client, "fetch_positions"):
-                logger.critical(
-                    f"[Force Close] cannot retry {pair_key}: futures position API unavailable"
-                )
-                return False, 0.0
-            try:
-                current_positions = await self.client.fetch_positions(global_sym)
-            except Exception:
-                logger.exception(
-                    f"[Force Close] cannot verify existing futures exposure for retry {pair_key}"
-                )
-                return False, 0.0
-            if current_positions is None:
-                logger.critical(
-                    f"[Force Close] retry position lookup returned None for {pair_key}"
-                )
-                return False, 0.0
-            if not current_positions:
-                logger.warning(
-                    f"[Force Close] futures leg for {pair_key} is already flat; "
-                    "skipping duplicate futures close and retrying spot liquidation"
-                )
-                return True, 0.0
-
-            actual_short_qty = 0.0
-            for position in current_positions:
-                if not isinstance(position, dict):
-                    return False, 0.0
-                info = position.get("info") or {}
-                side = str(
-                    position.get("side")
-                    or position.get("positionSide")
-                    or info.get("posSide")
-                    or info.get("positionSide")
-                    or ""
-                ).lower()
-                contracts = position.get("contracts")
-                raw_size = contracts
-                if raw_size is None:
-                    raw_size = position.get("positionAmt", info.get("positionAmt"))
-                if raw_size is None:
-                    logger.critical(
-                        f"[Force Close] retry position size unavailable for {pair_key}"
-                    )
-                    return False, 0.0
-                try:
-                    signed_size = float(raw_size)
-                    contract_size = float(position.get("contractSize") or 1.0)
-                except (TypeError, ValueError):
-                    return False, 0.0
-                if not math.isfinite(signed_size) or not math.isfinite(contract_size) or contract_size <= 0:
-                    return False, 0.0
-                if abs(signed_size) <= 1e-12:
-                    continue
-                if side:
-                    if side != "short":
-                        logger.critical(
-                            f"[Force Close] refusing retry for {pair_key}: "
-                            f"unexpected futures side={side}"
-                        )
-                        return False, 0.0
-                elif contracts is not None or signed_size >= 0:
-                    logger.critical(
-                        f"[Force Close] refusing retry for {pair_key}: "
-                        "position side cannot be verified"
-                    )
-                    return False, 0.0
-                actual_short_qty += abs(signed_size) * (contract_size if contracts is not None else 1.0)
-
-            tolerance = max(1e-10, pos.qty * 1e-4)
-            if actual_short_qty <= tolerance:
-                logger.warning(
-                    f"[Force Close] futures leg for {pair_key} is already flat; "
-                    "skipping duplicate futures close and retrying spot liquidation"
-                )
-                return True, 0.0
-            if actual_short_qty > tolerance:
-                # The previous close attempt may still be pending or its
-                # exchange outcome may be unknown. Do not submit another
-                # futures close with a new client order id; manual order
-                # reconciliation is required before retrying that leg.
-                logger.critical(
-                    f"[Force Close] retry for {pair_key} found residual short "
-                    f"{actual_short_qty} (expected {pos.qty}); refusing duplicate "
-                    "futures close submission"
-                )
-                return False, 0.0
+        if allow_already_flat and not await self._retry_short_is_flat(
+            pair_key, pos, global_sym
+        ):
+            return False, 0.0
 
         logger.warning(f"[Force Close] Closing global short {pos.qty} on {global_sym}...")
-        # Keep paper-mode market fills tied to the latest observed futures book.
-        if hasattr(self.client, "update_market_price"):
-            try:
-                raw = await self.redis.get(f"arb:live_price:{pair_key}")
-                if raw:
-                    snapshot = json.loads(raw)
-                    if not helpers.snapshot_is_stale(snapshot):
-                        self.client.update_market_price(
-                            symbol=global_sym,
-                            best_bid=float(snapshot.get("global_best_bid_usdt", 0.0)),
-                            best_ask=float(snapshot.get("global_best_ask_usdt", 0.0)),
-                        )
-            except Exception:
-                logger.exception(
-                    f"[Force Close] failed to sync futures quote for {pair_key}"
-                )
+        await self._sync_force_close_market_price(pair_key, global_sym)
         try:
             force_coid = build_client_order_id(
                 pair_key, "force-close", self._next_order_seq()
@@ -200,46 +254,8 @@ class ForceCloseLegMixin:
                 quantity=pos.qty,
                 reduce_only=True,
             )
-
-            # Order acknowledgement is not proof that the short is flat.
-            # The authoritative position endpoint must confirm zero exposure.
-            if not hasattr(self.client, "fetch_positions"):
-                logger.critical(
-                    f"[Force Close] cannot verify futures position for {pair_key}: "
-                    "client has no fetch_positions method"
-                )
+            if not await self._verify_force_close_futures_flat(pair_key, global_sym):
                 return False, 0.0
-            positions = await self.client.fetch_positions(global_sym)
-            if positions is None:
-                logger.critical(
-                    f"[Force Close] futures position lookup returned None for {pair_key}"
-                )
-                return False, 0.0
-            for position in positions:
-                if not isinstance(position, dict):
-                    logger.critical(
-                        f"[Force Close] invalid position payload for {pair_key}: {position!r}"
-                    )
-                    return False, 0.0
-                info = position.get("info") or {}
-                raw_size = position.get("contracts")
-                if raw_size is None:
-                    raw_size = position.get("positionAmt", info.get("positionAmt"))
-                if raw_size is None:
-                    logger.critical(
-                        f"[Force Close] position size unavailable for {pair_key}: {position}"
-                    )
-                    return False, 0.0
-                try:
-                    remaining = abs(float(raw_size))
-                except (TypeError, ValueError):
-                    return False, 0.0
-                if remaining > 1e-12:
-                    logger.critical(
-                        f"[Force Close] residual futures exposure for {pair_key}: "
-                        f"{remaining} contracts/units remain"
-                    )
-                    return False, 0.0
 
             fill_price = helpers.extract_fill_price(res)
             if fill_price <= 0:
