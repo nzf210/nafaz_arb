@@ -498,6 +498,7 @@ class ForceCloseMixin:
                 ARB_TRADE_HISTORY_KEY, 0, ARB_TRADE_HISTORY_MAX_LEN
             )
             self.supabase.trade_closed(pair_key, closed_trade, pos)
+            pnl["risk_event_id"] = closed_trade["trade_id"]
 
             # Update exchange account balances with realized PnL & release locked funds
             spot_cost = float(getattr(pos, "spot_cost_usdt", 0.0) or 0.0)
@@ -673,7 +674,7 @@ class ForceCloseMixin:
             self.active_positions.pop(pair_key, None)
             self.last_pegged_global_ask.pop(pair_key, None)
             if pos and pos.qty > 0 and not pnl.get("pnl_unverified"):
-                self.record_realized_pnl(pnl["net_profit_usdt"], event_id=f"position-close:{pair_key}:{getattr(pos, 'opened_at_ms', 0)}", pair_key=pair_key)
+                self.record_realized_pnl(pnl["net_profit_usdt"], event_id=pnl.get("risk_event_id") or f"force-close:{pair_key}:{getattr(pos, 'opened_at_ms', 0)}", pair_key=pair_key)
             self.states[pair_key] = PositionState.CLOSED
             if pnl.get("pnl_unverified"):
                 logger.critical(
