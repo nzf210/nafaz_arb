@@ -602,6 +602,7 @@ type RecoveryRetryReply struct {
 	RequestID string `json:"request_id"`
 	Action string `json:"action"`
 	Resolved bool `json:"resolved"`
+	Error string `json:"error"`
 	Complete bool `json:"complete"`
 	PendingOrders map[string]string `json:"pending_orders"`
 	ScopeHalts map[string]string `json:"scope_halts"`
