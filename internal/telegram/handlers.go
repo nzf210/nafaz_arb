@@ -329,6 +329,8 @@ func (b *Bot) handleCommand(
 		b.handlePositionsCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/pending":
 		b.handlePendingOrdersCommand(ctx, msg.Chat.ID, msg.MessageID)
+	case "/spotmax":
+		b.handleSpotMaxCommand(ctx, msg, parts)
 	case "/balance":
 		userID := int64(0)
 		if msg.From != nil {
@@ -511,6 +513,51 @@ func (b *Bot) handleBalanceCommand(ctx context.Context, chatID, replyToID, userI
 		message = string(runes[:3700]) + "\n<i>Daftar dipotong karena batas panjang pesan Telegram.</i>"
 	}
 	b.sendReplyWithMarkup(ctx, chatID, 0, message, b.defaultKeyboard())
+}
+
+func (b *Bot) handleSpotMaxCommand(ctx context.Context, msg *Message, parts []string) {
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Redis tidak terhubung; pengaturan max spot order tidak tersedia.", b.defaultKeyboard())
+		return
+	}
+	if len(parts) == 1 {
+		limits, err := rc.GetSpotOrderLimits(ctx)
+		if err != nil {
+			b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Gagal membaca spot order limits: "+html.EscapeString(err.Error()), b.defaultKeyboard())
+			return
+		}
+		var out strings.Builder
+		out.WriteString("⚙️ <b>MAX OPEN SPOT ORDERS PER CEX</b>\\n\\nDefault untuk CEX tanpa override: <b>2</b>\\n")
+		if len(limits) == 0 { out.WriteString("\\nBelum ada override; semua CEX memakai default 2.\\n") }
+		for exchange, limit := range limits { out.WriteString(fmt.Sprintf("\\n• <b>%s</b>: <code>%d</code>", html.EscapeString(strings.ToUpper(exchange)), limit)) }
+		out.WriteString("\\n\\nAtur: <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>\\nContoh: <code>/spotmax indodax 3</code>")
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, out.String(), b.defaultKeyboard())
+		return
+	}
+	userID := int64(0)
+	if msg.From != nil { userID = msg.From.ID }
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "⛔ <b>Akses ditolak:</b> hanya operator terotorisasi yang boleh mengubah batas order Spot.", b.defaultKeyboard())
+		return
+	}
+	if len(parts) != 3 {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "ℹ️ Gunakan <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>. Rentang jumlah 1–100; default 2.", b.defaultKeyboard())
+		return
+	}
+	limit, err := strconv.Atoi(parts[2])
+	if err != nil || limit < 1 || limit > 100 {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Jumlah harus berupa bilangan bulat 1–100.", b.defaultKeyboard())
+		return
+	}
+	if err := rc.SetSpotOrderLimit(ctx, parts[1], limit); err != nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Gagal mengubah batas: "+html.EscapeString(err.Error()), b.defaultKeyboard())
+		return
+	}
+	b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+		fmt.Sprintf("✅ <b>BATAS OPEN SPOT ORDER DIPERBARUI</b>\\n\\n• CEX: <b>%s</b>\\n• Maksimum: <b>%d</b> order/posisi Spot\\n\\nPerubahan disimpan di Redis dan dikirim ke Executor tanpa restart. Order/posisi yang sudah terbuka tidak dibatalkan; batas baru hanya mencegah entry baru sampai jumlah turun di bawah batas.", html.EscapeString(strings.ToUpper(parts[1])), limit), b.defaultKeyboard())
 }
 
 func (b *Bot) handleKillSwitchCommand(ctx context.Context, chatID int64, userID int64, replyToID int64, parts []string) {
