@@ -210,4 +210,3 @@ class OrderRecord:
             return OrderTerminal.OPEN
         return OrderTerminal.UNKNOWN
 
-@dataclass
