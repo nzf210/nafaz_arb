@@ -1043,7 +1043,7 @@ class ArbitrageEngine(
                 await self.publish_status()
             return
 
-        if not self._trading_halted:
+        if not self._trading_halted or self._halt_reason != "KILL_SWITCH":
             self._trading_halted = True
             self._halt_reason = "KILL_SWITCH"
             self._persist_risk_state("trading_halt", scope="global", reason="KILL_SWITCH", value={"halt_reason": "KILL_SWITCH", "source": "operator"})
