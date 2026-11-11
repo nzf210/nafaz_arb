@@ -379,6 +379,31 @@ class TradeFillReconciliationWorker:
             )
         self._clear(identity, scope)
 
+    @staticmethod
+    def _candidate_context_fields(
+        row: Dict[str, Any], filled_qty: float
+    ) -> Dict[str, Any]:
+        context = {
+            "exchange": str(row.get("exchange_name") or "").lower(),
+            "market_type": str(row.get("market_type") or "").lower(),
+            "pair_key": str(row.get("pair_key") or ""),
+            "symbol": str(row.get("symbol") or ""),
+            "client_order_id": str(row.get("client_order_id") or ""),
+            "exchange_order_id": str(row.get("exchange_order_id") or ""),
+            "filled_qty": filled_qty,
+        }
+        context["scope"] = context["pair_key"] or context["exchange"]
+        return context
+
+    @staticmethod
+    def _candidate_context_has_identity(context: Dict[str, Any]) -> bool:
+        return bool(
+            context["exchange"]
+            and context["market_type"] in ("spot", "perpetual")
+            and context["symbol"]
+            and (context["client_order_id"] or context["exchange_order_id"])
+        )
+
     async def _candidate_reconciliation_context(
         self, writer, identity: str, row: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
@@ -399,27 +424,13 @@ class TradeFillReconciliationWorker:
         watermark_current = await self._watermark_is_current(
             writer, identity, scope, filled_qty
         )
-        if watermark_current is not False:
-            if watermark_current is True:
-                self._clear(identity, scope)
+        if watermark_current is None:
             return None
-
-        context = {
-            "exchange": str(row.get("exchange_name") or "").lower(),
-            "market_type": str(row.get("market_type") or "").lower(),
-            "pair_key": str(row.get("pair_key") or ""),
-            "symbol": str(row.get("symbol") or ""),
-            "client_order_id": str(row.get("client_order_id") or ""),
-            "exchange_order_id": str(row.get("exchange_order_id") or ""),
-            "filled_qty": filled_qty,
-        }
-        context["scope"] = context["pair_key"] or context["exchange"]
-        if (
-            not context["exchange"]
-            or context["market_type"] not in ("spot", "perpetual")
-            or not context["symbol"]
-            or not (context["client_order_id"] or context["exchange_order_id"])
-        ):
+        if watermark_current:
+            self._clear(identity, scope)
+            return None
+        context = self._candidate_context_fields(row, filled_qty)
+        if not self._candidate_context_has_identity(context):
             await self._halt(
                 identity,
                 context["scope"] or "unknown",
