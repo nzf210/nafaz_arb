@@ -254,14 +254,8 @@ class EngineRuntimeMixin:
             await pubsub.unsubscribe("arb:kill_switch")
             await pubsub.close()
 
-    async def handle_kill_switch(self, message_data: str) -> None:
-        """
-        Handles the operator kill switch on arb:kill_switch.
-
-        ON halts every new entry globally until an explicit OFF is received.
-        Unlike the daily-loss breaker the kill switch does NOT auto-reset on a
-        UTC rollover - only an operator OFF clears it.
-        """
+    @staticmethod
+    def _parse_kill_switch_message(message_data: str) -> tuple:
         action = "on"
         reason = "OPERATOR"
         try:
@@ -275,28 +269,44 @@ class EngineRuntimeMixin:
                 action = "off"
             elif text:
                 reason = message_data.strip()
+        return action, reason
 
-        if action == "off":
-            if self._trading_halted and self._halt_reason == "KILL_SWITCH":
-                self._trading_halted = False
-                self._halt_reason = ""
-                halt_saved = self._persist_risk_state("trading_halt", scope="global", resolved=True)
-                self._manual_resume_day = self._loss_day
-                resume_saved = self._persist_risk_state("trading_resume", scope="global", reason="manual resume", value={"loss_day": self._loss_day})
-                if halt_saved and resume_saved:
-                    self.supabase.clear_risk_persistence_failure()
-                    self._risk_persistence_failed = False
-                    self._refresh_entry_gate()
-                logger.warning(f"[Kill Switch] Trading resumed ({reason})")
-                await self.publish_status()
-            return
-
+    async def _resume_from_kill_switch(self, reason: str) -> None:
         if not self._trading_halted or self._halt_reason != "KILL_SWITCH":
-            self._trading_halted = True
-            self._halt_reason = "KILL_SWITCH"
-            self._persist_risk_state("trading_halt", scope="global", reason="KILL_SWITCH", value={"halt_reason": "KILL_SWITCH", "source": "operator"})
-            logger.critical(f"[Kill Switch] ALL new entries halted ({reason})")
-            await self.publish_status()
+            return
+        self._trading_halted = False
+        self._halt_reason = ""
+        halt_saved = self._persist_risk_state(
+            "trading_halt", scope="global", resolved=True
+        )
+        self._manual_resume_day = self._loss_day
+        resume_saved = self._persist_risk_state(
+            "trading_resume", scope="global", reason="manual resume",
+            value={"loss_day": self._loss_day},
+        )
+        if halt_saved and resume_saved:
+            self.supabase.clear_risk_persistence_failure()
+            self._risk_persistence_failed = False
+            self._refresh_entry_gate()
+        logger.warning(f"[Kill Switch] Trading resumed ({reason})")
+        await self.publish_status()
+
+    async def handle_kill_switch(self, message_data: str) -> None:
+        """Handles the operator kill switch on arb:kill_switch."""
+        action, reason = self._parse_kill_switch_message(message_data)
+        if action == "off":
+            await self._resume_from_kill_switch(reason)
+            return
+        if self._trading_halted and self._halt_reason == "KILL_SWITCH":
+            return
+        self._trading_halted = True
+        self._halt_reason = "KILL_SWITCH"
+        self._persist_risk_state(
+            "trading_halt", scope="global", reason="KILL_SWITCH",
+            value={"halt_reason": "KILL_SWITCH", "source": "operator"},
+        )
+        logger.critical(f"[Kill Switch] ALL new entries halted ({reason})")
+        await self.publish_status()
 
     # -------------------------------------------------------------
     # State 1: Entry Order Pegging
