@@ -113,6 +113,24 @@ class ExchangeOrderMixin:
             normalized["client_order_id"] = logical_id
         return normalized
 
+    async def fetch_local_order_book(
+        self, symbol: str, limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Fetch the live local spot book using the venue-native adapter."""
+        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
+        fetcher = getattr(self.local, "fetch_order_book", None)
+        if not callable(fetcher):
+            raise NotImplementedError(
+                f"{getattr(self.local, 'id', 'local')} does not expose an order book"
+            )
+        book = await fetcher(order_symbol, limit)
+        if not isinstance(book, dict):
+            raise ValueError("local venue returned a malformed order book")
+        bids, asks = book.get("bids"), book.get("asks")
+        if not isinstance(bids, list) or not isinstance(asks, list):
+            raise ValueError("local venue returned malformed order book levels")
+        return book
+
     async def place_local_limit_buy(
         self, symbol: str, amount: float, price: float,
         client_order_id: Optional[str] = None, amount_spec: Any = None,
