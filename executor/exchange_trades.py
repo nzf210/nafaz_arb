@@ -119,13 +119,8 @@ class ExchangeTradeMixin:
             }
         return fee if isinstance(fee, dict) else None
 
-    def _normalize_order_trade(
-        self, trade: dict, spec: Optional[AmountSpec],
-        expected_order: str, expected_client: str,
-    ):
-        if not isinstance(trade, dict):
-            raise ValueError("exchange returned a malformed trade row")
-        info = trade.get("info") if isinstance(trade.get("info"), dict) else {}
+    @staticmethod
+    def _trade_order_identity(trade: dict, info: dict) -> tuple:
         actual_order = str(
             trade.get("order") or trade.get("orderId") or info.get("orderId")
             or info.get("ordId") or info.get("order_id") or ""
@@ -134,18 +129,14 @@ class ExchangeTradeMixin:
             trade.get("clientOrderId") or trade.get("client_order_id")
             or info.get("clientOrderId") or info.get("clOrdId") or ""
         )
-        if not self._trade_matches_requested_order(
-            actual_order, actual_client, expected_order, expected_client
-        ):
-            return None
-
-        fill = dict(trade)
-        fill["id"] = str(
+        fill_id = str(
             trade.get("id") or trade.get("tradeId") or info.get("tradeId")
             or info.get("execId") or info.get("matchId") or info.get("fillId") or ""
         )
-        fill["order"] = actual_order
-        fill["clientOrderId"] = actual_client
+        return actual_order, actual_client, fill_id
+
+    @staticmethod
+    def _trade_quantity_and_price(trade: dict, spec: Optional[AmountSpec]):
         try:
             qty = float(
                 trade.get("amount")
@@ -156,23 +147,47 @@ class ExchangeTradeMixin:
             raise ValueError(
                 "exchange trade has invalid quantity or price"
             ) from exc
-        if not math.isfinite(qty) or qty <= 0 or not math.isfinite(price) or price <= 0:
+        if (
+            not math.isfinite(qty) or qty <= 0
+            or not math.isfinite(price) or price <= 0
+        ):
             raise ValueError(
                 "exchange trade has non-positive or non-finite quantity/price"
             )
         if spec is not None and spec.unit == "CONTRACT":
             qty = order_amount_to_base(qty, spec)
-        fill["amount"] = qty
-        fill["price"] = price
         if spec is not None and spec.unit == "CONTRACT":
-            fill["cost"] = qty * price
+            cost = qty * price
         else:
             quote_cost = trade.get("cost")
             if quote_cost is None:
                 quote_cost = trade.get("quoteQty")
-            if quote_cost is None:
-                quote_cost = qty * price
-            fill["cost"] = float(quote_cost)
+            cost = float(quote_cost if quote_cost is not None else qty * price)
+        return qty, price, cost
+
+    def _normalize_order_trade(
+        self, trade: dict, spec: Optional[AmountSpec],
+        expected_order: str, expected_client: str,
+    ):
+        if not isinstance(trade, dict):
+            raise ValueError("exchange returned a malformed trade row")
+        info = trade.get("info") if isinstance(trade.get("info"), dict) else {}
+        actual_order, actual_client, fill_id = self._trade_order_identity(
+            trade, info
+        )
+        if not self._trade_matches_requested_order(
+            actual_order, actual_client, expected_order, expected_client
+        ):
+            return None
+
+        qty, price, cost = self._trade_quantity_and_price(trade, spec)
+        fill = dict(trade)
+        fill["id"] = fill_id
+        fill["order"] = actual_order
+        fill["clientOrderId"] = actual_client
+        fill["amount"] = qty
+        fill["price"] = price
+        fill["cost"] = cost
         fill["fee"] = self._trade_fee_payload(trade, info)
         fill["raw_payload"] = {
             "info": info,
