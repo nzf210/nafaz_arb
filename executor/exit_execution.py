@@ -20,7 +20,7 @@ class ExitExecutionMixin:
     """Focused exit pricing, order management, or execution responsibilities."""
 
     def _build_closed_trade_record(
-        self, pair_tag: str, pos: ActivePosition, unclosed_delta: float,
+        self, pos: ActivePosition, unclosed_delta: float,
         exit_price_idr: float, entry_price_idr: float, short_entry_usdt: float,
         short_exit_usdt: float, usdt_rate: float, total_qty_before: float,
     ) -> tuple[dict, float, float]:
@@ -111,7 +111,8 @@ class ExitExecutionMixin:
 
     async def _persist_closed_trade(
         self, pair_tag: str, pos: ActivePosition, closed_trade: dict,
-        spot_cost: float, futures_margin: float,
+        spot_cost: float, futures_margin: float, spot_pnl_usdt: float,
+        usdt_rate: float,
     ) -> None:
         await self.redis.lpush(ARB_TRADE_HISTORY_KEY, json.dumps(closed_trade))
         await self.redis.ltrim(
@@ -121,11 +122,7 @@ class ExitExecutionMixin:
         if hasattr(self.client, "apply_realized_trade"):
             self.client.apply_realized_trade(
                 spot_cost_usdt=spot_cost,
-                spot_pnl_usdt=closed_trade["spot_pnl_idr"] / (
-                    float(closed_trade["spot_pnl_idr"])
-                    / float(closed_trade["spot_pnl_usdt"])
-                    if closed_trade["spot_pnl_usdt"] else 1.0
-                ) if closed_trade["spot_pnl_usdt"] else 0.0,
+                spot_pnl_usdt=spot_pnl_usdt,
                 spot_fees_usdt=closed_trade["spot_fees_usdt"],
                 futures_margin_usdt=futures_margin,
                 futures_pnl_usdt=closed_trade["futures_pnl_usdt"],
@@ -136,10 +133,7 @@ class ExitExecutionMixin:
             bals = await self._get_balance_snapshot(
                 pair_tag=pair_tag,
                 symbol=pos.symbol,
-                usdt_idr_rate=(
-                    closed_trade["spot_pnl_idr"] / closed_trade["spot_pnl_usdt"]
-                    if closed_trade["spot_pnl_usdt"] else 0.0
-                ),
+                usdt_idr_rate=usdt_rate,
             )
             if bals is not None:
                 await self.redis.set(BALANCES_KEY, json.dumps(bals))
@@ -287,13 +281,14 @@ class ExitExecutionMixin:
                 )
             closed_trade, spot_cost, futures_margin = (
                 self._build_closed_trade_record(
-                    pair_tag, pos, unclosed_delta, exit_price_idr,
+                    pos, unclosed_delta, exit_price_idr,
                     entry_price_idr, short_entry_usdt, short_exit_usdt,
                     usdt_rate, total_qty_before,
                 )
             )
             await self._persist_closed_trade(
-                pair_tag, pos, closed_trade, spot_cost, futures_margin
+                pair_tag, pos, closed_trade, spot_cost, futures_margin,
+                closed_trade["spot_pnl_usdt"], usdt_rate,
             )
         except Exception as ee:
             pos.state = PositionState.RECONCILIATION_REQUIRED
