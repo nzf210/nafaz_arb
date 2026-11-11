@@ -30,7 +30,7 @@ class FakeWriter:
     def order_fill(self, *, order_id, exchange, fill, is_mock=False):
         fill_id = (exchange, fill["id"])
         if fill_id in self.fills:
-            return False
+            return True
         self.fills[fill_id] = {
             "order_id": order_id, "exchange": exchange, "fill": fill,
             "is_mock": is_mock,
@@ -189,7 +189,10 @@ async def test_mismatch_is_retried_until_exchange_trade_history_matches():
     await worker.reconcile_once()
 
     assert engine.supabase.watermarks == {}
-    engine.client_for_exchange.trades = [_trade(amount=0.5)]
+    engine.client_for_exchange.trades = [
+        _trade(amount=0.2),
+        _trade(id="trade-2", amount=0.3, cost=30.0, timestamp=1_700_000_000_200),
+    ]
     await worker.reconcile_once()
 
     assert engine.supabase.watermarks["indodax:spot:order-1"] == pytest.approx(0.5)
