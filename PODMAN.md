@@ -314,6 +314,25 @@ menulis `positions`, `orders`, `order_fills`, `closed_trades`,
 `funding_payments`, `balance_snapshots`, dan `executor_status_snapshots`
 belum dihubungkan ke runtime.
 
-Penulisan Supabase bersifat best-effort. Belum ada durable outbox; outage panjang,
-queue penuh, atau proses mati dapat menyebabkan histori Supabase tidak lengkap.
-Redis dan exchange API tetap menjadi sumber runtime untuk koordinasi dan exposure.
+Penulisan Supabase memakai durable local outbox:
+- Scanner: `data/scanner/supabase-outbox.jsonl` (default maksimum 128 MiB).
+- Executor: `data/executor/supabase-outbox.sqlite3` (default maksimum 50.000 row pending).
+
+Kedua direktori harus berada pada persistent host volume dan writable oleh UID/GID
+container. Outbox menyimpan data sebelum pengiriman HTTP; worker menghapus row hanya
+setelah upsert Supabase berhasil. Karena itu, restart container atau outage Supabase
+tidak langsung menghilangkan antrean yang sudah berhasil dijurnal. Jangan menghapus
+atau mengganti file outbox ketika masih ada backlog. Backup file beserta file SQLite
+WAL/SHM sebelum memindahkan host atau volume.
+
+Pantau ukuran journal dan error delivery:
+```bash
+ls -lh data/scanner/supabase-outbox.jsonl data/executor/supabase-outbox.sqlite3*
+podman compose logs --since 30m nafaz-scanner nafaz-executor | grep -Ei 'supabase|outbox|CRITICAL'
+```
+
+Jika ukuran terus bertambah, periksa credential, konektivitas, schema/migration,
+dan permission volume. Capacity/disk error dicatat sebagai CRITICAL; persistence
+tetap fail-open dan tidak boleh menjadi prasyarat hedge, rollback, force-close,
+atau risk decision. Outbox hanya untuk satu writer per file/host. Redis dan
+exchange API tetap menjadi sumber runtime untuk koordinasi dan exposure.
