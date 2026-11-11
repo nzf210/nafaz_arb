@@ -66,7 +66,14 @@ Implemented writes:
   for actual balances, order state, and position exposure.
 
 Still schema-only / not yet connected to runtime writes: `position_legs`,
-`funding_payments`, `balance_snapshots`, and `executor_status_snapshots`.
+`funding_payments`, and `executor_status_snapshots`. The executor now writes
+append-only `balance_snapshots` from authenticated spot/perpetual balance
+reports. Its live exposure worker checks that spot base-asset totals cover the
+aggregate managed quantity and compares each managed futures short with the
+exchange position. A confirmed mismatch or unavailable read halts new entries
+on the affected venue while leaving existing position management available.
+Spot balances are a minimum-coverage check only; excess wallet inventory is not
+assumed to belong to the bot.
 Strategy/risk configuration tables are also not read dynamically by this runtime.
 
 Delivery guarantees and remaining limitations:
@@ -104,11 +111,13 @@ Delivery guarantees and remaining limitations:
   replicas. Use persistent local volumes and back up journals before replacing
   hosts or volumes.
 - The scanner reconciliation worker is a delivery reconciler only: it replays
-  scanner opportunity snapshots and confirms durable delivery. It does not
-  inspect private exchange balances/positions, change Redis exposure state, or
-  place/cancel orders. Executor restart verification separately checks restored
-  futures exposure against exchange positions and marks mismatches
-  `RECONCILIATION_REQUIRED`.
+  scanner opportunity snapshots and confirms durable delivery. Live exchange
+  exposure reconciliation is performed separately by the Python executor; it
+  is read-only and never places/cancels orders. The executor's universal order
+  recovery reconciles order status and cumulative fills, while the exposure
+  worker checks spot base-asset coverage and futures short quantities. A
+  confirmed mismatch or unavailable read halts new entries on the affected
+  venue and publishes an operational event.
 - Supabase remains an audit/history sink, never authority for live exposure.
   Scanner opportunities and executor history are not a complete exchange ledger
   unless fills, fees, funding settlements, balances, and position legs are also
