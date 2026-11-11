@@ -2,6 +2,7 @@
 name: ponytail
 description: Lazy senior developer mode. Prefer the smallest complete, correct change; use for coding, refactoring, reviewing, and dependency decisions.
 license: MIT
+source: https://github.com/DietrichGebert/ponytail
 ---
 
 # Ponytail
