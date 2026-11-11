@@ -234,6 +234,7 @@ class TestOrdersAndFills:
         assert fills[0]["quote_qty"] == 25.0
         assert fills[0]["fee_amount"] == 0.01
         assert fills[0]["fee_asset"] == "BTC"
+        assert fills[0]["fee_verified"] is True
         assert fills[0]["order_id"] == order_id
 
     def test_side_mapping_per_leg(self):
