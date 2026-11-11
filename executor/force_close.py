@@ -673,7 +673,7 @@ class ForceCloseMixin:
             self.active_positions.pop(pair_key, None)
             self.last_pegged_global_ask.pop(pair_key, None)
             if pos and pos.qty > 0 and not pnl.get("pnl_unverified"):
-                self.record_realized_pnl(pnl["net_profit_usdt"])
+                self.record_realized_pnl(pnl["net_profit_usdt"], event_id=f"position-close:{pair_key}:{getattr(pos, 'opened_at_ms', 0)}", pair_key=pair_key)
             self.states[pair_key] = PositionState.CLOSED
             if pnl.get("pnl_unverified"):
                 logger.critical(
