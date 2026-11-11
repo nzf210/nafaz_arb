@@ -827,6 +827,10 @@ class ArbitrageEngine(
     async def start(self):
         """Starts listeners and monitoring loops."""
         await self.initialize()
+        # Verify spot inventory coverage and futures short exposure before
+        # listeners can accept a new entry signal after startup.
+        if not getattr(self.config, "mock_mode", False):
+            await self.exposure_reconciliation.reconcile_once()
         self._running = True
 
         self._tasks.append(asyncio.create_task(self._listen_signals()))
