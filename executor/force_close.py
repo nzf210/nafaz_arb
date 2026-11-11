@@ -678,7 +678,7 @@ class ForceCloseMixin:
             self.states[pair_key] = PositionState.CLOSED
             self._failure_reasons.pop(pair_key, None)
             self._persist_risk_state("position_failure", scope="position", pair_key=pair_key, resolved=True)
-            await self._clear_exposure_halt(pair_key, "verified force close completed")
+            self._clear_exposure_halt(pair_key, "verified force close completed")
             if pnl.get("pnl_unverified"):
                 logger.critical(
                     f"[Force Close Complete] Exposure for {pair_key} is flat, but realized "
