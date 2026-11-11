@@ -120,6 +120,8 @@ class ArbitrageEngine(
         self._loss_day: str = self._utc_day()
         self._trading_halted: bool = False
         self._halt_reason: str = ""
+        self._risk_state_restored = False
+        self._risk_persistence_failed = False
 
         # Risk-control: halts keyed by exchange name (venue-level, not global).
         self._exchange_halted: Dict[str, str] = {}
@@ -212,6 +214,7 @@ class ArbitrageEngine(
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
+        await self._restore_risk_state()
         await self._recover_active_positions()
         await self._recover_pending_entry_orders()
         await self._run_order_recovery()
@@ -1033,6 +1036,7 @@ class ArbitrageEngine(
             if self._trading_halted and self._halt_reason == "KILL_SWITCH":
                 self._trading_halted = False
                 self._halt_reason = ""
+                self._persist_risk_state("trading_halt", scope="global", resolved=True)
                 logger.warning(f"[Kill Switch] Trading resumed ({reason})")
                 await self.publish_status()
             return
@@ -1040,6 +1044,7 @@ class ArbitrageEngine(
         if not self._trading_halted:
             self._trading_halted = True
             self._halt_reason = "KILL_SWITCH"
+            self._persist_risk_state("trading_halt", scope="global", reason="KILL_SWITCH", value={"halt_reason": "KILL_SWITCH", "source": "operator"})
             logger.critical(f"[Kill Switch] ALL new entries halted ({reason})")
             await self.publish_status()
 
@@ -1829,6 +1834,7 @@ class ArbitrageEngine(
             "timestamp_ms": int(time.time() * 1000),
         }
         self._failure_reasons[pair_tag] = entry
+        self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, reason=reason, value=entry)
         logger.critical(f"[{state.value}] {pair_tag}: {reason} - {message}")
         if reason != "HEDGE_FAILED":
             try:
@@ -1891,6 +1897,7 @@ class ArbitrageEngine(
             return
         self._loss_day = today
         self._daily_realized_loss_usdt = 0.0
+        self._persist_risk_state("daily_loss", scope="global", value={"loss_usdt": 0.0, "loss_day": today})
         # The operator kill switch does not auto-reset on a new UTC day.
         if (
             self._trading_halted
@@ -1898,6 +1905,7 @@ class ArbitrageEngine(
         ):
             self._trading_halted = False
             self._halt_reason = ""
+            self._persist_risk_state("trading_halt", scope="global", resolved=True)
             logger.warning("[Circuit Breaker] New UTC day - trading resumed")
 
     def record_realized_pnl(self, net_profit_usdt: float) -> None:
@@ -1911,6 +1919,7 @@ class ArbitrageEngine(
         self._roll_loss_day_if_needed()
         if net_profit_usdt < 0:
             self._daily_realized_loss_usdt += -net_profit_usdt
+        self._persist_risk_state("daily_loss", scope="global", value={"loss_usdt": self._daily_realized_loss_usdt, "loss_day": self._loss_day})
 
         limit = getattr(self.config, "max_daily_loss_usdt", 0.0)
         if limit <= 0 or self._trading_halted:
@@ -1918,6 +1927,7 @@ class ArbitrageEngine(
         if self._daily_realized_loss_usdt >= limit:
             self._trading_halted = True
             self._halt_reason = "DAILY_LOSS_LIMIT"
+            self._persist_risk_state("trading_halt", scope="global", reason="DAILY_LOSS_LIMIT", value={"halt_reason": "DAILY_LOSS_LIMIT", "loss_usdt": self._daily_realized_loss_usdt, "loss_day": self._loss_day})
             logger.critical(
                 f"[Circuit Breaker] HALTED new entries: daily realized loss "
                 f"{self._daily_realized_loss_usdt:.4f} USDT >= limit {limit:.4f} USDT"
@@ -1927,6 +1937,7 @@ class ArbitrageEngine(
         """Clears the halt flag; used by the operator once a loss is reviewed."""
         self._trading_halted = False
         self._halt_reason = ""
+        self._persist_risk_state("trading_halt", scope="global", resolved=True)
         logger.warning(f"[Circuit Breaker] Trading resumed manually ({reason})")
         await self.publish_status()
 
