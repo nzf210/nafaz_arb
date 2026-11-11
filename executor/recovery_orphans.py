@@ -235,7 +235,11 @@ class RecoveryOrphanMixin:
         self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
         self._refresh_entry_gate()
         await self.publish_status()
-        return not self._recovery_pending_orders and not self._recovery_scope_halts
+        unresolved_states = any(
+            state == PositionState.RECONCILIATION_REQUIRED
+            for state in self.states.values()
+        )
+        return not self._recovery_pending_orders and not self._recovery_scope_halts and not unresolved_states
 
     async def _clear_resolved_pair_failure(self, pair_tag: str) -> bool:
         """Clear a pair incident only after order, fill, and exposure checks pass."""
