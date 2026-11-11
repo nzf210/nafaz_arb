@@ -427,43 +427,103 @@ func availableBookDepth(levels []domain.PriceLevel) decimal.Decimal {
 	return sum
 }
 
-func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr domain.FundingRate, now time.Time, positionReason string, isSynthetic bool, fxRate float64, requiredNotional decimal.Decimal, dynamicProfiles ...*redishandler.DynamicFeeProfile) (domain.Opportunity, error) {
-	if err := validateOrderBooks(sb, pb); err != nil {
-		return domain.Opportunity{}, err
-	}
-	if err := validateOrderBookAge(sb, pb, now, s.cfg.MaxOrderBookAgeSeconds); err != nil {
-		return domain.Opportunity{}, err
-	}
-	if err := validateCrossExchangeTimestampAlignment(sb, pb, time.Duration(s.cfg.MaxCrossExchangeSkewSeconds)*time.Second); err != nil {
-		return domain.Opportunity{}, err
-	}
-	if err := validateOrderBookIntegrity(sb, pb); err != nil {
-		return domain.Opportunity{}, err
-	}
-	if err := s.validateLiquidityVelocity(sb, pb, requiredNotional); err != nil {
-		return domain.Opportunity{}, err
-	}
-	if err := s.validateOrderBookImbalance(sb, pb); err != nil {
-		return domain.Opportunity{}, err
-	}
-	if err := s.validateLastTradeAge(now, sm, pm, sb, pb); err != nil {
-		return domain.Opportunity{}, err
-	}
-	spotAsk := decimal.NewFromFloat(sb.Asks[0].Price)
-	spotBid := decimal.NewFromFloat(sb.Bids[0].Price)
-	perpBid := decimal.NewFromFloat(pb.Bids[0].Price)
-	perpAsk := decimal.NewFromFloat(pb.Asks[0].Price)
+type opportunityCalculationInput struct {
+	spotMarket       domain.Market
+	perpMarket       domain.Market
+	spotBook         domain.OrderBook
+	perpBook         domain.OrderBook
+	funding          domain.FundingRate
+	now              time.Time
+	positionReason   string
+	isSynthetic      bool
+	fxRate           float64
+	requiredNotional decimal.Decimal
+	dynamicProfiles  []*redishandler.DynamicFeeProfile
+}
 
-	targetBudget := decimal.NewFromFloat(s.cfg.CapitalTotal).Mul(decimal.NewFromFloat(s.cfg.AllocationPerPair))
+type opportunitySizing struct {
+	targetBudget decimal.Decimal
+	perpLeverage decimal.Decimal
+	spotEntryRef decimal.Decimal
+	quantity     decimal.Decimal
+	makerTaker   bool
+}
+
+type opportunityFees struct {
+	spotMakerPct  float64
+	spotTakerPct  float64
+	perpTakerPct  float64
+	source        string
+	verified      bool
+	fetchedAtMS   int64
+	spotTakerRate decimal.Decimal
+	perpTakerRate decimal.Decimal
+	surchargeRate decimal.Decimal
+}
+
+type opportunityProfit struct {
+	spread                 decimal.Decimal
+	slippage               decimal.Decimal
+	fees                   decimal.Decimal
+	funding                decimal.Decimal
+	net                    decimal.Decimal
+	capital                decimal.Decimal
+	capacityPct            float64
+	roi                    decimal.Decimal
+	status                 string
+	minAcceptablePerpPrice decimal.Decimal
+}
+
+func (s *Service) validateCalculationInput(input opportunityCalculationInput) error {
+	if err := validateOrderBooks(input.spotBook, input.perpBook); err != nil {
+		return err
+	}
+	if err := validateOrderBookAge(
+		input.spotBook, input.perpBook, input.now, s.cfg.MaxOrderBookAgeSeconds,
+	); err != nil {
+		return err
+	}
+	if err := validateCrossExchangeTimestampAlignment(
+		input.spotBook, input.perpBook,
+		time.Duration(s.cfg.MaxCrossExchangeSkewSeconds)*time.Second,
+	); err != nil {
+		return err
+	}
+	if err := validateOrderBookIntegrity(input.spotBook, input.perpBook); err != nil {
+		return err
+	}
+	if err := s.validateLiquidityVelocity(
+		input.spotBook, input.perpBook, input.requiredNotional,
+	); err != nil {
+		return err
+	}
+	if err := s.validateOrderBookImbalance(input.spotBook, input.perpBook); err != nil {
+		return err
+	}
+	return s.validateLastTradeAge(
+		input.now, input.spotMarket, input.perpMarket,
+		input.spotBook, input.perpBook,
+	)
+}
+
+func (s *Service) calculateOpportunitySizing(
+	input opportunityCalculationInput,
+) (opportunitySizing, error) {
+	sm, pm, sb, pb := input.spotMarket, input.perpMarket,
+		input.spotBook, input.perpBook
+	targetBudget := decimal.NewFromFloat(s.cfg.CapitalTotal).
+		Mul(decimal.NewFromFloat(s.cfg.AllocationPerPair))
 	perpLevFloat := s.cfg.PerpLeverage
 	if perpLevFloat <= 0 {
 		perpLevFloat = 1
 	}
 	perpLev := decimal.NewFromFloat(perpLevFloat)
-
 	isMakerTaker := s.cfg.ExecutionMode == "MAKER_TAKER"
 
-	var spotEntryRef decimal.Decimal
+	spotAsk := decimal.NewFromFloat(sb.Asks[0].Price)
+	spotBid := decimal.NewFromFloat(sb.Bids[0].Price)
+	perpBid := decimal.NewFromFloat(pb.Bids[0].Price)
+	spotEntryRef := spotAsk
 	if isMakerTaker {
 		tickSize := sm.TickSize
 		if tickSize <= 0 {
@@ -473,35 +533,30 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 			tickSize = 1.0
 		}
 		tickDec := decimal.NewFromFloat(tickSize)
-		if isSynthetic && fxRate > 0 {
-			tickDec = tickDec.Div(decimal.NewFromFloat(fxRate))
+		if input.isSynthetic && input.fxRate > 0 {
+			tickDec = tickDec.Div(decimal.NewFromFloat(input.fxRate))
 		}
 		spotEntryRef = spotBid.Add(tickDec)
-		if spotEntryRef.GreaterThanOrEqual(spotAsk) && spotAsk.GreaterThan(spotBid) {
+		if spotEntryRef.GreaterThanOrEqual(spotAsk) &&
+			spotAsk.GreaterThan(spotBid) {
 			spotEntryRef = spotBid
 		}
-	} else {
-		spotEntryRef = spotAsk
 	}
 
 	denom := spotEntryRef.Add(perpBid.Div(perpLev))
 	if denom.IsZero() {
-		return domain.Opportunity{}, fmt.Errorf("invalid denominator for quantity calculation")
+		return opportunitySizing{}, fmt.Errorf(
+			"invalid denominator for quantity calculation",
+		)
 	}
-	targetQty := targetBudget.Div(denom)
-	qty := targetQty
-
+	qty := targetBudget.Div(denom)
 	if s.cfg.AdaptiveSizingEnabled() {
 		maxExecutable := qty
 		if isMakerTaker {
-			// Maker-Taker: Limit Buy on Spot at spotBid, Market Short on Perp at perpEntry
-			// Needs Perp Bids depth for short entry, Spot Bids depth for spot exit, Perp Asks depth for perp exit
 			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(pb.Bids))
 			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(sb.Bids))
 			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(pb.Asks))
 		} else {
-			// Taker-Taker: Market Buy on Spot, Market Short on Perp
-			// Needs Spot Asks and Perp Bids for entry; Spot Bids and Perp Asks for exit
 			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(sb.Asks))
 			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(pb.Bids))
 			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(sb.Bids))
@@ -511,127 +566,156 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 			qty = maxExecutable
 		}
 	}
-
 	minCap := s.cfg.MinAllocatedCapital
 	if minCap <= 0 {
 		minCap = 10.0
 	}
-	capitalEstimate := spotEntryRef.Mul(qty).Add(perpBid.Mul(qty).Div(perpLev))
+	capitalEstimate := spotEntryRef.Mul(qty).Add(
+		perpBid.Mul(qty).Div(perpLev),
+	)
 	if capitalEstimate.LessThan(decimal.NewFromFloat(minCap)) {
-		return domain.Opportunity{}, fmt.Errorf("insufficient depth for minimum capital: available %.2f, min %.2f", capitalEstimate.InexactFloat64(), minCap)
+		return opportunitySizing{}, fmt.Errorf(
+			"insufficient depth for minimum capital: available %.2f, min %.2f",
+			capitalEstimate.InexactFloat64(), minCap,
+		)
 	}
+	return opportunitySizing{
+		targetBudget: targetBudget,
+		perpLeverage: perpLev,
+		spotEntryRef: spotEntryRef,
+		quantity:     qty,
+		makerTaker:   isMakerTaker,
+	}, nil
+}
 
-	prices, err := calculateExecutionPrices(sb, pb, qty, isMakerTaker, spotEntryRef)
-	if err != nil {
-		return domain.Opportunity{}, err
-	}
-
-	hundred := decimal.NewFromInt(100)
-	spotMakerFeePct := s.cfg.SpotMakerFeePct
-	spotTakerFeePct := s.cfg.SpotTakerFeePct
-	perpTakerFeePct := s.cfg.PerpTakerFeePct
+func (s *Service) resolveOpportunityFees(
+	input opportunityCalculationInput,
+) opportunityFees {
+	sm, pm := input.spotMarket, input.perpMarket
+	spotMakerPct := s.cfg.SpotMakerFeePct
+	spotTakerPct := s.cfg.SpotTakerFeePct
+	perpTakerPct := s.cfg.PerpTakerFeePct
 	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(sm.Exchange)]; ok {
 		if profile.SpotMakerFeePct != nil {
-			spotMakerFeePct = *profile.SpotMakerFeePct
+			spotMakerPct = *profile.SpotMakerFeePct
 		}
 		if profile.SpotTakerFeePct != nil {
-			spotTakerFeePct = *profile.SpotTakerFeePct
+			spotTakerPct = *profile.SpotTakerFeePct
 		}
 	}
-	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(pm.Exchange)]; ok && profile.PerpTakerFeePct != nil {
-		perpTakerFeePct = *profile.PerpTakerFeePct
+	if profile, ok := s.cfg.FeeProfiles[strings.ToLower(pm.Exchange)]; ok &&
+		profile.PerpTakerFeePct != nil {
+		perpTakerPct = *profile.PerpTakerFeePct
 	}
+
 	feeSource := "CONFIG"
 	feeVerified := false
-	var feeFetchedAtMS int64
-	spotDynamic := len(dynamicProfiles) > 0 && dynamicProfiles[0] != nil
-	perpDynamic := len(dynamicProfiles) > 1 && dynamicProfiles[1] != nil
+	var fetchedAtMS int64
+	spotDynamic := len(input.dynamicProfiles) > 0 &&
+		input.dynamicProfiles[0] != nil
+	perpDynamic := len(input.dynamicProfiles) > 1 &&
+		input.dynamicProfiles[1] != nil
 	if spotDynamic {
-		spotMakerFeePct = dynamicProfiles[0].MakerFeePct
-		spotTakerFeePct = dynamicProfiles[0].TakerFeePct
-		feeFetchedAtMS = dynamicProfiles[0].FetchedAtMS
+		spotMakerPct = input.dynamicProfiles[0].MakerFeePct
+		spotTakerPct = input.dynamicProfiles[0].TakerFeePct
+		fetchedAtMS = input.dynamicProfiles[0].FetchedAtMS
 	}
 	if perpDynamic {
-		perpTakerFeePct = dynamicProfiles[1].TakerFeePct
-		if dynamicProfiles[1].FetchedAtMS > feeFetchedAtMS {
-			feeFetchedAtMS = dynamicProfiles[1].FetchedAtMS
+		perpTakerPct = input.dynamicProfiles[1].TakerFeePct
+		if input.dynamicProfiles[1].FetchedAtMS > fetchedAtMS {
+			fetchedAtMS = input.dynamicProfiles[1].FetchedAtMS
 		}
 	}
 	if spotDynamic && perpDynamic {
-		feeSource = "EXCHANGE_API"
-		feeVerified = true
+		feeSource, feeVerified = "EXCHANGE_API", true
 	} else if spotDynamic || perpDynamic {
 		feeSource = "PARTIAL_EXCHANGE_API"
 	}
-	spotTakerFeeRate := decimal.NewFromFloat(spotTakerFeePct).Div(hundred)
-	perpTakerFeeRate := decimal.NewFromFloat(perpTakerFeePct).Div(hundred)
-	// Fee-asset surcharge: model non-quote-asset fee effects (BNB discount,
-	// fee billed in another asset) as a flat extra rate on notional so the
-	// net profit is not overstated. 0 = disabled.
-	var feeAssetSurchargeRate decimal.Decimal
-	if s.cfg.FeeAssetSurchargePct > 0 {
-		feeAssetSurchargeRate = decimal.NewFromFloat(s.cfg.FeeAssetSurchargePct).Div(hundred)
+	hundred := decimal.NewFromInt(100)
+	fees := opportunityFees{
+		spotMakerPct: spotMakerPct,
+		spotTakerPct: spotTakerPct,
+		perpTakerPct: perpTakerPct,
+		source:       feeSource,
+		verified:     feeVerified,
+		fetchedAtMS:  fetchedAtMS,
+		spotTakerRate: decimal.NewFromFloat(spotTakerPct).Div(hundred),
+		perpTakerRate: decimal.NewFromFloat(perpTakerPct).Div(hundred),
 	}
+	if s.cfg.FeeAssetSurchargePct > 0 {
+		fees.surchargeRate = decimal.NewFromFloat(
+			s.cfg.FeeAssetSurchargePct,
+		).Div(hundred)
+	}
+	return fees
+}
 
-	var spread decimal.Decimal
-	var slippage decimal.Decimal
-	var spotFees decimal.Decimal
-
-	if isMakerTaker {
-		// Maker-Taker: Limit Buy on Spot at spotEntryRef, Market Short on Perp at perpEntry
-		spread = perpBid.Sub(spotEntryRef).Mul(qty)
-		// Spot entry slippage is 0 because limit order execution is locked at spotEntryRef
+func (s *Service) calculateOpportunityProfit(
+	input opportunityCalculationInput, sizing opportunitySizing,
+	prices executionPrices, fees opportunityFees,
+) (opportunityProfit, error) {
+	sb, pb, fr := input.spotBook, input.perpBook, input.funding
+	qty := sizing.quantity
+	spotAsk := decimal.NewFromFloat(sb.Asks[0].Price)
+	spotBid := decimal.NewFromFloat(sb.Bids[0].Price)
+	perpBid := decimal.NewFromFloat(pb.Bids[0].Price)
+	perpAsk := decimal.NewFromFloat(pb.Asks[0].Price)
+	var spread, slippage, spotFees decimal.Decimal
+	if sizing.makerTaker {
+		spread = perpBid.Sub(sizing.spotEntryRef).Mul(qty)
 		slippage = spotBid.Sub(prices.spotExit).
 			Add(perpBid.Sub(prices.perpEntry)).
 			Add(prices.perpExit.Sub(perpAsk)).
 			Mul(qty)
-
-		spotMakerFeeRate := decimal.NewFromFloat(spotMakerFeePct).Div(hundred)
-		spotEntryFee := prices.spotEntry.Mul(qty).Mul(spotMakerFeeRate)
-		spotExitFee := prices.spotExit.Mul(qty).Mul(spotTakerFeeRate)
+		spotMakerRate := decimal.NewFromFloat(fees.spotMakerPct).Div(
+			decimal.NewFromInt(100),
+		)
+		spotEntryFee := prices.spotEntry.Mul(qty).Mul(spotMakerRate)
+		spotExitFee := prices.spotExit.Mul(qty).Mul(fees.spotTakerRate)
 		spotFees = spotEntryFee.Add(spotExitFee)
 	} else {
-		// Taker-Taker (default)
 		spread = perpBid.Sub(spotAsk).Mul(qty)
 		slippage = prices.spotEntry.Sub(spotAsk).
 			Add(spotBid.Sub(prices.spotExit)).
 			Add(perpBid.Sub(prices.perpEntry)).
 			Add(prices.perpExit.Sub(perpAsk)).
 			Mul(qty)
-		spotFees = prices.spotEntry.Add(prices.spotExit).Mul(qty).Mul(spotTakerFeeRate)
+		spotFees = prices.spotEntry.Add(prices.spotExit).
+			Mul(qty).Mul(fees.spotTakerRate)
 	}
-
-	perpFees := prices.perpEntry.Add(prices.perpExit).Mul(qty).Mul(perpTakerFeeRate)
-	if !feeAssetSurchargeRate.IsZero() {
-		// Surcharge applies to the round-trip notional of both legs.
-		surcharge := prices.spotEntry.Add(prices.spotExit).Add(prices.perpEntry).Add(prices.perpExit).Mul(qty).Mul(feeAssetSurchargeRate)
+	perpFees := prices.perpEntry.Add(prices.perpExit).
+		Mul(qty).Mul(fees.perpTakerRate)
+	if !fees.surchargeRate.IsZero() {
+		surcharge := prices.spotEntry.Add(prices.spotExit).
+			Add(prices.perpEntry).Add(prices.perpExit).
+			Mul(qty).Mul(fees.surchargeRate)
 		spotFees = spotFees.Add(surcharge)
 	}
-	fees := spotFees.Add(perpFees)
-
-	settlements := calculateSettlements(s.cfg.EstimatedHoldingHours, fr.IntervalHours, fr.NextFundingTime, now)
+	totalFees := spotFees.Add(perpFees)
+	settlements := calculateSettlements(
+		s.cfg.EstimatedHoldingHours, fr.IntervalHours, fr.NextFundingTime, input.now,
+	)
 	frRate := decimal.NewFromFloat(fr.Rate)
 	settlementsDec := decimal.NewFromInt(int64(settlements))
-	funding := prices.perpEntry.Mul(qty).Mul(frRate).Mul(settlementsDec) // positive rate: short receives
-
-	net := spread.Add(funding).Sub(fees).Sub(slippage)
-	capital := prices.spotEntry.Mul(qty).Add(prices.perpEntry.Mul(qty).Div(perpLev))
+	funding := prices.perpEntry.Mul(qty).Mul(frRate).Mul(settlementsDec)
+	net := spread.Add(funding).Sub(totalFees).Sub(slippage)
+	capital := prices.spotEntry.Mul(qty).Add(
+		prices.perpEntry.Mul(qty).Div(sizing.perpLeverage),
+	)
 	if capital.LessThanOrEqual(decimal.Zero) {
-		return domain.Opportunity{}, fmt.Errorf("invalid allocated capital")
+		return opportunityProfit{}, fmt.Errorf("invalid allocated capital")
 	}
-
 	capacityPct := 100.0
-	if targetBudget.GreaterThan(decimal.Zero) {
-		pct := capital.Div(targetBudget).Mul(hundred).InexactFloat64()
+	if sizing.targetBudget.GreaterThan(decimal.Zero) {
+		pct := capital.Div(sizing.targetBudget).Mul(
+			decimal.NewFromInt(100),
+		).InexactFloat64()
 		if pct < 100.0 {
 			capacityPct = pct
 		}
 	}
-
-	roi := net.Div(capital).Mul(hundred)
-	netFloat := net.InexactFloat64()
+	roi := net.Div(capital).Mul(decimal.NewFromInt(100))
 	roiFloat := roi.InexactFloat64()
-
 	status := "PROFITABLE_IN_RANGE"
 	switch {
 	case net.LessThanOrEqual(decimal.Zero):
@@ -641,78 +725,117 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 	case roiFloat > s.cfg.MaxNetROIPct:
 		status = "ABOVE_MAX_TARGET"
 	}
+	minAcceptablePerpPrice := calculateMinAcceptablePerpPrice(
+		minAcceptablePerpPriceParams{
+			spotEntry:         prices.spotEntry,
+			perpExit:          prices.perpExit,
+			qty:               qty,
+			spotFees:          spotFees,
+			perpTakerFeeRate:  fees.perpTakerRate,
+			frRate:            frRate,
+			settlementsDec:    settlementsDec,
+			slippage:          slippage,
+			minNetProfitQuote: s.cfg.MinNetProfitQuote,
+		},
+	)
+	return opportunityProfit{
+		spread: spread, slippage: slippage, fees: totalFees, funding: funding,
+		net: net, capital: capital, capacityPct: capacityPct, roi: roi,
+		status: status, minAcceptablePerpPrice: minAcceptablePerpPrice,
+	}, nil
+}
 
-	minAcceptablePerpPrice := calculateMinAcceptablePerpPrice(minAcceptablePerpPriceParams{
-		spotEntry:         prices.spotEntry,
-		perpExit:          prices.perpExit,
-		qty:               qty,
-		spotFees:          spotFees,
-		perpTakerFeeRate:  perpTakerFeeRate,
-		frRate:            frRate,
-		settlementsDec:    settlementsDec,
-		slippage:          slippage,
-		minNetProfitQuote: s.cfg.MinNetProfitQuote,
-	})
-
+func (s *Service) buildOpportunity(
+	input opportunityCalculationInput, sizing opportunitySizing,
+	prices executionPrices, fees opportunityFees, profit opportunityProfit,
+) domain.Opportunity {
+	sm, pm, sb, fr := input.spotMarket, input.perpMarket,
+		input.spotBook, input.funding
 	execMode := s.cfg.ExecutionMode
 	if execMode == "" {
 		execMode = "TAKER_TAKER"
 	}
-
 	ttlSeconds := s.cfg.MaxOrderTTLSeconds
 	if ttlSeconds <= 0 {
 		ttlSeconds = 30
 	}
-
 	targetQuote := pm.QuoteAsset
-	if !isSynthetic {
+	if !input.isSynthetic {
 		targetQuote = sm.QuoteAsset
 	}
-	spotEntryFeePct := spotTakerFeePct
-	if isMakerTaker {
-		spotEntryFeePct = spotMakerFeePct
+	spotEntryFeePct := fees.spotTakerPct
+	if sizing.makerTaker {
+		spotEntryFeePct = fees.spotMakerPct
 	}
-
-	op := domain.Opportunity{
+	return domain.Opportunity{
 		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
 		SpotEntryFeePct:        spotEntryFeePct,
-		SpotExitFeePct:         spotTakerFeePct,
-		PerpEntryFeePct:        perpTakerFeePct,
-		PerpExitFeePct:         perpTakerFeePct,
-		FeeSource:              feeSource,
-		FeeVerified:            feeVerified,
-		FeeFetchedAtMS:         feeFetchedAtMS,
+		SpotExitFeePct:         fees.spotTakerPct,
+		PerpEntryFeePct:        fees.perpTakerPct,
+		PerpExitFeePct:         fees.perpTakerPct,
+		FeeSource:              fees.source,
+		FeeVerified:            fees.verified,
+		FeeFetchedAtMS:         fees.fetchedAtMS,
 		FeeAssetSurchargePct:   s.cfg.FeeAssetSurchargePct,
 		LocalExchange:          sm.Exchange,
 		GlobalExchange:         pm.Exchange,
 		BaseAsset:              sm.BaseAsset,
 		QuoteAsset:             targetQuote,
 		SpotSymbol:             sm.Symbol,
-		PerpSymbol:             pm.Symbol,
+		PerpSymbol:              pm.Symbol,
 		ExecutionMode:          execMode,
 		SpotEntryPrice:         prices.spotEntry.InexactFloat64(),
 		SpotExitPrice:          prices.spotExit.InexactFloat64(),
 		PerpEntryPrice:         prices.perpEntry.InexactFloat64(),
 		PerpExitPrice:          prices.perpExit.InexactFloat64(),
-		Quantity:               qty.InexactFloat64(),
-		SpreadPnL:              spread.InexactFloat64(),
-		FundingPnL:             funding.InexactFloat64(),
-		TradingFees:            fees.InexactFloat64(),
-		Slippage:               slippage.InexactFloat64(),
-		NetProfit:              netFloat,
-		AllocatedCapital:       capital.InexactFloat64(),
-		NetROIPct:              roiFloat,
-		ProfitabilityStatus:    status,
-		LastScannedAt:          now,
+		Quantity:               sizing.quantity.InexactFloat64(),
+		SpreadPnL:              profit.spread.InexactFloat64(),
+		FundingPnL:             profit.funding.InexactFloat64(),
+		TradingFees:            profit.fees.InexactFloat64(),
+		Slippage:               profit.slippage.InexactFloat64(),
+		NetProfit:              profit.net.InexactFloat64(),
+		AllocatedCapital:       profit.capital.InexactFloat64(),
+		NetROIPct:              profit.roi.InexactFloat64(),
+		ProfitabilityStatus:    profit.status,
+		LastScannedAt:          input.now,
 		SpotTargetLimitPrice:   prices.spotEntry.InexactFloat64(),
-		MinAcceptablePerpPrice: minAcceptablePerpPrice.InexactFloat64(),
+		MinAcceptablePerpPrice: profit.minAcceptablePerpPrice.InexactFloat64(),
 		SpotQueueDepth:         sb.Bids[0].Quantity,
 		MaxOrderTTLSeconds:     ttlSeconds,
-		IsSynthetic:            isSynthetic,
-		SyntheticFXRate:        fxRate,
+		IsSynthetic:            input.isSynthetic,
+		SyntheticFXRate:        input.fxRate,
 		OriginalSpotQuote:      sm.QuoteAsset,
-		CapacityPct:            capacityPct,
+		CapacityPct:            profit.capacityPct,
 	}
-	s.evaluateOpportunity(&op, positionReason, perpBid.InexactFloat64(), spotEntryRef.InexactFloat64(), fr.Rate)
+}
+
+func (s *Service) calculate(
+	input opportunityCalculationInput,
+) (domain.Opportunity, error) {
+	if err := s.validateCalculationInput(input); err != nil {
+		return domain.Opportunity{}, err
+	}
+	sizing, err := s.calculateOpportunitySizing(input)
+	if err != nil {
+		return domain.Opportunity{}, err
+	}
+	prices, err := calculateExecutionPrices(
+		input.spotBook, input.perpBook, sizing.quantity,
+		sizing.makerTaker, sizing.spotEntryRef,
+	)
+	if err != nil {
+		return domain.Opportunity{}, err
+	}
+	fees := s.resolveOpportunityFees(input)
+	profit, err := s.calculateOpportunityProfit(input, sizing, prices, fees)
+	if err != nil {
+		return domain.Opportunity{}, err
+	}
+	op := s.buildOpportunity(input, sizing, prices, fees, profit)
+	s.evaluateOpportunity(
+		&op, input.positionReason,
+		decimal.NewFromFloat(input.perpBook.Bids[0].Price).InexactFloat64(),
+		sizing.spotEntryRef.InexactFloat64(), input.funding.Rate,
+	)
 	return op, nil
 }
