@@ -69,7 +69,6 @@ def _as_spec_dict(value: Any) -> Optional[Dict[str, Any]]:
         return value
     return None
 
-@dataclass
 def _record_string(data: Dict[str, Any], key: str, default: str = "") -> str:
     return str(data.get(key) or default)
 
@@ -87,6 +86,7 @@ def _record_context(data: Dict[str, Any]):
     return context if isinstance(context, dict) else None
 
 
+@dataclass
 class OrderRecord:
     """One row of the universal order registry.
 
