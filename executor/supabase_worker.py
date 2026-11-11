@@ -33,7 +33,7 @@ class SupabaseWorkerMixin:
                 logger.exception("Supabase durable outbox worker error")
                 await asyncio.sleep(1.0)
 
-    async def _ensure_session(self) -> None:
+    def _ensure_session(self) -> None:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 timeout=_TIMEOUT,
@@ -105,7 +105,7 @@ class SupabaseWorkerMixin:
 
     async def _flush(self, batch: list) -> None:
         grouped = self._group_outbox_batch(batch)
-        await self._ensure_session()
+        self._ensure_session()
         for (table, on_conflict, _keys), items in grouped.items():
             await self._deliver_outbox_group(table, on_conflict, items)
 
