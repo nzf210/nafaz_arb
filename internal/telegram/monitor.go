@@ -284,9 +284,16 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 func (b *Bot) sendStartupSummary(ctx context.Context) {
 	var snapshot monitorSnapshot
 	var problem string
-	for attempt := 0; attempt < 30; attempt++ {
+	recoveryComplete := false
+	for attempt := 0; attempt < 60; attempt++ {
 		snapshot, problem = b.readMonitorSnapshot(ctx)
-		if problem == "" { break }
+		if problem == "" {
+			var recovery monitorSnapshot
+			_ = json.Unmarshal(rawField(snapshot, "recovery"), &recovery)
+			_ = json.Unmarshal(rawField(recovery, "complete"), &recoveryComplete)
+			if recoveryComplete { break }
+			problem = "Executor startup recovery is still in progress."
+		}
 		select { case <-ctx.Done(): return; case <-time.After(time.Second): }
 	}
 	targets := append([]int64(nil), b.cfg.Telegram.AllowedChatIDs...)
