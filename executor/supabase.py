@@ -317,7 +317,7 @@ class SupabaseWriter:
         leg: Optional[str] = None,
         market_type: Optional[str] = None,
         limit_price: Optional[float] = None,
-    ) -> None:
+    ) -> bool:
         """Upserts one universal order-registry row.
 
         ``local_order_id`` is the primary key and is derived from the client
