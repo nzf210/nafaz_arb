@@ -330,21 +330,9 @@ class EngineEntrySubmissionMixin:
                 )
                 return
             if entry_coid and self._is_definitive_order_rejection(exc):
-                registry = getattr(self, "order_registry", None)
-                if registry is not None:
-                    try:
-                        rejected = await registry.find_by_client_id(
-                            pair_info.local_exchange, entry_coid
-                        )
-                        if rejected is not None:
-                            rejected.status = "rejected"
-                            await registry.register(rejected)
-                            await registry.retire(rejected)
-                    except Exception:
-                        logger.exception(
-                            "[OrderRegistry] could not finalize rejected intent %s",
-                            entry_coid,
-                        )
+                await self._mark_order_submission_rejected(
+                    pair_info.local_exchange, entry_coid
+                )
             await self._handle_entry_submission_failure(
                 pair_tag, pair_info, actual_cost_usdt, exc
             )
