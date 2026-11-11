@@ -11,7 +11,7 @@ from executor.helpers import (
     ORPHAN_INDEX_KEY,
     orphan_order_key,
 )
-from executor.order_registry_common import _EXIT_ROLES, logger
+from executor.order_registry_common import logger
 
 
 
