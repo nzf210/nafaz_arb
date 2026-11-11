@@ -223,7 +223,11 @@ class TradeFillReconciliationWorker:
                 fetch = getattr(client, "fetch_order_trades", None)
                 if not callable(fetch):
                     raise NotImplementedError(f"no bound trade-history client for {exchange}")
-                submitted = _timestamp_ms(row.get("submitted_at"), int(time.time() * 1000) - 7 * 86400 * 1000)
+                now_ms = int(time.time() * 1000)
+                submitted = max(
+                    _timestamp_ms(row.get("submitted_at"), now_ms - 7 * 86400 * 1000),
+                    now_ms - 90 * 86400 * 1000,
+                )
                 amount_spec = (
                     row.get("global_amount_spec") if market_type == "perpetual"
                     else row.get("local_amount_spec")
