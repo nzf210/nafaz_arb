@@ -304,9 +304,8 @@ async def test_balance_mismatch_halts_venue(engine):
     assert engine._exchange_halted == {}
 
 @pytest.mark.asyncio
-async def test_consecutive_order_failures_halt_exchange(engine):
-    """N consecutive entry placement failures halt that exchange only."""
-    engine.config.max_consecutive_order_failures = 2
+async def test_ambiguous_order_submit_halts_pair_without_retry(engine):
+    """An exchange transport failure is ambiguous and must halt before a retry."""
     client = BalancesMockClient(spot_available=1000.0, futures_available=1000.0)
     engine.client = client
 
@@ -316,13 +315,12 @@ async def test_consecutive_order_failures_halt_exchange(engine):
 
     client.fail_next_buy = True
     await engine.handle_signal_notification(pair_tag)
-    assert "indodax" not in engine._exchange_halted
-    client.fail_next_buy = True
-    await engine.handle_signal_notification(pair_tag)
-    assert "indodax" in engine._exchange_halted
-    assert "2 consecutive order failures" in engine._exchange_halted["indodax"]
 
-    # Halted venue rejects further entries before even reaching placement.
+    assert pair_tag in engine._recovery_scope_halts
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert "indodax" not in engine._exchange_halted
+
+    # The same signal cannot trigger another submit while acknowledgement is unresolved.
     client.fail_next_buy = False
     orders_before = len(client.placed_buys)
     await engine.handle_signal_notification(pair_tag)
