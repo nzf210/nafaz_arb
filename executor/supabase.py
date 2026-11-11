@@ -79,35 +79,53 @@ class SupabaseWriter(
     async def close(self) -> None:
         if self._task is None:
             return
-        deadline = asyncio.get_running_loop().time() + 2.0
-        while self._outbox is not None and self._outbox.pending_count() and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.05)
-        if self._outbox is not None and self._outbox.pending_count():
-            logger.warning("Supabase durable outbox retained %d pending rows for restart", self._outbox.pending_count())
-        self._task.cancel()
         cancelled_by_caller = False
         try:
-            await self._task
+            deadline = asyncio.get_running_loop().time() + 2.0
+            while (
+                self._outbox is not None
+                and self._outbox.pending_count()
+                and asyncio.get_running_loop().time() < deadline
+            ):
+                await asyncio.sleep(0.05)
         except asyncio.CancelledError:
-            current_task = asyncio.current_task()
-            cancelled_by_caller = bool(
-                current_task is not None and current_task.cancelling()
+            # Cancellation must not leave the worker or its durable journal open.
+            cancelled_by_caller = True
+
+        if self._outbox is not None and self._outbox.pending_count():
+            logger.warning(
+                "Supabase durable outbox retained %d pending rows for restart",
+                self._outbox.pending_count(),
             )
-        except Exception:
-            logger.exception("Supabase outbox worker failed during shutdown")
-        self._task = None
+        worker = self._task
+        if worker is not None:
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                cancelled_by_caller = cancelled_by_caller or bool(
+                    current_task is not None and current_task.cancelling()
+                )
+            except Exception:
+                logger.exception("Supabase outbox worker failed during shutdown")
+            finally:
+                self._task = None
+
         if self._session is not None:
             try:
                 await self._session.close()
             except asyncio.CancelledError:
-                # Finish releasing the durable outbox before propagating caller cancellation.
                 cancelled_by_caller = True
             except Exception:
                 logger.exception("Supabase HTTP session failed to close cleanly")
             finally:
                 self._session = None
         if self._dropped:
-            logger.error("Supabase durable outbox enqueue failures: %d rows were not journaled", self._dropped)
+            logger.error(
+                "Supabase durable outbox enqueue failures: %d rows were not journaled",
+                self._dropped,
+            )
         if self._outbox is not None:
             self._outbox.close()
             self._outbox = None
