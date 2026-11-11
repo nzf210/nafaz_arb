@@ -117,3 +117,19 @@ def _normalize_open_order(order: Dict[str, Any], symbol: str, spec: Optional[Amo
         normalized["symbol"] = symbol
     normalized.pop("info", None)
     return _expose_client_order_id(normalized)
+
+
+def _balance_fetch_params(exchange: Any, market: str) -> Dict[str, Any]:
+    """Return explicit CCXT market params where a venue needs them."""
+    exchange_id = str(getattr(exchange, "id", "") or "").lower()
+    if market == "futures" and exchange_id == "mexc":
+        return {"type": "swap"}
+    return {}
+
+
+async def _fetch_exchange_balance(exchange: Any, market: str) -> Dict[str, Any]:
+    """Fetch a balance without changing legacy no-argument adapter contracts."""
+    params = _balance_fetch_params(exchange, market)
+    if params:
+        return await exchange.fetch_balance(params)
+    return await exchange.fetch_balance()
