@@ -624,6 +624,7 @@ class SupabaseWriter:
             "quote_qty": quote_qty,
             "fee_amount": fee_amount,
             "fee_asset": fee_asset,
+            "fee_verified": fee_amount is not None and bool(fee_asset),
             "filled_at": datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).isoformat(),
             "raw_payload": (
                 fill.get("raw_payload") if isinstance(fill.get("raw_payload"), dict)
