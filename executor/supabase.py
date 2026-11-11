@@ -462,6 +462,12 @@ class SupabaseWriter:
                     "reduce_only": payload["reduce_only"],
                     "is_mock": payload["is_mock"],
                     "submitted_at": submitted_at,
+                    "completed_at": (
+                        datetime.now(timezone.utc).isoformat()
+                        if str(payload["status"]).lower() in (
+                            "closed", "filled", "canceled", "cancelled", "rejected", "expired"
+                        ) else None
+                    ),
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                     "raw_payload": {
                         "source": "universal_order_registry",
@@ -742,7 +748,7 @@ class SupabaseWriter:
                     "id,pair_key,exchange_name,market_type,leg,exchange_order_id,"
                     "client_order_id,symbol,side,status,requested_qty,filled_qty,"
                     "remaining_qty,limit_price,average_fill_price,reduce_only,"
-                    "submitted_at,updated_at,is_mock",
+                    "submitted_at,completed_at,updated_at,is_mock",
                 )
             except Exception as exc:
                 errors.append(f"orders: {exc}")
@@ -802,6 +808,11 @@ class SupabaseWriter:
                     "average_fill_price": row.get("average_fill_price") or existing.get("average_fill_price"),
                     "reduce_only": bool(row.get("reduce_only", existing.get("reduce_only", False))),
                     "submitted_at": existing.get("submitted_at") or _ms_to_iso(row.get("created_at")),
+                    "completed_at": existing.get("completed_at") or (
+                        row.get("updated_at") if str(row.get("status") or "").lower()
+                        in ("closed", "filled", "canceled", "cancelled", "rejected", "expired")
+                        else None
+                    ),
                     "local_amount_spec": raw.get("local_amount_spec"),
                     "global_amount_spec": raw.get("global_amount_spec"),
                     "is_mock": row.get("is_mock", False),
