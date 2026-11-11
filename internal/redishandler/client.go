@@ -7,6 +7,7 @@ import (
 	"errors"
 	"encoding/json"
 	"math"
+	"strconv"
 	"fmt"
 	"strings"
 	"time"
@@ -27,6 +28,8 @@ const (
 	ChannelEmergencyCancel = "arb:emergency_cancel"
 	ChannelForceClose      = "arb:force_close"
 	ChannelKillSwitch      = "arb:kill_switch"
+	ChannelSpotOrderLimitUpdate = "arb:executor:spot_order_limit_update"
+	KeySpotOrderLimits = "arb:executor:spot_order_limits"
 	ChannelTradeEvents     = "arb:trade_events"
 	KeyPrefixSignal        = "arb:signal:"
 	KeySignalPriority      = "arb:signal_priority"
@@ -451,6 +454,35 @@ func (c *Client) PublishKillSwitch(ctx context.Context, action, reason string) e
 		return fmt.Errorf("marshal kill switch: %w", err)
 	}
 	return c.rdb.Publish(ctx, ChannelKillSwitch, string(data)).Err()
+}
+
+// SetSpotOrderLimit persists and broadcasts a per-spot-CEX open-order cap.
+// The executor applies the update immediately and restores it after restart.
+func (c *Client) SetSpotOrderLimit(ctx context.Context, exchange string, limit int) error {
+	if c == nil || c.rdb == nil { return errors.New("redis is not connected") }
+	exchange = strings.ToLower(strings.TrimSpace(exchange))
+	if exchange == "" || len(exchange) > 64 { return errors.New("exchange name is invalid") }
+	for _, r := range exchange { if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-') { return errors.New("exchange name may contain only letters, digits, '_' or '-'") } }
+	if limit < 1 || limit > 100 { return errors.New("max open spot orders must be between 1 and 100") }
+	if err := c.rdb.HSet(ctx, KeySpotOrderLimits, exchange, limit).Err(); err != nil { return fmt.Errorf("persist spot order limit: %w", err) }
+	payload, err := json.Marshal(map[string]interface{}{"exchange": exchange, "max_open_spot_orders": limit, "updated_at_ms": time.Now().UnixMilli()})
+	if err != nil { return fmt.Errorf("marshal spot order limit: %w", err) }
+	if err := c.rdb.Publish(ctx, ChannelSpotOrderLimitUpdate, string(payload)).Err(); err != nil { return fmt.Errorf("publish spot order limit: %w", err) }
+	return nil
+}
+
+// GetSpotOrderLimits returns operator overrides; venues without an override use default 2.
+func (c *Client) GetSpotOrderLimits(ctx context.Context) (map[string]int, error) {
+	if c == nil || c.rdb == nil { return nil, errors.New("redis is not connected") }
+	stored, err := c.rdb.HGetAll(ctx, KeySpotOrderLimits).Result()
+	if err != nil { return nil, fmt.Errorf("read spot order limits: %w", err) }
+	limits := make(map[string]int, len(stored))
+	for exchange, raw := range stored {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 1 || value > 100 { return nil, fmt.Errorf("stored spot order limit for %s is invalid", exchange) }
+		limits[exchange] = value
+	}
+	return limits, nil
 }
 
 // GetLivePrice retrieves the latest PricingSnapshot for a pair.
