@@ -128,6 +128,23 @@ func (b *Bot) sendOrphanOrderSection(
 func buildMonitorSectionRaw(
 	snapshot monitorSnapshot, title string, fields []string,
 ) json.RawMessage {
+	if title == "RECONCILIATION INCIDENTS" {
+		var recovery monitorSnapshot
+		_ = json.Unmarshal(rawField(snapshot, "recovery"), &recovery)
+		view := monitorSnapshot{}
+		for key, value := range map[string]json.RawMessage{
+			"mismatches": rawField(snapshot, "reconciliation", "reconciliation_mismatches", "mismatches"),
+			"pending_orders": rawField(recovery, "pending_orders"),
+			"scope_halts": rawField(recovery, "scope_halts"),
+			"failures": rawField(snapshot, "failures"),
+		} {
+			if len(value) > 0 {
+				view[key] = value
+			}
+		}
+		raw, _ := json.Marshal(view)
+		return raw
+	}
 	if title == "RISK HALT" {
 		view := monitorSnapshot{}
 		for _, key := range []string{
