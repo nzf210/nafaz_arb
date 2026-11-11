@@ -301,12 +301,37 @@ class ExitMixin:
                 )
                 return False
 
-            # A cancel can race a partial/full fill. Reconcile the final cumulative
-            # fill (and close the matching futures quantity) before sizing a new
-            # spot order, otherwise the replacement could oversell the position.
-            await self._process_pending_exit_bound(pair_tag)
-            if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+            # A cancel can race a partial/full fill. Use the exact terminal
+            # REST snapshot returned above (not a possibly stale private-stream
+            # cache) before sizing a replacement, otherwise a late fill could
+            # leave the new order sized for already-sold inventory.
+            pos = self.active_positions.get(pair_tag)
+            if pos is None:
                 return False
+            self.supabase.order(
+                pair_tag,
+                "spot_exit",
+                pos.local_exchange,
+                "spot",
+                symbol,
+                final_order,
+                client_order_id=old_order.get("client_order_id"),
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+            )
+            try:
+                final_filled = max(0.0, float(final_order.get("filled", 0.0) or 0.0))
+                already_closed = max(0.0, float(old_order.get("closed_short_qty", 0.0) or 0.0))
+            except (TypeError, ValueError):
+                logger.error(
+                    "[Cancel & Replace] invalid final fill quantity for %s (%s); replacement blocked",
+                    pair_tag, old_order_id,
+                )
+                return False
+            unclosed_delta = final_filled - already_closed
+            if unclosed_delta > 0:
+                await self._execute_exit_fill(pair_tag, old_order, pos, unclosed_delta)
+                if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+                    return False
             if pair_tag not in self.active_positions:
                 return False
 
