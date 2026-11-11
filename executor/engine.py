@@ -600,6 +600,21 @@ class ArbitrageEngine(
                             token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
                         self.pending_entry_orders[pair_tag] = order_info
                         self.states[pair_tag] = PositionState.ENTRY_PENDING
+                        # Resolve any already-submitted futures leg before
+                        # the spot fill handler considers placing another hedge.
+                        # This prevents a restart between futures fill and spot
+                        # watermark persistence from doubling the short position.
+                        if not await self._reconcile_pending_entry_hedges(pair_tag, order_info):
+                            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                            self._mark_failed(
+                                pair_tag,
+                                "HEDGE_RECOVERY_UNVERIFIED",
+                                "A previously submitted futures hedge could not be verified; "
+                                "the spot fill was retained without submitting a duplicate hedge.",
+                                detail={"order_id": order_id, "symbol": symbol},
+                                state=PositionState.RECONCILIATION_REQUIRED,
+                            )
+                            continue
                         await self._handle_entry_fills(
                             pair_tag,
                             order_info,
