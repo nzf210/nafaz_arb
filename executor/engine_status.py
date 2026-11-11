@@ -257,6 +257,19 @@ class EngineStatusMixin:
             "open_positions": len(self.active_positions),
             "pending_entries": len(self.pending_entry_orders),
             "pending_exits": len(self.pending_exit_orders),
+            "spot_order_limits": dict(getattr(self.config, "max_open_spot_orders_per_exchange", {}) or {}),
+            "default_max_open_spot_orders_per_exchange": 2,
+            "spot_open_order_counts": {
+                exchange: self._spot_open_order_count(exchange)
+                for exchange in sorted({
+                    str(getattr(position, "local_exchange", "")).lower()
+                    for position in self.active_positions.values()
+                } | {
+                    str((order or {}).get("local_exchange", "")).lower()
+                    for order in self.pending_entry_orders.values()
+                } | set((getattr(self.config, "max_open_spot_orders_per_exchange", {}) or {}).keys()))
+                if exchange
+            },
             "pending_orders": self._pending_order_snapshots(),
             "failed_pairs": len(self._failure_reasons),
             "trading_halted": self._trading_halted,
