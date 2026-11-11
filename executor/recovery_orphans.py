@@ -252,6 +252,13 @@ class RecoveryOrphanMixin:
             return False
         if getattr(self.exposure_reconciliation, "_reported", {}):
             return False
+        if (
+            not getattr(self.config, "mock_mode", False)
+            and not getattr(getattr(self, "supabase", None), "enabled", False)
+        ):
+            # Without the durable fill ledger, an empty worker error set does
+            # not mean exchange fills were verified.
+            return False
         if any(scope == pair_tag for scope in getattr(self.trade_fill_reconciliation, "_reported", {}).values()):
             return False
         position = self.active_positions.get(pair_tag)
