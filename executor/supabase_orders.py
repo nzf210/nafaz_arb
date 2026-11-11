@@ -15,30 +15,18 @@ from executor.supabase_common import _POSITION_NS, _SIDE_BY_LEG, _canonical_side
 class SupabaseOrderMixin:
     """Focused writer methods grouped by persistence responsibility."""
 
-    def order_record(
-        self,
-        row: Dict[str, Any],
-        leg: Optional[str] = None,
-        market_type: Optional[str] = None,
-        limit_price: Optional[float] = None,
-    ) -> bool:
-        """Upserts one universal order-registry row.
-
-        ``local_order_id`` is the primary key and is derived from the client
-        order id, so a re-submitted or re-adopted order updates its own row
-        instead of inserting a duplicate. ``pair_key`` and ``position_key`` are
-        only sent when they are non-null, keeping the newest known linkage
-        instead of erasing it with a null.
-        """
-        local_order_id = str(row.get("local_order_id") or "")
-        if not local_order_id:
-            return False
-        role = str(row.get("order_role") or "ENTRY")
+    def _build_order_registry_payload(
+        self, row: Dict[str, Any], role: str,
+        leg: Optional[str], market_type: Optional[str],
+        limit_price: Optional[float],
+    ) -> tuple:
         fallback_side, resolved_leg, resolved_market = _role_catalogue(
             role, leg, market_type or row.get("market_type")
         )
+        requested_qty = _num(row.get("original_quantity"))
+        filled_qty = _num(row.get("filled_quantity"))
         payload = {
-            "local_order_id": local_order_id,
+            "local_order_id": str(row.get("local_order_id") or ""),
             "exchange_name": str(row.get("exchange_name") or ""),
             "market_type": resolved_market,
             "leg": resolved_leg,
@@ -47,26 +35,32 @@ class SupabaseOrderMixin:
             "side": _canonical_side(row.get("side")) or fallback_side,
             "order_type": str(row.get("order_type") or "limit"),
             "status": str(row.get("status") or "open"),
-            "requested_qty": _num(row.get("original_quantity")),
-            "filled_qty": _num(row.get("filled_quantity")),
+            "requested_qty": requested_qty,
+            "filled_qty": filled_qty,
             "remaining_qty": max(
                 0.0,
-                _num(row.get("remaining_quantity"), _num(row.get("original_quantity")) - _num(row.get("filled_quantity"))),
+                _num(
+                    row.get("remaining_quantity"),
+                    requested_qty - filled_qty,
+                ),
             ),
             "average_fill_price": _num(row.get("average_fill_price")) or None,
-            "limit_price": limit_price if limit_price is not None else (_num(row.get("price")) or None),
+            "limit_price": (
+                limit_price
+                if limit_price is not None
+                else (_num(row.get("price")) or None)
+            ),
             "reduce_only": bool(row.get("reduce_only", False)),
             "recovery_status": str(row.get("recovery_status") or "MANAGED"),
             "is_mock": bool(row.get("is_mock", True)),
             "last_reconciled_at": datetime.now(timezone.utc).isoformat(),
-            # Carries the entry lifecycle context (FX snapshot, fee profile,
-            # amount rules) that a post-restart hedge cannot re-derive.
             "raw_payload": json.dumps(
                 {
                     key: row.get(key)
                     for key in (
-                        "local_amount_spec", "global_amount_spec", "recovery_context",
-                        "hedged_quantity", "orphan_id", "scope", "reason", "detected_at",
+                        "local_amount_spec", "global_amount_spec",
+                        "recovery_context", "hedged_quantity", "orphan_id",
+                        "scope", "reason", "detected_at",
                     )
                     if row.get(key) is not None
                 },
@@ -74,13 +68,11 @@ class SupabaseOrderMixin:
             ),
         }
         exchange_order_id = str(row.get("exchange_order_id") or "")
+        client_order_id = str(row.get("client_order_id") or "")
         if exchange_order_id:
             payload["exchange_order_id"] = exchange_order_id
-        client_order_id = str(row.get("client_order_id") or "")
         if client_order_id:
             payload["client_order_id"] = client_order_id
-        # Kept distinct: a position key ("position:<pair>") is not a pair key, and
-        # writing one into the other would corrupt every recovery lookup.
         pair_key = str(row.get("pair_key") or "")
         if pair_key:
             payload["pair_key"] = pair_key
@@ -89,56 +81,93 @@ class SupabaseOrderMixin:
             payload["position_key"] = position_key
         if isinstance(row.get("raw_payload"), str):
             payload["raw_payload"] = row["raw_payload"]
-        registry_ok = self._emit("order_registry", payload, on_conflict="local_order_id")
-        # Every bot-owned order also needs an analytics parent row because
-        # order_fills.order_id references public.orders, not order_registry.
-        # This covers futures hedges/rollbacks that do not call the legacy
-        # pair-scoped order() callback directly.
-        analytics_ok = True
-        if pair_key and (client_order_id or exchange_order_id):
-            order_key = client_order_id or exchange_order_id
-            order_row_id = self.order_id_for(pair_key, payload["exchange_name"], order_key)
-            submitted_at = _ms_to_iso(row.get("created_at")) or datetime.now(timezone.utc).isoformat()
-            analytics_ok = self._emit(
-                "orders",
-                {
-                    "id": order_row_id,
-                    "position_id": self._position_ids.get(pair_key),
-                    "pair_key": pair_key,
-                    "exchange_name": payload["exchange_name"],
-                    "market_type": resolved_market,
-                    "leg": resolved_leg,
-                    "exchange_order_id": exchange_order_id or None,
-                    "client_order_id": client_order_id or None,
-                    "symbol": payload["symbol"],
-                    "side": payload["side"],
-                    "order_type": payload["order_type"],
-                    "status": payload["status"],
-                    "requested_qty": payload["requested_qty"],
-                    "filled_qty": payload["filled_qty"],
-                    "remaining_qty": payload["remaining_qty"],
-                    "limit_price": payload["limit_price"],
-                    "average_fill_price": payload["average_fill_price"],
-                    "reduce_only": payload["reduce_only"],
-                    "is_mock": payload["is_mock"],
-                    "submitted_at": submitted_at,
-                    "completed_at": (
-                        datetime.now(timezone.utc).isoformat()
-                        if str(payload["status"]).lower() in (
-                            "closed", "filled", "canceled", "cancelled", "rejected", "expired"
-                        ) else None
-                    ),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                    "raw_payload": {
-                        "source": "universal_order_registry",
-                        "local_order_id": local_order_id,
-                        "local_amount_spec": row.get("local_amount_spec"),
-                        "global_amount_spec": row.get("global_amount_spec"),
-                        "recovery_context": row.get("recovery_context"),
-                    },
+        return (
+            payload, exchange_order_id, client_order_id,
+            pair_key, resolved_leg, resolved_market,
+        )
+
+    def _emit_order_analytics_parent(
+        self, row: Dict[str, Any], payload: Dict[str, Any],
+        exchange_order_id: str, client_order_id: str, pair_key: str,
+        resolved_leg: str, resolved_market: str,
+    ) -> bool:
+        if not pair_key or not (client_order_id or exchange_order_id):
+            return True
+        order_key = client_order_id or exchange_order_id
+        order_row_id = self.order_id_for(
+            pair_key, payload["exchange_name"], order_key
+        )
+        submitted_at = (
+            _ms_to_iso(row.get("created_at"))
+            or datetime.now(timezone.utc).isoformat()
+        )
+        status = str(payload["status"]).lower()
+        completed_at = None
+        if status in (
+            "closed", "filled", "canceled", "cancelled", "rejected", "expired"
+        ):
+            completed_at = datetime.now(timezone.utc).isoformat()
+        return self._emit(
+            "orders",
+            {
+                "id": order_row_id,
+                "position_id": self._position_ids.get(pair_key),
+                "pair_key": pair_key,
+                "exchange_name": payload["exchange_name"],
+                "market_type": resolved_market,
+                "leg": resolved_leg,
+                "exchange_order_id": exchange_order_id or None,
+                "client_order_id": client_order_id or None,
+                "symbol": payload["symbol"],
+                "side": payload["side"],
+                "order_type": payload["order_type"],
+                "status": payload["status"],
+                "requested_qty": payload["requested_qty"],
+                "filled_qty": payload["filled_qty"],
+                "remaining_qty": payload["remaining_qty"],
+                "limit_price": payload["limit_price"],
+                "average_fill_price": payload["average_fill_price"],
+                "reduce_only": payload["reduce_only"],
+                "is_mock": payload["is_mock"],
+                "submitted_at": submitted_at,
+                "completed_at": completed_at,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "raw_payload": {
+                    "source": "universal_order_registry",
+                    "local_order_id": payload["local_order_id"],
+                    "local_amount_spec": row.get("local_amount_spec"),
+                    "global_amount_spec": row.get("global_amount_spec"),
+                    "recovery_context": row.get("recovery_context"),
                 },
-                on_conflict="id",
-            )
+            },
+            on_conflict="id",
+        )
+
+    def order_record(
+        self,
+        row: Dict[str, Any],
+        leg: Optional[str] = None,
+        market_type: Optional[str] = None,
+        limit_price: Optional[float] = None,
+    ) -> bool:
+        """Upsert a universal order record and its analytics parent."""
+        local_order_id = str(row.get("local_order_id") or "")
+        if not local_order_id:
+            return False
+        role = str(row.get("order_role") or "ENTRY")
+        (
+            payload, exchange_order_id, client_order_id, pair_key,
+            resolved_leg, resolved_market,
+        ) = self._build_order_registry_payload(
+            row, role, leg, market_type, limit_price
+        )
+        registry_ok = self._emit(
+            "order_registry", payload, on_conflict="local_order_id"
+        )
+        analytics_ok = self._emit_order_analytics_parent(
+            row, payload, exchange_order_id, client_order_id, pair_key,
+            resolved_leg, resolved_market,
+        )
         return bool(registry_ok and analytics_ok)
 
     def order(
