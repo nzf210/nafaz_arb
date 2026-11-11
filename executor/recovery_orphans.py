@@ -134,7 +134,10 @@ class RecoveryOrphanMixin:
         A verified order lookup alone is insufficient to clear a pair halt.
         Position, fill, and aggregate exposure checks must also pass.
         """
-        touched_pairs = set()
+        touched_pairs = {
+            pair_tag for pair_tag, state in self.states.items()
+            if state == PositionState.RECONCILIATION_REQUIRED
+        }
         for local_id in await self.order_registry.pending_recovery_ids():
             record = self._recovered_order_records.get(local_id)
             if record is None:
