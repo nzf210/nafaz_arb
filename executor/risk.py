@@ -64,11 +64,6 @@ class RiskMixin:
         rows = await writer.fetch_active_risk_states(
             is_mock=bool(getattr(self.config, "mock_mode", False))
         )
-        if getattr(writer, "risk_persistence_failed", lambda: False)():
-            self._risk_persistence_failed = True
-            self._trading_halted = True
-            self._halt_reason = "RISK_STATE_PERSISTENCE_FAILED"
-            self._entry_blocked = True
         for row in rows:
             kind = str(row.get("state_type") or "")
             scope = str(row.get("scope") or "")
@@ -124,6 +119,11 @@ class RiskMixin:
                     self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
                 if self.states[pair_key] == PositionState.RECONCILIATION_REQUIRED:
                     self._recovery_scope_halts[pair_key] = reason or "restored unresolved position failure"
+        if getattr(writer, "risk_persistence_failed", lambda: False)():
+            self._risk_persistence_failed = True
+            self._trading_halted = True
+            self._halt_reason = "RISK_STATE_PERSISTENCE_FAILED"
+            self._entry_blocked = True
         # The immutable verified PnL ledger is authoritative; the mutable
         # accumulator above is only a fast snapshot/cache.
         self._daily_realized_loss_usdt = await writer.fetch_daily_realized_loss_usdt(
