@@ -1037,6 +1037,8 @@ class ArbitrageEngine(
                 self._trading_halted = False
                 self._halt_reason = ""
                 self._persist_risk_state("trading_halt", scope="global", resolved=True)
+                self._manual_resume_day = self._loss_day
+                self._persist_risk_state("trading_resume", scope="global", reason="manual resume", value={"loss_day": self._loss_day})
                 logger.warning(f"[Kill Switch] Trading resumed ({reason})")
                 await self.publish_status()
             return
@@ -1897,6 +1899,8 @@ class ArbitrageEngine(
             return
         self._loss_day = today
         self._daily_realized_loss_usdt = 0.0
+        self._manual_resume_day = None
+        self._persist_risk_state("trading_resume", scope="global", resolved=True)
         self._persist_risk_state("daily_loss", scope="global", value={"loss_usdt": 0.0, "loss_day": today})
         # The operator kill switch does not auto-reset on a new UTC day.
         if (
@@ -1933,6 +1937,9 @@ class ArbitrageEngine(
         if net_profit_usdt < 0:
             self._daily_realized_loss_usdt += -net_profit_usdt
         self._persist_risk_state("daily_loss", scope="global", value={"loss_usdt": self._daily_realized_loss_usdt, "loss_day": self._loss_day})
+        if event_id:
+            self._persist_risk_state("trading_resume", scope="global", resolved=True)
+            self._manual_resume_day = None
 
         limit = getattr(self.config, "max_daily_loss_usdt", 0.0)
         if limit <= 0 or self._trading_halted:
@@ -1951,6 +1958,8 @@ class ArbitrageEngine(
         self._trading_halted = False
         self._halt_reason = ""
         self._persist_risk_state("trading_halt", scope="global", resolved=True)
+        self._manual_resume_day = self._loss_day
+        self._persist_risk_state("trading_resume", scope="global", reason=reason, value={"loss_day": self._loss_day})
         logger.warning(f"[Circuit Breaker] Trading resumed manually ({reason})")
         await self.publish_status()
 
