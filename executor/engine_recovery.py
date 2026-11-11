@@ -391,116 +391,132 @@ class EngineRecoveryMixin:
             return "unknown", None
         return str(order.get("status", "unknown")), float(order.get("filled", 0.0) or 0.0)
 
-    async def _recover_active_positions(self) -> None:
-        """
-        Restores open positions from Redis after a restart/redeploy.
+    async def _migrate_active_position_key(
+        self, pair_tag: str, key: str, pos: ActivePosition
+    ):
+        if "__" in pair_tag or not pos.global_exchange or not pos.global_symbol:
+            return pair_tag, key
+        migrated_tag = ExchangePairKey.from_pair_info({
+            "local_exchange": pos.local_exchange,
+            "local_symbol": pos.symbol,
+            "global_exchange": pos.global_exchange,
+            "global_symbol": pos.global_symbol,
+        }).tag.lower()
+        if migrated_tag == pair_tag:
+            return pair_tag, key
+        migrated_key = f"arb:active_pos:{migrated_tag}"
+        if await self.redis.get(migrated_key):
+            pos.state = "RECONCILIATION_REQUIRED"
+            self.active_positions[pair_tag] = pos
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            await self.redis.set(key, json.dumps(pos.to_dict()))
+            self._mark_failed(
+                pair_tag,
+                "LEGACY_POSITION_KEY_COLLISION",
+                "Legacy position cannot be migrated because the venue-qualified key already exists.",
+                detail={"legacy_key": key, "target_key": migrated_key},
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+            return None
+        await self.redis.set(migrated_key, json.dumps(pos.to_dict()))
+        await self.redis.delete(key)
+        return migrated_tag, migrated_key
 
-        Without this the engine forgets every hedged position it still holds on
-        the exchange: no exit pegging, no funding accrual, and no force-close
-        target. Recovered positions resume as HEDGED_ACTIVE so the monitoring
-        loop immediately resumes managing them.
-        """
-        recovered = 0
+    async def _retain_invalid_recovered_position(
+        self, pair_tag: str, key: str, pos: ActivePosition
+    ) -> None:
+        self.active_positions[pair_tag] = pos
+        pos.state = "RECONCILIATION_REQUIRED"
+        self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+        await self.redis.set(key, json.dumps(pos.to_dict()))
+        self._mark_failed(
+            pair_tag,
+            "RECOVERED_POSITION_QTY_INVALID",
+            f"Recovered position quantity is invalid ({pos.qty}); exchange exposure must be checked.",
+            detail={"qty": pos.qty, "symbol": pos.symbol},
+            state=PositionState.RECONCILIATION_REQUIRED,
+        )
+        logger.critical(
+            f"[Recovery] retaining {pair_tag}: recovered qty is {pos.qty}; "
+            "manual reconciliation required"
+        )
+
+    def _restore_active_position_state(
+        self, pair_tag: str, pos: ActivePosition
+    ) -> None:
+        self.active_positions[pair_tag] = pos
+        if getattr(pos, "state", "HEDGED_ACTIVE") == "RECONCILIATION_REQUIRED":
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            self._failure_reasons[pair_tag] = {
+                "reason": "RESTORED_RECONCILIATION_REQUIRED",
+                "message": (
+                    "Position restored from Redis with RECONCILIATION_REQUIRED state. "
+                    "Manual intervention required."
+                ),
+                "detail": {"qty": pos.qty, "symbol": pos.symbol},
+                "timestamp_ms": int(time.time() * 1000),
+            }
+            logger.critical(
+                f"[Recovery] Position {pair_tag} has RECONCILIATION_REQUIRED status! "
+                "Manual intervention required; skipping automatic active exit management."
+            )
+        else:
+            self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+
+    async def _recover_active_position_record(self, key: str) -> bool:
+        pair_tag = key.split("arb:active_pos:", 1)[-1]
+        try:
+            raw = await self.redis.get(key)
+            if not raw:
+                return False
+            pos = ActivePosition.from_dict(json.loads(raw))
+            migrated = await self._migrate_active_position_key(pair_tag, key, pos)
+            if migrated is None:
+                return False
+            pair_tag, key = migrated
+            if pos.qty <= 0:
+                await self._retain_invalid_recovered_position(pair_tag, key, pos)
+                return False
+
+            self._restore_active_position_state(pair_tag, pos)
+            logger.warning(
+                f"[Recovery] Restored position {pair_tag}: qty={pos.qty}, "
+                f"entry_idr={pos.entry_price_idr}, short_entry_usdt={pos.short_entry_usdt}, "
+                f"state={self.states[pair_tag].value}"
+            )
+            self.supabase.position_opened(
+                pair_tag,
+                pos,
+                getattr(self, "_pair_infos", {}).get(pair_tag),
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+            )
+            return True
+        except Exception as exc:
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            self._mark_failed(
+                pair_tag,
+                "ACTIVE_POSITION_RECORD_INVALID",
+                f"Persisted active position cannot be parsed: {exc}",
+                detail={"redis_key": key},
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+            logger.exception(
+                f"[Recovery] invalid active position record {key}; Redis key retained"
+            )
+            return False
+
+    async def _recover_active_positions(self) -> None:
+        """Restore Redis positions and preserve unresolved records for reconciliation."""
         try:
             keys = await self.redis.keys("arb:active_pos:*")
         except Exception:
             logger.exception("[Recovery] failed to scan arb:active_pos:* keys")
             return
 
+        recovered = 0
         for key in keys or []:
-            pair_tag = key.split("arb:active_pos:", 1)[-1]
-            try:
-                raw = await self.redis.get(key)
-                if not raw:
-                    continue
-                pos = ActivePosition.from_dict(json.loads(raw))
-                if "__" not in pair_tag and pos.global_exchange and pos.global_symbol:
-                    migrated_tag = ExchangePairKey.from_pair_info({
-                        "local_exchange": pos.local_exchange,
-                        "local_symbol": pos.symbol,
-                        "global_exchange": pos.global_exchange,
-                        "global_symbol": pos.global_symbol,
-                    }).tag.lower()
-                    if migrated_tag != pair_tag:
-                        migrated_key = f"arb:active_pos:{migrated_tag}"
-                        existing = await self.redis.get(migrated_key)
-                        if existing:
-                            pos.state = "RECONCILIATION_REQUIRED"
-                            self.active_positions[pair_tag] = pos
-                            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                            await self.redis.set(key, json.dumps(pos.to_dict()))
-                            self._mark_failed(
-                                pair_tag,
-                                "LEGACY_POSITION_KEY_COLLISION",
-                                "Legacy position cannot be migrated because the venue-qualified key already exists.",
-                                detail={"legacy_key": key, "target_key": migrated_key},
-                                state=PositionState.RECONCILIATION_REQUIRED,
-                            )
-                            continue
-                        await self.redis.set(migrated_key, json.dumps(pos.to_dict()))
-                        await self.redis.delete(key)
-                        pair_tag, key = migrated_tag, migrated_key
-                if pos.qty <= 0:
-                    # A zero/invalid Redis quantity is not proof that the exchange
-                    # is flat. Retain the record and require explicit reconciliation.
-                    self.active_positions[pair_tag] = pos
-                    pos.state = "RECONCILIATION_REQUIRED"
-                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                    await self.redis.set(key, json.dumps(pos.to_dict()))
-                    self._mark_failed(
-                        pair_tag,
-                        "RECOVERED_POSITION_QTY_INVALID",
-                        f"Recovered position quantity is invalid ({pos.qty}); exchange exposure must be checked.",
-                        detail={"qty": pos.qty, "symbol": pos.symbol},
-                        state=PositionState.RECONCILIATION_REQUIRED,
-                    )
-                    logger.critical(
-                        f"[Recovery] retaining {pair_tag}: recovered qty is {pos.qty}; "
-                        "manual reconciliation required"
-                    )
-                    continue
-
-                self.active_positions[pair_tag] = pos
-                pos_state_str = getattr(pos, "state", "HEDGED_ACTIVE")
-                if pos_state_str == "RECONCILIATION_REQUIRED":
-                    self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                    self._failure_reasons[pair_tag] = {
-                        "reason": "RESTORED_RECONCILIATION_REQUIRED",
-                        "message": "Position restored from Redis with RECONCILIATION_REQUIRED state. Manual intervention required.",
-                        "detail": {"qty": pos.qty, "symbol": pos.symbol},
-                        "timestamp_ms": int(time.time() * 1000),
-                    }
-                    logger.critical(
-                        f"[Recovery] Position {pair_tag} has RECONCILIATION_REQUIRED status! "
-                        f"Manual intervention required; skipping automatic active exit management."
-                    )
-                else:
-                    self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+            if await self._recover_active_position_record(key):
                 recovered += 1
-                logger.warning(
-                    f"[Recovery] Restored position {pair_tag}: qty={pos.qty}, "
-                    f"entry_idr={pos.entry_price_idr}, short_entry_usdt={pos.short_entry_usdt}, "
-                    f"state={self.states[pair_tag].value}"
-                )
-                self.supabase.position_opened(
-                    pair_tag,
-                    pos,
-                    getattr(self, "_pair_infos", {}).get(pair_tag),
-                    is_mock=bool(getattr(self.config, "mock_mode", False)),
-                )
-            except Exception as exc:
-                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-                self._mark_failed(
-                    pair_tag,
-                    "ACTIVE_POSITION_RECORD_INVALID",
-                    f"Persisted active position cannot be parsed: {exc}",
-                    detail={"redis_key": key},
-                    state=PositionState.RECONCILIATION_REQUIRED,
-                )
-                logger.exception(
-                    f"[Recovery] invalid active position record {key}; Redis key retained"
-                )
-
         if recovered:
             logger.warning(
                 f"[Recovery] {recovered} active position(s) restored - resuming management"
