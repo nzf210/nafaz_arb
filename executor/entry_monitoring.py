@@ -52,6 +52,27 @@ class EntryMonitoringMixin:
             pair_tag, self._process_pending_entry_bound, pair_tag, order_info
         )
 
+    async def _handle_pending_entry_fetch_failure(
+        self, pair_tag: str, order_info: dict, order_id: str, exc: Exception,
+        now: float,
+    ) -> None:
+        failures = int(order_info.get("fetch_failures", 0) or 0) + 1
+        order_info["fetch_failures"] = failures
+        order_info["last_fetch_error"] = f"{type(exc).__name__}: {exc}"
+        base = max(
+            0.05, float(getattr(self.config, "monitor_interval_seconds", 0.5))
+        )
+        ceiling = float(
+            getattr(self.config, "order_fetch_backoff_max_seconds", 60.0)
+        )
+        delay = min(ceiling, base * (2 ** min(failures, 10)))
+        order_info["fetch_retry_after"] = now + delay
+        logger.error(
+            f"failed to fetch local order {order_id} "
+            f"(attempt {failures}, retry in {delay:.1f}s): {type(exc).__name__}"
+        )
+        await self._expire_unfetchable_entry_order(pair_tag, order_info)
+
     async def _process_pending_entry_bound(self, pair_tag: str, order_info: dict) -> None:
         """Process adverse selection check, fill tracking, and position creation for an entry order.
 
@@ -98,18 +119,9 @@ class EntryMonitoringMixin:
                 except Exception as exc:
                     # Count the failure instead of retrying blindly, then space
                     # out the next attempt so a throttled venue can recover.
-                    failures = int(order_info.get("fetch_failures", 0) or 0) + 1
-                    order_info["fetch_failures"] = failures
-                    order_info["last_fetch_error"] = f"{type(exc).__name__}: {exc}"
-                    base = max(0.05, float(getattr(self.config, "monitor_interval_seconds", 0.5)))
-                    ceiling = float(getattr(self.config, "order_fetch_backoff_max_seconds", 60.0))
-                    delay = min(ceiling, base * (2 ** min(failures, 10)))
-                    order_info["fetch_retry_after"] = now + delay
-                    logger.error(
-                        f"failed to fetch local order {order_id} "
-                        f"(attempt {failures}, retry in {delay:.1f}s): {type(exc).__name__}"
+                    await self._handle_pending_entry_fetch_failure(
+                        pair_tag, order_info, order_id, exc, now
                     )
-                    await self._expire_unfetchable_entry_order(pair_tag, order_info)
                     return
                 order_info["fetch_failures"] = 0
                 order_info["fetch_retry_after"] = 0.0
