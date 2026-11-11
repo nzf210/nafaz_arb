@@ -742,18 +742,11 @@ async def test_tokocrypto_broker_prefixed_client_id_is_normalized_for_recovery()
         id = "tokocrypto"
         options = {"broker": {"marketType": broker_prefix}}
 
+        def __init__(self):
+            self.open_rows = []
+
         async def fetch_open_orders(self, symbol):
-            return [{
-                "id": "toko-open-1",
-                "clientOrderId": wire_id,
-                "symbol": symbol,
-                "side": "buy",
-                "type": "limit",
-                "amount": 0.01,
-                "filled": 0.0,
-                "remaining": 0.01,
-                "status": "open",
-            }]
+            return list(self.open_rows)
 
         async def fetch_closed_orders(self, symbol, since=None, limit=None):
             return [{
@@ -772,6 +765,17 @@ async def test_tokocrypto_broker_prefixed_client_id_is_normalized_for_recovery()
     recovered = await client.fetch_local_order_by_client_id(
         logical_id, "FLOKI/IDR"
     )
+    client.local.open_rows = [{
+        "id": "toko-open-1",
+        "clientOrderId": wire_id,
+        "symbol": "FLOKI/IDR",
+        "side": "buy",
+        "type": "limit",
+        "amount": 0.01,
+        "filled": 0.0,
+        "remaining": 0.01,
+        "status": "open",
+    }]
     opened = await client.fetch_local_open_orders("FLOKI/IDR")
 
     assert recovered["id"] == "toko-closed-1"
