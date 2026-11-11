@@ -412,7 +412,7 @@ func (c *Client) PositionOrderFills(ctx context.Context, positionID string) (map
 	orderQuery.Set("limit", "500")
 	orders, err := readRows("orders", orderQuery)
 	if err != nil { return nil, err }
-	result := map[string][]json.RawMessage{"orders": orders, "fills": {}}
+	result := map[string][]json.RawMessage{"orders": orders, "fills": []json.RawMessage{}}
 	ids := make([]string, 0, len(orders))
 	for _, row := range orders {
 		var order struct { ID string `json:"id"` }
