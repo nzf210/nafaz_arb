@@ -1734,7 +1734,7 @@ async def test_order_registry_reregister_is_idempotent_across_instances(fake_red
     assert recovered.hedged_quantity == pytest.approx(0.005)
     assert recovered.remaining_quantity == pytest.approx(0.004)
     assert await fake_redis.hgetall("arb:order_recovery_idx") == {
-        record.local_order_id.encode(): b"1"
+        record.local_order_id: "1"
     }
 
 
