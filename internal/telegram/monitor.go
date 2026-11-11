@@ -84,7 +84,7 @@ func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) 
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders</b>\n\n"+html.EscapeString(problem), b.defaultKeyboard())
 		return
 	}
-	raw := rawField(snapshot, "active_orders", "orders", "pending_orders")
+	raw := rawField(snapshot, "order_registry", "all_orders", "active_orders", "orders")
 	items := decodeList(raw)
 	if len(items) == 0 && len(raw) > 0 {
 		var object monitorSnapshot
@@ -183,7 +183,13 @@ func (b *Bot) sendStartupSummary(ctx context.Context) {
 		if problem == "" { break }
 		select { case <-ctx.Done(): return; case <-time.After(time.Second): }
 	}
-	if problem != "" { return }
+	if problem != "" {
+		message := "🚨 <b>EXECUTOR STARTUP RECOVERY — NOT READY</b>\\n\\n• Global trading: <b>NOT READY / UNKNOWN</b>\\n• Verification: " + html.EscapeString(problem) + "\\n\\n<i>Jangan aktifkan trading sampai order, posisi, dan exchange berhasil diverifikasi.</i>"
+		targets := append([]int64(nil), b.cfg.Telegram.AllowedChatIDs...)
+		if b.cfg.Telegram.ChatID != 0 { targets = []int64{b.cfg.Telegram.ChatID} }
+		for _, chatID := range targets { if b.isChatAllowed(chatID) { b.sendReplyWithMarkup(ctx, chatID, 0, message, nil) } }
+		return
+	}
 	started := time.Now().UTC().Format(time.RFC3339)
 	if raw := rawField(snapshot, "startup_time", "executor_startup_time"); len(raw) > 0 {
 		var value string; if json.Unmarshal(raw, &value) == nil && value != "" { started = value }
