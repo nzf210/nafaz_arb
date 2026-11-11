@@ -130,19 +130,32 @@ class EngineOrderIntentMixin:
         """Fail closed when a venue may have accepted an unacknowledged submit."""
         registry = getattr(self, "order_registry", None)
         if registry is not None and client_order_id:
+            record = None
             try:
                 record = await registry.find_by_client_id(exchange, client_order_id)
-                if record is not None:
-                    record.recovery_status = "UNVERIFIED"
+            except Exception:
+                logger.exception(
+                    "[OrderRegistry] could not locate ambiguous submission %s",
+                    client_order_id,
+                )
+            if record is not None:
+                record.recovery_status = "UNVERIFIED"
+                try:
                     await registry.register(record)
+                except Exception:
+                    logger.exception(
+                        "[OrderRegistry] could not update ambiguous submission %s",
+                        client_order_id,
+                    )
+                try:
                     await registry.mark_pending_recovery(
                         record.local_order_id, reason
                     )
-            except Exception:
-                logger.exception(
-                    "[OrderRegistry] could not mark ambiguous submission %s pending",
-                    client_order_id,
-                )
+                except Exception:
+                    logger.exception(
+                        "[OrderRegistry] could not mark ambiguous submission %s pending",
+                        client_order_id,
+                    )
         self._halt_exposure_scope(
             pair_tag, "exchange order submission acknowledgement is ambiguous"
         )
