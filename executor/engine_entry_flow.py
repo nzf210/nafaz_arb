@@ -118,8 +118,6 @@ class EngineEntryFlowMixin:
             await self.publish_status()
             return False
 
-    """Coordinates validation, sizing, and the existing spot entry lifecycle."""
-
     async def _handle_signal_locked(
         self, pair_tag: str, payload: Optional[ExecutorPayload] = None
     ):
