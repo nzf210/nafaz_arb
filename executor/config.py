@@ -356,7 +356,7 @@ class ExecutorConfig:
     _NUMERIC_BOUNDS = {
         "max_stale_latency_ms": (1, 60000, 500),
         "max_order_ttl_seconds": (1, 86400, 120),
-        "maker_refresh_after_seconds": (0, 86400, 45),
+        "maker_refresh_after_seconds": (0, 86400, 15),
         "maker_refresh_cooldown_seconds": (1, 86400, 15),
         "adaptive_maker_min_net_profit_pct": (0.0, 10.0, 0.10),
         "min_partial_fill_usd": (0.0, None, 10.0),
