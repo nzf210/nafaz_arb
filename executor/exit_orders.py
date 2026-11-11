@@ -17,35 +17,9 @@ logger = logging.getLogger("executor.engine")
 class ExitOrderManagementMixin:
     """Focused exit pricing, order management, or execution responsibilities."""
 
-    async def _cancel_existing_exit_order(self, pair_tag: str, symbol: str) -> bool:
-        """Cancel and reconcile the current spot exit before any replacement is submitted.
-
-        A cancel acknowledgement alone is not sufficient: exchanges may reject,
-        time out, or race a fill against the cancel request. Only a fetched
-        terminal order status permits the replacement path to continue.
-        """
-        old_order = self.pending_exit_orders.get(pair_tag)
-        if old_order is None:
-            return True
-
-        old_order_id = str(old_order.get("order_id") or "")
-        if not old_order_id:
-            logger.critical(
-                "[Cancel & Replace] refusing replacement for %s: existing exit has no exchange order id",
-                pair_tag,
-            )
-            return False
-
-        try:
-            await self.client.cancel_local_order(old_order_id, symbol)
-        except Exception as exc:
-            # A timeout can mean the exchange accepted the cancel. Always
-            # query the venue before deciding whether it is safe to replace.
-            logger.warning(
-                "[Cancel & Replace] cancel request for %s (%s) was inconclusive: %s",
-                pair_tag, old_order_id, exc,
-            )
-
+    async def _fetch_terminal_exit_order(
+        self, pair_tag: str, old_order_id: str, symbol: str
+    ):
         try:
             final_order = await self.client.fetch_local_order(old_order_id, symbol)
         except Exception:
@@ -53,15 +27,13 @@ class ExitOrderManagementMixin:
                 "[Cancel & Replace] cannot verify terminal status for old exit %s (%s); replacement blocked",
                 pair_tag, old_order_id,
             )
-            return False
-
+            return None
         if not isinstance(final_order, dict):
             logger.error(
                 "[Cancel & Replace] malformed status for old exit %s (%s); replacement blocked",
                 pair_tag, old_order_id,
             )
-            return False
-
+            return None
         status = str(final_order.get("status") or "").strip().lower()
         terminal_statuses = {
             "canceled", "cancelled", "closed", "filled", "expired", "rejected",
@@ -71,15 +43,13 @@ class ExitOrderManagementMixin:
                 "[Cancel & Replace] old exit %s for %s is still non-terminal (%s); replacement blocked",
                 old_order_id, pair_tag, status or "unknown",
             )
-            return False
+            return None
+        return final_order
 
-        # A cancel can race a partial/full fill. Use the exact terminal
-        # REST snapshot returned above (not a possibly stale private-stream
-        # cache) before sizing a replacement, otherwise a late fill could
-        # leave the new order sized for already-sold inventory.
-        pos = self.active_positions.get(pair_tag)
-        if pos is None:
-            return False
+    async def _apply_terminal_exit_order_fills(
+        self, pair_tag: str, old_order: dict, pos: ActivePosition,
+        symbol: str, final_order: dict,
+    ) -> bool:
         self.supabase.order(
             pair_tag,
             "spot_exit",
@@ -92,11 +62,13 @@ class ExitOrderManagementMixin:
         )
         try:
             final_filled = max(0.0, float(final_order.get("filled", 0.0) or 0.0))
-            already_closed = max(0.0, float(old_order.get("closed_short_qty", 0.0) or 0.0))
+            already_closed = max(
+                0.0, float(old_order.get("closed_short_qty", 0.0) or 0.0)
+            )
         except (TypeError, ValueError):
             logger.error(
                 "[Cancel & Replace] invalid final fill quantity for %s (%s); replacement blocked",
-                pair_tag, old_order_id,
+                pair_tag, old_order.get("order_id"),
             )
             return False
         unclosed_delta = final_filled - already_closed
@@ -104,10 +76,41 @@ class ExitOrderManagementMixin:
             await self._execute_exit_fill(pair_tag, old_order, pos, unclosed_delta)
             if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
                 return False
-        if pair_tag not in self.active_positions:
+        return pair_tag in self.active_positions
+
+    async def _cancel_existing_exit_order(self, pair_tag: str, symbol: str) -> bool:
+        """Cancel and reconcile the current spot exit before any replacement is submitted."""
+        old_order = self.pending_exit_orders.get(pair_tag)
+        if old_order is None:
+            return True
+        old_order_id = str(old_order.get("order_id") or "")
+        if not old_order_id:
+            logger.critical(
+                "[Cancel & Replace] refusing replacement for %s: existing exit has no exchange order id",
+                pair_tag,
+            )
             return False
 
-        # The old order is terminal and all of its fills have been handled.
+        try:
+            await self.client.cancel_local_order(old_order_id, symbol)
+        except Exception as exc:
+            logger.warning(
+                "[Cancel & Replace] cancel request for %s (%s) was inconclusive: %s",
+                pair_tag, old_order_id, exc,
+            )
+        final_order = await self._fetch_terminal_exit_order(
+            pair_tag, old_order_id, symbol
+        )
+        if final_order is None:
+            return False
+        pos = self.active_positions.get(pair_tag)
+        if pos is None:
+            return False
+        if not await self._apply_terminal_exit_order_fills(
+            pair_tag, old_order, pos, symbol, final_order
+        ):
+            return False
+
         # Remove only this exact pending record; never discard a newer order.
         if self.pending_exit_orders.get(pair_tag) is old_order:
             self.pending_exit_orders.pop(pair_tag, None)
