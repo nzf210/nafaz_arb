@@ -340,3 +340,30 @@ func TestRequestOrphanResolutionCarriesExactOperatorTarget(t *testing.T) {
 		t.Fatalf("unexpected orphan resolution result: %+v", reply)
 	}
 }
+
+
+func TestSpotOrderLimitPersistsAndBroadcasts(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub := client.rdb.Subscribe(ctx, ChannelSpotOrderLimitUpdate)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil { t.Fatalf("subscribe spot order limit: %v", err) }
+	if err := client.SetSpotOrderLimit(ctx, "TOKOCRYPTO", 4); err != nil { t.Fatalf("SetSpotOrderLimit: %v", err) }
+	limits, err := client.GetSpotOrderLimits(ctx)
+	if err != nil { t.Fatalf("GetSpotOrderLimits: %v", err) }
+	if limits["tokocrypto"] != 4 { t.Fatalf("persisted limits = %#v, want tokocrypto=4", limits) }
+	select {
+	case message := <-sub.Channel():
+		var update map[string]interface{}
+		if err := json.Unmarshal([]byte(message.Payload), &update); err != nil { t.Fatal(err) }
+		if update["exchange"] != "tokocrypto" || update["max_open_spot_orders"] != float64(4) {
+			t.Fatalf("unexpected spot order limit event: %#v", update)
+		}
+	case <-ctx.Done():
+		t.Fatal("spot order limit update was not broadcast")
+	}
+	if err := client.SetSpotOrderLimit(ctx, "indodax", 0); err == nil { t.Fatal("expected invalid limit to be rejected") }
+}
