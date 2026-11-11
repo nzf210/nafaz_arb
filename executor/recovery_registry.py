@@ -313,6 +313,23 @@ class RecoveryRegistryMixin:
             )
             return
 
+        if not order_id:
+            observed_client_id = str(
+                order.get("clientOrderId") or order.get("client_order_id") or ""
+            )
+            if observed_client_id != record.client_order_id:
+                record.recovery_status = RecoveryStatus.UNVERIFIED.value
+                await self.order_registry.register(record)
+                await self.order_registry.mark_pending_recovery(
+                    record.local_order_id,
+                    "venue lookup did not confirm the exact client order id",
+                )
+                self._halt_exposure_scope(
+                    record.pair_key or f"{exchange}:{symbol}",
+                    "client order id acknowledgement could not be verified",
+                )
+                return
+
         previous_status = record.status
         market = "futures" if record.market_type == "perpetual" else "spot"
         amount_spec = record.local_amount_spec if market == "spot" else record.global_amount_spec
