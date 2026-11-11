@@ -301,6 +301,43 @@ class IndodaxTAPIv2:
         )
         return self._order(order, symbol)
 
+    @staticmethod
+    def _normalize_my_trade(raw: dict, default_symbol: str) -> Dict[str, Any]:
+        if not isinstance(raw, dict):
+            raise ValueError("indodax v2 returned a malformed trade row")
+        fee_cost = raw.get("commission")
+        fee_asset = raw.get("commissionAsset")
+        side = (
+            "buy" if raw.get("isBuyer") is True
+            else "sell" if raw.get("isBuyer") is False
+            else None
+        )
+        maker_taker = (
+            "maker" if raw.get("isMaker") is True
+            else "taker" if raw.get("isMaker") is False
+            else None
+        )
+        return {
+            "id": str(raw.get("tradeId") or ""),
+            "order": str(raw.get("orderId") or ""),
+            "clientOrderId": str(raw.get("clientOrderId") or ""),
+            "symbol": str(raw.get("symbol") or default_symbol),
+            "side": side,
+            "amount": _to_float(raw.get("qty")),
+            "price": _to_float(raw.get("price")),
+            "cost": _to_float(raw.get("quoteQty")),
+            "fee": (
+                {
+                    "cost": _to_float(fee_cost),
+                    "currency": str(fee_asset or "").upper(),
+                }
+                if fee_cost is not None else None
+            ),
+            "timestamp": int(raw.get("time") or 0) or None,
+            "takerOrMaker": maker_taker,
+            "info": raw,
+        }
+
     async def fetch_my_trades(
         self,
         symbol: str,
@@ -308,12 +345,7 @@ class IndodaxTAPIv2:
         limit: Optional[int] = None,
         params: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Fetch authenticated, individual fills from the TAPI v2 myTrades API.
-
-        The API's time window is limited to seven days. Callers may supply
-        startTime/endTime chunks and an order/client-order filter so a restart
-        can replay fills without relying on cumulative order averages.
-        """
+        """Fetch authenticated individual fills from the TAPI v2 myTrades API."""
         if not symbol:
             raise ValueError("fetch_my_trades requires a symbol")
         query = dict(params or {})
@@ -327,40 +359,10 @@ class IndodaxTAPIv2:
         rows = payload.get("data") if isinstance(payload, dict) else payload
         if not isinstance(rows, list):
             raise ValueError("indodax v2 returned a malformed myTrades payload")
-        trades = []
-        for raw in rows:
-            if not isinstance(raw, dict):
-                raise ValueError("indodax v2 returned a malformed trade row")
-            fee_cost = raw.get("commission")
-            fee_asset = raw.get("commissionAsset")
-            side = None
-            if raw.get("isBuyer") is True:
-                side = "buy"
-            elif raw.get("isBuyer") is False:
-                side = "sell"
-            maker_taker = None
-            if raw.get("isMaker") is True:
-                maker_taker = "maker"
-            elif raw.get("isMaker") is False:
-                maker_taker = "taker"
-            trades.append({
-                "id": str(raw.get("tradeId") or ""),
-                "order": str(raw.get("orderId") or ""),
-                "clientOrderId": str(raw.get("clientOrderId") or ""),
-                "symbol": str(raw.get("symbol") or query["symbol"]),
-                "side": side,
-                "amount": _to_float(raw.get("qty")),
-                "price": _to_float(raw.get("price")),
-                "cost": _to_float(raw.get("quoteQty")),
-                "fee": (
-                    {"cost": _to_float(fee_cost), "currency": str(fee_asset or "").upper()}
-                    if fee_cost is not None else None
-                ),
-                "timestamp": int(raw.get("time") or 0) or None,
-                "takerOrMaker": maker_taker,
-                "info": raw,
-            })
-        return trades
+        return [
+            self._normalize_my_trade(raw, query["symbol"])
+            for raw in rows
+        ]
 
     async def fetch_balance(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         account = await self._request("GET", "/api/v2/account")
