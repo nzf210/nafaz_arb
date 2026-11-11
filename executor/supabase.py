@@ -99,9 +99,13 @@ class SupabaseWriter(
         if self._session is not None:
             try:
                 await self._session.close()
+            except asyncio.CancelledError:
+                # Finish releasing the durable outbox before propagating caller cancellation.
+                cancelled_by_caller = True
             except Exception:
-                pass
-            self._session = None
+                logger.exception("Supabase HTTP session failed to close cleanly")
+            finally:
+                self._session = None
         if self._dropped:
             logger.error("Supabase durable outbox enqueue failures: %d rows were not journaled", self._dropped)
         if self._outbox is not None:
