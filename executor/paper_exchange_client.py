@@ -267,7 +267,7 @@ class PaperTradingExchangeClient:
         venue would still be holding.
         """
         open_orders = []
-        for order_id, order in list(self.orders.items()):
+        for order_id, order in self.orders.items():
             if str(order.get("status", "")).lower() != "open":
                 continue
             if symbol and str(order.get("symbol", "")) != symbol:
