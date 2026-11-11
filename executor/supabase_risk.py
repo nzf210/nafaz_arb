@@ -1,6 +1,7 @@
 """supabase risk operations for the durable Supabase writer."""
 
 import json
+import uuid
 import os
 import time
 from datetime import datetime, timezone
@@ -8,7 +9,7 @@ from typing import Any, Optional
 
 import aiohttp
 
-from executor.supabase_common import _TIMEOUT, _ms_to_iso, _num, logger
+from executor.supabase_common import _POSITION_NS, _TIMEOUT, _ms_to_iso, _num, logger
 
 
 
