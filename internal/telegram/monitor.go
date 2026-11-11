@@ -323,8 +323,12 @@ func relatedPositionOrders(
 	return related
 }
 
+type positionLedgerReader interface {
+	PositionOrderFills(context.Context, string) (map[string][]json.RawMessage, error)
+}
+
 func readPositionLedger(
-	ctx context.Context, reader PositionLedgerReader, id string,
+	ctx context.Context, reader positionLedgerReader, id string,
 ) ([]json.RawMessage, []json.RawMessage, bool, error) {
 	if reader == nil {
 		return nil, nil, false, nil
