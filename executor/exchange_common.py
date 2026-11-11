@@ -189,6 +189,25 @@ def _accepted_client_order_ids(
     accepted.discard(None)
     return accepted
 
+# OKX accounts in long/short (hedged) position mode require an explicit posSide
+# on every contract order; omitting it is rejected by the venue. Accounts in net
+# mode must NOT receive it. CCXT leaves the choice to the caller, so the side is
+# declared here instead of relying on ccxt's ``hedged`` option.
+_OKX_POSITION_SIDE = {"short": "short", "long": "long"}
+
+def futures_position_side_params(exchange: Any, position_side: str) -> Dict[str, Any]:
+    """Venue params that select which futures position an order acts on.
+
+    Returns an empty mapping for venues that infer the position from the order
+    side (net mode), so callers can merge unconditionally.
+    """
+    if str(getattr(exchange, "id", "") or "").lower() != "okx":
+        return {}
+    side = _OKX_POSITION_SIDE.get(str(position_side or "").lower())
+    if side is None:
+        raise ValueError(f"unsupported futures position side: {position_side}")
+    return {"posSide": side}
+
 async def _find_order_by_client_id(
     exchange: Any, symbol: str, client_order_id: str, broker_prefix: str = ""
 ) -> Optional[Dict[str, Any]]:

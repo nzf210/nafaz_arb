@@ -95,6 +95,55 @@ async def test_live_futures_order_converts_base_quantity_to_contracts_and_back()
     assert futures.calls[1][2]["reduceOnly"] is True
     assert closed["filled"] == pytest.approx(0.003)
 
+@pytest.mark.asyncio
+async def test_okx_futures_legs_declare_the_short_position_side():
+    """OKX long/short accounts reject contract orders without an explicit posSide."""
+    from executor.exchange_client import ExchangeClient
+
+    class Futures:
+        def __init__(self):
+            self.id = "okx"
+            self.calls = []
+
+        async def create_market_sell_order(self, symbol, amount, *params):
+            self.calls.append(("sell", symbol, amount, params))
+            return {"symbol": symbol, "amount": amount, "filled": amount, "status": "closed"}
+
+        async def create_market_buy_order(self, symbol, amount, params):
+            self.calls.append(("buy", symbol, amount, params))
+            return {"symbol": symbol, "amount": amount, "filled": amount, "status": "closed"}
+
+    futures = Futures()
+    client = ExchangeClient(object(), futures)
+    spec = {"unit": "CONTRACT", "step": 1.0, "min": 1.0, "base_per_unit": 0.001}
+
+    await client.open_global_short_market(
+        "SOON/USDT:USDT", 0.003, client_order_id="hedge-123", amount_spec=spec,
+    )
+    await client.close_global_short_market("SOON/USDT:USDT", 0.003, amount_spec=spec)
+
+    open_params = futures.calls[0][3][0]
+    assert open_params["posSide"] == "short"
+    assert open_params["reduceOnly"] is False
+    close_params = futures.calls[1][3]
+    assert close_params["posSide"] == "short"
+    assert close_params["reduceOnly"] is True
+
+def test_futures_position_side_params_only_targets_okx():
+    from executor.exchange_common import futures_position_side_params
+
+    class Ex:
+        def __init__(self, name):
+            self.id = name
+
+    assert futures_position_side_params(Ex("okx"), "short") == {"posSide": "short"}
+    assert futures_position_side_params(Ex("okx"), "long") == {"posSide": "long"}
+    # Net-mode venues infer the position from the order side.
+    assert futures_position_side_params(Ex("bybit"), "short") == {}
+    assert futures_position_side_params(Ex("mexc"), "short") == {}
+    with pytest.raises(ValueError):
+        futures_position_side_params(Ex("okx"), "sideways")
+
 
 @pytest.mark.asyncio
 async def test_live_client_resolves_scanner_market_ids_before_orders():

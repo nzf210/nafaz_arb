@@ -7,8 +7,8 @@ from executor.quantity import AmountSpec, base_to_order_amount
 from executor.exchange_common import (
     _base_order_result, _expose_client_order_id,
     _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
+    futures_position_side_params,
 )
-
 
 
 class ExchangeFuturesMixin:
@@ -67,6 +67,7 @@ class ExchangeFuturesMixin:
         # params mapping; merge the id and reduceOnly flag rather than passing
         # two positional mappings (which raises before the venue request).
         params = {"reduceOnly": False}
+        params.update(futures_position_side_params(self.global_fut, "short"))
         if client_order_id:
             params["clientOrderId"] = client_order_id
         order = await self.global_fut.create_market_sell_order(
@@ -88,6 +89,7 @@ class ExchangeFuturesMixin:
         order_amount = base_to_order_amount(amount, spec)
         order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
         params = {"reduceOnly": True}
+        params.update(futures_position_side_params(self.global_fut, "short"))
         if client_order_id:
             params["clientOrderId"] = client_order_id
         order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)
