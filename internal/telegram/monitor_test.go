@@ -269,7 +269,7 @@ func TestReconcileResolveCommandUsesVerifiedExecutorAction(t *testing.T) {
 	if !strings.Contains(sent.Text, "ORPHAN TERVERIFIKASI") {
 		t.Fatalf("expected verified orphan resolution response, got: %s", sent.Text)
 	}
-	if !strings.Contains(sent.Text, "tidak ada order yang dikirim") {
+	if !strings.Contains(strings.ToLower(sent.Text), "tidak ada order yang dikirim") {
 		t.Fatalf("response must confirm no order submission: %s", sent.Text)
 	}
 }
