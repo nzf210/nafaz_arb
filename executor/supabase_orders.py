@@ -15,6 +15,26 @@ from executor.supabase_common import _POSITION_NS, _SIDE_BY_LEG, _canonical_side
 class SupabaseOrderMixin:
     """Focused writer methods grouped by persistence responsibility."""
 
+    @staticmethod
+    def _attach_order_registry_identifiers(
+        payload: Dict[str, Any], row: Dict[str, Any]
+    ) -> tuple:
+        exchange_order_id = str(row.get("exchange_order_id") or "")
+        client_order_id = str(row.get("client_order_id") or "")
+        pair_key = str(row.get("pair_key") or "")
+        position_key = str(row.get("position_key") or "")
+        for key, value in (
+            ("exchange_order_id", exchange_order_id),
+            ("client_order_id", client_order_id),
+            ("pair_key", pair_key),
+            ("position_key", position_key),
+        ):
+            if value:
+                payload[key] = value
+        if isinstance(row.get("raw_payload"), str):
+            payload["raw_payload"] = row["raw_payload"]
+        return exchange_order_id, client_order_id, pair_key
+
     def _build_order_registry_payload(
         self, row: Dict[str, Any], role: str,
         leg: Optional[str], market_type: Optional[str],
@@ -67,20 +87,9 @@ class SupabaseOrderMixin:
                 default=str,
             ),
         }
-        exchange_order_id = str(row.get("exchange_order_id") or "")
-        client_order_id = str(row.get("client_order_id") or "")
-        if exchange_order_id:
-            payload["exchange_order_id"] = exchange_order_id
-        if client_order_id:
-            payload["client_order_id"] = client_order_id
-        pair_key = str(row.get("pair_key") or "")
-        if pair_key:
-            payload["pair_key"] = pair_key
-        position_key = str(row.get("position_key") or "")
-        if position_key:
-            payload["position_key"] = position_key
-        if isinstance(row.get("raw_payload"), str):
-            payload["raw_payload"] = row["raw_payload"]
+        exchange_order_id, client_order_id, pair_key = (
+            self._attach_order_registry_identifiers(payload, row)
+        )
         return (
             payload, exchange_order_id, client_order_id,
             pair_key, resolved_leg, resolved_market,
@@ -273,7 +282,6 @@ class SupabaseOrderMixin:
         order_id: str,
         exchange: str,
         fill: Dict[str, Any],
-        is_mock: bool = False,
     ) -> bool:
         """Journals one exchange execution by its immutable venue trade id."""
         if not isinstance(fill, dict) or not order_id:
