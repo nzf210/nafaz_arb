@@ -44,12 +44,21 @@ class RollbackMixin:
         # One id for the whole retry sequence: every attempt is the same logical
         # order, so the venue can reject duplicates rather than sell twice.
         seq = self._next_order_seq()
+        rollback_coid = build_client_order_id(pair_tag, "rollback", seq)
+        await self._register_order_intent(
+            pair_tag, rollback_coid,
+            exchange=getattr(self.config, "local_exchange_name", ""),
+            market_type="spot", symbol=symbol,
+            role=OrderRole.ROLLBACK.value, side="sell",
+            order_type="market", price=0.0, quantity=unhedged_delta,
+            local_amount_spec=amount_spec,
+        )
         try:
             emergency_order = await retry_with_backoff(
                 lambda: self.client.place_local_market_sell(
                     symbol,
                     unhedged_delta,
-                    client_order_id=build_client_order_id(pair_tag, "rollback", seq),
+                    client_order_id=rollback_coid,
                     amount_spec=amount_spec
                     or (
                         AmountSpec(
@@ -82,7 +91,7 @@ class RollbackMixin:
             "spot",
             symbol,
             emergency_order,
-            client_order_id=build_client_order_id(pair_tag, "rollback", seq),
+            client_order_id=rollback_coid,
             is_mock=bool(getattr(self.config, "mock_mode", False)),
         )
         await self._register_order(
