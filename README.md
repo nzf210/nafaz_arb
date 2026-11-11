@@ -375,7 +375,11 @@ compares the total fill quantity against the order's cumulative filled quantity.
 INDODAX uses TAPI v2 `/api/v2/myTrades` in seven-day windows; supported CCXT
 venues use `fetch_my_trades`. Missing/unsupported trade history or a quantity
 mismatch is not converted into a synthetic fill: the affected pair is marked
-`RECONCILIATION_REQUIRED` and new entries remain blocked until verified.
+`RECONCILIATION_REQUIRED` and new entries remain blocked until verified. The
+worker runs every 120 seconds by default; configure
+`TRADE_FILL_RECONCILIATION_INTERVAL_SECONDS` to change its interval. Apply
+`supabase/migrations/20261111000100_add_live_order_fill_reconciliation.sql`
+before deploying this change.
 `position_legs`, `funding_payments`, and `executor_status_snapshots` remain
 schema-only. Supabase history must never replace authenticated exchange-side
 exposure verification.
