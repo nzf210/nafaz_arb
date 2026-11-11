@@ -356,11 +356,17 @@ never the anon/publishable key. Do not commit it, put it in the image, or expose
 to frontend/Telegram clients. If credentials are absent, persistence is disabled;
 a database outage does not block exchange risk management.
 
-Still schema-only: `position_legs`, `funding_payments`, `balance_snapshots`,
-and `executor_status_snapshots`. The scanner delivery worker reconciles only
-durable opportunity delivery; it does not reconcile private exchange positions
-or balances. Supabase history is not a complete exchange ledger and must never
-replace authenticated exchange-side exposure verification.
+Runtime exchange reconciliation: the executor periodically re-runs the
+universal order-registry reconciliation and verifies restored/live futures
+short exposure against the venue. Spot and perpetual wallet balances are
+captured as append-only `balance_snapshots` observations for audit. A failed
+balance read is not recorded as zero and blocks new entries on the affected
+venue scope. Balance snapshots are observations only: because wallets may
+contain funds unrelated to bot positions, they are not treated as proof of
+position ownership or used to automatically resize/close a position.
+`position_legs`, `funding_payments`, and `executor_status_snapshots` remain
+schema-only. Supabase history must never replace authenticated exchange-side
+exposure verification.
 See [Supabase runtime and deployment notes](./supabase/README.md).
 
 
