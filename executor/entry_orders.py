@@ -30,6 +30,53 @@ class EntryOrderManagementMixin:
         except Exception:
             pass
 
+    async def _fetch_entry_order_for_cancel_reconciliation(
+        self, pair_tag: str, order_info: dict, reason: str,
+        cancel_error: str | None,
+    ):
+        order_id = str(order_info["order_id"])
+        local_symbol = str(order_info["symbol"])
+        try:
+            order = await self.client.fetch_local_order(order_id, local_symbol)
+        except Exception as exc:
+            self.supabase.event(
+                "ENTRY_ORDER_CANCEL_RECONCILIATION_FAILED",
+                pair_key=pair_tag,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+                payload={
+                    "order_id": order_id,
+                    "client_order_id": order_info.get("client_order_id", ""),
+                    "symbol": local_symbol,
+                    "reason": reason,
+                    "cancel_error": cancel_error,
+                    "fetch_error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            logger.exception(
+                f"[{reason}] cannot verify order {order_id}; pending state and "
+                "reserved funds are retained"
+            )
+            return None
+        if isinstance(order, dict):
+            return order
+        self.supabase.event(
+            "ENTRY_ORDER_CANCEL_RECONCILIATION_FAILED",
+            pair_key=pair_tag,
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+            payload={
+                "order_id": order_id,
+                "symbol": local_symbol,
+                "reason": reason,
+                "cancel_error": cancel_error,
+                "fetch_error": "invalid exchange order payload",
+            },
+        )
+        logger.critical(
+            f"[{reason}] invalid exchange response for {order_id}; "
+            "pending state is retained"
+        )
+        return None
+
     async def _cancel_entry_order_and_reconcile(
         self, pair_tag: str, order_info: dict, reason: str
     ) -> bool:
@@ -74,45 +121,10 @@ class EntryOrderManagementMixin:
                 "reconciling the order directly with the exchange"
             )
 
-        try:
-            order = await self.client.fetch_local_order(order_id, local_symbol)
-        except Exception as exc:
-            self.supabase.event(
-                "ENTRY_ORDER_CANCEL_RECONCILIATION_FAILED",
-                pair_key=pair_tag,
-                is_mock=bool(getattr(self.config, "mock_mode", False)),
-                payload={
-                    "order_id": order_id,
-                    "client_order_id": order_info.get("client_order_id", ""),
-                    "symbol": local_symbol,
-                    "reason": reason,
-                    "cancel_error": cancel_error,
-                    "fetch_error": f"{type(exc).__name__}: {exc}",
-                },
-            )
-            logger.exception(
-                f"[{reason}] cannot verify order {order_id}; pending state and "
-                "reserved funds are retained"
-            )
-            return False
-
-        if not isinstance(order, dict):
-            self.supabase.event(
-                "ENTRY_ORDER_CANCEL_RECONCILIATION_FAILED",
-                pair_key=pair_tag,
-                is_mock=bool(getattr(self.config, "mock_mode", False)),
-                payload={
-                    "order_id": order_id,
-                    "symbol": local_symbol,
-                    "reason": reason,
-                    "cancel_error": cancel_error,
-                    "fetch_error": "invalid exchange order payload",
-                },
-            )
-            logger.critical(
-                f"[{reason}] invalid exchange response for {order_id}; "
-                "pending state is retained"
-            )
+        order = await self._fetch_entry_order_for_cancel_reconciliation(
+            pair_tag, order_info, reason, cancel_error
+        )
+        if order is None:
             return False
 
         status = str(order.get("status", "unknown")).lower()
