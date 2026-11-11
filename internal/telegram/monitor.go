@@ -189,31 +189,49 @@ func (b *Bot) sendStartupSummary(ctx context.Context) {
 		if problem == "" { break }
 		select { case <-ctx.Done(): return; case <-time.After(time.Second): }
 	}
+	targets := append([]int64(nil), b.cfg.Telegram.AllowedChatIDs...)
+	if b.cfg.Telegram.ChatID != 0 { targets = []int64{b.cfg.Telegram.ChatID} }
 	if problem != "" {
-		message := "🚨 <b>EXECUTOR STARTUP RECOVERY — NOT READY</b>\n\n• Global trading: <b>NOT READY / UNKNOWN</b>\n• Verification: " + html.EscapeString(problem) + "\n\n<i>Jangan aktifkan trading sampai order, posisi, dan exchange berhasil diverifikasi.</i>"
-		targets := append([]int64(nil), b.cfg.Telegram.AllowedChatIDs...)
-		if b.cfg.Telegram.ChatID != 0 { targets = []int64{b.cfg.Telegram.ChatID} }
+		message := "🚨 <b>EXECUTOR STARTUP RECOVERY — NOT READY</b>\\n\\n• Global trading: <b>NOT READY / UNKNOWN</b>\\n• Verification: " + html.EscapeString(problem) + "\\n\\n<i>Jangan aktifkan trading sampai order, posisi, dan exchange berhasil diverifikasi.</i>"
 		for _, chatID := range targets { if b.isChatAllowed(chatID) { b.sendReplyWithMarkup(ctx, chatID, 0, message, nil) } }
 		return
 	}
-	started := time.Now().UTC().Format(time.RFC3339)
-	if raw := rawField(snapshot, "startup_time", "executor_startup_time"); len(raw) > 0 {
-		var value string; if json.Unmarshal(raw, &value) == nil && value != "" { started = value }
+
+	var recovery, reconciliation monitorSnapshot
+	_ = json.Unmarshal(rawField(snapshot, "recovery"), &recovery)
+	_ = json.Unmarshal(rawField(snapshot, "reconciliation"), &reconciliation)
+	countMap := func(raw json.RawMessage) int { var value map[string]json.RawMessage; _ = json.Unmarshal(raw, &value); return len(value) }
+	countList := func(raw json.RawMessage) int { return len(decodeList(raw)) }
+	orphanCount := countList(rawField(recovery, "orphan_orders"))
+	pendingRecoveryCount := countMap(rawField(recovery, "pending_orders"))
+	scopeHaltCount := countMap(rawField(recovery, "scope_halts"))
+	failedExchangeCount := countMap(rawField(snapshot, "exchange_halted"))
+	mismatchCount := countMap(rawField(reconciliation, "exposure_mismatches")) + countMap(rawField(reconciliation, "trade_fill_mismatches"))
+	pendingOrders := decodeList(rawField(snapshot, "pending_orders"))
+	partialFillCount := 0
+	for _, item := range pendingOrders {
+		var order map[string]interface{}
+		_ = json.Unmarshal(item, &order)
+		status := strings.ToUpper(firstMapValue(order, "status", "state"))
+		filled := firstMapValue(order, "filled", "filled_quantity", "filled_qty")
+		if strings.Contains(status, "PARTIAL") || (filled != "n/a" && filled != "0" && filled != "0.0") { partialFillCount++ }
 	}
-	safetyReady := false
-	_ = json.Unmarshal(rawField(snapshot, "safety_conditions_met"), &safetyReady)
-	globalStatus := "NOT READY / UNKNOWN"
-	if safetyReady && strings.EqualFold(string(rawField(snapshot, "global_trading_status")), "\"READY\"") {
-		globalStatus = "READY"
+	ready := false
+	var recoveryComplete, recoveryReady, tradingHalted bool
+	_ = json.Unmarshal(rawField(recovery, "complete"), &recoveryComplete)
+	_ = json.Unmarshal(rawField(recovery, "ready"), &recoveryReady)
+	_ = json.Unmarshal(rawField(snapshot, "trading_halted"), &tradingHalted)
+	ready = recoveryComplete && recoveryReady && !tradingHalted && orphanCount == 0 && pendingRecoveryCount == 0 && scopeHaltCount == 0 && failedExchangeCount == 0 && mismatchCount == 0
+	globalStatus := "NOT READY"
+	if ready { globalStatus = "READY" }
+
+	started := "unknown"
+	if raw := rawField(snapshot, "executor_startup_time_ms"); len(raw) > 0 {
+		var value int64
+		if json.Unmarshal(raw, &value) == nil && value > 0 { started = time.UnixMilli(value).UTC().Format(time.RFC3339) }
 	}
-	count := func(names ...string) string {
-		raw := rawField(snapshot, names...)
-		if len(raw)==0 { return "unknown" }
-		return strings.Trim(string(raw), "\"")
-	}
-	message := fmt.Sprintf("🚦 <b>EXECUTOR STARTUP RECOVERY</b>\n\n• Startup: <code>%s</code>\n• Recovered positions: <code>%s</code>\n• Recovered open orders: <code>%s</code>\n• Partial-fill orders: <code>%s</code>\n• Orphan orders: <code>%s</code>\n• Reconciliation mismatches: <code>%s</code>\n• Failed exchanges: <code>%s</code>\n• Global trading: <b>%s</b>\n\n<i>READY hanya jika safety_conditions_met=true dan global_trading_status=READY.</i>",
-		html.EscapeString(started), count("recovered_positions"), count("recovered_open_orders"), count("partial_fill_orders"), count("orphan_orders_count"), count("reconciliation_mismatch_count"), count("failed_exchanges"), globalStatus)
-	targets := append([]int64(nil), b.cfg.Telegram.AllowedChatIDs...)
-	if b.cfg.Telegram.ChatID != 0 { targets = []int64{b.cfg.Telegram.ChatID} }
+	message := fmt.Sprintf("🚦 <b>EXECUTOR STARTUP RECOVERY</b>\\n\\n• Startup: <code>%s</code>\\n• Recovered positions: <code>%s</code>\\n• Recovered open orders: <code>%s</code>\\n• Partial-fill orders: <code>%d</code>\\n• Orphan orders: <code>%d</code>\\n• Reconciliation mismatches: <code>%d</code>\\n• Exchanges halted / failed verification: <code>%d</code>\\n• Global trading: <b>%s</b>\\n\\n<i>READY hanya jika recovery complete, semua registry/venue terverifikasi, tidak ada orphan, mismatch, scope halt, atau risk halt.</i>",
+		html.EscapeString(started), strings.Trim(string(rawField(snapshot, "open_positions")), "\\""), strings.Trim(string(rawField(recovery, "tracked_orders")), "\\""),
+		partialFillCount, orphanCount, mismatchCount, failedExchangeCount, globalStatus)
 	for _, chatID := range targets { if b.isChatAllowed(chatID) { b.sendReplyWithMarkup(ctx, chatID, 0, message, nil) } }
 }
