@@ -179,7 +179,7 @@ class RiskMixin:
         if not exchange:
             return
         seconds = max(1.0, float(seconds))
-        self._exchange_halted[exchange] = f"rate limited ({seconds:.0f}s cooldown)"
+        self._exchange_halted[exchange] = f"rate limited ({seconds:.0f}s cooldown)"\n        self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, reason=self._exchange_halted[exchange], value={"source": "rate_limit_cooldown", "seconds": seconds})
         token = self._venue_cooldown_epoch = getattr(self, "_venue_cooldown_epoch", 0) + 1
 
         async def _clear_after_cooldown():
@@ -193,6 +193,7 @@ class RiskMixin:
                 return
             if self._exchange_halted.get(exchange, "").startswith("rate limited"):
                 del self._exchange_halted[exchange]
+                self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, resolved=True)
                 logger.warning(
                     f"[Risk Control] Exchange {exchange} rate-limit cooldown elapsed; "
                     "entries re-enabled"
@@ -297,6 +298,8 @@ class RiskMixin:
             reason = f"balance feed unavailable: {exc}"
             self._exchange_halted[local_name] = reason
             self._exchange_halted[global_name] = reason
+            self._persist_risk_state("exchange_halt", scope="exchange", exchange=local_name, reason=reason, value={"source": "balance_feed_unavailable"})
+            self._persist_risk_state("exchange_halt", scope="exchange", exchange=global_name, reason=reason, value={"source": "balance_feed_unavailable"})
             logger.exception(
                 "[Risk Control] balance read failed; both venues halted for new entries"
             )
