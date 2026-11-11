@@ -4,6 +4,8 @@ import math
 import time
 from typing import Optional, Dict, Any
 
+from executor.exchange_common import _fetch_exchange_balance
+
 
 
 class ExchangeFeeBalanceMixin:
