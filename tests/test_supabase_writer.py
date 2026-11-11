@@ -229,6 +229,7 @@ class TestOrdersAndFills:
         fills = [row for table, _, row in rows if table == "order_fills"]
         assert len(fills) == 1
         assert fills[0]["exchange_fill_id"] == "venue-trade-99"
+        assert fills[0]["fill_source"] == "exchange_trade"
         assert fills[0]["qty"] == 0.25
         assert fills[0]["quote_qty"] == 25.0
         assert fills[0]["fee_amount"] == 0.01
