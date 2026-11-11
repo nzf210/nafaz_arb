@@ -227,3 +227,16 @@ async def test_registry_only_candidate_recreates_parent_order_before_fills():
     assert parent_kwargs["is_mock"] is False
     saved = next(iter(engine.supabase.fills.values()))
     assert saved["order_id"].startswith("order-row:")
+
+
+@pytest.mark.asyncio
+async def test_fills_with_missing_fee_details_are_not_marked_reconciled():
+    engine = FakeEngine([_candidate()], [_trade(fee=None)])
+    worker = TradeFillReconciliationWorker(engine)
+
+    await worker.reconcile_once()
+
+    scope = "indodax:BTC_IDR:okx:BTC_USDT"
+    assert "trade-fill reconciliation:" in engine._recovery_scope_halts[scope]
+    assert engine.failures[0][0][1] == "TRADE_FILL_RECONCILIATION_REQUIRED"
+    assert engine.supabase.watermarks == {}
