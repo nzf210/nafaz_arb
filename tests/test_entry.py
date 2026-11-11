@@ -544,10 +544,10 @@ async def test_p0_04_short_entry_uses_futures_ask_not_spot_price(engine, fake_re
     assert mock_client.global_short_sells[0]["price"] == 65_000.0
 
 @pytest.mark.asyncio
-async def test_p0_04_missing_futures_price_aborts_and_rolls_back(fake_redis):
+async def test_p0_04_missing_futures_price_requires_manual_reconciliation(fake_redis):
     """
-    If the futures short returns no usable price, the engine must not fall back to
-    the spot price. The hedge is aborted and the spot leg rolled back instead.
+    A futures order is known to have been accepted; missing fill price must not
+    trigger a second risk-changing order against an unresolved hedge.
     """
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
@@ -575,8 +575,9 @@ async def test_p0_04_missing_futures_price_aborts_and_rolls_back(fake_redis):
     await engine._check_entry_orders()
 
     assert pair_tag not in engine.active_positions
-    assert len(client.placed_sells) == 1
-    assert engine.states[pair_tag] == PositionState.CLOSED
+    assert client.placed_sells == []
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert pair_tag in engine._recovery_scope_halts
 
 @pytest.mark.asyncio
 async def test_entry_revalidation_rejects_collapsed_spread(engine, fake_redis, mock_client):
