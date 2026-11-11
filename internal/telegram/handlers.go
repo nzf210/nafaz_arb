@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -530,10 +531,10 @@ func (b *Bot) handleSpotMaxCommand(ctx context.Context, msg *Message, parts []st
 			return
 		}
 		var out strings.Builder
-		out.WriteString("⚙️ <b>MAX OPEN SPOT ORDERS PER CEX</b>\\n\\nDefault untuk CEX tanpa override: <b>2</b>\\n")
-		if len(limits) == 0 { out.WriteString("\\nBelum ada override; semua CEX memakai default 2.\\n") }
-		for exchange, limit := range limits { out.WriteString(fmt.Sprintf("\\n• <b>%s</b>: <code>%d</code>", html.EscapeString(strings.ToUpper(exchange)), limit)) }
-		out.WriteString("\\n\\nAtur: <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>\\nContoh: <code>/spotmax indodax 3</code>")
+		out.WriteString("⚙️ <b>MAX OPEN SPOT ORDERS PER CEX</b>\n\nDefault untuk CEX tanpa override: <b>2</b>\n")
+		if len(limits) == 0 { out.WriteString("\nBelum ada override; semua CEX memakai default 2.\n") }
+		for exchange, limit := range limits { out.WriteString(fmt.Sprintf("\n• <b>%s</b>: <code>%d</code>", html.EscapeString(strings.ToUpper(exchange)), limit)) }
+		out.WriteString("\n\nAtur: <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>\nContoh: <code>/spotmax indodax 3</code>")
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, out.String(), b.defaultKeyboard())
 		return
 	}
@@ -557,7 +558,7 @@ func (b *Bot) handleSpotMaxCommand(ctx context.Context, msg *Message, parts []st
 		return
 	}
 	b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-		fmt.Sprintf("✅ <b>BATAS OPEN SPOT ORDER DIPERBARUI</b>\\n\\n• CEX: <b>%s</b>\\n• Maksimum: <b>%d</b> order/posisi Spot\\n\\nPerubahan disimpan di Redis dan dikirim ke Executor tanpa restart. Order/posisi yang sudah terbuka tidak dibatalkan; batas baru hanya mencegah entry baru sampai jumlah turun di bawah batas.", html.EscapeString(strings.ToUpper(parts[1])), limit), b.defaultKeyboard())
+		fmt.Sprintf("✅ <b>BATAS OPEN SPOT ORDER DIPERBARUI</b>\n\n• CEX: <b>%s</b>\n• Maksimum: <b>%d</b> order/posisi Spot\n\nPerubahan disimpan di Redis dan dikirim ke Executor tanpa restart. Order/posisi yang sudah terbuka tidak dibatalkan; batas baru hanya mencegah entry baru sampai jumlah turun di bawah batas.", html.EscapeString(strings.ToUpper(parts[1])), limit), b.defaultKeyboard())
 }
 
 func (b *Bot) handleKillSwitchCommand(ctx context.Context, chatID int64, userID int64, replyToID int64, parts []string) {
