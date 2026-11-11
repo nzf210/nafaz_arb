@@ -622,6 +622,14 @@ class EntryMixin:
                         record.hedged_quantity = max(
                             float(record.hedged_quantity or 0.0), quantity
                         )
+                        if hedge_order_id:
+                            context = dict(record.recovery_context or {})
+                            hedge_fills = context.get("hedge_fill_orders")
+                            if not isinstance(hedge_fills, dict):
+                                hedge_fills = {}
+                            hedge_fills.setdefault(str(hedge_order_id), quantity)
+                            context["hedge_fill_orders"] = hedge_fills
+                            record.recovery_context = context
                         await registry.register(record)
                         persisted = True
                     else:
