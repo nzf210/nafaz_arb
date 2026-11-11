@@ -173,18 +173,31 @@ func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id
 }
 
 func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64, id string) {
-	b.mu.Lock(); rc := b.redisClient; b.mu.Unlock()
-	if rc == nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Redis tidak terhubung; posisi dan order terkait tidak dapat diverifikasi.", b.defaultKeyboard()); return }
+	b.mu.Lock()
+	rc := b.redisClient
+	ledgerReader := b.positionLedgerReader
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Redis tidak terhubung; posisi dan active order terkait tidak dapat diverifikasi.", b.defaultKeyboard())
+		return
+	}
 	positions, posErr := rc.ListActivePositions(ctx)
-	if posErr != nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca active positions: "+html.EscapeString(posErr.Error()), b.defaultKeyboard()); return }
+	if posErr != nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca active positions: "+html.EscapeString(posErr.Error()), b.defaultKeyboard())
+		return
+	}
 	var matched *domain.ActivePosition
 	for i := range positions {
 		if strings.EqualFold(positions[i].Symbol, id) || redishandler.CleanPairKey(positions[i].LocalExchange, positions[i].Symbol) == id {
-			matched = &positions[i]; break
+			matched = &positions[i]
+			break
 		}
 	}
 	orders, orderErr := rc.ListActiveOrderRecords(ctx)
-	if orderErr != nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca order registry terkait posisi: "+html.EscapeString(orderErr.Error()), b.defaultKeyboard()); return }
+	if orderErr != nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca order registry terkait posisi: "+html.EscapeString(orderErr.Error()), b.defaultKeyboard())
+		return
+	}
 	var related []json.RawMessage
 	for _, item := range orders {
 		var record map[string]interface{}
@@ -193,22 +206,47 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 			related = append(related, item)
 		}
 	}
-	if matched == nil && len(related) == 0 {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Position ID tidak ditemukan pada active position store maupun active order registry. Ini tidak membuktikan tidak ada exposure di exchange.", b.defaultKeyboard()); return
+	var ledger map[string][]json.RawMessage
+	ledgerAvailable := ledgerReader != nil
+	if ledgerReader != nil {
+		var err error
+		ledger, err = ledgerReader.PositionOrderFills(ctx, id)
+		if err != nil {
+			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Supabase order/fill ledger tidak dapat dibaca: "+html.EscapeString(err.Error())+"\\nData Redis tetap tersedia, tetapi fills historis belum terverifikasi.", b.defaultKeyboard())
+			return
+		}
+	}
+	ledgerOrders, ledgerFills := ledger["orders"], ledger["fills"]
+	if matched == nil && len(related) == 0 && len(ledgerOrders) == 0 {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Position ID tidak ditemukan pada active position store maupun durable order ledger. Ini tidak membuktikan tidak ada exposure di exchange.", b.defaultKeyboard())
+		return
 	}
 	var out strings.Builder
-	out.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\n\n")
+	out.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\\n\\n")
 	if matched != nil {
 		raw, _ := json.Marshal(matched)
-		out.WriteString("<b>Active position snapshot</b>\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>\n")
+		out.WriteString("<b>Active position snapshot</b>\\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>\\n")
 	}
-	out.WriteString(fmt.Sprintf("<b>Active orders terkait (%d)</b>\n", len(related)))
-	if len(related) == 0 { out.WriteString("<i>Tidak ada active order terkait yang ditemukan.</i>\n") }
+	out.WriteString(fmt.Sprintf("<b>Redis active orders terkait (%d)</b>\\n", len(related)))
 	for i, item := range related {
-		if i >= 10 { out.WriteString("<i>Daftar order dibatasi 10.</i>"); break }
-		out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\n")
+		if i >= 5 { out.WriteString("<i>Redis order list dibatasi 5.</i>"); break }
+		out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\\n")
 	}
-	out.WriteString("<i>Fill ledger historis tidak dipublikasikan oleh status Redis Telegram saat ini.</i>")
+	if ledgerAvailable {
+		out.WriteString(fmt.Sprintf("<b>Supabase durable orders (%d)</b>\\n", len(ledgerOrders)))
+		for i, item := range ledgerOrders {
+			if i >= 5 { out.WriteString("<i>Durable order list dibatasi 5.</i>"); break }
+			out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\\n")
+		}
+		out.WriteString(fmt.Sprintf("<b>Immutable exchange fills (%d)</b>\\n", len(ledgerFills)))
+		for i, item := range ledgerFills {
+			if i >= 10 { out.WriteString("<i>Fill list dibatasi 10.</i>"); break }
+			out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\\n")
+		}
+	} else {
+		out.WriteString("<b>Fills historis:</b> <i>Supabase belum terhubung; fill ledger tidak dapat diverifikasi.</i>\\n")
+	}
+	out.WriteString("<i>Read-only: tidak ada order atau posisi yang diubah.</i>")
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
 }
 
