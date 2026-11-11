@@ -173,39 +173,38 @@ class EngineStatusMixin:
             if self.states.get(pair_tag) == PositionState.FAILED:
                 self.states[pair_tag] = PositionState.IDLE
 
-    def _pending_order_snapshot(self, leg: str, pair_tag: str, order: dict) -> dict:
-        position = self.active_positions.get(pair_tag)
-        state = self.states.get(pair_tag)
-        if state == PositionState.RECONCILIATION_REQUIRED:
-            status = "RECONCILIATION_REQUIRED"
-        else:
-            filled_for_status = max(
-                0.0, float(order.get("filled", 0.0) or 0.0)
-            )
-            status = "PARTIALLY_FILLED" if filled_for_status > 0 else "OPEN"
-
-        quantity = max(0.0, float(order.get("qty", 0.0) or 0.0))
-        filled = max(0.0, float(order.get("filled", 0.0) or 0.0))
-        placed_at = (
-            order.get("placed_time", 0)
-            or order.get("created_at", 0)
-            or 0
-        )
+    @staticmethod
+    def _pending_order_created_at_ms(order: dict) -> int:
+        placed_at = order.get("placed_time", 0) or order.get("created_at", 0) or 0
         try:
             placed_value = float(placed_at)
-            created_at_ms = (
-                int(placed_value * 1000)
-                if placed_value < 100000000000
-                else int(placed_value)
-            )
         except (TypeError, ValueError):
-            created_at_ms = 0
-
-        symbol = str(order.get("symbol", ""))
-        inferred_quote = (
-            symbol.replace("_", "/").split("/")[-1]
-            if "/" in symbol or "_" in symbol else ""
+            return 0
+        return (
+            int(placed_value * 1000)
+            if placed_value < 100000000000
+            else int(placed_value)
         )
+
+    @staticmethod
+    def _infer_pending_order_quote_asset(symbol: str) -> str:
+        normalized = symbol.replace("_", "/")
+        return normalized.split("/")[-1] if "/" in normalized else ""
+
+    def _pending_order_status(self, pair_tag: str, order: dict) -> str:
+        if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+            return "RECONCILIATION_REQUIRED"
+        filled = max(0.0, float(order.get("filled", 0.0) or 0.0))
+        return "PARTIALLY_FILLED" if filled > 0 else "OPEN"
+
+    def _pending_order_snapshot(self, leg: str, pair_tag: str, order: dict) -> dict:
+        position = self.active_positions.get(pair_tag)
+        status = self._pending_order_status(pair_tag, order)
+        quantity = max(0.0, float(order.get("qty", 0.0) or 0.0))
+        filled = max(0.0, float(order.get("filled", 0.0) or 0.0))
+        symbol = str(order.get("symbol", ""))
+        inferred_quote = self._infer_pending_order_quote_asset(symbol)
+        created_at_ms = self._pending_order_created_at_ms(order)
         return {
             "pair_tag": pair_tag,
             "leg": leg,
