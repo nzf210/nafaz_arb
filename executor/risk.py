@@ -74,6 +74,8 @@ class RiskMixin:
             if kind == "trading_halt" and scope == "global":
                 self._trading_halted = True
                 self._halt_reason = str((value or {}).get("halt_reason") or reason or "RESTORED_MANUAL_HALT")
+            elif kind == "trading_resume" and scope == "global":
+                self._manual_resume_day = str((value or {}).get("loss_day") or self._utc_day())
             elif kind == "daily_loss" and scope == "global":
                 state = value if isinstance(value, dict) else {}
                 if state.get("loss_day") == self._utc_day():
@@ -105,7 +107,7 @@ class RiskMixin:
                     self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
         self._risk_state_restored = True
         limit = float(getattr(self.config, "max_daily_loss_usdt", 0.0) or 0.0)
-        if limit > 0 and self._daily_realized_loss_usdt >= limit and not self._trading_halted:
+        if limit > 0 and self._daily_realized_loss_usdt >= limit and not self._trading_halted and getattr(self, "_manual_resume_day", None) != self._loss_day:
             self._trading_halted = True
             self._halt_reason = "DAILY_LOSS_LIMIT"
             self._persist_risk_state("trading_halt", scope="global", reason="DAILY_LOSS_LIMIT", value={"halt_reason": "DAILY_LOSS_LIMIT", "loss_usdt": self._daily_realized_loss_usdt, "loss_day": self._loss_day})
