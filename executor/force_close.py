@@ -170,6 +170,7 @@ class ForceCloseMixin:
                     side="buy", order_type="market", price=0.0,
                     quantity=pos.qty, reduce_only=True,
                     global_amount_spec=pos.global_amount_spec,
+                    required=False,
                 )
                 res = await self.client.close_global_short_market(
                     global_sym,
