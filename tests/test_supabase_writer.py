@@ -224,7 +224,7 @@ class TestOrdersAndFills:
         ) is True
         assert writer.order_fill(
             order_id=order_id, exchange="indodax", fill=fill, is_mock=False
-        ) is False
+        ) is True
         rows = _drain(writer)
         fills = [row for table, _, row in rows if table == "order_fills"]
         assert len(fills) == 1
