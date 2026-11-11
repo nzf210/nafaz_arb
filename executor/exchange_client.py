@@ -1210,7 +1210,8 @@ class PaperTradingExchangeClient:
         }
 
     async def close(self):
-        pass
+        # Preserve the async exchange-client contract during paper-mode shutdown.
+        await asyncio.sleep(0)
 
 
 def create_exchange_client(config: Any) -> Any:
