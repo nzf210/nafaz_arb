@@ -76,22 +76,16 @@ class SupabaseWriter(
         self._task = asyncio.create_task(self._run())
         logger.info("Supabase persistence enabled -> %s (durable outbox: %s)", self.url, self._outbox.path)
 
-    async def close(self) -> None:
-        if self._task is None:
-            return
-        cancellation: Optional[asyncio.CancelledError] = None
-        try:
-            deadline = asyncio.get_running_loop().time() + 2.0
-            while (
-                self._outbox is not None
-                and self._outbox.pending_count()
-                and asyncio.get_running_loop().time() < deadline
-            ):
-                await asyncio.sleep(0.05)
-        except asyncio.CancelledError as exc:
-            # Finish cleanup, then re-raise this same cancellation signal.
-            cancellation = exc
+    async def _drain_outbox_before_close(self) -> None:
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (
+            self._outbox is not None
+            and self._outbox.pending_count()
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.05)
 
+    async def _finish_close(self) -> None:
         if self._outbox is not None and self._outbox.pending_count():
             logger.warning(
                 "Supabase durable outbox retained %d pending rows for restart",
@@ -102,39 +96,48 @@ class SupabaseWriter(
             worker.cancel()
             try:
                 await worker
-            except asyncio.CancelledError as exc:
-                current_task = asyncio.current_task()
-                if (
-                    cancellation is None
-                    and current_task is not None
-                    and current_task.cancelling()
-                ):
-                    cancellation = exc
+            except asyncio.CancelledError:
+                # This is the worker cancellation initiated immediately above.
+                pass
             except Exception:
                 logger.exception("Supabase outbox worker failed during shutdown")
             finally:
                 self._task = None
 
-        if self._session is not None:
-            try:
-                await self._session.close()
-            except asyncio.CancelledError as exc:
-                if cancellation is None:
-                    cancellation = exc
-            except Exception:
-                logger.exception("Supabase HTTP session failed to close cleanly")
-            finally:
-                self._session = None
-        if self._dropped:
-            logger.error(
-                "Supabase durable outbox enqueue failures: %d rows were not journaled",
-                self._dropped,
-            )
-        if self._outbox is not None:
-            self._outbox.close()
-            self._outbox = None
-        if cancellation is not None:
-            raise cancellation
+        try:
+            if self._session is not None:
+                try:
+                    await self._session.close()
+                except Exception:
+                    logger.exception("Supabase HTTP session failed to close cleanly")
+        finally:
+            self._session = None
+            if self._dropped:
+                logger.error(
+                    "Supabase durable outbox enqueue failures: %d rows were not journaled",
+                    self._dropped,
+                )
+            if self._outbox is not None:
+                self._outbox.close()
+                self._outbox = None
+
+    async def _finish_close_without_cancellation_interruption(self) -> None:
+        cleanup_task = asyncio.create_task(self._finish_close())
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            await cleanup_task
+            raise
+
+    async def close(self) -> None:
+        if self._task is None:
+            return
+        try:
+            await self._drain_outbox_before_close()
+        except asyncio.CancelledError:
+            await self._finish_close_without_cancellation_interruption()
+            raise
+        await self._finish_close_without_cancellation_interruption()
 
     # ------------------------------------------------------------------- emit
 
