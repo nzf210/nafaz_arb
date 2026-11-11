@@ -133,7 +133,7 @@ class RiskFundingMixin:
                 pair_info=pair_info,
                 usdt_idr_rate=usdt_idr_rate,
             )
-        except Exception as exc:
+        except Exception:
             # A balance probe failure must not silently pass the gate; surface it
             # and let the caller decide, matching the pre-existing fail-open on
             # unsupported clients while logging loudly.
