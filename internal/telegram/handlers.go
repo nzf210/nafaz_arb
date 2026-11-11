@@ -80,6 +80,22 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatPairDetail(parts[1]), b.defaultKeyboard())
 	case "/active":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatActiveOpportunities(), b.defaultKeyboard())
+	case "/orders":
+		b.handleOrdersCommand(ctx, msg.Chat.ID, msg.MessageID)
+	case "/recovery":
+		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "RECOVERY STATUS", "recovery", "recovery_status", "startup_recovery")
+	case "/orphans":
+		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "ORPHAN ORDERS", "orphans", "orphan_orders", "orphan_order_details")
+	case "/reconcile":
+		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "RECONCILIATION MISMATCHES", "reconciliation", "reconciliation_mismatches", "mismatches")
+	case "/risk":
+		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "RISK HALT", "risk", "risk_status", "risk_halt")
+	case "/order":
+		if len(parts) < 2 { b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "Gunakan: <code>/order &lt;internal_order_id&gt;</code>", b.defaultKeyboard()); return }
+		b.handleOrderDetail(ctx, msg.Chat.ID, msg.MessageID, parts[1])
+	case "/position":
+		if len(parts) < 2 { b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "Gunakan: <code>/position &lt;position_id&gt;</code>", b.defaultKeyboard()); return }
+		b.handlePositionDetail(ctx, msg.Chat.ID, msg.MessageID, parts[1])
 	case "/positions":
 		b.handlePositionsCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/pending":
