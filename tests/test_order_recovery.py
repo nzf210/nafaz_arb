@@ -1229,3 +1229,33 @@ async def test_durable_registry_read_failure_keeps_global_entry_gate(fake_redis)
     assert "*" in engine._recovery_scope_halts
     assert engine._venue_halted_reason(PAIR_TAG)
     assert engine._entry_blocked is True
+
+
+@pytest.mark.asyncio
+async def test_order_intent_is_registered_before_venue_ack(fake_redis):
+    """A client id and pair context survive a crash before exchange acknowledgement."""
+    engine = await _build(fake_redis, MockExchangeClient())
+    client_order_id = "btc-idr-entry-intent-9"
+
+    intent = await engine._register_order_intent(
+        PAIR_TAG,
+        client_order_id,
+        exchange="indodax",
+        market_type="spot",
+        symbol="btc_idr",
+        role=OrderRole.ENTRY.value,
+        side="buy",
+        order_type="limit",
+        price=1_000_000_000.0,
+        quantity=0.01,
+        local_amount_spec=LOCAL_SPEC,
+        global_amount_spec=GLOBAL_SPEC,
+        recovery_context=ENTRY_CONTEXT,
+    )
+
+    stored = await engine.order_registry.find_by_client_id("indodax", client_order_id)
+    assert stored is not None
+    assert stored.local_order_id == intent.local_order_id
+    assert stored.status == "submitting"
+    assert stored.pair_key == PAIR_TAG
+    assert stored.recovery_context["usdt_idr_rate"] == 16_000.0
