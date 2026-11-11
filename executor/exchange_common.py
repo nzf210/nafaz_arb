@@ -90,18 +90,30 @@ def _base_order_result(order: Dict[str, Any], spec: AmountSpec) -> Dict[str, Any
     return normalized
 
 def _expose_client_order_id(order: Dict[str, Any]) -> Dict[str, Any]:
-    """Adds a snake_case ``client_order_id`` alias.
-
-    Every venue except indodax answers with ccxt's ``clientOrderId``; normalizing
-    here means the recovery matcher never has to know which venue produced the
-    payload.
-    """
-    if isinstance(order, dict) and order.get("client_order_id") is None:
-        alias = order.get("clientOrderId")
-        if alias:
-            order = dict(order)
-            order["client_order_id"] = alias
-    return order
+    """Expose venue-specific client-id fields through one canonical alias."""
+    if not isinstance(order, dict) or order.get("client_order_id") is not None:
+        return order
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    alias = next(
+        (
+            value for value in (
+                order.get("clientOrderId"), order.get("clientId"),
+                order.get("clOrdId"), order.get("orderLinkId"),
+                order.get("origClientOrderId"), order.get("clientOid"),
+                info.get("clientOrderId"), info.get("clientId"),
+                info.get("clOrdId"), info.get("orderLinkId"),
+                info.get("origClientOrderId"), info.get("clientOid"),
+                info.get("newClientOrderId"),
+            )
+            if value not in (None, "")
+        ),
+        None,
+    )
+    if alias is None:
+        return order
+    normalized = dict(order)
+    normalized["client_order_id"] = str(alias)
+    return normalized
 
 def _normalize_open_order(order: Dict[str, Any], symbol: str, spec: Optional[AmountSpec]) -> Dict[str, Any]:
     """Canonical shape for an open order discovered directly on the venue.
