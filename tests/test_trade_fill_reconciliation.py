@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from executor.trade_fill_reconciliation import TradeFillReconciliationWorker
+from executor.models import PositionState
 
 
 class FakeWriter:
@@ -142,7 +143,7 @@ async def test_filled_order_without_trade_history_fails_closed():
     await worker.reconcile_once()
 
     assert engine._recovery_scope_halts
-    assert engine.failures[0][1]["state"] == "RECONCILIATION_REQUIRED"
+    assert engine.failures[0][1]["state"] == PositionState.RECONCILIATION_REQUIRED
 
 
 @pytest.mark.asyncio
