@@ -105,6 +105,12 @@ class RiskMixin:
                     self.states[pair_key] = PositionState(restored_state)
                 except ValueError:
                     self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
+        # The immutable verified PnL ledger is authoritative; the mutable
+        # accumulator above is only a fast snapshot/cache.
+        self._daily_realized_loss_usdt = await writer.fetch_daily_realized_loss_usdt(
+            self._utc_day(), is_mock=bool(getattr(self.config, "mock_mode", False))
+        )
+        self._loss_day = self._utc_day()
         self._risk_state_restored = True
         limit = float(getattr(self.config, "max_daily_loss_usdt", 0.0) or 0.0)
         if limit > 0 and self._daily_realized_loss_usdt >= limit and not self._trading_halted and getattr(self, "_manual_resume_day", None) != self._loss_day:
