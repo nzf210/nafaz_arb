@@ -79,7 +79,7 @@ func (b *Bot) sendMonitorSection(ctx context.Context, chatID, replyToID int64, t
 		reported := decodeList(rawField(recovery, "orphan_orders"))
 		if len(items) == 0 && len(reported) > 0 { items = reported }
 		if len(items) != len(reported) {
-			b.sendReplyWithMarkup(ctx, chatID, replyToID, fmt.Sprintf("⚠️ <b>ORPHAN REGISTRY MISMATCH</b>\\nRedis index: <code>%d</code> | Recovery snapshot: <code>%d</code>\\nGunakan daftar berikut sebagai informasi parsial; inventory belum konsisten.", len(items), len(reported)), b.defaultKeyboard())
+			b.sendReplyWithMarkup(ctx, chatID, replyToID, fmt.Sprintf("⚠️ <b>ORPHAN REGISTRY MISMATCH</b>\nRedis index: <code>%d</code> | Recovery snapshot: <code>%d</code>\nGunakan daftar berikut sebagai informasi parsial; inventory belum konsisten.", len(items), len(reported)), b.defaultKeyboard())
 		}
 		raw, _ = json.Marshal(items)
 	} else if title == "RISK HALT" {
