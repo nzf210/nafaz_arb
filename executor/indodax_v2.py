@@ -309,6 +309,14 @@ class IndodaxTAPIv2:
             )
         if price is not None:
             payload["price"] = _fmt(price)
+        time_in_force = (params or {}).get("timeInForce")
+        if time_in_force is not None:
+            if order_type != "LIMIT":
+                raise ValueError("timeInForce is supported only for Indodax limit orders")
+            normalized_tif = str(time_in_force).upper()
+            if normalized_tif not in {"GTC", "MOC"}:
+                raise ValueError(f"unsupported Indodax timeInForce: {time_in_force}")
+            payload["timeInForce"] = normalized_tif
         client_order_id = (params or {}).get("clientOrderId")
         if client_order_id:
             payload["newClientOrderId"] = str(client_order_id)[:36]
