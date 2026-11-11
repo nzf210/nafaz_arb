@@ -86,7 +86,6 @@ class RecoveryAdoptionMixin:
         record: OrderRecord,
         order: Dict[str, Any],
         pair_tag: str,
-        market: str,
         amount_spec: Any,
     ) -> bool:
         """Binds an adopted order back into the live lifecycle."""
@@ -111,7 +110,7 @@ class RecoveryAdoptionMixin:
             return False
         if status in (OrderTerminal.FILLED, OrderTerminal.CANCELED):
             return await self._finalize_adopted_terminal(
-                record, order, pair_tag, market, amount_spec
+                record, order, pair_tag, amount_spec
             )
         if record.order_role == OrderRole.ENTRY.value:
             return await self._adopt_resting_entry_order(
@@ -180,7 +179,6 @@ class RecoveryAdoptionMixin:
         record: OrderRecord,
         order: Dict[str, Any],
         pair_tag: str,
-        market: str,
         amount_spec: Any,
     ) -> bool:
         """Reconciles an already-terminal order discovered during the sweep."""
