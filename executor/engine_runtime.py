@@ -193,6 +193,33 @@ class EngineRuntimeMixin:
             await pubsub.close()
 
 
+    @staticmethod
+    def _balance_request_id(raw) -> str:
+        request = json.loads(
+            raw if isinstance(raw, str) else raw.decode("utf-8")
+        )
+        request_id = str(request.get("request_id", "")).strip()
+        if not request_id or len(request_id) > 64 or not request_id.isalnum():
+            return ""
+        return request_id
+
+    async def _publish_balance_reply(self, raw) -> None:
+        request_id = self._balance_request_id(raw)
+        if not request_id:
+            return
+        reports = await self.client.fetch_balance_report()
+        payload = {
+            "request_id": request_id,
+            "timestamp_ms": int(time.time() * 1000),
+            "mock_mode": bool(getattr(self.config, "mock_mode", False)),
+            "exchanges": reports,
+        }
+        await self.redis.set(
+            f"arb:balance_reply:{request_id}",
+            json.dumps(payload, allow_nan=False),
+            ex=30,
+        )
+
     async def _listen_balance_requests(self):
         """Handles read-only Telegram balance requests and stores short-lived replies."""
         pubsub = self.redis.pubsub()
@@ -202,15 +229,7 @@ class EngineRuntimeMixin:
                 message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
                 if message and message.get("type") == "message":
                     try:
-                        raw = message.get("data")
-                        request = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
-                        request_id = str(request.get("request_id", "")).strip()
-                        if not request_id or len(request_id) > 64 or not request_id.isalnum():
-                            continue
-                        reports = await self.client.fetch_balance_report()
-                        payload = {"request_id": request_id, "timestamp_ms": int(time.time()*1000),
-                                   "mock_mode": bool(getattr(self.config, "mock_mode", False)), "exchanges": reports}
-                        await self.redis.set(f"arb:balance_reply:{request_id}", json.dumps(payload, allow_nan=False), ex=30)
+                        await self._publish_balance_reply(message.get("data"))
                     except Exception:
                         logger.exception("failed to process Telegram balance request")
                 await asyncio.sleep(0.01)
