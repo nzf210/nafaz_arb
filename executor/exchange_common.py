@@ -149,7 +149,9 @@ async def _find_order_by_client_id(
 
     historical_queries = 0
     failures = []
-    for method_name in ("fetch_open_orders", "fetch_closed_orders", "fetch_canceled_orders"):
+    for method_name in (
+        "fetch_open_orders", "fetch_closed_orders", "fetch_canceled_orders"
+    ):
         method = getattr(exchange, method_name, None)
         if not callable(method):
             continue
@@ -181,11 +183,14 @@ async def _find_order_by_client_id(
                 trades = await trades_method(symbol)
             if trades is None or not isinstance(trades, (list, tuple)):
                 raise ValueError("fetch_my_trades returned a malformed trade collection")
-            successful_queries += 1
             historical_queries += 1
             matching_trade = next((trade for trade in trades if matches(trade)), None)
             if matching_trade is not None:
-                info = matching_trade.get("info") if isinstance(matching_trade.get("info"), dict) else {}
+                info = (
+                    matching_trade.get("info")
+                    if isinstance(matching_trade.get("info"), dict)
+                    else {}
+                )
                 order_id = str(
                     matching_trade.get("order") or matching_trade.get("orderId")
                     or info.get("orderId") or ""
