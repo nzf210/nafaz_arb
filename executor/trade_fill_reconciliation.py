@@ -91,7 +91,15 @@ class TradeFillReconciliationWorker:
                         "pair_key": record.pair_key,
                         "exchange_name": record.exchange,
                         "market_type": record.market_type,
-                        "leg": record.order_role,
+                        "leg": {
+                            "ENTRY": "spot_entry" if record.market_type == "spot" else "futures_entry",
+                            "HEDGE": "futures_entry",
+                            "EXIT_SPOT": "spot_exit",
+                            "EXIT_FUTURES": "futures_exit",
+                            "EMERGENCY": "rollback",
+                            "ROLLBACK": "rollback",
+                            "FORCE_CLOSE": "futures_exit" if record.market_type == "perpetual" else "force_close",
+                        }.get(record.order_role, "spot_entry"),
                         "exchange_order_id": record.exchange_order_id,
                         "client_order_id": record.client_order_id,
                         "symbol": record.symbol,
@@ -210,6 +218,37 @@ class TradeFillReconciliationWorker:
                 order_key = client_order_id or exchange_order_id
                 order_row_id = str(row.get("id") or "")
                 if not order_row_id:
+                    # Older deployments may have a durable order_registry row
+                    # but no matching public.orders analytics parent. Recreate
+                    # that parent before inserting fills (the fill FK targets
+                    # public.orders, not order_registry).
+                    leg = str(row.get("leg") or "")
+                    if leg not in (
+                        "spot_entry", "futures_entry", "spot_exit",
+                        "futures_exit", "rollback", "force_close",
+                    ):
+                        raise RuntimeError("filled registry order has no valid analytics leg")
+                    parent_ok = writer.order(
+                        pair_key,
+                        leg,
+                        exchange,
+                        market_type,
+                        symbol,
+                        {
+                            "id": exchange_order_id,
+                            "amount": float(row.get("requested_qty") or filled_qty),
+                            "filled": filled_qty,
+                            "average": row.get("average_fill_price"),
+                            "price": row.get("limit_price"),
+                            "status": row.get("status") or "closed",
+                        },
+                        client_order_id=client_order_id or None,
+                        reduce_only=bool(row.get("reduce_only", False)),
+                        is_mock=False,
+                        submitted_at_ms=submitted,
+                    )
+                    if parent_ok is False:
+                        raise RuntimeError("could not durably create parent order row for exchange fills")
                     order_id_fn = getattr(writer, "order_id_for", None)
                     if not callable(order_id_fn):
                         raise RuntimeError("cannot resolve stable analytics order id for exchange fills")
