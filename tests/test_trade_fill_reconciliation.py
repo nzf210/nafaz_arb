@@ -13,6 +13,11 @@ class FakeWriter:
         self.candidates = candidates
         self.fills = {}
         self.watermarks = {}
+        self.parent_orders = []
+
+    def order(self, *args, **kwargs):
+        self.parent_orders.append((args, kwargs))
+        return True
 
     def fill_sync_watermark(self, identity):
         return self.watermarks.get(identity)
@@ -197,3 +202,28 @@ async def test_mismatch_is_retried_until_exchange_trade_history_matches():
 
     assert engine.supabase.watermarks["indodax:spot:order-1"] == pytest.approx(0.5)
     assert "indodax:BTC_IDR:okx:BTC_USDT" not in engine._recovery_scope_halts
+
+
+@pytest.mark.asyncio
+async def test_registry_only_candidate_recreates_parent_order_before_fills():
+    engine = FakeEngine(
+        [_candidate(
+            id=None,
+            requested_qty=0.5,
+            status="closed",
+            leg="spot_entry",
+            reduce_only=False,
+        )],
+        [_trade()],
+    )
+    worker = TradeFillReconciliationWorker(engine)
+
+    await worker.reconcile_once()
+
+    assert len(engine.supabase.parent_orders) == 1
+    parent_args, parent_kwargs = engine.supabase.parent_orders[0]
+    assert parent_args[0] == "indodax:BTC_IDR:okx:BTC_USDT"
+    assert parent_args[1] == "spot_entry"
+    assert parent_kwargs["is_mock"] is False
+    saved = next(iter(engine.supabase.fills.values()))
+    assert saved["order_id"].startswith("order-row:")
