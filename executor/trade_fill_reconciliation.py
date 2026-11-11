@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import inspect
 import math
 import time
 from datetime import datetime, timezone
@@ -147,7 +148,7 @@ class TradeFillReconciliationWorker:
         if resolved_scope:
             self._verified_scopes.add(resolved_scope)
 
-    def _flush_clears(self) -> None:
+    async def _flush_clears(self) -> None:
         # Defer clearing until every candidate has been checked. This prevents
         # a good order processed early in the pass from briefly lifting a
         # pair halt while another order for that pair is still mismatched.
@@ -159,7 +160,9 @@ class TradeFillReconciliationWorker:
                     continue
                 reason = str(reasons.get(scope, "") or "")
                 if "trade-fill reconciliation:" in reason:
-                    clear(scope, "all exchange trade fills verified")
+                    result = clear(scope, "all exchange trade fills verified")
+                if inspect.isawaitable(result):
+                    await result
         self._verified_scopes.clear()
 
     async def reconcile_once(self) -> None:
@@ -372,4 +375,4 @@ class TradeFillReconciliationWorker:
             finally:
                 if token is not None:
                     self.engine._reset_pair_client(token)
-        self._flush_clears()
+        await self._flush_clears()
