@@ -676,6 +676,9 @@ class ForceCloseMixin:
             if pos and pos.qty > 0 and not pnl.get("pnl_unverified"):
                 self.record_realized_pnl(pnl["net_profit_usdt"], event_id=pnl.get("risk_event_id") or f"force-close:{pair_key}:{getattr(pos, 'opened_at_ms', 0)}", pair_key=pair_key)
             self.states[pair_key] = PositionState.CLOSED
+            self._failure_reasons.pop(pair_key, None)
+            self._persist_risk_state("position_failure", scope="position", pair_key=pair_key, resolved=True)
+            await self._clear_exposure_halt(pair_key, "verified force close completed")
             if pnl.get("pnl_unverified"):
                 logger.critical(
                     f"[Force Close Complete] Exposure for {pair_key} is flat, but realized "
