@@ -1333,6 +1333,7 @@ async def test_unacknowledged_spot_intent_is_recovered_by_client_id(fake_redis):
         id="901", clientOrderId="btc-idr-entry-ack-1", filled=0.004,
         status="open",
     )
+    client.orders["901"] = dict(venue_order)
     lookups = []
 
     async def fetch_local_order_by_client_id(client_order_id, symbol, amount_spec=None):
