@@ -36,6 +36,7 @@ class TradeFillReconciliationWorker:
         self.absolute_tolerance = 1e-8
         self._reported: Dict[str, str] = {}
         self._last_indodax_request_at = 0.0
+        self._verified_scopes = set()
 
     @staticmethod
     def _interval() -> float:
@@ -141,20 +142,25 @@ class TradeFillReconciliationWorker:
                 state=PositionState.RECONCILIATION_REQUIRED,
             )
 
-    async def _clear(self, identity: str) -> None:
-        scope = self._reported.pop(identity, None)
-        if not scope:
-            return
-        # Several filled orders can belong to the same pair. Do not lift that
-        # pair's entry gate until every previously mismatched order is verified.
-        if any(other_scope == scope for other_scope in self._reported.values()):
-            return
+    async def _clear(self, identity: str, scope: Optional[str] = None) -> None:
+        resolved_scope = self._reported.pop(identity, None) or scope
+        if resolved_scope:
+            self._verified_scopes.add(resolved_scope)
+
+    async def _flush_clears(self) -> None:
+        # Defer clearing until every candidate has been checked. This prevents
+        # a good order processed early in the pass from briefly lifting a
+        # pair halt while another order for that pair is still mismatched.
+        clear = getattr(self.engine, "_clear_exposure_halt", None)
         reasons = getattr(self.engine, "_recovery_scope_halts", {})
-        reason = str(reasons.get(scope, "") or "")
-        if "trade-fill reconciliation:" in reason:
-            clear = getattr(self.engine, "_clear_exposure_halt", None)
-            if callable(clear):
-                await clear(scope, "all exchange trade fills verified")
+        if callable(clear):
+            for scope in tuple(self._verified_scopes):
+                if any(other_scope == scope for other_scope in self._reported.values()):
+                    continue
+                reason = str(reasons.get(scope, "") or "")
+                if "trade-fill reconciliation:" in reason:
+                    await clear(scope, "all exchange trade fills verified")
+        self._verified_scopes.clear()
 
     async def reconcile_once(self) -> None:
         if getattr(self.engine.config, "mock_mode", False):
@@ -165,20 +171,22 @@ class TradeFillReconciliationWorker:
             return
 
         candidates = await self._load_candidates()
+        self._verified_scopes.clear()
         for identity, row in candidates.items():
+            scope = str(row.get("pair_key") or row.get("exchange_name") or "unknown")
             try:
                 filled_qty = float(row.get("filled_qty") or row.get("filled_quantity") or 0.0)
             except (TypeError, ValueError):
                 filled_qty = float("nan")
             if not math.isfinite(filled_qty) or filled_qty < 0:
                 await self._halt(
-                    identity, str(row.get("pair_key") or row.get("exchange_name") or "unknown"),
+                    identity, scope,
                     "Order has an invalid cumulative filled quantity; individual fills cannot be reconciled.",
                     {"order": row},
                 )
                 continue
             if filled_qty <= self.absolute_tolerance:
-                await self._clear(identity)
+                await self._clear(identity, scope)
                 continue
             watermark_reader = getattr(writer, "fill_sync_watermark", None)
             try:
@@ -364,3 +372,4 @@ class TradeFillReconciliationWorker:
             finally:
                 if token is not None:
                     self.engine._reset_pair_client(token)
+        await self._flush_clears()
