@@ -12,6 +12,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
+_BEGIN_IMMEDIATE_SQL = _BEGIN_IMMEDIATE_SQL
+_PENDING_COUNT_SQL = _PENDING_COUNT_SQL
+_ENQUEUE_PENDING_SQL = """INSERT INTO pending_outbox
+   (table_name, conflict_target, row_json, created_at)
+   VALUES (?, ?, ?, ?)"""
+
+
 class OutboxFull(RuntimeError):
     """Raised when the configured durable outbox capacity is exhausted."""
 
@@ -57,17 +64,15 @@ class DurableOutbox:
     def enqueue(self, table: str, conflict_target: Optional[str], row: Dict[str, Any]) -> int:
         payload = json.dumps(row, separators=(",", ":"), ensure_ascii=False, default=str)
         with self._lock:
-            self._db.execute("BEGIN IMMEDIATE")
+            self._db.execute(_BEGIN_IMMEDIATE_SQL)
             try:
                 count = self._db.execute(
-                    "SELECT COUNT(*) FROM pending_outbox"
+                    _PENDING_COUNT_SQL
                 ).fetchone()[0]
                 if count >= self.max_pending:
                     raise OutboxFull(f"durable outbox capacity reached ({self.max_pending})")
                 cursor = self._db.execute(
-                    """INSERT INTO pending_outbox
-                       (table_name, conflict_target, row_json, created_at)
-                       VALUES (?, ?, ?, ?)""",
+                    _ENQUEUE_PENDING_SQL,
                     (table, conflict_target, payload, time.time()),
                 )
                 self._db.execute("COMMIT")
@@ -105,7 +110,7 @@ class DurableOutbox:
         """Atomically enqueue an immutable event once across retries/restarts."""
         payload = json.dumps(row, separators=(",", ":"), ensure_ascii=False, default=str)
         with self._lock:
-            self._db.execute("BEGIN IMMEDIATE")
+            self._db.execute(_BEGIN_IMMEDIATE_SQL)
             try:
                 exists = self._db.execute(
                     "SELECT 1 FROM writer_state WHERE state_key=?", (state_key,)
@@ -113,13 +118,11 @@ class DurableOutbox:
                 if exists:
                     self._db.execute("COMMIT")
                     return False
-                count = self._db.execute("SELECT COUNT(*) FROM pending_outbox").fetchone()[0]
+                count = self._db.execute(_PENDING_COUNT_SQL).fetchone()[0]
                 if count >= self.max_pending:
                     raise OutboxFull(f"durable outbox capacity reached ({self.max_pending})")
                 self._db.execute(
-                    """INSERT INTO pending_outbox
-                       (table_name, conflict_target, row_json, created_at)
-                       VALUES (?, ?, ?, ?)""",
+                    _ENQUEUE_PENDING_SQL,
                     (table, conflict_target, payload, time.time()),
                 )
                 self._db.execute(
@@ -145,7 +148,7 @@ class DurableOutbox:
         """Atomically journal a new fill delta and advance its cumulative watermark."""
         value = max(0.0, float(cumulative))
         with self._lock:
-            self._db.execute("BEGIN IMMEDIATE")
+            self._db.execute(_BEGIN_IMMEDIATE_SQL)
             try:
                 previous_row = self._db.execute(
                     "SELECT numeric_value FROM writer_state WHERE state_key=?",
@@ -156,7 +159,7 @@ class DurableOutbox:
                 if delta <= 1e-12:
                     self._db.execute("COMMIT")
                     return 0.0
-                count = self._db.execute("SELECT COUNT(*) FROM pending_outbox").fetchone()[0]
+                count = self._db.execute(_PENDING_COUNT_SQL).fetchone()[0]
                 if count >= self.max_pending:
                     raise OutboxFull(f"durable outbox capacity reached ({self.max_pending})")
                 fill_row = dict(row)
@@ -164,9 +167,7 @@ class DurableOutbox:
                 fill_row["quote_qty"] = delta * float(fill_row.get("price") or 0.0)
                 payload = json.dumps(fill_row, separators=(",", ":"), ensure_ascii=False, default=str)
                 self._db.execute(
-                    """INSERT INTO pending_outbox
-                       (table_name, conflict_target, row_json, created_at)
-                       VALUES (?, ?, ?, ?)""",
+                    _ENQUEUE_PENDING_SQL,
                     (table, conflict_target, payload, time.time()),
                 )
                 self._db.execute(
@@ -226,7 +227,7 @@ class DurableOutbox:
 
     def pending_count(self) -> int:
         with self._lock:
-            return int(self._db.execute("SELECT COUNT(*) FROM pending_outbox").fetchone()[0])
+            return int(self._db.execute(_PENDING_COUNT_SQL).fetchone()[0])
 
     def close(self) -> None:
         with self._lock:
