@@ -14,6 +14,73 @@ logger = logging.getLogger("executor.order_recovery")
 class RecoveryAdoptionMixin:
     """Focused order-recovery responsibilities."""
 
+    async def _adopt_resting_entry_order(
+        self, record: OrderRecord, order: Dict[str, Any],
+        pair_tag: str, amount_spec: Any,
+    ) -> bool:
+        if pair_tag in self.pending_entry_orders:
+            record.recovery_status = RecoveryStatus.ADOPTED.value
+            await self.order_registry.register(record)
+            await self.order_registry.clear_pending_recovery(record.local_order_id)
+            return True
+        info = self._rebuild_entry_order_info(record, order, amount_spec)
+        if info is None:
+            record.recovery_status = RecoveryStatus.UNVERIFIED.value
+            await self.order_registry.register(record)
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id,
+                "resting entry could not be rebuilt from bot state; manual reconciliation required",
+            )
+            return False
+        self.pending_entry_orders[pair_tag] = info
+        self.states[pair_tag] = (
+            PositionState.ENTRY_PARTIAL
+            if record.filled_quantity > 0 else PositionState.ENTRY_PENDING
+        )
+        await self._persist_pending_entry(pair_tag, info)
+        record.recovery_status = RecoveryStatus.ADOPTED.value
+        await self.order_registry.register(record)
+        return True
+
+    async def _adopt_resting_exit_order(
+        self, record: OrderRecord, pair_tag: str, amount_spec: Any,
+    ) -> bool:
+        pos = self.active_positions.get(pair_tag)
+        if pos is None:
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id, "resting exit order has no tracked position"
+            )
+            return False
+        previous = self.pending_exit_orders.get(pair_tag, {})
+        self.pending_exit_orders[pair_tag] = {
+            "order_id": record.exchange_order_id,
+            "client_order_id": record.client_order_id,
+            "symbol": record.symbol,
+            "price": record.price,
+            "qty": record.original_quantity or pos.qty,
+            "filled": record.filled_quantity,
+            "closed_short_qty": float(previous.get("closed_short_qty", 0.0) or 0.0),
+            "tick_size": getattr(pos, "local_price_tick", 1.0),
+            "local_exchange": pos.local_exchange,
+            "local_amount_spec": _spec_dict(amount_spec),
+        }
+        if self.states.get(pair_tag) != PositionState.RECONCILIATION_REQUIRED:
+            self.states[pair_tag] = PositionState.EXIT_PENDING
+        record.recovery_status = RecoveryStatus.ADOPTED.value
+        await self.order_registry.register(record)
+        return True
+
+    async def _reject_unexpected_resting_market_order(
+        self, record: OrderRecord
+    ) -> bool:
+        record.recovery_status = RecoveryStatus.UNVERIFIED.value
+        await self.order_registry.register(record)
+        await self.order_registry.mark_pending_recovery(
+            record.local_order_id,
+            f"unexpected resting {record.order_role} order; manual reconciliation required",
+        )
+        return False
+
     async def _apply_adopted_order(
         self,
         record: OrderRecord,
@@ -22,20 +89,12 @@ class RecoveryAdoptionMixin:
         market: str,
         amount_spec: Any,
     ) -> bool:
-        """Binds an adopted order back into the live lifecycle.
-
-        Returns False when the order could neither be adopted nor safely
-        classified, in which case it stays pending and blocks new entries.
-        """
-        # Venue amount rules discovered from the sweep are recorded on the
-        # record: without them a later restart could not rebuild the order.
+        """Binds an adopted order back into the live lifecycle."""
         if record.local_amount_spec is None and amount_spec is not None:
             record.local_amount_spec = (
                 amount_spec.to_dict() if hasattr(amount_spec, "to_dict") else amount_spec
             )
         self._apply_venue_state(record, order)
-        # Reconcile the durable hedge watermark from any live pending record: the
-        # monitoring loop advances it as hedges land.
         live = self.pending_entry_orders.get(pair_tag)
         if isinstance(live, dict):
             record.hedged_quantity = max(
@@ -50,73 +109,71 @@ class RecoveryAdoptionMixin:
                 record.local_order_id, f"unknown venue status '{record.status}'"
             )
             return False
-
         if status in (OrderTerminal.FILLED, OrderTerminal.CANCELED):
-            return await self._finalize_adopted_terminal(record, order, pair_tag, market, amount_spec)
-
-        if record.order_role == OrderRole.ENTRY.value:
-            if pair_tag in self.pending_entry_orders:
-                # Already re-adopted by the pending-entry pass; the record itself
-                # is verified, so it must not stay on the pending list.
-                record.recovery_status = RecoveryStatus.ADOPTED.value
-                await self.order_registry.register(record)
-                await self.order_registry.clear_pending_recovery(record.local_order_id)
-                return True
-            info = self._rebuild_entry_order_info(record, order, amount_spec)
-            if info is None:
-                record.recovery_status = RecoveryStatus.UNVERIFIED.value
-                await self.order_registry.register(record)
-                await self.order_registry.mark_pending_recovery(
-                    record.local_order_id,
-                    "resting entry could not be rebuilt from bot state; manual reconciliation required",
-                )
-                return False
-            self.pending_entry_orders[pair_tag] = info
-            self.states[pair_tag] = (
-                PositionState.ENTRY_PARTIAL if record.filled_quantity > 0 else PositionState.ENTRY_PENDING
+            return await self._finalize_adopted_terminal(
+                record, order, pair_tag, market, amount_spec
             )
-            await self._persist_pending_entry(pair_tag, info)
-            record.recovery_status = RecoveryStatus.ADOPTED.value
-            await self.order_registry.register(record)
-            return True
-
+        if record.order_role == OrderRole.ENTRY.value:
+            return await self._adopt_resting_entry_order(
+                record, order, pair_tag, amount_spec
+            )
         if record.order_role == OrderRole.EXIT_SPOT.value:
-            pos = self.active_positions.get(pair_tag)
-            if pos is None:
-                await self.order_registry.mark_pending_recovery(
-                    record.local_order_id, "resting exit order has no tracked position"
-                )
-                return False
-            self.pending_exit_orders[pair_tag] = {
-                "order_id": record.exchange_order_id,
-                "client_order_id": record.client_order_id,
-                "symbol": record.symbol,
-                "price": record.price,
-                "qty": record.original_quantity or pos.qty,
-                "filled": record.filled_quantity,
-                "closed_short_qty": float(
-                    self.pending_exit_orders.get(pair_tag, {}).get("closed_short_qty", 0.0) or 0.0
-                ),
-                "tick_size": getattr(pos, "local_price_tick", 1.0),
-                "local_exchange": pos.local_exchange,
-                "local_amount_spec": _spec_dict(amount_spec),
-            }
-            if self.states.get(pair_tag) != PositionState.RECONCILIATION_REQUIRED:
-                self.states[pair_tag] = PositionState.EXIT_PENDING
-            record.recovery_status = RecoveryStatus.ADOPTED.value
-            await self.order_registry.register(record)
-            return True
+            return await self._adopt_resting_exit_order(
+                record, pair_tag, amount_spec
+            )
+        return await self._reject_unexpected_resting_market_order(record)
 
-        # Hedge, rollback, emergency and force-close legs are submitted as market
-        # orders: one resting at the venue is unexpected. Re-adopting it silently
-        # would be a guess, so it is surfaced instead.
-        record.recovery_status = RecoveryStatus.UNVERIFIED.value
-        await self.order_registry.register(record)
-        await self.order_registry.mark_pending_recovery(
-            record.local_order_id,
-            f"unexpected resting {record.order_role} order; manual reconciliation required",
+    async def _finalize_terminal_entry(
+        self, record: OrderRecord, order: Dict[str, Any], pair_tag: str,
+        amount_spec: Any,
+    ) -> bool:
+        info = self.pending_entry_orders.get(pair_tag) or (
+            self._rebuild_entry_order_info(record, order, amount_spec)
         )
-        return False
+        if info is None:
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id,
+                "terminal entry cannot be reconciled without its pair context",
+            )
+            return False
+        info["filled"] = record.filled_quantity
+        self.pending_entry_orders[pair_tag] = info
+        self.states[pair_tag] = PositionState.ENTRY_PENDING
+        await self._handle_entry_fills(pair_tag, info, order)
+        if self.states.get(pair_tag) in (
+            PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
+        ):
+            logger.critical(
+                "[Recovery] fill reconciliation failed for %s; pending record retained",
+                pair_tag,
+            )
+            return False
+        await self._finalize_entry_order(pair_tag, record.status)
+        return True
+
+    async def _finalize_terminal_spot_exit(
+        self, record: OrderRecord, pair_tag: str, amount_spec: Any,
+    ) -> bool:
+        pos = self.active_positions.get(pair_tag)
+        if pos is None:
+            return True
+        self.pending_exit_orders[pair_tag] = {
+            "order_id": record.exchange_order_id,
+            "client_order_id": record.client_order_id,
+            "symbol": record.symbol,
+            "price": record.price,
+            "qty": record.original_quantity,
+            "filled": record.filled_quantity,
+            "closed_short_qty": 0.0,
+            "tick_size": getattr(pos, "local_price_tick", 1.0),
+            "local_exchange": getattr(pos, "local_exchange", ""),
+            "local_amount_spec": _spec_dict(amount_spec),
+        }
+        await self._process_pending_exit(pair_tag, force_reconcile=True)
+        pos = self.active_positions.get(pair_tag)
+        if pos is not None:
+            await self._finalize_exit_position(pair_tag, pos)
+        return True
 
     async def _finalize_adopted_terminal(
         self,
@@ -129,62 +186,19 @@ class RecoveryAdoptionMixin:
         """Reconciles an already-terminal order discovered during the sweep."""
         await self.order_registry.register(record)
         await self.order_registry.retire(record)
-
         if record.order_role == OrderRole.ENTRY.value:
-            info = self.pending_entry_orders.get(pair_tag) or self._rebuild_entry_order_info(
-                record, order, amount_spec
+            return await self._finalize_terminal_entry(
+                record, order, pair_tag, amount_spec
             )
-            if info is None:
-                await self.order_registry.mark_pending_recovery(
-                    record.local_order_id,
-                    "terminal entry cannot be reconciled without its pair context",
-                )
-                return False
-            info["filled"] = record.filled_quantity
-            self.pending_entry_orders[pair_tag] = info
-            # Hedge any final fill through the normal lifecycle, then release the
-            # pending record. This is the crash-between-order-and-hedge case.
-            self.states[pair_tag] = PositionState.ENTRY_PENDING
-            await self._handle_entry_fills(pair_tag, info, order)
-            if self.states.get(pair_tag) in (
-                PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
-            ):
-                logger.critical(
-                    "[Recovery] fill reconciliation failed for %s; pending record retained",
-                    pair_tag,
-                )
-                return False
-            await self._finalize_entry_order(pair_tag, record.status)
-            return True
-
         if record.order_role == OrderRole.EXIT_SPOT.value:
-            if pair_tag not in self.active_positions:
-                return True
-            self.pending_exit_orders[pair_tag] = {
-                "order_id": record.exchange_order_id,
-                "client_order_id": record.client_order_id,
-                "symbol": record.symbol,
-                "price": record.price,
-                "qty": record.original_quantity,
-                "filled": record.filled_quantity,
-                "closed_short_qty": 0.0,
-                "tick_size": getattr(self.active_positions.get(pair_tag), "local_price_tick", 1.0),
-                "local_exchange": getattr(self.active_positions.get(pair_tag), "local_exchange", ""),
-                "local_amount_spec": _spec_dict(amount_spec),
-            }
-            await self._process_pending_exit(pair_tag, force_reconcile=True)
-            pos = self.active_positions.get(pair_tag)
-            if pos is not None:
-                await self._finalize_exit_position(pair_tag, pos)
-            return True
-
+            return await self._finalize_terminal_spot_exit(
+                record, pair_tag, amount_spec
+            )
         if record.order_role == OrderRole.HEDGE.value:
-            return await self._reconcile_recovered_entry_hedge(record, order, pair_tag)
-
+            return await self._reconcile_recovered_entry_hedge(
+                record, order, pair_tag
+            )
         if record.order_role in ACKNOWLEDGED_EXIT_ROLES:
-            # A terminal futures close is already reflected in the position, and a
-            # terminal rollback means the spot leg was liquidated. Neither needs
-            # a replayed action; the restored position keeps the exit lifecycle.
             logger.info(
                 "[Recovery] terminal %s order %s for %s acknowledged",
                 record.order_role, record.exchange_order_id, pair_tag,
