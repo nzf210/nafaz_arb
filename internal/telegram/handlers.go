@@ -268,8 +268,10 @@ func (b *Bot) handleOrphanResolveCommand(ctx context.Context, msg *Message, part
 		return
 	}
 	if !reply.Resolved {
+		detail := "Exchange belum membuktikan order terminal dengan fill nol, atau masih ada insiden lain pada scope yang sama."
+		if reply.Error != "" { detail = reply.Error }
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-			"🛑 <b>ORPHAN TETAP DIBLOKIR</b>\nExchange belum membuktikan order terminal dengan fill nol, atau masih ada insiden lain pada scope yang sama. Halt tetap dipertahankan. Periksa <code>/orphans</code> dan <code>/reconcile</code>.",
+			"🛑 <b>ORPHAN TETAP DIBLOKIR</b>\n"+html.EscapeString(detail)+" Halt tetap dipertahankan. Periksa <code>/orphans</code> dan <code>/reconcile</code>.",
 			b.defaultKeyboard())
 		return
 	}
