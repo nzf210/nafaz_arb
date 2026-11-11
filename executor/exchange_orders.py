@@ -11,10 +11,52 @@ from executor.exchange_common import (
 
 
 
+SPOT_BASE_AMOUNT_ERROR = "spot order amount rules must use BASE units"
+
+
 class ExchangeOrderMixin:
     """Focused asynchronous exchange adapter operations."""
 
-    async def _resolve_symbol(self, exchange: Any, symbol: str, market_kind: str) -> str:
+    @staticmethod
+    def _normalized_market_id(symbol: str, exchange_id: str) -> str:
+        raw_id = str(symbol or "").strip()
+        if ":" in raw_id and raw_id.split(":", 1)[0].lower() in {
+            exchange_id, "toko", "okx", "mexc",
+        }:
+            raw_id = raw_id.split(":", 1)[1]
+        return "".join(char for char in raw_id.upper() if char.isalnum())
+
+    @staticmethod
+    def _market_matches_pair(
+        market: Any, normalized_id: str, pair_base: str,
+        pair_quote: str, market_kind: str,
+    ) -> bool:
+        if not isinstance(market, dict):
+            return False
+        market_id = "".join(
+            char for char in str(market.get("id", "")).upper()
+            if char.isalnum()
+        )
+        if market_id != normalized_id:
+            return False
+        if pair_base and str(market.get("base", "")).upper() != pair_base:
+            return False
+        market_quote = str(market.get("quote", "")).upper()
+        if pair_quote and market_quote != pair_quote:
+            quote_aliases = {
+                pair_quote,
+                "BIDR" if pair_quote == "IDR" else pair_quote,
+            }
+            if market_quote not in quote_aliases:
+                return False
+        is_contract = bool(
+            market.get("swap") or market.get("future") or market.get("contract")
+        )
+        return not is_contract if market_kind == "spot" else is_contract
+
+    async def _resolve_symbol(
+        self, exchange: Any, symbol: str, market_kind: str
+    ) -> str:
         """Resolve scanner market IDs to the venue's CCXT unified symbol."""
         if isinstance(exchange, IndodaxTAPIv2):
             return symbol
@@ -27,42 +69,22 @@ class ExchangeOrderMixin:
             return symbol
 
         exchange_id = str(getattr(exchange, "id", "") or "").lower()
-        raw_id = str(symbol or "").strip()
-        if ":" in raw_id and raw_id.split(":", 1)[0].lower() in {
-            exchange_id, "toko", "okx", "mexc",
-        }:
-            raw_id = raw_id.split(":", 1)[1]
-        normalized_id = "".join(char for char in raw_id.upper() if char.isalnum())
-        pair_base = str(getattr(self._pair_info, "base_asset", "") or "").upper()
-        pair_quote = str(
+        normalized_id = self._normalized_market_id(symbol, exchange_id)
+        pair_base = str(
+            getattr(self._pair_info, "base_asset", "") or ""
+        ).upper()
+        quote_asset = (
             getattr(self._pair_info, "global_quote_asset", "")
             if market_kind == "futures"
             else getattr(self._pair_info, "quote_asset", "")
-        ).upper()
-        candidates = []
-        for market in markets.values():
-            if not isinstance(market, dict):
-                continue
-            market_id = "".join(
-                char for char in str(market.get("id", "")).upper() if char.isalnum()
+        )
+        pair_quote = str(quote_asset or "").upper()
+        candidates = [
+            market for market in markets.values()
+            if self._market_matches_pair(
+                market, normalized_id, pair_base, pair_quote, market_kind
             )
-            if market_id != normalized_id:
-                continue
-            if pair_base and str(market.get("base", "")).upper() != pair_base:
-                continue
-            if pair_quote and str(market.get("quote", "")).upper() != pair_quote:
-                # Synthetic IDR pairs may map BIDR scanner markets to an IDR
-                # CCXT alias; exact venue market ID remains authoritative.
-                quote_alias = {pair_quote, "BIDR" if pair_quote == "IDR" else pair_quote}
-                if str(market.get("quote", "")).upper() not in quote_alias:
-                    continue
-            if market_kind == "spot":
-                if market.get("swap") or market.get("future") or market.get("contract"):
-                    continue
-            elif not (market.get("swap") or market.get("future") or market.get("contract")):
-                continue
-            candidates.append(market)
-
+        ]
         if len(candidates) == 1 and candidates[0].get("symbol"):
             return str(candidates[0]["symbol"])
         if len(candidates) > 1:
@@ -81,7 +103,7 @@ class ExchangeOrderMixin:
             raise ValueError(f"invalid buy params: amount={amount}, price={price}")
         spec = _require_amount_spec(amount_spec)
         if spec.unit != "BASE":
-            raise ValueError("spot order amount rules must use BASE units")
+            raise ValueError(SPOT_BASE_AMOUNT_ERROR)
         order_amount = base_to_order_amount(amount, spec)
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
         order = await self.local.create_limit_buy_order(
@@ -104,7 +126,7 @@ class ExchangeOrderMixin:
             raise ValueError(f"invalid sell params: amount={amount}, price={price}")
         spec = _require_amount_spec(amount_spec)
         if spec.unit != "BASE":
-            raise ValueError("spot order amount rules must use BASE units")
+            raise ValueError(SPOT_BASE_AMOUNT_ERROR)
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
         order = await self.local.create_limit_sell_order(
             order_symbol,
@@ -131,7 +153,7 @@ class ExchangeOrderMixin:
             raise ValueError(f"invalid market sell amount: {amount}")
         spec = _require_amount_spec(amount_spec)
         if spec.unit != "BASE":
-            raise ValueError("spot order amount rules must use BASE units")
+            raise ValueError(SPOT_BASE_AMOUNT_ERROR)
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
         order = await self.local.create_market_sell_order(
             order_symbol, base_to_order_amount(amount, spec),
