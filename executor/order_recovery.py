@@ -52,11 +52,20 @@ class OrderRecoveryMixin:
         """Reconciles durable registry + positions + venue open orders."""
         if self.redis is None or self.order_registry is None:
             return
+        registry_loaded = True
         try:
             records = await self.order_registry.active_records()
-        except Exception:
+        except Exception as exc:
             logger.exception("[Recovery] failed to load the durable order registry")
             records = {}
+            registry_loaded = False
+            # A partial cache plus an unavailable durable read is not a complete
+            # inventory. Gate every pair until a later recovery pass can merge
+            # both sources; venue open-order discovery alone cannot reveal
+            # already-filled market orders.
+            self._halt_exposure_scope(
+                "*", f"durable registry unavailable: {type(exc).__name__}: {exc}"
+            )
         self._recovered_order_records = records
         self._recovered_orphans = await self.order_registry.orphans()
         for orphan in self._recovered_orphans.values():
@@ -67,6 +76,9 @@ class OrderRecoveryMixin:
         await self._reconcile_registered_orders(records)
         await self._reconcile_venue_open_orders()
         await self._finalize_recovery_state()
+        if registry_loaded:
+            self._recovery_scope_halts.pop("*", None)
+            self._refresh_entry_gate()
 
     # ------------------------------------------- durable registry reconciliation
 
@@ -82,10 +94,13 @@ class OrderRecoveryMixin:
         groups: Dict[tuple, list] = {}
         for record in records.values():
             exchange = (record.exchange or self.config.local_exchange_name or "").lower()
-            groups.setdefault((exchange, record.symbol), []).append(record)
+            # Pair and market are part of the binding context. Two strategies
+            # may share a venue symbol while hedging on different futures venues.
+            groups.setdefault(
+                (exchange, record.symbol, record.pair_key, record.market_type), []
+            ).append(record)
 
-        for (exchange, symbol), group in groups.items():
-            pair_tag = group[0].pair_key
+        for (exchange, symbol, pair_tag, market_type), group in groups.items():
             token = None
             try:
                 if not getattr(self.config, "mock_mode", False) and pair_tag:
@@ -583,10 +598,8 @@ class OrderRecoveryMixin:
         if record is not None:
             # A record whose pair link was never written (crash between submit
             # and registration) is completed from the market it belongs to.
-            pair_tag = (
-                record.pair_key
-                or requested_pair_tag
-                or self._match_position_by_catalogue(exchange, symbol)
+            pair_tag = record.pair_key or self._match_position_by_catalogue(
+                exchange, symbol
             )
             record.pair_key = pair_tag
             record.position_id = record.position_id or self._position_id_for(pair_tag)
@@ -602,8 +615,9 @@ class OrderRecoveryMixin:
         # Role depends on the pair: only after linking is it known whether this
         # is an entry, an exit against an open position, or an unhedged hedge leg.
         pair_tag = self._match_position_by_catalogue(exchange, symbol)
-        if not pair_tag and requested_pair_tag:
-            pair_tag = requested_pair_tag
+        # requested_pair_tag is only a scan hint, not proof of ownership. When
+        # multiple tracked positions share this venue market, catalogue matching
+        # deliberately returns no owner and the order must remain an orphan.
         if not pair_tag:
             return None, ""
         role = self._infer_role(symbol, pair_tag, market)
@@ -666,14 +680,18 @@ class OrderRecoveryMixin:
             return ""
         exchange = exchange.lower()
         candidates = set(self.active_positions) | set(self.pending_entry_orders)
+        matches = []
         for pair_tag in candidates:
             tracked_symbol, tracked_exchanges = self._tracked_market(pair_tag)
             if exchange not in tracked_exchanges:
                 continue
             tracked_base, tracked_quote = self._symbol_parts(tracked_symbol)
             if (tracked_base, tracked_quote) == (base, quote):
-                return pair_tag
-        return ""
+                matches.append(pair_tag)
+        # A market can be shared by strategies whose futures leg differs. The
+        # spot symbol alone cannot identify which strategy owns an unlabelled
+        # order; choosing the first set member would attach it nondeterministically.
+        return matches[0] if len(matches) == 1 else ""
 
     def _tracked_market(self, pair_tag: str) -> tuple:
         """Returns (local symbol, venues) for a tracked pair."""
