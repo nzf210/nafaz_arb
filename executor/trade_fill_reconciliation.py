@@ -203,7 +203,7 @@ class TradeFillReconciliationWorker:
                 and abs(float(previous_verified) - filled_qty)
                 <= max(self.absolute_tolerance, abs(filled_qty) * self.relative_tolerance)
             ):
-                await self._clear(identity)
+                await self._clear(identity, scope)
                 continue
 
             exchange = str(row.get("exchange_name") or "").lower()
@@ -354,7 +354,7 @@ class TradeFillReconciliationWorker:
                 marker = getattr(writer, "mark_fill_sync", None)
                 if not callable(marker) or marker(identity, filled_qty) is False:
                     raise RuntimeError("could not persist verified fill reconciliation watermark")
-                await self._clear(identity)
+                await self._clear(identity, scope)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
