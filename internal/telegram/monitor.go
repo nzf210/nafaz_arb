@@ -87,7 +87,7 @@ func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) 
 	raw := rawField(snapshot, "active_orders", "orders", "pending_orders")
 	items := decodeList(raw)
 	if len(items) == 0 && len(raw) > 0 {
-		var object map[string]json.RawMessage
+		var object monitorSnapshot
 		if json.Unmarshal(raw, &object) == nil {
 			items = decodeList(rawField(object, "items", "orders", "active"))
 		}
