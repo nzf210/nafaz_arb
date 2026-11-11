@@ -6,6 +6,7 @@ state and helper methods stay on one object.
 
 import asyncio
 import inspect
+import json
 import logging
 import math
 from typing import Dict, Optional
@@ -97,8 +98,17 @@ class RiskMixin:
                     "reason": reason, "message": reason, "detail": {},
                     "timestamp_ms": int(time.time() * 1000),
                 }
-                restored_state = str(failure.get("state") or "RECONCILIATION_REQUIRED")\n                try:\n                    self.states[pair_key] = PositionState(restored_state)\n                except ValueError:\n                    self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
+                restored_state = str(failure.get("state") or "RECONCILIATION_REQUIRED")
+                try:
+                    self.states[pair_key] = PositionState(restored_state)
+                except ValueError:
+                    self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
         self._risk_state_restored = True
+        limit = float(getattr(self.config, "max_daily_loss_usdt", 0.0) or 0.0)
+        if limit > 0 and self._daily_realized_loss_usdt >= limit and not self._trading_halted:
+            self._trading_halted = True
+            self._halt_reason = "DAILY_LOSS_LIMIT"
+            self._persist_risk_state("trading_halt", scope="global", reason="DAILY_LOSS_LIMIT", value={"halt_reason": "DAILY_LOSS_LIMIT", "loss_usdt": self._daily_realized_loss_usdt, "loss_day": self._loss_day})
         # A restored loss halt remains active until the same UTC day rolls over.
         self._roll_loss_day_if_needed()
         logger.warning("Restored %d unresolved durable risk-state records", len(rows))
@@ -147,7 +157,8 @@ class RiskMixin:
         self._consecutive_order_failures[exchange] = count
         self._persist_risk_state("consecutive_order_failures", scope="exchange", exchange=exchange, reason=reason, value={"count": count})
         if count >= threshold:
-            self._exchange_halted[exchange] = f"{count} consecutive order failures ({reason})"\n            self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, reason=self._exchange_halted[exchange], value={"source": "consecutive_order_failures"})
+            self._exchange_halted[exchange] = f"{count} consecutive order failures ({reason})"
+            self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, reason=self._exchange_halted[exchange], value={"source": "consecutive_order_failures"})
             logger.critical(
                 f"[Risk Control] Exchange {exchange} HALTED for new entries: "
                 f"{count} consecutive order failures ({reason})"
@@ -179,7 +190,8 @@ class RiskMixin:
         if not exchange:
             return
         seconds = max(1.0, float(seconds))
-        self._exchange_halted[exchange] = f"rate limited ({seconds:.0f}s cooldown)"\n        self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, reason=self._exchange_halted[exchange], value={"source": "rate_limit_cooldown", "seconds": seconds})
+        self._exchange_halted[exchange] = f"rate limited ({seconds:.0f}s cooldown)"
+        self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, reason=self._exchange_halted[exchange], value={"source": "rate_limit_cooldown", "seconds": seconds})
         token = self._venue_cooldown_epoch = getattr(self, "_venue_cooldown_epoch", 0) + 1
 
         async def _clear_after_cooldown():
