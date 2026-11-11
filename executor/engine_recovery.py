@@ -339,6 +339,7 @@ class EngineRecoveryMixin:
                 pair_tag, order_info, order_id, symbol
             )
             return
+        order_info["filled"] = float(filled or 0.0)
         if status == "open":
             await self._adopt_open_pending_entry(
                 pair_tag, order_info, order_id, filled
