@@ -770,14 +770,14 @@ class SupabaseWriter:
             for row in orders:
                 exchange = str(row.get("exchange_name") or "").lower()
                 market = str(row.get("market_type") or "").lower()
-                key = str(row.get("exchange_order_id") or row.get("client_order_id") or "")
+                key = str(row.get("client_order_id") or row.get("exchange_order_id") or "")
                 if exchange and market and key:
                     candidates[f"{exchange}:{market}:{key}"] = dict(row)
 
             for row in registry:
                 exchange = str(row.get("exchange_name") or "").lower()
                 market = str(row.get("market_type") or "").lower()
-                key = str(row.get("exchange_order_id") or row.get("client_order_id") or "")
+                key = str(row.get("client_order_id") or row.get("exchange_order_id") or "")
                 if not exchange or not market or not key:
                     continue
                 identity = f"{exchange}:{market}:{key}"
