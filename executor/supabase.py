@@ -309,6 +309,49 @@ class SupabaseWriter:
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
 
+    def balance_snapshot(
+        self,
+        *,
+        exchange: str,
+        market_type: str,
+        asset: str,
+        total: float,
+        free: float,
+        used: float,
+        is_mock: bool = True,
+        raw_payload: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Append one validated exchange balance observation.
+
+        Rows are intentionally append-only: each poll is a point-in-time
+        snapshot, not an upsert that could erase evidence of prior drift.
+        """
+        exchange_name = str(exchange or "").strip().lower()
+        market = str(market_type or "").strip().lower()
+        currency = str(asset or "").strip().upper()
+        if not exchange_name or market not in ("spot", "perpetual") or not currency:
+            return False
+        try:
+            values = [float(total), float(free), float(used)]
+        except (TypeError, ValueError):
+            return False
+        if any(not math.isfinite(value) or value < 0 for value in values):
+            return False
+        return self._emit(
+            "balance_snapshots",
+            {
+                "exchange_name": exchange_name,
+                "market_type": market,
+                "asset": currency,
+                "total": values[0],
+                "free": values[1],
+                "used": values[2],
+                "is_mock": bool(is_mock),
+                "observed_at": datetime.now(timezone.utc).isoformat(),
+                "raw_payload": raw_payload or {},
+            },
+        )
+
     # ------------------------------------------------------------------ orders
 
     def order_record(
