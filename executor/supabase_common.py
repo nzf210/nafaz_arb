@@ -1,6 +1,7 @@
 """Shared Supabase row normalization, role mapping, and delivery constants."""
 
 import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -106,4 +107,4 @@ def _num(value: Any, default: float = 0.0) -> float:
         result = float(value)
     except (TypeError, ValueError):
         return default
-    return result if result == result else default  # drop NaN
+    return default if math.isnan(result) else result  # drop NaN
