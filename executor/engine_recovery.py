@@ -127,10 +127,11 @@ class EngineRecoveryMixin:
                 state=PositionState.RECONCILIATION_REQUIRED,
             )
 
-    async def _verify_recovered_active_positions(self) -> None:
-        """Verify restored live positions against authoritative exchange exposure."""
+    async def _verify_recovered_active_positions(self) -> set:
+        """Verify restored live positions and return pairs proven consistent."""
+        verified_pairs = set()
         if not self.active_positions:
-            return
+            return verified_pairs
         groups = self._group_recovered_positions()
         if not hasattr(self.client, "fetch_positions"):
             logger.critical(
@@ -139,13 +140,14 @@ class EngineRecoveryMixin:
             )
             for (_, symbol), items in groups.items():
                 await self._mark_recovered_group_unverified(symbol, items)
-            return
+            return verified_pairs
 
         for (_, global_symbol), items in groups.items():
             actual_qty, reason = await self._fetch_recovered_short_quantity(
                 global_symbol, items
             )
             if reason is None:
+                verified_pairs.update(pair_tag for pair_tag, _ in items)
                 logger.info(
                     f"[Recovery] verified {global_symbol} short quantity "
                     f"{actual_qty} against Redis snapshot "
@@ -155,6 +157,7 @@ class EngineRecoveryMixin:
             await self._mark_recovered_group_mismatch(
                 global_symbol, items, reason, actual_qty
             )
+        return verified_pairs
 
     async def _persist_pending_entry(self, pair_tag: str, order_info: dict) -> None:
         """Persists a pending entry order so a restart can adopt or cancel it."""
