@@ -46,6 +46,12 @@ Do not run the migration against a production project until its existing schema 
 migration history have been checked. Do not make ad-hoc remote schema changes in
 Studio after adopting versioned migrations.
 
+Before deploying trade-fill reconciliation, ensure
+`20261111000100_add_live_order_fill_reconciliation.sql` has been applied. It adds
+the `orders.is_mock` discriminator used to prevent paper-trading rows from being
+replayed as live exchange fills. Apply it with the same reviewed `supabase db push --remote`
+workflow above.
+
 ## Runtime persistence status
 
 The runtime uses Supabase as a best-effort audit/history sink. It is not the
@@ -62,8 +68,10 @@ Implemented writes:
   also ensures its per-leg `orders` parent row exists. Individual fills are
   replayed from authenticated exchange trade history and keyed by immutable
   exchange trade IDs; quantity, price, quote value, fee amount, fee asset, and
-  venue timestamp are persisted. A durable SQLite idempotency key prevents the
-  same exchange fill from being enqueued twice across restarts.
+  venue timestamp are persisted. Durable SQLite idempotency keys prevent the
+  same exchange fill from being enqueued twice across restarts, and a per-order
+  verified cumulative watermark avoids repeated private-history API calls when
+  the order's filled quantity has not changed.
 - Redis remains authoritative for active-position recovery, locks, live prices,
   balances, pub/sub, and fast coordination. Exchange APIs remain authoritative
   for actual balances, order state, and position exposure.
@@ -116,7 +124,8 @@ Delivery guarantees and remaining limitations:
   replicas. Use persistent local volumes and back up journals before replacing
   hosts or volumes.
 - The executor trade-fill reconciliation worker reads authenticated spot and
-  perpetual trade history at startup and periodically thereafter. INDODAX uses
+  perpetual trade history at startup and every 120 seconds by default
+  (`TRADE_FILL_RECONCILIATION_INTERVAL_SECONDS`). INDODAX uses
   the TAPI v2 `/api/v2/myTrades` endpoint with bounded seven-day windows;
   supported CCXT venues use `fetch_my_trades`. Unsupported or incomplete
   history is not treated as zero fills and blocks new entries for the affected
