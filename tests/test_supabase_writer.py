@@ -139,15 +139,60 @@ class TestPositions:
         writer = _writer()
         writer.position_opened("p", _pos(), None)
         writer.position_status("p", "CLOSED", _pos(qty=0.0))
-        row = _drain(writer)[1][2]
+        rows = _drain(writer)
+        row = next(row for table, _, row in rows if table == "positions")
+        legs = [row for table, _, row in rows if table == "position_legs"]
         assert row["status"] == "CLOSED"
         assert row["closed_at"]
+        assert len(legs) == 4
+        assert {row["leg"] for row in legs} == {"spot", "perpetual"}
+        assert all(row["status"] == "CLOSED" for row in legs)
 
     def test_is_mock_follows_config_not_position(self):
         writer = _writer()
         writer.position_opened("p", _pos(), None, is_mock=False)
-        assert _drain(writer)[0][2]["is_mock"] is False
+        rows = _drain(writer)
+        parent = next(row for table, _, row in rows if table == "positions")
+        assert parent["is_mock"] is False
 
+    def test_position_opened_persists_independent_spot_and_perpetual_legs(self):
+        writer = _writer()
+        pair = SimpleNamespace(local_symbol="BTC/IDR", global_symbol="BTC/USDT")
+        writer.position_opened("indodax:btc_idr", _pos(), pair, is_mock=False)
+        rows = _drain(writer)
+        legs = [row for table, _, row in rows if table == "position_legs"]
+        assert len(legs) == 2
+        by_leg = {row["leg"]: row for row in legs}
+        assert by_leg["spot"]["symbol"] == "BTC/IDR"
+        assert by_leg["spot"]["side"] == "long"
+        assert by_leg["perpetual"]["symbol"] == "BTC/USDT"
+        assert by_leg["perpetual"]["side"] == "short"
+        assert by_leg["spot"]["qty"] == 10.0
+        assert by_leg["spot"]["position_id"] == by_leg["perpetual"]["position_id"]
+
+    def test_confirmed_funding_payment_is_deduplicated(self):
+        writer = _writer()
+        pos = _pos()
+        writer.position_opened("p", pos, None, is_mock=False)
+        _drain(writer)
+        payment = {
+            "id": "funding-123",
+            "timestamp": 1_700_000_000_000,
+            "amount": 0.025,
+            "code": "USDT",
+            "symbol": "BTC/USDT:USDT",
+            "rate": 0.0001,
+        }
+        assert writer.funding_payment("p", pos, payment, is_mock=False)
+        assert writer.funding_payment("p", pos, payment, is_mock=False)
+        rows = _drain(writer)
+        funding = [row for table, _, row in rows if table == "funding_payments"]
+        assert len(funding) == 1
+        assert funding[0]["exchange_payment_id"] == "funding-123"
+        assert funding[0]["amount"] == pytest.approx(0.025)
+        assert funding[0]["asset"] == "USDT"
+        assert funding[0]["payment_status"] == "confirmed"
+        assert funding[0]["position_id"] == writer._position_ids["p"]
 
 class TestOrdersAndFills:
     def test_order_id_is_stable_across_writer_restarts(self):
