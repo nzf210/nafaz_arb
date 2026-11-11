@@ -148,6 +148,7 @@ async def _find_order_by_client_id(
         return any(str(value) == client_order_id for value in candidates if value)
 
     successful_queries = 0
+    historical_queries = 0
     failures = []
     for method_name in ("fetch_open_orders", "fetch_closed_orders", "fetch_canceled_orders"):
         method = getattr(exchange, method_name, None)
@@ -164,6 +165,8 @@ async def _find_order_by_client_id(
             if rows is None or not isinstance(rows, (list, tuple)):
                 raise ValueError(f"{method_name} returned a malformed order collection")
             successful_queries += 1
+            if method_name != "fetch_open_orders":
+                historical_queries += 1
             for row in rows:
                 if matches(row):
                     return _expose_client_order_id(dict(row))
@@ -181,6 +184,7 @@ async def _find_order_by_client_id(
             if trades is None or not isinstance(trades, (list, tuple)):
                 raise ValueError("fetch_my_trades returned a malformed trade collection")
             successful_queries += 1
+            historical_queries += 1
             matching_trade = next((trade for trade in trades if matches(trade)), None)
             if matching_trade is not None:
                 info = matching_trade.get("info") if isinstance(matching_trade.get("info"), dict) else {}
@@ -210,9 +214,9 @@ async def _find_order_by_client_id(
         raise RuntimeError(
             "client-order-id lookup was not authoritative: " + "; ".join(failures)
         )
-    if successful_queries == 0:
+    if historical_queries == 0:
         raise NotImplementedError(
-            "venue exposes no supported history endpoint for client-order-id recovery"
+            "venue exposes no supported historical endpoint for client-order-id recovery"
         )
     return None
 
