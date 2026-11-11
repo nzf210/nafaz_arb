@@ -137,14 +137,21 @@ class EngineEntryFlowMixin:
     def _spot_open_order_count(self, exchange: str) -> int:
         """Count distinct spot pairs with an open position or pending entry."""
         venue = str(exchange or "").strip().lower()
+        def pair_exchange(pair, value=None):
+            exchange_name = (
+                value.get("local_exchange", "") if isinstance(value, dict)
+                else getattr(value, "local_exchange", "")
+            )
+            return str(exchange_name or str(pair).split(":", 1)[0]).strip().lower()
+
         active_pairs = {
             pair for pair, position in self.active_positions.items()
-            if str(getattr(position, "local_exchange", "")).strip().lower() == venue
+            if pair_exchange(pair, position) == venue
             and float(getattr(position, "qty", 0.0) or 0.0) > 0
         }
         pending_pairs = {
             pair for pair, order in self.pending_entry_orders.items()
-            if str((order or {}).get("local_exchange", "")).strip().lower() == venue
+            if pair_exchange(pair, order) == venue
         }
         counted_states = {
             "ENTRY_PENDING", "ENTRY_PARTIAL", "HEDGED_ACTIVE",
@@ -153,7 +160,7 @@ class EngineEntryFlowMixin:
         lifecycle_pairs = {
             pair for pair, state in self.states.items()
             if getattr(state, "value", str(state)) in counted_states
-            and str(getattr(self._pair_infos.get(pair), "local_exchange", "")).strip().lower() == venue
+            and pair_exchange(pair, self._pair_infos.get(pair)) == venue
         }
         return len(active_pairs | pending_pairs | lifecycle_pairs)
 
