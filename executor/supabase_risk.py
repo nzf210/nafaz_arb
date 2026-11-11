@@ -9,7 +9,10 @@ from typing import Any, Optional
 
 import aiohttp
 
-from executor.supabase_common import _POSITION_NS, _TIMEOUT, _ms_to_iso, _num, logger
+from executor.supabase_common import (
+    _AUTHORIZATION_BEARER_PREFIX, _JSON_CONTENT_TYPE, _POSITION_NS,
+    _TIMEOUT, _ms_to_iso, _num, logger,
+)
 
 
 
@@ -69,8 +72,8 @@ class SupabaseRiskMixin:
                 created = True
             headers = {
                 "apikey": self.key,
-                "Authorization": f"Bearer {self.key}",
-                "Accept": "application/json",
+                "Authorization": _AUTHORIZATION_BEARER_PREFIX + self.key,
+                "Accept": _JSON_CONTENT_TYPE,
                 "Accept-Encoding": "identity",
             }
             async with session.get(
@@ -148,8 +151,8 @@ class SupabaseRiskMixin:
                 created = True
             headers = {
                 "apikey": self.key,
-                "Authorization": f"Bearer {self.key}",
-                "Accept": "application/json",
+                "Authorization": _AUTHORIZATION_BEARER_PREFIX + self.key,
+                "Accept": _JSON_CONTENT_TYPE,
                 "Accept-Encoding": "identity",
             }
             async with session.get(
