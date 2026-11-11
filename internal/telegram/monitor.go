@@ -14,6 +14,8 @@ import (
 
 type monitorSnapshot map[string]json.RawMessage
 
+const htmlPreClose = "</pre>"
+
 func (b *Bot) readMonitorSnapshot(ctx context.Context) (monitorSnapshot, string) {
 	b.mu.Lock()
 	rc := b.redisClient
