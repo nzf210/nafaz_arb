@@ -152,7 +152,7 @@ class ExecutorConfig:
             limits = exec_cfg.get("max_open_spot_orders_per_exchange", {})
             if isinstance(limits, dict):
                 self.max_open_spot_orders_per_exchange = {
-                    str(name).strip().lower(): int(limit)
+                    str(name).strip().lower(): limit
                     for name, limit in limits.items()
                 }
             # Load modular exchanges dictionary if provided in config
