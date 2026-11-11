@@ -1463,6 +1463,11 @@ async def test_unresolved_futures_acknowledgement_blocks_without_spot_rollback(f
 
     client.open_global_short_market = submit_short
     client.fetch_global_order_by_client_id = missing_short
+
+    async def unavailable_positions(symbol):
+        raise RuntimeError("position endpoint unavailable")
+
+    client.fetch_positions = unavailable_positions
     engine = await _build(fake_redis, client)
     engine._assert_hedge_slippage_within_limit = no_slippage_check
     engine._rollback_hedge_failure = rollback
@@ -1484,3 +1489,143 @@ async def test_unresolved_futures_acknowledgement_blocks_without_spot_rollback(f
     assert engine._entry_blocked is True
     assert engine.states[PAIR_TAG] == PositionState.RECONCILIATION_REQUIRED
     assert await engine.order_registry.pending_recovery_ids()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_hedge_missing_order_and_flat_position_allows_rollback(fake_redis):
+    """Exact order absence plus a flat position is required before spot unwind."""
+    client = MockExchangeClient()
+    submit_ids = []
+    rollback_calls = []
+
+    async def submit_short(symbol, amount, **kwargs):
+        submit_ids.append(kwargs["client_order_id"])
+        raise TimeoutError("lost response")
+
+    async def no_order(client_order_id, symbol, amount_spec=None):
+        return None
+
+    async def no_slippage_check(*args, **kwargs):
+        return None
+
+    async def rollback(*args, **kwargs):
+        rollback_calls.append(args[2])
+        return None
+
+    client.open_global_short_market = submit_short
+    client.fetch_global_order_by_client_id = no_order
+    engine = await _build(fake_redis, client)
+    engine._assert_hedge_slippage_within_limit = no_slippage_check
+    engine._rollback_hedge_failure = rollback
+
+    await engine._execute_entry_hedge(
+        PAIR_TAG,
+        {
+            "order_id": "501", "client_order_id": "spot-parent",
+            "local_exchange": "indodax", "global_exchange": "binance",
+            "global_symbol": "BTCUSDT", "symbol": "btc_idr",
+            "global_amount_spec": GLOBAL_SPEC,
+        },
+        0.01, 1_000_000_000.0, 16_000.0,
+    )
+
+    assert len(submit_ids) == 1
+    assert rollback_calls == [pytest.approx(0.01)]
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_hedge_found_partial_fill_never_rolls_back(fake_redis):
+    """A terminal partial hedge is exposure even if the position endpoint says flat."""
+    client = MockExchangeClient()
+    rollback_calls = []
+
+    async def submit_short(symbol, amount, **kwargs):
+        raise TimeoutError("lost response")
+
+    async def partial_order(client_order_id, symbol, amount_spec=None):
+        return {
+            "id": "hedge-partial-1", "client_order_id": client_order_id,
+            "symbol": symbol, "status": "canceled", "filled": 0.004,
+        }
+
+    async def no_slippage_check(*args, **kwargs):
+        return None
+
+    async def rollback(*args, **kwargs):
+        rollback_calls.append(True)
+
+    client.open_global_short_market = submit_short
+    client.fetch_global_order_by_client_id = partial_order
+    engine = await _build(fake_redis, client)
+    engine._assert_hedge_slippage_within_limit = no_slippage_check
+    engine._rollback_hedge_failure = rollback
+    await engine._execute_entry_hedge(
+        PAIR_TAG,
+        {
+            "order_id": "501", "client_order_id": "spot-parent",
+            "local_exchange": "indodax", "global_exchange": "binance",
+            "global_symbol": "BTCUSDT", "symbol": "btc_idr",
+            "global_amount_spec": GLOBAL_SPEC,
+        },
+        0.01, 1_000_000_000.0, 16_000.0,
+    )
+
+    assert rollback_calls == []
+    assert engine.states[PAIR_TAG] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_hedge_open_zero_fill_order_never_rolls_back(fake_redis):
+    """A resting zero-fill order can still fill after the position snapshot."""
+    client = MockExchangeClient()
+    rollback_calls = []
+
+    async def submit_short(symbol, amount, **kwargs):
+        raise TimeoutError("lost response")
+
+    async def open_order(client_order_id, symbol, amount_spec=None):
+        return {
+            "id": "hedge-open-1", "client_order_id": client_order_id,
+            "symbol": symbol, "status": "open", "filled": 0.0,
+        }
+
+    async def no_slippage_check(*args, **kwargs):
+        return None
+
+    async def rollback(*args, **kwargs):
+        rollback_calls.append(True)
+
+    client.open_global_short_market = submit_short
+    client.fetch_global_order_by_client_id = open_order
+    engine = await _build(fake_redis, client)
+    engine._assert_hedge_slippage_within_limit = no_slippage_check
+    engine._rollback_hedge_failure = rollback
+    await engine._execute_entry_hedge(
+        PAIR_TAG,
+        {
+            "order_id": "501", "client_order_id": "spot-parent",
+            "local_exchange": "indodax", "global_exchange": "binance",
+            "global_symbol": "BTCUSDT", "symbol": "btc_idr",
+            "global_amount_spec": GLOBAL_SPEC,
+        },
+        0.01, 1_000_000_000.0, 16_000.0,
+    )
+
+    assert rollback_calls == []
+    assert engine.states[PAIR_TAG] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_hedge_opposite_positions_do_not_net_to_flat(engine):
+    """Long and short legs on one contract remain gross exposure, not a flat book."""
+    class OppositePositionClient(FailingHedgeClient):
+        async def fetch_positions(self, symbol):
+            return [
+                {"symbol": symbol, "contracts": 0.01, "contractSize": 1, "side": "short"},
+                {"symbol": symbol, "contracts": 0.01, "contractSize": 1, "side": "long"},
+            ]
+
+    engine.client = OppositePositionClient()
+    assert await engine._hedge_may_be_open(
+        PAIR_TAG, "BTCUSDT", RuntimeError("ambiguous submit")
+    ) is True
