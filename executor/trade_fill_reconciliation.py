@@ -212,12 +212,15 @@ class TradeFillReconciliationWorker:
                     if not isinstance(trade, dict):
                         raise ValueError("venue returned a malformed individual fill")
                     total_qty += float(trade["amount"])
-                    writer.order_fill(
+                    if writer.order_fill(
                         order_id=order_row_id,
                         exchange=exchange,
                         fill=trade,
                         is_mock=False,
-                    )
+                    ) is False:
+                        raise RuntimeError(
+                            f"exchange fill {trade.get('id')} could not be durably journaled"
+                        )
                 tolerance = max(self.absolute_tolerance, abs(filled_qty) * self.relative_tolerance)
                 if not trades or abs(total_qty - filled_qty) > tolerance:
                     await self._halt(
