@@ -1029,6 +1029,82 @@ class OrderRecoveryMixin:
         )
         return True
 
+
+    async def _reconcile_pending_entry_hedges(
+        self, pair_tag: str, spot_order_info: Dict[str, Any]
+    ) -> bool:
+        """Resolve journaled futures hedges before a terminal spot fill can retry one.
+
+        Startup's legacy pending-entry loader runs before the universal sweep.
+        This targeted pass closes that ordering gap: a futures order accepted just
+        before a crash must be reconciled before _handle_entry_fills can submit a
+        replacement hedge for the same spot quantity.
+        """
+        records = await self.order_registry.active_records()
+        parent_exchange = str(spot_order_info.get("local_exchange") or "").lower()
+        parent_order_id = str(spot_order_info.get("order_id") or "")
+        parent_client_id = str(spot_order_info.get("client_order_id") or "")
+        for hedge in records.values():
+            if hedge.order_role != OrderRole.HEDGE.value:
+                continue
+            context = hedge.recovery_context or {}
+            if str(context.get("parent_spot_exchange") or "").lower() != parent_exchange:
+                continue
+            if parent_order_id and str(context.get("parent_spot_order_id") or "") != parent_order_id:
+                continue
+            if parent_client_id and str(context.get("parent_spot_client_order_id") or "") != parent_client_id:
+                continue
+            if not hedge.exchange_order_id:
+                await self.order_registry.mark_pending_recovery(
+                    hedge.local_order_id, "futures hedge submit outcome is ambiguous after restart"
+                )
+                return False
+            try:
+                venue_order = await self._fetch_order_by_role(
+                    hedge, hedge.exchange_order_id, hedge.symbol
+                )
+            except Exception as exc:
+                await self.order_registry.mark_pending_recovery(
+                    hedge.local_order_id, f"futures hedge fetch failed: {type(exc).__name__}: {exc}"
+                )
+                return False
+            if not isinstance(venue_order, dict):
+                await self.order_registry.mark_pending_recovery(
+                    hedge.local_order_id, "futures hedge returned malformed venue state"
+                )
+                return False
+            self._apply_venue_state(hedge, venue_order)
+            classification = hedge.classify_status()
+            if classification == OrderTerminal.OPEN or classification == OrderTerminal.UNKNOWN:
+                await self.order_registry.register(hedge)
+                await self.order_registry.mark_pending_recovery(
+                    hedge.local_order_id, "futures hedge is not confirmed terminal"
+                )
+                return False
+            if hedge.filled_quantity > 0:
+                if not await self._reconcile_recovered_entry_hedge(
+                    hedge, venue_order, pair_tag
+                ):
+                    return False
+            else:
+                # A confirmed zero-fill terminal hedge is safe to retire. The
+                # spot fill handler below may then place the hedge once.
+                await self.order_registry.register(hedge)
+                await self.order_registry.retire(hedge)
+                await self.order_registry.clear_pending_recovery(hedge.local_order_id)
+
+        parent = None
+        if parent_exchange and parent_order_id:
+            parent = await self.order_registry.find_by_exchange_id(parent_exchange, parent_order_id)
+        if parent is None and parent_exchange and parent_client_id:
+            parent = await self.order_registry.find_by_client_id(parent_exchange, parent_client_id)
+        if parent is not None:
+            spot_order_info["hedged_short_qty"] = max(
+                float(spot_order_info.get("hedged_short_qty", 0.0) or 0.0),
+                float(parent.hedged_quantity or 0.0),
+            )
+        return True
+
     def _rebuild_entry_order_info(
         self, record: OrderRecord, order: Dict[str, Any], amount_spec: Any
     ) -> Optional[dict]:
