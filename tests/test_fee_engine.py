@@ -83,8 +83,9 @@ def test_explicit_zero_maker_fee_is_preserved():
 
 @pytest.mark.parametrize("bad", [-0.01, 100.01, float("nan"), float("inf")])
 def test_invalid_fee_rates_are_rejected(bad):
+    rates = FeeRates(bad, 0, 0, 0)
     with pytest.raises(ValueError):
-        FeeRates(bad, 0, 0, 0).validate()
+        rates.validate()
 
 
 def test_spot_exit_fee_is_included_in_solved_profit_floor():
