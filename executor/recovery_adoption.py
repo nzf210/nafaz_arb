@@ -486,6 +486,13 @@ class RecoveryAdoptionMixin:
             ),
         }
 
+    @staticmethod
+    def _recovered_entry_usdt_rate(context: dict) -> float:
+        try:
+            return float(context.get("usdt_idr_rate", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
     def _rebuild_entry_order_info(
         self, record: OrderRecord, order: Dict[str, Any], amount_spec: Any
     ) -> Optional[dict]:
@@ -494,10 +501,7 @@ class RecoveryAdoptionMixin:
         if not pair_tag or not record.symbol:
             return None
         context = record.recovery_context or {}
-        try:
-            usdt_rate = float(context.get("usdt_idr_rate", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            usdt_rate = 0.0
+        usdt_rate = self._recovered_entry_usdt_rate(context)
         if usdt_rate <= 0:
             return None
         pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
