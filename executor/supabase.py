@@ -488,14 +488,14 @@ class SupabaseWriter:
         reduce_only: bool = False,
         is_mock: bool = True,
         submitted_at_ms: Optional[int] = None,
-    ) -> None:
+    ) -> bool:
         """Upserts the order lifecycle row; individual fills come from venue trade history."""
         if not isinstance(order, dict):
-            return
+            return False
         exchange_order_id = str(order.get("id") or "") or None
         key = client_order_id or exchange_order_id
         if not key:
-            return
+            return False
         order_state_key = f"{exchange}:{pair_key}:{key}"
         order_id = self._order_ids.setdefault(
             order_state_key, str(uuid.uuid5(_POSITION_NS, f"order:{order_state_key}"))
