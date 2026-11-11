@@ -13,6 +13,10 @@ from executor.entry_common import logger
 
 
 
+class AmbiguousOrderSubmission(RuntimeError):
+    """The venue may have accepted an order but its acknowledgement is unknown."""
+
+
 class EntryHedgeMixin:
     """Focused entry lifecycle responsibilities."""
 
@@ -158,9 +162,12 @@ class EntryHedgeMixin:
         self, pair_tag: str, order_info: dict, global_symbol: str,
         unhedged_delta: float, expected_short_price: float,
     ):
-        hedge_coid = build_client_order_id(
+        hedge_coid = str(
+            order_info.get("pending_hedge_client_order_id") or ""
+        ) or build_client_order_id(
             pair_tag, "hedge", self._next_order_seq()
         )
+        order_info["pending_hedge_client_order_id"] = hedge_coid
         recovery_context = {
             "parent_spot_exchange": str(
                 order_info.get("local_exchange", "")
@@ -186,15 +193,45 @@ class EntryHedgeMixin:
             recovery_context=recovery_context,
             required=True,
         )
-        short_order = await self.client.open_global_short_market(
-            global_symbol,
-            unhedged_delta,
-            price=expected_short_price,
-            client_order_id=hedge_coid,
-            amount_spec=AmountSpec.from_dict(
-                order_info.get("global_amount_spec")
-            ),
-        )
+        order_info["hedge_submit_started"] = True
+        try:
+            short_order = await self.client.open_global_short_market(
+                global_symbol,
+                unhedged_delta,
+                price=expected_short_price,
+                client_order_id=hedge_coid,
+                amount_spec=AmountSpec.from_dict(
+                    order_info.get("global_amount_spec")
+                ),
+            )
+        except Exception as submit_error:
+            lookup = getattr(
+                self.client, "fetch_global_order_by_client_id", None
+            )
+            recovered = None
+            if callable(lookup):
+                try:
+                    recovered = await lookup(
+                        hedge_coid, global_symbol,
+                        order_info.get("global_amount_spec"),
+                    )
+                except Exception as lookup_error:
+                    raise AmbiguousOrderSubmission(
+                        f"futures submit failed ({type(submit_error).__name__}: "
+                        f"{submit_error}); client-id lookup failed "
+                        f"({type(lookup_error).__name__}: {lookup_error})"
+                    ) from submit_error
+            if not isinstance(recovered, dict) or not recovered.get("id"):
+                raise AmbiguousOrderSubmission(
+                    f"futures submit failed ({type(submit_error).__name__}: "
+                    f"{submit_error}); no acknowledged order was found for "
+                    f"client id {hedge_coid}"
+                ) from submit_error
+            logger.warning(
+                "[State 2] recovered futures hedge %s by client id after lost acknowledgement",
+                hedge_coid,
+            )
+            short_order = recovered
         if not isinstance(short_order, dict):
             raise ValueError(
                 "futures hedge returned no verifiable order payload; "
@@ -332,6 +369,8 @@ class EntryHedgeMixin:
                 "spot-order watermark is not durable; pair entry remains halted",
                 pair_tag,
             )
+        order_info.pop("pending_hedge_client_order_id", None)
+        order_info["hedge_submit_started"] = False
         await self._publish_entry_position_opened(pair_tag)
 
     async def _execute_entry_hedge(
@@ -373,6 +412,13 @@ class EntryHedgeMixin:
                 self._record_order_failure(
                     global_exchange, "hedge order placement failed"
                 )
+            if order_info.get("hedge_submit_started"):
+                await self._mark_order_submission_ambiguous(
+                    pair_tag, global_exchange,
+                    str(order_info.get("pending_hedge_client_order_id") or ""),
+                    f"{type(he).__name__}: {he}",
+                )
+                return
             await self._rollback_hedge_failure(
                 pair_tag, order_info, unhedged_delta, price_idr, usdt_rate, he
             )
