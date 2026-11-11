@@ -314,7 +314,7 @@ class RecoveryDiscoveryMixin:
         """
         if not exchange_order_id and not client_order_id:
             return None
-        for pair_tag, order_info in list(self.pending_entry_orders.items()):
+        for pair_tag, order_info in self.pending_entry_orders.items():
             stored_id = str(order_info.get("order_id") or "")
             stored_coid = str(order_info.get("client_order_id") or "")
             matches_exchange_id = bool(
