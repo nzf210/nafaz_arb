@@ -181,9 +181,11 @@ async def test_pair_halt_remains_until_all_mismatched_orders_are_verified():
     worker._reported = {"order-1": scope, "order-2": scope}
 
     await worker._clear("order-1")
+    await worker._flush_clears()
     assert scope in engine._recovery_scope_halts
 
     await worker._clear("order-2")
+    await worker._flush_clears()
     assert scope not in engine._recovery_scope_halts
 
 
