@@ -44,9 +44,10 @@ def _record():
 async def test_redis_success_does_not_mask_failed_durable_order_journal():
     writer = _Writer(enabled=True, result=False)
     registry = UniversalOrderRegistry(_Redis(), writer)
+    record = _record()
 
     with pytest.raises(RuntimeError, match="durable Supabase outbox"):
-        await registry._persist(_record())
+        await registry._persist(record)
 
     assert len(writer.rows) == 1
 
