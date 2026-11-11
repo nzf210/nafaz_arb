@@ -357,13 +357,16 @@ to frontend/Telegram clients. If credentials are absent, persistence is disabled
 a database outage does not block exchange risk management.
 
 Runtime exchange reconciliation: the executor periodically re-runs the
-universal order-registry reconciliation and verifies restored/live futures
-short exposure against the venue. Spot and perpetual wallet balances are
-captured as append-only `balance_snapshots` observations for audit. A failed
-balance read is not recorded as zero and blocks new entries on the affected
-venue scope. Balance snapshots are observations only: because wallets may
-contain funds unrelated to bot positions, they are not treated as proof of
-position ownership or used to automatically resize/close a position.
+universal order-registry reconciliation, matches venue order status and
+cumulative fills with the durable registry, checks that spot base-asset totals
+cover managed quantities, and compares futures short exposure with managed
+positions. Spot and perpetual wallet balances are captured as append-only
+`balance_snapshots` observations for audit. A failed balance/position read or
+confirmed mismatch blocks new entries on the affected venue while existing
+position management remains active. Spot balances are checked as a minimum
+coverage threshold because wallets may contain unrelated manual inventory;
+the bot never attributes excess wallet assets to its own positions or
+automatically resizes/closes positions from a balance snapshot.
 `position_legs`, `funding_payments`, and `executor_status_snapshots` remain
 schema-only. Supabase history must never replace authenticated exchange-side
 exposure verification.
