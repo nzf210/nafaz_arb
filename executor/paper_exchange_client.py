@@ -232,14 +232,10 @@ class PaperTradingExchangeClient:
             mkt_bid = mkt.get("bid", 0.0)
             mkt_ask = mkt.get("ask", 0.0)
 
-            # Limit Buy (Maker): Fills if sellers hit or drop to our bid (market ask <= our limit buy price)
-            if side == "buy" and mkt_ask > 0 and mkt_ask <= order_price:
-                order["filled"] = order["amount"]
-                order["status"] = "closed"
-                order["_filled_time"] = time.time()
-
-            # Limit Sell (Maker): Fills if buyers bid up to or cross our ask (market bid >= our limit sell price)
-            elif side == "sell" and mkt_bid > 0 and mkt_bid >= order_price:
+            # Evaluate each maker side independently, then apply one shared fill transition.
+            buy_crossed = side == "buy" and mkt_ask > 0 and mkt_ask <= order_price
+            sell_crossed = side == "sell" and mkt_bid > 0 and mkt_bid >= order_price
+            if buy_crossed or sell_crossed:
                 order["filled"] = order["amount"]
                 order["status"] = "closed"
                 order["_filled_time"] = time.time()
