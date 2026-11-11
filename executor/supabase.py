@@ -79,7 +79,7 @@ class SupabaseWriter(
     async def close(self) -> None:
         if self._task is None:
             return
-        cancelled_by_caller = False
+        cancellation: Optional[asyncio.CancelledError] = None
         try:
             deadline = asyncio.get_running_loop().time() + 2.0
             while (
@@ -88,9 +88,9 @@ class SupabaseWriter(
                 and asyncio.get_running_loop().time() < deadline
             ):
                 await asyncio.sleep(0.05)
-        except asyncio.CancelledError:
-            # Cancellation must not leave the worker or its durable journal open.
-            cancelled_by_caller = True
+        except asyncio.CancelledError as exc:
+            # Finish cleanup, then re-raise this same cancellation signal.
+            cancellation = exc
 
         if self._outbox is not None and self._outbox.pending_count():
             logger.warning(
@@ -102,11 +102,14 @@ class SupabaseWriter(
             worker.cancel()
             try:
                 await worker
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
                 current_task = asyncio.current_task()
-                cancelled_by_caller = cancelled_by_caller or bool(
-                    current_task is not None and current_task.cancelling()
-                )
+                if (
+                    cancellation is None
+                    and current_task is not None
+                    and current_task.cancelling()
+                ):
+                    cancellation = exc
             except Exception:
                 logger.exception("Supabase outbox worker failed during shutdown")
             finally:
@@ -115,8 +118,9 @@ class SupabaseWriter(
         if self._session is not None:
             try:
                 await self._session.close()
-            except asyncio.CancelledError:
-                cancelled_by_caller = True
+            except asyncio.CancelledError as exc:
+                if cancellation is None:
+                    cancellation = exc
             except Exception:
                 logger.exception("Supabase HTTP session failed to close cleanly")
             finally:
@@ -129,8 +133,8 @@ class SupabaseWriter(
         if self._outbox is not None:
             self._outbox.close()
             self._outbox = None
-        if cancelled_by_caller:
-            raise asyncio.CancelledError
+        if cancellation is not None:
+            raise cancellation
 
     # ------------------------------------------------------------------- emit
 
