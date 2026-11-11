@@ -506,6 +506,50 @@ func (s *Service) validateCalculationInput(input opportunityCalculationInput) er
 	)
 }
 
+func (s *Service) opportunitySpotEntryReference(
+	input opportunityCalculationInput,
+	sm Market,
+	sb, pb OrderBook,
+	spotBid, spotAsk decimal.Decimal,
+	makerTaker bool,
+) decimal.Decimal {
+	if !makerTaker {
+		return spotAsk
+	}
+	tickSize := sm.TickSize
+	if tickSize <= 0 {
+		tickSize = s.cfg.LocalPriceTick
+	}
+	if tickSize <= 0 {
+		tickSize = 1.0
+	}
+	tick := decimal.NewFromFloat(tickSize)
+	if input.isSynthetic && input.fxRate > 0 {
+		tick = tick.Div(decimal.NewFromFloat(input.fxRate))
+	}
+	entry := spotBid.Add(tick)
+	if entry.GreaterThanOrEqual(spotAsk) && spotAsk.GreaterThan(spotBid) {
+		return spotBid
+	}
+	return entry
+}
+
+func (s *Service) opportunityExecutableDepth(
+	spotBook, perpBook OrderBook, makerTaker bool,
+) decimal.Decimal {
+	depth := decimal.Zero
+	if makerTaker {
+		depth = availableBookDepth(perpBook.Bids)
+		depth = decimal.Min(depth, availableBookDepth(spotBook.Bids))
+		depth = decimal.Min(depth, availableBookDepth(perpBook.Asks))
+		return depth
+	}
+	depth = availableBookDepth(spotBook.Asks)
+	depth = decimal.Min(depth, availableBookDepth(perpBook.Bids))
+	depth = decimal.Min(depth, availableBookDepth(spotBook.Bids))
+	return decimal.Min(depth, availableBookDepth(perpBook.Asks))
+}
+
 func (s *Service) calculateOpportunitySizing(
 	input opportunityCalculationInput,
 ) (opportunitySizing, error) {
@@ -517,31 +561,13 @@ func (s *Service) calculateOpportunitySizing(
 		perpLevFloat = 1
 	}
 	perpLev := decimal.NewFromFloat(perpLevFloat)
-	isMakerTaker := s.cfg.ExecutionMode == "MAKER_TAKER"
-
+	makerTaker := s.cfg.ExecutionMode == "MAKER_TAKER"
 	spotAsk := decimal.NewFromFloat(sb.Asks[0].Price)
 	spotBid := decimal.NewFromFloat(sb.Bids[0].Price)
 	perpBid := decimal.NewFromFloat(pb.Bids[0].Price)
-	spotEntryRef := spotAsk
-	if isMakerTaker {
-		tickSize := sm.TickSize
-		if tickSize <= 0 {
-			tickSize = s.cfg.LocalPriceTick
-		}
-		if tickSize <= 0 {
-			tickSize = 1.0
-		}
-		tickDec := decimal.NewFromFloat(tickSize)
-		if input.isSynthetic && input.fxRate > 0 {
-			tickDec = tickDec.Div(decimal.NewFromFloat(input.fxRate))
-		}
-		spotEntryRef = spotBid.Add(tickDec)
-		if spotEntryRef.GreaterThanOrEqual(spotAsk) &&
-			spotAsk.GreaterThan(spotBid) {
-			spotEntryRef = spotBid
-		}
-	}
-
+	spotEntryRef := s.opportunitySpotEntryReference(
+		input, sm, sb, spotBid, spotAsk, makerTaker,
+	)
 	denom := spotEntryRef.Add(perpBid.Div(perpLev))
 	if denom.IsZero() {
 		return opportunitySizing{}, fmt.Errorf(
@@ -550,17 +576,7 @@ func (s *Service) calculateOpportunitySizing(
 	}
 	qty := targetBudget.Div(denom)
 	if s.cfg.AdaptiveSizingEnabled() {
-		maxExecutable := qty
-		if isMakerTaker {
-			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(pb.Bids))
-			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(sb.Bids))
-			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(pb.Asks))
-		} else {
-			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(sb.Asks))
-			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(pb.Bids))
-			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(sb.Bids))
-			maxExecutable = decimal.Min(maxExecutable, availableBookDepth(pb.Asks))
-		}
+		maxExecutable := s.opportunityExecutableDepth(sb, pb, makerTaker)
 		if maxExecutable.GreaterThan(decimal.Zero) && maxExecutable.LessThan(qty) {
 			qty = maxExecutable
 		}
@@ -583,7 +599,7 @@ func (s *Service) calculateOpportunitySizing(
 		perpLeverage: perpLev,
 		spotEntryRef: spotEntryRef,
 		quantity:     qty,
-		makerTaker:   isMakerTaker,
+		makerTaker:   makerTaker,
 	}, nil
 }
 
