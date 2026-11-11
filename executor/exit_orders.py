@@ -196,7 +196,7 @@ class ExitOrderManagementMixin:
         if not pos or pos.qty <= 0:
             return
 
-        price_data = await self._fetch_live_price(pair_tag, pos)
+        price_data = await self._fetch_live_price(pair_tag)
         if not price_data:
             return
         global_ask_usdt, usdt_idr_rate = price_data
@@ -219,7 +219,7 @@ class ExitOrderManagementMixin:
 
         now_ms = int(time.time() * 1000)
         funding_passed = await self._handle_funding_rollover(
-            pair_tag, pos, global_ask_usdt, now_ms
+            pair_tag, pos, now_ms
         )
 
         # Mark-to-market: when no fresh live prices exist (scanner offline,
