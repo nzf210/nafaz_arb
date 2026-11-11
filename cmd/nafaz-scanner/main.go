@@ -125,6 +125,7 @@ func main(){
 	tgBot:=telegram.New(cfg,server)
 	if remoteStore != nil {
 		tgBot.SetOpportunityHistoryReader(remoteStore)
+		tgBot.SetPositionLedgerReader(remoteStore)
 	}
 	if redisClient != nil {
 		tgBot.SetRedisClient(redisClient)
