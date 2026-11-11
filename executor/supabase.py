@@ -445,16 +445,7 @@ class SupabaseWriter:
         is_mock: bool = True,
         submitted_at_ms: Optional[int] = None,
     ) -> None:
-        """Upserts an order and appends any newly observed fill quantity.
-
-        This writes the pair-scoped analytics view. The universal order registry
-        is written separately by the call site that knows the order's role, so the
-        recovery identity is never inferred from a leg name.
-
-        ``submitted_at_ms`` is the executor-side submission timestamp. It must
-        remain stable across polling updates so DB timestamps describe order
-        lifetime rather than the most recent observation.
-        """
+        """Upserts the order lifecycle row; individual fills come from venue trade history."""
         if not isinstance(order, dict):
             return
         exchange_order_id = str(order.get("id") or "") or None
@@ -465,7 +456,6 @@ class SupabaseWriter:
         order_id = self._order_ids.setdefault(
             order_state_key, str(uuid.uuid5(_POSITION_NS, f"order:{order_state_key}"))
         )
-
         requested = _num(order.get("amount"), _num(order.get("filled")))
         filled = _num(order.get("filled"))
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -475,7 +465,7 @@ class SupabaseWriter:
             or self._order_submitted_at.setdefault(order_state_key, now_iso)
         )
         terminal_status = str(order.get("status") or "").lower() in (
-            "closed", "canceled", "cancelled", "rejected", "expired"
+            "closed", "filled", "canceled", "cancelled", "rejected", "expired"
         )
         completed_at = (
             self._order_completed_at.setdefault(order_state_key, now_iso)
@@ -502,6 +492,7 @@ class SupabaseWriter:
                 "limit_price": _num(order.get("price")) or None,
                 "average_fill_price": _num(order.get("average")) or None,
                 "reduce_only": bool(reduce_only),
+                "is_mock": bool(is_mock),
                 "submitted_at": submitted_at,
                 "completed_at": completed_at,
                 "updated_at": now_iso,
@@ -510,29 +501,73 @@ class SupabaseWriter:
             on_conflict="id",
         )
 
-        if filled > 1e-12 and self._outbox is not None:
-            price = _num(order.get("average"), _num(order.get("price")))
-            fill_id = f"{exchange_order_id or key}:{filled:.18f}"
-            fill_row = {
-                # Deterministic primary key: the schema's unique index spans an
-                # expression (coalesce on exchange_account_id) and so cannot be
-                # targeted by ON CONFLICT, while the id can.
-                "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
-                "order_id": order_id,
-                "exchange_name": exchange,
-                "exchange_fill_id": fill_id,
-                "price": price,
-                "filled_at": datetime.now(timezone.utc).isoformat(),
-                "raw_payload": {"derived_from": "cumulative_filled"},
-            }
-            try:
-                delta = self._outbox.enqueue_cumulative_fill(
-                    "order_fills", "id", fill_row, f"{exchange}:{pair_key}:{key}", filled
-                )
-            except Exception:
-                self._dropped += 1
-                logger.exception("CRITICAL: failed to journal cumulative fill for %s", key)
+    def order_id_for(
+        self, pair_key: str, exchange: str, key: str
+    ) -> str:
+        """Returns the same stable order UUID used by the order lifecycle writer."""
+        order_state_key = f"{exchange}:{pair_key}:{key}"
+        return self._order_ids.setdefault(
+            order_state_key, str(uuid.uuid5(_POSITION_NS, f"order:{order_state_key}"))
+        )
 
+    def order_fill(
+        self,
+        *,
+        order_id: str,
+        exchange: str,
+        fill: Dict[str, Any],
+        is_mock: bool = False,
+    ) -> bool:
+        """Journals one exchange execution by its immutable venue trade id."""
+        if not isinstance(fill, dict) or not order_id:
+            return False
+        fill_id = str(fill.get("id") or fill.get("trade_id") or "").strip()
+        if not fill_id:
+            return False
+        try:
+            qty = float(fill.get("amount"))
+            price = float(fill.get("price"))
+            quote_qty = float(fill.get("cost") if fill.get("cost") is not None else qty * price)
+            timestamp = int(fill.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            return False
+        if (
+            not all(math.isfinite(value) for value in (qty, price, quote_qty))
+            or qty <= 0 or price <= 0 or quote_qty < 0 or timestamp <= 0
+        ):
+            return False
+        fee = fill.get("fee") if isinstance(fill.get("fee"), dict) else {}
+        fee_cost = fee.get("cost")
+        try:
+            fee_amount = float(fee_cost) if fee_cost is not None else None
+        except (TypeError, ValueError):
+            return False
+        if fee_amount is not None and (not math.isfinite(fee_amount) or fee_amount < 0):
+            return False
+        fee_asset = str(fee.get("currency") or "").strip().upper() or None
+        row = {
+            "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
+            "order_id": order_id,
+            "exchange_name": str(exchange).strip().lower(),
+            "exchange_fill_id": fill_id,
+            "qty": qty,
+            "price": price,
+            "quote_qty": quote_qty,
+            "fee_amount": fee_amount,
+            "fee_asset": fee_asset,
+            "filled_at": datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).isoformat(),
+            "raw_payload": fill.get("info") if isinstance(fill.get("info"), dict) else fill,
+        }
+        if not self.enabled or self._outbox is None:
+            return False
+        try:
+            return self._outbox.enqueue_once(
+                "order_fills", "id", row, f"exchange-fill:{exchange}:{fill_id}"
+            )
+        except Exception:
+            self._dropped += 1
+            logger.exception("CRITICAL: failed to journal exchange fill %s", fill_id)
+            return False
 
     # ------------------------------------------------------------ closed trades
 
@@ -589,6 +624,57 @@ class SupabaseWriter:
         )
 
     # ------------------------------------------------------------------- flush
+
+    async def fetch_recent_order_fill_candidates(self, days: int = 90, limit: int = 2000) -> list:
+        """Read recent live order rows to replay immutable fills after a restart."""
+        if not self.enabled or not self.url or not self.key:
+            return []
+        cutoff = datetime.fromtimestamp(
+            time.time() - max(1, int(days)) * 86400, tz=timezone.utc
+        ).isoformat()
+        params = {
+            "select": (
+                "id,pair_key,exchange_name,market_type,leg,exchange_order_id,"
+                "client_order_id,symbol,side,filled_qty,submitted_at,updated_at,is_mock"
+            ),
+            "is_mock": "eq.false",
+            "updated_at": f"gte.{cutoff}",
+            "order": "updated_at.desc",
+            "limit": str(max(1, min(int(limit), 10000))),
+        }
+        session = self._session
+        created = False
+        try:
+            if session is None or session.closed:
+                session = aiohttp.ClientSession(timeout=_TIMEOUT)
+                created = True
+            headers = {
+                "apikey": self.key,
+                "Authorization": f"Bearer {self.key}",
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+            }
+            async with session.get(
+                f"{self.url}/rest/v1/orders", params=params, headers=headers
+            ) as resp:
+                if resp.status >= 300:
+                    body = (await resp.text())[:500]
+                    raise RuntimeError(
+                        f"recent order fill candidate read failed with HTTP {resp.status}: {body}"
+                    )
+                rows = await resp.json()
+        except Exception as exc:
+            logger.error("recent order fill candidate read failed: %s", exc)
+            raise RuntimeError("recent order fill candidates could not be read") from exc
+        finally:
+            if created and session is not None:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+        if not isinstance(rows, list):
+            raise RuntimeError("recent order fill candidates returned a malformed payload")
+        return [row for row in rows if isinstance(row, dict)]
 
     async def fetch_open_order_records(self, limit: int = 500) -> list:
         """Reads non-terminal order-registry rows for startup recovery.
