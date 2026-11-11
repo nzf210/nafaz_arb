@@ -327,7 +327,6 @@ class TradeFillReconciliationWorker:
                 order_id=order_row_id,
                 exchange=exchange,
                 fill=trade,
-                is_mock=False,
             ) is False:
                 raise RuntimeError(
                     f"exchange fill {trade.get('id')} could not be durably journaled"
