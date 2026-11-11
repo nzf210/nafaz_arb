@@ -638,3 +638,89 @@ def test_engine_pair_client_binding_is_task_local_and_restores_previous_binding(
     assert engine.client is toko_client
     engine._reset_pair_client(token_a)
     assert engine.client is base
+
+@pytest.mark.asyncio
+async def test_spot_order_history_lookup_matches_exact_client_id():
+    """The adapter can recover a filled/closed order when its create ack was lost."""
+    from executor.exchange_client import ExchangeClient
+
+    class Spot:
+        id = "okx"
+
+        async def fetch_open_orders(self, symbol):
+            return []
+
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            return [{
+                "id": "ack-spot-1",
+                "clientOrderId": "pair-entry-77",
+                "symbol": symbol,
+                "side": "buy",
+                "type": "limit",
+                "amount": 0.01,
+                "filled": 0.01,
+                "remaining": 0.0,
+                "status": "closed",
+                "average": 100.0,
+            }]
+
+    client = ExchangeClient(Spot(), object())
+    order = await client.fetch_local_order_by_client_id(
+        "pair-entry-77", "BTC/USDT"
+    )
+
+    assert order["id"] == "ack-spot-1"
+    assert order["client_order_id"] == "pair-entry-77"
+    assert order["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_futures_order_history_lookup_resolves_client_id_through_private_trade():
+    """A filled market hedge can be found through the private trade's client id."""
+    from executor.exchange_client import ExchangeClient
+
+    class Futures:
+        id = "okx"
+
+        async def fetch_open_orders(self, symbol):
+            return []
+
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            raise NotSupported("closed order history unavailable")
+
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            raise NotSupported("canceled order history unavailable")
+
+        async def fetch_my_trades(self, symbol, since=None, limit=None):
+            return [{
+                "id": "trade-1",
+                "order": "ack-hedge-1",
+                "clientOrderId": "pair-hedge-78",
+                "symbol": symbol,
+            }]
+
+        async def fetch_order(self, order_id, symbol):
+            assert order_id == "ack-hedge-1"
+            return {
+                "id": order_id,
+                "symbol": symbol,
+                "side": "sell",
+                "type": "market",
+                "amount": 0.01,
+                "filled": 0.01,
+                "remaining": 0.0,
+                "status": "closed",
+                "average": 101.0,
+            }
+
+    class NotSupported(Exception):
+        pass
+
+    client = ExchangeClient(object(), Futures())
+    order = await client.fetch_global_order_by_client_id(
+        "pair-hedge-78", "BTC/USDT"
+    )
+
+    assert order["id"] == "ack-hedge-1"
+    assert order["client_order_id"] == "pair-hedge-78"
+    assert order["filled"] == pytest.approx(0.01)
