@@ -236,7 +236,8 @@ class RiskMixin:
             try:
                 await asyncio.sleep(seconds)
             except asyncio.CancelledError:
-                return
+                # Cancellation is a lifecycle signal; never convert it into success.
+                raise
             # Only clear the halt this task installed; a newer cooldown or a
             # manual halt must not be undone by a stale timer.
             if getattr(self, "_venue_cooldown_epoch", 0) != token:
