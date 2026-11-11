@@ -300,6 +300,7 @@ class ForceCloseMixin:
                     symbol=pos.symbol, role=OrderRole.FORCE_CLOSE.value,
                     side="sell", order_type="market", price=0.0,
                     quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
+                    required=False,
                 )
                 spot_order = await helpers.retry_with_backoff(
                     lambda: self.client.place_local_market_sell(
