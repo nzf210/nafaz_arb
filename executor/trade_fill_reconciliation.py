@@ -437,7 +437,7 @@ class TradeFillReconciliationWorker:
                 token = self.engine._bind_pair_client(
                     self.engine._pair_info_for_tag(pair_key)
                 )
-            except (LookupError, KeyError, ValueError):
+            except (LookupError, ValueError):
                 token = None
         client = (
             self.engine.client
