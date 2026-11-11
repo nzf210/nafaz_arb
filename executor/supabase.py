@@ -1084,3 +1084,80 @@ class SupabaseWriter:
                     "Supabase delivery deferred table=%s rows=%d: %s",
                     table, len(rows), last_error,
                 )
+
+
+    # ---------------------------------------------------------- durable risk state
+
+    def risk_state(
+        self, *, state_type: str, scope: str, value: Any, reason: str = "",
+        exchange: Optional[str] = None, pair_key: Optional[str] = None,
+        resolved: bool = False, state_id: Optional[str] = None,
+        is_mock: bool = True,
+    ) -> bool:
+        """Journal a mutable risk-state snapshot by stable identity.
+
+        The SQLite outbox is the synchronous durability boundary; Supabase is
+        the cross-process source of truth. Repeated writes upsert one state row.
+        """
+        identity = state_id or str(uuid.uuid5(
+            _POSITION_NS,
+            f"risk:{state_type}:{scope}:{(exchange or '').lower()}:{pair_key or ''}",
+        ))
+        now = datetime.now(timezone.utc).isoformat()
+        return self._emit(
+            "risk_state",
+            {
+                "state_id": identity,
+                "state_type": str(state_type),
+                "scope": str(scope),
+                "exchange": str(exchange).lower() if exchange else None,
+                "pair_key": pair_key,
+                "reason": str(reason or ""),
+                "value": value if isinstance(value, (dict, list, str, int, float, bool)) or value is None else str(value),
+                "created_at": now,
+                "updated_at": now,
+                "resolved_at": now if resolved else None,
+                "is_mock": bool(is_mock),
+            },
+            on_conflict="state_id",
+        )
+
+    async def fetch_active_risk_states(self, *, is_mock: bool = True) -> list:
+        """Reads unresolved state from Supabase; errors are not treated as empty."""
+        if not self.enabled or not self.url or not self.key:
+            return []
+        params = {
+            "select": "state_id,state_type,scope,exchange,pair_key,reason,value,created_at,updated_at,resolved_at,is_mock",
+            "resolved_at": "is.null",
+            "is_mock": f"eq.{str(bool(is_mock)).lower()}",
+            "order": "updated_at.asc",
+            "limit": "5000",
+        }
+        session = self._session
+        created = False
+        try:
+            if session is None or session.closed:
+                session = aiohttp.ClientSession(timeout=_TIMEOUT)
+                created = True
+            headers = {
+                "apikey": self.key,
+                "Authorization": f"Bearer {self.key}",
+                "Accept": "application/json",
+                "Accept-Encoding": "identity",
+            }
+            async with session.get(
+                f"{self.url}/rest/v1/risk_state", params=params, headers=headers
+            ) as resp:
+                if resp.status >= 300:
+                    body = (await resp.text())[:500]
+                    raise RuntimeError(f"risk state read failed with HTTP {resp.status}: {body}")
+                rows = await resp.json()
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise RuntimeError("risk state read returned malformed payload")
+            return rows
+        except Exception as exc:
+            logger.error("durable risk-state restoration failed: %s", exc)
+            raise RuntimeError("durable risk state could not be restored") from exc
+        finally:
+            if created and session is not None:
+                await session.close()
