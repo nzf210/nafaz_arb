@@ -642,7 +642,11 @@ class ExchangeClient:
                     else qty * price
                 )
             fee = trade.get("fee")
-            if not isinstance(fee, dict):
+            if (
+                not isinstance(fee, dict)
+                or fee.get("cost") is None
+                or not fee.get("currency")
+            ):
                 fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
                 fee = fee_rows[0] if fee_rows and isinstance(fee_rows[0], dict) else {
                     "cost": trade.get(
