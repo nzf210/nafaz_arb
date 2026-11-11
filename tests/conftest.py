@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis.aioredis as fake_aioredis
 import pytest
+from ccxt.base.errors import InsufficientFunds
 
 from executor.config import ExecutorConfig
 from executor.engine import ArbitrageEngine, build_client_order_id, clean_pair_key, round_to_tick
@@ -370,16 +371,16 @@ class SlowLimitBuyClient(MockExchangeClient):
         return await super().place_local_limit_buy(symbol, amount, price, amount_spec=amount_spec)
 
 class FailingHedgeClient(MockExchangeClient):
-    """Client whose futures short always fails, to exercise the hedge rollback path."""
+    """Client whose futures venue explicitly rejects a short order."""
 
     async def open_global_short_market(self, symbol: str, amount: float, price: float = 0.0, client_order_id=None, amount_spec=None):
-        raise RuntimeError("global futures unavailable")
+        raise InsufficientFunds("global futures unavailable")
 
 class BlockingSellClient(MockExchangeClient):
-    """Client whose hedge AND emergency spot sell always fail, simulating total liquidity loss."""
+    """Client whose hedge is explicitly rejected and emergency spot sell fails."""
 
     async def open_global_short_market(self, symbol: str, amount: float, price: float = 0.0, client_order_id=None, amount_spec=None):
-        raise RuntimeError("global futures unavailable")
+        raise InsufficientFunds("global futures unavailable")
 
     async def place_local_market_sell(self, symbol: str, amount: float, client_order_id=None, amount_spec=None):
         raise RuntimeError("local spot exchange unavailable")
