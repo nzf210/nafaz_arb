@@ -37,6 +37,8 @@ class PaperTradingExchangeClient:
 
     async def fetch_balance_report(self) -> list:
         """Returns simulated balances with an explicit simulation label."""
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         return [
             {"name": self.local_name, "market": "spot", "status": "ok", "assets": [
                 {"asset": "USDT", "free": max(0.0, self.balance_spot-self.locked_spot), "used": self.locked_spot, "total": self.balance_spot}]},
@@ -117,6 +119,8 @@ class PaperTradingExchangeClient:
         self, symbol: str, amount: float, price: float,
         client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         self._validate_base_amount(amount, amount_spec)
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
@@ -146,6 +150,8 @@ class PaperTradingExchangeClient:
         self, symbol: str, amount: float, price: float,
         client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         self._validate_base_amount(amount, amount_spec)
         if client_order_id:
             existing = self._find_by_client_id(client_order_id)
@@ -174,6 +180,8 @@ class PaperTradingExchangeClient:
         client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
         """Taker market sell at the live best bid. Used for emergency hedge rollback."""
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         self._validate_base_amount(amount, amount_spec)
         if amount <= 0:
             raise ValueError(f"invalid market sell amount: {amount}")
@@ -200,11 +208,15 @@ class PaperTradingExchangeClient:
         return order
 
     async def cancel_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         if order_id in self.orders:
             self.orders[order_id]["status"] = "canceled"
         return {"id": order_id, "status": "canceled"}
 
     async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         order = self.orders.get(order_id)
         if not order:
             return {"id": order_id, "status": "closed", "filled": 0.0}
@@ -273,6 +285,8 @@ class PaperTradingExchangeClient:
         Hedge and unwound legs are market orders and therefore terminal, so a
         correct simulation returns nothing resting here.
         """
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         open_orders = []
         for order in self.orders.values():
             if str(order.get("status", "")).lower() != "open":
@@ -300,6 +314,8 @@ class PaperTradingExchangeClient:
         self, symbol: str, amount: float, price: float = 0.0,
         client_order_id: Optional[str] = None, amount_spec: Any = None,
     ) -> Dict[str, Any]:
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         self._validate_base_amount(amount, amount_spec)
         if amount <= 0:
             raise ValueError(f"invalid short amount: {amount}")
@@ -326,6 +342,8 @@ class PaperTradingExchangeClient:
         self, symbol: str, amount: float, client_order_id: Optional[str] = None,
         amount_spec: Any = None,
     ) -> Dict[str, Any]:
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         self._validate_base_amount(amount, amount_spec)
         self.order_counter += 1
         oid = f"mock-close-{self.order_counter}"
@@ -351,6 +369,8 @@ class PaperTradingExchangeClient:
 
     async def fetch_positions(self, symbol: str) -> list:
         """Paper-mode position: net of tracked open-short and close trades."""
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         shorts = sum(
             float(t["amount"])
             for t in self.trades
@@ -370,14 +390,20 @@ class PaperTradingExchangeClient:
         self, symbol: str, since: Optional[int] = None, limit: int = 100
     ) -> list:
         """Paper mode has no exchange settlement ledger; never invent funding credits."""
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         return []
 
     async def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
         """Paper mode does not fabricate a future settlement schedule."""
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         return {}
 
     async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
         """Mirrors the live client: returns the last known ask for this symbol."""
+        # Keep the async client contract cooperative even for in-memory operations.
+        await asyncio.sleep(0)
         clean_sym = symbol.lower().strip().replace("/", "_").replace("-", "_")
         price = self.market_prices.get(clean_sym) or {}
         return {
