@@ -1154,7 +1154,18 @@ class SupabaseWriter:
                 rows = await resp.json()
             if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
                 raise RuntimeError("risk state read returned malformed payload")
-            return rows
+            # Supabase delivery is asynchronous. Overlay the SQLite journal so
+            # a halt/resume queued immediately before a crash is restored even
+            # when its network upsert had not reached PostgREST yet.
+            merged = {str(row.get("state_id")): dict(row) for row in rows if row.get("state_id")}
+            if self._outbox is not None:
+                for _item_id, _table, _conflict, pending_row in self._outbox.pending_table("risk_state"):
+                    if bool(pending_row.get("is_mock", True)) != bool(is_mock):
+                        continue
+                    state_id = str(pending_row.get("state_id") or "")
+                    if state_id:
+                        merged[state_id] = dict(pending_row)
+            return [row for row in merged.values() if row.get("resolved_at") is None]
         except Exception as exc:
             logger.error("durable risk-state restoration failed: %s", exc)
             raise RuntimeError("durable risk state could not be restored") from exc
