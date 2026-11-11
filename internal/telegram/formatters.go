@@ -20,7 +20,14 @@ func (b *Bot) formatHelp() string {
 
 <b>Perintah Keyboard:</b>
 /menu - <i>Buka menu tombol interaktif</i>
-/positions - <i>Lihat posisi aktif Executor & opsi tutup paksa</i>
+/orders - <i>Lihat active bot orders</i>
+/recovery - <i>Status recovery setelah restart</i>
+/orphans - <i>Order exchange belum teridentifikasi</i>
+/reconcile - <i>Mismatch reconciliation terbaru</i>
+/risk - <i>Status risk halt</i>
+/order [internal_order_id] - <i>Detail order dan fills terkait</i>
+/position [position_id] - <i>Detail posisi</i>
+/positions - <i>Lihat posisi aktif Executor</i>
 /pending - <i>Lihat pending order Spot yang belum selesai</i>
 /balance - <i>Cek saldo live seluruh aset Spot & Futures</i>
 /scan - <i>Jalankan scan pasar on-demand</i>
