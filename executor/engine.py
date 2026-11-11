@@ -1488,6 +1488,43 @@ class ArbitrageEngine(
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
             placed_time = time.time()
+            await self._register_order_intent(
+                pair_tag,
+                entry_coid,
+                exchange=pair_info.local_exchange,
+                market_type="spot",
+                symbol=pair_info.local_symbol,
+                role=OrderRole.ENTRY.value,
+                side="buy",
+                order_type="limit",
+                price=buy_price_idr,
+                quantity=buy_qty,
+                local_amount_spec=pair_info.local_amount_spec,
+                global_amount_spec=pair_info.global_amount_spec,
+                recovery_context={
+                    "usdt_idr_rate": snapshot.usdt_idr_rate,
+                    "fx_rate_timestamp_ms": snapshot.timestamp_ms,
+                    "global_ask_usdt": snapshot.global_best_ask_usdt,
+                    "global_symbol": pair_info.global_symbol,
+                    "base_asset": pair_info.base_asset,
+                    "quote_asset": pair_info.quote_asset,
+                    "cancel_threshold_usdt": directives.cancel_if_global_bid_drops_below_usdt,
+                    "min_entry_spread_pct": directives.min_entry_spread_pct,
+                    "base_target_exit_spread_pct": directives.base_target_exit_spread_pct,
+                    "current_funding_rate": payload.funding_metrics.current_funding_rate,
+                    "next_funding_time_ms": payload.funding_metrics.next_funding_time_ms,
+                    "spot_entry_fee_pct": directives.spot_entry_fee_pct,
+                    "spot_exit_fee_pct": directives.spot_exit_fee_pct,
+                    "perp_entry_fee_pct": directives.perp_entry_fee_pct,
+                    "perp_exit_fee_pct": directives.perp_exit_fee_pct,
+                    "fee_source": directives.fee_source,
+                    "fee_verified": directives.fee_verified,
+                    "fee_fetched_at_ms": directives.fee_fetched_at_ms,
+                    "fee_asset_surcharge_pct": directives.fee_asset_surcharge_pct,
+                    "spot_cost_usdt": actual_cost_usdt,
+                    "futures_margin_usdt": actual_cost_usdt,
+                },
+            )
             order = await self.client.place_local_limit_buy(
                 pair_info.local_symbol,
                 buy_qty,
