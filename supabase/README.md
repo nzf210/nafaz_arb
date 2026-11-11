@@ -82,9 +82,12 @@ Implemented writes:
   balances, pub/sub, and fast coordination. Exchange APIs remain authoritative
   for actual balances, order state, and position exposure.
 
-Still schema-only / not yet connected to runtime writes: `position_legs`,
-`funding_payments`, and `executor_status_snapshots`. The executor now writes
-append-only `balance_snapshots` from authenticated spot/perpetual balance
+`position_legs` receives independent spot/perpetual upserts keyed by the parent
+position and leg. Confirmed exchange funding settlements are written to
+`funding_payments` through the durable SQLite outbox, with deterministic IDs so
+replayed ledger rows are idempotent. `executor_status_snapshots` remains
+schema-only. The executor also writes append-only `balance_snapshots` from
+authenticated spot/perpetual balance
 reports. Its live exposure worker checks that spot base-asset totals cover the
 aggregate managed quantity and compares each managed futures short with the
 exchange position. A confirmed mismatch or unavailable read halts new entries
