@@ -156,10 +156,14 @@ func (b *Bot) handleReconcileCommand(ctx context.Context, msg *Message, parts []
 		b.handleReconcileRetryCommand(ctx, msg)
 		return
 	}
+	if len(parts) > 1 && strings.EqualFold(parts[1], "resolve") {
+		b.handleOrphanResolveCommand(ctx, msg, parts)
+		return
+	}
 	if len(parts) > 1 && !strings.EqualFold(parts[1], "status") {
 		b.sendReplyWithMarkup(
 			ctx, msg.Chat.ID, msg.MessageID,
-			"ℹ️ Gunakan <code>/reconcile</code> untuk daftar insiden atau <code>/reconcile retry</code> untuk menjalankan verifikasi ulang read-only.",
+			"ℹ️ Gunakan <code>/reconcile</code>, <code>/reconcile retry</code>, atau <code>/reconcile resolve ORPHAN_ID [PAIR]</code>.",
 			b.defaultKeyboard(),
 		)
 		return
@@ -226,6 +230,54 @@ func (b *Bot) handleReconcileRetryCommand(ctx context.Context, msg *Message) {
 		message += "\n\n<b>Halt:</b> <code>" + html.EscapeString(prettyJSON(mustJSONRaw(reply.ScopeHalts))) + "</code>"
 	}
 	b.sendReplyWithMarkup(ctx, msg.Chat.ID, 0, message, b.defaultKeyboard())
+}
+
+func (b *Bot) handleOrphanResolveCommand(ctx context.Context, msg *Message, parts []string) {
+	if len(parts) < 3 {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"ℹ️ Gunakan <code>/reconcile resolve ORPHAN_ID [PAIR_TAG]</code>. Resolusi hanya berhasil jika exchange membuktikan order terminal dengan fill nol.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	userID := int64(0)
+	if msg.From != nil { userID = msg.From.ID }
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"⛔ <b>Akses ditolak:</b> User tidak diizinkan menyelesaikan orphan order.",
+			b.defaultKeyboard())
+		return
+	}
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"❌ Redis tidak terhubung; resolusi orphan tidak dapat dikirim.",
+			b.defaultKeyboard())
+		return
+	}
+	pairTag := ""
+	if len(parts) > 3 { pairTag = parts[3] }
+	reply, err := rc.RequestOrphanResolution(ctx, parts[2], pairTag)
+	if err != nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"⚠️ <b>Resolusi orphan tidak terkonfirmasi:</b> "+html.EscapeString(err.Error()),
+			b.defaultKeyboard())
+		return
+	}
+	if !reply.Resolved {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"🛑 <b>ORPHAN TETAP DIBLOKIR</b>\nExchange belum membuktikan order terminal dengan fill nol, atau masih ada insiden lain pada scope yang sama. Halt tetap dipertahankan. Periksa <code>/orphans</code> dan <code>/reconcile</code>.",
+			b.defaultKeyboard())
+		return
+	}
+	status := "⚠️ Scope masih memiliki halt lain."
+	if reply.Complete { status = "🟢 Tidak ada pending recovery atau scope halt tersisa." }
+	b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+		"✅ <b>ORPHAN TERVERIFIKASI DAN DICATAT SELESAI</b>\n• Orphan: <code>"+html.EscapeString(parts[2])+"</code>\n• Pair: <code>"+html.EscapeString(pairTag)+"</code>\n• "+status+"\n\n<i>Resolusi hanya dilakukan setelah exact venue lookup memastikan status terminal dan filled quantity nol. Tidak ada order yang dikirim atau dibatalkan.</i>",
+		b.defaultKeyboard())
 }
 
 func mustJSONRaw(value interface{}) json.RawMessage {
