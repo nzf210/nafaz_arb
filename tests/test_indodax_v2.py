@@ -5,7 +5,7 @@ import hmac
 
 import pytest
 
-from executor.indodax_v2 import IndodaxTAPIv2, _fmt, normalize_symbol
+from executor.indodax_v2 import IndodaxAPIError, IndodaxTAPIv2, _fmt, normalize_symbol
 from executor.exchange_client import ExchangeClient
 
 def _adapter():
@@ -120,9 +120,70 @@ async def test_create_limit_buy_posts_signed_body_with_client_order_id():
     assert "quantity=0.01" in body
     assert "price=1000000" in body
     assert "newClientOrderId=btcidr-entry-1" in body
+    assert "timeInForce=MOC" in body
     assert call["headers"]["X-APIKEY"] == "K"
     assert call["headers"]["Sign"] == ex.sign(body)
     assert order["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_indodax_limit_sell_uses_post_only_moc():
+    session = _StubSession(
+        {
+            "symbol": "BTCIDR", "orderId": 13, "side": "SELL",
+            "type": "LIMIT", "price": "1100000",
+            "origQty": "0.01", "executedQty": "0",
+        }
+    )
+    ex = IndodaxTAPIv2("K", "S", session=session)
+    client = ExchangeClient(ex, object())
+
+    await client.place_local_limit_sell(
+        "btc_idr", 0.01, 1_100_000.0,
+        client_order_id="btcidr-exit-1",
+        amount_spec={"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
+    )
+
+    body = session.calls[0]["data"]
+    assert "side=SELL" in body
+    assert "timeInForce=MOC" in body
+
+
+@pytest.mark.asyncio
+async def test_indodax_moc_rejection_does_not_retry_as_gtc():
+    session = _StubSession({"code": -1013, "msg": "post-only order would take"})
+    ex = IndodaxTAPIv2("K", "S", session=session)
+    client = ExchangeClient(ex, object())
+
+    with pytest.raises(IndodaxAPIError, match="post-only order would take"):
+        await client.place_local_limit_buy(
+            "btc_idr", 0.01, 1_000_000.0,
+            client_order_id="btcidr-entry-rejected",
+            amount_spec={"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
+        )
+
+    assert len(session.calls) == 1
+    assert "timeInForce=MOC" in session.calls[0]["data"]
+    assert "timeInForce=GTC" not in session.calls[0]["data"]
+
+
+@pytest.mark.asyncio
+async def test_indodax_market_sell_does_not_send_limit_time_in_force():
+    session = _StubSession(
+        {
+            "symbol": "BTCIDR", "orderId": 14, "side": "SELL",
+            "type": "MARKET", "origQty": "0.01", "executedQty": "0.01",
+        }
+    )
+    ex = IndodaxTAPIv2("K", "S", session=session)
+    client = ExchangeClient(ex, object())
+
+    await client.place_local_market_sell(
+        "btc_idr", 0.01,
+        amount_spec={"unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0},
+    )
+
+    assert "timeInForce" not in session.calls[0]["data"]
 
 
 @pytest.mark.asyncio
