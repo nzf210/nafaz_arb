@@ -86,6 +86,52 @@ class RiskStateMixin:
                 "restored unresolved position failure"
             )
 
+    def _restore_global_risk_record(
+        self, kind: str, value, reason: str
+    ) -> bool:
+        if kind == "trading_halt":
+            self._trading_halted = True
+            self._halt_reason = str(
+                (value or {}).get("halt_reason") or reason or "RESTORED_MANUAL_HALT"
+            )
+            return True
+        if kind == "trading_resume":
+            self._manual_resume_day = str(
+                (value or {}).get("loss_day") or self._utc_day()
+            )
+            return True
+        if kind == "daily_loss":
+            self._restore_daily_loss_record(value)
+            return True
+        return False
+
+    def _restore_exchange_risk_record(
+        self, kind: str, exchange: str, reason: str, value
+    ) -> bool:
+        if not exchange:
+            return False
+        if kind == "exchange_halt":
+            self._restore_exchange_halt_record(exchange, reason, value)
+            return True
+        if kind == "consecutive_order_failures":
+            self._consecutive_order_failures[exchange] = max(
+                0, int((value or {}).get("count", 0))
+            )
+            return True
+        return False
+
+    def _restore_reconciliation_halt(
+        self, scope: str, exchange: str, pair_key: str, reason: str
+    ) -> None:
+        key = "*" if scope == "global" else (
+            exchange if scope == "exchange" else pair_key
+        )
+        if not key:
+            return
+        self._recovery_scope_halts[key] = reason
+        if key == "*":
+            self._entry_blocked = True
+
     def _restore_risk_record(self, row: dict) -> None:
         kind = str(row.get("state_type") or "")
         scope = str(row.get("scope") or "")
@@ -99,29 +145,16 @@ class RiskStateMixin:
             except (TypeError, ValueError):
                 pass
 
-        if kind == "trading_halt" and scope == "global":
-            self._trading_halted = True
-            self._halt_reason = str(
-                (value or {}).get("halt_reason") or reason or "RESTORED_MANUAL_HALT"
-            )
-        elif kind == "trading_resume" and scope == "global":
-            self._manual_resume_day = str((value or {}).get("loss_day") or self._utc_day())
-        elif kind == "daily_loss" and scope == "global":
-            self._restore_daily_loss_record(value)
-        elif kind == "exchange_halt" and scope == "exchange" and exchange:
-            self._restore_exchange_halt_record(exchange, reason, value)
-        elif kind == "consecutive_order_failures" and scope == "exchange" and exchange:
-            self._consecutive_order_failures[exchange] = max(
-                0, int((value or {}).get("count", 0))
-            )
-        elif kind == "reconciliation_halt":
-            key = "*" if scope == "global" else (
-                exchange if scope == "exchange" else pair_key
-            )
-            if key:
-                self._recovery_scope_halts[key] = reason
-                if key == "*":
-                    self._entry_blocked = True
+        if scope == "global" and self._restore_global_risk_record(
+            kind, value, reason
+        ):
+            return
+        if scope == "exchange" and self._restore_exchange_risk_record(
+            kind, exchange, reason, value
+        ):
+            return
+        if kind == "reconciliation_halt":
+            self._restore_reconciliation_halt(scope, exchange, pair_key, reason)
         elif kind == "position_failure" and pair_key:
             self._restore_position_failure_record(pair_key, reason, value)
 
