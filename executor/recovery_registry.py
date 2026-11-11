@@ -3,7 +3,10 @@
 import asyncio
 import logging
 import time
+import uuid
 from typing import Any, Dict
+
+from redis.exceptions import WatchError
 
 from executor.models import OrderRecord, PositionState, RecoveryStatus
 
@@ -45,13 +48,12 @@ class RecoveryRegistryMixin:
         if self.redis is None or self.order_registry is None:
             return False
 
-        lock = self.redis.lock(
-            "arb:executor:order-recovery:lock",
-            timeout=300,
-            thread_local=False,
-        )
+        lock_token = uuid.uuid4().hex
+        lock_key = "arb:executor:order-recovery:lock"
         try:
-            acquired = await lock.acquire(blocking=False)
+            acquired = await self.redis.set(
+                lock_key, lock_token, nx=True, px=300_000
+            )
         except Exception as exc:
             logger.critical(
                 "[Recovery] distributed lock unavailable; recovery skipped and "
@@ -77,7 +79,7 @@ class RecoveryRegistryMixin:
 
         owner_task = asyncio.current_task()
         heartbeat = asyncio.create_task(
-            self._renew_order_recovery_lock(lock, owner_task)
+            self._renew_order_recovery_lock(lock_token, owner_task)
         )
         completed = False
         try:
@@ -87,7 +89,9 @@ class RecoveryRegistryMixin:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
             try:
-                await lock.release()
+                released = await self._release_order_recovery_lock(lock_token)
+                if not released:
+                    raise RuntimeError("recovery lease is no longer owned by this executor")
             except Exception as exc:
                 # A lost/expired lease must never be treated as a successful
                 # release: retain the global entry gate until a later full pass.
@@ -103,13 +107,15 @@ class RecoveryRegistryMixin:
                 completed = False
         return completed
 
-    async def _renew_order_recovery_lock(self, lock, owner_task) -> None:
-        """Renew the recovery lease and abort work if ownership is lost."""
+    async def _renew_order_recovery_lock(self, lock_token: str, owner_task) -> None:
+        """Renew the lease only while its unique owner token is still present."""
         while True:
             await asyncio.sleep(60)
             try:
-                renewed = await lock.extend(300, replace_ttl=True)
-                if renewed is False:
+                renewed = await self._update_order_recovery_lease(
+                    lock_token, extend=True
+                )
+                if not renewed:
                     raise RuntimeError("Redis rejected recovery lease renewal")
             except asyncio.CancelledError:
                 raise
@@ -126,6 +132,38 @@ class RecoveryRegistryMixin:
                 if owner_task is not None and not owner_task.done():
                     owner_task.cancel()
                 return
+
+    async def _update_order_recovery_lease(
+        self, lock_token: str, *, extend: bool
+    ) -> bool:
+        """Atomically renew or release the lease only for its current owner."""
+        lock_key = "arb:executor:order-recovery:lock"
+        for _ in range(3):
+            async with self.redis.pipeline(transaction=True) as pipe:
+                try:
+                    await pipe.watch(lock_key)
+                    current = await pipe.get(lock_key)
+                    if isinstance(current, bytes):
+                        current = current.decode("utf-8")
+                    if current != lock_token:
+                        await pipe.unwatch()
+                        return False
+                    pipe.multi()
+                    if extend:
+                        pipe.pexpire(lock_key, 300_000)
+                    else:
+                        pipe.delete(lock_key)
+                    await pipe.execute()
+                    return True
+                except WatchError:
+                    continue
+        return False
+
+    async def _release_order_recovery_lock(self, lock_token: str) -> bool:
+        """Compare-and-delete the lease; never delete another executor's lock."""
+        return await self._update_order_recovery_lease(
+            lock_token, extend=False
+        )
 
     async def _run_order_recovery_with_lock(self) -> None:
         """Reconciles durable registry + positions + venue open orders."""
