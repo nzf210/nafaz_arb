@@ -8,6 +8,7 @@ select
     'indodax'::text as local_exchange,
     'schema-smoke-idempotency'::text as idempotency_scan_id,
     'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt'::text as idempotency_key,
+    (select idempotency_pair_key from pg_temp._smoke_constants)::text as idempotency_pair_key,
     '11111111-1111-1111-1111-111111111111'::uuid as order_local_id,
     'smoke-entry-1'::text as order_client_id,
     'btc_idr'::text as local_symbol,
@@ -152,7 +153,7 @@ insert into public.scanner_opportunities (
     scan_id, pair_key, idempotency_key, local_exchange, global_exchange,
     local_symbol, global_symbol, quote_asset, eligibility_status, observed_at, payload
 ) values (
-    (select idempotency_scan_id from pg_temp._smoke_constants), 'indodax:btc_idr->okx:btc/usdt:usdt',
+    (select idempotency_scan_id from pg_temp._smoke_constants), (select idempotency_pair_key from pg_temp._smoke_constants),
     (select idempotency_key from pg_temp._smoke_constants), (select local_exchange from pg_temp._smoke_constants), 'okx',
     (select local_symbol from pg_temp._smoke_constants), 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":1}'::jsonb
 )
@@ -163,7 +164,7 @@ insert into public.scanner_opportunities (
     scan_id, pair_key, idempotency_key, local_exchange, global_exchange,
     local_symbol, global_symbol, quote_asset, eligibility_status, observed_at, payload
 ) values (
-    (select idempotency_scan_id from pg_temp._smoke_constants), 'indodax:btc_idr->okx:btc/usdt:usdt',
+    (select idempotency_scan_id from pg_temp._smoke_constants), (select idempotency_pair_key from pg_temp._smoke_constants),
     (select idempotency_key from pg_temp._smoke_constants), (select local_exchange from pg_temp._smoke_constants), 'okx',
     (select local_symbol from pg_temp._smoke_constants), 'BTC/USDT:USDT', 'IDR', 'ELIGIBLE', now(), '{"attempt":2}'::jsonb
 )
