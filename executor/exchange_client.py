@@ -645,8 +645,12 @@ class ExchangeClient:
             if not isinstance(fee, dict):
                 fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
                 fee = fee_rows[0] if fee_rows and isinstance(fee_rows[0], dict) else {
-                    "cost": trade.get("commission", info.get("commission")),
-                    "currency": trade.get("commissionAsset", info.get("commissionAsset")),
+                    "cost": trade.get(
+                        "commission", info.get("commission", info.get("execFee"))
+                    ),
+                    "currency": trade.get(
+                        "commissionAsset", info.get("commissionAsset", info.get("feeCurrency"))
+                    ),
                 }
             fill["fee"] = fee if isinstance(fee, dict) else None
             fill["raw_payload"] = {
