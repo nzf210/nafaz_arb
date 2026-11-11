@@ -8,7 +8,7 @@ select
     'indodax'::text as local_exchange,
     'schema-smoke-idempotency'::text as idempotency_scan_id,
     'schema-smoke-idempotency:indodax:btc_idr->okx:btc/usdt:usdt'::text as idempotency_key,
-    (select idempotency_pair_key from pg_temp._smoke_constants)::text as idempotency_pair_key,
+    'indodax:btc_idr->okx:btc/usdt:usdt'::text as idempotency_pair_key,
     '11111111-1111-1111-1111-111111111111'::uuid as order_local_id,
     'smoke-entry-1'::text as order_client_id,
     'btc_idr'::text as local_symbol,
