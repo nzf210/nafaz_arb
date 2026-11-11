@@ -1252,3 +1252,17 @@ class SupabaseWriter:
         finally:
             if created and session is not None:
                 await session.close()
+
+
+    def mark_risk_persistence_failure(self) -> None:
+        if self._outbox is not None:
+            self._outbox.set_numeric_state("risk-persistence-failed", 1.0)
+
+    def risk_persistence_failed(self) -> bool:
+        if self._outbox is None:
+            return False
+        return (self._outbox.get_numeric_state("risk-persistence-failed") or 0.0) > 0
+
+    def clear_risk_persistence_failure(self) -> None:
+        if self._outbox is not None:
+            self._outbox.set_numeric_state("risk-persistence-failed", 0.0)
