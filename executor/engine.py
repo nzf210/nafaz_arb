@@ -125,6 +125,8 @@ class ArbitrageEngine(
         # together both pass the "no active position" check between the Redis
         # read and the order placement, producing a doubled spot position.
         self._pair_locks: Dict[str, asyncio.Lock] = {}
+        # Serialize entry admission across different pairs sharing one spot CEX.
+        self._spot_exchange_entry_locks: Dict[str, asyncio.Lock] = {}
 
         # Last failure per pair, surfaced through arb:executor:status so an
         # operator can query why a pair stopped instead of scraping logs.
