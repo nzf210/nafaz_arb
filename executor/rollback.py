@@ -161,6 +161,12 @@ class RollbackMixin:
                 )
                 return True
             info = position.get("info") or {}
+            if not isinstance(info, dict):
+                logger.critical(
+                    f"[Hedge Ambiguity] {pair_tag}: malformed futures position info; "
+                    "spot rollback blocked"
+                )
+                return True
             raw_contracts = position.get("contracts")
             if raw_contracts is not None:
                 try:
