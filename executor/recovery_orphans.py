@@ -134,7 +134,7 @@ class RecoveryOrphanMixin:
         releasable without restarting the process. Returns True when nothing is
         left pending.
         """
-        for local_id in list(await self.order_registry.pending_recovery_ids()):
+        for local_id in await self.order_registry.pending_recovery_ids():
             record = self._recovered_order_records.get(local_id)
             if record is None:
                 record = await self.order_registry.load(local_id)
