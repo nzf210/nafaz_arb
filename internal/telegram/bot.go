@@ -193,7 +193,7 @@ func (b *Bot) Start(ctx context.Context) error {
 		{Command: "positions", Description: "💼 Status posisi terbuka"},
 		{Command: "recovery", Description: "🔄 Status recovery setelah restart"},
 		{Command: "orphans", Description: "👻 Order exchange yang belum teridentifikasi"},
-		{Command: "reconcile", Description: "🧾 Mismatch reconciliation terbaru"},
+		{Command: "reconcile", Description: "🧾 Insiden reconciliation; /reconcile retry untuk verifikasi ulang"},
 		{Command: "risk", Description: "🛡️ Status risk halt"},
 		{Command: "order", Description: "🔎 Detail order berdasarkan internal ID"},
 		{Command: "position", Description: "🔎 Detail posisi berdasarkan ID"},
@@ -351,8 +351,9 @@ func (b *Bot) isUserAllowedForSensitiveActions(userID int64) bool {
 		}
 		return false
 	}
-	// Fallback to chat authorization if user list is empty
-	return b.isChatAllowed(userID)
+	// The caller has already verified the chat. When no user allow-list is
+	// configured, that authorized chat is the operator trust boundary.
+	return true
 }
 
 func (b *Bot) defaultKeyboard() *InlineKeyboardMarkup {
