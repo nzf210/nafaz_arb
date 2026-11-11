@@ -5,6 +5,7 @@ and must derive fills from cumulative quantities exactly once.
 """
 
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -489,3 +490,26 @@ class TestOrderRegistryWriter:
         assert "pair_key" not in row
         assert "position_key" not in row
         assert row["recovery_status"] == "ORPHAN_ORDER"
+
+
+    def test_order_registry_persists_hedge_watermark_in_raw_payload(self):
+        writer = _writer()
+        writer.order_record(
+            {
+                "local_order_id": "33333333-3333-3333-3333-333333333333",
+                "exchange_name": "indodax",
+                "market_type": "spot",
+                "order_role": "ENTRY",
+                "symbol": "btc_idr",
+                "side": "buy",
+                "status": "open",
+                "original_quantity": 0.01,
+                "filled_quantity": 0.01,
+                "hedged_quantity": 0.006,
+                "pair_key": "indodax:btc_idr",
+                "recovery_context": {"usdt_idr_rate": 16000.0},
+            }
+        )
+        row = [r for t, _, r in _drain(writer) if t == "order_registry"][0]
+        payload = json.loads(row["raw_payload"])
+        assert payload["hedged_quantity"] == pytest.approx(0.006)
