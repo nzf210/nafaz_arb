@@ -53,6 +53,46 @@ class SupabaseRiskMixin:
             on_conflict="state_id",
         )
 
+    def _merge_active_risk_state_rows(self, rows: list, is_mock: bool) -> list:
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise RuntimeError("risk state read returned malformed payload")
+        merged = {
+            str(row.get("state_id")): dict(row)
+            for row in rows if row.get("state_id")
+        }
+        if self._outbox is not None:
+            for _item_id, _table, _conflict, pending_row in self._outbox.pending_table(
+                "risk_state"
+            ):
+                if bool(pending_row.get("is_mock", True)) != bool(is_mock):
+                    continue
+                state_id = str(pending_row.get("state_id") or "")
+                if state_id:
+                    merged[state_id] = dict(pending_row)
+        return [
+            row for row in merged.values()
+            if row.get("resolved_at") is None
+        ]
+
+    def _merge_pending_realized_pnl_events(
+        self, events: dict, loss_day: str, is_mock: bool
+    ) -> dict:
+        if self._outbox is None:
+            return events
+        for event_id in events:
+            self._outbox.set_numeric_state(f"risk-pnl:{event_id}", 1.0)
+        for _item_id, _table, _conflict, row in self._outbox.pending_table(
+            "risk_pnl_events"
+        ):
+            if bool(row.get("is_mock", True)) != bool(is_mock):
+                continue
+            if (
+                str(row.get("loss_day_utc") or "") == str(loss_day)
+                and row.get("event_id")
+            ):
+                events[str(row["event_id"])] = float(row.get("pnl_usdt") or 0.0)
+        return events
+
     async def fetch_active_risk_states(self, *, is_mock: bool = True) -> list:
         """Reads unresolved state from Supabase; errors are not treated as empty."""
         if not self.enabled or not self.url or not self.key:
@@ -83,20 +123,9 @@ class SupabaseRiskMixin:
                     body = (await resp.text())[:500]
                     raise RuntimeError(f"risk state read failed with HTTP {resp.status}: {body}")
                 rows = await resp.json()
-            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
-                raise RuntimeError("risk state read returned malformed payload")
-            # Supabase delivery is asynchronous. Overlay the SQLite journal so
-            # a halt/resume queued immediately before a crash is restored even
-            # when its network upsert had not reached PostgREST yet.
-            merged = {str(row.get("state_id")): dict(row) for row in rows if row.get("state_id")}
-            if self._outbox is not None:
-                for _item_id, _table, _conflict, pending_row in self._outbox.pending_table("risk_state"):
-                    if bool(pending_row.get("is_mock", True)) != bool(is_mock):
-                        continue
-                    state_id = str(pending_row.get("state_id") or "")
-                    if state_id:
-                        merged[state_id] = dict(pending_row)
-            return [row for row in merged.values() if row.get("resolved_at") is None]
+            # Overlay the SQLite journal: queued halt/resume events must survive
+            # a crash before their asynchronous Supabase upsert is delivered.
+            return self._merge_active_risk_state_rows(rows, is_mock)
         except Exception as exc:
             logger.error("durable risk-state restoration failed: %s", exc)
             raise RuntimeError("durable risk state could not be restored") from exc
@@ -164,18 +193,13 @@ class SupabaseRiskMixin:
                 rows = await resp.json()
             if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
                 raise RuntimeError("realized PnL ledger returned malformed payload")
-            events = {str(row.get("event_id")): float(row.get("pnl_usdt") or 0.0)
-                      for row in rows if row.get("event_id")}
-            if self._outbox is not None:
-                # Seed local idempotency markers from already committed remote
-                # events, so a fresh container volume cannot count a replay twice.
-                for event_id in events:
-                    self._outbox.set_numeric_state(f"risk-pnl:{event_id}", 1.0)
-                for _item_id, _table, _conflict, row in self._outbox.pending_table("risk_pnl_events"):
-                    if bool(row.get("is_mock", True)) != bool(is_mock):
-                        continue
-                    if str(row.get("loss_day_utc") or "") == str(loss_day) and row.get("event_id"):
-                        events[str(row["event_id"])] = float(row.get("pnl_usdt") or 0.0)
+            events = {
+                str(row.get("event_id")): float(row.get("pnl_usdt") or 0.0)
+                for row in rows if row.get("event_id")
+            }
+            events = self._merge_pending_realized_pnl_events(
+                events, loss_day, is_mock
+            )
             return sum(-pnl for pnl in events.values() if pnl < 0)
         except Exception as exc:
             logger.error("daily realized PnL restoration failed: %s", exc)
