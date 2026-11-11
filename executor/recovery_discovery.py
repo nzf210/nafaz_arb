@@ -191,6 +191,7 @@ class RecoveryDiscoveryMixin:
             await self._orphan(
                 order, exchange, symbol, requested_pair_tag,
                 "venue order carries no order id or client order id",
+                market_type="perpetual" if market == "futures" else "spot",
             )
             return
 
@@ -204,6 +205,7 @@ class RecoveryDiscoveryMixin:
             await self._orphan(
                 order, exchange, symbol, requested_pair_tag,
                 "active venue order matches no tracked pair, position, pending record or cancelled base order",
+                market_type="perpetual" if market == "futures" else "spot",
             )
             return
 
