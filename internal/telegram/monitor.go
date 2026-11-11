@@ -435,7 +435,7 @@ type startupRecoverySummary struct {
 
 func (b *Bot) waitForStartupRecovery(
 	ctx context.Context,
-) (monitorSnapshot, string) {
+) (monitorSnapshot, string, bool) {
 	var snapshot monitorSnapshot
 	problem := ""
 	for attempt := 0; attempt < 60; attempt++ {
@@ -446,7 +446,7 @@ func (b *Bot) waitForStartupRecovery(
 			_ = json.Unmarshal(rawField(snapshot, "recovery"), &recovery)
 			_ = json.Unmarshal(rawField(recovery, "complete"), &recoveryComplete)
 			if recoveryComplete {
-				return snapshot, ""
+				return snapshot, "", false
 			}
 			problem = "Executor startup recovery is still in progress."
 		}
