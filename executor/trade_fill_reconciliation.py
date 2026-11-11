@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from executor.models import PositionState
+
 logger = logging.getLogger("executor.trade_fill_reconciliation")
 
 
@@ -120,7 +122,7 @@ class TradeFillReconciliationWorker:
                 "TRADE_FILL_RECONCILIATION_REQUIRED",
                 message,
                 detail=detail,
-                state="RECONCILIATION_REQUIRED",
+                state=PositionState.RECONCILIATION_REQUIRED,
             )
 
     async def _clear(self, identity: str) -> None:
