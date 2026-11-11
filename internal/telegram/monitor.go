@@ -100,14 +100,14 @@ func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) 
 	rc := b.redisClient
 	b.mu.Unlock()
 	if rc == nil {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders</b>\\n\\nRedis tidak terhubung; registry order tidak dapat diverifikasi.", b.defaultKeyboard())
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders</b>\n\nRedis tidak terhubung; registry order tidak dapat diverifikasi.", b.defaultKeyboard())
 		return
 	}
 	statusRaw, found, statusErr := rc.GetExecutorStatus(ctx)
 	if statusErr != nil || !found {
 		problem := "Executor status snapshot tidak tersedia; registry saja tidak cukup untuk membuktikan seluruh exchange order telah direkonsiliasi."
 		if statusErr != nil { problem = statusErr.Error() }
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders — verifikasi belum lengkap</b>\\n\\n"+html.EscapeString(problem), b.defaultKeyboard())
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Orders — verifikasi belum lengkap</b>\n\n"+html.EscapeString(problem), b.defaultKeyboard())
 		return
 	}
 	var status monitorSnapshot
@@ -126,7 +126,7 @@ func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) 
 		return
 	}
 	if !recoveryComplete || expected != len(items) {
-		warning := fmt.Sprintf("⚠️ <b>INVENTORY BELUM TERVERIFIKASI</b>\\nRecovery complete: <code>%t</code> | Snapshot tracked: <code>%d</code> | Registry terbaca: <code>%d</code>\\nDaftar di bawah hanya order yang berhasil dibaca; jangan menganggapnya sebagai seluruh order exchange.", recoveryComplete, expected, len(items))
+		warning := fmt.Sprintf("⚠️ <b>INVENTORY BELUM TERVERIFIKASI</b>\nRecovery complete: <code>%t</code> | Snapshot tracked: <code>%d</code> | Registry terbaca: <code>%d</code>\nDaftar di bawah hanya order yang berhasil dibaca; jangan menganggapnya sebagai seluruh order exchange.", recoveryComplete, expected, len(items))
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, warning, nil)
 	}
 	b.sendOrderList(ctx, chatID, replyToID, items)
@@ -166,7 +166,7 @@ func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id
 		var m map[string]interface{}
 		_ = json.Unmarshal(item, &m)
 		if firstMapValue(m, "local_order_id", "internal_order_id", "exchange_order_id", "id") == id {
-			b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\\n<pre>"+html.EscapeString(prettyJSON(item))+"</pre>", b.defaultKeyboard()); return
+			b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\n<pre>"+html.EscapeString(prettyJSON(item))+"</pre>", b.defaultKeyboard()); return
 		}
 	}
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Order ID tidak ditemukan dalam active order registry. Order terminal mungkin sudah dipindahkan dari index aktif; jangan menyimpulkan order exchange tidak ada.", b.defaultKeyboard())
@@ -197,16 +197,16 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Position ID tidak ditemukan pada active position store maupun active order registry. Ini tidak membuktikan tidak ada exposure di exchange.", b.defaultKeyboard()); return
 	}
 	var out strings.Builder
-	out.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\\n\\n")
+	out.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\n\n")
 	if matched != nil {
 		raw, _ := json.Marshal(matched)
-		out.WriteString("<b>Active position snapshot</b>\\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>\\n")
+		out.WriteString("<b>Active position snapshot</b>\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>\n")
 	}
-	out.WriteString(fmt.Sprintf("<b>Active orders terkait (%d)</b>\\n", len(related)))
-	if len(related) == 0 { out.WriteString("<i>Tidak ada active order terkait yang ditemukan.</i>\\n") }
+	out.WriteString(fmt.Sprintf("<b>Active orders terkait (%d)</b>\n", len(related)))
+	if len(related) == 0 { out.WriteString("<i>Tidak ada active order terkait yang ditemukan.</i>\n") }
 	for i, item := range related {
 		if i >= 10 { out.WriteString("<i>Daftar order dibatasi 10.</i>"); break }
-		out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\\n")
+		out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\n")
 	}
 	out.WriteString("<i>Fill ledger historis tidak dipublikasikan oleh status Redis Telegram saat ini.</i>")
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
