@@ -63,7 +63,7 @@ class TradeFillReconciliationWorker:
         market = str(row.get("market_type") or "").lower()
         order_id = str(row.get("exchange_order_id") or "")
         client_id = str(row.get("client_order_id") or "")
-        key = order_id or client_id
+        key = client_id or order_id
         return f"{exchange}:{market}:{key}" if exchange and market and key else ""
 
     async def _load_candidates(self) -> Dict[str, Dict[str, Any]]:
