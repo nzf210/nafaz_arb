@@ -14,7 +14,7 @@ ARB_STATS_KEY = "arb:stats"
 
 
 
-def _parse_force_close_pair_key(message_data: str):
+def _parse_force_close_directive_pair_key(message_data: str):
     """Extract the pair key from a FORCE_CLOSE directive."""
     if not message_data:
         return None
@@ -31,9 +31,9 @@ class ForceCloseLifecycleMixin:
     """Focused emergency close leg or lifecycle operations."""
 
     @staticmethod
-    def _parse_force_close_pair_key(message_data: str):
+    def _parse_force_close_directive_pair_key(message_data: str):
         """Compatibility alias for the module-level directive parser."""
-        return _parse_force_close_pair_key(message_data)
+        return _parse_force_close_directive_pair_key(message_data)
 
 
     async def _record_force_close_trade(
@@ -134,7 +134,7 @@ class ForceCloseLifecycleMixin:
         4. Removes active position from Redis.
         """
         logger.warning(f"Received FORCE_CLOSE directive: {message_data}")
-        pair_key = _parse_force_close_pair_key(message_data)
+        pair_key = _parse_force_close_directive_pair_key(message_data)
         if not pair_key:
             return
 
