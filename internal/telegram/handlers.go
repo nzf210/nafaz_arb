@@ -546,6 +546,21 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			ev.NetProfitIDR,
 			ev.NetROIPct,
 		)
+	case "ORDER_NOT_FOUND_AFTER_RESTART", "UNKNOWN_EXCHANGE_ORDER", "ORPHAN_ORDER", "CANCEL_FAILED", "REPLACEMENT_BLOCKED", "PARTIAL_FILL_IMBALANCE", "EXPOSURE_MISMATCH", "RECOVERY_EXCHANGE_API_FAILED", "DATABASE_PERSISTENCE_FAILED", "POSITION_RECOVERY_FAILED", "RECONCILIATION_MISMATCH", "RISK_HALT":
+		pair := ev.PairTag
+		if pair == "" { pair = ev.PairKey }
+		if pair == "" { pair = ev.Symbol }
+		orderID, positionID, action := "n/a", "n/a", "Periksa exchange dan rekonsiliasi secara manual sebelum mengizinkan entry baru."
+		if ev.Detail != nil {
+			if v, ok := ev.Detail["order_id"]; ok { orderID = fmt.Sprint(v) }
+			if v, ok := ev.Detail["internal_order_id"]; ok && orderID == "n/a" { orderID = fmt.Sprint(v) }
+			if v, ok := ev.Detail["position_id"]; ok { positionID = fmt.Sprint(v) }
+			if v, ok := ev.Detail["required_action"]; ok { action = fmt.Sprint(v) }
+		}
+		if ev.Message != "" { action = ev.Message }
+		text = fmt.Sprintf("🚨 <b>CRITICAL EXECUTION / RECOVERY ALERT</b>\n\n• Event: <code>%s</code>\n• Pair: <code>%s</code>\n• Exchange: <code>%s</code> / <code>%s</code>\n• Order ID: <code>%s</code>\n• Position ID: <code>%s</code>\n• Status: <code>%s</code>\n• Reason: <code>%s</code>\n\n<b>Required action:</b> %s\n\n<i>Jangan mengasumsikan order/posisi aman sampai diverifikasi pada exchange.</i>",
+			html.EscapeString(ev.Event), html.EscapeString(pair), html.EscapeString(ev.LocalExchange), html.EscapeString(ev.GlobalExchange),
+			html.EscapeString(orderID), html.EscapeString(positionID), html.EscapeString(ev.State), html.EscapeString(ev.Reason), html.EscapeString(action))
 	default:
 		return
 	}
