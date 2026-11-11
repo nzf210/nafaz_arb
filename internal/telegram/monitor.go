@@ -134,7 +134,7 @@ func (b *Bot) handleOrdersCommand(ctx context.Context, chatID, replyToID int64) 
 
 func (b *Bot) sendOrderList(ctx context.Context, chatID, replyToID int64, items []json.RawMessage) {
 	if len(items) == 0 {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "📋 <b>ACTIVE BOT ORDERS (0)</b>\\n\\n<i>Tidak ada active order pada registry setelah recovery terverifikasi.</i>", b.defaultKeyboard())
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "📋 <b>ACTIVE BOT ORDERS (0)</b>\n\n<i>Tidak ada active order pada registry setelah recovery terverifikasi.</i>", b.defaultKeyboard())
 		return
 	}
 	const pageSize = 20
@@ -143,7 +143,7 @@ func (b *Bot) sendOrderList(ctx context.Context, chatID, replyToID int64, items 
 		end := start + pageSize
 		if end > len(items) { end = len(items) }
 		var out strings.Builder
-		out.WriteString(fmt.Sprintf("📋 <b>ACTIVE BOT ORDERS (%d) — %d/%d</b>\\n\\n", len(items), page+1, pages))
+		out.WriteString(fmt.Sprintf("📋 <b>ACTIVE BOT ORDERS (%d) — %d/%d</b>\n\n", len(items), page+1, pages))
 		for i, item := range items[start:end] {
 			var m map[string]interface{}
 			_ = json.Unmarshal(item, &m)
@@ -151,7 +151,7 @@ func (b *Bot) sendOrderList(ctx context.Context, chatID, replyToID int64, items 
 			pair := firstMapValue(m, "pair", "pair_key", "pair_tag", "symbol", "pair_id")
 			exchange := firstMapValue(m, "exchange", "exchange_name", "local_exchange", "venue")
 			status := firstMapValue(m, "status", "state")
-			out.WriteString(fmt.Sprintf("<b>[%d] %s</b>\\n• Pair: <code>%s</code>\\n• Exchange: <code>%s</code>\\n• Status: <code>%s</code>\\n\\n",
+			out.WriteString(fmt.Sprintf("<b>[%d] %s</b>\n• Pair: <code>%s</code>\n• Exchange: <code>%s</code>\n• Status: <code>%s</code>\n\n",
 				start+i+1, html.EscapeString(id), html.EscapeString(pair), html.EscapeString(exchange), html.EscapeString(status)))
 		}
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String()+"<i>Read-only; tidak ada order yang diubah.</i>", b.defaultKeyboard())
@@ -183,7 +183,7 @@ func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id
 
 func (b *Bot) sendJSONPages(ctx context.Context, chatID, replyToID int64, title string, rows []json.RawMessage) {
 	if len(rows) == 0 {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "<b>"+html.EscapeString(title)+" (0)</b>\\n<i>Tidak ada record.</i>", b.defaultKeyboard())
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "<b>"+html.EscapeString(title)+" (0)</b>\n<i>Tidak ada record.</i>", b.defaultKeyboard())
 		return
 	}
 	const pageSize = 3
@@ -192,11 +192,11 @@ func (b *Bot) sendJSONPages(ctx context.Context, chatID, replyToID int64, title 
 		end := start + pageSize
 		if end > len(rows) { end = len(rows) }
 		var out strings.Builder
-		out.WriteString(fmt.Sprintf("<b>%s (%d) — %d/%d</b>\\n\\n", html.EscapeString(title), len(rows), page+1, pages))
+		out.WriteString(fmt.Sprintf("<b>%s (%d) — %d/%d</b>\n\n", html.EscapeString(title), len(rows), page+1, pages))
 		for _, row := range rows[start:end] {
 			value := prettyJSON(row)
-			if len([]rune(value)) > 1000 { value = string([]rune(value)[:950]) + "\\n... record dipotong" }
-			out.WriteString("<pre>"+html.EscapeString(value)+"</pre>\\n")
+			if len([]rune(value)) > 1000 { value = string([]rune(value)[:950]) + "\n... record dipotong" }
+			out.WriteString("<pre>"+html.EscapeString(value)+"</pre>\n")
 		}
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
 		replyToID = 0
@@ -243,7 +243,7 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 		var err error
 		ledger, err = ledgerReader.PositionOrderFills(ctx, id)
 		if err != nil {
-			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Supabase order/fill ledger tidak dapat dibaca: "+html.EscapeString(err.Error())+"\\nData Redis tetap tersedia, tetapi fills historis belum terverifikasi.", b.defaultKeyboard())
+			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Supabase order/fill ledger tidak dapat dibaca: "+html.EscapeString(err.Error())+"\nData Redis tetap tersedia, tetapi fills historis belum terverifikasi.", b.defaultKeyboard())
 			return
 		}
 	}
@@ -253,10 +253,10 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 		return
 	}
 	var summary strings.Builder
-	summary.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\\n")
+	summary.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\n")
 	if matched != nil {
 		raw, _ := json.Marshal(matched)
-		summary.WriteString("<b>Active position snapshot</b>\\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>")
+		summary.WriteString("<b>Active position snapshot</b>\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>")
 	}
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, summary.String(), b.defaultKeyboard())
 	b.sendJSONPages(ctx, chatID, 0, "Redis active orders terkait", related)
