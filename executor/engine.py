@@ -233,7 +233,6 @@ class ArbitrageEngine(
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
-        await self._restore_risk_state()
         self._recovery_complete = await self._run_startup_recovery()
         if not self._recovery_complete:
             self._halt_exposure_scope(
