@@ -119,6 +119,104 @@ def _normalize_open_order(order: Dict[str, Any], symbol: str, spec: Optional[Amo
     return _expose_client_order_id(normalized)
 
 
+
+async def _find_order_by_client_id(
+    exchange: Any, symbol: str, client_order_id: str
+) -> Optional[Dict[str, Any]]:
+    """Find an acknowledged order by exact client id without submitting again.
+
+    Open orders cover resting limits; closed-order history and private trade
+    history cover market orders that filled before the process received its
+    acknowledgement. An unsupported or failed lookup is never proof of absence.
+    """
+    if not client_order_id:
+        raise ValueError("client order id is required for acknowledgement recovery")
+
+    def matches(order: Any) -> bool:
+        if not isinstance(order, dict):
+            return False
+        info = order.get("info") if isinstance(order.get("info"), dict) else {}
+        candidates = (
+            order.get("clientOrderId"), order.get("client_order_id"),
+            order.get("clOrdId"), order.get("orderLinkId"),
+            order.get("origClientOrderId"), order.get("clientOid"),
+            info.get("clientOrderId"), info.get("client_order_id"),
+            info.get("clOrdId"), info.get("orderLinkId"),
+            info.get("origClientOrderId"), info.get("clientOid"),
+            info.get("newClientOrderId"),
+        )
+        return any(str(value) == client_order_id for value in candidates if value)
+
+    successful_queries = 0
+    failures = []
+    for method_name in ("fetch_open_orders", "fetch_closed_orders", "fetch_canceled_orders"):
+        method = getattr(exchange, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            if method_name == "fetch_open_orders":
+                rows = await method(symbol)
+            else:
+                try:
+                    rows = await method(symbol, None, 1000)
+                except TypeError:
+                    rows = await method(symbol)
+            if rows is None or not isinstance(rows, (list, tuple)):
+                raise ValueError(f"{method_name} returned a malformed order collection")
+            successful_queries += 1
+            for row in rows:
+                if matches(row):
+                    return _expose_client_order_id(dict(row))
+        except Exception as exc:
+            if type(exc).__name__ not in ("NotSupported", "NotImplementedError"):
+                failures.append(f"{method_name}: {type(exc).__name__}: {exc}")
+
+    trades_method = getattr(exchange, "fetch_my_trades", None)
+    if callable(trades_method):
+        try:
+            try:
+                trades = await trades_method(symbol, None, 1000)
+            except TypeError:
+                trades = await trades_method(symbol)
+            if trades is None or not isinstance(trades, (list, tuple)):
+                raise ValueError("fetch_my_trades returned a malformed trade collection")
+            successful_queries += 1
+            matching_trade = next((trade for trade in trades if matches(trade)), None)
+            if matching_trade is not None:
+                info = matching_trade.get("info") if isinstance(matching_trade.get("info"), dict) else {}
+                order_id = str(
+                    matching_trade.get("order") or matching_trade.get("orderId")
+                    or info.get("orderId") or ""
+                )
+                if not order_id:
+                    raise ValueError("matching private trade has no exchange order id")
+                fetch_order = getattr(exchange, "fetch_order", None)
+                if not callable(fetch_order):
+                    raise NotImplementedError(
+                        "venue cannot fetch the order referenced by its private trade"
+                    )
+                order = await fetch_order(order_id, symbol)
+                if not isinstance(order, dict):
+                    raise ValueError("fetch_order returned a malformed order payload")
+                if not matches(order):
+                    order = dict(order)
+                    order.setdefault("clientOrderId", client_order_id)
+                return _expose_client_order_id(order)
+        except Exception as exc:
+            if type(exc).__name__ not in ("NotSupported", "NotImplementedError"):
+                failures.append(f"fetch_my_trades: {type(exc).__name__}: {exc}")
+
+    if failures:
+        raise RuntimeError(
+            "client-order-id lookup was not authoritative: " + "; ".join(failures)
+        )
+    if successful_queries == 0:
+        raise NotImplementedError(
+            "venue exposes no supported history endpoint for client-order-id recovery"
+        )
+    return None
+
+
 def _balance_fetch_params(exchange: Any, market: str) -> Dict[str, Any]:
     """Return explicit CCXT market params where a venue needs them."""
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
