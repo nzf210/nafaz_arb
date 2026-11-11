@@ -176,6 +176,25 @@ class EngineEntrySubmissionMixin:
             },
         )
 
+    @staticmethod
+    def _is_definitive_order_rejection(exc) -> bool:
+        """Recognize explicit venue rejections; transport failures stay ambiguous."""
+        error_name = type(exc).__name__.lower()
+        error_text = str(exc).lower()
+        definitive_types = {
+            "insufficientfunds", "invalidorder", "badrequest",
+            "authenticationerror", "permissiondenied", "invalidsymbol",
+            "marketclosed", "argumentsrequired",
+        }
+        definitive_messages = (
+            "insufficient funds", "insufficient balance", "insufficientfunds",
+            "min_notional", "minimum notional", "invalid symbol",
+            "unknown symbol", "market is not available",
+        )
+        return error_name in definitive_types or any(
+            marker in error_text for marker in definitive_messages
+        )
+
     async def _submit_entry_order(
         self, pair_tag, payload, pair_info, snapshot, directives,
         buy_qty, actual_cost_usdt, buy_price_idr,
@@ -218,6 +237,9 @@ class EngineEntrySubmissionMixin:
                     amount_spec=pair_info.local_amount_spec,
                 )
             except Exception as submit_error:
+                if self._is_definitive_order_rejection(submit_error):
+                    submission_started = False
+                    raise
                 lookup = getattr(
                     self.client, "fetch_local_order_by_client_id", None
                 )
