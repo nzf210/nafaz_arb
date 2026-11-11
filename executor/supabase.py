@@ -361,7 +361,7 @@ class SupabaseWriter:
                     key: row.get(key)
                     for key in (
                         "local_amount_spec", "global_amount_spec", "recovery_context",
-                        "orphan_id", "scope", "reason", "detected_at",
+                        "hedged_quantity", "orphan_id", "scope", "reason", "detected_at",
                     )
                     if row.get(key) is not None
                 },
@@ -583,14 +583,14 @@ class SupabaseWriter:
                 f"{self.url}/rest/v1/order_registry", params=params, headers=headers
             ) as resp:
                 if resp.status >= 300:
-                    logger.error(
-                        "order registry read failed with status %s", resp.status
+                    body = (await resp.text())[:500]
+                    raise RuntimeError(
+                        f"order registry read failed with HTTP {resp.status}: {body}"
                     )
-                    return []
                 rows = await resp.json()
         except Exception as exc:
             logger.error("order registry read failed: %s", exc)
-            return []
+            raise RuntimeError("durable order registry could not be read") from exc
         finally:
             if created and session is not None:
                 try:
@@ -598,8 +598,7 @@ class SupabaseWriter:
                 except Exception:
                     pass
         if not isinstance(rows, list):
-            logger.error("order registry read returned a malformed payload")
-            return []
+            raise RuntimeError("order registry read returned a malformed payload")
         return [row for row in rows if isinstance(row, dict)]
 
     # ------------------------------------------------------------------- flush
