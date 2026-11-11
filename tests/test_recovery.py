@@ -524,7 +524,7 @@ async def test_p0_pending_entry_unknown_venue_state_is_retained_and_blocked(engi
 
 @pytest.mark.asyncio
 async def test_partial_futures_hedge_fill_is_not_recorded_as_fully_hedged(fake_redis):
-    """A partial futures fill blocks spot rollback and forces manual reconciliation."""
+    """A known partial futures fill blocks spot rollback and forces manual reconciliation."""
     client = OpenShortPositionClient()
     client.amount_unused = 0.002
 
@@ -559,8 +559,8 @@ async def test_partial_futures_hedge_fill_is_not_recorded_as_fully_hedged(fake_r
 
     assert pair_tag not in engine.active_positions
     assert client.placed_sells == []
-    assert engine.states[pair_tag] == PositionState.FAILED
-    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "HEDGE_STATE_UNKNOWN"
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert pair_tag in engine._recovery_scope_halts
 
 
 @pytest.mark.asyncio
