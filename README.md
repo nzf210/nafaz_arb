@@ -382,9 +382,12 @@ worker runs every 120 seconds by default; configure
 before deploying this change; it adds both the live-order discriminator and
 the fill-source classification and fee-verification flag needed to separate
 legacy snapshots from verified exchange executions.
-`position_legs`, `funding_payments`, and `executor_status_snapshots` remain
-schema-only. Supabase history must never replace authenticated exchange-side
-exposure verification.
+`position_legs` now receives independent spot/perpetual leg upserts as the parent
+position lifecycle changes. Confirmed funding settlements returned by the
+exchange funding ledger are journaled to `funding_payments` with deterministic
+payment IDs before the Redis funding aggregate is advanced. `executor_status_snapshots`
+remains schema-only. Supabase history must never replace authenticated
+exchange-side exposure verification.
 See [Supabase runtime and deployment notes](./supabase/README.md).
 
 
