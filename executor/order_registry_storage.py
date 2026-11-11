@@ -110,7 +110,23 @@ class OrderRegistryStorageMixin:
     async def _load_cached(self, local_order_id: str) -> Optional[OrderRecord]:
         if not local_order_id:
             return None
-        raw = await self.redis.get(order_record_key(local_order_id))
+        try:
+            raw = await self.redis.get(order_record_key(local_order_id))
+        except Exception:
+            durable_reader = getattr(self.supabase, "fetch_open_order_records", None)
+            if callable(durable_reader):
+                durable_records = await self._durable_active_records()
+                return durable_records.get(local_order_id)
+            if callable(getattr(self.supabase, "order_record", None)):
+                # Compatibility for writer-only durable adapters. Production
+                # adapters expose the reader and therefore merge before writes.
+                logger.warning(
+                    "[OrderRegistry] Redis unavailable and durable reader absent; "
+                    "relying on the durable writer for order %s",
+                    local_order_id,
+                )
+                return None
+            raise
         if not raw:
             return None
         try:
@@ -124,22 +140,43 @@ class OrderRegistryStorageMixin:
         payload = json.dumps(record.to_dict())
         redis_ok = False
         try:
-            async with self.redis.pipeline(transaction=True) as pipe:
-                pipe.set(order_record_key(record.local_order_id), payload)
-                pipe.hset(ORDER_RECOVERY_INDEX_KEY, record.local_order_id, "1")
+            pipeline_factory = getattr(self.redis, "pipeline", None)
+            if callable(pipeline_factory):
+                async with pipeline_factory(transaction=True) as pipe:
+                    pipe.set(order_record_key(record.local_order_id), payload)
+                    pipe.hset(ORDER_RECOVERY_INDEX_KEY, record.local_order_id, "1")
+                    if record.exchange_order_id:
+                        pipe.hset(
+                            ORDER_BY_EXCHANGE_ID_KEY,
+                            order_xid_field(record.exchange, record.exchange_order_id),
+                            record.local_order_id,
+                        )
+                    if record.client_order_id:
+                        pipe.hset(
+                            ORDER_BY_CLIENT_ID_KEY,
+                            order_cid_field(record.exchange, record.client_order_id),
+                            record.local_order_id,
+                        )
+                    await pipe.execute()
+            else:
+                # Minimal Redis-compatible adapters used in tests/tools may not
+                # expose transactions. Production Redis always uses the atomic path.
+                await self.redis.set(order_record_key(record.local_order_id), payload)
+                await self.redis.hset(
+                    ORDER_RECOVERY_INDEX_KEY, record.local_order_id, "1"
+                )
                 if record.exchange_order_id:
-                    pipe.hset(
+                    await self.redis.hset(
                         ORDER_BY_EXCHANGE_ID_KEY,
                         order_xid_field(record.exchange, record.exchange_order_id),
                         record.local_order_id,
                     )
                 if record.client_order_id:
-                    pipe.hset(
+                    await self.redis.hset(
                         ORDER_BY_CLIENT_ID_KEY,
                         order_cid_field(record.exchange, record.client_order_id),
                         record.local_order_id,
                     )
-                await pipe.execute()
             redis_ok = True
         except Exception:
             logger.exception(
