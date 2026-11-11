@@ -333,12 +333,22 @@ class IndodaxTAPIv2:
                 raise ValueError("indodax v2 returned a malformed trade row")
             fee_cost = raw.get("commission")
             fee_asset = raw.get("commissionAsset")
+            side = None
+            if raw.get("isBuyer") is True:
+                side = "buy"
+            elif raw.get("isBuyer") is False:
+                side = "sell"
+            maker_taker = None
+            if raw.get("isMaker") is True:
+                maker_taker = "maker"
+            elif raw.get("isMaker") is False:
+                maker_taker = "taker"
             trades.append({
                 "id": str(raw.get("tradeId") or ""),
                 "order": str(raw.get("orderId") or ""),
                 "clientOrderId": str(raw.get("clientOrderId") or ""),
                 "symbol": str(raw.get("symbol") or query["symbol"]),
-                "side": "buy" if raw.get("isBuyer") is True else "sell" if raw.get("isBuyer") is False else None,
+                "side": side,
                 "amount": _to_float(raw.get("qty")),
                 "price": _to_float(raw.get("price")),
                 "cost": _to_float(raw.get("quoteQty")),
@@ -347,7 +357,7 @@ class IndodaxTAPIv2:
                     if fee_cost is not None else None
                 ),
                 "timestamp": int(raw.get("time") or 0) or None,
-                "takerOrMaker": "maker" if raw.get("isMaker") is True else "taker" if raw.get("isMaker") is False else None,
+                "takerOrMaker": maker_taker,
                 "info": raw,
             })
         return trades
