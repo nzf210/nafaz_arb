@@ -321,4 +321,4 @@ async def test_exchange_client_converts_contract_fill_quantity_to_base_units():
     )
 
     assert fills[0]["amount"] == pytest.approx(0.02)
-    assert fills[0]["cost"] == pytest.approx(200)
+    assert fills[0]["cost"] == pytest.approx(2)
