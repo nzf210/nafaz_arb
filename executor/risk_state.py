@@ -123,9 +123,12 @@ class RiskStateMixin:
     def _restore_reconciliation_halt(
         self, scope: str, exchange: str, pair_key: str, reason: str
     ) -> None:
-        key = "*" if scope == "global" else (
-            exchange if scope == "exchange" else pair_key
-        )
+        if scope == "global":
+            key = "*"
+        elif scope == "exchange":
+            key = exchange
+        else:
+            key = pair_key
         if not key:
             return
         self._recovery_scope_halts[key] = reason
