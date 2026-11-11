@@ -429,7 +429,51 @@ class SupabaseWriter:
             payload["position_key"] = position_key
         if isinstance(row.get("raw_payload"), str):
             payload["raw_payload"] = row["raw_payload"]
-        return self._emit("order_registry", payload, on_conflict="local_order_id")
+        registry_ok = self._emit("order_registry", payload, on_conflict="local_order_id")
+        # Every bot-owned order also needs an analytics parent row because
+        # order_fills.order_id references public.orders, not order_registry.
+        # This covers futures hedges/rollbacks that do not call the legacy
+        # pair-scoped order() callback directly.
+        analytics_ok = True
+        if pair_key and (client_order_id or exchange_order_id):
+            order_key = client_order_id or exchange_order_id
+            order_row_id = self.order_id_for(pair_key, payload["exchange_name"], order_key)
+            submitted_at = _ms_to_iso(row.get("created_at")) or datetime.now(timezone.utc).isoformat()
+            analytics_ok = self._emit(
+                "orders",
+                {
+                    "id": order_row_id,
+                    "position_id": self._position_ids.get(pair_key),
+                    "pair_key": pair_key,
+                    "exchange_name": payload["exchange_name"],
+                    "market_type": resolved_market,
+                    "leg": resolved_leg,
+                    "exchange_order_id": exchange_order_id or None,
+                    "client_order_id": client_order_id or None,
+                    "symbol": payload["symbol"],
+                    "side": payload["side"],
+                    "order_type": payload["order_type"],
+                    "status": payload["status"],
+                    "requested_qty": payload["requested_qty"],
+                    "filled_qty": payload["filled_qty"],
+                    "remaining_qty": payload["remaining_qty"],
+                    "limit_price": payload["limit_price"],
+                    "average_fill_price": payload["average_fill_price"],
+                    "reduce_only": payload["reduce_only"],
+                    "is_mock": payload["is_mock"],
+                    "submitted_at": submitted_at,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "raw_payload": {
+                        "source": "universal_order_registry",
+                        "local_order_id": local_order_id,
+                        "local_amount_spec": row.get("local_amount_spec"),
+                        "global_amount_spec": row.get("global_amount_spec"),
+                        "recovery_context": row.get("recovery_context"),
+                    },
+                },
+                on_conflict="id",
+            )
+        return bool(registry_ok and analytics_ok)
 
     def order(
         self,
