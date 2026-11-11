@@ -839,6 +839,100 @@ async def test_tokocrypto_broker_prefixed_client_id_is_normalized_for_recovery()
 
 
 @pytest.mark.asyncio
+async def test_tokocrypto_rejected_client_id_echo_is_learned_for_recovery():
+    """The id a venue echoes may differ from the one submitted and must be reused.
+
+    Binance Cloud rejects a 36-char dashed id and stores the hash it forwarded.
+    A recovery lookup derives the candidate ids from the logical one, so the
+    echoed form has to be learned from the acknowledgement or the order can
+    never be matched again.
+    """
+    from executor.exchange_client import ExchangeClient
+    from executor.quantity import AmountSpec
+
+    logical_id = "tokocrypto-toko-ath-usdt-okx-ath-usdt-swap-entry-7"
+    spec = AmountSpec(unit="BASE", step=0.0001, minimum=0.0, base_per_unit=1.0)
+    # Prefixed and hashed: neither the prefix nor the hash can be reversed.
+    wire_id = "xTKT5PX2Fdddc776f055963b51entry7"
+
+    class TokoSpot:
+        id = "tokocrypto"
+        options = {"broker": {"marketType": "x-TKT5PX2F"}}
+
+        def __init__(self):
+            self.created = []
+
+        async def create_limit_buy_order(self, symbol, amount, price, params=None):
+            self.created.append(dict(params or {}))
+            return {
+                "id": "9001",
+                "clientOrderId": logical_id,
+                "info": {"clientId": wire_id},
+                "symbol": symbol,
+                "side": "buy",
+                "type": "limit",
+                "amount": 1.0,
+                "filled": 0.0,
+                "remaining": 1.0,
+                "status": "open",
+                "average": 0.0,
+                "price": price,
+            }
+
+        def market(self, symbol):
+            return {"id": symbol.replace("/", "_")}
+
+        @staticmethod
+        def parse_order(row, market=None):
+            # Mirror the real venue parser: it lifts the Binance-shaped fields
+            # onto the canonical order shape the bot reads.
+            return {
+                "id": str(row.get("orderId") or ""),
+                "clientOrderId": str(row.get("clientId") or ""),
+                "symbol": market["id"] if market else "",
+                "side": "buy" if str(row.get("side")) == "0" else "sell",
+                "type": "limit",
+                "amount": float(row.get("origQty") or 0.0),
+                "filled": float(row.get("executedQty") or 0.0),
+                "status": "open" if str(row.get("status")) == "0" else "closed",
+            }
+
+        async def privateGetOpenV1Orders(self, request=None):
+            # Tokocrypto's single list endpoint: no client-id filter, so the
+            # reader has to walk it. Only this order exists in the archive.
+            return {"data": {"list": [{
+                "orderId": "9001",
+                "clientId": wire_id,
+                "symbol": "ATH_USDT",
+                "symbolType": 1,
+                "side": 0,
+                "type": 1,
+                "price": "2500",
+                "origQty": "1",
+                "executedQty": "0",
+                "status": 0,
+            }]}}
+
+    spot = TokoSpot()
+    client = ExchangeClient(spot, object())
+
+    placed = await client.place_local_limit_buy(
+        "ATH/USDT", 1.0, 2500.0,
+        client_order_id=logical_id, amount_spec=spec,
+    )
+
+    assert placed["client_order_id"] == wire_id
+    assert spot.created[0]["clientOrderId"] == wire_id
+
+    recovered = await client.fetch_local_order_by_client_id(
+        logical_id, "ATH/USDT", spec
+    )
+
+    assert recovered is not None
+    assert recovered["id"] == "9001"
+    assert recovered["client_order_id"] == logical_id
+
+@pytest.mark.asyncio
 async def test_tokocrypto_client_id_alias_is_matched_and_duplicate_ids_fail_closed():
     from executor.exchange_client import ExchangeClient
 

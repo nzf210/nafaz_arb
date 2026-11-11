@@ -30,6 +30,24 @@ def _serialize_amount_spec(value: Any) -> Any:
     return serializer() if callable(serializer) else value
 
 
+def _acknowledged_client_order_id(
+    logical_id: str, order: dict
+) -> str:
+    """The spelling a venue stored for this order, when it differs.
+
+    A venue may mint its own client id instead of accepting the submitted one,
+    and that spelling is the only thing a later lookup can match on, so it is
+    persisted with the record rather than held in process memory.
+    """
+    if not logical_id or not isinstance(order, dict):
+        return ""
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    observed = str(
+        info.get("clientId") or info.get("clientOrderId")
+        or order.get("clientId") or order.get("clientOrderId") or ""
+    )
+    return observed if observed and observed != logical_id else ""
+
 class EngineOrderIntentMixin:
     """Focused orchestration responsibilities, composed by ArbitrageEngine."""
 
@@ -56,6 +74,9 @@ class EngineOrderIntentMixin:
                     spec.exchange, client_order_id, str(order.get("id") or "")
                 ),
                 client_order_id=client_order_id or "",
+                venue_client_order_id=_acknowledged_client_order_id(
+                    client_order_id, order
+                ),
                 exchange_order_id=str(order.get("id") or ""),
                 pair_key=pair_tag,
                 position_id=f"position:{pair_tag}" if pair_tag else "",

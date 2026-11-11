@@ -1,10 +1,18 @@
 """Shared venue order normalization and client-id helpers."""
 
 import hashlib
+import logging
 from typing import Optional, Dict, Any
 
 from executor.indodax_v2 import IndodaxTAPIv2
 from executor.quantity import AmountSpec, order_amount_to_base
+
+logger = logging.getLogger("executor.exchange")
+
+# Tokocrypto (and Binance Cloud generally) exposes one order list for open and
+# finished orders and no client-id filter, so recovery has to page it.
+_TOKOCRYPTO_ORDER_ARCHIVE_SIZE = 100
+_TOKOCRYPTO_ORDER_ARCHIVE_MAX_PAGES = 10
 
 
 
@@ -80,6 +88,68 @@ def _tokocrypto_client_order_id(
             )
     return f"{prefix}{digest[:room]}{tail}"
 
+class ClientOrderIdAliasStore:
+    """Remembers the wire id a venue actually accepted for a logical id.
+
+    The rewrite above is not invertible: a venue echoes the hashed id and no
+    amount of prefix stripping recovers the logical one. The durable order
+    registry is the only place the logical id survives, so recovering a submit
+    whose acknowledgement was lost means remembering the wire form while the
+    order is still in memory.
+    """
+
+    def __init__(self) -> None:
+        self._wire_by_scope: Dict[tuple, str] = {}
+
+    def remember(
+        self, exchange: Any, scope: str, logical_id: Optional[str],
+        wire_id: Optional[str],
+    ) -> None:
+        """Records one accepted (logical, wire) pair for the wiring venue."""
+        if not logical_id or not wire_id:
+            return
+        venue = str(getattr(exchange, "id", "") or "").strip().lower()
+        scope_key = str(scope or "").strip().lower()
+        if not venue or not scope_key:
+            return
+        self._wire_by_scope[(venue, scope_key, str(logical_id))] = str(wire_id)
+
+    def wire_id(self, exchange: Any, scope: str, logical_id: str) -> Optional[str]:
+        venue = str(getattr(exchange, "id", "") or "").strip().lower()
+        return self._wire_by_scope.get(
+            (venue, str(scope or "").strip().lower(), str(logical_id))
+        )
+
+# One store per process: an order is only ambiguous while this process holds it.
+CLIENT_ORDER_ID_ALIASES = ClientOrderIdAliasStore()
+
+def accepted_client_order_id(
+    exchange: Any,
+    order: Dict[str, Any],
+    logical_id: Optional[str],
+    broker_prefix: str = "",
+    scope: str = "",
+) -> Optional[str]:
+    """Learns the exact client id a venue acknowledged, keyed on the order itself.
+
+    A venue may report the id it minted instead of the one submitted (Binance
+    Cloud drops a broker prefix, Tokocrypto echoes a hash), so the spelling a
+    later lookup has to search for can only come from the acknowledgement.
+    One row's own alias is never handed to another row: accepting a *different*
+    id during recovery would hide a genuinely ambiguous submit.
+    """
+    if not isinstance(order, dict) or not isinstance(logical_id, str):
+        return None
+    venue = str(getattr(exchange, "id", "") or "").lower()
+    wire = str(order.get("client_order_id") or order.get("clientOrderId") or "")
+    if not venue or not logical_id or not wire or wire == logical_id:
+        return None
+    if wire not in _accepted_client_order_ids(
+        exchange, logical_id, broker_prefix, scope
+    ):
+        return None
+    return wire
+
 def venue_client_order_id(
     exchange: Any, client_order_id: Optional[str], broker_prefix: str = ""
 ) -> Optional[str]:
@@ -125,6 +195,67 @@ def _base_order_result(order: Dict[str, Any], spec: AmountSpec) -> Dict[str, Any
             normalized[key] = order_amount_to_base(float(normalized[key]), spec)
     return normalized
 
+def acknowledged_order_result(
+    exchange: Any,
+    order: Dict[str, Any],
+    spec: Optional[AmountSpec],
+    client_order_id: Optional[str] = None,
+    broker_prefix: str = "",
+    scope: str = "",
+) -> Dict[str, Any]:
+    """Normalizes a submit acknowledgement and learns its wire client id.
+
+    Every create path returns through here so the exact id the venue accepted
+    is recorded before the order id is even known; a later lookup by client id
+    would otherwise search for a spelling the venue never stored.
+    """
+    normalized = _base_order_result(order, spec) if spec is not None else dict(order)
+    # Order matters: the exposure helper prefers the venue's own alias, so the
+    # accepted wire id is written over both after it has run.
+    normalized = _expose_client_order_id(normalized)
+    wire = _remember_accepted_client_order_id(
+        exchange, order, client_order_id, broker_prefix, scope
+    )
+    if wire is not None:
+        normalized["client_order_id"] = wire
+        normalized["clientOrderId"] = wire
+    return normalized
+
+def _remember_accepted_client_order_id(
+    exchange: Any,
+    order: Dict[str, Any],
+    logical_id: Optional[str],
+    broker_prefix: str,
+    scope: str,
+) -> Optional[str]:
+    """Records the wire id a venue acknowledged for a submitted logical id."""
+    if not logical_id or not isinstance(order, dict):
+        return None
+    info = order.get("info") if isinstance(order.get("info"), dict) else {}
+    # Tokocrypto answers with two ids: ``clientId`` (the prefixed, hashed id it
+    # actually stores) and the raw Binance-shaped ``clientOrderId`` echo, which
+    # is the *forwarded* id and therefore unbranded on a broker account. The
+    # stored one wins because that is what every later read returns.
+    wire = str(
+        info.get("clientId") or info.get("clientOrderId")
+        or order.get("clientId") or order.get("clientOrderId") or ""
+    )
+    if not wire:
+        return None
+    # Binance Cloud verifies the signature against the id it forwarded, and a
+    # broker-registered account can see that id prefixed. Anything else is a
+    # venue echo this process never caused, so it is not learned.
+    expected = venue_client_order_id(exchange, logical_id, broker_prefix)
+    allowed = {logical_id}
+    if expected:
+        allowed.add(str(expected))
+        if broker_prefix:
+            allowed.add(f"{broker_prefix}{expected}")
+    if wire not in allowed:
+        return None
+    CLIENT_ORDER_ID_ALIASES.remember(exchange, scope, logical_id, wire)
+    return wire
+
 def _expose_client_order_id(order: Dict[str, Any]) -> Dict[str, Any]:
     """Expose venue-specific client-id fields through one canonical alias."""
     if not isinstance(order, dict) or order.get("client_order_id") is not None:
@@ -169,7 +300,7 @@ def _normalize_open_order(order: Dict[str, Any], symbol: str, spec: Optional[Amo
 
 
 def _accepted_client_order_ids(
-    exchange: Any, client_order_id: str, broker_prefix: str = ""
+    exchange: Any, client_order_id: str, broker_prefix: str = "", scope: str = ""
 ) -> set:
     """Every id spelling that may legitimately appear on the venue.
 
@@ -179,13 +310,15 @@ def _accepted_client_order_ids(
     guarantee: only ids derived from this one logical id are admitted.
     """
     accepted = {client_order_id}
+    # An id the venue already acknowledged is authoritative for any venue, not
+    # only the one whose rewrite rules this module knows.
+    accepted.add(CLIENT_ORDER_ID_ALIASES.wire_id(exchange, scope, client_order_id))
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
-    if exchange_id != "tokocrypto":
-        return accepted
-    accepted.add(venue_client_order_id(exchange, client_order_id, broker_prefix))
-    accepted.add(_tokocrypto_client_order_id(client_order_id, broker_prefix))
-    if broker_prefix:
-        accepted.add(f"{broker_prefix}{client_order_id}")
+    if exchange_id == "tokocrypto":
+        accepted.add(venue_client_order_id(exchange, client_order_id, broker_prefix))
+        accepted.add(_tokocrypto_client_order_id(client_order_id, broker_prefix))
+        if broker_prefix:
+            accepted.add(f"{broker_prefix}{client_order_id}")
     accepted.discard(None)
     return accepted
 
@@ -208,8 +341,123 @@ def futures_position_side_params(exchange: Any, position_side: str) -> Dict[str,
         raise ValueError(f"unsupported futures position side: {position_side}")
     return {"posSide": side}
 
+def _order_archive_page_reader(exchange: Any, symbol: str) -> Any:
+    """Recent-order reader for venues whose history ignores the client id filter.
+
+    Tokocrypto's only order list is the Binance-Cloud ``/open/v1/orders``
+    endpoint: it covers resting and finished orders alike and has no client-id
+    filter, so a lost acknowledgement can only be recovered by walking it.
+    """
+    venue = getattr(exchange, "local", exchange)
+    if str(getattr(venue, "id", "") or "").lower() != "tokocrypto":
+        return None
+    api = getattr(venue, "privateGetOpenV1Orders", None)
+    if not callable(api):
+        return None
+
+    async def page(
+        page_size: int = _TOKOCRYPTO_ORDER_ARCHIVE_SIZE, cursor: str = ""
+    ) -> tuple:
+        # ``fromId``/``direct`` page backwards from a known order id, so one
+        # extra row repeats at the boundary; the pager de-duplicates by id.
+        request = {"symbol": symbol, "limit": int(page_size)}
+        if cursor:
+            request["fromId"] = str(cursor)
+            request["direct"] = "prev"
+        response = await api(request)
+        data = response.get("data") if isinstance(response, dict) else None
+        rows = data.get("list") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError("tokocrypto returned a malformed order archive page")
+        parsed = [
+            _parse_archive_order(venue, row, symbol)
+            for row in rows if isinstance(row, dict)
+        ]
+        return parsed, len(rows) < int(page_size)
+
+    return page
+
+def _parse_archive_order(venue: Any, row: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    """Maps one raw archive row onto the same shape the rest of the bot reads.
+
+    The endpoint answers with the Binance-shaped payload (``orderId``,
+    ``clientId``, numeric ``side``/``status``), so it is run through the venue's
+    own parser when available rather than hand-mapped here.
+    """
+    parser = getattr(venue, "parse_order", None)
+    if callable(parser):
+        try:
+            market = venue.market(symbol) if hasattr(venue, "market") else None
+        except Exception:
+            market = None
+        try:
+            return parser(row, market)
+        except Exception:
+            logger.debug("could not parse %s archive row; using it verbatim", venue)
+    return dict(row)
+
+async def _find_order_in_paged_archive(
+    exchange: Any, symbol: str, matches: Any, client_order_id: str
+) -> Optional[Dict[str, Any]]:
+    """Searches a venue archive that its own API cannot filter by client id."""
+    page_reader = _order_archive_page_reader(exchange, symbol)
+    if page_reader is None:
+        return None
+    observed: dict = {}
+    cursor = ""
+    for _ in range(_TOKOCRYPTO_ORDER_ARCHIVE_MAX_PAGES):
+        rows, exhausted = await page_reader(_TOKOCRYPTO_ORDER_ARCHIVE_SIZE, cursor)
+        if not rows and not exhausted:
+            return None
+        for row in rows:
+            identity = str(
+                row.get("id") or row.get("orderId")
+                or row.get("clientId") or row.get("clientOrderId") or ""
+            )
+            if identity:
+                observed[identity] = row
+        found = _unique_archive_match(list(observed.values()), matches, client_order_id)
+        if found is not None:
+            return _expose_client_order_id(found)
+        if exhausted:
+            return None
+        # ``direct=prev`` is inclusive of the cursor it is given, so the next
+        # page must start strictly before the last id already read.
+        cursor = str(rows[-1].get("id") or rows[-1].get("orderId") or "") if rows else ""
+        if not cursor:
+            return None
+    # The archive was longer than this reader may walk, so absence is not
+    # established. Refusing to answer keeps the caller fail-closed.
+    raise RuntimeError(
+        f"{getattr(exchange, 'id', 'venue')} order archive exceeded "
+        f"{_TOKOCRYPTO_ORDER_ARCHIVE_MAX_PAGES} pages without a match"
+    )
+
+def _unique_archive_match(
+    rows: list, matches: Any, client_order_id: str
+) -> Optional[Dict[str, Any]]:
+    """One matching row, or a hard failure when the id is not unique."""
+    matched = {}
+    for row in rows:
+        if not matches(row):
+            continue
+        identity = str(row.get("id") or row.get("orderId") or repr(row))
+        matched[identity] = row
+    if len(matched) > 1:
+        raise RuntimeError(
+            "multiple exchange orders share client order id "
+            f"{client_order_id}; manual reconciliation is required"
+        )
+    if not matched:
+        return None
+    return dict(next(iter(matched.values())))
+
 async def _find_order_by_client_id(
-    exchange: Any, symbol: str, client_order_id: str, broker_prefix: str = ""
+    exchange: Any,
+    symbol: str,
+    client_order_id: str,
+    broker_prefix: str = "",
+    scope: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Find an acknowledged order by exact client id without submitting again.
 
@@ -218,7 +466,9 @@ async def _find_order_by_client_id(
     """
     if not client_order_id:
         raise ValueError("client order id is required for acknowledgement recovery")
-    accepted_ids = _accepted_client_order_ids(exchange, client_order_id, broker_prefix)
+    accepted_ids = _accepted_client_order_ids(
+        exchange, client_order_id, broker_prefix, scope
+    )
 
     def matches(order: Any) -> bool:
         if not isinstance(order, dict):
@@ -286,7 +536,7 @@ async def _find_order_by_client_id(
                 raise ValueError(f"{method_name} returned a malformed order collection")
             if method_name != "fetch_open_orders":
                 historical_queries += 1
-            discovered_orders.extend(row for row in rows if matches(row))
+            discovered_orders.extend([row for row in rows if isinstance(row, dict)])
         except Exception as exc:
             if type(exc).__name__ not in ("NotSupported", "NotImplementedError"):
                 failures.append(f"{method_name}: {type(exc).__name__}: {exc}")
@@ -294,6 +544,21 @@ async def _find_order_by_client_id(
     found = unique_order(discovered_orders)
     if found is not None:
         return found
+
+    try:
+        archived = await _find_order_in_paged_archive(
+            exchange, symbol, matches, client_order_id
+        )
+        historical_queries += 1
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        archived = None
+        failures.append(
+            f"order archive: {type(exc).__name__}: {exc}"
+        )
+    if archived is not None:
+        return archived
 
     trades_method = getattr(exchange, "fetch_my_trades", None)
     if callable(trades_method):

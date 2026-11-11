@@ -355,7 +355,8 @@ class IndodaxTAPIv2:
         return self._order(order, symbol)
 
     async def fetch_order_by_client_id(
-        self, client_order_id: str, symbol: str
+        self, client_order_id: str, symbol: str,
+        params: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """Fetch one order by the venue's origClientOrderId lookup parameter."""
         if not client_order_id:

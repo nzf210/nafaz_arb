@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 
 from executor.quantity import AmountSpec, base_to_order_amount
 from executor.exchange_common import (
-    _base_order_result, _expose_client_order_id,
+    _base_order_result, _expose_client_order_id, acknowledged_order_result,
     _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
     futures_position_side_params,
 )
@@ -73,7 +73,10 @@ class ExchangeFuturesMixin:
         order = await self.global_fut.create_market_sell_order(
             order_symbol, order_amount, params
         )
-        return _base_order_result(order, spec)
+        return acknowledged_order_result(
+            self.global_fut, order, spec, client_order_id,
+            self._global_broker_prefix, self._global_scope,
+        )
 
     async def close_global_short_market(
         self, symbol: str, amount: float, client_order_id: Optional[str] = None,
@@ -93,7 +96,10 @@ class ExchangeFuturesMixin:
         if client_order_id:
             params["clientOrderId"] = client_order_id
         order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)
-        return _base_order_result(order, spec)
+        return acknowledged_order_result(
+            self.global_fut, order, spec, client_order_id,
+            self._global_broker_prefix, self._global_scope,
+        )
 
     async def fetch_global_order(
         self, order_id: str, symbol: str, amount_spec: Any = None
@@ -114,7 +120,8 @@ class ExchangeFuturesMixin:
         spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
         order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
         order = await _find_order_by_client_id(
-            self.global_fut, order_symbol, client_order_id
+            self.global_fut, order_symbol, client_order_id,
+            self._global_broker_prefix, self._global_scope,
         )
         if order is None:
             return None

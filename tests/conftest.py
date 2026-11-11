@@ -29,6 +29,10 @@ from executor.models import (
 class MockExchangeClient:
     """Mock Exchange Client implementing required methods."""
 
+    # Recovery keys learned client-order-id aliases on the venue name, so the
+    # stub needs one; without it every alias lookup is keyed on an empty venue.
+    id = "mock"
+
     def __init__(self):
         self.orders = {}
         self.order_counter = 100

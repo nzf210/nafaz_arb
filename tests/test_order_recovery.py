@@ -79,6 +79,15 @@ def _position(qty: float = 0.01, **overrides) -> ActivePosition:
     data.update(overrides)
     return ActivePosition(**data)
 
+def intent_exchange_venue(record):
+    """Venue name a spot record's client-order-id alias is keyed under.
+
+    The alias store keys on the resolved venue name plus the record's own
+    exchange, so a test seeding an alias must use exactly that pair.
+    """
+    return str(getattr(record, "exchange", "") or "")
+
+
 def _entry_record(client_order_id="btc-idr-entry-7", exchange_order_id="501", **overrides):
     data = dict(
         local_order_id=OrderRecord.local_id_for("indodax", client_order_id, exchange_order_id),
@@ -1468,6 +1477,137 @@ async def test_unresolved_client_id_intent_stays_pending_and_entry_halted(fake_r
     assert engine._entry_blocked is True
     assert PAIR_TAG in engine._recovery_scope_halts
     assert client.order_counter == submissions_before
+
+@pytest.mark.asyncio
+async def test_venue_minted_client_id_is_adopted_instead_of_failing_closed(fake_redis):
+    """A venue that echoes an id it minted must still resolve its own order.
+
+    Tokocrypto rewrites an over-long, punctuated client id into a prefixed
+    hash, so the id that comes back is not the one submitted. Exact-match
+    recovery has no way to rederive it, and treating the mismatch as
+    unverifiable strands the order in RECONCILIATION_REQUIRED forever.
+    """
+    from executor.exchange_common import CLIENT_ORDER_ID_ALIASES
+
+    client = MockExchangeClient()
+    logical_id = "tokocrypto-toko-ath-usdt-okx-ath-usdt-swap-entry-7"
+    wire_id = "xTKT5PX2Fdddc776f055963b51entry7"
+    venue_order = {
+        "id": "903",
+        "clientOrderId": wire_id,
+        "symbol": "ATH/USDT",
+        "side": "buy",
+        "type": "limit",
+        "amount": 0.5,
+        "filled": 0.0,
+        "remaining": 0.5,
+        "price": 2500.0,
+        "status": "open",
+    }
+
+    async def lookup_by_client_id(client_order_id, symbol, amount_spec=None):
+        return dict(venue_order)
+
+    client.fetch_local_order_by_client_id = lookup_by_client_id
+    engine = await _build(fake_redis, client)
+    intent = _entry_record(
+        local_order_id=OrderRecord.local_id_for("tokocrypto", logical_id, ""),
+        client_order_id=logical_id,
+        exchange_order_id="",
+        exchange="tokocrypto",
+        symbol="ATH/USDT",
+        status="submitting",
+    )
+    await engine.order_registry.register(intent)
+    # The submit acknowledgement taught the process the venue's own spelling.
+    CLIENT_ORDER_ID_ALIASES.remember(
+        client, "tokocrypto", logical_id, wire_id
+    )
+
+    await engine._run_order_recovery()
+
+    assert await engine.order_registry.pending_recovery_ids() == {}
+    recovered = await engine.order_registry.find_by_client_id("tokocrypto", logical_id)
+    assert recovered is not None
+    assert recovered.exchange_order_id == "903"
+
+@pytest.mark.asyncio
+async def test_restart_adopts_order_by_persisted_venue_client_id(fake_redis):
+    """The recorded venue spelling must outlive the process that learnt it.
+
+    A restart has no in-memory alias, so exact-match recovery can only succeed
+    if the acknowledged wire id was persisted with the order record.
+    """
+    client = MockExchangeClient()
+    logical_id = "tokocrypto-toko-ath-usdt-okx-ath-usdt-swap-entry-7"
+    wire_id = "xTKT5PX2Fdddc776f055963b51entry7"
+
+    async def lookup_by_client_id(client_order_id, symbol, amount_spec=None):
+        return {
+            "id": "905",
+            "clientOrderId": wire_id,
+            "symbol": symbol,
+            "side": "buy",
+            "type": "limit",
+            "amount": 0.5,
+            "filled": 0.0,
+            "remaining": 0.5,
+            "price": 2500.0,
+            "status": "open",
+        }
+
+    client.fetch_local_order_by_client_id = lookup_by_client_id
+    engine = await _build(fake_redis, client)
+    intent = _entry_record(
+        local_order_id=OrderRecord.local_id_for("tokocrypto", logical_id, ""),
+        client_order_id=logical_id,
+        venue_client_order_id=wire_id,
+        exchange_order_id="",
+        exchange="tokocrypto",
+        symbol="ATH/USDT",
+        status="submitting",
+    )
+    await engine.order_registry.register(intent)
+
+    await engine._run_order_recovery()
+
+    assert await engine.order_registry.pending_recovery_ids() == {}
+    recovered = await engine.order_registry.find_by_client_id("tokocrypto", logical_id)
+    assert recovered is not None
+    assert recovered.exchange_order_id == "905"
+
+@pytest.mark.asyncio
+async def test_unlearnt_foreign_client_id_still_fails_closed(fake_redis):
+    """An id the process never submitted must never be adopted on its word."""
+    client = MockExchangeClient()
+
+    async def lookup_foreign(client_order_id, symbol, amount_spec=None):
+        return {
+            "id": "904",
+            "clientOrderId": "some-other-bot-entry-1",
+            "symbol": symbol,
+            "side": "buy",
+            "type": "limit",
+            "amount": 0.5,
+            "filled": 0.0,
+            "remaining": 0.5,
+            "status": "open",
+        }
+
+    client.fetch_local_order_by_client_id = lookup_foreign
+    engine = await _build(fake_redis, client)
+    intent = _entry_record(
+        client_order_id="tokocrypto-toko-ath-usdt-okx-ath-usdt-swap-entry-8",
+        exchange_order_id="",
+        status="submitting",
+    )
+    await engine.order_registry.register(intent)
+
+    await engine._run_order_recovery()
+
+    pending = await engine.order_registry.pending_recovery_ids()
+    assert intent.local_order_id in pending
+    assert engine._entry_blocked is True
 
 @pytest.mark.asyncio
 async def test_futures_hedge_timeout_recovers_exact_order_by_client_id(fake_redis):

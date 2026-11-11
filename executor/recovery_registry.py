@@ -8,11 +8,36 @@ from typing import Any, Dict, Optional
 
 from redis.exceptions import WatchError
 
+from executor.exchange_common import _accepted_client_order_ids
 from executor.models import OrderRecord, PositionState, RecoveryStatus
 
 logger = logging.getLogger("executor.order_recovery")
 
 
+
+def _record_accepted_client_ids(record: OrderRecord, owner: Any) -> set:
+    """Every client-id spelling that may legitimately answer for one record.
+
+    A lost acknowledgement means the only proof of acceptance is the id the
+    venue reports, which for a broker-prefixed venue is the spelling it minted
+    rather than the one submitted.
+    """
+    # A facade exposes the spot leg as ``local``; a bare venue is its own.
+    venue = getattr(owner, "local", None) or owner
+    prefix = ""
+    market = "futures" if getattr(record, "market_type", "") == "perpetual" else "spot"
+    if market == "spot":
+        prefix = str(getattr(owner, "_local_broker_prefix", "") or "")
+    accepted = _accepted_client_order_ids(
+        venue,
+        str(record.client_order_id or ""),
+        broker_prefix=prefix,
+        scope=str(getattr(record, "exchange", "") or ""),
+    )
+    # Survives a restart, unlike the in-process alias learnt at submit time.
+    accepted.add(str(getattr(record, "venue_client_order_id", "") or ""))
+    accepted.discard("")
+    return accepted
 
 class RecoveryRegistryMixin:
     """Focused order-recovery responsibilities."""
@@ -356,7 +381,16 @@ class RecoveryRegistryMixin:
             observed_client_id = str(
                 order.get("clientOrderId") or order.get("client_order_id") or ""
             )
-            if observed_client_id != record.client_order_id:
+            # A venue may store a spelling it minted rather than the submitted
+            # id, so the alias learnt from that same acknowledgement counts as
+            # a match. Any other id still fails closed.
+            accepted_ids = _record_accepted_client_ids(
+                record, self._client_for_exchange(exchange) or self.client
+            )
+            if (
+                observed_client_id != record.client_order_id
+                and observed_client_id not in accepted_ids
+            ):
                 record.recovery_status = RecoveryStatus.UNVERIFIED.value
                 await self.order_registry.register(record)
                 await self.order_registry.mark_pending_recovery(

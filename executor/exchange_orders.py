@@ -5,10 +5,9 @@ from typing import Optional, Dict, Any
 from executor.indodax_v2 import IndodaxTAPIv2
 from executor.quantity import AmountSpec, base_to_order_amount
 from executor.exchange_common import (
-    _accepted_client_order_ids,
+    accepted_client_order_id, acknowledged_order_result,
     _base_order_result, _expose_client_order_id, _local_order_params,
     _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
-    venue_client_order_id,
 )
 
 
@@ -17,7 +16,16 @@ SPOT_BASE_AMOUNT_ERROR = "spot order amount rules must use BASE units"
 
 
 class ExchangeOrderMixin:
-    """Focused asynchronous exchange adapter operations."""
+    """Spot order legs of the exchange facade.
+
+    ``_local_scope`` names the venue leg a client order id belongs to. It is
+    part of the alias key because the same logical id can be looked up on a
+    different market, and an alias must never answer for the wrong one.
+    """
+
+    @property
+    def _local_scope(self) -> str:
+        return str(getattr(self, "_local_broker_prefix", "") or "")
 
     @staticmethod
     def _strip_venue_prefix(symbol: str) -> str:
@@ -119,7 +127,8 @@ class ExchangeOrderMixin:
         Tokocrypto rewrites the id into a hash-based alphanumeric form, so the
         wire value cannot be mapped back by reversing the transform. The caller
         already knows which logical id it searched for, and that is exactly the
-        id the registry is keyed on, so it is adopted when supplied.
+        id the registry is keyed on, so it is adopted when supplied -- but only
+        for the order that actually carried that id's wire spelling.
         """
         normalized = _expose_client_order_id(order)
         prefix = str(getattr(self, "_local_broker_prefix", "") or "")
@@ -132,9 +141,9 @@ class ExchangeOrderMixin:
         )
         logical_id = ""
         if logical_client_order_id and client_id != logical_client_order_id:
-            exchange_id = str(getattr(self.local, "id", "") or "").lower()
-            if exchange_id == "tokocrypto" and client_id in _accepted_client_order_ids(
-                self.local, logical_client_order_id
+            if accepted_client_order_id(
+                self.local, normalized, logical_client_order_id,
+                prefix, self._local_scope,
             ):
                 logical_id = logical_client_order_id
         if not logical_id and prefix and client_id.startswith(prefix):
@@ -185,7 +194,10 @@ class ExchangeOrderMixin:
                 require_post_only=isinstance(self.local, IndodaxTAPIv2),
             ),
         )
-        return _base_order_result(order, spec)
+        return acknowledged_order_result(
+            self.local, order, spec, client_order_id,
+            self._local_broker_prefix, self._local_scope,
+        )
 
     async def place_local_limit_sell(
         self, symbol: str, amount: float, price: float,
@@ -208,7 +220,10 @@ class ExchangeOrderMixin:
                 require_post_only=isinstance(self.local, IndodaxTAPIv2),
             ),
         )
-        return _base_order_result(order, spec)
+        return acknowledged_order_result(
+            self.local, order, spec, client_order_id,
+            self._local_broker_prefix, self._local_scope,
+        )
 
     async def cancel_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Cancels an existing order on local spot exchange."""
@@ -233,7 +248,10 @@ class ExchangeOrderMixin:
                 broker_prefix=self._local_broker_prefix,
             ),
         )
-        return _base_order_result(order, spec)
+        return acknowledged_order_result(
+            self.local, order, spec, client_order_id,
+            self._local_broker_prefix, self._local_scope,
+        )
 
     async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Fetches status of an order on local spot exchange."""
@@ -250,7 +268,8 @@ class ExchangeOrderMixin:
         # The finder derives every accepted wire spelling from the logical id;
         # passing an already-rewritten id would make it rewrite a second time.
         order = await _find_order_by_client_id(
-            self.local, order_symbol, client_order_id, self._local_broker_prefix
+            self.local, order_symbol, client_order_id,
+            self._local_broker_prefix, self._local_scope,
         )
         if order is None:
             return None

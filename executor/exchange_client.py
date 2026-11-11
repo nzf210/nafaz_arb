@@ -43,10 +43,19 @@ class ExchangeClient(
         self._local_broker_prefix = _broker_prefix_for(
             getattr(local_exchange, "id", ""), local_exchange
         )
+        self._global_broker_prefix = _broker_prefix_for(
+            getattr(global_exchange, "id", ""), global_exchange
+        )
         self.balance_exchanges = balance_exchanges or {
             getattr(local_exchange, "id", "local"): {"market": "spot", "client": local_exchange},
             getattr(global_exchange, "id", "global"): {"market": "futures", "client": global_exchange},
         }
+
+    @property
+    def _global_scope(self) -> str:
+        """Venue leg name for global (perpetual) client-order-id aliases."""
+        venue = getattr(self, "global_fut", None)
+        return str(getattr(venue, "id", "") or "") if venue is not None else ""
 
     def for_venue(self, exchange: str) -> Optional["ExchangeClient"]:
         """Return a facade bound to one venue, independent of a registered pair.

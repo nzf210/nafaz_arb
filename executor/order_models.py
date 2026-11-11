@@ -100,6 +100,11 @@ class OrderRecord:
 
     local_order_id: str
     client_order_id: str
+    # Spelling the venue actually stored for ``client_order_id``. A Binance
+    # Cloud venue rewrites a client id into a prefixed hash, and the rewrite is
+    # not invertible, so a restart that only remembers the logical id can never
+    # match the order again. Empty means the venue kept the id verbatim.
+    venue_client_order_id: str = ""
     exchange_order_id: str = ""
     position_id: str = ""
     pair_key: str = ""
@@ -147,6 +152,7 @@ class OrderRecord:
         return {
             "local_order_id": self.local_order_id,
             "client_order_id": self.client_order_id,
+            "venue_client_order_id": self.venue_client_order_id,
             "exchange_order_id": self.exchange_order_id,
             "position_id": self.position_id,
             "pair_key": self.pair_key,
@@ -179,6 +185,7 @@ class OrderRecord:
         record = cls(
             local_order_id=_record_string(d, "local_order_id"),
             client_order_id=_record_string(d, "client_order_id"),
+            venue_client_order_id=_record_string(d, "venue_client_order_id"),
             exchange_order_id=_record_string(d, "exchange_order_id"),
             position_id=_record_string(d, "position_id"),
             pair_key=_record_string(d, "pair_key"),
