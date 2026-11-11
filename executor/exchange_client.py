@@ -555,16 +555,11 @@ class ExchangeClient:
             raw_trades = await fetcher(resolved, int(since or 0) or None, 1000)
             if not isinstance(raw_trades, list):
                 raise ValueError("exchange returned malformed trade history")
-            if len(raw_trades) >= 1000 and since:
-                oldest = min(
-                    (int(item.get("timestamp") or 0) for item in raw_trades if isinstance(item, dict)),
-                    default=0,
+            if len(raw_trades) >= 1000:
+                raise RuntimeError(
+                    "exchange trade-history response reached its 1000-fill limit; "
+                    "cannot prove complete order fill history"
                 )
-                if oldest > int(since):
-                    raise RuntimeError(
-                        "exchange trade-history response reached its 1000-fill limit; "
-                        "cannot prove complete order fill history"
-                    )
 
         expected_order = str(order_id or "")
         expected_client = str(client_order_id or "")
@@ -582,11 +577,16 @@ class ExchangeClient:
                 trade.get("clientOrderId") or trade.get("client_order_id")
                 or info.get("clientOrderId") or info.get("clOrdId") or ""
             )
-            if expected_order and actual_order and actual_order != expected_order:
-                continue
-            if expected_client and actual_client and actual_client != expected_client:
-                continue
-            if (expected_order or expected_client) and not (actual_order or actual_client):
+            # Prefer the client id when the venue returns it: some adapters
+            # expose a full order reference in trade history that differs from
+            # the numeric order id used by fetch_order.
+            if expected_client and actual_client:
+                if actual_client != expected_client:
+                    continue
+            elif expected_order and actual_order:
+                if actual_order != expected_order:
+                    continue
+            else:
                 continue
             fill = dict(trade)
             fill["id"] = str(trade.get("id") or trade.get("tradeId") or info.get("tradeId") or "")
