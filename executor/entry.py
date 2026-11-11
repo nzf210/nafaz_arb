@@ -78,6 +78,14 @@ class EntryMixin:
                 # waited for the lock; drop the stale snapshot if so.
                 if self.pending_entry_orders.get(pair_tag) is not order_info:
                     return
+                # A pending entry must not hedge again while recovery has an
+                # unresolved order or a non-durable hedge watermark for this
+                # pair. Active-position exit monitoring remains independent.
+                if (
+                    self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED
+                    or pair_tag in (getattr(self, "_recovery_scope_halts", {}) or {})
+                ):
+                    return
                 if await self._check_adverse_selection(pair_tag, order_info):
                     return
 
