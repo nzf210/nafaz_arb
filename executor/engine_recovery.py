@@ -37,6 +37,44 @@ class EngineRecoveryMixin:
                 state=PositionState.RECONCILIATION_REQUIRED,
             )
 
+    @staticmethod
+    def _position_side(position: dict, info: dict) -> str:
+        return str(
+            position.get("side")
+            or position.get("positionSide")
+            or info.get("posSide")
+            or info.get("positionSide")
+            or ""
+        ).lower()
+
+    @classmethod
+    def _short_quantity_from_position(cls, position: dict) -> float:
+        if not isinstance(position, dict):
+            raise ValueError("invalid position payload")
+        info = position.get("info") or {}
+        side = cls._position_side(position, info)
+        raw_contracts = position.get("contracts")
+        if raw_contracts is not None:
+            size = abs(float(raw_contracts)) * abs(
+                float(position.get("contractSize") or 1.0)
+            )
+            if size <= 1e-12:
+                return 0.0
+            if side != "short":
+                raise ValueError(
+                    f"unexpected non-short futures exposure (side={side or 'unknown'})"
+                )
+            return size
+        raw_amount = position.get("positionAmt", info.get("positionAmt"))
+        if raw_amount is None:
+            raise ValueError("position size unavailable")
+        signed_amount = float(raw_amount)
+        if abs(signed_amount) <= 1e-12:
+            return 0.0
+        if signed_amount >= 0:
+            raise ValueError("unexpected long or unsigned futures exposure")
+        return abs(signed_amount)
+
     async def _fetch_recovered_short_quantity(self, global_symbol: str, items):
         """Return (exchange short quantity, mismatch reason) for one venue symbol."""
         token = None
@@ -49,37 +87,7 @@ class EngineRecoveryMixin:
             for position in positions:
                 if not isinstance(position, dict):
                     raise ValueError("invalid position payload")
-                info = position.get("info") or {}
-                side = str(
-                    position.get("side")
-                    or position.get("positionSide")
-                    or info.get("posSide")
-                    or info.get("positionSide")
-                    or ""
-                ).lower()
-                raw_contracts = position.get("contracts")
-                if raw_contracts is not None:
-                    size = abs(float(raw_contracts)) * abs(
-                        float(position.get("contractSize") or 1.0)
-                    )
-                    if size <= 1e-12:
-                        continue
-                    if side != "short":
-                        raise ValueError(
-                            f"unexpected non-short futures exposure (side={side or 'unknown'})"
-                        )
-                    actual_short_qty += size
-                    continue
-
-                raw_amount = position.get("positionAmt", info.get("positionAmt"))
-                if raw_amount is None:
-                    raise ValueError("position size unavailable")
-                signed_amount = float(raw_amount)
-                if abs(signed_amount) <= 1e-12:
-                    continue
-                if signed_amount >= 0:
-                    raise ValueError("unexpected long or unsigned futures exposure")
-                actual_short_qty += abs(signed_amount)
+                actual_short_qty += self._short_quantity_from_position(position)
         except Exception as exc:
             return None, f"cannot verify futures position after restart: {exc}"
         finally:
