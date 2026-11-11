@@ -1618,7 +1618,7 @@ async def test_ambiguous_hedge_open_zero_fill_order_never_rolls_back(fake_redis)
 @pytest.mark.asyncio
 async def test_ambiguous_hedge_opposite_positions_do_not_net_to_flat(engine):
     """Long and short legs on one contract remain gross exposure, not a flat book."""
-    class OppositePositionClient(FailingHedgeClient):
+    class OppositePositionClient(MockExchangeClient):
         async def fetch_positions(self, symbol):
             return [
                 {"symbol": symbol, "contracts": 0.01, "contractSize": 1, "side": "short"},
