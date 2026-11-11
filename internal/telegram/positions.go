@@ -40,72 +40,162 @@ type executorPendingSnapshot struct {
 
 // handlePendingOrdersCommand shows only executor-managed orders still awaiting
 // resolution. It reads the executor's latest status snapshot and never mutates orders.
-func (b *Bot) handlePendingOrdersCommand(ctx context.Context, chatID, replyToID int64) {
+func (b *Bot) readPendingOrderSnapshot(
+	ctx context.Context,
+) (executorPendingSnapshot, string, bool) {
 	b.mu.Lock()
 	rc := b.redisClient
 	b.mu.Unlock()
 	if rc == nil {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🕒 <b>Pending Orders</b>\n\n❌ Redis belum terhubung; status order tidak dapat dibaca.", b.defaultKeyboard())
-		return
+		return executorPendingSnapshot{},
+			"🕒 <b>Pending Orders</b>\n\n❌ Redis belum terhubung; status order tidak dapat dibaca.",
+			false
 	}
 	raw, found, err := rc.GetExecutorStatus(ctx)
 	if err != nil {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Gagal membaca status executor:</b> "+html.EscapeString(err.Error()), b.defaultKeyboard())
-		return
+		return executorPendingSnapshot{},
+			"❌ <b>Gagal membaca status executor:</b> "+html.EscapeString(err.Error()),
+			false
 	}
 	if !found {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🕒 <b>Pending Orders</b>\n\n⚠️ Executor offline atau status terakhir sudah kedaluwarsa. Tidak ada data pending yang dapat diverifikasi.", b.defaultKeyboard())
-		return
+		return executorPendingSnapshot{},
+			"🕒 <b>Pending Orders</b>\n\n⚠️ Executor offline atau status terakhir sudah kedaluwarsa. Tidak ada data pending yang dapat diverifikasi.",
+			false
 	}
 	var snapshot executorPendingSnapshot
 	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ <b>Format status executor tidak valid:</b> "+html.EscapeString(err.Error()), b.defaultKeyboard())
-		return
+		return executorPendingSnapshot{},
+			"❌ <b>Format status executor tidak valid:</b> "+html.EscapeString(err.Error()),
+			false
 	}
-	if len(snapshot.PendingOrders) == 0 && snapshot.PendingEntries+snapshot.PendingExits > 0 {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ <b>Executor belum mengirim rincian pending order.</b>\n\nPerbarui image executor agar menu ini dapat menampilkan ID order, CEX, harga, dan kuantitas. Jumlah tercatat: "+fmt.Sprintf("%d entry / %d exit", snapshot.PendingEntries, snapshot.PendingExits), b.defaultKeyboard())
-		return
+	if len(snapshot.PendingOrders) == 0 &&
+		snapshot.PendingEntries+snapshot.PendingExits > 0 {
+		return executorPendingSnapshot{},
+			"⚠️ <b>Executor belum mengirim rincian pending order.</b>\n\nPerbarui image executor agar menu ini dapat menampilkan ID order, CEX, harga, dan kuantitas. Jumlah tercatat: "+
+				fmt.Sprintf("%d entry / %d exit", snapshot.PendingEntries, snapshot.PendingExits),
+			false
 	}
-	orders := append([]pendingOrderSnapshot(nil), snapshot.PendingOrders...)
-	sort.SliceStable(orders, func(i, j int) bool {
-		left := strings.ToLower(orders[i].LocalExchange + "|" + orders[i].Symbol)
-		right := strings.ToLower(orders[j].LocalExchange + "|" + orders[j].Symbol)
+	return snapshot, "", true
+}
+
+func sortPendingOrderSnapshots(
+	orders []pendingOrderSnapshot,
+) []pendingOrderSnapshot {
+	sorted := append([]pendingOrderSnapshot(nil), orders...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		left := strings.ToLower(
+			sorted[i].LocalExchange + "|" + sorted[i].Symbol,
+		)
+		right := strings.ToLower(
+			sorted[j].LocalExchange + "|" + sorted[j].Symbol,
+		)
 		return left < right
 	})
+	return sorted
+}
+
+func formatPendingOrderPage(
+	snapshot executorPendingSnapshot, orders []pendingOrderSnapshot,
+	start, end, page, pages int,
+) string {
+	var out strings.Builder
+	out.WriteString(fmt.Sprintf(
+		"🕒 <b>PENDING ORDERS (%d) — %d/%d</b> — grouped by exchange / pair\n",
+		len(orders), page+1, pages,
+	))
+	if snapshot.MockMode {
+		out.WriteString("⚠️ <b>MODE SIMULASI</b>\n")
+	} else {
+		out.WriteString("🟢 <b>EXECUTOR LIVE</b>\n")
+	}
+	if snapshot.TimestampMS > 0 {
+		out.WriteString(
+			"🕓 Snapshot: " +
+				time.UnixMilli(snapshot.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC") +
+				"\n",
+		)
+	}
+	out.WriteString("\n")
+	lastGroup := ""
+	for i, order := range orders[start:end] {
+		group := strings.ToUpper(order.LocalExchange) + " / " +
+			strings.ToUpper(order.Symbol)
+		if group != lastGroup {
+			out.WriteString("<b>🏦 " + html.EscapeString(group) + "</b>\n")
+			lastGroup = group
+		}
+		status := order.Status
+		if status == "" {
+			status = "UNKNOWN"
+		}
+		out.WriteString(fmt.Sprintf(
+			"<b>[%d] %s — %s</b>\n",
+			start+i+1, html.EscapeString(strings.ToUpper(order.Symbol)),
+			html.EscapeString(status),
+		))
+		out.WriteString(fmt.Sprintf(
+			"• Leg: <code>%s</code> | Order ID: <code>%s</code>\n",
+			html.EscapeString(order.Leg), html.EscapeString(order.OrderID),
+		))
+		out.WriteString(fmt.Sprintf(
+			"• CEX Spot: <b>%s</b> | CEX Futures: <b>%s</b>\n",
+			html.EscapeString(strings.ToUpper(order.LocalExchange)),
+			html.EscapeString(strings.ToUpper(order.GlobalExchange)),
+		))
+		out.WriteString(fmt.Sprintf(
+			"• Harga: <code>%.10g %s</code> | Qty: <code>%.8g</code>\n",
+			order.Price, html.EscapeString(order.QuoteAsset), order.Qty,
+		))
+		out.WriteString(fmt.Sprintf(
+			"• Filled: <code>%.8g</code> | Sisa: <code>%.8g</code>\n",
+			order.Filled, order.Remaining,
+		))
+		if order.CreatedAtMS > 0 {
+			age := time.Since(time.UnixMilli(order.CreatedAtMS))
+			if age < 0 {
+				age = 0
+			}
+			out.WriteString(fmt.Sprintf(
+				"• Dibuka: %s (umur %s)\n",
+				time.UnixMilli(order.CreatedAtMS).UTC().Format(TIME_FORMAT),
+				age.Round(time.Second),
+			))
+		} else {
+			out.WriteString("• Waktu pembukaan: <i>tidak tersedia</i>\n")
+		}
+		out.WriteString("\n")
+	}
+	out.WriteString("<i>Read-only: status berasal dari snapshot executor NAFAZ.</i>")
+	return out.String()
+}
+
+func (b *Bot) handlePendingOrdersCommand(
+	ctx context.Context, chatID, replyToID int64,
+) {
+	snapshot, problem, ok := b.readPendingOrderSnapshot(ctx)
+	if !ok {
+		b.sendReplyWithMarkup(
+			ctx, chatID, replyToID, problem, b.defaultKeyboard(),
+		)
+		return
+	}
+	orders := sortPendingOrderSnapshots(snapshot.PendingOrders)
 	if len(orders) == 0 {
 		message := "🕒 <b>PENDING ORDERS (0)</b>\n<i>Tidak ada pending order pada snapshot executor.</i>"
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, message, b.defaultKeyboard())
+		b.sendReplyWithMarkup(
+			ctx, chatID, replyToID, message, b.defaultKeyboard(),
+		)
 		return
 	}
 	const pageSize = 6
 	pages := (len(orders) + pageSize - 1) / pageSize
 	for page, start := 0, 0; start < len(orders); page, start = page+1, start+pageSize {
-		end := start + pageSize
-		if end > len(orders) { end = len(orders) }
-		var out strings.Builder
-		out.WriteString(fmt.Sprintf("🕒 <b>PENDING ORDERS (%d) — %d/%d</b> — grouped by exchange / pair\n", len(orders), page+1, pages))
-		if snapshot.MockMode { out.WriteString("⚠️ <b>MODE SIMULASI</b>\n") } else { out.WriteString("🟢 <b>EXECUTOR LIVE</b>\n") }
-		if snapshot.TimestampMS > 0 { out.WriteString("🕓 Snapshot: "+time.UnixMilli(snapshot.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC")+"\n") }
-		out.WriteString("\n")
-		lastGroup := ""
-		for i, order := range orders[start:end] {
-			group := strings.ToUpper(order.LocalExchange) + " / " + strings.ToUpper(order.Symbol)
-			if group != lastGroup { out.WriteString("<b>🏦 "+html.EscapeString(group)+"</b>\n"); lastGroup = group }
-			status := order.Status
-			if status == "" { status = "UNKNOWN" }
-			out.WriteString(fmt.Sprintf("<b>[%d] %s — %s</b>\n", start+i+1, html.EscapeString(strings.ToUpper(order.Symbol)), html.EscapeString(status)))
-			out.WriteString(fmt.Sprintf("• Leg: <code>%s</code> | Order ID: <code>%s</code>\n", html.EscapeString(order.Leg), html.EscapeString(order.OrderID)))
-			out.WriteString(fmt.Sprintf("• CEX Spot: <b>%s</b> | CEX Futures: <b>%s</b>\n", html.EscapeString(strings.ToUpper(order.LocalExchange)), html.EscapeString(strings.ToUpper(order.GlobalExchange))))
-			out.WriteString(fmt.Sprintf("• Harga: <code>%.10g %s</code> | Qty: <code>%.8g</code>\n", order.Price, html.EscapeString(order.QuoteAsset), order.Qty))
-			out.WriteString(fmt.Sprintf("• Filled: <code>%.8g</code> | Sisa: <code>%.8g</code>\n", order.Filled, order.Remaining))
-			if order.CreatedAtMS > 0 {
-				age := time.Since(time.UnixMilli(order.CreatedAtMS)); if age < 0 { age = 0 }
-				out.WriteString(fmt.Sprintf("• Dibuka: %s (umur %s)\n", time.UnixMilli(order.CreatedAtMS).UTC().Format(TIME_FORMAT), age.Round(time.Second)))
-			} else { out.WriteString("• Waktu pembukaan: <i>tidak tersedia</i>\n") }
-			out.WriteString("\n")
-		}
-		out.WriteString("<i>Read-only: status berasal dari snapshot executor NAFAZ.</i>")
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
+		end := min(start+pageSize, len(orders))
+		b.sendReplyWithMarkup(
+			ctx, chatID, replyToID,
+			formatPendingOrderPage(snapshot, orders, start, end, page, pages),
+			b.defaultKeyboard(),
+		)
 		replyToID = 0
 	}
 }
