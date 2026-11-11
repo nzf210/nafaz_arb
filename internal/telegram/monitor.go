@@ -140,8 +140,8 @@ func (b *Bot) sendOrderList(ctx context.Context, chatID, replyToID int64, items 
 		if i >= 20 { out.WriteString("\n<i>Daftar dibatasi 20 order.</i>"); break }
 		var m map[string]interface{}
 		_ = json.Unmarshal(item, &m)
-		id := firstMapValue(m, "internal_order_id", "order_id", "id")
-		pair := firstMapValue(m, "pair", "pair_tag", "symbol", "pair_id")
+		id := firstMapValue(m, "local_order_id", "internal_order_id", "order_id", "id")
+		pair := firstMapValue(m, "pair", "pair_key", "pair_tag", "symbol", "pair_id")
 		exchange := firstMapValue(m, "exchange", "local_exchange", "venue")
 		status := firstMapValue(m, "status", "state")
 		out.WriteString(fmt.Sprintf("<b>[%d] %s</b>\n• Pair: <code>%s</code>\n• Exchange: <code>%s</code>\n• Status: <code>%s</code>\n\n",
