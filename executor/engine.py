@@ -234,12 +234,12 @@ class ArbitrageEngine(
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
         await self._restore_risk_state()
-        await self._recover_active_positions()
-        await self._recover_pending_entry_orders()
-        await self._run_order_recovery()
-        if not getattr(self.config, "mock_mode", False):
-            await self._verify_recovered_active_positions()
-        self._recovery_complete = True
+        self._recovery_complete = await self._run_startup_recovery()
+        if not self._recovery_complete:
+            self._halt_exposure_scope(
+                "*", "startup recovery did not acquire and complete the distributed lease"
+            )
+            self._refresh_entry_gate()
         logger.info(
             "[Recovery] startup reconciliation finished: ready=%s, pending=%d, orphans=%d",
             not self._entry_blocked, len(self._recovery_pending_orders), len(self._recovered_orphans),
