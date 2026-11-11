@@ -205,6 +205,15 @@ class EntryHedgeMixin:
                 ),
             )
         except Exception as submit_error:
+            rejection_check = getattr(
+                self, "_is_definitive_order_rejection", None
+            )
+            if callable(rejection_check) and rejection_check(submit_error):
+                order_info["hedge_submit_started"] = False
+                await self._mark_order_submission_rejected(
+                    str(order_info.get("global_exchange") or ""), hedge_coid
+                )
+                raise
             lookup = getattr(
                 self.client, "fetch_global_order_by_client_id", None
             )
