@@ -390,9 +390,3 @@ class PaperTradingExchangeClient:
         # Preserve the async exchange-client contract during paper-mode shutdown.
         await asyncio.sleep(0)
 
-
-def create_exchange_client(config: Any) -> Any:
-    """Factory creating appropriate client (CCXT live or Paper Trading mock)."""
-    if getattr(config, "mock_mode", False):
-        return PaperTradingExchangeClient(
-            local_name=config.local_exchange_name,
