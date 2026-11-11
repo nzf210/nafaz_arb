@@ -558,24 +558,27 @@ class ExchangeClient:
         else:
             order_trade_fetcher = getattr(exchange, "fetch_order_trades", None)
             if callable(order_trade_fetcher) and order_id:
-                raw_trades = await order_trade_fetcher(
-                    str(order_id), resolved, int(since or 0) or None, 1000
-                )
+                try:
+                    raw_trades = await order_trade_fetcher(
+                        str(order_id), resolved, int(since or 0) or None, 1000
+                    )
+                except (NotImplementedError, ccxt.NotSupported):
+                    raw_trades = await fetcher(resolved, int(since or 0) or None, 1000)
             else:
                 raw_trades = await fetcher(resolved, int(since or 0) or None, 1000)
             if not isinstance(raw_trades, list):
                 raise ValueError("exchange returned malformed trade history")
+            if len(raw_trades) >= 1000:
+                raise RuntimeError(
+                    "exchange trade-history response reached its 1000-fill limit; "
+                    "cannot prove complete order fill history"
+                )
             if until is not None:
                 raw_trades = [
                     item for item in raw_trades
                     if isinstance(item, dict)
                     and int(item.get("timestamp") or 0) <= int(until)
                 ]
-            if len(raw_trades) >= 1000:
-                raise RuntimeError(
-                    "exchange trade-history response reached its 1000-fill limit; "
-                    "cannot prove complete order fill history"
-                )
 
         expected_order = str(order_id or "")
         expected_client = str(client_order_id or "")
