@@ -304,22 +304,44 @@ class EntryOrderManagementMixin:
             values = self._maker_quote_snapshot_values(snapshot, order_info)
             if values is None:
                 return None
-            candidate = math.floor(
-                (values["local_bid"] + 1e-12) / values["tick"]
-            ) * values["tick"]
-            if (
-                candidate <= values["current_price"]
-                or candidate >= values["local_ask"]
-            ):
-                return None
+            max_buy_price = float(
+                order_info.get("adaptive_max_buy_price_idr", 0.0) or 0.0
+            )
+            if max_buy_price > 0:
+                raw_candidate = min(
+                    values["local_ask"] - values["tick"], max_buy_price
+                )
+                candidate = math.floor(
+                    (raw_candidate + 1e-12) / values["tick"]
+                ) * values["tick"]
+                # If the best bid has already moved above the profit ceiling,
+                # there is no safe maker quote: cancel the stale order.
+                if candidate < values["local_bid"]:
+                    candidate = 0.0
+            else:
+                # Legacy pending orders have no persisted profit ceiling.
+                candidate = math.floor(
+                    (values["local_bid"] + 1e-12) / values["tick"]
+                ) * values["tick"]
+
+            if candidate > 0 and candidate >= values["local_ask"]:
+                candidate = 0.0
             live_global_idr = values["global_bid"] * values["fx_rate"]
             live_spread_pct = (
                 (live_global_idr - candidate) / live_global_idr
-            ) * 100.0
-            if live_spread_pct < values["min_spread"]:
+            ) * 100.0 if candidate > 0 else 0.0
+            if candidate > 0 and live_spread_pct < values["min_spread"]:
+                candidate = 0.0
+                live_spread_pct = 0.0
+            if (
+                candidate > 0
+                and abs(candidate - values["current_price"]) < values["tick"]
+            ):
                 return None
             return {
                 "local_bid": values["local_bid"],
+                "local_ask": values["local_ask"],
+                "candidate_price": candidate,
                 "current_price": values["current_price"],
                 "live_spread_pct": live_spread_pct,
                 "min_spread": values["min_spread"],
@@ -361,10 +383,12 @@ class EntryOrderManagementMixin:
             return False
         await self.redis.set(cooldown_key, str(quote["now_ms"]), ex=cooldown_seconds)
         logger.info(
-            f"[Maker Refresh] {pair_tag}: quote aged {age:.1f}s; "
-            f"best bid {quote['local_bid']} is above order {quote['current_price']}, "
-            f"fresh edge {quote['live_spread_pct']:.4f}% meets floor "
-            f"{quote['min_spread']:.4f}%. Canceling and waiting for the next scanner signal."
+            f"[Maker Refresh] {pair_tag}: 15s quote evaluation; "
+            f"current={quote['current_price']} candidate={quote['candidate_price']} "
+            f"best_bid={quote['local_bid']} best_ask={quote['local_ask']} "
+            f"edge={quote['live_spread_pct']:.4f}% floor={quote['min_spread']:.4f}%. "
+            "Canceling through the existing reconciliation lifecycle; "
+            "a fresh scanner signal is required before replacement."
         )
         return await self._cancel_entry_order_and_reconcile(
             pair_tag, order_info, "Maker Quote Refresh"
