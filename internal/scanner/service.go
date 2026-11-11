@@ -509,8 +509,7 @@ func (s *Service) validateCalculationInput(input opportunityCalculationInput) er
 func (s *Service) calculateOpportunitySizing(
 	input opportunityCalculationInput,
 ) (opportunitySizing, error) {
-	sm, pm, sb, pb := input.spotMarket, input.perpMarket,
-		input.spotBook, input.perpBook
+	sm, sb, pb := input.spotMarket, input.spotBook, input.perpBook
 	targetBudget := decimal.NewFromFloat(s.cfg.CapitalTotal).
 		Mul(decimal.NewFromFloat(s.cfg.AllocationPerPair))
 	perpLevFloat := s.cfg.PerpLeverage
