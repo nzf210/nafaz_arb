@@ -282,7 +282,7 @@ class EngineRuntimeMixin:
                 "action": action,
                 "resolved": bool(result["resolved"]),
                 "error": str(result.get("error") or ""),
-                "complete": not self._recovery_pending_orders and not self._recovery_scope_halts,
+                "complete": not result.get("error") and not self._recovery_pending_orders and not self._recovery_scope_halts,
                 "pending_orders": self._recovery_pending_orders,
                 "scope_halts": dict(self._recovery_scope_halts),
                 "timestamp_ms": int(time.time() * 1000),
