@@ -1908,7 +1908,7 @@ class ArbitrageEngine(
             self._persist_risk_state("trading_halt", scope="global", resolved=True)
             logger.warning("[Circuit Breaker] New UTC day - trading resumed")
 
-    def record_realized_pnl(self, net_profit_usdt: float) -> None:
+    def record_realized_pnl(self, net_profit_usdt: float, event_id: Optional[str] = None, pair_key: str = "unknown") -> None:
         """
         Feeds a closed trade's net PnL into the daily loss breaker.
 
@@ -1917,6 +1917,19 @@ class ArbitrageEngine(
         the loss the breaker is trying to stop.
         """
         self._roll_loss_day_if_needed()
+        if event_id and getattr(self.supabase, "enabled", False):
+            result = self.supabase.risk_pnl_event(
+                event_id, pair_key=pair_key, pnl_usdt=float(net_profit_usdt),
+                loss_day=self._loss_day,
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+            )
+            if result == "duplicate":
+                logger.info("[Risk] duplicate realized PnL event ignored: %s", event_id)
+                return
+            if result == "failed":
+                self._risk_persistence_failed = True
+                self._entry_blocked = True
+                logger.critical("[Risk] PnL event durability failed; new entries fail-closed")
         if net_profit_usdt < 0:
             self._daily_realized_loss_usdt += -net_profit_usdt
         self._persist_risk_state("daily_loss", scope="global", value={"loss_usdt": self._daily_realized_loss_usdt, "loss_day": self._loss_day})
