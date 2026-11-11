@@ -43,7 +43,7 @@ class EngineFeePreflightMixin:
                 "taker": float(profile["taker_fee_pct"]),
                 "fetched_at_ms": fetched_at,
             }
-        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        except (TypeError, ValueError, KeyError):
             logger.warning(
                 "[Fee Engine] ignoring malformed cached %s fee profile", market_name
             )
