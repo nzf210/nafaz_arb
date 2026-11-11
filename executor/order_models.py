@@ -163,7 +163,18 @@ class OrderRecord:
             "average_fill_price": self.average_fill_price,
             "status": self.status,
             "reduce_only": self.reduce_only,
-             @classmethod
+            "is_mock": self.is_mock,
+            "recovery_status": self.recovery_status,
+            "local_amount_spec": self.local_amount_spec,
+            "global_amount_spec": self.global_amount_spec,
+            "recovery_context": self.recovery_context,
+            "hedged_quantity": self.hedged_quantity,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "last_reconciled_at": self.last_reconciled_at,
+        }
+
+    @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "OrderRecord":
         record = cls(
             local_order_id=_record_string(d, "local_order_id"),
@@ -195,16 +206,6 @@ class OrderRecord:
             created_at=_record_int(d, "created_at"),
             updated_at=_record_int(d, "updated_at"),
             last_reconciled_at=_record_int(d, "last_reconciled_at"),
-        )
-        if not record.local_order_id and record.client_order_id:
-            record.local_order_id = cls.local_id_for(
-                record.exchange, record.client_order_id, record.exchange_order_id
-            )
-        return record
-t(d.get("hedged_quantity") or 0.0),
-            created_at=int(d.get("created_at") or 0),
-            updated_at=int(d.get("updated_at") or 0),
-            last_reconciled_at=int(d.get("last_reconciled_at") or 0),
         )
         if not record.local_order_id and record.client_order_id:
             record.local_order_id = cls.local_id_for(
