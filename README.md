@@ -362,8 +362,8 @@ cumulative fills with the durable registry, checks that spot base-asset totals
 cover managed quantities, and compares futures short exposure with managed
 positions. Spot and perpetual wallet balances are captured as append-only
 `balance_snapshots` observations for audit. A failed balance/position read or
-confirmed mismatch blocks new entries on the affected venue while existing
-position management remains active. Spot balances are checked as a minimum
+confirmed mismatch for a venue with managed exposure blocks new entries there
+while existing position management remains active. Spot balances are checked as a minimum
 coverage threshold because wallets may contain unrelated manual inventory;
 the bot never attributes excess wallet assets to its own positions or
 automatically resizes/closes positions from a balance snapshot.
