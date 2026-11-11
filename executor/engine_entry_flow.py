@@ -125,6 +125,41 @@ class EngineEntryFlowMixin:
             await self.publish_status()
             return False
 
+    def _spot_order_limit(self, exchange: str) -> int:
+        limits = getattr(self.config, "max_open_spot_orders_per_exchange", {}) or {}
+        try:
+            value = int(limits.get(str(exchange).strip().lower(), 2))
+        except (TypeError, ValueError):
+            value = 2
+        return min(100, max(1, value))
+
+    def _spot_open_order_count(self, exchange: str) -> int:
+        """Count distinct spot pairs with an open position or pending entry."""
+        venue = str(exchange or "").strip().lower()
+        active_pairs = {
+            pair for pair, position in self.active_positions.items()
+            if str(getattr(position, "local_exchange", "")).strip().lower() == venue
+            and float(getattr(position, "qty", 0.0) or 0.0) > 0
+        }
+        pending_pairs = {
+            pair for pair, order in self.pending_entry_orders.items()
+            if str((order or {}).get("local_exchange", "")).strip().lower() == venue
+        }
+        uncertain_pairs = {
+            pair for pair, state in self.states.items()
+            if getattr(state, "value", str(state)) == "RECONCILIATION_REQUIRED"
+            and str(getattr(self._pair_infos.get(pair), "local_exchange", "")).strip().lower() == venue
+        }
+        return len(active_pairs | pending_pairs | uncertain_pairs)
+
+    def _spot_exchange_entry_lock(self, exchange: str):
+        venue = str(exchange or "").strip().lower()
+        lock = self._spot_exchange_entry_locks.get(venue)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._spot_exchange_entry_locks[venue] = lock
+        return lock
+
     async def _handle_signal_locked(
         self, pair_tag: str, payload: Optional[ExecutorPayload] = None
     ):
@@ -187,7 +222,22 @@ class EngineEntryFlowMixin:
         if sizing is None:
             return
         buy_qty, actual_cost_usdt, buy_price_idr = sizing
-        await self._submit_entry_order(
-            pair_tag, payload, pair_info, snapshot, directives,
-            buy_qty, actual_cost_usdt, buy_price_idr,
-        )
+        # The exchange-wide lock closes the race where simultaneous signals
+        # for different pairs would all pass the same venue cap.
+        exchange = str(pair_info.local_exchange or "").strip().lower()
+        async with self._spot_exchange_entry_lock(exchange):
+            current = self._spot_open_order_count(exchange)
+            maximum = self._spot_order_limit(exchange)
+            if current >= maximum:
+                self._mark_failed(
+                    pair_tag,
+                    "SPOT_OPEN_ORDER_LIMIT_REACHED",
+                    f"{exchange} already has {current}/{maximum} open spot positions or pending entries.",
+                    detail={"exchange": exchange, "open_spot_orders": current, "max_open_spot_orders": maximum},
+                )
+                await self.publish_status()
+                return
+            await self._submit_entry_order(
+                pair_tag, payload, pair_info, snapshot, directives,
+                buy_qty, actual_cost_usdt, buy_price_idr,
+            )
