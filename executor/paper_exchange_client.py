@@ -47,10 +47,7 @@ class PaperTradingExchangeClient:
         ]
 
     def get_balances(
-        self,
-        local_quote_asset: str = "IDR",
-        global_quote_asset: str = "USDT",
-        usdt_idr_rate: float = 0.0,
+        self, *_quote_context, **_quote_options
     ) -> Dict[str, float]:
         """Returns simulated balance breakdown; quote arguments mirror the live client."""
         return {
@@ -207,7 +204,7 @@ class PaperTradingExchangeClient:
         self.orders[oid] = order
         return order
 
-    async def cancel_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
+    async def cancel_local_order(self, order_id: str, *_unused_args, **_unused_kwargs) -> Dict[str, Any]:
         # Keep the async client contract cooperative even for in-memory operations.
         await asyncio.sleep(0)
         if order_id in self.orders:
@@ -258,7 +255,7 @@ class PaperTradingExchangeClient:
         return None
 
     async def fetch_local_open_orders(
-        self, symbol: Optional[str] = None, amount_spec: Any = None
+        self, symbol: Optional[str] = None, *_unused_args, **_unused_kwargs
     ) -> list:
         """Resting spot orders in the simulated book, in venue payload shape.
 
@@ -278,7 +275,7 @@ class PaperTradingExchangeClient:
         return open_orders
 
     async def fetch_global_open_orders(
-        self, symbol: Optional[str] = None, amount_spec: Any = None
+        self, symbol: Optional[str] = None, *_unused_args, **_unused_kwargs
     ) -> list:
         """Resting futures orders in the simulated book.
 
@@ -387,14 +384,14 @@ class PaperTradingExchangeClient:
         return [{"symbol": symbol, "contracts": qty, "side": "short"}]
 
     async def fetch_funding_history(
-        self, symbol: str, since: Optional[int] = None, limit: int = 100
+        self, *_unused_args, **_unused_kwargs
     ) -> list:
         """Paper mode has no exchange settlement ledger; never invent funding credits."""
         # Keep the async client contract cooperative even for in-memory operations.
         await asyncio.sleep(0)
         return []
 
-    async def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
+    async def fetch_funding_rate(self, *_unused_args, **_unused_kwargs) -> Dict[str, Any]:
         """Paper mode does not fabricate a future settlement schedule."""
         # Keep the async client contract cooperative even for in-memory operations.
         await asyncio.sleep(0)
