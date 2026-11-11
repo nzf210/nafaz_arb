@@ -1161,3 +1161,31 @@ class SupabaseWriter:
         finally:
             if created and session is not None:
                 await session.close()
+
+
+    def risk_pnl_event(self, event_id: str, *, pair_key: str, pnl_usdt: float, loss_day: str, is_mock: bool = True) -> str:
+        """Idempotently journal a verified realized-PnL event.
+
+        Returns inserted, duplicate, or failed. A duplicate event must never
+        increment the daily loss accumulator a second time.
+        """
+        if not self.enabled or self._outbox is None:
+            return "failed"
+        try:
+            inserted = self._outbox.enqueue_once(
+                "risk_pnl_events", "event_id",
+                {
+                    "event_id": str(event_id),
+                    "pair_key": str(pair_key),
+                    "pnl_usdt": float(pnl_usdt),
+                    "loss_day_utc": str(loss_day),
+                    "is_mock": bool(is_mock),
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                },
+                f"risk-pnl:{event_id}",
+            )
+            return "inserted" if inserted else "duplicate"
+        except Exception:
+            self._dropped += 1
+            logger.exception("CRITICAL: failed to journal realized PnL event %s", event_id)
+            return "failed"
