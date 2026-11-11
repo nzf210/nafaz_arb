@@ -25,15 +25,31 @@ class RecoveryRegistryMixin:
 
     async def _run_order_recovery_lifecycle_with_lock(self) -> None:
         await self._run_order_recovery_with_lock()
-        if (
-            self._recovery_pending_orders
-            or self._recovery_scope_halts
-            or any(
-                state == PositionState.RECONCILIATION_REQUIRED
-                for state in self.states.values()
-            )
+        self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
+        # Do not immediately retry unresolved records in the same sweep: the
+        # single-order endpoint and open-order catalogue must agree. A later
+        # periodic pass or explicit operator retry may re-check the incident.
+        if self._recovery_pending_orders:
+            self._refresh_entry_gate()
+            return
+        if self._recovery_scope_halts or any(
+            state == PositionState.RECONCILIATION_REQUIRED
+            for state in self.states.values()
         ):
-            await self.retry_pending_order_recovery()
+            verified_positions = set()
+            try:
+                verified_positions = await self._verify_recovered_active_positions()
+                if not getattr(self.config, "mock_mode", False):
+                    await self.trade_fill_reconciliation.reconcile_once()
+                    await self.exposure_reconciliation.reconcile_once()
+            except Exception as exc:
+                logger.exception("[Recovery] periodic incident verification failed")
+                self._halt_exposure_scope(
+                    "*", f"periodic incident verification failed: {type(exc).__name__}: {exc}"
+                )
+            for pair_tag in verified_positions:
+                await self._clear_resolved_pair_failure(pair_tag)
+        self._refresh_entry_gate()
 
     async def _run_startup_recovery(self) -> bool:
         """Restore all startup state while holding one cross-instance lease."""
