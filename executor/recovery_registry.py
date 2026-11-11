@@ -146,7 +146,7 @@ class RecoveryRegistryMixin:
         market = "futures" if record.market_type == "perpetual" else "spot"
         amount_spec = record.local_amount_spec if market == "spot" else record.global_amount_spec
         adopted = await self._apply_adopted_order(
-            record, order, record.pair_key, market, amount_spec
+            record, order, record.pair_key, amount_spec
         )
         if adopted:
             await self.order_registry.clear_pending_recovery(record.local_order_id)
