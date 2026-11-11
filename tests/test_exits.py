@@ -405,7 +405,7 @@ async def test_funding_rollover_uses_actual_exchange_settlement(engine, fake_red
     }
 
     applied = await engine._handle_funding_rollover(
-        pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms
+        pair_tag, pos, now_ms=now_ms
     )
 
     assert applied is True
@@ -416,7 +416,7 @@ async def test_funding_rollover_uses_actual_exchange_settlement(engine, fake_red
 
     # Replaying the same cycle cannot credit the same settlement twice.
     applied_again = await engine._handle_funding_rollover(
-        pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms + 1
+        pair_tag, pos, now_ms=now_ms + 1
     )
     assert applied_again is False
     assert pos.accumulated_funding_usdt == pytest.approx(0.975)
@@ -445,7 +445,7 @@ async def test_funding_rollover_never_estimates_missing_settlement(engine, fake_
     }
 
     applied = await engine._handle_funding_rollover(
-        pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms
+        pair_tag, pos, now_ms=now_ms
     )
 
     assert applied is False
