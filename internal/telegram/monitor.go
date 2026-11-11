@@ -181,6 +181,28 @@ func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Order ID tidak ditemukan dalam active order registry. Order terminal mungkin sudah dipindahkan dari index aktif; jangan menyimpulkan order exchange tidak ada.", b.defaultKeyboard())
 }
 
+func (b *Bot) sendJSONPages(ctx context.Context, chatID, replyToID int64, title string, rows []json.RawMessage) {
+	if len(rows) == 0 {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "<b>"+html.EscapeString(title)+" (0)</b>\\n<i>Tidak ada record.</i>", b.defaultKeyboard())
+		return
+	}
+	const pageSize = 3
+	pages := (len(rows) + pageSize - 1) / pageSize
+	for page, start := 0, 0; start < len(rows); page, start = page+1, start+pageSize {
+		end := start + pageSize
+		if end > len(rows) { end = len(rows) }
+		var out strings.Builder
+		out.WriteString(fmt.Sprintf("<b>%s (%d) — %d/%d</b>\\n\\n", html.EscapeString(title), len(rows), page+1, pages))
+		for _, row := range rows[start:end] {
+			value := prettyJSON(row)
+			if len([]rune(value)) > 1000 { value = string([]rune(value)[:950]) + "\\n... record dipotong" }
+			out.WriteString("<pre>"+html.EscapeString(value)+"</pre>\\n")
+		}
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
+		replyToID = 0
+	}
+}
+
 func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64, id string) {
 	b.mu.Lock()
 	rc := b.redisClient
@@ -221,7 +243,7 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 		var err error
 		ledger, err = ledgerReader.PositionOrderFills(ctx, id)
 		if err != nil {
-			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Supabase order/fill ledger tidak dapat dibaca: "+html.EscapeString(err.Error())+"\nData Redis tetap tersedia, tetapi fills historis belum terverifikasi.", b.defaultKeyboard())
+			b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Supabase order/fill ledger tidak dapat dibaca: "+html.EscapeString(err.Error())+"\\nData Redis tetap tersedia, tetapi fills historis belum terverifikasi.", b.defaultKeyboard())
 			return
 		}
 	}
@@ -230,33 +252,20 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Position ID tidak ditemukan pada active position store maupun durable order ledger. Ini tidak membuktikan tidak ada exposure di exchange.", b.defaultKeyboard())
 		return
 	}
-	var out strings.Builder
-	out.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\n\n")
+	var summary strings.Builder
+	summary.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\\n")
 	if matched != nil {
 		raw, _ := json.Marshal(matched)
-		out.WriteString("<b>Active position snapshot</b>\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>\n")
+		summary.WriteString("<b>Active position snapshot</b>\\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>")
 	}
-	out.WriteString(fmt.Sprintf("<b>Redis active orders terkait (%d)</b>\n", len(related)))
-	for i, item := range related {
-		if i >= 5 { out.WriteString("<i>Redis order list dibatasi 5.</i>"); break }
-		out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\n")
-	}
+	b.sendReplyWithMarkup(ctx, chatID, replyToID, summary.String(), b.defaultKeyboard())
+	b.sendJSONPages(ctx, chatID, 0, "Redis active orders terkait", related)
 	if ledgerAvailable {
-		out.WriteString(fmt.Sprintf("<b>Supabase durable orders (%d)</b>\n", len(ledgerOrders)))
-		for i, item := range ledgerOrders {
-			if i >= 5 { out.WriteString("<i>Durable order list dibatasi 5.</i>"); break }
-			out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\n")
-		}
-		out.WriteString(fmt.Sprintf("<b>Immutable exchange fills (%d)</b>\n", len(ledgerFills)))
-		for i, item := range ledgerFills {
-			if i >= 10 { out.WriteString("<i>Fill list dibatasi 10.</i>"); break }
-			out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\n")
-		}
+		b.sendJSONPages(ctx, chatID, 0, "Supabase durable orders", ledgerOrders)
+		b.sendJSONPages(ctx, chatID, 0, "Immutable exchange fills", ledgerFills)
 	} else {
-		out.WriteString("<b>Fills historis:</b> <i>Supabase belum terhubung; fill ledger tidak dapat diverifikasi.</i>\n")
+		b.sendReplyWithMarkup(ctx, chatID, 0, "<b>Fills historis:</b> Supabase belum terhubung; fill ledger tidak dapat diverifikasi.", b.defaultKeyboard())
 	}
-	out.WriteString("<i>Read-only: tidak ada order atau posisi yang diubah.</i>")
-	b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
 }
 
 func (b *Bot) sendStartupSummary(ctx context.Context) {
