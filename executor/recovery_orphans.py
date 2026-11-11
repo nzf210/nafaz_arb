@@ -281,6 +281,9 @@ class RecoveryOrphanMixin:
             logger.exception("[Recovery] failed to persist reconciled position state for %s", pair_tag)
             return False
 
+        position_status = getattr(self.supabase, "position_status", None)
+        if callable(position_status):
+            position_status(pair_tag, restored_state.value, position)
         if not self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, resolved=True):
             if not getattr(self.config, "mock_mode", False):
                 return False
