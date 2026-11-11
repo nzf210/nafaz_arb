@@ -274,6 +274,7 @@ class ExitMixin:
                     symbol=pos.symbol, role=OrderRole.EXIT_SPOT.value,
                     side="sell", order_type="limit", price=limit_sell_idr,
                     quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
+                    required=False,
                 )
                 order = await self.client.place_local_limit_sell(
                     pos.symbol,
