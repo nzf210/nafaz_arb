@@ -597,3 +597,17 @@ async def test_operator_kill_switch_overrides_daily_loss_halt(engine):
     await engine.handle_kill_switch(json.dumps({"action": "on"}))
     assert engine._trading_halted is True
     assert engine._halt_reason == "KILL_SWITCH"
+
+
+@pytest.mark.asyncio
+async def test_venue_cooldown_task_propagates_cancellation(engine):
+    """Cancelling a cooldown task must remain observable by its task owner."""
+    engine._pause_venue_for_cooldown("indodax", 60.0)
+    task = engine._venue_cooldown_tasks["indodax"]
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Cancellation must not accidentally clear the active venue halt.
+    assert "indodax" in engine._exchange_halted
