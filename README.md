@@ -367,6 +367,15 @@ while existing position management remains active. Spot balances are checked as 
 coverage threshold because wallets may contain unrelated manual inventory;
 the bot never attributes excess wallet assets to its own positions or
 automatically resizes/closes positions from a balance snapshot.
+
+Trade-fill reconciliation reads immutable execution records from authenticated
+exchange trade history, stores each unique exchange trade ID with its actual
+quantity, price, quote value, fee amount/asset, and execution timestamp, and
+compares the total fill quantity against the order's cumulative filled quantity.
+INDODAX uses TAPI v2 `/api/v2/myTrades` in seven-day windows; supported CCXT
+venues use `fetch_my_trades`. Missing/unsupported trade history or a quantity
+mismatch is not converted into a synthetic fill: the affected pair is marked
+`RECONCILIATION_REQUIRED` and new entries remain blocked until verified.
 `position_legs`, `funding_payments`, and `executor_status_snapshots` remain
 schema-only. Supabase history must never replace authenticated exchange-side
 exposure verification.
