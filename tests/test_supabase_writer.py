@@ -149,7 +149,14 @@ class TestPositions:
         assert row["closed_at"]
         assert len(legs) == 4
         assert {row["leg"] for row in legs} == {"spot", "perpetual"}
-        assert all(row["status"] == "CLOSED" for row in legs)
+        # The outbox records both lifecycle snapshots. The latest upsert for
+        # each (position_id, leg) must be CLOSED; earlier OPEN rows are valid
+        # history and must not be mistaken for the final database state.
+        latest_by_leg = {row["leg"]: row for row in legs}
+        assert {leg: row["status"] for leg, row in latest_by_leg.items()} == {
+            "spot": "CLOSED",
+            "perpetual": "CLOSED",
+        }
 
     def test_is_mock_follows_config_not_position(self):
         writer = _writer()
