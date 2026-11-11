@@ -121,6 +121,12 @@ class RecoveryRegistryMixin:
         try:
             await recovery_callback()
             completed = True
+        except Exception as exc:
+            self._halt_exposure_scope(
+                "*", f"recovery callback failed: {type(exc).__name__}: {exc}"
+            )
+            self._refresh_entry_gate()
+            raise
         finally:
             heartbeat.cancel()
             await asyncio.gather(heartbeat, return_exceptions=True)
