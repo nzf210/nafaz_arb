@@ -47,6 +47,64 @@ class RecoveryRegistryMixin:
 
     # ------------------------------------------- durable registry reconciliation
 
+    @staticmethod
+    def _group_registered_orders(records: Dict[str, OrderRecord]) -> Dict[tuple, list]:
+        groups: Dict[tuple, list] = {}
+        for record in records.values():
+            exchange = (
+                record.exchange or self.config.local_exchange_name or ""
+            ).lower()
+            groups.setdefault(
+                (exchange, record.symbol, record.pair_key, record.market_type), []
+            ).append(record)
+        return groups
+
+    async def _reconcile_registered_group(
+        self, exchange: str, symbol: str, pair_tag: str, group: list
+    ) -> None:
+        token = None
+        try:
+            if not getattr(self.config, "mock_mode", False) and pair_tag:
+                try:
+                    token = self._bind_pair_client(
+                        self._pair_info_for_tag(pair_tag)
+                    )
+                except LookupError as exc:
+                    logger.warning(
+                        "[Recovery] no pair client for %s (%s); verifying with the default client",
+                        pair_tag, exc,
+                    )
+            for record in group:
+                await self._reconcile_registered_order(
+                    record, exchange, symbol
+                )
+        except Exception as exc:
+            logger.critical(
+                "[Recovery] cannot verify registry records for %s/%s: %s",
+                exchange, symbol, exc,
+            )
+            for record in group:
+                record.recovery_status = RecoveryStatus.UNVERIFIED.value
+                await self.order_registry.register(record)
+                await self.order_registry.mark_pending_recovery(
+                    record.local_order_id, f"venue verification failed: {exc}"
+                )
+        finally:
+            if token is not None:
+                self._reset_pair_client(token)
+
+    async def _reconcile_registered_orders(
+        self, records: Dict[str, OrderRecord]
+    ) -> None:
+        """Verify non-terminal registry records against their exact venues."""
+        if not records:
+            return
+        groups = self._group_registered_orders(records)
+        for (exchange, symbol, pair_tag, _market_type), group in groups.items():
+            await self._reconcile_registered_group(
+                exchange, symbol, pair_tag, group
+            )
+
     async def _reconcile_registered_orders(self, records: Dict[str, OrderRecord]) -> None:
         """Verifies each non-terminal registry record against the exact venue.
 
@@ -275,29 +333,34 @@ class RecoveryRegistryMixin:
             await self._detect_phantom_orders(exchange, market, open_orders)
             self._clear_sweep_halt(exchange)
 
+    @staticmethod
+    def _is_phantom_candidate(
+        record: OrderRecord, exchange: str, market_type: str, listed: set
+    ) -> bool:
+        if str(record.exchange or "").lower() != str(exchange or "").lower():
+            return False
+        if (record.market_type or "") != market_type:
+            return False
+        if record.is_terminal or record.recovery_status == RecoveryStatus.UNVERIFIED.value:
+            return False
+        return bool(
+            record.exchange_order_id
+            and record.exchange_order_id not in listed
+        )
+
     async def _detect_phantom_orders(
         self, exchange: str, market: str, open_orders: list
     ) -> None:
-        """Flags records the bot still believes are resting but the venue omits.
-
-        The venue's open-order list is authoritative for "is it still resting".
-        A record missing from it was filled or canceled while the bot was down;
-        the individual fetch already tried to resolve that, so what is left is a
-        genuine disagreement. It is surfaced as PHANTOM and blocks entries rather
-        than being silently dropped: a filled entry may still need a hedge.
-        """
+        """Flag locally resting records missing from the venue open-order list."""
         listed = {
-            str(order.get("id") or "") for order in open_orders if isinstance(order, dict)
+            str(order.get("id") or "")
+            for order in open_orders if isinstance(order, dict)
         }
         market_type = "perpetual" if market == "futures" else "spot"
         for record in (self._recovered_order_records or {}).values():
-            if str(record.exchange or "").lower() != str(exchange or "").lower():
-                continue
-            if (record.market_type or "") != market_type:
-                continue
-            if record.is_terminal or record.recovery_status == RecoveryStatus.UNVERIFIED.value:
-                continue
-            if not record.exchange_order_id or record.exchange_order_id in listed:
+            if not self._is_phantom_candidate(
+                record, exchange, market_type, listed
+            ):
                 continue
             record.recovery_status = RecoveryStatus.PHANTOM.value
             await self.order_registry.register(record)
