@@ -578,11 +578,42 @@ async def test_orphan_manual_reconciliation_clears_halt(fake_redis):
     await engine._run_order_recovery()
     orphan_id = next(iter(await engine.order_registry.orphans()))
 
+    # Operator acknowledgement alone is insufficient while the venue order
+    # is still open. A terminal zero-fill exchange response is required.
+    assert await engine.resolve_orphan_order(orphan_id, reason="OPERATOR_REVIEW") is False
+    assert engine._entry_blocked is True
+    assert await engine.order_registry.orphans()
+
+    client.orders["999"]["status"] = "canceled"
     assert await engine.resolve_orphan_order(orphan_id, reason="OPERATOR_REVIEW") is True
 
     assert engine._recovery_scope_halts == {}
     assert engine._entry_blocked is False
     assert await engine.order_registry.orphans() == {}
+
+
+@pytest.mark.asyncio
+async def test_orphan_resolution_does_not_clear_scope_with_another_orphan(fake_redis):
+    """Resolving one orphan cannot release a scope still owned by another orphan."""
+    client = MockExchangeClient()
+    client.orders["999"] = _venue_order(
+        id="999", clientOrderId="unknown-order-1", symbol="eth_idr"
+    )
+    client.orders["1000"] = _venue_order(
+        id="1000", clientOrderId="unknown-order-2", symbol="eth_idr"
+    )
+    engine = await _build(fake_redis, client)
+    await engine._run_order_recovery()
+    orphans = await engine.order_registry.orphans()
+    first_id = next(iter(orphans))
+
+    first = orphans[first_id]
+    client.orders[first["exchange_order_id"]]["status"] = "canceled"
+    assert await engine.resolve_orphan_order(first_id, reason="OPERATOR_REVIEW") is True
+
+    assert engine._recovery_scope_halts
+    assert engine._entry_blocked is True
+    assert len(await engine.order_registry.orphans()) == 1
 
 @pytest.mark.asyncio
 async def test_orphan_registration_is_idempotent(fake_redis):
