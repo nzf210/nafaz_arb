@@ -16,7 +16,7 @@ type monitorSnapshot map[string]json.RawMessage
 
 const htmlPreClose = "</pre>"
 
-func (b *Bot) readMonitorSnapshot(ctx context.Context) (monitorSnapshot, string, bool) {
+func (b *Bot) readMonitorSnapshot(ctx context.Context) (monitorSnapshot, string) {
 	b.mu.Lock()
 	rc := b.redisClient
 	b.mu.Unlock()
@@ -34,7 +34,7 @@ func (b *Bot) readMonitorSnapshot(ctx context.Context) (monitorSnapshot, string,
 	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
 		return nil, "Snapshot executor tidak valid: " + err.Error()
 	}
-	return snapshot, "", false
+	return snapshot, ""
 }
 
 func rawField(m monitorSnapshot, names ...string) json.RawMessage {
