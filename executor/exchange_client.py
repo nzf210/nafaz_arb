@@ -614,7 +614,10 @@ class ExchangeClient:
             else:
                 continue
             fill = dict(trade)
-            fill["id"] = str(trade.get("id") or trade.get("tradeId") or info.get("tradeId") or "")
+            fill["id"] = str(
+                trade.get("id") or trade.get("tradeId") or info.get("tradeId")
+                or info.get("execId") or info.get("matchId") or info.get("fillId") or ""
+            )
             fill["order"] = actual_order
             fill["clientOrderId"] = actual_client
             try:
