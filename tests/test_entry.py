@@ -723,3 +723,49 @@ async def test_signal_for_unconfigured_venue_is_rejected(engine, fake_redis, moc
     assert mock_client.placed_buys == []
     assert engine.states[pair_tag] == PositionState.FAILED
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "EXECUTOR_VENUE_MISMATCH"
+
+@pytest.mark.asyncio
+async def test_spot_submit_timeout_recovers_existing_order_by_client_id(
+    engine, fake_redis, mock_client
+):
+    """A spot order accepted before a lost response is adopted, never resubmitted."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    payload = _revalidation_payload(now_ms)
+    mock_client.update_market_price("BTC/USDT", 65000.0, 65010.0)
+    engine.client = mock_client
+    original_submit = mock_client.place_local_limit_buy
+    submit_calls = []
+    lookup_calls = []
+
+    async def submit_then_lose_response(symbol, amount, price, client_order_id=None, amount_spec=None):
+        submit_calls.append(client_order_id)
+        await original_submit(
+            symbol, amount, price,
+            client_order_id=client_order_id, amount_spec=amount_spec,
+        )
+        raise TimeoutError("exchange accepted order but response was lost")
+
+    async def lookup_by_client_id(client_order_id, symbol, amount_spec=None):
+        lookup_calls.append(client_order_id)
+        for order in mock_client.orders.values():
+            if order.get("client_order_id") == client_order_id:
+                recovered = dict(order)
+                recovered["clientOrderId"] = client_order_id
+                return recovered
+        return None
+
+    mock_client.place_local_limit_buy = submit_then_lose_response
+    mock_client.fetch_local_order_by_client_id = lookup_by_client_id
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}", json.dumps(payload)
+    )
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(submit_calls) == 1
+    assert lookup_calls == submit_calls
+    assert len(mock_client.placed_buys) == 1
+    assert engine.pending_entry_orders[pair_tag]["client_order_id"] == submit_calls[0]
+    assert engine.pending_entry_orders[pair_tag]["order_id"] == mock_client.placed_buys[0]["id"]
+    assert engine.states[pair_tag] == PositionState.ENTRY_PENDING
