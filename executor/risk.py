@@ -526,6 +526,9 @@ class RiskMixin:
         recovery_halts = getattr(self, "_recovery_scope_halts", None) or {}
         if "*" in recovery_halts:
             return f"global: {recovery_halts['*']}"
+        if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+            failure = (getattr(self, "_failure_reasons", {}) or {}).get(pair_tag) or {}
+            return f"{pair_tag}: {failure.get('reason') or 'position reconciliation required'}"
         for key in self._recovery_scope_keys(pair_tag):
             if key in recovery_halts:
                 return f"{key}: {recovery_halts[key]}"
