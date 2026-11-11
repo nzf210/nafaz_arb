@@ -184,7 +184,7 @@ func (b *Bot) sendStartupSummary(ctx context.Context) {
 		select { case <-ctx.Done(): return; case <-time.After(time.Second): }
 	}
 	if problem != "" {
-		message := "🚨 <b>EXECUTOR STARTUP RECOVERY — NOT READY</b>\\n\\n• Global trading: <b>NOT READY / UNKNOWN</b>\\n• Verification: " + html.EscapeString(problem) + "\\n\\n<i>Jangan aktifkan trading sampai order, posisi, dan exchange berhasil diverifikasi.</i>"
+		message := "🚨 <b>EXECUTOR STARTUP RECOVERY — NOT READY</b>\n\n• Global trading: <b>NOT READY / UNKNOWN</b>\n• Verification: " + html.EscapeString(problem) + "\n\n<i>Jangan aktifkan trading sampai order, posisi, dan exchange berhasil diverifikasi.</i>"
 		targets := append([]int64(nil), b.cfg.Telegram.AllowedChatIDs...)
 		if b.cfg.Telegram.ChatID != 0 { targets = []int64{b.cfg.Telegram.ChatID} }
 		for _, chatID := range targets { if b.isChatAllowed(chatID) { b.sendReplyWithMarkup(ctx, chatID, 0, message, nil) } }
