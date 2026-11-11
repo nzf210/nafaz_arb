@@ -144,3 +144,18 @@ class ExchangeFuturesMixin:
         return await self.global_fut.fetch_ticker(order_symbol)
 
     async def close(self):
+        """Closes each unique exchange connection exactly once."""
+        clients = [self.local, self.global_fut]
+        clients.extend(
+            entry.get("client")
+            for entry in self.balance_exchanges.values()
+            if entry.get("client") is not None
+        )
+        closed = set()
+        for exchange in clients:
+            if exchange is None or id(exchange) in closed:
+                continue
+            closed.add(id(exchange))
+            closer = getattr(exchange, "close", None)
+            if callable(closer):
+                await closer()
