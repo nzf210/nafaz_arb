@@ -20,13 +20,12 @@ func TestOrdersCommandUsesExecutorOrderRegistry(t *testing.T) {
 	defer rdb.Close()
 	payload := map[string]interface{}{
 		"status": "RUNNING",
-		"active_orders": []map[string]interface{}{{
-			"internal_order_id": "internal-42", "order_id": "exchange-42",
-			"pair": "BTC/USDT", "exchange": "okx", "status": "PARTIALLY_FILLED",
-		}},
+		"recovery": map[string]interface{}{"complete": true, "tracked_orders": 1},
 	}
 	raw, _ := json.Marshal(payload)
 	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, raw, 0).Err(); err != nil { t.Fatal(err) }
+	if err := rdb.HSet(context.Background(), redishandler.KeyOrderRecoveryIndex, "internal-42", "1").Err(); err != nil { t.Fatal(err) }
+	if err := rdb.Set(context.Background(), redishandler.KeyPrefixOrderRecord+"internal-42", `{"local_order_id":"internal-42","exchange_order_id":"exchange-42","pair_key":"BTC/USDT","exchange":"okx","status":"PARTIALLY_FILLED","filled_quantity":1}`, 0).Err(); err != nil { t.Fatal(err) }
 
 	var sent SendMessageReq
 	tsHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -45,10 +44,10 @@ func TestOrdersCommandUsesExecutorOrderRegistry(t *testing.T) {
 }
 
 func TestOrdersCommandDoesNotClaimEmptyWhenRegistryMissing(t *testing.T) {
-	var sent SendMessageReq
+	var sent []SendMessageReq
 	tsHandler := func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/sendMessage" {
-			_ = json.NewDecoder(r.Body).Decode(&sent)
+			var message SendMessageReq; _ = json.NewDecoder(r.Body).Decode(&message); sent = append(sent, message)
 			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok:true})
 		}
 	}
@@ -59,11 +58,11 @@ func TestOrdersCommandDoesNotClaimEmptyWhenRegistryMissing(t *testing.T) {
 	defer mr.Close()
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer rdb.Close()
-	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, `{"status":"RUNNING","pending_orders":[]}`, 0).Err(); err != nil { t.Fatal(err) }
+	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, `{"status":"RUNNING","recovery":{"complete":false,"tracked_orders":0},"pending_orders":[]}`, 0).Err(); err != nil { t.Fatal(err) }
 	bot.SetRedisClient(redishandler.NewWithClient(rdb))
 	bot.handleOrdersCommand(context.Background(), -100123456789, 0)
-	if !strings.Contains(sent.Text, "belum mempublikasikan all-order registry") {
-		t.Fatalf("expected explicit incomplete-registry warning, got: %s", sent.Text)
+	if len(sent) < 2 || !strings.Contains(sent[0].Text, "INVENTORY BELUM TERVERIFIKASI") {
+		t.Fatalf("expected explicit incomplete-recovery warning, got: %+v", sent)
 	}
 }
 
