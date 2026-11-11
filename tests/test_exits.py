@@ -531,3 +531,96 @@ async def test_status_snapshot_exposes_managed_pending_orders(engine):
     assert order["global_exchange"] == "okx"
     assert order["quote_asset"] == "USDT"
     assert order["remaining"] == 2000.0
+
+
+@pytest.mark.asyncio
+async def test_cancel_replace_blocks_new_exit_when_old_order_is_still_open(
+    engine, fake_redis, mock_client
+):
+    """A cancel timeout plus a still-open venue order must never create a second sell."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        base_target_exit_spread_pct=0.30,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    snapshot = {
+        "global_best_ask_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+    await engine._check_dynamic_exits()
+
+    assert len(mock_client.placed_sells) == 1
+    old_order = mock_client.placed_sells[0]
+    old_order_id = old_order["id"]
+    original_cancel = mock_client.cancel_local_order
+
+    async def cancel_times_out(order_id, symbol):
+        raise TimeoutError("cancel acknowledgement timed out")
+
+    mock_client.cancel_local_order = cancel_times_out
+    mock_client.orders[old_order_id]["status"] = "open"
+    snapshot["global_best_ask_usdt"] = 65_200.0
+    snapshot["timestamp_ms"] = int(time.time() * 1000)
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+
+    await engine._check_dynamic_exits()
+
+    assert len(mock_client.placed_sells) == 1
+    assert engine.pending_exit_orders[pair_tag]["order_id"] == old_order_id
+    assert mock_client.orders[old_order_id]["status"] == "open"
+    mock_client.cancel_local_order = original_cancel
+
+
+@pytest.mark.asyncio
+async def test_cancel_replace_uses_exchange_status_when_cancel_acknowledgement_times_out(
+    engine, fake_redis, mock_client
+):
+    """A lost cancel acknowledgement is recoverable when REST confirms terminal status."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        base_target_exit_spread_pct=0.30,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    snapshot = {
+        "global_best_ask_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+    await engine._check_dynamic_exits()
+
+    old_order = mock_client.placed_sells[0]
+    old_order_id = old_order["id"]
+
+    async def cancel_times_out(order_id, symbol):
+        mock_client.orders[order_id]["status"] = "canceled"
+        raise TimeoutError("exchange canceled but acknowledgement was lost")
+
+    mock_client.cancel_local_order = cancel_times_out
+    snapshot["global_best_ask_usdt"] = 65_200.0
+    snapshot["timestamp_ms"] = int(time.time() * 1000)
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+
+    await engine._check_dynamic_exits()
+
+    assert mock_client.orders[old_order_id]["status"] == "canceled"
+    assert len(mock_client.placed_sells) == 2
+    assert engine.pending_exit_orders[pair_tag]["order_id"] == mock_client.placed_sells[1]["id"]
