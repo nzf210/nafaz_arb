@@ -273,7 +273,7 @@ class RecoveryRegistryMixin:
             for order in open_orders:
                 await self._adopt_venue_order(order, exchange, symbol, pair_tag, market, amount_spec)
             await self._detect_phantom_orders(exchange, market, open_orders)
-            await self._clear_sweep_halt(exchange)
+            self._clear_sweep_halt(exchange)
 
     async def _detect_phantom_orders(
         self, exchange: str, market: str, open_orders: list
@@ -311,7 +311,7 @@ class RecoveryRegistryMixin:
                 record.exchange_order_id, record.pair_key or "unlinked", exchange,
             )
 
-    async def _clear_sweep_halt(self, exchange: str) -> None:
+    def _clear_sweep_halt(self, exchange: str) -> None:
         """Lifts the gate a failed open-order sweep installed for this venue."""
         halts = getattr(self, "_recovery_scope_halts", None) or {}
         if exchange in halts and "open-order sweep" in halts[exchange]:
