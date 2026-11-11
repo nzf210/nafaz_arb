@@ -109,6 +109,57 @@ class SupabaseQueryMixin:
             "is_mock": row.get("is_mock", False),
         }
 
+    @staticmethod
+    def _fill_candidate_table_queries() -> tuple:
+        return (
+            (
+                "orders",
+                "id,pair_key,exchange_name,market_type,leg,exchange_order_id,"
+                "client_order_id,symbol,side,status,requested_qty,filled_qty,"
+                "remaining_qty,limit_price,average_fill_price,reduce_only,"
+                "submitted_at,completed_at,updated_at,is_mock",
+            ),
+            (
+                "order_registry",
+                "local_order_id,client_order_id,exchange_order_id,pair_key,"
+                "exchange_name,market_type,leg,order_role,symbol,side,order_type,"
+                "status,requested_qty,filled_qty,remaining_qty,limit_price,"
+                "average_fill_price,reduce_only,recovery_status,is_mock,"
+                "raw_payload,created_at,updated_at",
+            ),
+        )
+
+    async def _read_fill_candidate_tables(
+        self, session, headers: dict, cutoff: str, limit: int
+    ) -> tuple:
+        results = []
+        errors = []
+        for table, select in self._fill_candidate_table_queries():
+            try:
+                rows = await self._read_candidate_table(
+                    session, table, select, headers, cutoff, limit
+                )
+            except Exception as exc:
+                errors.append(f"{table}: {exc}")
+                rows = []
+            results.append(rows)
+        orders, registry = results
+        if not orders and not registry and errors:
+            raise RuntimeError("; ".join(errors))
+        return orders, registry
+
+    def _build_fill_candidate_map(
+        self, orders: list, registry: list
+    ) -> Dict[str, Dict[str, Any]]:
+        candidates: Dict[str, Dict[str, Any]] = {}
+        for row in orders:
+            identity = self._fill_candidate_identity(row)
+            if identity:
+                candidates[identity] = dict(row)
+        for row in registry:
+            self._merge_registry_fill_candidate(candidates, row)
+        return candidates
+
     async def fetch_recent_order_fill_candidates(
         self, days: int = 90, limit: int = 2000
     ) -> list:
@@ -130,45 +181,10 @@ class SupabaseQueryMixin:
             if session is None or session.closed:
                 session = aiohttp.ClientSession(timeout=_TIMEOUT)
                 created = True
-            errors = []
-            table_queries = (
-                (
-                    "orders",
-                    "id,pair_key,exchange_name,market_type,leg,exchange_order_id,"
-                    "client_order_id,symbol,side,status,requested_qty,filled_qty,"
-                    "remaining_qty,limit_price,average_fill_price,reduce_only,"
-                    "submitted_at,completed_at,updated_at,is_mock",
-                ),
-                (
-                    "order_registry",
-                    "local_order_id,client_order_id,exchange_order_id,pair_key,"
-                    "exchange_name,market_type,leg,order_role,symbol,side,order_type,"
-                    "status,requested_qty,filled_qty,remaining_qty,limit_price,"
-                    "average_fill_price,reduce_only,recovery_status,is_mock,"
-                    "raw_payload,created_at,updated_at",
-                ),
+            orders, registry = await self._read_fill_candidate_tables(
+                session, headers, cutoff, limit
             )
-            results = []
-            for table, select in table_queries:
-                try:
-                    rows = await self._read_candidate_table(
-                        session, table, select, headers, cutoff, limit
-                    )
-                except Exception as exc:
-                    errors.append(f"{table}: {exc}")
-                    rows = []
-                results.append(rows)
-            orders, registry = results
-            if not orders and not registry and errors:
-                raise RuntimeError("; ".join(errors))
-
-            candidates: Dict[str, Dict[str, Any]] = {}
-            for row in orders:
-                identity = self._fill_candidate_identity(row)
-                if identity:
-                    candidates[identity] = dict(row)
-            for row in registry:
-                self._merge_registry_fill_candidate(candidates, row)
+            candidates = self._build_fill_candidate_map(orders, registry)
             return list(candidates.values())
         except Exception as exc:
             logger.error("recent order fill candidate read failed: %s", exc)
