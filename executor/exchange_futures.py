@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any
 from executor.quantity import AmountSpec, base_to_order_amount
 from executor.exchange_common import (
     _base_order_result, _client_order_params, _expose_client_order_id,
-    _normalize_open_order, _require_amount_spec,
+    _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
 )
 
 
@@ -98,6 +98,20 @@ class ExchangeFuturesMixin:
         order = await self.global_fut.fetch_order(order_id, order_symbol)
         if not isinstance(order, dict):
             raise ValueError("global futures venue returned a malformed order payload")
+        normalized = _base_order_result(order, spec) if spec is not None else dict(order)
+        return _expose_client_order_id(normalized)
+
+    async def fetch_global_order_by_client_id(
+        self, client_order_id: str, symbol: str, amount_spec: Any = None
+    ) -> Optional[Dict[str, Any]]:
+        """Finds an acknowledged futures order using its exact client id."""
+        spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
+        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
+        order = await _find_order_by_client_id(
+            self.global_fut, order_symbol, client_order_id
+        )
+        if order is None:
+            return None
         normalized = _base_order_result(order, spec) if spec is not None else dict(order)
         return _expose_client_order_id(normalized)
 
