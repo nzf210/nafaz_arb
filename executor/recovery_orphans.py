@@ -1,6 +1,7 @@
 """recovery orphan helpers for the universal order lifecycle."""
 
 import logging
+import json
 from typing import Any, Dict
 
 from executor.models import OrderRecord, OrderRole, PositionState
@@ -128,39 +129,83 @@ class RecoveryOrphanMixin:
 
 
     async def retry_pending_order_recovery(self) -> bool:
-        """Re-verifies every pending order and releases the gates it clears.
+        """Re-run read-only recovery; never submit, cancel, or replace orders.
 
-        The venue may become reachable long after startup, so a gate must be
-        releasable without restarting the process. Returns True when nothing is
-        left pending.
+        A verified order lookup alone is insufficient to clear a pair halt.
+        Position, fill, and aggregate exposure checks must also pass.
         """
+        touched_pairs = set()
         for local_id in await self.order_registry.pending_recovery_ids():
             record = self._recovered_order_records.get(local_id)
             if record is None:
                 record = await self.order_registry.load(local_id)
             if record is None:
-                await self.order_registry.clear_pending_recovery(local_id)
+                self._halt_exposure_scope("*", f"pending recovery record {local_id} is missing")
                 continue
-            resolved = await self._retry_one_pending_order(record)
-            if resolved and record.pair_key:
-                remaining = await self.order_registry.pending_recovery_ids()
-                if not any(
-                    (self._recovered_order_records.get(other_id) or record).pair_key
-                    == record.pair_key
-                    for other_id in remaining
-                ):
-                    self.states[record.pair_key] = PositionState.IDLE
-                    self._clear_exposure_halt(record.pair_key, "pending order verified")
+            if record.pair_key:
+                touched_pairs.add(record.pair_key)
+            await self._retry_one_pending_order(record)
 
-        # A venue-scope gate from a failed open-order sweep is released by
-        # re-running the sweep: the venue may be answering again now.
-        if any(":" not in key for key in (self._recovery_scope_halts or {})):
+        if any(scope == "*" or ":" not in scope for scope in (self._recovery_scope_halts or {})):
             await self._reconcile_venue_open_orders()
 
         self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
+        verified_positions = set()
+        try:
+            verified_positions = await self._verify_recovered_active_positions()
+            if not getattr(self.config, "mock_mode", False):
+                await self.trade_fill_reconciliation.reconcile_once()
+                await self.exposure_reconciliation.reconcile_once()
+        except Exception as exc:
+            logger.exception("[Recovery] full reconciliation retry failed")
+            self._halt_exposure_scope("*", f"full reconciliation retry failed: {type(exc).__name__}: {exc}")
+
+        for pair_tag in touched_pairs:
+            if pair_tag in verified_positions:
+                await self._clear_resolved_pair_failure(pair_tag)
+
+        self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
         self._refresh_entry_gate()
+        await self.publish_status()
         return not self._recovery_pending_orders and not self._recovery_scope_halts
 
+    async def _clear_resolved_pair_failure(self, pair_tag: str) -> bool:
+        """Clear a pair incident only after order, fill, and exposure checks pass."""
+        if self.states.get(pair_tag) != PositionState.RECONCILIATION_REQUIRED:
+            return False
+        for local_id in self._recovery_pending_orders:
+            record = self._recovered_order_records.get(local_id)
+            if record is None:
+                record = await self.order_registry.load(local_id)
+            if record is None or record.pair_key == pair_tag:
+                return False
+        orphans = await self.order_registry.orphans()
+        if any(str(item.get("scope") or "") == pair_tag for item in orphans.values()):
+            return False
+        if getattr(self.exposure_reconciliation, "_reported", {}):
+            return False
+        if any(scope == pair_tag for scope in getattr(self.trade_fill_reconciliation, "_reported", {}).values()):
+            return False
+        position = self.active_positions.get(pair_tag)
+        if position is None or self.redis is None:
+            return False
+
+        restored_state = PositionState.EXIT_PENDING if pair_tag in self.pending_exit_orders else PositionState.HEDGED_ACTIVE
+        position.state = restored_state.value
+        try:
+            await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(position.to_dict()))
+        except Exception:
+            logger.exception("[Recovery] failed to persist reconciled position state for %s", pair_tag)
+            return False
+
+        if not self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, resolved=True):
+            if not getattr(self.config, "mock_mode", False):
+                return False
+        self.states[pair_tag] = restored_state
+        self._failure_reasons.pop(pair_tag, None)
+        self._clear_exposure_halt(pair_tag, "orders, fills and exposure verified")
+        logger.warning("[Recovery] reconciliation incident cleared for %s (%s)", pair_tag, restored_state.value)
+        return True
     async def _retry_one_pending_order(self, record: OrderRecord) -> bool:
         """Re-runs venue verification for one record; True when it resolved."""
         token = None
