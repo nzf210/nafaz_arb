@@ -291,6 +291,46 @@ class SupabaseWriter:
         }
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
+        self._position_legs(pair_key, position_id, pos, pair_info, status=row["status"], is_mock=is_mock)
+
+    def _position_legs(
+        self, pair_key: str, position_id: str, pos: Any, pair_info: Any,
+        *, status: str, is_mock: bool,
+    ) -> None:
+        """Upsert spot and perpetual legs independently from the parent position."""
+        if pos is None:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        local_exchange = str(getattr(pos, "local_exchange", "") or "")
+        global_exchange = str(getattr(pos, "global_exchange", "") or "")
+        local_symbol = str(getattr(pair_info, "local_symbol", "") or getattr(pos, "symbol", "") or "")
+        global_symbol = str(getattr(pair_info, "global_symbol", "") or getattr(pos, "symbol", "") or "")
+        qty = max(0.0, _num(getattr(pos, "qty", 0.0)))
+        spot_price = _num(getattr(pos, "entry_price_idr", 0.0)) or None
+        perp_price = _num(getattr(pos, "short_entry_usdt", 0.0)) or None
+        for leg, exchange, symbol, side, price in (
+            ("spot", local_exchange, local_symbol, "long", spot_price),
+            ("perpetual", global_exchange, global_symbol, "short", perp_price),
+        ):
+            if not exchange or not symbol:
+                continue
+            leg_id = str(uuid.uuid5(_POSITION_NS, f"{position_id}:{leg}"))
+            self._emit(
+                "position_legs",
+                {
+                    "id": leg_id,
+                    "position_id": position_id,
+                    "leg": leg,
+                    "exchange_name": exchange,
+                    "symbol": symbol,
+                    "side": side,
+                    "status": status,
+                    "qty": qty,
+                    "average_entry_price": price,
+                    "updated_at": now,
+                },
+                on_conflict="position_id,leg",
+            )
 
     def position_status(self, pair_key: str, status: str, pos: Any = None) -> None:
         position_id = self._position_ids.get(pair_key)
@@ -309,6 +349,56 @@ class SupabaseWriter:
                 row["closed_at"] = datetime.now(timezone.utc).isoformat()
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
+        self._position_legs(
+            pair_key, position_id, pos, None, status=status,
+            is_mock=bool(row.get("is_mock", True)),
+        )
+
+    def funding_payment(
+        self, pair_key: str, pos: Any, payment: Dict[str, Any], *, is_mock: bool = False
+    ) -> bool:
+        """Journal one confirmed exchange funding settlement idempotently."""
+        position_id = self._position_ids.get(pair_key)
+        if not position_id or not isinstance(payment, dict):
+            return False
+        info = payment.get("info") if isinstance(payment.get("info"), dict) else {}
+        raw_id = (
+            payment.get("id") or payment.get("tranId") or payment.get("tradeId")
+            or info.get("id") or info.get("tranId") or info.get("billId")
+        )
+        try:
+            timestamp = int(payment.get("timestamp") or info.get("timestamp") or 0)
+            amount = float(payment.get("amount"))
+        except (TypeError, ValueError):
+            return False
+        asset = str(payment.get("code") or payment.get("currency") or info.get("currency") or "USDT").upper()
+        symbol = str(payment.get("symbol") or getattr(pos, "symbol", "") or "")
+        exchange = str(getattr(pos, "global_exchange", "") or "").lower()
+        if timestamp <= 0 or not math.isfinite(amount) or not asset or not symbol or not exchange:
+            return False
+        # Some venues omit a payment ID. A deterministic composite prevents
+        # duplicate replay of the same ledger row without guessing its value.
+        payment_id = str(raw_id or uuid.uuid5(
+            _POSITION_NS, f"{exchange}:{symbol}:{timestamp}:{asset}:{amount:.18g}"
+        ))
+        return self._emit(
+            "funding_payments",
+            {
+                "position_id": position_id,
+                "exchange_name": exchange,
+                "symbol": symbol,
+                "exchange_payment_id": payment_id,
+                "funding_rate": _num(payment.get("rate", info.get("fundingRate")), 0.0) or None,
+                "position_qty": _num(payment.get("contracts", payment.get("amount"))),
+                "mark_price": _num(payment.get("price", info.get("markPrice"))) or None,
+                "amount": amount,
+                "asset": asset,
+                "payment_status": "confirmed",
+                "settled_at": _ms_to_iso(timestamp),
+                "raw_payload": payment,
+            },
+            on_conflict="exchange_name,exchange_payment_id",
+        )
 
     def balance_snapshot(
         self,
