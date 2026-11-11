@@ -308,7 +308,7 @@ class EntryOrderManagementMixin:
                 "min_spread": min_spread,
                 "now_ms": now_ms,
             }
-        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        except (TypeError, ValueError, KeyError):
             return None
 
     async def _refresh_stale_maker_quote(
