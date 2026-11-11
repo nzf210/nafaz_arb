@@ -240,89 +240,102 @@ class EntryOrderManagementMixin:
         )
         return await self._cancel_entry_order_and_reconcile(pair_tag, order_info, reason)
 
+    @staticmethod
+    def _maker_order_is_unfilled(order_info: dict, order: dict) -> bool:
+        try:
+            quantities = (
+                float(order.get("filled", 0.0) or 0.0),
+                float(order_info.get("filled", 0.0) or 0.0),
+                float(order_info.get("hedged_short_qty", 0.0) or 0.0),
+            )
+        except (TypeError, ValueError):
+            return False
+        return all(math.isfinite(value) and value == 0 for value in quantities)
+
+    async def _fresh_maker_quote(self, pair_tag: str, order_info: dict):
+        raw = await self.redis.get(f"arb:live_price:{pair_tag}")
+        if not raw:
+            return None
+        try:
+            snapshot = json.loads(raw)
+            timestamp_ms = int(snapshot.get("timestamp_ms", 0) or 0)
+            now_ms = int(time.time() * 1000)
+            age_ms = now_ms - timestamp_ms
+            if timestamp_ms <= 0 or age_ms < 0 or age_ms > 3000:
+                return None
+            local_bid = float(snapshot.get("local_best_bid", 0.0) or 0.0)
+            local_ask = float(snapshot.get("local_best_ask", 0.0) or 0.0)
+            global_bid = float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0)
+            fx_rate = float(
+                snapshot.get("usdt_idr_rate", 0.0)
+                or order_info.get("usdt_idr_rate", 0.0)
+            )
+            current_price = float(order_info.get("price", 0.0) or 0.0)
+            tick = float(order_info.get("tick_size", 0.0) or 0.0)
+            min_spread = float(order_info.get("min_entry_spread_pct", 0.0) or 0.0)
+            market_values = (
+                local_bid, local_ask, global_bid, fx_rate, current_price, tick
+            )
+            if not all(math.isfinite(value) and value > 0 for value in market_values):
+                return None
+            if not math.isfinite(min_spread) or min_spread < 0:
+                return None
+            candidate = math.floor((local_bid + 1e-12) / tick) * tick
+            if candidate <= current_price or candidate >= local_ask:
+                return None
+            live_global_idr = global_bid * fx_rate
+            live_spread_pct = (
+                (live_global_idr - candidate) / live_global_idr
+            ) * 100.0
+            if live_spread_pct < min_spread:
+                return None
+            return {
+                "local_bid": local_bid,
+                "current_price": current_price,
+                "live_spread_pct": live_spread_pct,
+                "min_spread": min_spread,
+                "now_ms": now_ms,
+            }
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return None
+
     async def _refresh_stale_maker_quote(
         self, pair_tag: str, order_info: dict, order: dict
     ) -> bool:
-        """
-        Safely refresh a stale, completely unfilled maker quote.
-
-        This deliberately cancels and reconciles the old order, then waits for
-        the scanner's next fresh signal to submit a new quote. It never places
-        a replacement from the executor, avoiding a cancel/replace crash window
-        that cannot yet be recovered by clientOrderId on every supported venue.
-        """
-        refresh_after = int(getattr(self.config, "maker_refresh_after_seconds", 0) or 0)
+        """Cancel a stale, unfilled maker quote only when a fresh quote remains safe."""
+        refresh_after = int(
+            getattr(self.config, "maker_refresh_after_seconds", 0) or 0
+        )
         if refresh_after <= 0 or str(order.get("status", "")).lower() != "open":
             return False
-
-        # Any observed fill makes this order ineligible for repricing. The
-        # normal fill/hedge path remains the only owner of partial fills.
-        try:
-            current_filled = float(order.get("filled", 0.0) or 0.0)
-            known_filled = float(order_info.get("filled", 0.0) or 0.0)
-            hedged = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
-            quantities = (current_filled, known_filled, hedged)
-            if not all(math.isfinite(value) and value >= 0 for value in quantities):
-                return False
-        except (TypeError, ValueError):
-            return False
-        if current_filled > 0 or known_filled > 0 or hedged > 0:
+        if not self._maker_order_is_unfilled(order_info, order):
             return False
 
         placed_time = float(order_info.get("placed_time", 0.0) or 0.0)
         age = time.time() - placed_time
-        if not math.isfinite(placed_time) or placed_time <= 0 or not math.isfinite(age) or age < refresh_after:
+        if (
+            not math.isfinite(placed_time)
+            or placed_time <= 0
+            or not math.isfinite(age)
+            or age < refresh_after
+        ):
             return False
 
-        # A refresh is useful only when the best bid has moved above our
-        # resting price and a fresh quote still satisfies the scanner's edge
-        # floor. Never cross the ask or improve beyond the current best bid.
-        try:
-            raw = await self.redis.get(f"arb:live_price:{pair_tag}")
-            if not raw:
-                return False
-            snapshot = json.loads(raw)
-            timestamp_ms = int(snapshot.get("timestamp_ms", 0) or 0)
-            now_ms = int(time.time() * 1000)
-            if timestamp_ms <= 0 or now_ms - timestamp_ms < 0 or now_ms - timestamp_ms > 3000:
-                return False
-            local_bid = float(snapshot.get("local_best_bid", 0.0) or 0.0)
-            local_ask = float(snapshot.get("local_best_ask", 0.0) or 0.0)
-            global_bid = float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0)
-            fx_rate = float(snapshot.get("usdt_idr_rate", 0.0) or order_info.get("usdt_idr_rate", 0.0))
-            current_price = float(order_info.get("price", 0.0) or 0.0)
-            tick = float(order_info.get("tick_size", 0.0) or 0.0)
-            min_spread = float(order_info.get("min_entry_spread_pct", 0.0) or 0.0)
-            market_values = (local_bid, local_ask, global_bid, fx_rate, current_price, tick)
-            if not all(math.isfinite(value) and value > 0 for value in market_values):
-                return False
-            if not math.isfinite(min_spread) or min_spread < 0:
-                return False
-            candidate = math.floor((local_bid + 1e-12) / tick) * tick
-            if candidate <= current_price or candidate >= local_ask:
-                return False
-            live_global_idr = global_bid * fx_rate
-            live_spread_pct = ((live_global_idr - candidate) / live_global_idr) * 100.0
-            if live_spread_pct < min_spread:
-                return False
-        except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+        quote = await self._fresh_maker_quote(pair_tag, order_info)
+        if quote is None:
             return False
-
         cooldown_seconds = int(
             getattr(self.config, "maker_refresh_cooldown_seconds", 300) or 300
         )
         cooldown_key = f"arb:maker_refresh_cooldown:{pair_tag}"
         if await self.redis.exists(cooldown_key):
             return False
-
-        # Record cooldown before cancellation. If the process crashes or the
-        # cancel is ambiguous, this prevents rapid repeated cancel attempts.
-        await self.redis.set(cooldown_key, str(now_ms), ex=cooldown_seconds)
+        await self.redis.set(cooldown_key, str(quote["now_ms"]), ex=cooldown_seconds)
         logger.info(
             f"[Maker Refresh] {pair_tag}: quote aged {age:.1f}s; "
-            f"best bid {local_bid} is above order {current_price}, "
-            f"fresh edge {live_spread_pct:.4f}% meets floor {min_spread:.4f}%. "
-            "Canceling and waiting for the next scanner signal."
+            f"best bid {quote['local_bid']} is above order {quote['current_price']}, "
+            f"fresh edge {quote['live_spread_pct']:.4f}% meets floor "
+            f"{quote['min_spread']:.4f}%. Canceling and waiting for the next scanner signal."
         )
         return await self._cancel_entry_order_and_reconcile(
             pair_tag, order_info, "Maker Quote Refresh"
