@@ -274,19 +274,22 @@ class RecoveryOrphanMixin:
             return False
 
         restored_state = PositionState.EXIT_PENDING if pair_tag in self.pending_exit_orders else PositionState.HEDGED_ACTIVE
+        if not self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, resolved=True):
+            if not getattr(self.config, "mock_mode", False):
+                return False
+
+        previous_position_state = position.state
         position.state = restored_state.value
         try:
             await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(position.to_dict()))
         except Exception:
+            position.state = previous_position_state
             logger.exception("[Recovery] failed to persist reconciled position state for %s", pair_tag)
             return False
 
         position_status = getattr(self.supabase, "position_status", None)
         if callable(position_status):
             position_status(pair_tag, restored_state.value, position)
-        if not self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, resolved=True):
-            if not getattr(self.config, "mock_mode", False):
-                return False
         self.states[pair_tag] = restored_state
         self._failure_reasons.pop(pair_tag, None)
         self._clear_exposure_halt(pair_tag, "orders, fills and exposure verified")
