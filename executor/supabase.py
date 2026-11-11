@@ -759,7 +759,7 @@ class SupabaseWriter:
                     "local_order_id,client_order_id,exchange_order_id,pair_key,"
                     "exchange_name,market_type,leg,order_role,symbol,side,order_type,"
                     "status,requested_qty,filled_qty,remaining_qty,limit_price,"
-                    "average_fill_price,reduce_only,recovery_status,is_mock,raw_payload,updated_at",
+                    "average_fill_price,reduce_only,recovery_status,is_mock,raw_payload,created_at,updated_at",
                 )
             except Exception as exc:
                 errors.append(f"order_registry: {exc}")
@@ -808,7 +808,7 @@ class SupabaseWriter:
                     "limit_price": row.get("limit_price") or existing.get("limit_price"),
                     "average_fill_price": row.get("average_fill_price") or existing.get("average_fill_price"),
                     "reduce_only": bool(row.get("reduce_only", existing.get("reduce_only", False))),
-                    "submitted_at": existing.get("submitted_at") or _ms_to_iso(row.get("created_at")),
+                    "submitted_at": existing.get("submitted_at") or row.get("created_at"),
                     "completed_at": existing.get("completed_at") or (
                         row.get("updated_at") if str(row.get("status") or "").lower()
                         in ("closed", "filled", "canceled", "cancelled", "rejected", "expired")
