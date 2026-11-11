@@ -167,18 +167,23 @@ func firstMapValue(m map[string]interface{}, keys ...string) string {
 }
 
 func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id string) {
-	b.mu.Lock(); rc := b.redisClient; b.mu.Unlock()
-	if rc == nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Redis tidak terhubung; order registry tidak dapat diverifikasi.", b.defaultKeyboard()); return }
-	records, err := rc.ListActiveOrderRecords(ctx)
-	if err != nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca order registry: "+html.EscapeString(err.Error()), b.defaultKeyboard()); return }
-	for _, item := range records {
-		var m map[string]interface{}
-		_ = json.Unmarshal(item, &m)
-		if firstMapValue(m, "local_order_id", "internal_order_id", "exchange_order_id", "id") == id {
-			b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\n<pre>"+html.EscapeString(prettyJSON(item))+"</pre>", b.defaultKeyboard()); return
-		}
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Redis tidak terhubung; order registry tidak dapat diverifikasi.", b.defaultKeyboard())
+		return
 	}
-	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Order ID tidak ditemukan dalam active order registry. Order terminal mungkin sudah dipindahkan dari index aktif; jangan menyimpulkan order exchange tidak ada.", b.defaultKeyboard())
+	record, found, err := rc.GetOrderRecord(ctx, id)
+	if err != nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca order record: "+html.EscapeString(err.Error()), b.defaultKeyboard())
+		return
+	}
+	if found {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\\n<pre>"+html.EscapeString(prettyJSON(record))+"</pre>", b.defaultKeyboard())
+		return
+	}
+	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Internal order ID tidak ditemukan pada registry Redis. Jika order sudah retired, periksa Supabase order_registry; ketiadaan record bukan bukti order exchange tidak ada.", b.defaultKeyboard())
 }
 
 func (b *Bot) sendJSONPages(ctx context.Context, chatID, replyToID int64, title string, rows []json.RawMessage) {
