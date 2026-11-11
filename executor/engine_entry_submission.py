@@ -59,6 +59,9 @@ class EngineEntrySubmissionMixin:
             "local_exchange": pair_info.local_exchange,
             "global_exchange": pair_info.global_exchange,
             "price": buy_price_idr,
+            "adaptive_max_buy_price_idr": float(
+                getattr(directives, "adaptive_max_buy_price_idr", 0.0) or 0.0
+            ),
             "qty": buy_qty,
             "filled": 0.0,
             "hedged_short_qty": 0.0,
