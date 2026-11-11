@@ -1,6 +1,7 @@
 """Signal-to-entry orchestration facade for the arbitrage engine."""
 
 import math
+import time
 from typing import Optional
 
 from executor.models import ExecutorPayload
@@ -30,6 +31,12 @@ class EngineEntryFlowMixin:
             book = await self.client.fetch_local_order_book(
                 pair_info.local_symbol, limit=20
             )
+            book_timestamp_ms = int((book or {}).get("timestamp") or 0)
+            book_age_ms = int(time.time() * 1000) - book_timestamp_ms
+            if book_timestamp_ms <= 0 or not 0 <= book_age_ms <= 3000:
+                raise ValueError(
+                    f"Indodax order book is stale or has no valid timestamp ({book_age_ms}ms)"
+                )
             ticker = await self.client.fetch_global_ticker(pair_info.global_symbol)
             global_bid_usdt = float((ticker or {}).get("bid") or 0.0)
             fx_rate = float(payload.pricing_snapshot.usdt_idr_rate or 0.0)
