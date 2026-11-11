@@ -122,7 +122,7 @@ func (b *Bot) sendMonitorSection(ctx context.Context, chatID, replyToID int64, t
 		runes := []rune(body)
 		body = string(runes[:3200]) + "\n... dipotong; gunakan detail spesifik."
 	}
-	msg := "📡 <b>" + html.EscapeString(title) + "</b>\n\n<pre>" + html.EscapeString(body) + "</pre>\n\n<i>Read-only. Sumber: snapshot executor terakhir.</i>"
+	msg := "📡 <b>" + html.EscapeString(title) + "</b>\n\n<pre>" + html.EscapeString(body) + htmlPreClose + "\n\n<i>Read-only. Sumber: snapshot executor terakhir.</i>"
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, msg, b.defaultKeyboard())
 }
 
@@ -212,7 +212,7 @@ func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id
 		return
 	}
 	if found {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\n<pre>"+html.EscapeString(prettyJSON(safeRecordJSON(record)))+"</pre>", b.defaultKeyboard())
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\n<pre>"+html.EscapeString(prettyJSON(safeRecordJSON(record)))+htmlPreClose, b.defaultKeyboard())
 		return
 	}
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Internal order ID tidak ditemukan pada registry Redis. Jika order sudah retired, periksa Supabase order_registry; ketiadaan record bukan bukti order exchange tidak ada.", b.defaultKeyboard())
@@ -233,7 +233,7 @@ func (b *Bot) sendJSONPages(ctx context.Context, chatID, replyToID int64, title 
 		for _, row := range rows[start:end] {
 			value := prettyJSON(safeRecordJSON(row))
 			if len([]rune(value)) > 1000 { value = string([]rune(value)[:950]) + "\n... record dipotong" }
-			out.WriteString("<pre>"+html.EscapeString(value)+"</pre>\n")
+			out.WriteString("<pre>"+html.EscapeString(value)+htmlPreClose + "\n")
 		}
 		b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
 		replyToID = 0
@@ -293,7 +293,7 @@ func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64,
 	summary.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\n")
 	if matched != nil {
 		raw, _ := json.Marshal(matched)
-		summary.WriteString("<b>Active position snapshot</b>\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>")
+		summary.WriteString("<b>Active position snapshot</b>\n<pre>"+html.EscapeString(prettyJSON(raw))+htmlPreClose)
 	}
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, summary.String(), b.defaultKeyboard())
 	b.sendJSONPages(ctx, chatID, 0, "Redis active orders terkait", related)
