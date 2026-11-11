@@ -1295,3 +1295,31 @@ async def test_crash_after_exchange_acceptance_before_ack_is_adopted_by_client_i
     assert PAIR_TAG in engine.pending_entry_orders
     assert engine.pending_entry_orders[PAIR_TAG]["usdt_idr_rate"] == 16_000.0
     assert await engine.order_registry.pending_recovery_ids() == {}
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_required_entry_cannot_submit_duplicate_hedge(fake_redis):
+    """An unresolved hedge intent gates the pending-entry monitor from hedging again."""
+    client = MockExchangeClient()
+    client.orders["501"] = _venue_order(filled=0.01, status="closed")
+    engine = await _build(fake_redis, client)
+    order_info = {
+        "order_id": "501",
+        "client_order_id": "btc-idr-entry-7",
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "qty": 0.01,
+        "filled": 0.0,
+        "hedged_short_qty": 0.0,
+        "price": 1_000_000_000.0,
+        "usdt_idr_rate": 16_000.0,
+    }
+    engine.pending_entry_orders[PAIR_TAG] = order_info
+    engine.states[PAIR_TAG] = PositionState.RECONCILIATION_REQUIRED
+    engine._recovery_scope_halts[PAIR_TAG] = "unresolved hedge order"
+
+    await engine._process_pending_entry_bound(PAIR_TAG, order_info)
+
+    assert client.global_short_sells == []
