@@ -52,7 +52,7 @@ class ExchangeFuturesMixin:
 
     async def open_global_short_market(
         self, symbol: str, amount: float, client_order_id: Optional[str] = None,
-        amount_spec: Any = None,
+        amount_spec: Any = None, price: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Executes an instant Short 1x Market Hedge on Global Futures.
