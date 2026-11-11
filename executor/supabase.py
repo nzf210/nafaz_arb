@@ -813,7 +813,7 @@ class SupabaseWriter:
                     "limit_price": row.get("limit_price") or existing.get("limit_price"),
                     "average_fill_price": row.get("average_fill_price") or existing.get("average_fill_price"),
                     "reduce_only": bool(row.get("reduce_only", existing.get("reduce_only", False))),
-                    "submitted_at": existing.get("submitted_at") or row.get("created_at"),
+                    "submitted_at": row.get("created_at") or existing.get("submitted_at"),
                     "completed_at": existing.get("completed_at") or (
                         row.get("updated_at") if str(row.get("status") or "").lower()
                         in ("closed", "filled", "canceled", "cancelled", "rejected", "expired")
