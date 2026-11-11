@@ -448,6 +448,15 @@ class ArbitrageEngine(
         the exchange accepts the order but before it returns an exchange id, the
         startup open-order sweep can still bind the venue order to this intent.
         """
+        # LIVE trading must never proceed with Redis-only order tracking. The
+        # pre-submit intent is the last safe point to reject a configuration
+        # that cannot durably journal every exchange order for restart recovery.
+        if not bool(getattr(self.config, "mock_mode", False)) and not bool(
+            getattr(self.supabase, "enabled", False)
+        ):
+            raise RuntimeError(
+                "refusing LIVE order submission: Supabase durable order persistence is disabled"
+            )
         record = await self._register_order(
             pair_tag,
             client_order_id,
