@@ -12,6 +12,14 @@ class FakeWriter:
     def __init__(self, candidates):
         self.candidates = candidates
         self.fills = {}
+        self.watermarks = {}
+
+    def fill_sync_watermark(self, identity):
+        return self.watermarks.get(identity)
+
+    def mark_fill_sync(self, identity, cumulative_filled):
+        self.watermarks[identity] = float(cumulative_filled)
+        return True
 
     async def fetch_recent_order_fill_candidates(self, days=90, limit=5000):
         return self.candidates
@@ -119,6 +127,8 @@ async def test_reconciles_and_journals_real_trade_id_and_fee():
     assert saved["fill"]["fee"]["cost"] == pytest.approx(0.05)
     assert saved["order_id"] == "00000000-0000-0000-0000-000000000001"
     assert engine.failures == []
+    assert len(engine.client_for_exchange.calls) == 1
+    assert engine.supabase.watermarks["indodax:spot:order-1"] == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
@@ -170,3 +180,17 @@ async def test_pair_halt_remains_until_all_mismatched_orders_are_verified():
 
     await worker._clear("order-2")
     assert scope not in engine._recovery_scope_halts
+
+
+@pytest.mark.asyncio
+async def test_mismatch_is_retried_until_exchange_trade_history_matches():
+    engine = FakeEngine([_candidate()], [_trade(amount=0.2)])
+    worker = TradeFillReconciliationWorker(engine)
+    await worker.reconcile_once()
+
+    assert engine.supabase.watermarks == {}
+    engine.client_for_exchange.trades = [_trade(amount=0.5)]
+    await worker.reconcile_once()
+
+    assert engine.supabase.watermarks["indodax:spot:order-1"] == pytest.approx(0.5)
+    assert "indodax:BTC_IDR:okx:BTC_USDT" not in engine._recovery_scope_halts
