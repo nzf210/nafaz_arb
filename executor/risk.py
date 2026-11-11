@@ -40,6 +40,10 @@ class RiskMixin:
             is_mock=bool(getattr(self.config, "mock_mode", False)),
         )
         if not ok and not getattr(self.config, "mock_mode", False):
+            try:
+                writer.mark_risk_persistence_failure()
+            except Exception:
+                logger.exception("Unable to persist risk journal failure sentinel")
             self._entry_blocked = True
             self._risk_persistence_failed = True
             logger.critical("LIVE entry blocked: risk state could not be journaled")
@@ -60,6 +64,11 @@ class RiskMixin:
         rows = await writer.fetch_active_risk_states(
             is_mock=bool(getattr(self.config, "mock_mode", False))
         )
+        if getattr(writer, "risk_persistence_failed", lambda: False)():
+            self._risk_persistence_failed = True
+            self._trading_halted = True
+            self._halt_reason = "RISK_STATE_PERSISTENCE_FAILED"
+            self._entry_blocked = True
         for row in rows:
             kind = str(row.get("state_type") or "")
             scope = str(row.get("scope") or "")
