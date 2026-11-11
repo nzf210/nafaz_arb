@@ -618,7 +618,11 @@ class SupabaseWriter:
             "fee_amount": fee_amount,
             "fee_asset": fee_asset,
             "filled_at": datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).isoformat(),
-            "raw_payload": fill.get("info") if isinstance(fill.get("info"), dict) else fill,
+            "raw_payload": (
+                fill.get("raw_payload") if isinstance(fill.get("raw_payload"), dict)
+                else fill.get("info") if isinstance(fill.get("info"), dict)
+                else fill
+            ),
         }
         if not self.enabled or self._outbox is None:
             return False
