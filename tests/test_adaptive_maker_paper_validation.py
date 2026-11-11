@@ -8,6 +8,40 @@ import pytest
 from tests.conftest import _entry_order_info
 
 
+def test_indodax_limit_order_params_require_explicit_moc(monkeypatch):
+    """Indodax limit paths carry MOC while non-limit paths do not."""
+    from executor import exchange_common
+    from executor.quantity import AmountSpec
+
+    class FakeIndodaxTAPIv2:
+        pass
+
+    monkeypatch.setattr(exchange_common, "IndodaxTAPIv2", FakeIndodaxTAPIv2)
+    spec = AmountSpec(
+        unit="BASE", step=0.00000001, minimum=0.00000001, base_per_unit=1.0
+    )
+    exchange = FakeIndodaxTAPIv2()
+
+    limit_params = exchange_common._local_order_params(
+        exchange, "indodax-btc-idr-entry-1", spec,
+        require_amount_step=True, require_post_only=True,
+    )
+    market_params = exchange_common._local_order_params(
+        exchange, "indodax-btc-idr-market-1", spec,
+        require_post_only=False,
+    )
+
+    assert limit_params == ({
+        "clientOrderId": "indodax-btc-idr-entry-1",
+        "quantityIncrement": 0.00000001,
+        "timeInForce": "MOC",
+    },)
+    assert market_params == ({
+        "clientOrderId": "indodax-btc-idr-market-1",
+        "quantityIncrement": 0.00000001,
+    },)
+
+
 @pytest.mark.asyncio
 async def test_indodax_idr_refresh_uses_15_second_policy_not_generic_policy(
     engine, fake_redis, mock_client
