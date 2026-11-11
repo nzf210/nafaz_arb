@@ -146,12 +146,16 @@ class EngineEntryFlowMixin:
             pair for pair, order in self.pending_entry_orders.items()
             if str((order or {}).get("local_exchange", "")).strip().lower() == venue
         }
-        uncertain_pairs = {
+        counted_states = {
+            "ENTRY_PENDING", "ENTRY_PARTIAL", "HEDGED_ACTIVE",
+            "EXIT_PENDING", "RECONCILIATION_REQUIRED",
+        }
+        lifecycle_pairs = {
             pair for pair, state in self.states.items()
-            if getattr(state, "value", str(state)) == "RECONCILIATION_REQUIRED"
+            if getattr(state, "value", str(state)) in counted_states
             and str(getattr(self._pair_infos.get(pair), "local_exchange", "")).strip().lower() == venue
         }
-        return len(active_pairs | pending_pairs | uncertain_pairs)
+        return len(active_pairs | pending_pairs | lifecycle_pairs)
 
     def _spot_exchange_entry_lock(self, exchange: str):
         venue = str(exchange or "").strip().lower()
