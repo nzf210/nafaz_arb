@@ -187,16 +187,7 @@ class TestOrdersAndFills:
         assert row["leg"] == "spot_entry"
         assert row["remaining_qty"] == 10.0
 
-    def test_fill_emitted_once_per_cumulative_quantity(self):
-        writer = _writer()
-        order = {"id": "1", "amount": 10.0, "filled": 4.0, "status": "open"}
-        writer.order("p", "spot_entry", "indodax", "spot", "usdt_idr", order)
-        writer.order("p", "spot_entry", "indodax", "spot", "usdt_idr", order)
-        fills = [r for t, _, r in _drain(writer) if t == "order_fills"]
-        assert len(fills) == 1
-        assert fills[0]["qty"] == 4.0
-
-    def test_second_partial_fill_has_new_id_and_delta(self):
+    def test_order_updates_do_not_invent_exchange_fills_from_cumulative_quantity(self):
         writer = _writer()
         writer.order(
             "p", "spot_entry", "indodax", "spot", "usdt_idr",
@@ -206,9 +197,43 @@ class TestOrdersAndFills:
             "p", "spot_entry", "indodax", "spot", "usdt_idr",
             {"id": "1", "amount": 10.0, "filled": 7.0, "status": "open"},
         )
-        fills = [r for t, _, r in _drain(writer) if t == "order_fills"]
-        assert [f["qty"] for f in fills] == [4.0, 3.0]
-        assert fills[0]["exchange_fill_id"] != fills[1]["exchange_fill_id"]
+        rows = _drain(writer)
+        assert len([row for row in rows if row[0] == "orders"]) == 2
+        assert not [row for row in rows if row[0] == "order_fills"]
+
+    def test_exchange_fill_persists_actual_trade_id_fee_and_quantity(self):
+        writer = _writer()
+        writer.order(
+            "p", "spot_entry", "indodax", "spot", "btc_idr",
+            {"id": "venue-order-1", "amount": 1.0, "filled": 0.25, "status": "closed"},
+            client_order_id="client-order-1",
+            is_mock=False,
+        )
+        order_id = writer.order_id_for("p", "indodax", "client-order-1")
+        fill = {
+            "id": "venue-trade-99",
+            "amount": 0.25,
+            "price": 100.0,
+            "cost": 25.0,
+            "timestamp": 1_700_000_000_000,
+            "fee": {"cost": 0.01, "currency": "BTC"},
+            "info": {"tradeId": "venue-trade-99"},
+        }
+        assert writer.order_fill(
+            order_id=order_id, exchange="indodax", fill=fill, is_mock=False
+        ) is True
+        assert writer.order_fill(
+            order_id=order_id, exchange="indodax", fill=fill, is_mock=False
+        ) is False
+        rows = _drain(writer)
+        fills = [row for table, _, row in rows if table == "order_fills"]
+        assert len(fills) == 1
+        assert fills[0]["exchange_fill_id"] == "venue-trade-99"
+        assert fills[0]["qty"] == 0.25
+        assert fills[0]["quote_qty"] == 25.0
+        assert fills[0]["fee_amount"] == 0.01
+        assert fills[0]["fee_asset"] == "BTC"
+        assert fills[0]["order_id"] == order_id
 
     def test_side_mapping_per_leg(self):
         writer = _writer()
