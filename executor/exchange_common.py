@@ -147,7 +147,6 @@ async def _find_order_by_client_id(
         )
         return any(str(value) == client_order_id for value in candidates if value)
 
-    successful_queries = 0
     historical_queries = 0
     failures = []
     for method_name in ("fetch_open_orders", "fetch_closed_orders", "fetch_canceled_orders"):
@@ -164,7 +163,6 @@ async def _find_order_by_client_id(
                     rows = await method(symbol)
             if rows is None or not isinstance(rows, (list, tuple)):
                 raise ValueError(f"{method_name} returned a malformed order collection")
-            successful_queries += 1
             if method_name != "fetch_open_orders":
                 historical_queries += 1
             for row in rows:
