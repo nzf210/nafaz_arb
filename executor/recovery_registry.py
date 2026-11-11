@@ -1,5 +1,6 @@
 """recovery registry helpers for the universal order lifecycle."""
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict
@@ -14,9 +15,96 @@ class RecoveryRegistryMixin:
     """Focused order-recovery responsibilities."""
 
     async def _run_order_recovery(self) -> None:
-        """Reconciles durable registry + positions + venue open orders."""
+        """Run recovery under a Redis lease shared by every executor instance.
+
+        A process-local asyncio lock is insufficient: two replicas can otherwise
+        reconcile and adopt the same venue orders concurrently. Redis' lock uses
+        an owner token and compare-and-delete release, while the heartbeat keeps
+        the lease alive during slow venue/API reconciliation.
+        """
         if self.redis is None or self.order_registry is None:
             return
+
+        lock = self.redis.lock(
+            "arb:executor:order-recovery:lock",
+            timeout=300,
+            thread_local=False,
+        )
+        try:
+            acquired = await lock.acquire(blocking=False)
+        except Exception as exc:
+            logger.critical(
+                "[Recovery] distributed lock unavailable; recovery skipped and "
+                "entries halted: %s",
+                exc,
+            )
+            self._halt_exposure_scope(
+                "*", f"distributed recovery lock unavailable: {type(exc).__name__}"
+            )
+            self._refresh_entry_gate()
+            return
+
+        if not acquired:
+            logger.warning(
+                "[Recovery] another executor owns the distributed recovery lease; "
+                "this instance remains entry-gated"
+            )
+            self._halt_exposure_scope(
+                "*", "distributed recovery is owned by another executor"
+            )
+            self._refresh_entry_gate()
+            return
+
+        owner_task = asyncio.current_task()
+        heartbeat = asyncio.create_task(
+            self._renew_order_recovery_lock(lock, owner_task)
+        )
+        try:
+            await self._run_order_recovery_with_lock()
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+            try:
+                await lock.release()
+            except Exception as exc:
+                # A lost/expired lease must never be treated as a successful
+                # release: retain the global entry gate until a later full pass.
+                logger.critical(
+                    "[Recovery] distributed lock release failed; entries remain "
+                    "halted until recovery can reacquire the lease: %s",
+                    exc,
+                )
+                self._halt_exposure_scope(
+                    "*", "distributed recovery lock release could not be verified"
+                )
+                self._refresh_entry_gate()
+
+    async def _renew_order_recovery_lock(self, lock, owner_task) -> None:
+        """Renew the recovery lease and abort work if ownership is lost."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                renewed = await lock.extend(300, replace_ttl=True)
+                if renewed is False:
+                    raise RuntimeError("Redis rejected recovery lease renewal")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.critical(
+                    "[Recovery] distributed recovery lease lost; aborting this "
+                    "recovery pass: %s",
+                    exc,
+                )
+                self._halt_exposure_scope(
+                    "*", "distributed recovery lease lost during reconciliation"
+                )
+                self._refresh_entry_gate()
+                if owner_task is not None and not owner_task.done():
+                    owner_task.cancel()
+                return
+
+    async def _run_order_recovery_with_lock(self) -> None:
+        """Reconciles durable registry + positions + venue open orders."""
         registry_loaded = True
         try:
             records = await self.order_registry.active_records()
