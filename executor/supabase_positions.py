@@ -41,6 +41,48 @@ class SupabasePositionMixin:
             },
             on_conflict="event_id",
         )
+        normalized_type = str(event_type or "").upper()
+        if any(
+            marker in normalized_type
+            for marker in ("RECONCIL", "ORDER", "ORPHAN", "HEDGE_STATE", "EXECUTION_FAILURE")
+        ):
+            self._emit_once(
+                "reconciliation_audit",
+                {
+                    "event_id": resolved_event_id,
+                    "event_type": normalized_type,
+                    "pair_key": pair_key,
+                    "exchange_name": (
+                        event_payload.get("exchange_name")
+                        or event_payload.get("exchange")
+                    ),
+                    "market_type": event_payload.get("market_type"),
+                    "entity_type": event_payload.get("entity_type") or "order",
+                    "entity_id": (
+                        event_payload.get("local_order_id")
+                        or event_payload.get("orphan_id")
+                        or event_payload.get("order_id")
+                    ),
+                    "from_state": (
+                        event_payload.get("from_state")
+                        or event_payload.get("previous_state")
+                    ),
+                    "to_state": (
+                        event_payload.get("to_state")
+                        or event_payload.get("state")
+                    ),
+                    "reason": (
+                        event_payload.get("reason")
+                        or event_payload.get("message")
+                    ),
+                    "actor": str(event_payload.get("actor") or "executor"),
+                    "is_mock": bool(is_mock),
+                    "occurred_at": occurred_at,
+                    "payload": event_payload,
+                },
+                state_key=f"reconciliation-audit:{resolved_event_id}",
+                on_conflict="event_id",
+            )
         if event_type == "EXECUTION_FAILURE":
             state = str(event_payload.get("state") or "").upper()
             self._emit(
