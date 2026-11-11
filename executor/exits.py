@@ -146,6 +146,14 @@ class ExitMixin:
                 return False
 
             settled.sort(key=lambda item: item[0])
+            # Journal each exchange settlement before updating the Redis aggregate.
+            # The payment ID (or deterministic fallback) makes outbox replay safe.
+            is_mock = bool(getattr(self.config, "mock_mode", False))
+            for _timestamp, _amount, payment in settled:
+                if hasattr(self.supabase, "funding_payment"):
+                    self.supabase.funding_payment(
+                        pair_tag, pos, payment, is_mock=is_mock
+                    )
             actual_amount = sum(item[1] for item in settled)
             pos.accumulated_funding_usdt += actual_amount
             pos.last_funding_time_ms = settled[-1][0]
