@@ -245,41 +245,49 @@ class EngineRuntimeMixin:
             await pubsub.close()
 
     async def _handle_recovery_request(self, raw) -> None:
-        """Execute an operator-requested read-only reconciliation retry."""
+        """Handle read-only retry and venue-verified orphan resolution requests."""
         try:
             request = json.loads(raw if isinstance(raw, str) else raw.decode("utf-8"))
             request_id = str(request.get("request_id", "")).strip()
             action = str(request.get("action", "")).strip().lower()
-            if (
-                not request_id
-                or len(request_id) > 64
-                or not request_id.isalnum()
-                or action != "retry"
-            ):
+            if not request_id or len(request_id) > 64 or not request_id.isalnum():
                 return
-            # The same distributed lease used by startup recovery prevents two
-            # executor replicas from reconciling the same orders concurrently.
-            await self._with_order_recovery_lock(self.retry_pending_order_recovery)
+            if action not in ("retry", "resolve_orphan"):
+                return
+            result = {"resolved": False}
+            if action == "retry":
+                await self._with_order_recovery_lock(self.retry_pending_order_recovery)
+                self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
+                result["resolved"] = not self._recovery_pending_orders and not self._recovery_scope_halts
+            else:
+                orphan_id = str(request.get("orphan_id", "")).strip()
+                pair_tag = str(request.get("pair_tag", "")).strip()
+                if not orphan_id or len(orphan_id) > 256:
+                    return
+                async def resolve():
+                    result["resolved"] = await self.resolve_orphan_order(
+                        orphan_id, pair_tag=pair_tag, reason="TELEGRAM_OPERATOR"
+                    )
+                await self._with_order_recovery_lock(resolve)
             self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
             self._refresh_entry_gate()
             reply = {
                 "request_id": request_id,
+                "action": action,
+                "resolved": bool(result["resolved"]),
                 "complete": not self._recovery_pending_orders and not self._recovery_scope_halts,
                 "pending_orders": self._recovery_pending_orders,
                 "scope_halts": dict(self._recovery_scope_halts),
                 "timestamp_ms": int(time.time() * 1000),
             }
             await self.redis.set(
-                f"arb:recovery_reply:{request_id}",
-                json.dumps(reply, default=str),
-                ex=30,
+                f"arb:recovery_reply:{request_id}", json.dumps(reply, default=str), ex=30
             )
             await self.publish_status()
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("failed to process operator recovery request")
-
     async def _listen_recovery_requests(self):
         """Listen for Telegram requests to re-run read-only recovery."""
         pubsub = self.redis.pubsub()
