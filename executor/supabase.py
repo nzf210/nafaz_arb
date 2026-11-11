@@ -318,12 +318,16 @@ class SupabaseWriter:
 
         if filled > 1e-12 and self._outbox is not None:
             price = _num(order.get("average"), _num(order.get("price")))
+            cumulative_quote = _num(order.get("cost"))
+            if cumulative_quote <= 0 and price > 0:
+                cumulative_quote = filled * price
+            order_state_key = f"{exchange}:{pair_key}:{key}"
             fill_id = f"{exchange_order_id or key}:{filled:.18f}"
             fill_row = {
-                # Deterministic primary key: the schema's unique index spans an
-                # expression (coalesce on exchange_account_id) and so cannot be
-                # targeted by ON CONFLICT, while the id can.
-                "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
+                # The database's account-scoped expression index cannot be used
+                # as an ON CONFLICT target. Include pair identity in our stable
+                # primary key to avoid collisions if a venue reuses an order id.
+                "id": str(uuid.uuid5(_POSITION_NS, f"fill:{order_state_key}:{filled:.18f}")),
                 "order_id": order_id,
                 "exchange_name": exchange,
                 "exchange_fill_id": fill_id,
@@ -332,8 +336,13 @@ class SupabaseWriter:
                 "raw_payload": {"derived_from": "cumulative_filled"},
             }
             try:
-                delta = self._outbox.enqueue_cumulative_fill(
-                    "order_fills", "id", fill_row, f"{exchange}:{pair_key}:{key}", filled
+                self._outbox.enqueue_cumulative_fill(
+                    "order_fills",
+                    "id",
+                    fill_row,
+                    order_state_key,
+                    filled,
+                    cumulative_quote,
                 )
             except Exception:
                 self._dropped += 1
