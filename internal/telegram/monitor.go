@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 )
 
@@ -136,49 +137,58 @@ func firstMapValue(m map[string]interface{}, keys ...string) string {
 }
 
 func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id string) {
-	snapshot, problem := b.readMonitorSnapshot(ctx)
-	if problem != "" {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ "+html.EscapeString(problem), b.defaultKeyboard()); return
-	}
-	for _, field := range []string{"order_registry", "all_orders", "active_orders", "orders", "pending_orders"} {
-		for _, item := range decodeList(rawField(snapshot, field)) {
-			var m map[string]interface{}
-			_ = json.Unmarshal(item, &m)
-			if firstMapValue(m, "internal_order_id", "order_id", "id") == id {
-				b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\n<pre>"+html.EscapeString(prettyJSON(item))+"</pre>", b.defaultKeyboard()); return
-			}
+	b.mu.Lock(); rc := b.redisClient; b.mu.Unlock()
+	if rc == nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Redis tidak terhubung; order registry tidak dapat diverifikasi.", b.defaultKeyboard()); return }
+	records, err := rc.ListActiveOrderRecords(ctx)
+	if err != nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca order registry: "+html.EscapeString(err.Error()), b.defaultKeyboard()); return }
+	for _, item := range records {
+		var m map[string]interface{}
+		_ = json.Unmarshal(item, &m)
+		if firstMapValue(m, "local_order_id", "internal_order_id", "exchange_order_id", "id") == id {
+			b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\\n<pre>"+html.EscapeString(prettyJSON(item))+"</pre>", b.defaultKeyboard()); return
 		}
 	}
-	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Order ID tidak ditemukan pada snapshot executor. Jangan menyimpulkan order tidak ada di exchange; lakukan rekonsiliasi.", b.defaultKeyboard())
+	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Order ID tidak ditemukan dalam active order registry. Order terminal mungkin sudah dipindahkan dari index aktif; jangan menyimpulkan order exchange tidak ada.", b.defaultKeyboard())
 }
 
 func (b *Bot) handlePositionDetail(ctx context.Context, chatID, replyToID int64, id string) {
-	snapshot, problem := b.readMonitorSnapshot(ctx)
-	if problem != "" { b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ "+html.EscapeString(problem), b.defaultKeyboard()); return }
-	for _, field := range []string{"positions", "active_positions", "position_registry"} {
-		for _, item := range decodeList(rawField(snapshot, field)) {
-			var m map[string]interface{}
-			_ = json.Unmarshal(item, &m)
-			if firstMapValue(m, "position_id", "id", "pair_tag", "symbol") == id {
-				b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>POSITION "+html.EscapeString(id)+"</b>\n<pre>"+html.EscapeString(prettyJSON(item))+"</pre>", b.defaultKeyboard()); return
-			}
-		}
-	}
-	// Redis active-position records remain a supported fallback, but are not
-	// misrepresented as a complete historical position/order/fill ledger.
 	b.mu.Lock(); rc := b.redisClient; b.mu.Unlock()
-	if rc != nil {
-		positions, err := rc.ListActivePositions(ctx)
-		if err == nil {
-			for _, pos := range positions {
-				if strings.EqualFold(pos.Symbol, id) || redishandler.CleanPairKey(pos.LocalExchange, pos.Symbol) == id {
-					raw, _ := json.Marshal(pos)
-					b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ACTIVE POSITION</b>\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>\n<i>Executor snapshot tidak menyediakan ledger order/fill historis untuk posisi ini.</i>", b.defaultKeyboard()); return
-				}
-			}
+	if rc == nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Redis tidak terhubung; posisi dan order terkait tidak dapat diverifikasi.", b.defaultKeyboard()); return }
+	positions, posErr := rc.ListActivePositions(ctx)
+	if posErr != nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca active positions: "+html.EscapeString(posErr.Error()), b.defaultKeyboard()); return }
+	var matched *domain.ActivePosition
+	for i := range positions {
+		if strings.EqualFold(positions[i].Symbol, id) || redishandler.CleanPairKey(positions[i].LocalExchange, positions[i].Symbol) == id {
+			matched = &positions[i]; break
 		}
 	}
-	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Position ID tidak ditemukan. Data order/fills historis tidak tersedia dalam snapshot.", b.defaultKeyboard())
+	orders, orderErr := rc.ListActiveOrderRecords(ctx)
+	if orderErr != nil { b.sendReplyWithMarkup(ctx, chatID, replyToID, "❌ Gagal membaca order registry terkait posisi: "+html.EscapeString(orderErr.Error()), b.defaultKeyboard()); return }
+	var related []json.RawMessage
+	for _, item := range orders {
+		var record map[string]interface{}
+		_ = json.Unmarshal(item, &record)
+		if firstMapValue(record, "position_id") == id || firstMapValue(record, "pair_key", "pair_tag") == id {
+			related = append(related, item)
+		}
+	}
+	if matched == nil && len(related) == 0 {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Position ID tidak ditemukan pada active position store maupun active order registry. Ini tidak membuktikan tidak ada exposure di exchange.", b.defaultKeyboard()); return
+	}
+	var out strings.Builder
+	out.WriteString("🔎 <b>POSITION "+html.EscapeString(id)+"</b>\\n\\n")
+	if matched != nil {
+		raw, _ := json.Marshal(matched)
+		out.WriteString("<b>Active position snapshot</b>\\n<pre>"+html.EscapeString(prettyJSON(raw))+"</pre>\\n")
+	}
+	out.WriteString(fmt.Sprintf("<b>Active orders terkait (%d)</b>\\n", len(related)))
+	if len(related) == 0 { out.WriteString("<i>Tidak ada active order terkait yang ditemukan.</i>\\n") }
+	for i, item := range related {
+		if i >= 10 { out.WriteString("<i>Daftar order dibatasi 10.</i>"); break }
+		out.WriteString("<pre>"+html.EscapeString(prettyJSON(item))+"</pre>\\n")
+	}
+	out.WriteString("<i>Fill ledger historis tidak dipublikasikan oleh status Redis Telegram saat ini.</i>")
+	b.sendReplyWithMarkup(ctx, chatID, replyToID, out.String(), b.defaultKeyboard())
 }
 
 func (b *Bot) sendStartupSummary(ctx context.Context) {
