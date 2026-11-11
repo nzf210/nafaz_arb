@@ -3,7 +3,7 @@
 import logging
 import json
 import math
-from typing import Tuple
+from typing import Optional, Tuple
 
 from executor.models import OrderRole
 from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt
@@ -180,10 +180,9 @@ class ForceCloseLegMixin:
     ) -> Tuple[bool, float]:
         """Close the futures short and return its fill price only after flat verification."""
         global_sym = self._resolve_global_symbol(pos.symbol)
-        if allow_already_flat and not await self._retry_short_is_flat(
-            pair_key, pos, global_sym
-        ):
-            return False, 0.0
+        if allow_already_flat:
+            already_flat = await self._retry_short_is_flat(pair_key, pos, global_sym)
+            return (True, 0.0) if already_flat else (False, 0.0)
 
         logger.warning(f"[Force Close] Closing global short {pos.qty} on {global_sym}...")
         await self._sync_force_close_market_price(pair_key, global_sym)
