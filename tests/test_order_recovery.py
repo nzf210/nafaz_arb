@@ -1123,3 +1123,109 @@ async def test_registry_merge_never_moves_state_backwards(fake_redis):
     assert merged.status == "closed"
     assert merged.filled_quantity == pytest.approx(0.01)
     assert merged.hedged_quantity == pytest.approx(0.01)
+
+
+# ----------------------------------------------------- durable cache reconciliation
+
+@pytest.mark.asyncio
+async def test_registry_merges_partial_redis_cache_with_supabase_rows(fake_redis):
+    """A non-empty Redis cache must not hide records missing from Redis."""
+    engine = await _build(fake_redis, MockExchangeClient())
+    cached = _entry_record(hedged_quantity=0.002)
+    missing = _entry_record(
+        client_order_id="btc-idr-entry-8",
+        exchange_order_id="502",
+    )
+    await engine.order_registry.register(cached)
+
+    def durable_row(record, hedged_quantity):
+        return {
+            "local_order_id": record.local_order_id,
+            "client_order_id": record.client_order_id,
+            "exchange_order_id": record.exchange_order_id,
+            "pair_key": record.pair_key,
+            "position_key": record.position_id,
+            "exchange_name": record.exchange,
+            "market_type": record.market_type,
+            "order_role": record.order_role,
+            "symbol": record.symbol,
+            "side": record.side,
+            "order_type": record.order_type,
+            "status": record.status,
+            "requested_qty": record.original_quantity,
+            "filled_qty": record.filled_quantity,
+            "remaining_qty": record.remaining_quantity,
+            "limit_price": record.price,
+            "reduce_only": False,
+            "recovery_status": RecoveryStatus.MANAGED.value,
+            "is_mock": True,
+            "raw_payload": {
+                "local_amount_spec": LOCAL_SPEC,
+                "global_amount_spec": GLOBAL_SPEC,
+                "recovery_context": ENTRY_CONTEXT,
+                "hedged_quantity": hedged_quantity,
+            },
+        }
+
+    async def durable_rows(limit=500):
+        return [
+            durable_row(cached, 0.006),
+            durable_row(missing, 0.0),
+        ]
+
+    engine.supabase.fetch_open_order_records = durable_rows
+    records = await engine.order_registry.active_records()
+
+    assert set(records) == {cached.local_order_id, missing.local_order_id}
+    assert records[cached.local_order_id].hedged_quantity == pytest.approx(0.006)
+    assert records[missing.local_order_id].pair_key == PAIR_TAG
+
+
+@pytest.mark.asyncio
+async def test_hedge_watermark_is_persisted_on_originating_spot_order(fake_redis):
+    """The spot entry record, not just its futures child, stores hedge progress."""
+    engine = await _build(fake_redis, MockExchangeClient())
+    record = _entry_record()
+    await engine.order_registry.register(record)
+    order_info = {
+        "order_id": record.exchange_order_id,
+        "client_order_id": record.client_order_id,
+        "local_exchange": record.exchange,
+        "hedged_short_qty": 0.006,
+    }
+
+    await engine._persist_entry_hedge_watermark(PAIR_TAG, order_info, 0.006)
+
+    stored = await engine.order_registry.load(record.local_order_id)
+    assert stored.hedged_quantity == pytest.approx(0.006)
+    pending = json.loads(await fake_redis.get("arb:pending_entry:" + PAIR_TAG))
+    assert pending["hedged_short_qty"] == pytest.approx(0.006)
+
+
+def test_catalogue_match_refuses_multiple_strategies_on_same_spot_market():
+    """A shared spot symbol cannot identify which distinct futures pair owns an order."""
+    engine = _engine(None, MockExchangeClient())
+    engine.active_positions["indodax:btc_idr__binance:btc_usdt"] = _position(
+        global_exchange="binance"
+    )
+    engine.active_positions["indodax:btc_idr__okx:btc_usdt"] = _position(
+        global_exchange="okx"
+    )
+
+    assert engine._match_position_by_catalogue("indodax", "btc_idr") == ""
+
+
+@pytest.mark.asyncio
+async def test_durable_registry_read_failure_keeps_global_entry_gate(fake_redis):
+    """A Supabase read outage cannot be mistaken for an empty durable registry."""
+    engine = await _build(fake_redis, MockExchangeClient())
+
+    async def unavailable(limit=500):
+        raise RuntimeError("database unavailable")
+
+    engine.supabase.fetch_open_order_records = unavailable
+    await engine._run_order_recovery()
+
+    assert "*" in engine._recovery_scope_halts
+    assert engine._venue_halted_reason(PAIR_TAG)
+    assert engine._entry_blocked is True
