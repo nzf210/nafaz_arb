@@ -180,7 +180,7 @@ func (b *Bot) handleOrderDetail(ctx context.Context, chatID, replyToID int64, id
 		return
 	}
 	if found {
-		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\\n<pre>"+html.EscapeString(prettyJSON(record))+"</pre>", b.defaultKeyboard())
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, "🔎 <b>ORDER "+html.EscapeString(id)+"</b>\n<pre>"+html.EscapeString(prettyJSON(record))+"</pre>", b.defaultKeyboard())
 		return
 	}
 	b.sendReplyWithMarkup(ctx, chatID, replyToID, "⚠️ Internal order ID tidak ditemukan pada registry Redis. Jika order sudah retired, periksa Supabase order_registry; ketiadaan record bukan bukti order exchange tidak ada.", b.defaultKeyboard())
