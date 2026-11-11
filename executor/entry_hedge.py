@@ -142,6 +142,186 @@ class EntryHedgeMixin:
             )
             return False
 
+    async def _submit_entry_hedge_order(
+        self, pair_tag: str, order_info: dict, global_symbol: str,
+        unhedged_delta: float, expected_short_price: float,
+    ):
+        hedge_coid = build_client_order_id(
+            pair_tag, "hedge", self._next_order_seq()
+        )
+        recovery_context = {
+            "parent_spot_exchange": str(
+                order_info.get("local_exchange", "")
+            ).lower(),
+            "parent_spot_order_id": str(order_info.get("order_id", "")),
+            "parent_spot_client_order_id": str(
+                order_info.get("client_order_id", "")
+            ),
+            "hedge_requested_for_spot_fill": float(unhedged_delta),
+        }
+        await self._register_order_intent(
+            pair_tag,
+            hedge_coid,
+            exchange=order_info.get("global_exchange", ""),
+            market_type="perpetual",
+            symbol=global_symbol,
+            role=OrderRole.HEDGE.value,
+            side="sell",
+            order_type="market",
+            price=expected_short_price,
+            quantity=unhedged_delta,
+            global_amount_spec=order_info.get("global_amount_spec"),
+            recovery_context=recovery_context,
+            required=True,
+        )
+        short_order = await self.client.open_global_short_market(
+            global_symbol,
+            unhedged_delta,
+            price=expected_short_price,
+            client_order_id=hedge_coid,
+            amount_spec=AmountSpec.from_dict(
+                order_info.get("global_amount_spec")
+            ),
+        )
+        if not isinstance(short_order, dict):
+            raise ValueError(
+                "futures hedge returned no verifiable order payload; "
+                "reconciliation required"
+            )
+        hedge_status = str(short_order.get("status", "")).lower()
+        if hedge_status not in ("closed", "filled"):
+            raise ValueError(
+                f"futures hedge is not terminal (status={hedge_status})"
+            )
+        try:
+            actual_hedged_qty = float(short_order.get("filled") or 0.0)
+        except (TypeError, ValueError):
+            actual_hedged_qty = 0.0
+        qty_tolerance = max(1e-12, unhedged_delta * 1e-8)
+        if actual_hedged_qty + qty_tolerance < unhedged_delta:
+            raise ValueError(
+                f"futures hedge fill incomplete: requested={unhedged_delta}, "
+                f"filled={actual_hedged_qty}; spot rollback will be guarded by "
+                "an authoritative futures-position check"
+            )
+        if actual_hedged_qty > unhedged_delta + qty_tolerance:
+            raise ValueError(
+                f"futures hedge overfilled: requested={unhedged_delta}, "
+                f"filled={actual_hedged_qty}; manual reconciliation required"
+            )
+
+        recovery_order = dict(short_order)
+        recovery_order["status"] = "open"
+        hedge_journal = await self._register_order(
+            pair_tag,
+            hedge_coid,
+            recovery_order,
+            exchange=order_info.get("global_exchange", ""),
+            market_type="perpetual",
+            symbol=global_symbol,
+            role=OrderRole.HEDGE.value,
+            side="sell",
+            order_type="market",
+            price=expected_short_price,
+            quantity=unhedged_delta,
+            global_amount_spec=order_info.get("global_amount_spec"),
+            recovery_context=recovery_context,
+        )
+        if hedge_journal is None:
+            raise RuntimeError(
+                "futures hedge was accepted but its fill could not be journaled; "
+                "rollback/reconciliation is required"
+            )
+        return hedge_coid, recovery_context, short_order, actual_hedged_qty
+
+    async def _publish_entry_position_opened(self, pair_tag: str) -> None:
+        pos = self.active_positions[pair_tag]
+        open_msg = {
+            "event": "POSITION_OPENED",
+            "local_exchange": pos.local_exchange,
+            "global_exchange": pos.global_exchange,
+            "symbol": pos.symbol,
+            "qty": pos.qty,
+            "entry_price_idr": pos.entry_price_idr,
+            "short_entry_usdt": pos.short_entry_usdt,
+            "is_mock": getattr(self.config, "mock_mode", False),
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(open_msg))
+        self.supabase.event(
+            "POSITION_OPENED",
+            pair_key=pair_tag,
+            is_mock=open_msg["is_mock"],
+            occurred_at_ms=open_msg["timestamp_ms"],
+            payload=open_msg,
+        )
+
+    async def _persist_entry_hedge_success(
+        self, pair_tag: str, order_info: dict, unhedged_delta: float,
+        price_idr: float, usdt_rate: float, hedge_coid: str,
+        recovery_context: dict, short_order: dict, actual_hedged_qty: float,
+        expected_short_price: float,
+    ) -> None:
+        global_symbol = order_info["global_symbol"]
+        order_info["hedged_short_qty"] += actual_hedged_qty
+        watermark_persisted = await self._persist_entry_hedge_watermark(
+            pair_tag,
+            order_info,
+            order_info["hedged_short_qty"],
+            hedge_order_id=hedge_coid,
+        )
+        self._record_hedged_position(
+            pair_tag, order_info, actual_hedged_qty,
+            short_order, price_idr, usdt_rate,
+        )
+        self.supabase.order(
+            pair_tag,
+            "futures_entry",
+            order_info.get("global_exchange", ""),
+            "perpetual",
+            global_symbol,
+            short_order,
+            client_order_id=hedge_coid,
+            reduce_only=False,
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
+        await self._register_order(
+            pair_tag,
+            hedge_coid,
+            short_order,
+            exchange=order_info.get("global_exchange", ""),
+            market_type="perpetual",
+            symbol=global_symbol,
+            role=OrderRole.HEDGE.value,
+            side="sell",
+            order_type="market",
+            price=expected_short_price,
+            quantity=unhedged_delta,
+            global_amount_spec=order_info.get("global_amount_spec"),
+            recovery_context=recovery_context,
+        )
+        self.supabase.position_opened(
+            pair_tag,
+            self.active_positions[pair_tag],
+            getattr(self, "_pair_infos", {}).get(pair_tag),
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
+        await self.redis.set(
+            f"arb:active_pos:{pair_tag}",
+            json.dumps(self.active_positions[pair_tag].to_dict()),
+        )
+        self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+        if not watermark_persisted:
+            self._halt_exposure_scope(
+                pair_tag, "entry hedge watermark could not be persisted"
+            )
+            logger.critical(
+                "[Recovery] %s is hedged on the venue but its originating "
+                "spot-order watermark is not durable; pair entry remains halted",
+                pair_tag,
+            )
+        await self._publish_entry_position_opened(pair_tag)
+
     async def _execute_entry_hedge(
         self,
         pair_tag: str,
@@ -153,182 +333,24 @@ class EntryHedgeMixin:
         """Execute market short on global exchange and persist position state."""
         global_symbol = order_info["global_symbol"]
         try:
-            # Use the live futures ask as the expected short fill, never the spot price.
-            expected_short_price = float(order_info.get("global_ask_usdt", 0.0) or 0.0)
+            expected_short_price = float(
+                order_info.get("global_ask_usdt", 0.0) or 0.0
+            )
             if expected_short_price <= 0 and usdt_rate > 0:
                 expected_short_price = price_idr / usdt_rate
-
             await self._assert_hedge_slippage_within_limit(
                 pair_tag, order_info, unhedged_delta, expected_short_price
             )
-
-            # CORE RULE 2: ONLY Short 1x Futures (Market Sell)
-            hedge_coid = build_client_order_id(
-                pair_tag, "hedge", self._next_order_seq()
-            )
-            hedge_recovery_context = {
-                "parent_spot_exchange": str(order_info.get("local_exchange", "")).lower(),
-                "parent_spot_order_id": str(order_info.get("order_id", "")),
-                "parent_spot_client_order_id": str(order_info.get("client_order_id", "")),
-                "hedge_requested_for_spot_fill": float(unhedged_delta),
-            }
-            await self._register_order_intent(
-                pair_tag,
-                hedge_coid,
-                exchange=order_info.get("global_exchange", ""),
-                market_type="perpetual",
-                symbol=global_symbol,
-                role=OrderRole.HEDGE.value,
-                side="sell",
-                order_type="market",
-                price=expected_short_price,
-                quantity=unhedged_delta,
-                global_amount_spec=order_info.get("global_amount_spec"),
-                recovery_context=hedge_recovery_context,
-                required=True,
-            )
-            short_order = await self.client.open_global_short_market(
-                global_symbol,
-                unhedged_delta,
-                price=expected_short_price,
-                client_order_id=hedge_coid,
-                amount_spec=AmountSpec.from_dict(order_info.get("global_amount_spec")),
-            )
-            if not isinstance(short_order, dict):
-                raise ValueError(
-                    "futures hedge returned no verifiable order payload; "
-                    "reconciliation required"
+            hedge_coid, recovery_context, short_order, actual_hedged_qty = (
+                await self._submit_entry_hedge_order(
+                    pair_tag, order_info, global_symbol,
+                    unhedged_delta, expected_short_price,
                 )
-            hedge_status = str(short_order.get("status", "")).lower()
-            if hedge_status not in ("closed", "filled"):
-                raise ValueError(
-                    f"futures hedge is not terminal (status={hedge_status})"
-                )
-            try:
-                actual_hedged_qty = float(short_order.get("filled") or 0.0)
-            except (TypeError, ValueError):
-                actual_hedged_qty = 0.0
-            qty_tolerance = max(1e-12, unhedged_delta * 1e-8)
-            if actual_hedged_qty + qty_tolerance < unhedged_delta:
-                raise ValueError(
-                    f"futures hedge fill incomplete: requested={unhedged_delta}, "
-                    f"filled={actual_hedged_qty}; spot rollback will be guarded by "
-                    "an authoritative futures-position check"
-                )
-            if actual_hedged_qty > unhedged_delta + qty_tolerance:
-                raise ValueError(
-                    f"futures hedge overfilled: requested={unhedged_delta}, "
-                    f"filled={actual_hedged_qty}; manual reconciliation required"
-                )
-
-            # Register the exchange acknowledgement while the hedge is
-            # deliberately non-terminal in the recovery journal. If the
-            # process dies now, startup can fetch the exact futures order by
-            # exchange id and reconcile its fill against the parent spot leg.
-            recovery_order = dict(short_order)
-            recovery_order["status"] = "open"
-            hedge_journal = await self._register_order(
-                pair_tag,
-                hedge_coid,
-                recovery_order,
-                exchange=order_info.get("global_exchange", ""),
-                market_type="perpetual",
-                symbol=global_symbol,
-                role=OrderRole.HEDGE.value,
-                side="sell",
-                order_type="market",
-                price=expected_short_price,
-                quantity=unhedged_delta,
-                global_amount_spec=order_info.get("global_amount_spec"),
-                recovery_context=hedge_recovery_context,
             )
-            if hedge_journal is None:
-                raise RuntimeError(
-                    "futures hedge was accepted but its fill could not be journaled; "
-                    "rollback/reconciliation is required"
-                )
-            order_info["hedged_short_qty"] += actual_hedged_qty
-            # Persist the entry's cumulative hedge watermark and the unique
-            # futures order id together on the originating spot record.
-            watermark_persisted = await self._persist_entry_hedge_watermark(
-                pair_tag, order_info, order_info["hedged_short_qty"],
-                hedge_order_id=hedge_coid,
-            )
-            self._record_hedged_position(
-                pair_tag, order_info, actual_hedged_qty, short_order, price_idr, usdt_rate
-            )
-            self.supabase.order(
-                pair_tag,
-                "futures_entry",
-                order_info.get("global_exchange", ""),
-                "perpetual",
-                global_symbol,
-                short_order,
-                client_order_id=hedge_coid,
-                reduce_only=False,
-                is_mock=bool(getattr(self.config, "mock_mode", False)),
-            )
-            await self._register_order(
-                pair_tag,
-                hedge_coid,
-                short_order,
-                exchange=order_info.get("global_exchange", ""),
-                market_type="perpetual",
-                symbol=global_symbol,
-                role=OrderRole.HEDGE.value,
-                side="sell",
-                order_type="market",
-                price=expected_short_price,
-                quantity=unhedged_delta,
-                global_amount_spec=order_info.get("global_amount_spec"),
-                recovery_context=hedge_recovery_context,
-            )
-            self.supabase.position_opened(
-                pair_tag,
-                self.active_positions[pair_tag],
-                getattr(self, "_pair_infos", {}).get(pair_tag),
-                is_mock=bool(getattr(self.config, "mock_mode", False)),
-            )
-
-            active_key = f"arb:active_pos:{pair_tag}"
-            await self.redis.set(
-                active_key,
-                json.dumps(self.active_positions[pair_tag].to_dict()),
-            )
-            self.states[pair_tag] = PositionState.HEDGED_ACTIVE
-            if not watermark_persisted:
-                # The exchange hedge succeeded, so keep managing the live
-                # position, but do not permit another entry against a spot
-                # order whose cumulative hedge watermark is not durable.
-                self._halt_exposure_scope(
-                    pair_tag, "entry hedge watermark could not be persisted"
-                )
-                logger.critical(
-                    "[Recovery] %s is hedged on the venue but its originating "
-                    "spot-order watermark is not durable; pair entry remains halted",
-                    pair_tag,
-                )
-
-            # Publish event to arb:trade_events for Telegram Bot
-            pos = self.active_positions[pair_tag]
-            open_msg = {
-                "event": "POSITION_OPENED",
-                "local_exchange": pos.local_exchange,
-                "global_exchange": pos.global_exchange,
-                "symbol": pos.symbol,
-                "qty": pos.qty,
-                "entry_price_idr": pos.entry_price_idr,
-                "short_entry_usdt": pos.short_entry_usdt,
-                "is_mock": getattr(self.config, "mock_mode", False),
-                "timestamp_ms": int(time.time() * 1000),
-            }
-            await self.redis.publish(self.ARB_TRADE_EVENTS, json.dumps(open_msg))
-            self.supabase.event(
-                "POSITION_OPENED",
-                pair_key=pair_tag,
-                is_mock=open_msg["is_mock"],
-                occurred_at_ms=open_msg["timestamp_ms"],
-                payload=open_msg,
+            await self._persist_entry_hedge_success(
+                pair_tag, order_info, unhedged_delta, price_idr, usdt_rate,
+                hedge_coid, recovery_context, short_order, actual_hedged_qty,
+                expected_short_price,
             )
         except Exception as he:
             logger.critical(
@@ -339,7 +361,6 @@ class EntryHedgeMixin:
                 self._record_order_failure(
                     global_exchange, "hedge order placement failed"
                 )
-            # The spot leg is already filled but unhedged: roll it back immediately.
             await self._rollback_hedge_failure(
                 pair_tag, order_info, unhedged_delta, price_idr, usdt_rate, he
             )
