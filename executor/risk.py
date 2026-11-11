@@ -19,10 +19,95 @@ logger = logging.getLogger("executor.engine")
 class RiskMixin:
     """Exposure caps, per-venue halts and balance-drift detection."""
 
+
+    def _persist_risk_state(
+        self, state_type: str, *, scope: str = "global", exchange: str = None,
+        pair_key: str = None, reason: str = "", value=None, resolved: bool = False,
+    ) -> bool:
+        """Persist safety state synchronously to the durable local outbox."""
+        writer = getattr(self, "supabase", None)
+        if writer is None or not getattr(writer, "enabled", False):
+            if not getattr(self.config, "mock_mode", False):
+                self._entry_blocked = True
+                self._risk_persistence_failed = True
+                logger.critical("LIVE entry blocked: durable risk-state storage is unavailable")
+            return False
+        ok = writer.risk_state(
+            state_type=state_type, scope=scope, exchange=exchange,
+            pair_key=pair_key, reason=reason, value=value, resolved=resolved,
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
+        if not ok and not getattr(self.config, "mock_mode", False):
+            self._entry_blocked = True
+            self._risk_persistence_failed = True
+            logger.critical("LIVE entry blocked: risk state could not be journaled")
+        return bool(ok)
+
+    async def _restore_risk_state(self) -> None:
+        """Restore unresolved durable halts before recovery/listeners can accept signals."""
+        writer = getattr(self, "supabase", None)
+        if writer is None or not getattr(writer, "enabled", False):
+            self._risk_state_restored = True
+            if not getattr(self.config, "mock_mode", False):
+                self._trading_halted = True
+                self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
+                self._entry_blocked = True
+                self._risk_persistence_failed = True
+                logger.critical("LIVE startup fail-closed: configure durable Supabase risk-state storage")
+            return
+        rows = await writer.fetch_active_risk_states(
+            is_mock=bool(getattr(self.config, "mock_mode", False))
+        )
+        for row in rows:
+            kind = str(row.get("state_type") or "")
+            scope = str(row.get("scope") or "")
+            exchange = str(row.get("exchange") or "").lower()
+            pair_key = str(row.get("pair_key") or "")
+            value = row.get("value")
+            reason = str(row.get("reason") or "")
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (TypeError, ValueError):
+                    pass
+            if kind == "trading_halt" and scope == "global":
+                self._trading_halted = True
+                self._halt_reason = str((value or {}).get("halt_reason") or reason or "RESTORED_MANUAL_HALT")
+            elif kind == "daily_loss" and scope == "global":
+                state = value if isinstance(value, dict) else {}
+                if state.get("loss_day") == self._utc_day():
+                    self._loss_day = str(state["loss_day"])
+                    self._daily_realized_loss_usdt = max(0.0, float(state.get("loss_usdt", 0.0)))
+                else:
+                    self._loss_day = self._utc_day()
+                    self._daily_realized_loss_usdt = 0.0
+            elif kind == "exchange_halt" and scope == "exchange" and exchange:
+                self._exchange_halted[exchange] = reason
+            elif kind == "consecutive_order_failures" and scope == "exchange" and exchange:
+                self._consecutive_order_failures[exchange] = max(0, int((value or {}).get("count", 0)))
+            elif kind == "reconciliation_halt":
+                key = "*" if scope == "global" else exchange if scope == "exchange" else pair_key
+                if key:
+                    self._recovery_scope_halts[key] = reason
+                    if key == "*":
+                        self._entry_blocked = True
+            elif kind == "position_failure" and pair_key:
+                failure = value if isinstance(value, dict) else {}
+                self._failure_reasons[pair_key] = failure or {
+                    "reason": reason, "message": reason, "detail": {},
+                    "timestamp_ms": int(time.time() * 1000),
+                }
+                self.states[pair_key] = __import__("executor.models", fromlist=["PositionState"]).PositionState.RECONCILIATION_REQUIRED
+        self._risk_state_restored = True
+        # A restored loss halt remains active until the same UTC day rolls over.
+        self._roll_loss_day_if_needed()
+        logger.warning("Restored %d unresolved durable risk-state records", len(rows))
+
     def _record_order_success(self, exchange: str) -> None:
         """Clears the consecutive-failure counter for an exchange after a clean order."""
         if exchange:
             self._consecutive_order_failures.pop(exchange, None)
+        self._persist_risk_state("consecutive_order_failures", scope="exchange", exchange=exchange, value={"count": 0}, resolved=True)
 
     def _record_order_failure(self, exchange: str, reason: str) -> None:
         """
@@ -60,8 +145,9 @@ class RiskMixin:
             return
         count = self._consecutive_order_failures.get(exchange, 0) + 1
         self._consecutive_order_failures[exchange] = count
+        self._persist_risk_state("consecutive_order_failures", scope="exchange", exchange=exchange, reason=reason, value={"count": count})
         if count >= threshold:
-            self._exchange_halted[exchange] = f"{count} consecutive order failures ({reason})"
+            self._exchange_halted[exchange] = f"{count} consecutive order failures ({reason})"\n            self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, reason=self._exchange_halted[exchange], value={"source": "consecutive_order_failures"})
             logger.critical(
                 f"[Risk Control] Exchange {exchange} HALTED for new entries: "
                 f"{count} consecutive order failures ({reason})"
@@ -77,6 +163,7 @@ class RiskMixin:
         """Clears a venue halt; returns True when a halt was actually removed."""
         if exchange in self._exchange_halted:
             del self._exchange_halted[exchange]
+            self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, resolved=True)
             self._consecutive_order_failures.pop(exchange, None)
             logger.warning(f"[Risk Control] Exchange {exchange} resumed ({reason})")
             return True
