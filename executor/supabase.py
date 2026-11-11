@@ -85,10 +85,16 @@ class SupabaseWriter(
         if self._outbox is not None and self._outbox.pending_count():
             logger.warning("Supabase durable outbox retained %d pending rows for restart", self._outbox.pending_count())
         self._task.cancel()
+        cancelled_by_caller = False
         try:
             await self._task
-        except (asyncio.CancelledError, Exception):
-            pass
+        except asyncio.CancelledError:
+            current_task = asyncio.current_task()
+            cancelled_by_caller = bool(
+                current_task is not None and current_task.cancelling()
+            )
+        except Exception:
+            logger.exception("Supabase outbox worker failed during shutdown")
         self._task = None
         if self._session is not None:
             try:
@@ -101,6 +107,8 @@ class SupabaseWriter(
         if self._outbox is not None:
             self._outbox.close()
             self._outbox = None
+        if cancelled_by_caller:
+            raise asyncio.CancelledError
 
     # ------------------------------------------------------------------- emit
 
