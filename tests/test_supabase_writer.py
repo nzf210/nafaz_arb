@@ -1,7 +1,7 @@
 """Tests for the best-effort Supabase writer.
 
 The writer must never raise into the trading path, must be idempotent on retry,
-and must derive fills from cumulative quantities exactly once.
+and must persist immutable exchange fills exactly once.
 """
 
 from types import SimpleNamespace
