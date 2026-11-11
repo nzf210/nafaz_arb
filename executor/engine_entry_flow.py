@@ -1,5 +1,6 @@
 """Signal-to-entry orchestration facade for the arbitrage engine."""
 
+import math
 from typing import Optional
 
 from executor.models import ExecutorPayload
