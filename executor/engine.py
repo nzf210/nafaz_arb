@@ -1840,6 +1840,9 @@ class ArbitrageEngine(
         }
         self._failure_reasons[pair_tag] = entry
         self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, reason=reason, value={**entry, "state": state.value})
+        if state == PositionState.RECONCILIATION_REQUIRED:
+            self._persist_risk_state("reconciliation_halt", scope="pair", pair_key=pair_tag, reason=reason, value={"source": "position_failure"})
+            self._recovery_scope_halts[pair_tag] = reason
         logger.critical(f"[{state.value}] {pair_tag}: {reason} - {message}")
         if reason != "HEDGE_FAILED":
             try:
@@ -1967,7 +1970,10 @@ class ArbitrageEngine(
         await self.publish_status()
 
     def clear_failure(self, pair_tag: str) -> None:
-        """Clears a recorded failure so the pair can trade again."""
+        """Clears a non-reconciliation failure; safety incidents need explicit reconciliation."""
+        if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+            logger.warning("[Risk] refusing to clear unresolved reconciliation failure for %s", pair_tag)
+            return
         if self._failure_reasons.pop(pair_tag, None) is not None:
             self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, resolved=True)
             if self.states.get(pair_tag) == PositionState.FAILED:
