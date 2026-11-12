@@ -1,7 +1,7 @@
-"""Immutable, venue-qualified identity and client registry for executor pairs.
+"""Registri identitas rute dan klien executor yang tidak dapat diubah.
 
-A pair is identified by both legs. Local symbol alone is insufficient because
-one spot market can be hedged on multiple futures venues simultaneously.
+Satu rute diidentifikasi oleh kedua kaki transaksi. Simbol spot saja tidak
+cukup karena satu pasar spot dapat dipasangkan dengan beberapa venue futures.
 """
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ def _normalize(value: str, field: str) -> str:
     return normalized
 
 
-# The scanner adds these prefixes to keep symbols from different adapters
-# unambiguous. They are internal venue namespaces, not part of the asset code.
+# Scanner menambahkan awalan berikut agar simbol dari adaptor berbeda tetap unik.
+# Awalan ini hanya namespace internal venue, bukan bagian dari kode aset.
 _VENUE_SYMBOL_PREFIXES = {
     "tokocrypto": ("TOKO:",),
     "mexc": ("MEXC:",),
@@ -37,15 +37,15 @@ def _normalize_symbol(value: str, field: str, venue: str) -> str:
     if not normalized:
         raise ValueError(f"{field} must be a qualified BASE/QUOTE symbol")
 
-    # Strip only adapter-owned namespace prefixes for the matching venue.
-    # Never discard arbitrary text before ':' because it could be a real asset.
+    # Hapus hanya awalan namespace milik adaptor untuk venue yang sesuai.
+    # Jangan menghapus teks sembarang sebelum tanda titik dua karena bisa berupa aset asli.
     for prefix in _VENUE_SYMBOL_PREFIXES.get(venue, ()):
         if normalized.startswith(prefix):
             normalized = normalized[len(prefix):]
             break
 
-    # OKX native SWAP instrument IDs are BASE-QUOTE-SWAP. SWAP is the
-    # contract type, not a third asset component.
+    # ID instrumen SWAP asli OKX berbentuk BASE-QUOTE-SWAP. SWAP adalah jenis
+    # kontrak, bukan komponen aset ketiga.
     for suffix in ("-SWAP", "_SWAP", "/SWAP"):
         if normalized.endswith(suffix):
             normalized = normalized[:-len(suffix)]
@@ -53,8 +53,8 @@ def _normalize_symbol(value: str, field: str, venue: str) -> str:
 
     normalized = normalized.replace("-", "/").replace("_", "/")
     if "/" not in normalized:
-        # Binance/Bybit may expose compact symbols (BTCUSDT); split only
-        # on a known quote suffix, longest first to avoid partial matches.
+        # Binance/Bybit dapat menampilkan simbol ringkas (BTCUSDT); pisahkan hanya
+        # berdasarkan akhiran kuotasi yang dikenal, dari yang terpanjang.
         for quote in _SUPPORTED_QUOTES:
             if normalized.endswith(quote) and len(normalized) > len(quote):
                 normalized = f"{normalized[:-len(quote)]}/{quote}"
@@ -100,7 +100,7 @@ class ExchangePairKey:
 
     @classmethod
     def from_pair_info(cls, pair_info: Any) -> "ExchangePairKey":
-        """Build a key from the executor PairInfo dataclass or its JSON mapping."""
+        """Bangun kunci dari dataclass PairInfo executor atau pemetaan JSON."""
         if isinstance(pair_info, dict):
             values = pair_info
         else:
@@ -126,7 +126,7 @@ class ExchangePairKey:
 
 
 class PairClientRegistry:
-    """Resolves a client only for its exact local+global venue/symbol tuple."""
+    """Selesaikan klien hanya untuk kombinasi venue dan simbol kedua kaki yang tepat."""
 
     def __init__(self) -> None:
         self._clients: Dict[ExchangePairKey, Any] = {}
