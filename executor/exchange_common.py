@@ -43,12 +43,14 @@ def _local_order_params(
 
 VENUE_CLIENT_ORDER_ID_MAX_LEN = 36
 
-# Tokocrypto validates client order ids far more strictly than its ccxt
-# defaults suggest: the venue rejects anything longer than 32 characters and
-# anything containing a non-alphanumeric character with error 3703
-# "Invalid client ID" (verified against the live venue). Indodax, Binance and
-# OKX all accept the dashed ``{pair}-{leg}-{seq}`` ids, so the tightening is
-# applied only to this exchange.
+class TokocryptoClientIDConfigurationError(ValueError):
+    """The registered Tokocrypto broker prefix is required for safe order IDs."""
+
+
+# Tokocrypto's CCXT adapter constructs clientId as broker.marketType + uuid22.
+# Preserve that registered prefix verbatim (including its separator); only the
+# bot-generated suffix is restricted. The venue does not enforce uniqueness, so
+# the id is a correlation key and ambiguous submissions must not be retried.
 TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN = 32
 
 def _tokocrypto_client_order_id(
@@ -69,7 +71,16 @@ def _tokocrypto_client_order_id(
     else:
         leg, seq = "", ""
     tail = "".join(c for c in f"{leg}{seq}" if c.isalnum())
-    prefix = "".join(c for c in broker_prefix if c.isalnum())
+    prefix = str(broker_prefix or "")
+    if not prefix:
+        raise TokocryptoClientIDConfigurationError(
+            "Tokocrypto order submission requires the account's registered broker_id "
+            "(exchange credentials options.broker_id or options.broker.marketType)"
+        )
+    if len(prefix) >= TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN:
+        raise TokocryptoClientIDConfigurationError(
+            "Tokocrypto broker_id leaves no room for a client order id suffix"
+        )
     digest = hashlib.sha256(client_order_id.encode("utf-8")).hexdigest()
     room = TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - len(tail)
     if room < 1:
@@ -99,14 +110,14 @@ def venue_client_order_id(
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
     if exchange_id != "tokocrypto":
         return client_order_id
-    already_charset_safe = all(c.isalnum() for c in client_order_id)
-    if already_charset_safe and len(client_order_id) <= TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN:
-        return client_order_id
-    if broker_prefix and client_order_id.startswith(broker_prefix):
-        stripped = client_order_id[len(broker_prefix):]
-        if all(c.isalnum() for c in stripped) and len(stripped) <= (
-            TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(broker_prefix)
-        ):
+    if not broker_prefix:
+        raise TokocryptoClientIDConfigurationError(
+            "Tokocrypto order submission requires the account's registered broker_id "
+            "(exchange credentials options.broker_id or options.broker.marketType)"
+        )
+    if client_order_id.startswith(broker_prefix):
+        suffix = client_order_id[len(broker_prefix):]
+        if suffix and suffix.isalnum() and len(client_order_id) <= TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN:
             return client_order_id
     return _tokocrypto_client_order_id(client_order_id, broker_prefix)
 
@@ -184,8 +195,14 @@ def _accepted_client_order_ids(
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
     if exchange_id != "tokocrypto":
         return accepted
-    accepted.add(venue_client_order_id(exchange, client_order_id, broker_prefix))
-    accepted.add(_tokocrypto_client_order_id(client_order_id, broker_prefix))
+    if broker_prefix:
+        accepted.add(venue_client_order_id(exchange, client_order_id, broker_prefix))
+        accepted.add(_tokocrypto_client_order_id(client_order_id, broker_prefix))
+    # Older v2 builds stripped punctuation from the registered broker prefix
+    # (or omitted it entirely). Keep those historical wire spellings searchable
+    # for recovery, but never generate them for a new order.
+    legacy_prefix = "".join(c for c in str(broker_prefix or "") if c.isalnum())
+    accepted.add(_tokocrypto_client_order_id(client_order_id, legacy_prefix))
     if broker_prefix:
         accepted.add(f"{broker_prefix}{client_order_id}")
     accepted.discard(None)
