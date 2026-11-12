@@ -119,7 +119,6 @@ class EngineRuntimeListenersMixin:
             await pubsub.close()
 
 
-    @staticmethod
     async def _listen_balance_requests(self):
         """Handles read-only Telegram balance requests and stores short-lived replies."""
         pubsub = self.redis.pubsub()
