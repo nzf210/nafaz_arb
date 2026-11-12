@@ -422,11 +422,30 @@ func (b *Bot) answerCallbackQuery(ctx context.Context, callbackID string, toastT
 	defer resp.Body.Close()
 }
 
+func truncateTelegramRunes(text string, maxRunes int) (string, bool) {
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text, false
+	}
+	const suffix = "\n... (pesan dipotong karena melebihi batas Telegram)"
+	cut := maxRunes - len([]rune(suffix))
+	if cut < 0 {
+		cut = 0
+	}
+	return string(runes[:cut]) + suffix, true
+}
+
 func (b *Bot) sendReplyWithMarkup(ctx context.Context, chatID int64, replyToID int64, text string, markup *InlineKeyboardMarkup) {
+	capped, truncated := truncateTelegramRunes(text, 4000)
+	parseMode := "HTML"
+	if truncated {
+		// Truncating mid-HTML risks unclosed tags that Telegram rejects with 400.
+		parseMode = ""
+	}
 	reqBody := SendMessageReq{
 		ChatID:           chatID,
-		Text:             text,
-		ParseMode:        "HTML",
+		Text:             capped,
+		ParseMode:        parseMode,
 		ReplyToMessageID: replyToID,
 		ReplyMarkup:      markup,
 	}
@@ -506,7 +525,11 @@ func (b *Bot) formatScanRejectionSummary(r domain.ScanResult) string {
 		message.WriteString("\n<b>Kesalahan evaluasi terbaru:</b>\n")
 		limit := len(r.Errors); if limit > 3 { limit = 3 }
 		for _, scanErr := range r.Errors[:limit] {
-			message.WriteString("• " + html.EscapeString(scanErr) + "\n")
+			line := scanErr
+			if runes := []rune(line); len(runes) > 200 {
+				line = string(runes[:200]) + "..."
+			}
+			message.WriteString("• " + html.EscapeString(line) + "\n")
 		}
 	}
 	message.WriteString("\n<i>Entry tidak dipaksakan. Periksa alasan di atas; filter profit dan proteksi risiko tetap aktif.</i>")

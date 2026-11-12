@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +28,11 @@ func main(){
 	switch cfg.Mode {
 	case "LIVE":
 		live := exchange.NewLiveAdapter()
+		if dir := filepath.Dir(cfg.HistoryPath); dir != "" && dir != "." {
+			live.SetMarketCacheDir(dir)
+		} else {
+			live.SetMarketCacheDir("./data")
+		}
 		if cfg.GlobalFuturesExchange != "" {
 			live.SetTargetPerpExchange(cfg.GlobalFuturesExchange)
 		}
@@ -42,6 +49,20 @@ func main(){
 			reconnect, _ := time.ParseDuration(cfg.OKXWSReconnectInterval)
 			maxBackoff, _ := time.ParseDuration(cfg.OKXWSMaxReconnectBackoff)
 			live.EnableOKXBookWebSocket(context.Background(), cfg.OKXWSURL, staleAfter, reconnect, maxBackoff)
+		}
+		indodaxWSEnabled := strings.TrimSpace(cfg.IndodaxWSToken) != ""
+		if cfg.IndodaxWebSocketEnabled != nil {
+			indodaxWSEnabled = *cfg.IndodaxWebSocketEnabled
+		}
+		if indodaxWSEnabled {
+			if strings.TrimSpace(cfg.IndodaxWSToken) == "" {
+				log.Printf("warning: indodax_ws_enabled=true without indodax_ws_token; Indodax will remain on throttled REST fallback")
+			} else {
+				staleAfter, _ := time.ParseDuration(cfg.IndodaxWSStaleAfter)
+				reconnect, _ := time.ParseDuration(cfg.OKXWSReconnectInterval)
+				maxBackoff, _ := time.ParseDuration(cfg.OKXWSMaxReconnectBackoff)
+				live.EnableIndodaxBookWebSocket(context.Background(), cfg.IndodaxWSURL, cfg.IndodaxWSToken, staleAfter, reconnect, maxBackoff)
+			}
 		}
 		defer live.Close()
 		adapter = live

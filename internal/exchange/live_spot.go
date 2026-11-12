@@ -7,6 +7,8 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -14,9 +16,15 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
 
-// USDTIDRRate retrieves the current live USDT/IDR exchange rate from Indodax ticker with caching.
+// USDTIDRRate retrieves the current live USDT/IDR exchange rate from Indodax WS/ticker
+// with singleflight deduping and live Tokocrypto USDT_IDR depth fallback.
 func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 	l.mu.RLock()
+	indodaxWS := l.indodaxBooks
+	indodaxMaxAge := l.indodaxWSMaxAge
+	if indodaxMaxAge <= 0 {
+		indodaxMaxAge = 60 * time.Second
+	}
 	if l.lastUSDTIDRRate > 0 && time.Since(l.lastUSDTIDRTime) < 60*time.Second {
 		rate := l.lastUSDTIDRRate
 		l.mu.RUnlock()
@@ -24,6 +32,65 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 	}
 	l.mu.RUnlock()
 
+	if indodaxWS != nil {
+		if rate, ok := indodaxWS.USDTIDRRate(indodaxMaxAge); ok && rate > 0 {
+			return rate, nil
+		}
+	}
+
+	l.usdtIDRMu.Lock()
+	if flight := l.usdtIDRFlight; flight != nil {
+		l.usdtIDRMu.Unlock()
+		select {
+		case <-flight.done:
+			return flight.rate, flight.err
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	}
+	flight := &usdtIDRCall{done: make(chan struct{})}
+	l.usdtIDRFlight = flight
+	l.usdtIDRMu.Unlock()
+
+	rate, err := l.resolveLiveUSDTIDRRate(ctx)
+	flight.rate = rate
+	flight.err = err
+	close(flight.done)
+
+	l.usdtIDRMu.Lock()
+	l.usdtIDRFlight = nil
+	l.usdtIDRMu.Unlock()
+	return rate, err
+}
+
+func (l *LiveAdapter) resolveLiveUSDTIDRRate(ctx context.Context) (float64, error) {
+	started := time.Now()
+	rate, indodaxErr := l.fetchIndodaxUSDTIDRRate(ctx)
+	l.recordScanMetric("indodax", started, indodaxErr)
+	if indodaxErr == nil && rate > 0 {
+		l.mu.Lock()
+		l.lastUSDTIDRRate = rate
+		l.lastUSDTIDRTime = time.Now().UTC()
+		l.mu.Unlock()
+		return rate, nil
+	}
+
+	l.recordScanError(fmt.Sprintf("indodax usdtidr unavailable (%v); trying tokocrypto USDT_IDR", indodaxErr))
+	tokoStarted := time.Now()
+	tokoRate, tokoErr := l.fetchTokocryptoUSDTIDRRate(ctx)
+	l.recordScanMetric("tokocrypto", tokoStarted, tokoErr)
+	if tokoErr == nil && tokoRate > 0 {
+		l.mu.Lock()
+		l.lastUSDTIDRRate = tokoRate
+		l.lastUSDTIDRTime = time.Now().UTC()
+		l.mu.Unlock()
+		return tokoRate, nil
+	}
+
+	return 0, fmt.Errorf("usdtidr unavailable: indodax=(%v); tokocrypto=(%v)", indodaxErr, tokoErr)
+}
+
+func (l *LiveAdapter) fetchIndodaxUSDTIDRRate(ctx context.Context) (float64, error) {
 	endpoint := l.indodaxBaseURL + "/api/ticker/usdtidr"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -31,7 +98,7 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 	}
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
 
-	resp, err := l.client.Do(req)
+	resp, err := l.indodaxDo(ctx, req)
 	if err != nil {
 		return 0, fmt.Errorf("indodax usdtidr ticker request: %w", err)
 	}
@@ -63,34 +130,89 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 	if last <= 0 {
 		return 0, fmt.Errorf("invalid indodax usdtidr rate: %s", raw.Ticker.Last)
 	}
-
-	l.mu.Lock()
-	l.lastUSDTIDRRate = last
-	l.lastUSDTIDRTime = time.Now().UTC()
-	l.mu.Unlock()
-
 	return last, nil
 }
 
-// SpotMarkets discovers active spot pairs on Tokocrypto and Indodax (and MEXC Spot if target is mexc/all).
+func (l *LiveAdapter) fetchTokocryptoUSDTIDRRate(ctx context.Context) (float64, error) {
+	if strings.TrimSpace(l.tokocryptoBaseURL) == "" {
+		return 0, fmt.Errorf("tokocrypto base URL not configured")
+	}
+	endpoint := l.tokocryptoBaseURL + "/open/v1/market/depth?symbol=USDT_IDR&limit=5"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, fmt.Errorf("tokocrypto usdtidr depth req: %w", err)
+	}
+	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
+	resp, err := l.tokocryptoDo(ctx, req)
+	if err != nil {
+		return 0, fmt.Errorf("tokocrypto usdtidr depth request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("tokocrypto usdtidr depth status: %d", resp.StatusCode)
+	}
+
+	var raw struct {
+		Code int `json:"code"`
+		Data struct {
+			Bids [][]string `json:"bids"`
+			Asks [][]string `json:"asks"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return 0, fmt.Errorf("decode tokocrypto usdtidr depth: %w", err)
+	}
+	bids := parseStringLevels(raw.Data.Bids, 1.0)
+	asks := parseStringLevels(raw.Data.Asks, 1.0)
+	if len(bids) == 0 || len(asks) == 0 || bids[0].Price <= 0 || asks[0].Price <= bids[0].Price {
+		return 0, fmt.Errorf("tokocrypto usdtidr book invalid or one-sided")
+	}
+	return (bids[0].Price + asks[0].Price) / 2, nil
+}
+
+// SpotMarkets discovers active spot pairs on Tokocrypto, Indodax, and MEXC Spot.
 func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
 	var allMarkets []domain.Market
 	var errs []string
 
+	tokoStart := time.Now()
 	tokoMarkets, err := l.fetchTokocryptoSpotMarkets(ctx)
+	l.recordScanMetric("tokocrypto", tokoStart, err)
 	if err == nil {
 		allMarkets = append(allMarkets, tokoMarkets...)
 	} else {
-		errs = append(errs, fmt.Sprintf("toko: %v", err))
+		msg := fmt.Sprintf("tokocrypto spot discovery: %v", err)
+		errs = append(errs, msg)
+		l.recordScanError(msg)
 	}
 
-	indodaxMarkets, err := l.fetchIndodaxSpotMarkets(ctx)
-	if err == nil {
+	indodaxStart := time.Now()
+	indodaxMarkets, indodaxErr, usedIndodaxFallback := l.fetchIndodaxSpotMarketsWithStatus(ctx)
+	l.recordScanMetric("indodax", indodaxStart, indodaxErr)
+	if len(indodaxMarkets) > 0 {
 		allMarkets = append(allMarkets, indodaxMarkets...)
-	} else {
-		errs = append(errs, fmt.Sprintf("indodax: %v", err))
+		if usedIndodaxFallback && indodaxErr != nil {
+			l.recordScanError(fmt.Sprintf("indodax spot discovery (%v; using cached fallback)", indodaxErr))
+		}
+	} else if indodaxErr != nil {
+		msg := fmt.Sprintf("indodax spot discovery: %v", indodaxErr)
+		errs = append(errs, msg)
+		l.recordScanError(msg)
 	}
 
+	if strings.TrimSpace(l.mexcSpotBaseURL) != "" {
+		mexcStart := time.Now()
+		mexcMarkets, err := l.fetchMEXCSpotMarkets(ctx)
+		l.recordScanMetric("mexc", mexcStart, err)
+		if err == nil {
+			allMarkets = append(allMarkets, mexcMarkets...)
+		} else {
+			msg := fmt.Sprintf("mexc spot discovery: %v", err)
+			errs = append(errs, msg)
+			l.recordScanError(msg)
+		}
+	}
 
 	if len(allMarkets) == 0 {
 		return nil, fmt.Errorf("failed to discover spot markets (%s)", strings.Join(errs, "; "))
@@ -115,7 +237,7 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 	}
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
 
-	resp, err := l.client.Do(req)
+	resp, err := l.tokocryptoDo(ctx, req)
 	if err != nil {
 		return l.getFallbackTokocryptoSpot(err)
 	}
@@ -208,29 +330,39 @@ func (l *LiveAdapter) getFallbackTokocryptoSpot(err error) ([]domain.Market, err
 }
 
 func (l *LiveAdapter) fetchIndodaxSpotMarkets(ctx context.Context) ([]domain.Market, error) {
+	markets, err, _ := l.fetchIndodaxSpotMarketsWithStatus(ctx)
+	return markets, err
+}
+
+func (l *LiveAdapter) fetchIndodaxSpotMarketsWithStatus(ctx context.Context) ([]domain.Market, error, bool) {
 	l.mu.RLock()
 	if len(l.cachedIndodaxSpot) > 0 && time.Since(l.lastIndodaxSpotFetch) < 1*time.Hour {
 		res := l.cachedIndodaxSpot
 		l.mu.RUnlock()
-		return res, nil
+		return res, nil, false
 	}
 	l.mu.RUnlock()
 
 	endpoint := l.indodaxBaseURL + "/api/pairs"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return l.getFallbackIndodaxSpot(err)
+		fb, fbErr := l.getFallbackIndodaxSpot(err)
+		return fb, err, fbErr == nil && len(fb) > 0
 	}
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
 
-	resp, err := l.client.Do(req)
+	resp, err := l.indodaxDo(ctx, req)
 	if err != nil {
-		return l.getFallbackIndodaxSpot(fmt.Errorf("indodax pairs request: %w", err))
+		wrapped := fmt.Errorf("indodax pairs request: %w", err)
+		fb, fbErr := l.getFallbackIndodaxSpot(wrapped)
+		return fb, wrapped, fbErr == nil && len(fb) > 0
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return l.getFallbackIndodaxSpot(fmt.Errorf("indodax pairs status: %d", resp.StatusCode))
+		statusErr := fmt.Errorf("indodax pairs status: %d", resp.StatusCode)
+		fb, fbErr := l.getFallbackIndodaxSpot(statusErr)
+		return fb, statusErr, fbErr == nil && len(fb) > 0
 	}
 
 	var indodaxPairs []struct {
@@ -242,7 +374,9 @@ func (l *LiveAdapter) fetchIndodaxSpotMarkets(ctx context.Context) ([]domain.Mar
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&indodaxPairs); err != nil {
-		return l.getFallbackIndodaxSpot(fmt.Errorf("decode indodax pairs: %w", err))
+		decErr := fmt.Errorf("decode indodax pairs: %w", err)
+		fb, fbErr := l.getFallbackIndodaxSpot(decErr)
+		return fb, decErr, fbErr == nil && len(fb) > 0
 	}
 
 	var markets []domain.Market
@@ -276,17 +410,137 @@ func (l *LiveAdapter) fetchIndodaxSpotMarkets(ctx context.Context) ([]domain.Mar
 		l.mu.Lock()
 		l.cachedIndodaxSpot = markets
 		l.lastIndodaxSpotFetch = time.Now().UTC()
+		cacheDir := l.marketCacheDir
 		l.mu.Unlock()
+		if cacheDir != "" {
+			l.saveIndodaxSpotCache(cacheDir, markets)
+		}
 	}
 
-	return markets, nil
+	return markets, nil, false
 }
 
 func (l *LiveAdapter) getFallbackIndodaxSpot(err error) ([]domain.Market, error) {
 	l.mu.RLock()
+	cached := l.cachedIndodaxSpot
+	cacheDir := l.marketCacheDir
+	l.mu.RUnlock()
+	if len(cached) > 0 {
+		return cached, nil
+	}
+	if cacheDir != "" {
+		if loaded := l.loadIndodaxSpotCache(cacheDir); len(loaded) > 0 {
+			l.mu.Lock()
+			l.cachedIndodaxSpot = loaded
+			l.mu.Unlock()
+			return loaded, nil
+		}
+	}
+	return nil, err
+}
+
+func (l *LiveAdapter) saveIndodaxSpotCache(dir string, markets []domain.Market) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	data, err := json.Marshal(markets)
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, "indodax_spot_markets.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
+}
+
+func (l *LiveAdapter) loadIndodaxSpotCache(dir string) []domain.Market {
+	path := filepath.Join(dir, "indodax_spot_markets.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var markets []domain.Market
+	if err := json.Unmarshal(data, &markets); err != nil || len(markets) == 0 {
+		return nil
+	}
+	return markets
+}
+
+func (l *LiveAdapter) fetchMEXCSpotMarkets(ctx context.Context) ([]domain.Market, error) {
+	l.mu.RLock()
+	if len(l.cachedMEXCSpot) > 0 && time.Since(l.lastMEXCSpotFetch) < 1*time.Hour {
+		res := l.cachedMEXCSpot
+		l.mu.RUnlock()
+		return res, nil
+	}
+	l.mu.RUnlock()
+
+	endpoint := l.mexcSpotBaseURL + "/api/v3/defaultSymbols"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return l.getFallbackMEXCSpot(fmt.Errorf("mexc spot symbols req: %w", err))
+	}
+	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
+
+	resp, err := l.mexcSpotDo(ctx, req)
+	if err != nil {
+		return l.getFallbackMEXCSpot(fmt.Errorf("mexc spot symbols request: %w", err))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return l.getFallbackMEXCSpot(fmt.Errorf("mexc spot symbols status: %d", resp.StatusCode))
+	}
+
+	var raw struct {
+		Code int      `json:"code"`
+		Data []string `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return l.getFallbackMEXCSpot(fmt.Errorf("decode mexc spot symbols: %w", err))
+	}
+
+	var markets []domain.Market
+	for _, sym := range raw.Data {
+		var base, quote string
+		switch {
+		case strings.HasSuffix(sym, "USDT"):
+			quote = "USDT"
+			base = strings.TrimSuffix(sym, "USDT")
+		case strings.HasSuffix(sym, "USDC"):
+			quote = "USDC"
+			base = strings.TrimSuffix(sym, "USDC")
+		default:
+			continue
+		}
+		if base == "" {
+			continue
+		}
+		markets = append(markets, domain.Market{
+			Exchange:   "mexc",
+			Symbol:     MEXC_SPOT + sym,
+			BaseAsset:  strings.ToUpper(base),
+			QuoteAsset: strings.ToUpper(quote),
+			MarketType: "SPOT",
+			Active:     true,
+		})
+	}
+	if len(markets) > 0 {
+		l.mu.Lock()
+		l.cachedMEXCSpot = markets
+		l.lastMEXCSpotFetch = time.Now().UTC()
+		l.mu.Unlock()
+	}
+	return markets, nil
+}
+
+func (l *LiveAdapter) getFallbackMEXCSpot(err error) ([]domain.Market, error) {
+	l.mu.RLock()
 	defer l.mu.RUnlock()
-	if len(l.cachedIndodaxSpot) > 0 {
-		return l.cachedIndodaxSpot, nil
+	if len(l.cachedMEXCSpot) > 0 {
+		return l.cachedMEXCSpot, nil
 	}
 	return nil, err
 }

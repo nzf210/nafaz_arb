@@ -788,3 +788,24 @@ func TestPendingOrdersCommandShowsExecutorSnapshot(t *testing.T) {
 		t.Fatalf("pending order details missing: %s", sent.Text)
 	}
 }
+
+func TestSendReplyWithMarkupTruncatesOversizedMessages(t *testing.T) {
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	oversized := "<b>Error:</b> " + strings.Repeat("x", 5000)
+	bot.sendReplyWithMarkup(context.Background(), -100123456789, 0, oversized, nil)
+	if len([]rune(sent.Text)) > 4096 {
+		t.Fatalf("expected truncated message <= 4096 runes, got %d", len([]rune(sent.Text)))
+	}
+	if sent.ParseMode != "" {
+		t.Fatalf("expected ParseMode cleared after HTML truncation, got %q", sent.ParseMode)
+	}
+}

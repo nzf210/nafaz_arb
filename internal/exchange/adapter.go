@@ -23,6 +23,14 @@ type RateProvider interface {
 	USDTIDRRate(context.Context) (float64, error)
 }
 
+// ScanTelemetryProvider is an optional interface adapters can implement to
+// report discovery/FX per-exchange request metrics and non-fatal venue errors
+// observed during a scan.
+type ScanTelemetryProvider interface {
+	ResetScanTelemetry()
+	ConsumeScanTelemetry() ([]domain.ExchangeScanMetrics, []string)
+}
+
 func isEligibleMarket(m domain.Market, marketType string, allowedQuotes map[string]bool) bool {
 	return m.Active && strings.EqualFold(m.MarketType, marketType) && allowedQuotes[strings.ToUpper(m.QuoteAsset)]
 }
@@ -58,12 +66,18 @@ func matchSpotMarket(s domain.Market, perpByKey map[string][]domain.Market, allo
 	var matches [][2]domain.Market
 	if isEligibleMarket(s, "SPOT", allowed) {
 		for _, p := range perpByKey[marketPairKey(s)] {
+			if strings.EqualFold(s.Exchange, p.Exchange) {
+				continue
+			}
 			matches = append(matches, [2]domain.Market{s, p})
 		}
 	}
 	if enableSyntheticIDR && isSyntheticIDRMarket(s) {
 		synthKey := strings.ToUpper(s.BaseAsset + "/USDT")
 		for _, p := range perpByKey[synthKey] {
+			if strings.EqualFold(s.Exchange, p.Exchange) {
+				continue
+			}
 			matches = append(matches, [2]domain.Market{s, p})
 		}
 	}

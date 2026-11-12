@@ -53,4 +53,16 @@ func TestMatchMarketsWithSynthetic(t *testing.T) {
 	if !foundBIDR {
 		t.Fatal("expected toko:SOLBIDR to pair with SOL_USDT")
 	}
+
+	// Self-venue spot vs perp (mexc spot vs mexc perp) must be skipped while
+	// cross-venue mexc spot vs okx perp matches.
+	mexcPairs := MatchMarketsWithSynthetic(
+		[]domain.Market{{Exchange: "mexc", Symbol: "mexc_spot:BTCUSDT", BaseAsset: "BTC", QuoteAsset: "USDT", MarketType: "SPOT", Active: true}},
+		perp,
+		quotes,
+		false,
+	)
+	if len(mexcPairs) != 1 || mexcPairs[0][1].Exchange != "okx" {
+		t.Fatalf("expected only mexc_spot vs okx perp, got %+v", mexcPairs)
+	}
 }

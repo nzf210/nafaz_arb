@@ -79,6 +79,10 @@ type Config struct {
 	OKXWSStaleAfter               string         `json:"okx_ws_stale_after"`
 	OKXWSReconnectInterval        string         `json:"okx_ws_reconnect_interval"`
 	OKXWSMaxReconnectBackoff      string         `json:"okx_ws_max_reconnect_backoff"`
+	IndodaxWebSocketEnabled       *bool          `json:"indodax_ws_enabled,omitempty"`
+	IndodaxWSURL                  string         `json:"indodax_ws_url"`
+	IndodaxWSToken                string         `json:"indodax_ws_token"`
+	IndodaxWSStaleAfter           string         `json:"indodax_ws_stale_after"`
 	WebSocketBookMaxAgeSeconds    int            `json:"websocket_book_max_age_seconds"`
 	ExchangeErrorWindowSeconds    int            `json:"exchange_error_window_seconds"`
 	ExchangeErrorRateThreshold    float64        `json:"exchange_error_rate_threshold"`
@@ -138,6 +142,8 @@ func (c *Config) setDefaults() {
 	c.OKXWSStaleAfter = defaultString(c.OKXWSStaleAfter, "65s")
 	c.OKXWSReconnectInterval = defaultString(c.OKXWSReconnectInterval, "1s")
 	c.OKXWSMaxReconnectBackoff = defaultString(c.OKXWSMaxReconnectBackoff, "30s")
+	c.IndodaxWSURL = defaultString(c.IndodaxWSURL, "wss://ws3.indodax.com/ws/")
+	c.IndodaxWSStaleAfter = defaultString(c.IndodaxWSStaleAfter, "65s")
 	// Require recent order books and tight cross-venue alignment by default.
 	c.MaxOrderBookAgeSeconds = defaultInt(c.MaxOrderBookAgeSeconds, 5)
 	c.MaxCrossExchangeSkewSeconds = defaultInt(c.MaxCrossExchangeSkewSeconds, 3)
@@ -227,10 +233,14 @@ func (c *Config) validate() error {
 	if c.OKXWSURL != "" && !strings.HasPrefix(strings.ToLower(c.OKXWSURL), "wss://") {
 		return fmt.Errorf("okx_ws_url must use wss://")
 	}
+	if c.IndodaxWSURL != "" && !strings.HasPrefix(strings.ToLower(c.IndodaxWSURL), "wss://") {
+		return fmt.Errorf("indodax_ws_url must use wss://")
+	}
 	for name, value := range map[string]string{
 		"okx_ws_stale_after": c.OKXWSStaleAfter,
 		"okx_ws_reconnect_interval": c.OKXWSReconnectInterval,
 		"okx_ws_max_reconnect_backoff": c.OKXWSMaxReconnectBackoff,
+		"indodax_ws_stale_after": c.IndodaxWSStaleAfter,
 	} {
 		if strings.TrimSpace(value) == "" { continue }
 		d, err := time.ParseDuration(value)
@@ -384,6 +394,13 @@ func (c *Config) applyEnvOverrides() {
 	setEnvString(&c.OKXWSStaleAfter, "OKX_WS_STALE_AFTER")
 	setEnvString(&c.OKXWSReconnectInterval, "OKX_WS_RECONNECT_INTERVAL")
 	setEnvString(&c.OKXWSMaxReconnectBackoff, "OKX_WS_MAX_RECONNECT_BACKOFF")
+	if v := os.Getenv("INDODAX_WS_ENABLED"); v != "" {
+		enabled := strings.EqualFold(v, "true") || v == "1"
+		c.IndodaxWebSocketEnabled = &enabled
+	}
+	setEnvString(&c.IndodaxWSURL, "INDODAX_WS_URL")
+	setEnvString(&c.IndodaxWSToken, "INDODAX_WS_TOKEN")
+	setEnvString(&c.IndodaxWSStaleAfter, "INDODAX_WS_STALE_AFTER")
 	setEnvInt(&c.WebSocketBookMaxAgeSeconds, "WEBSOCKET_BOOK_MAX_AGE_SECONDS")
 	setEnvString(&c.GlobalFuturesExchange, "GLOBAL_FUTURES_EXCHANGE")
 	setEnvBool(&c.EnableExecutorSignals, "ENABLE_EXECUTOR_SIGNALS")

@@ -110,15 +110,21 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 		}
 	}()
 
+	if telemetry, ok := s.adapter.(exchange.ScanTelemetryProvider); ok {
+		telemetry.ResetScanTelemetry()
+	}
+
 	marketDiscoveryStarted := time.Now()
 	spot, err := s.adapter.SpotMarkets(ctx)
 	if err != nil {
 		result.MarketDiscoveryDurationMS = time.Since(marketDiscoveryStarted).Milliseconds()
+		s.mergeAdapterTelemetry(&result)
 		return result, false, fmt.Errorf("spot market discovery: %w", err)
 	}
 	perp, err := s.adapter.PerpetualMarkets(ctx)
 	if err != nil {
 		result.MarketDiscoveryDurationMS = time.Since(marketDiscoveryStarted).Milliseconds()
+		s.mergeAdapterTelemetry(&result)
 		return result, false, fmt.Errorf("perpetual market discovery: %w", err)
 	}
 	result.TotalMarkets = len(spot) + len(perp)
@@ -128,6 +134,9 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 	pairs := exchange.MatchMarketsWithSynthetic(spot, perp, s.cfg.QuoteAssets, s.cfg.EnableSyntheticIDR)
 	if len(s.cfg.ExcludedSymbols) > 0 {
 		pairs = s.filterExcludedSymbols(pairs)
+	}
+	if sub, ok := s.adapter.(interface{ SubscribeIndodaxBooks([][2]domain.Market) }); ok {
+		sub.SubscribeIndodaxBooks(pairs)
 	}
 	result.MatchedPairs = len(pairs)
 	result.MarketDiscoveryDurationMS = time.Since(marketDiscoveryStarted).Milliseconds()
@@ -151,9 +160,42 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 	if !applyEvaluationResults(evalResults, &result) {
 		complete = false
 	}
+	s.mergeAdapterTelemetry(&result)
 
 	sort.Slice(result.Opportunities, func(i, j int) bool { return result.Opportunities[i].NetROIPct > result.Opportunities[j].NetROIPct })
 	return result, complete, nil
+}
+
+func (s *Service) mergeAdapterTelemetry(result *domain.ScanResult) {
+	telemetry, ok := s.adapter.(exchange.ScanTelemetryProvider)
+	if !ok {
+		return
+	}
+	extraMetrics, extraErrors := telemetry.ConsumeScanTelemetry()
+	if len(extraMetrics) > 0 {
+		merged := make(map[string]domain.ExchangeScanMetrics, len(result.ExchangeMetrics)+len(extraMetrics))
+		for _, m := range result.ExchangeMetrics {
+			merged[m.Exchange] = m
+		}
+		for _, m := range extraMetrics {
+			agg := merged[m.Exchange]
+			agg.Exchange = m.Exchange
+			agg.Requests += m.Requests
+			agg.Errors += m.Errors
+			agg.DurationMicros += m.DurationMicros
+			merged[m.Exchange] = agg
+		}
+		result.ExchangeMetrics = make([]domain.ExchangeScanMetrics, 0, len(merged))
+		for _, m := range merged {
+			result.ExchangeMetrics = append(result.ExchangeMetrics, m)
+		}
+		sort.Slice(result.ExchangeMetrics, func(i, j int) bool {
+			return result.ExchangeMetrics[i].Exchange < result.ExchangeMetrics[j].Exchange
+		})
+	}
+	if len(extraErrors) > 0 {
+		result.Errors = append(result.Errors, extraErrors...)
+	}
 }
 
 func (s *Service) filterActivePairs(pairs [][2]domain.Market, now time.Time) ([][2]domain.Market, int) {

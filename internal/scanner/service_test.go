@@ -1006,3 +1006,40 @@ func TestScanPersistsOpportunitiesToSupabase(t *testing.T) {
 		t.Fatal("persisted opportunity is missing idempotency_key")
 	}
 }
+
+type partialDiscoveryTelemetryAdapter struct {
+	*exchange.MockAdapter
+}
+
+func (p *partialDiscoveryTelemetryAdapter) ResetScanTelemetry() {}
+
+func (p *partialDiscoveryTelemetryAdapter) ConsumeScanTelemetry() ([]domain.ExchangeScanMetrics, []string) {
+	return []domain.ExchangeScanMetrics{
+		{Exchange: "indodax", Requests: 1, Errors: 1, DurationMicros: 5000},
+	}, []string{"indodax spot discovery: indodax pairs status: 403"}
+}
+
+func TestScanMergesDiscoveryTelemetryIntoExchangeMetrics(t *testing.T) {
+	cfg := config.Config{
+		Mode: "MOCK", QuoteAssets: []string{"USDT"},
+		CapitalTotal: 1000, AllocationPerPair: 0.5, PerpLeverage: 1,
+		EstimatedHoldingHours: 8, MinNetROIPct: 0.1, MaxNetROIPct: 10,
+	}
+	s := New(cfg, &partialDiscoveryTelemetryAdapter{MockAdapter: exchange.NewMockAdapter()})
+	result, _, err := s.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	foundIndodax := false
+	for _, m := range result.ExchangeMetrics {
+		if m.Exchange == "indodax" && m.Errors >= 1 {
+			foundIndodax = true
+		}
+	}
+	if !foundIndodax {
+		t.Fatalf("expected indodax metric in ExchangeMetrics, got %+v", result.ExchangeMetrics)
+	}
+	if len(result.Errors) == 0 || !strings.Contains(result.Errors[0], "403") {
+		t.Fatalf("expected discovery error surfaced in ScanResult.Errors, got %v", result.Errors)
+	}
+}
