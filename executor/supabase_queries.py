@@ -216,7 +216,7 @@ class SupabaseQueryMixin:
     def _open_order_record_query(limit: int) -> dict:
         return {
             "select": (
-                "local_order_id,client_order_id,exchange_order_id,pair_key,position_key,"
+                "local_order_id,client_order_id,venue_client_order_id,exchange_order_id,pair_key,position_key,"
                 "exchange_name,market_type,leg,order_role,symbol,side,order_type,status,"
                 "requested_qty,filled_qty,remaining_qty,limit_price,average_fill_price,"
                 "reduce_only,recovery_status,is_mock,raw_payload"
