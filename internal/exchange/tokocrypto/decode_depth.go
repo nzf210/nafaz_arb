@@ -11,10 +11,14 @@ import (
 func IsDepthUpdate(payload []byte) bool {
 	var envelope struct {
 		Event string `json:"e"`
-		Data struct { Event string `json:"e"` } `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if json.Unmarshal(payload, &envelope) != nil { return false }
-	return envelope.Event == "depthUpdate" || envelope.Data.Event == "depthUpdate"
+	if envelope.Event == "depthUpdate" { return true }
+	if len(envelope.Data) == 0 || string(envelope.Data) == "null" { return false }
+	var nested struct { Event string `json:"e"` }
+	if json.Unmarshal(envelope.Data, &nested) != nil { return false }
+	return nested.Event == "depthUpdate"
 }
 
 // DecodeDepthUpdate accepts both raw MBX events and combined-stream envelopes.
