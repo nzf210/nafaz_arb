@@ -14,13 +14,14 @@ type Adapter struct {
 	client *Client
 	source contracts.MarketDataAdapter
 	onMarkets func([]domain.Market)
+	onOutcome func(error)
 	mu sync.RWMutex
 	markets []domain.Market
 	fetchedAt time.Time
 }
 
-func NewAdapter(client *Client,source contracts.MarketDataAdapter,onMarkets func([]domain.Market))*Adapter{
-	return &Adapter{client:client,source:source,onMarkets:onMarkets}
+func NewAdapter(client *Client,source contracts.MarketDataAdapter,onMarkets func([]domain.Market),onOutcome func(error))*Adapter{
+	return &Adapter{client:client,source:source,onMarkets:onMarkets,onOutcome:onOutcome}
 }
 func(a *Adapter)SpotMarkets(ctx context.Context)([]domain.Market,error){
 	a.mu.RLock()
