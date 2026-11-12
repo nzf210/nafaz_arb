@@ -18,6 +18,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=appuser:appgroup executor/ ./executor/
+COPY --chown=appuser:appgroup scripts/live_readonly_preflight.py ./scripts/live_readonly_preflight.py
 
 USER appuser
 
