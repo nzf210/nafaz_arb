@@ -91,13 +91,24 @@ class RecoveryDiscoveryMixin:
         and is invisible in the local spot book.
         """
         catalogues = []
-        for exchange, market in (
-            (str(self.config.local_exchange_name or "").lower(), "spot"),
-            (str(self.config.global_exchange_name or "").lower(), "futures"),
-        ):
-            if not exchange:
+        # The active pair is not the complete account inventory. In particular,
+        # Tokocrypto can be an additional spot venue while Indodax remains the
+        # configured default. A crash between venue acceptance and local ACK
+        # must still be discoverable on every authenticated venue client.
+        venue_markets = {
+            str(self.config.local_exchange_name or "").strip().lower(): "spot",
+            str(self.config.global_exchange_name or "").strip().lower(): "futures",
+        }
+        balance_clients = getattr(self._base_client, "balance_exchanges", {}) or {}
+        for exchange, entry in balance_clients.items():
+            if not isinstance(entry, dict) or entry.get("client") is None:
                 continue
-            if self._client_for_exchange(exchange) is None:
+            market = str(entry.get("market") or "").strip().lower()
+            if market in ("spot", "futures"):
+                venue_markets[str(exchange).strip().lower()] = market
+
+        for exchange, market in sorted(venue_markets.items()):
+            if not exchange or self._client_for_exchange(exchange) is None:
                 continue
             catalogues.append({
                 "exchange": exchange,
