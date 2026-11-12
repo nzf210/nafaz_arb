@@ -33,6 +33,7 @@ type contractBook struct {
 	version int64
 	contractSize float64
 	updatedAt time.Time
+	synced bool
 }
 
 // PerpetualBookManager maintains version-synchronized MEXC contract books.
@@ -73,12 +74,12 @@ func (m *PerpetualBookManager) Apply(update PerpetualDepthUpdate)(bool,error){
 	bids,err:=contractLevelsToMap(update.Bids,book.contractSize);if err!=nil{delete(m.books,update.Symbol);return false,fmt.Errorf("update bids: %w",err)}
 	asks,err:=contractLevelsToMap(update.Asks,book.contractSize);if err!=nil{delete(m.books,update.Symbol);return false,fmt.Errorf("update asks: %w",err)}
 	applyContractLevels(book.bids,bids);applyContractLevels(book.asks,asks)
-	book.version=end;book.updatedAt=update.Timestamp;if book.updatedAt.IsZero(){book.updatedAt=m.now()}
+	book.version=end;book.synced=true;book.updatedAt=update.Timestamp;if book.updatedAt.IsZero(){book.updatedAt=m.now()}
 	return true,nil
 }
 
 func (m *PerpetualBookManager)Get(symbol string,maxAge time.Duration)(domain.OrderBook,bool){
-	m.mu.RLock();book:=m.books[symbol];if book==nil{m.mu.RUnlock();return domain.OrderBook{},false}
+	m.mu.RLock();book:=m.books[symbol];if book==nil||!book.synced{m.mu.RUnlock();return domain.OrderBook{},false}
 	bids:=contractMapLevels(book.bids,true,m.maxDepth);asks:=contractMapLevels(book.asks,false,m.maxDepth)
 	out:=domain.OrderBook{Exchange:"mexc",Symbol:symbol,Bids:bids,Asks:asks,SequenceID:book.version,Timestamp:book.updatedAt,ReceivedAt:book.updatedAt,Source:"websocket"}
 	m.mu.RUnlock()
