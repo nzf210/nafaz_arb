@@ -50,10 +50,10 @@ def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     """
     Builds a venue-safe client order id: ``{pair}-{leg}-{seq}``.
 
-    The id is deterministic for a given (pair, leg, sequence) so a retry of the
-    same logical order is recognised as a duplicate by the venue instead of
-    double-filling. Kept to lowercase alphanumerics and dashes because Binance,
-    OKX and Indodax each accept a different, partly overlapping character set.
+    The id is deterministic for a given (pair, leg, sequence), allowing the
+    durable registry to correlate an order across process restarts. This is not
+    a venue-side idempotency guarantee: Tokocrypto does not enforce clientId
+    uniqueness, so ambiguous submissions must never be retried.
 
     Binance Cloud broker prefixes are applied on the wire by
     ``executor.exchange_client.venue_client_order_id``, which also enforces the
