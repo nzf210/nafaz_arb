@@ -367,3 +367,40 @@ func TestSpotOrderLimitPersistsAndBroadcasts(t *testing.T) {
 	}
 	if err := client.SetSpotOrderLimit(ctx, "indodax", 0); err == nil { t.Fatal("expected invalid limit to be rejected") }
 }
+
+
+func TestListActivePositionsReturnsAuthoritativeRecords(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx := context.Background()
+	position := domain.ActivePosition{
+		LocalExchange: "indodax", GlobalExchange: "okx",
+		Symbol: "btc_idr", Qty: 0.25,
+	}
+	payload, err := json.Marshal(position)
+	if err != nil { t.Fatal(err) }
+	if err := client.rdb.Set(ctx, KeyPrefixActivePos+"indodax:btc_idr", payload, 0).Err(); err != nil { t.Fatal(err) }
+	got, err := client.ListActivePositions(ctx)
+	if err != nil { t.Fatal(err) }
+	if len(got) != 1 || got[0].Qty != 0.25 || got[0].GlobalExchange != "okx" {
+		t.Fatalf("unexpected active positions: %+v", got)
+	}
+}
+
+func TestListActivePositionsFailsClosedOnMalformedRecord(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx := context.Background()
+	if err := client.rdb.Set(ctx, KeyPrefixActivePos+"broken", "{", 0).Err(); err != nil { t.Fatal(err) }
+	if _, err := client.ListActivePositions(ctx); err == nil {
+		t.Fatal("expected malformed active position to fail closed")
+	}
+}
+
+func TestListActivePositionsRequiresRedis(t *testing.T) {
+	if _, err := (&Client{}).ListActivePositions(context.Background()); err == nil {
+		t.Fatal("expected disconnected Redis to fail closed")
+	}
+}
