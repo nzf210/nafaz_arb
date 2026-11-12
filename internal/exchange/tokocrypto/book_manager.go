@@ -68,11 +68,20 @@ func (m *BookManager) Apply(update DepthUpdate) (bool,error) {
 	if book==nil{return false,fmt.Errorf("tokocrypto book %s is not bootstrapped",update.Symbol)}
 	if update.FinalUpdateID<=book.lastID{return false,nil}
 	if !book.bridged {
-		if update.FirstUpdateID > book.lastID+1 || update.FinalUpdateID < book.lastID+1 {
+		bridged := update.FirstUpdateID <= book.lastID+1 && update.FinalUpdateID >= book.lastID+1
+		if update.PreviousUpdateID > 0 {
+			bridged = update.PreviousUpdateID == book.lastID
+		}
+		if !bridged {
 			delete(m.books,update.Symbol)
-			return false,fmt.Errorf("tokocrypto snapshot bridge failed for %s at update %d",update.Symbol,book.lastID+1)
+			return false,fmt.Errorf("tokocrypto snapshot bridge failed for %s at update %d (first=%d previous=%d final=%d)",update.Symbol,book.lastID+1,update.FirstUpdateID,update.PreviousUpdateID,update.FinalUpdateID)
 		}
 		book.bridged = true
+	} else if update.PreviousUpdateID > 0 {
+		if update.PreviousUpdateID != book.lastID {
+			delete(m.books,update.Symbol)
+			return false,fmt.Errorf("tokocrypto previous update gap for %s: expected previous %d, got %d",update.Symbol,book.lastID,update.PreviousUpdateID)
+		}
 	} else if update.FirstUpdateID != book.lastID+1 {
 		delete(m.books,update.Symbol)
 		return false,fmt.Errorf("tokocrypto sequence gap for %s: expected first update %d, got %d",update.Symbol,book.lastID+1,update.FirstUpdateID)
