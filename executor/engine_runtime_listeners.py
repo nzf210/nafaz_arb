@@ -193,4 +193,3 @@ class EngineRuntimeListenersMixin:
             await pubsub.unsubscribe("arb:kill_switch")
             await pubsub.close()
 
-    @staticmethod
