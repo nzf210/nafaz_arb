@@ -27,13 +27,13 @@ func (m marketAdapterStub) OpenExposures(context.Context)([]domain.OpenExposure,
 func TestAnalysisServiceUsesVerifiedFeesAndBoundedMarketSelection(t *testing.T) {
 	now:=time.Now()
 	markets:=[]domain.Market{
-		{Exchange:"a",Symbol:"BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
-		{Exchange:"b",Symbol:"BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
+		{Exchange:"a",Symbol:"A:BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
+		{Exchange:"b",Symbol:"B:BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
 		{Exchange:"c",Symbol:"ETH/USDT",BaseAsset:"ETH",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
 	}
 	books:=map[string]domain.OrderBook{
-		"a":{Exchange:"a",Symbol:"BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:100,Quantity:1}},Asks:[]domain.PriceLevel{{Price:100.1,Quantity:1}}},
-		"b":{Exchange:"b",Symbol:"BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:102,Quantity:1}},Asks:[]domain.PriceLevel{{Price:102.1,Quantity:1}}},
+		"a":{Exchange:"a",Symbol:"A:BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:100,Quantity:1}},Asks:[]domain.PriceLevel{{Price:100.1,Quantity:1}}},
+		"b":{Exchange:"b",Symbol:"B:BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:102,Quantity:1}},Asks:[]domain.PriceLevel{{Price:102.1,Quantity:1}}},
 	}
 	adapter:=marketAdapterStub{markets:markets,books:books}
 	engine,err:=NewEngine(CrossVenueSpotStrategy{MinNetReturnPct:.1})
@@ -54,12 +54,12 @@ func TestAnalysisServiceFailsClosedWhenFeeProfileMissing(t *testing.T) {
 	now:=time.Now()
 	adapter:=marketAdapterStub{
 		markets:[]domain.Market{
-			{Exchange:"a",Symbol:"BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
-			{Exchange:"b",Symbol:"BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
+			{Exchange:"a",Symbol:"A:BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
+			{Exchange:"b",Symbol:"B:BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
 		},
 		books:map[string]domain.OrderBook{
-			"a":{Exchange:"a",Symbol:"BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:100,Quantity:1}},Asks:[]domain.PriceLevel{{Price:100.1,Quantity:1}}},
-			"b":{Exchange:"b",Symbol:"BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:102,Quantity:1}},Asks:[]domain.PriceLevel{{Price:102.1,Quantity:1}}},
+			"a":{Exchange:"a",Symbol:"A:BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:100,Quantity:1}},Asks:[]domain.PriceLevel{{Price:100.1,Quantity:1}}},
+			"b":{Exchange:"b",Symbol:"B:BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:102,Quantity:1}},Asks:[]domain.PriceLevel{{Price:102.1,Quantity:1}}},
 		},
 	}
 	engine,err:=NewEngine(CrossVenueSpotStrategy{})
