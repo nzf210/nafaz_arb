@@ -1411,6 +1411,29 @@ async def _async_value(value):
 
 
 @pytest.mark.asyncio
+async def test_newer_durable_position_snapshot_overrides_stale_redis_state(fake_redis):
+    engine = await _build(fake_redis, MockExchangeClient(), mock_mode=False)
+    engine.supabase.enabled = True
+    cached = _position(state="ENTRY_PARTIAL", updated_at=100)
+    durable = _position(state="EXIT_PENDING", updated_at=200)
+    key = "arb:active_pos:" + PAIR_TAG
+    await fake_redis.set(key, json.dumps(cached.to_dict()))
+    engine.supabase.fetch_open_position_records = lambda: _async_value([{
+        "pair_key": PAIR_TAG,
+        "status": "EXIT_PENDING",
+        "is_mock": False,
+        "state_snapshot": durable.to_dict(),
+    }])
+
+    await engine._recover_active_positions()
+
+    assert engine.states[PAIR_TAG] == PositionState.EXIT_PENDING
+    restored = json.loads(await fake_redis.get(key))
+    assert restored["state"] == "EXIT_PENDING"
+    assert restored["updated_at"] == 200
+
+
+@pytest.mark.asyncio
 async def test_durable_registry_read_failure_keeps_global_entry_gate(fake_redis):
     """A Supabase read outage cannot be mistaken for an empty durable registry."""
     engine = await _build(fake_redis, MockExchangeClient())
