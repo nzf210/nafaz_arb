@@ -24,6 +24,22 @@ def _spot_symbol_arg(value: str) -> tuple[str, str]:
     return exchange.strip().lower(), symbol.strip()
 
 
+def _spot_order_arg(value: str) -> tuple[str, str, str]:
+    exchange, separator, remainder = value.partition("=")
+    symbol, order_separator, order_id = remainder.rpartition("=")
+    if (
+        not separator
+        or not order_separator
+        or not exchange.strip()
+        or not symbol.strip()
+        or not order_id.strip()
+    ):
+        raise argparse.ArgumentTypeError(
+            "spot orders must use EXCHANGE=UNIFIED_SYMBOL=ORDER_ID"
+        )
+    return exchange.strip().lower(), symbol.strip(), order_id.strip()
+
+
 async def _run(args) -> None:
     config = ExecutorConfig.load(args.config)
     if config.mock_mode:
@@ -82,6 +98,23 @@ async def _run(args) -> None:
             orders = await venue_client.fetch_local_open_orders(symbol)
             print(f"PASS exchange={name} symbol={symbol} signed_open_orders={len(orders)}")
 
+        for name, symbol, order_id in requested_orders:
+            venue_client = client.for_venue(name)
+            order = await venue_client.fetch_local_order(order_id, symbol)
+            if not isinstance(order, dict) or str(order.get("id") or "") != order_id:
+                raise RuntimeError(
+                    f"{name} order detail lookup returned an unverifiable order for {order_id}"
+                )
+            status = str(order.get("status") or "").lower()
+            if status not in {"open", "closed", "filled", "canceled", "cancelled", "rejected", "expired"}:
+                raise RuntimeError(
+                    f"{name} order {order_id} has an unknown status: {status or 'missing'}"
+                )
+            print(
+                f"PASS exchange={name} symbol={symbol} "
+                f"order_id={order_id} status={status} signed_order_detail=ok"
+            )
+
         if args.futures_symbol:
             positions = await client.fetch_positions(args.futures_symbol)
             orders = await client.fetch_global_open_orders(args.futures_symbol)
@@ -135,6 +168,12 @@ def main() -> int:
         action="append",
         type=_spot_symbol_arg,
         help="signed spot open-order check, repeat as EXCHANGE=SYMBOL",
+    )
+    parser.add_argument(
+        "--spot-order",
+        action="append",
+        type=_spot_order_arg,
+        help="signed spot order-detail check, repeat as EXCHANGE=SYMBOL=ORDER_ID",
     )
     parser.add_argument(
         "--futures-symbol",
