@@ -41,6 +41,7 @@ func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) 
 	tokoMarkets, err := l.fetchTokocryptoSpotMarkets(ctx)
 	if err == nil {
 		allMarkets = append(allMarkets, tokoMarkets...)
+		l.SubscribeTokocryptoBooks(tokoMarkets)
 	} else {
 		errs = append(errs, fmt.Sprintf("toko: %v", err))
 	}
@@ -118,4 +119,14 @@ func (l *LiveAdapter) getFallbackIndodaxSpot(err error) ([]domain.Market, error)
 		return l.cachedIndodaxSpot, nil
 	}
 	return nil, err
+}
+
+
+// SubscribeTokocryptoBooks dynamically tracks active MBX spot symbols.
+func (l *LiveAdapter) SubscribeTokocryptoBooks(markets []domain.Market) {
+	l.mu.RLock(); supervisor := l.tokocryptoSupervisor; l.mu.RUnlock()
+	if supervisor == nil { return }
+	symbols := make([]string,0,len(markets))
+	for _, market := range markets { if strings.EqualFold(market.Exchange,"tokocrypto") && market.Active { symbols=append(symbols,strings.TrimPrefix(market.Symbol,"toko:")) } }
+	supervisor.SetSymbols(sortedUniqueSymbols(symbols))
 }
