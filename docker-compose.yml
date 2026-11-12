@@ -84,10 +84,13 @@ services:
       - OKX_PASSPHRASE=${OKX_PASSPHRASE:-}
       - MEXC_API_KEY=${MEXC_API_KEY:-}
       - MEXC_API_SECRET=${MEXC_API_SECRET:-}
+      - BINANCE_API_KEY=${BINANCE_API_KEY:-}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET:-}
       - BYBIT_API_KEY=${BYBIT_API_KEY:-}
       - BYBIT_API_SECRET=${BYBIT_API_SECRET:-}
       - OKX_TESTNET=${OKX_TESTNET:-false}
       - MEXC_TESTNET=${MEXC_TESTNET:-false}
+      - BINANCE_TESTNET=${BINANCE_TESTNET:-false}
       - BYBIT_TESTNET=${BYBIT_TESTNET:-false}
       # Executor mode follows config.json mode (MOCK/LIVE).
       # Set EXECUTOR_MOCK_MODE=true only as an explicit emergency override.
