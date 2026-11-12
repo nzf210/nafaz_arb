@@ -78,7 +78,7 @@ def _tokocrypto_client_order_id(
     digest = hashlib.sha256(client_order_id.encode("utf-8")).hexdigest()
     room = TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - len(tail)
     if room < 1:
-        # Keep the tail: it carries the idempotency guarantee.
+        # Keep as much of the tail as possible for recovery correlation.
         tail = tail[: TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - 1]
         room = TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - len(tail)
         if room < 1:
