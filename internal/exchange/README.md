@@ -23,7 +23,7 @@ internal/exchange/
   `indodax.Client` for pair metadata and USDT/IDR ticker.
 - `tokocrypto.Adapter` owns Tokocrypto spot discovery/cache and triggers the
   MBX/NextMe depth supervisors after discovery.
-- `mexc.Adapter` owns MEXC perpetual discovery/cache and contract metadata;
+- `mexc.Adapter` owns MEXC spot/perpetual discovery/cache and contract metadata;
   its callback updates contract-size state and the perpetual depth supervisor.
 - `okx.Adapter` owns OKX SWAP discovery/cache and contract metadata; its
   callback updates contract-size state and the sequence-validated book manager.
