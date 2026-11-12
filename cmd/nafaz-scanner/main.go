@@ -24,7 +24,7 @@ import (
 func main(){
 	path:=flag.String("config","config.json","path to JSON config");flag.Parse()
 	cfg,err:=config.Load(*path);if err!=nil{log.Fatal(err)}
-	var adapter contracts.ReadOnlyAdapter
+	var adapter contracts.MarketDataAdapter
 	switch cfg.Mode {
 	case "LIVE":
 		live := exchange.NewLiveAdapter()
