@@ -29,56 +29,50 @@ begin
     end loop;
 end $$;
 
--- Runtime writer contracts for the executor's operational tables.
-do $
-declare
-    required_column record;
-begin
-    for required_column in
-        select * from (values
-            ('position_legs', 'position_id'),
-            ('position_legs', 'leg'),
-            ('position_legs', 'exchange_name'),
-            ('position_legs', 'symbol'),
-            ('position_legs', 'side'),
-            ('position_legs', 'status'),
-            ('position_legs', 'qty'),
-            ('position_legs', 'average_entry_price'),
-            ('funding_payments', 'position_id'),
-            ('funding_payments', 'exchange_name'),
-            ('funding_payments', 'symbol'),
-            ('funding_payments', 'exchange_payment_id'),
-            ('funding_payments', 'amount'),
-            ('funding_payments', 'asset'),
-            ('funding_payments', 'payment_status'),
-            ('funding_payments', 'settled_at'),
-            ('balance_snapshots', 'exchange_name'),
-            ('balance_snapshots', 'market_type'),
-            ('balance_snapshots', 'asset'),
-            ('balance_snapshots', 'total'),
-            ('balance_snapshots', 'free'),
-            ('balance_snapshots', 'used'),
-            ('balance_snapshots', 'is_mock'),
-            ('balance_snapshots', 'observed_at'),
-            ('executor_status_snapshots', 'instance_id'),
-            ('executor_status_snapshots', 'status'),
-            ('executor_status_snapshots', 'mode'),
-            ('executor_status_snapshots', 'is_mock'),
-            ('executor_status_snapshots', 'snapshot'),
-            ('executor_status_snapshots', 'observed_at')
-        ) as required(table_name, column_name)
-    loop
-        if not exists (
-            select 1 from information_schema.columns
-            where table_schema = 'public'
-              and table_name = required_column.table_name
-              and column_name = required_column.column_name
-        ) then
-            raise exception 'runtime persistence column missing: %.%',
-                required_column.table_name, required_column.column_name;
-        end if;
-    end loop;
-end $;
+-- Runtime writer contracts: division by zero fails CI if any required column is absent.
+select 1 / case when count(*) = 0 then 1 else 0 end
+from (
+    select required.table_name, required.column_name
+    from (values
+        ('position_legs', 'position_id'),
+        ('position_legs', 'leg'),
+        ('position_legs', 'exchange_name'),
+        ('position_legs', 'symbol'),
+        ('position_legs', 'side'),
+        ('position_legs', 'status'),
+        ('position_legs', 'qty'),
+        ('position_legs', 'average_entry_price'),
+        ('funding_payments', 'position_id'),
+        ('funding_payments', 'exchange_name'),
+        ('funding_payments', 'symbol'),
+        ('funding_payments', 'exchange_payment_id'),
+        ('funding_payments', 'amount'),
+        ('funding_payments', 'asset'),
+        ('funding_payments', 'payment_status'),
+        ('funding_payments', 'settled_at'),
+        ('balance_snapshots', 'exchange_name'),
+        ('balance_snapshots', 'market_type'),
+        ('balance_snapshots', 'asset'),
+        ('balance_snapshots', 'total'),
+        ('balance_snapshots', 'free'),
+        ('balance_snapshots', 'used'),
+        ('balance_snapshots', 'is_mock'),
+        ('balance_snapshots', 'observed_at'),
+        ('executor_status_snapshots', 'instance_id'),
+        ('executor_status_snapshots', 'status'),
+        ('executor_status_snapshots', 'mode'),
+        ('executor_status_snapshots', 'is_mock'),
+        ('executor_status_snapshots', 'snapshot'),
+        ('executor_status_snapshots', 'observed_at')
+    ) as required(table_name, column_name)
+    where not exists (
+        select 1
+        from information_schema.columns actual
+        where actual.table_schema = 'public'
+          and actual.table_name = required.table_name
+          and actual.column_name = required.column_name
+    )
+) missing_runtime_columns;
 
 insert into public.strategy_configs (name, config)
 values ('schema-smoke-test', '{"source":"ci"}'::jsonb);
