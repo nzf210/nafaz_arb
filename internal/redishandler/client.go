@@ -360,17 +360,22 @@ func (c *Client) ListActivePositions(ctx context.Context) ([]domain.ActivePositi
 // terminal orders. An unavailable index is an error, never an empty registry.
 func (c *Client) ListActiveOrderRecords(ctx context.Context) ([]json.RawMessage, error) {
 	if c == nil || c.rdb == nil { return nil, errors.New("redis is not connected") }
-	ids, err := c.rdb.HKeys(ctx, KeyOrderRecoveryIndex).Result()
-	if err != nil { return nil, fmt.Errorf("read active order registry index: %w", err) }
-	out := make([]json.RawMessage, 0, len(ids))
-	for _, id := range ids {
-		raw, getErr := c.rdb.Get(ctx, KeyPrefixOrderRecord+id).Bytes()
-		if getErr != nil {
-			if getErr == redis.Nil { continue }
-			return nil, fmt.Errorf("read order record %s: %w", id, getErr)
+	var out []json.RawMessage
+	var cursor uint64
+	for {
+		fields, nextCursor, err := c.rdb.HScan(ctx, KeyOrderRecoveryIndex, cursor, "*", 100).Result()
+		if err != nil { return nil, fmt.Errorf("scan active order registry index: %w", err) }
+		for i := 0; i+1 < len(fields); i += 2 {
+			id := fields[i]
+			raw, getErr := c.rdb.Get(ctx, KeyPrefixOrderRecord+id).Bytes()
+			if getErr != nil {
+				return nil, fmt.Errorf("read indexed active order record %s: %w", id, getErr)
+			}
+			if !json.Valid(raw) { return nil, fmt.Errorf("order record %s contains invalid JSON", id) }
+			out = append(out, json.RawMessage(raw))
 		}
-		if !json.Valid(raw) { return nil, fmt.Errorf("order record %s contains invalid JSON", id) }
-		out = append(out, json.RawMessage(raw))
+		cursor = nextCursor
+		if cursor == 0 { break }
 	}
 	return out, nil
 }
