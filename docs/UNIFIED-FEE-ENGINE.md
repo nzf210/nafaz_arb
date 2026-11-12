@@ -38,3 +38,8 @@ Tarif dan sumbernya disimpan sebagai snapshot tetap pada posisi agar pembaruan t
 ## Cakupan pengujian regresi
 
 `tests/test_fee_engine.py` mencakup delapan kombinasi spot Indodax/Tokocrypto dengan perpetual OKX/MEXC/Binance/Bybit, kedua mode eksekusi, maker fee nol yang disengaja, tarif tidak valid, dan aljabar batas harga keluar. `tests/test_exchange_fee_provider.py` menguji konversi komisi akun Tokocrypto dan fallback parsial Indodax. Pengujian Redis Go mencakup kesegaran data dan penyaringan sumber tarif yang terverifikasi.
+
+
+## Batas verifikasi PnL aktual
+
+Fee-rate snapshot dari API akun hanya memverifikasi tarif yang dipakai untuk estimasi; itu bukan bukti komisi yang benar-benar dipotong exchange pada setiap fill. Karena itu, catatan penutupan posisi dari kalkulasi tarif sekarang menyimpan `fee_rate_verified`, tetapi tetap menetapkan `fee_verified=false`, `fee_actual_reconciled=false`, dan `pnl_complete=false`. Nilai net PnL yang dihasilkan pada tahap ini harus dibaca sebagai estimasi konservatif. Ledger `order_fills` menyimpan komisi aktual dan konversi ke quote asset; konversi ke USDT untuk quote IDR atau aset ketiga hanya boleh dinyatakan lengkap setelah sumber kurs yang dapat diaudit tersedia.

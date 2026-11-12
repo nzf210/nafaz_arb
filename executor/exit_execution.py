@@ -88,7 +88,12 @@ class ExitExecutionMixin:
             "futures_fees_usdt": futures_fees_usdt,
             "fees_usdt": fees_usdt,
             "fee_source": rates.source,
-            "fee_verified": rates.verified,
+            # Fee-rate verification is not proof of actual exchange commissions.
+            "fee_rate_verified": rates.verified,
+            "fee_verified": False,
+            "fee_actual_reconciled": False,
+            "pnl_complete": False,
+            "pnl_source": "ESTIMATED_FEE_SNAPSHOT",
             "net_profit_usdt": net_profit_usdt,
             "net_profit_idr": net_profit_idr,
             "net_roi_pct": roi_pct,
