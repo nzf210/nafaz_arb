@@ -183,7 +183,8 @@ class EngineOrderIntentMixin:
                 pair_tag, exchange, client_order_id, reason
             )
             raise RuntimeError(
-                f"ambiguous local order submission {client_order_id}; no retry was sent"
+                f"ambiguous local order submission {client_order_id}: "
+                f"{reason[:1000]}; no retry was sent"
             ) from submit_error
 
         if not isinstance(order, dict) or not order.get("id"):
