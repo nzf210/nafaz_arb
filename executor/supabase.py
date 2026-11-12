@@ -7,7 +7,9 @@ rollback, or force-close operation on a remote request.
 
 import asyncio
 import logging
+import math
 import os
+import socket
 import time
 import uuid
 from datetime import datetime, timezone
@@ -21,6 +23,7 @@ logger = logging.getLogger("executor.supabase")
 
 _MAX_ATTEMPTS = 3
 _BATCH_MAX = 50
+_STATUS_HEARTBEAT_SECONDS = 60.0
 _TIMEOUT = aiohttp.ClientTimeout(total=8, connect=3)
 _SIDE_BY_LEG = {
     "spot_entry": "buy",
@@ -64,7 +67,15 @@ def _num(value: Any, default: float = 0.0) -> float:
         result = float(value)
     except (TypeError, ValueError):
         return default
-    return result if result == result else default  # drop NaN
+    return result if math.isfinite(result) else default
+
+
+def _optional_num(value: Any) -> Optional[float]:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
 class SupabaseWriter:
@@ -98,7 +109,10 @@ class SupabaseWriter:
         # restarts, and remove the need to read an id back from Supabase.
         self._position_ids: Dict[str, str] = {}
         self._position_rows: Dict[str, Dict[str, Any]] = {}
+        self._position_pair_infos: Dict[str, Any] = {}
         self._order_ids: Dict[str, str] = {}
+        self._last_status_signature: Optional[str] = None
+        self._last_status_at = 0.0
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -234,7 +248,9 @@ class SupabaseWriter:
             "state_snapshot": pos.to_dict() if hasattr(pos, "to_dict") else {},
         }
         self._position_rows[pair_key] = row
+        self._position_pair_infos[pair_key] = pair_info
         self._emit("positions", row, on_conflict="id")
+        self._emit_position_legs(pair_key, position_id, pos, row["status"])
 
     def position_status(self, pair_key: str, status: str, pos: Any = None) -> None:
         position_id = self._position_ids.get(pair_key)
@@ -253,6 +269,195 @@ class SupabaseWriter:
                 row["closed_at"] = datetime.now(timezone.utc).isoformat()
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
+        self._emit_position_legs(pair_key, position_id, pos, status)
+
+    def _emit_position_legs(
+        self, pair_key: str, position_id: str, pos: Any, status: str
+    ) -> None:
+        """Upserts the local long and perpetual short legs for an active position."""
+        position_row = self._position_rows.get(pair_key) or {}
+        pair_info = self._position_pair_infos.get(pair_key)
+        fallback_symbol = getattr(pos, "symbol", "") or position_row.get("local_symbol", "")
+        qty = _num(getattr(pos, "qty", position_row.get("qty", 0.0)))
+        spot_entry = _num(
+            getattr(pos, "entry_price_idr", position_row.get("spot_entry_avg_price", 0.0))
+        )
+        perp_entry = _num(
+            getattr(pos, "short_entry_usdt", position_row.get("futures_short_entry_avg_price", 0.0))
+        )
+        legs = (
+            (
+                "spot", "long",
+                str(getattr(pos, "local_exchange", "") or position_row.get("local_exchange", "")),
+                str(getattr(pair_info, "local_symbol", "") or fallback_symbol),
+                spot_entry,
+            ),
+            (
+                "perpetual", "short",
+                str(getattr(pos, "global_exchange", "") or position_row.get("global_exchange", "")),
+                str(getattr(pair_info, "global_symbol", "") or fallback_symbol),
+                perp_entry,
+            ),
+        )
+        for leg, side, exchange, symbol, entry_price in legs:
+            if not exchange or not symbol:
+                continue
+            row = {
+                "id": str(uuid.uuid5(_POSITION_NS, f"position-leg:{position_id}:{leg}")),
+                "position_id": position_id,
+                "leg": leg,
+                "exchange_name": exchange,
+                "symbol": symbol,
+                "side": side,
+                "status": status,
+                "qty": qty,
+                "average_entry_price": entry_price or None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._emit("position_legs", row, on_conflict="position_id,leg")
+
+    def funding_payment(
+        self,
+        pair_key: str,
+        pos: Any,
+        symbol: str,
+        payment: Dict[str, Any],
+        *,
+        is_mock: bool = True,
+    ) -> None:
+        """Journals a confirmed exchange settlement with a deterministic primary key."""
+        if not isinstance(payment, dict):
+            return
+        timestamp = _optional_num(payment.get("timestamp"))
+        amount = _optional_num(payment.get("amount"))
+        exchange = str(getattr(pos, "global_exchange", "") or payment.get("exchange") or "").lower()
+        resolved_symbol = str(symbol or payment.get("symbol") or "").strip()
+        if timestamp is None or timestamp <= 0 or amount is None or not exchange or not resolved_symbol:
+            return
+
+        info = payment.get("info") if isinstance(payment.get("info"), dict) else {}
+        external_id = (
+            payment.get("id") or info.get("id") or info.get("billId")
+            or info.get("tranId") or info.get("paymentId")
+        )
+        asset = str(payment.get("code") or payment.get("currency") or "USDT").upper()
+        if external_id in (None, ""):
+            external_id = f"derived:{resolved_symbol}:{int(timestamp)}:{asset}:{amount:.18g}"
+        external_id = str(external_id)
+        position_qty = _optional_num(payment.get("contracts"))
+        if position_qty is None:
+            position_qty = _optional_num(getattr(pos, "qty", None))
+        row = {
+            "id": str(uuid.uuid5(_POSITION_NS, f"funding:{exchange}:{external_id}")),
+            "position_id": self._position_ids.get(pair_key),
+            "exchange_name": exchange,
+            "symbol": resolved_symbol,
+            "exchange_payment_id": external_id,
+            "funding_rate": _optional_num(payment.get("rate")),
+            "position_qty": position_qty,
+            "mark_price": _optional_num(payment.get("price")),
+            "amount": amount,
+            "asset": asset,
+            "payment_status": "confirmed",
+            "settled_at": _ms_to_iso(int(timestamp)),
+            "raw_payload": {"payment": payment, "is_mock": bool(is_mock)},
+        }
+        self._emit("funding_payments", row, on_conflict="id")
+
+    def balance_snapshot(
+        self,
+        reports: Any,
+        *,
+        is_mock: bool = True,
+        observed_at_ms: Optional[int] = None,
+    ) -> int:
+        """Persists successful per-asset balance observations; never stores failed reads as zero."""
+        if not isinstance(reports, (list, tuple)):
+            return 0
+        stamp = int(observed_at_ms or time.time() * 1000)
+        observed_at = _ms_to_iso(stamp)
+        written = 0
+        for report in reports:
+            if not isinstance(report, dict) or str(report.get("status", "")).lower() != "ok":
+                continue
+            exchange = str(report.get("name") or "").strip().lower()
+            market = str(report.get("market") or "").strip().lower()
+            if market == "spot":
+                market_type = "spot"
+            elif market in ("future", "futures", "swap", "perpetual"):
+                market_type = "perpetual"
+            else:
+                continue
+            if not exchange:
+                continue
+            assets = report.get("assets")
+            if not isinstance(assets, list):
+                continue
+            for asset_row in assets:
+                if not isinstance(asset_row, dict):
+                    continue
+                asset = str(asset_row.get("asset") or "").strip().upper()
+                total = _optional_num(asset_row.get("total"))
+                free = _optional_num(asset_row.get("free"))
+                used = _optional_num(asset_row.get("used"))
+                if not asset or total is None or free is None or used is None:
+                    continue
+                if min(total, free, used) < 0:
+                    continue
+                row_id = str(uuid.uuid5(
+                    _POSITION_NS,
+                    f"balance:{exchange}:{market_type}:{asset}:{stamp}:{bool(is_mock)}",
+                ))
+                self._emit(
+                    "balance_snapshots",
+                    {
+                        "id": row_id,
+                        "exchange_name": exchange,
+                        "market_type": market_type,
+                        "asset": asset,
+                        "total": total,
+                        "free": free,
+                        "used": used,
+                        "is_mock": bool(is_mock),
+                        "observed_at": observed_at,
+                        "raw_payload": {"report": report, "asset": asset_row},
+                    },
+                    on_conflict="id",
+                )
+                written += 1
+        return written
+
+    def executor_status(
+        self, snapshot: Dict[str, Any], *, instance_id: Optional[str] = None
+    ) -> bool:
+        """Stores status changes immediately and an unchanged-state heartbeat every minute."""
+        if not isinstance(snapshot, dict):
+            return False
+        stamp = int(snapshot.get("timestamp_ms") or time.time() * 1000)
+        stable_snapshot = dict(snapshot)
+        stable_snapshot.pop("timestamp_ms", None)
+        signature = json.dumps(stable_snapshot, sort_keys=True, separators=(",", ":"), default=str)
+        now = time.monotonic()
+        if signature == self._last_status_signature and now - self._last_status_at < _STATUS_HEARTBEAT_SECONDS:
+            return False
+
+        resolved_instance = str(
+            instance_id or os.getenv("EXECUTOR_INSTANCE_ID") or socket.gethostname() or "executor"
+        ).strip()[:128] or "executor"
+        is_mock = bool(snapshot.get("mock_mode", True))
+        row = {
+            "id": str(uuid.uuid5(_POSITION_NS, f"executor-status:{resolved_instance}:{stamp}")),
+            "instance_id": resolved_instance,
+            "status": str(snapshot.get("status") or "UNKNOWN"),
+            "mode": "MOCK" if is_mock else "LIVE",
+            "is_mock": is_mock,
+            "snapshot": snapshot,
+            "observed_at": _ms_to_iso(stamp),
+        }
+        self._emit("executor_status_snapshots", row, on_conflict="id")
+        self._last_status_signature = signature
+        self._last_status_at = now
+        return True
 
     # ------------------------------------------------------------------ orders
 
