@@ -303,13 +303,15 @@ class RiskStateMixin:
         seconds = max(1.0, float(seconds))
         self._exchange_halted[exchange] = f"rate limited ({seconds:.0f}s cooldown)"
         self._persist_risk_state("exchange_halt", scope="exchange", exchange=exchange, reason=self._exchange_halted[exchange], value={"source": "rate_limit_cooldown", "seconds": seconds, "expires_at": time.time() + seconds})
-        token = self._venue_cooldown_epoch = getattr(self, "_venue_cooldown_epoch", 0) + 1
+        self._venue_cooldown_epochs = getattr(self, "_venue_cooldown_epochs", {})
+        token = self._venue_cooldown_epochs.get(exchange, 0) + 1
+        self._venue_cooldown_epochs[exchange] = token
 
         async def _clear_after_cooldown():
             await asyncio.sleep(seconds)
-            # Only clear the halt this task installed; a newer cooldown or a
-            # manual halt must not be undone by a stale timer.
-            if getattr(self, "_venue_cooldown_epoch", 0) != token:
+            # Token bersifat per-exchange agar cooldown venue lain tidak
+            # membatalkan timer ini; timer lama tidak boleh menghapus halt baru.
+            if self._venue_cooldown_epochs.get(exchange) != token:
                 return
             if self._exchange_halted.get(exchange, "").startswith("rate limited"):
                 del self._exchange_halted[exchange]

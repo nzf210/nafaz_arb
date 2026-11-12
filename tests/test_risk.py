@@ -603,6 +603,18 @@ async def test_operator_kill_switch_overrides_daily_loss_halt(engine):
 
 
 @pytest.mark.asyncio
+async def test_rate_limit_cooldowns_clear_independently_per_exchange(engine):
+    """A cooldown on another venue must not strand this venue in a permanent halt."""
+    engine._pause_venue_for_cooldown("indodax", 1.0)
+    engine._pause_venue_for_cooldown("okx", 1.0)
+
+    await asyncio.sleep(1.1)
+
+    assert "indodax" not in engine._exchange_halted
+    assert "okx" not in engine._exchange_halted
+
+
+@pytest.mark.asyncio
 async def test_venue_cooldown_task_propagates_cancellation(engine):
     """Cancelling a cooldown task must remain observable by its task owner."""
     engine._pause_venue_for_cooldown("indodax", 60.0)
