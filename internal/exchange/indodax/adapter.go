@@ -59,7 +59,7 @@ func (a *Adapter) USDTIDRRate(ctx context.Context)(float64,error){
 func (a *Adapter) ExchangeAvailable(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.ExchangeAvailable("indodax")};return false}
 func (a *Adapter) WSConnectionHealthy(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("indodax")};return false}
 func (a *Adapter) LastBookUpdate(_ string,symbol string)time.Time{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.LastBookUpdate("indodax",symbol)};return time.Time{}}
-func (a *Adapter) AccountAvailable(name string)(contracts.AccountStatus,error){
+func (a *Adapter) AccountAvailable(_ string)(contracts.AccountStatus,error){
 	if h,ok:=a.source.(contracts.AccountStatusProvider);ok{return h.AccountAvailable("indodax")}
 	return contracts.AccountStatus{},fmt.Errorf("indodax account status provider is unavailable")
 }
