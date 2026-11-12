@@ -33,6 +33,7 @@ def main() -> int:
             or not path.is_file()
             or "tests" in path.parts
             or path.name.startswith("test_")
+            or path.stem.endswith("_test")
         ):
             continue
         lines = count_lines(path)
