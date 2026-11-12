@@ -123,6 +123,38 @@ async def _build(fake_redis, client=None, mock_mode=True):
     await engine.supabase.start()
     return engine
 
+
+@pytest.mark.parametrize(
+    "state",
+    ["ENTRY_PARTIAL", "EXIT_PENDING", "FAILED"],
+)
+@pytest.mark.asyncio
+async def test_restart_preserves_non_hedged_position_lifecycle_state(fake_redis, state):
+    engine = await _build(fake_redis, MockExchangeClient())
+    position = _position(state=state)
+    key = "arb:active_pos:" + PAIR_TAG
+    await fake_redis.set(key, json.dumps(position.to_dict()))
+
+    assert await engine._recover_active_position_record(key) is True
+
+    assert engine.states[PAIR_TAG] == PositionState(state)
+    if state == "FAILED":
+        assert engine._failure_reasons[PAIR_TAG]["reason"] == "RESTORED_FAILED_POSITION"
+
+
+@pytest.mark.asyncio
+async def test_restart_drops_stale_closed_position_cache_key(fake_redis):
+    engine = await _build(fake_redis, MockExchangeClient())
+    position = _position(state="CLOSED")
+    key = "arb:active_pos:" + PAIR_TAG
+    await fake_redis.set(key, json.dumps(position.to_dict()))
+
+    assert await engine._recover_active_position_record(key) is False
+
+    assert await fake_redis.get(key) is None
+    assert PAIR_TAG not in engine.active_positions
+    assert engine.states[PAIR_TAG] == PositionState.CLOSED
+
 # --------------------------------------------------------------- pending entry
 
 @pytest.mark.asyncio
