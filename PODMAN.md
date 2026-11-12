@@ -309,10 +309,15 @@ Migration CI hanya membuktikan kompatibilitas pada PostgreSQL test, bukan bahwa
 project Supabase remote Anda sudah menerima migration.
 
 Cakupan runtime saat ini: scanner menulis `scanner_opportunities`; executor
-menulis `positions`, `orders`, `order_fills`, `closed_trades`,
-`executor_events`, dan `risk_events`. Tabel `position_legs`,
-`funding_payments`, `balance_snapshots`, dan `executor_status_snapshots`
-belum dihubungkan ke runtime.
+menulis `positions`, `position_legs`, `orders`, `order_fills`, `closed_trades`,
+`funding_payments` (hanya settlement aktual dari exchange), `balance_snapshots`
+(dari permintaan baca saldo yang berhasil), `executor_status_snapshots`,
+`executor_events`, dan `risk_events`. `EXECUTOR_INSTANCE_ID` opsional memberi
+label stabil untuk status executor; Compose default ke `nafaz-executor`.
+
+Balance read yang gagal tidak disimpan sebagai saldo nol. Funding estimasi tidak
+pernah dicatat sebagai payment confirmed. Snapshot status dibuat saat ada perubahan
+status dan heartbeat maksimal satu kali per 60 detik ketika tidak berubah.
 
 Penulisan Supabase memakai durable local outbox:
 - Scanner: `data/scanner/supabase-outbox.jsonl` (default maksimum 128 MiB).
