@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from executor.models import ActivePosition
+from executor.models import ActivePosition, PairInfo
 from executor.supabase import SupabaseWriter, _ms_to_iso
 from executor.supabase_outbox import DurableOutbox, OutboxFull
 
@@ -125,7 +125,8 @@ class TestPositions:
         pos = _pos()
         writer.position_opened("indodax:usdt_idr", pos, None)
         writer.position_opened("indodax:usdt_idr", pos, None)
-        rows = _drain(writer)
+        rows = [row for row in _drain(writer) if row[0] == "positions"]
+        assert len(rows) == 2
         assert rows[0][2]["id"] == rows[1][2]["id"]
         assert rows[0][1] == "id"
 
@@ -138,7 +139,8 @@ class TestPositions:
         writer = _writer()
         writer.position_opened("p", _pos(), None)
         writer.position_status("p", "CLOSED", _pos(qty=0.0))
-        row = _drain(writer)[1][2]
+        rows = [row for row in _drain(writer) if row[0] == "positions"]
+        row = rows[-1][2]
         assert row["status"] == "CLOSED"
         assert row["closed_at"]
 
@@ -146,6 +148,129 @@ class TestPositions:
         writer = _writer()
         writer.position_opened("p", _pos(), None, is_mock=False)
         assert _drain(writer)[0][2]["is_mock"] is False
+
+
+class TestOperationalTables:
+    def test_position_legs_are_upserted_for_both_venues_and_status_changes(self):
+        writer = _writer()
+        pair_info = PairInfo(
+            local_exchange="indodax",
+            global_exchange="okx",
+            local_symbol="BTC/IDR",
+            global_symbol="BTC/USDT:USDT",
+            base_asset="BTC",
+            quote_asset="IDR",
+        )
+        writer.position_opened("pair-btc", _pos(symbol="BTC/IDR"), pair_info, is_mock=False)
+        legs = [row for row in _drain(writer) if row[0] == "position_legs"]
+        assert len(legs) == 2
+        by_leg = {row[2]["leg"]: row for row in legs}
+        assert by_leg["spot"][1] == "position_id,leg"
+        assert by_leg["spot"][2]["side"] == "long"
+        assert by_leg["spot"][2]["symbol"] == "BTC/IDR"
+        assert by_leg["spot"][2]["average_entry_price"] == 18000.0
+        assert by_leg["perpetual"][2]["side"] == "short"
+        assert by_leg["perpetual"][2]["symbol"] == "BTC/USDT:USDT"
+        assert by_leg["perpetual"][2]["average_entry_price"] == 1.0
+
+        writer.position_status("pair-btc", "CLOSED", _pos(symbol="BTC/IDR", qty=0.0))
+        closed = [row for row in _drain(writer) if row[0] == "position_legs"]
+        assert len(closed) == 2
+        assert all(row[2]["status"] == "CLOSED" for row in closed)
+        assert all(row[2]["qty"] == 0.0 for row in closed)
+
+    def test_confirmed_funding_payment_is_signed_and_idempotent(self):
+        writer = _writer()
+        pos = _pos(symbol="BTC/USDT:USDT")
+        writer.position_opened("pair-btc", pos, None, is_mock=False)
+        _drain(writer)
+        payment = {
+            "id": "funding-001",
+            "symbol": "BTC/USDT:USDT",
+            "timestamp": 1_700_000_000_000,
+            "amount": -0.025,
+            "code": "USDT",
+            "rate": 0.0003,
+            "contracts": 0.01,
+            "price": 65000.0,
+        }
+        writer.funding_payment("pair-btc", pos, payment["symbol"], payment, is_mock=False)
+        writer.funding_payment("pair-btc", pos, payment["symbol"], payment, is_mock=False)
+        rows = [row for row in _drain(writer) if row[0] == "funding_payments"]
+        assert len(rows) == 2
+        assert rows[0][2]["id"] == rows[1][2]["id"]
+        assert rows[0][2]["exchange_payment_id"] == "funding-001"
+        assert rows[0][2]["payment_status"] == "confirmed"
+        assert rows[0][2]["amount"] == -0.025
+        assert rows[0][2]["asset"] == "USDT"
+        assert rows[0][2]["position_qty"] == 0.01
+        assert rows[0][2]["settled_at"].startswith("2023-11-14")
+        assert rows[0][2]["raw_payload"]["is_mock"] is False
+
+    def test_funding_payment_without_timestamp_or_amount_is_ignored(self):
+        writer = _writer()
+        writer.funding_payment("p", _pos(), "BTC/USDT:USDT", {"timestamp": 10}, is_mock=False)
+        assert _drain(writer) == []
+
+    def test_balance_snapshots_flatten_successful_venue_assets_and_are_idempotent(self):
+        writer = _writer()
+        reports = [
+            {
+                "name": "indodax", "market": "spot", "status": "ok",
+                "assets": [{"asset": "idr", "free": 100.0, "used": 5.0, "total": 105.0}],
+            },
+            {
+                "name": "mexc", "market": "futures", "status": "ok",
+                "assets": [{"asset": "usdt", "free": 8.0, "used": 2.0, "total": 10.0}],
+            },
+            {"name": "okx", "market": "futures", "status": "error", "assets": []},
+        ]
+        assert writer.balance_snapshot(reports, is_mock=False, observed_at_ms=1234567890000) == 2
+        first = [row for row in _drain(writer) if row[0] == "balance_snapshots"]
+        assert len(first) == 2
+        by_exchange = {row[2]["exchange_name"]: row[2] for row in first}
+        assert by_exchange["indodax"]["market_type"] == "spot"
+        assert by_exchange["indodax"]["asset"] == "IDR"
+        assert by_exchange["mexc"]["market_type"] == "perpetual"
+        assert by_exchange["mexc"]["free"] == 8.0
+        assert all(row[2]["is_mock"] is False for row in first)
+
+        writer.balance_snapshot(reports, is_mock=False, observed_at_ms=1234567890000)
+        second = [row for row in _drain(writer) if row[0] == "balance_snapshots"]
+        assert [row[2]["id"] for row in first] == [row[2]["id"] for row in second]
+
+    def test_balance_snapshot_skips_invalid_values_instead_of_recording_zero(self):
+        writer = _writer()
+        reports = [{
+            "name": "okx", "market": "futures", "status": "ok",
+            "assets": [{"asset": "USDT", "free": -1, "used": 0, "total": 1}],
+        }]
+        assert writer.balance_snapshot(reports, observed_at_ms=1234567890000) == 0
+        assert _drain(writer) == []
+
+    def test_executor_status_snapshots_emit_on_change_and_minute_heartbeat(self):
+        writer = _writer()
+        snapshot = {
+            "status": "RUNNING",
+            "mock_mode": True,
+            "trading_halted": False,
+            "timestamp_ms": 1_700_000_000_000,
+        }
+        assert writer.executor_status(snapshot, instance_id="test-executor") is True
+        first = [row for row in _drain(writer) if row[0] == "executor_status_snapshots"]
+        assert len(first) == 1
+        assert first[0][2]["mode"] == "MOCK"
+        assert first[0][2]["instance_id"] == "test-executor"
+
+        unchanged = dict(snapshot, timestamp_ms=1_700_000_000_001)
+        assert writer.executor_status(unchanged, instance_id="test-executor") is False
+        assert _drain(writer) == []
+
+        changed = dict(unchanged, trading_halted=True)
+        assert writer.executor_status(changed, instance_id="test-executor") is True
+        second = [row for row in _drain(writer) if row[0] == "executor_status_snapshots"]
+        assert len(second) == 1
+        assert second[0][2]["snapshot"]["trading_halted"] is True
 
 
 class TestOrdersAndFills:
@@ -269,7 +394,9 @@ class TestClosedTrades:
         writer.trade_closed("p", self.TRADE, _pos(qty=0.0))
         rows = _drain(writer)
         tables = [t for t, _, _ in rows]
-        assert tables == ["closed_trades", "positions", "executor_events"]
+        assert tables == [
+            "closed_trades", "positions", "position_legs", "position_legs", "executor_events"
+        ]
         assert rows[0][1] == "trade_key"
 
     def test_trade_without_id_ignored(self):
