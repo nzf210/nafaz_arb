@@ -21,11 +21,13 @@ class SupabaseOrderMixin:
     ) -> tuple:
         exchange_order_id = str(row.get("exchange_order_id") or "")
         client_order_id = str(row.get("client_order_id") or "")
+        venue_client_order_id = str(row.get("venue_client_order_id") or "")
         pair_key = str(row.get("pair_key") or "")
         position_key = str(row.get("position_key") or "")
         for key, value in (
             ("exchange_order_id", exchange_order_id),
             ("client_order_id", client_order_id),
+            ("venue_client_order_id", venue_client_order_id),
             ("pair_key", pair_key),
             ("position_key", position_key),
         ):
