@@ -5,6 +5,7 @@ from typing import Any
 
 from executor.models import OrderRecord, PositionState
 from executor.engine_common import logger
+from executor.exchange_common import exchange_order_id_from
 
 
 @dataclass(frozen=True)
@@ -71,13 +72,13 @@ class EngineOrderIntentMixin:
             spec = OrderRegistrationMetadata(**metadata)
             record = OrderRecord(
                 local_order_id=OrderRecord.local_id_for(
-                    spec.exchange, client_order_id, str(order.get("id") or "")
+                    spec.exchange, client_order_id, exchange_order_id_from(order)
                 ),
                 client_order_id=client_order_id or "",
                 venue_client_order_id=_acknowledged_client_order_id(
                     client_order_id, order
                 ),
-                exchange_order_id=str(order.get("id") or ""),
+                exchange_order_id=exchange_order_id_from(order),
                 pair_key=pair_tag,
                 position_id=f"position:{pair_tag}" if pair_tag else "",
                 exchange=str(spec.exchange or "").lower(),
