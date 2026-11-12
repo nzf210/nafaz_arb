@@ -495,13 +495,16 @@ class TestClosedTrades:
         row = _drain(writer)[0][2]
         assert row["fees"] == pytest.approx(0.25)
         assert row["metadata"] == {
-            "pnl_complete": None,
+            "pnl_complete": False,
+            "pnl_source": "ESTIMATED_FEE_SNAPSHOT",
+            "fee_rate_verified": False,
+            "fee_actual_reconciled": False,
             "spot_liquidation_failed": None,
             "spot_fees_usdt": pytest.approx(0.15),
             "futures_fees_usdt": pytest.approx(0.10),
             "fee_source": "EXCHANGE_API",
             "fee_verified": True,
-            "fee_estimation": "four_fill_round_trip",
+            "fee_estimation": "round_trip_rate_snapshot",
         }
 
     def test_trade_without_id_ignored(self):
