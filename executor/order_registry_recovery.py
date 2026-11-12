@@ -124,6 +124,10 @@ class OrderRegistryRecoveryMixin:
                     {
                         "local_order_id": row.get("local_order_id"),
                         "client_order_id": row.get("client_order_id"),
+                        "venue_client_order_id": (
+                            row.get("venue_client_order_id")
+                            or raw_payload.get("venue_client_order_id")
+                        ),
                         "exchange_order_id": row.get("exchange_order_id"),
                         "pair_key": row.get("pair_key"),
                         "position_id": row.get("position_key"),
@@ -142,8 +146,18 @@ class OrderRegistryRecoveryMixin:
                         "reduce_only": row.get("reduce_only"),
                         "is_mock": row.get("is_mock"),
                         "recovery_status": row.get("recovery_status"),
-                        "local_amount_spec": row.get("local_amount_spec"),
-                        "global_amount_spec": row.get("global_amount_spec"),
+                        # Amount specs are serialized into raw_payload by the
+                        # registry writer; they are not standalone SQL columns.
+                        # Restore them here or a restarted executor cannot safely
+                        # convert spot base quantities / hedge contracts.
+                        "local_amount_spec": (
+                            row.get("local_amount_spec")
+                            or raw_payload.get("local_amount_spec")
+                        ),
+                        "global_amount_spec": (
+                            row.get("global_amount_spec")
+                            or raw_payload.get("global_amount_spec")
+                        ),
                         "recovery_context": raw_payload.get("recovery_context"),
                         "hedged_quantity": raw_payload.get("hedged_quantity", 0.0),
                     }
