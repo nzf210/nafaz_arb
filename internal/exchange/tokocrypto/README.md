@@ -25,14 +25,29 @@ Official reference: <https://www.tokocrypto.com/apidocs/>
 (`U == previous u+1`), absolute quantity updates, zero-level deletion,
 sequence-gap invalidation, depth sorting/limiting, and synchronized-book reads.
 
-## Remaining integration work
+## Execution and recovery boundary
 
-The connection supervisor must subscribe before fetching the snapshot, buffer
-bounded updates during bootstrap, replay them in order, resnapshot on overflow or
-sequence gap, reconnect and resubscribe active symbols, and track freshness per
-symbol. REST remains the fallback until that supervisor is integrated and tested.
+The public market-data supervisor is integrated with `LiveAdapter` and remains
+opt-in through `EnableWebSocketFeed`. REST is still the fallback for stale,
+unsynchronized, or connection-capped symbols.
 
-Only MBX symbol type 1 is supported by this feed. Type 2/3 hosts and symbol
-formats differ and must remain REST-only unless separately implemented.
+The Python executor's authenticated Tokocrypto spot path uses the official
+CCXT adapter and requires the account-issued broker prefix:
 
-No authenticated user stream or order endpoint belongs in this package.
+- Set `TOKOCRYPTO_BROKER_ID` or `exchanges.tokocrypto.options.broker_id`.
+- The prefix is preserved exactly (including separators) and the generated
+  suffix is bounded to the venue's 32-character client-ID limit.
+- A missing broker ID blocks a new order locally; it is not replaced with a
+  guessed prefix.
+- Limit orders use CCXT `postOnly=True`, which serializes to Tokocrypto
+  `LIMIT_MAKER` (type 7).
+- Tokocrypto documents that `clientId` uniqueness is not enforced. It is used
+  for correlation and restart lookup only; an ambiguous submission is never
+  blindly retried.
+- The signed All Orders endpoint requires a symbol. Recovery therefore queries
+  symbols from durable order intents and tracked positions rather than calling
+  `fetch_open_orders(None)`.
+
+Only MBX symbol type 1 is supported by this public feed. Type 2/3 hosts and
+symbol formats differ and must remain REST-only unless separately implemented.
+No authenticated user WebSocket stream is enabled by this package.
