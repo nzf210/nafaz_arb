@@ -28,6 +28,11 @@ def _local_order_params(
     broker_prefix: str = "",
     require_post_only: bool = False,
 ) -> tuple:
+    is_tokocrypto = str(getattr(exchange, "id", "")).lower() == "tokocrypto"
+    if is_tokocrypto and not str(client_order_id or "").strip():
+        raise TokocryptoClientIDConfigurationError(
+            "Tokocrypto order submission requires a durable client_order_id"
+        )
     venue_id = venue_client_order_id(exchange, client_order_id, broker_prefix)
     params = {"clientOrderId": venue_id} if venue_id else {}
     if isinstance(exchange, IndodaxTAPIv2):
@@ -39,7 +44,7 @@ def _local_order_params(
         # MOC is attached only by the explicit limit-order call sites.
         if require_post_only:
             params["timeInForce"] = "MOC"
-    elif str(getattr(exchange, "id", "")).lower() == "tokocrypto":
+    elif is_tokocrypto:
         if amount_spec.unit != "BASE":
             raise ValueError("Tokocrypto spot amount rules must use BASE units")
         if amount_spec.step <= 0 and require_amount_step:
