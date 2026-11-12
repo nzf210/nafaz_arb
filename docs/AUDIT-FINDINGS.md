@@ -95,3 +95,5 @@ CEX account verification before LIVE funds are enabled.
 | R-25 | Fill reconciliation could continue after one durable history table failed or a page limit truncated history | Ledger recovery | Recent order/fill reads are paginated; any partial table read failure blocks reconciliation and raises a global safety halt |
 | R-26 | Tokocrypto/MEXC depth supervisors were opt-in even in LIVE mode | Market data | WebSocket supervisors now default on in LIVE, with explicit config/environment opt-out and REST fallback retained |
 
+| R-27 | Emergency rollback and force-close market sells retried the same clientId after any exception, despite Tokocrypto not guaranteeing clientId uniqueness | Execution safety | Emergency sells now submit once, then perform a symbol-scoped client-ID lookup; unresolved acknowledgement halts the pair and is never blindly resubmitted |
+
