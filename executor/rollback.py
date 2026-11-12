@@ -11,11 +11,7 @@ import time
 from typing import Any, Dict, Optional
 
 from executor import helpers
-from executor.helpers import (
-    RetryExhausted,
-    build_client_order_id,
-    retry_with_backoff,
-)
+from executor.helpers import build_client_order_id
 from executor.models import OrderRole, PositionState
 from executor.quantity import AmountSpec
 
@@ -40,9 +36,9 @@ class RollbackMixin:
         and ``error`` then carries the last failure so the operator event can say
         what went wrong.
         """
-        max_retries = 4  # 5 total attempts
-        # One id for the whole retry sequence: every attempt is the same logical
-        # order, so the venue can reject duplicates rather than sell twice.
+        # One durable intent and exactly one submit attempt. If the venue
+        # accepted the market sell but the acknowledgement was lost, resolve it
+        # by client ID; never blindly repeat a non-idempotent sell.
         seq = self._next_order_seq()
         rollback_coid = build_client_order_id(pair_tag, "rollback", seq)
         await self._register_order_intent(
@@ -54,35 +50,37 @@ class RollbackMixin:
             local_amount_spec=amount_spec,
             required=False,
         )
+        effective_spec = amount_spec or (
+            AmountSpec(
+                unit="BASE",
+                step=legacy_amount_step,
+                minimum=legacy_amount_step,
+                base_per_unit=1.0,
+            )
+            if legacy_amount_step > 0
+            else None
+        )
         try:
-            emergency_order = await retry_with_backoff(
+            emergency_order = await self._submit_local_order_once_with_recovery(
+                pair_tag,
+                getattr(self.config, "local_exchange_name", ""),
+                symbol,
+                rollback_coid,
                 lambda: self.client.place_local_market_sell(
                     symbol,
                     unhedged_delta,
                     client_order_id=rollback_coid,
-                    amount_spec=amount_spec
-                    or (
-                        AmountSpec(
-                            unit="BASE",
-                            step=legacy_amount_step,
-                            minimum=legacy_amount_step,
-                            base_per_unit=1.0,
-                        )
-                        if legacy_amount_step > 0
-                        else None
-                    ),
+                    amount_spec=effective_spec,
                 ),
-                max_retries=max_retries,
-                base_delay=0.5,
-                label=f"hedge rollback sell {symbol} for {pair_tag}",
+                amount_spec=effective_spec,
             )
-        except RetryExhausted as exhausted:
+        except Exception as submit_error:
             logger.critical(
-                f"[Hedge Rollback] FAILED to liquidate spot leg for {pair_tag} after "
-                f"{exhausted.attempts} attempts: {exhausted.last_error}. "
-                f"MANUAL INTERVENTION REQUIRED: {unhedged_delta} {symbol} is UNHEDGED."
+                "[Hedge Rollback] spot liquidation was not verified for %s after one submit: %s. "
+                "MANUAL INTERVENTION REQUIRED: %s %s may remain UNHEDGED.",
+                pair_tag, submit_error, unhedged_delta, symbol,
             )
-            return None, exhausted.last_error
+            return None, submit_error
         if not isinstance(emergency_order, dict):
             return None, RuntimeError("spot rollback returned no verifiable order")
         self.supabase.order(
