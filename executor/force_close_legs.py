@@ -224,8 +224,7 @@ class ForceCloseLegMixin:
                 symbol=global_sym, role=OrderRole.FORCE_CLOSE.value,
                 side="buy", order_type="market", price=0.0,
                 quantity=pos.qty, reduce_only=True,
-                global_amount_spec=pos.global_amount_spec,
-                required=False,
+                global_amount_spec=pos.global_amount_spec
             )
             res = await self.client.close_global_short_market(
                 global_sym,
@@ -366,8 +365,7 @@ class ForceCloseLegMixin:
                 exchange=pos.local_exchange, market_type="spot",
                 symbol=pos.symbol, role=OrderRole.FORCE_CLOSE.value,
                 side="sell", order_type="market", price=0.0,
-                quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
-                required=False,
+                quantity=pos.qty, local_amount_spec=pos.local_amount_spec
             )
             spot_order = await self._submit_local_order_once_with_recovery(
                 pair_key,
