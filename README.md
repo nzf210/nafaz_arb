@@ -436,4 +436,7 @@ It checks configured exchange market metadata/private balances, optional
 symbol-scoped open-order and futures-position reads, Redis, Supabase order and
 position recovery queries, and the recent fill ledger. It never submits,
 cancels, or modifies an order. Use a real listed symbol for the account and
-global futures venue.
+global futures venue. This verifies authenticated read access, not trade
+permission or acceptance of a new order; those must be confirmed separately
+with the venue's approved test environment or a manually authorized minimal
+live order. The bot will not place that test order automatically.
