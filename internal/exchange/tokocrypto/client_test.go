@@ -35,7 +35,7 @@ func TestNextMeOrderBookUsesSymbolTypeThreeEndpoint(t *testing.T) {
 	requested := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/open/v1/common/symbols" {
-			_, _ = w.Write([]byte(`{"code":0,"data":{"list":[{"symbol":"BTCIDR","symbolType":3,"baseAsset":"BTC","quoteAsset":"IDR","spotTradingEnable":1}]}}`))
+			_, _ = w.Write([]byte(`{"code":0,"data":{"list":[{"symbol":"BTC_IDR","type":3,"baseAsset":"BTC","quoteAsset":"IDR"}]}}`))
 			return
 		}
 		requested = r.URL.Path + "?" + r.URL.RawQuery
@@ -46,8 +46,8 @@ func TestNextMeOrderBookUsesSymbolTypeThreeEndpoint(t *testing.T) {
 	client := New(server.Client(), server.URL)
 	markets, err := client.Markets(context.Background())
 	if err != nil { t.Fatal(err) }
-	if len(markets) != 1 || markets[0].SymbolType != 3 { t.Fatalf("symbol type not preserved: %+v", markets) }
-	book, err := client.OrderBook(context.Background(), "toko:BTCIDR")
+	if len(markets) != 1 || markets[0].SymbolType != 3 || markets[0].Symbol != "toko:BTC_IDR" { t.Fatalf("symbol type not preserved: %+v", markets) }
+	book, err := client.OrderBook(context.Background(), "toko:BTC_IDR")
 	if err != nil { t.Fatal(err) }
 	if requested != "/api/v1/depth?symbol=BTCIDR&limit=20" { t.Fatalf("unexpected NextMe request: %s", requested) }
 	if book.SequenceID != 33 || book.Timestamp.IsZero() { t.Fatalf("unexpected NextMe book: %+v", book) }
