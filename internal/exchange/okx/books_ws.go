@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ type bookState struct {
 // symbol after its initial snapshot and every subsequent sequence check succeeded.
 type BookManager struct {
 	url string
+	httpClient *http.Client
 	log *slog.Logger
 	contractSize func(string) float64
 	reconnect time.Duration
@@ -75,6 +77,9 @@ func NewBookManager(url string, log *slog.Logger, contractSize func(string) floa
 		updates: make(chan struct{}, 1),
 	}
 }
+
+// SetHTTPClient installs a long-lived websocket handshake client. Call before Start.
+func (m *BookManager) SetHTTPClient(client *http.Client) { m.mu.Lock(); m.httpClient = client; m.mu.Unlock() }
 
 func (m *BookManager) Start(ctx context.Context) {
 	m.mu.Lock()
