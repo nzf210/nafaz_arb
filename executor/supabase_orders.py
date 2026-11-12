@@ -118,9 +118,7 @@ class SupabaseOrderMixin:
             "closed", "filled", "canceled", "cancelled", "rejected", "expired"
         ):
             completed_at = datetime.now(timezone.utc).isoformat()
-        return self._emit(
-            "orders",
-            {
+        analytics_row = {
                 "id": order_row_id,
                 "position_id": self._position_ids.get(pair_key),
                 "pair_key": pair_key,
@@ -150,9 +148,9 @@ class SupabaseOrderMixin:
                     "global_amount_spec": row.get("global_amount_spec"),
                     "recovery_context": row.get("recovery_context"),
                 },
-            },
-            on_conflict="id",
-        )
+            }
+        self._order_rows[order_row_id] = analytics_row
+        return self._emit("orders", analytics_row, on_conflict="id")
 
     def order_record(
         self,
@@ -221,9 +219,7 @@ class SupabaseOrderMixin:
             self._order_completed_at.setdefault(order_state_key, now_iso)
             if terminal_status else self._order_completed_at.get(order_state_key)
         )
-        return self._emit(
-            "orders",
-            {
+        analytics_row = {
                 "id": order_id,
                 "position_id": self._position_ids.get(pair_key),
                 "pair_key": pair_key,
@@ -247,9 +243,9 @@ class SupabaseOrderMixin:
                 "completed_at": completed_at,
                 "updated_at": now_iso,
                 "raw_payload": order,
-            },
-            on_conflict="id",
-        )
+            }
+        self._order_rows[order_id] = analytics_row
+        return self._emit("orders", analytics_row, on_conflict="id")
 
     def order_id_for(
         self, pair_key: str, exchange: str, key: str
@@ -277,15 +273,14 @@ class SupabaseOrderMixin:
         for order_state_key, order_id in tuple(self._order_ids.items()):
             if marker not in order_state_key:
                 continue
-            if self._emit(
-                "orders",
-                {
-                    "id": order_id,
-                    "position_id": position_id,
-                    "updated_at": now_iso,
-                },
-                on_conflict="id",
-            ):
+            existing_row = self._order_rows.get(order_id)
+            if not isinstance(existing_row, dict):
+                continue
+            analytics_row = dict(existing_row)
+            analytics_row["position_id"] = position_id
+            analytics_row["updated_at"] = now_iso
+            self._order_rows[order_id] = analytics_row
+            if self._emit("orders", analytics_row, on_conflict="id"):
                 linked += 1
         return linked
 
