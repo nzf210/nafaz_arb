@@ -236,3 +236,22 @@ async def test_tokocrypto_fetch_order_rejects_malformed_detail_response():
             await venue.fetch_order("12345")
     finally:
         await venue.close()
+
+
+def test_tokocrypto_order_without_durable_client_id_is_rejected_locally():
+    from executor.exchange_common import (
+        TokocryptoClientIDConfigurationError,
+        _local_order_params,
+    )
+    from executor.quantity import AmountSpec
+
+    class Venue:
+        id = "tokocrypto"
+        options = {"broker_id": "x-TKT5PX2F"}
+
+    with pytest.raises(TokocryptoClientIDConfigurationError, match="durable client_order_id"):
+        _local_order_params(
+            Venue(),
+            None,
+            AmountSpec(unit="BASE", step=0.001, minimum=0.001, base_per_unit=1.0),
+        )
