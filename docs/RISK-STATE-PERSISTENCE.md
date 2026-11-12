@@ -1,37 +1,37 @@
-# Durable risk-state recovery
+# Pemulihan status risiko persisten
 
-## Inventory and scope
+## 1. Inventaris status
 
-| Runtime state | Durable state type | Scope | Restoration behavior |
+| Status runtime | Jenis data persisten | Cakupan | Perilaku pemulihan |
 |---|---|---|---|
-| `_trading_halted`, `_halt_reason` | `trading_halt` | global | Restored before recovery/listeners; manual kill switch is never cleared by UTC rollover |
-| Manual resume acknowledgement | `trading_resume` | global | Prevents a previously acknowledged daily-loss halt from reappearing after restart on the same UTC day |
-| `_daily_realized_loss_usdt`, `_loss_day` | `daily_loss` + `risk_pnl_events` | global | Rebuilt from immutable verified PnL events for the current UTC date |
-| `_exchange_halted` | `exchange_halt` | exchange | Restored per venue; rate-limit cooldowns retain their expiry |
-| `_consecutive_order_failures` | `consecutive_order_failures` | exchange | Restored per venue and resolved on clean success/manual venue resume |
-| `_recovery_scope_halts` | `reconciliation_halt` | global/exchange/pair | Restored only at the affected exposure scope |
-| `_failure_reasons` and reconciliation-required position state | `position_failure` | position | Restored as a position safety state and pair entry gate |
-| Unhedged/partially reconciled exposure | `position_failure` + `reconciliation_halt` | position/pair | Remains blocked until the underlying reconciliation is explicitly resolved |
+| `_trading_halted`, `_halt_reason` | `trading_halt` | Global | Dipulihkan sebelum worker/listener berjalan; kill switch manual tidak dihapus saat pergantian tanggal UTC |
+| Pengakuan resume manual | `trading_resume` | Global | Mencegah penghentian rugi harian yang sudah diakui muncul kembali setelah restart pada hari UTC yang sama |
+| `_daily_realized_loss_usdt`, `_loss_day` | `daily_loss` + `risk_pnl_events` | Global | Dibangun ulang dari peristiwa PnL terverifikasi yang tidak dapat diubah untuk tanggal UTC berjalan |
+| `_exchange_halted` | `exchange_halt` | Bursa | Dipulihkan per venue; masa cooldown rate limit tetap dipertahankan |
+| `_consecutive_order_failures` | `consecutive_order_failures` | Bursa | Dipulihkan per venue dan diselesaikan setelah keberhasilan bersih atau resume manual |
+| `_recovery_scope_halts` | `reconciliation_halt` | Global/bursa/pasangan | Hanya dipulihkan pada cakupan eksposur yang terdampak |
+| `_failure_reasons` dan status posisi perlu rekonsiliasi | `position_failure` | Posisi | Dipulihkan sebagai status keselamatan posisi dan gerbang entri pasangan |
+| Eksposur tanpa hedge/rekonsiliasi parsial | `position_failure` + `reconciliation_halt` | Posisi/pasangan | Tetap diblokir sampai rekonsiliasi penyebabnya diselesaikan secara eksplisit |
 
-## Storage and ordering
+## 2. Penyimpanan dan urutan pemulihan
 
-- `risk_state` stores the required `state_id`, `state_type`, `scope`, `exchange`, `pair_key`, `reason`, `value`, `created_at`, `updated_at`, and `resolved_at` fields.
-- `risk_pnl_events` is an append-only, unique-event ledger. Only verified realized trade PnL is admitted by the close paths.
-- The SQLite durable outbox is the synchronous local journal. Startup overlays pending local `risk_state` and PnL rows over Supabase reads so a crash before asynchronous delivery does not erase a newly recorded halt.
-- If durable risk storage cannot be restored or journaled in LIVE mode, new entries are blocked. Position monitoring and de-risking remain available.
-- Redis is not used as the sole source of truth for any risk halt.
+- `risk_state` menyimpan `state_id`, `state_type`, `scope`, `exchange`, `pair_key`, `reason`, `value`, `created_at`, `updated_at`, dan `resolved_at`.
+- `risk_pnl_events` adalah ledger peristiwa append-only dengan ID unik. Hanya PnL transaksi terealisasi yang telah diverifikasi yang boleh dimasukkan melalui jalur penutupan.
+- Outbox SQLite adalah jurnal lokal sinkron. Saat startup, status risiko lokal yang masih menunggu pengiriman ditumpangkan di atas data Supabase agar crash sebelum pengiriman asinkron tidak menghapus status penghentian yang baru dicatat.
+- Jika penyimpanan risiko persisten gagal dipulihkan atau gagal dicatat dalam mode LIVE, entri baru diblokir. Pemantauan posisi dan pengurangan risiko tetap tersedia.
+- Redis tidak digunakan sebagai satu-satunya sumber kebenaran untuk status penghentian risiko.
 
-## UTC loss accounting and duplicate protection
+## 3. Akuntansi rugi harian UTC dan pencegahan duplikasi
 
-Daily loss is the sum of negative `pnl_usdt` values in `risk_pnl_events` where `loss_day_utc` equals the current UTC date. The immutable event ID is inserted once through the durable outbox; duplicate event IDs do not increment the accumulator. Profits do not offset the gross realized-loss accumulator, preserving existing strategy behavior.
+Rugi harian merupakan jumlah nilai negatif `pnl_usdt` pada `risk_pnl_events` dengan `loss_day_utc` sama dengan tanggal UTC saat ini. ID peristiwa immutable hanya dimasukkan sekali melalui outbox persisten; ID duplikat tidak menambah akumulator. Profit tidak mengurangi akumulator rugi terealisasi bruto, sesuai perilaku strategi yang dipertahankan.
 
-At UTC rollover only the daily-loss halt is eligible to clear. An operator kill switch remains active. A manual resume is durably recorded for the current UTC day; the next new realized PnL event re-arms normal daily-limit evaluation.
+Saat tanggal UTC berganti, hanya penghentian karena rugi harian yang memenuhi syarat untuk dihapus. Kill switch operator tetap aktif. Resume manual dicatat secara persisten untuk hari UTC berjalan; peristiwa PnL terealisasi baru akan mengaktifkan kembali evaluasi batas rugi harian.
 
-## Migration
+## 4. Migrasi
 
-Apply, in order:
+Terapkan secara berurutan:
 
 - `20261111000200_add_durable_risk_state.sql`
 - `20261111000300_add_idempotent_risk_pnl_events.sql`
 
-Both tables are service-role only and protected by RLS.
+Kedua tabel hanya dapat diakses oleh service-role dan dilindungi RLS.
