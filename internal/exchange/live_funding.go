@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
@@ -21,71 +22,11 @@ func (l *LiveAdapter) FundingRate(ctx context.Context, symbol string) (domain.Fu
 }
 
 func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {
-	rawSymbol := cleanSymbol(symbol)
-	path := fmt.Sprintf("/api/v5/public/funding-rate?instId=%s", url.QueryEscape(rawSymbol))
-
-	resp, err := l.okxDo(ctx, path, func() (*http.Request, error) {
-		return l.newOKXRequest(ctx, path)
-	})
-	if err != nil {
-		return domain.FundingRate{}, fmt.Errorf("okx funding request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		if classifyHTTPError(resp.StatusCode) {
-			return domain.FundingRate{}, fmt.Errorf("%w: okx funding status %d", ErrExchangeUnavailable, resp.StatusCode)
-		}
-		return domain.FundingRate{}, fmt.Errorf("okx funding status: %d", resp.StatusCode)
-	}
-
-	var okxResp struct {
-		Code string `json:"code"`
-		Msg  string `json:"msg"`
-		Data []struct {
-			FundingRate     string `json:"fundingRate"`
-			FundingTime     string `json:"fundingTime"`
-			PrevFundingTime string `json:"prevFundingTime"`
-			Ts              string `json:"ts"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&okxResp); err != nil {
-		return domain.FundingRate{}, fmt.Errorf("decode okx funding: %w", err)
-	}
-	if okxResp.Code != "0" || len(okxResp.Data) == 0 {
-		return domain.FundingRate{}, fmt.Errorf("okx funding error: %s (%s)", okxResp.Msg, okxResp.Code)
-	}
-
-	item := okxResp.Data[0]
-	rate, _ := strconv.ParseFloat(item.FundingRate, 64)
-
-	intervalHours := 8
-	ft, _ := strconv.ParseInt(item.FundingTime, 10, 64)
-	pft, _ := strconv.ParseInt(item.PrevFundingTime, 10, 64)
-	if ft > 0 && pft > 0 && ft > pft {
-		diffHours := int((ft - pft) / (1000 * 3600))
-		if diffHours > 0 {
-			intervalHours = diffHours
-		}
-	}
-
-	ts := time.Now().UTC()
-	if ms, err := strconv.ParseInt(item.Ts, 10, 64); err == nil && ms > 0 {
-		ts = time.UnixMilli(ms).UTC()
-	}
-
-	var nextFunding time.Time
-	if ft > 0 {
-		nextFunding = time.UnixMilli(ft).UTC()
-	}
-
-	return domain.FundingRate{
-		Rate:            rate,
-		IntervalHours:   intervalHours,
-		Timestamp:       ts,
-		NextFundingTime: nextFunding,
-	}, nil
+	l.mu.RLock(); client := l.okxClient; l.mu.RUnlock()
+	if client == nil { return domain.FundingRate{}, fmt.Errorf("okx client is not configured") }
+	rate, err := client.FundingRate(ctx, symbol)
+	if err != nil && strings.Contains(err.Error(), "status") { return domain.FundingRate{}, err }
+	return rate, err
 }
 
 func (l *LiveAdapter) fetchMEXCFundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {
