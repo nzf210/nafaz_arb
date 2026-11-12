@@ -248,7 +248,9 @@ class TestOperationalTables:
         assert writer.balance_snapshot(reports, observed_at_ms=1234567890000) == 0
         assert _drain(writer) == []
 
-    def test_executor_status_snapshots_emit_on_change_and_minute_heartbeat(self):
+    def test_executor_status_snapshots_emit_on_change_and_minute_heartbeat(self, monkeypatch):
+        clock = [100.0]
+        monkeypatch.setattr("executor.supabase.time.monotonic", lambda: clock[0])
         writer = _writer()
         snapshot = {
             "status": "RUNNING",
@@ -263,14 +265,25 @@ class TestOperationalTables:
         assert first[0][2]["instance_id"] == "test-executor"
 
         unchanged = dict(snapshot, timestamp_ms=1_700_000_000_001)
+        clock[0] += 0.5
         assert writer.executor_status(unchanged, instance_id="test-executor") is False
         assert _drain(writer) == []
 
-        changed = dict(unchanged, trading_halted=True)
+        clock[0] += 61
+        heartbeat = dict(unchanged, timestamp_ms=1_700_000_000_002)
+        assert writer.executor_status(heartbeat, instance_id="test-executor") is True
+        heartbeat_rows = [
+            row for row in _drain(writer) if row[0] == "executor_status_snapshots"
+        ]
+        assert len(heartbeat_rows) == 1
+
+        changed = dict(heartbeat, trading_halted=True)
         assert writer.executor_status(changed, instance_id="test-executor") is True
-        second = [row for row in _drain(writer) if row[0] == "executor_status_snapshots"]
-        assert len(second) == 1
-        assert second[0][2]["snapshot"]["trading_halted"] is True
+        changed_rows = [
+            row for row in _drain(writer) if row[0] == "executor_status_snapshots"
+        ]
+        assert len(changed_rows) == 1
+        assert changed_rows[0][2]["snapshot"]["trading_halted"] is True
 
 
 class TestOrdersAndFills:
