@@ -193,6 +193,8 @@ func (b *Bot) Start(ctx context.Context) error {
 		{Command: "positions", Description: "💼 Status posisi terbuka"},
 		{Command: "recovery", Description: "🔄 Status recovery setelah restart"},
 		{Command: "orphans", Description: "👻 Order exchange yang belum teridentifikasi"},
+		{Command: "cleanorphan", Description: "🧹 Force clean orphan/stuck order dari cache & DB"},
+		{Command: "hapusorphan", Description: "🧹 Alias /cleanorphan — hapus orphan dari cache & DB"},
 		{Command: "reconcile", Description: "🧾 Insiden, retry, dan resolve orphan terverifikasi"},
 		{Command: "risk", Description: "🛡️ Status risk halt"},
 		{Command: "order", Description: "🔎 Detail order berdasarkan internal ID"},

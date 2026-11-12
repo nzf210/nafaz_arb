@@ -244,6 +244,29 @@ class RecoveryOrphanMixin:
                 if ":" in scope:
                     pair_keys.add(scope)
 
+        for pending_map, is_entry in (
+            (getattr(self, "pending_entry_orders", None), True),
+            (getattr(self, "pending_exit_orders", None), False),
+        ):
+            if not isinstance(pending_map, dict):
+                continue
+            for pk, pinfo in list(pending_map.items()):
+                if not isinstance(pinfo, dict):
+                    continue
+                candidates = {
+                    str(pinfo.get("local_order_id") or ""),
+                    str(pinfo.get("order_id") or ""),
+                    str(pinfo.get("client_order_id") or ""),
+                }
+                if (resolved_ids & candidates) or pk in pair_keys:
+                    pending_map.pop(pk, None)
+                    removed_mem += 1
+                    pair_keys.add(pk)
+                    if is_entry:
+                        clear_pending = getattr(self, "_clear_pending_entry", None)
+                        if callable(clear_pending):
+                            await clear_pending(pk)
+
         # Refresh pending recovery cache & clear pair halts/blacklists
         self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
         remaining_records = await self.order_registry.active_records()
@@ -258,6 +281,11 @@ class RecoveryOrphanMixin:
             if not await self._scope_has_unresolved_recovery(pk):
                 self._clear_exposure_halt(pk, f"force cleaned orphan {tid} ({reason})")
                 cleared_pairs.append(pk)
+                if hasattr(self, "_failure_reasons") and isinstance(self._failure_reasons, dict):
+                    self._failure_reasons.pop(pk, None)
+                persist_risk = getattr(self, "_persist_risk_state", None)
+                if callable(persist_risk):
+                    persist_risk("position_failure", scope="position", pair_key=pk, resolved=True)
             if hasattr(self, "_pair_halted") and isinstance(self._pair_halted, dict):
                 self._pair_halted.pop(pk, None)
             if hasattr(self, "_record_pair_success"):

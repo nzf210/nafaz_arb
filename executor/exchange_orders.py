@@ -281,13 +281,23 @@ class ExchangeOrderMixin:
     async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Fetches status of an order on local spot exchange."""
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
-        order = await self.local.fetch_order(order_id, order_symbol)
-        if (
+        is_tokocrypto = (
             str(getattr(self.local, "id", "") or "").lower() == "tokocrypto"
-            and (not isinstance(order, dict) or not order.get("id"))
             and callable(getattr(self.local, "privateGetOpenV1Orders", None))
-        ):
+        )
+        if is_tokocrypto:
+            # Tokocrypto /open/v1/orders ignores orderId and defaults to type=1,
+            # causing ccxt.fetch_order to return another open order's payload.
             order = await self._fetch_tokocrypto_order_fallback(order_id, order_symbol)
+        else:
+            order = await self.local.fetch_order(order_id, order_symbol)
+            if (
+                order_id
+                and isinstance(order, dict)
+                and order.get("id")
+                and str(order.get("id")) != str(order_id)
+            ):
+                order = {}
         return self._normalize_local_client_order_id(order)
 
     async def fetch_local_order_by_client_id(

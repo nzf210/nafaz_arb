@@ -113,7 +113,20 @@ class RecoveryRegistryMixin:
                     await self._clear_resolved_pair_failure(pair_tag)
         self._refresh_entry_gate()
 
-    async def _with_order_recovery_lock(self, recovery_callback) -> bool:
+    def _get_local_recovery_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_local_recovery_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._local_recovery_lock = lock
+        return lock
+
+    async def _with_order_recovery_lock(
+        self,
+        recovery_callback,
+        *,
+        wait_timeout: float = 0.0,
+        halt_on_busy: bool = True,
+    ) -> bool:
         """Run a recovery callback under an owner-token Redis lease.
 
         A process-local asyncio lock is insufficient: two replicas can otherwise
@@ -124,70 +137,109 @@ class RecoveryRegistryMixin:
         if self.redis is None or self.order_registry is None:
             return False
 
+        local_lock = self._get_local_recovery_lock()
+        deadline = time.monotonic() + max(0.0, float(wait_timeout or 0.0))
+        local_acquired = False
+        if wait_timeout > 0:
+            try:
+                await asyncio.wait_for(
+                    local_lock.acquire(), timeout=max(0.05, float(wait_timeout))
+                )
+                local_acquired = True
+            except asyncio.TimeoutError:
+                if halt_on_busy:
+                    self._halt_exposure_scope(
+                        "*", "distributed recovery is owned by another executor"
+                    )
+                    self._refresh_entry_gate()
+                return False
+        else:
+            if local_lock.locked():
+                if halt_on_busy:
+                    self._halt_exposure_scope(
+                        "*", "distributed recovery is owned by another executor"
+                    )
+                    self._refresh_entry_gate()
+                return False
+            await local_lock.acquire()
+            local_acquired = True
+
         lock_token = uuid.uuid4().hex
         lock_key = "arb:executor:order-recovery:lock"
         try:
-            acquired = await self.redis.set(
-                lock_key, lock_token, nx=True, px=300_000
-            )
-        except Exception as exc:
-            logger.critical(
-                "[Recovery] distributed lock unavailable; recovery skipped and "
-                "entries halted: %s",
-                exc,
-            )
-            self._halt_exposure_scope(
-                "*", f"distributed recovery lock unavailable: {type(exc).__name__}"
-            )
-            self._refresh_entry_gate()
-            return False
+            acquired = False
+            while True:
+                try:
+                    acquired = bool(
+                        await self.redis.set(
+                            lock_key, lock_token, nx=True, px=300_000
+                        )
+                    )
+                except Exception as exc:
+                    logger.critical(
+                        "[Recovery] distributed lock unavailable; recovery skipped and "
+                        "entries halted: %s",
+                        exc,
+                    )
+                    self._halt_exposure_scope(
+                        "*", f"distributed recovery lock unavailable: {type(exc).__name__}"
+                    )
+                    self._refresh_entry_gate()
+                    return False
+                if acquired or time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(min(0.25, max(0.01, deadline - time.monotonic())))
 
-        if not acquired:
-            logger.warning(
-                "[Recovery] another executor owns the distributed recovery lease; "
-                "this instance remains entry-gated"
-            )
-            self._halt_exposure_scope(
-                "*", "distributed recovery is owned by another executor"
-            )
-            self._refresh_entry_gate()
-            return False
-
-        owner_task = asyncio.current_task()
-        heartbeat = asyncio.create_task(
-            self._renew_order_recovery_lock(lock_token, owner_task)
-        )
-        completed = False
-        try:
-            await recovery_callback()
-            completed = True
-        except Exception as exc:
-            self._halt_exposure_scope(
-                "*", f"recovery callback failed: {type(exc).__name__}: {exc}"
-            )
-            self._refresh_entry_gate()
-            raise
-        finally:
-            heartbeat.cancel()
-            await asyncio.gather(heartbeat, return_exceptions=True)
-            try:
-                released = await self._release_order_recovery_lock(lock_token)
-                if not released:
-                    raise RuntimeError("recovery lease is no longer owned by this executor")
-            except Exception as exc:
-                # A lost/expired lease must never be treated as a successful
-                # release: retain the global entry gate until a later full pass.
-                logger.critical(
-                    "[Recovery] distributed lock release failed; entries remain "
-                    "halted until recovery can reacquire the lease: %s",
-                    exc,
+            if not acquired:
+                logger.warning(
+                    "[Recovery] another executor owns the distributed recovery lease; "
+                    "this instance remains entry-gated"
                 )
+                if halt_on_busy:
+                    self._halt_exposure_scope(
+                        "*", "distributed recovery is owned by another executor"
+                    )
+                    self._refresh_entry_gate()
+                return False
+
+            owner_task = asyncio.current_task()
+            heartbeat = asyncio.create_task(
+                self._renew_order_recovery_lock(lock_token, owner_task)
+            )
+            completed = False
+            try:
+                await recovery_callback()
+                completed = True
+            except Exception as exc:
                 self._halt_exposure_scope(
-                    "*", "distributed recovery lock release could not be verified"
+                    "*", f"recovery callback failed: {type(exc).__name__}: {exc}"
                 )
                 self._refresh_entry_gate()
-                completed = False
-        return completed
+                raise
+            finally:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+                try:
+                    released = await self._release_order_recovery_lock(lock_token)
+                    if not released:
+                        raise RuntimeError("recovery lease is no longer owned by this executor")
+                except Exception as exc:
+                    # A lost/expired lease must never be treated as a successful
+                    # release: retain the global entry gate until a later full pass.
+                    logger.critical(
+                        "[Recovery] distributed lock release failed; entries remain "
+                        "halted until recovery can reacquire the lease: %s",
+                        exc,
+                    )
+                    self._halt_exposure_scope(
+                        "*", "distributed recovery lock release could not be verified"
+                    )
+                    self._refresh_entry_gate()
+                    completed = False
+            return completed
+        finally:
+            if local_acquired and local_lock.locked():
+                local_lock.release()
 
     async def _renew_order_recovery_lock(self, lock_token: str, owner_task) -> None:
         """Renew the lease only while its unique owner token is still present."""
@@ -380,6 +432,14 @@ class RecoveryRegistryMixin:
             await self.order_registry.register(record)
             await self.order_registry.mark_pending_recovery(
                 record.local_order_id, "venue returned a malformed order payload"
+            )
+            return
+        if order_id and order.get("id") and str(order.get("id")) != str(order_id):
+            record.recovery_status = RecoveryStatus.UNVERIFIED.value
+            await self.order_registry.register(record)
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id,
+                f"venue returned mismatched order id {order.get('id')} for {order_id}",
             )
             return
         if not order.get("id") and (not order_id or order_id not in str(order)):

@@ -277,7 +277,11 @@ class EngineRuntimeMixin:
                 return
             result = {"resolved": False, "deleted_redis": 0, "deleted_db": 0, "cleared_pairs": []}
             if action == "retry":
-                acquired = await self._with_order_recovery_lock(self.retry_pending_order_recovery)
+                acquired = await self._with_order_recovery_lock(
+                    self.retry_pending_order_recovery,
+                    wait_timeout=18.0,
+                    halt_on_busy=False,
+                )
                 if not acquired:
                     result["error"] = "Recovery sedang dijalankan replica lain atau lease tidak tersedia."
                 else:
@@ -305,7 +309,9 @@ class EngineRuntimeMixin:
                     result["cleared_pairs"] = list(clean_res.get("cleared_pairs") or [])
                     if clean_res.get("error"):
                         result["error"] = str(clean_res["error"])
-                acquired = await self._with_order_recovery_lock(force_clean)
+                acquired = await self._with_order_recovery_lock(
+                    force_clean, wait_timeout=18.0, halt_on_busy=False
+                )
                 if not acquired:
                     result["error"] = "Recovery lease sedang dimiliki replica lain; orphan tidak diubah."
                     result["resolved"] = False
@@ -318,7 +324,9 @@ class EngineRuntimeMixin:
                     result["resolved"] = await self.resolve_orphan_order(
                         orphan_id, pair_tag=pair_tag, reason="TELEGRAM_OPERATOR"
                     )
-                acquired = await self._with_order_recovery_lock(resolve)
+                acquired = await self._with_order_recovery_lock(
+                    resolve, wait_timeout=18.0, halt_on_busy=False
+                )
                 if not acquired:
                     result["error"] = "Recovery lease sedang dimiliki replica lain; orphan tidak diubah."
                     result["resolved"] = False

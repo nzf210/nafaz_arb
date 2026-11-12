@@ -191,10 +191,23 @@ func (b *Bot) handlePendingOrdersCommand(
 	pages := (len(orders) + pageSize - 1) / pageSize
 	for page, start := 0, 0; start < len(orders); page, start = page+1, start+pageSize {
 		end := min(start+pageSize, len(orders))
+		var kbRows [][]InlineKeyboardButton
+		for _, order := range orders[start:end] {
+			if order.Status == "RECONCILIATION_REQUIRED" && order.OrderID != "" && len("clean_orphan:"+order.OrderID) <= 64 {
+				kbRows = append(kbRows, []InlineKeyboardButton{
+					{Text: "🧹 Clean " + strings.ToUpper(order.Symbol) + " (" + order.OrderID + ")", CallbackData: "clean_orphan:" + order.OrderID},
+				})
+			}
+		}
+		markup := b.defaultKeyboard()
+		if len(kbRows) > 0 {
+			kbRows = append(kbRows, markup.InlineKeyboard...)
+			markup = &InlineKeyboardMarkup{InlineKeyboard: kbRows}
+		}
 		b.sendReplyWithMarkup(
 			ctx, chatID, replyToID,
 			formatPendingOrderPage(snapshot, orders, start, end, page, pages),
-			b.defaultKeyboard(),
+			markup,
 		)
 		replyToID = 0
 	}
