@@ -39,6 +39,10 @@ def _local_order_params(
         # MOC is attached only by the explicit limit-order call sites.
         if require_post_only:
             params["timeInForce"] = "MOC"
+    elif require_post_only and str(getattr(exchange, "id", "")).lower() == "tokocrypto":
+        # CCXT maps postOnly=True to Tokocrypto's LIMIT_MAKER (type=7), which
+        # the venue rejects if the order would immediately take liquidity.
+        params["postOnly"] = True
     return (params,) if params else ()
 
 VENUE_CLIENT_ORDER_ID_MAX_LEN = 36
