@@ -341,7 +341,10 @@ func (l *LiveAdapter) WebSocketStats() (hits, misses int64) {
 func (l *LiveAdapter) WSConnectionHealthy(exchange string) bool {
 	l.mu.RLock()
 	cache, maxAge, okxManager := l.wsCache, l.wsMaxAge, l.okxVenueBooks
+	tokoSupervisor, mexcSupervisor := l.tokocryptoSupervisor, l.mexcPerpSupervisor
 	l.mu.RUnlock()
+	if strings.EqualFold(exchange, "tokocrypto") && tokoSupervisor != nil { return tokoSupervisor.Healthy(maxAge*3) }
+	if strings.EqualFold(exchange, "mexc") && mexcSupervisor != nil { return mexcSupervisor.Healthy(maxAge*3) }
 	if strings.EqualFold(exchange, "okx") && okxManager != nil {
 		return okxManager.IsConnected()
 	}
@@ -356,10 +359,13 @@ func (l *LiveAdapter) WSConnectionHealthy(exchange string) bool {
 func (l *LiveAdapter) LastBookUpdate(exchange, symbol string) time.Time {
 	l.mu.RLock()
 	cache, okxManager := l.wsCache, l.okxVenueBooks
+	tokoBooks, mexcBooks := l.tokocryptoBooks, l.mexcPerpBooks
 	l.mu.RUnlock()
 	if strings.EqualFold(exchange, "okx") && okxManager != nil {
 		if book, ok := okxManager.Get(symbol, 0); ok { return book.ReceivedAt }
 	}
+	if strings.EqualFold(exchange,"tokocrypto") && tokoBooks != nil { if book,ok:=tokoBooks.Get(strings.TrimPrefix(symbol,"toko:"),0);ok{return book.ReceivedAt} }
+	if strings.EqualFold(exchange,"mexc") && mexcBooks != nil { if book,ok:=mexcBooks.Get(cleanSymbol(symbol),0);ok{return book.ReceivedAt} }
 	if cache == nil { return time.Time{} }
 	return cache.LastBookUpdate(exchange, symbol)
 }
