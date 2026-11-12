@@ -246,20 +246,21 @@ async def test_tokocrypto_order_carries_registered_broker_prefix():
 
     params = spot.calls[0][1][0]
     sent_id = params["clientOrderId"]
-    # Tokocrypto rejects any non-alphanumeric character with error 3703, so the
-    # broker id and the pair slug are stripped of punctuation on the wire.
-    assert sent_id.startswith("xTKT5PX2F")
+    # CCXT's native Tokocrypto path uses the registered broker.marketType
+    # verbatim. Preserve its separator; only the generated suffix is alphanumeric.
+    assert sent_id.startswith(BROKER_ID)
     # The deterministic "{leg}{seq}" tail survives, so the same intent maps to
     # the same wire id for reconciliation. Tokocrypto does NOT guarantee that
     # duplicate client ids are rejected; ambiguous submits must never be retried.
     assert sent_id.endswith("entry1")
     # The venue rejects anything longer than 32 characters.
     assert len(sent_id) <= 32
-    assert all(c.isalnum() for c in sent_id)
+    assert sent_id[len(BROKER_ID):].isalnum()
 
-    # Venues outside Binance Cloud keep the plain id; ids that are already
-    # within the Tokocrypto constraints are left untouched.
-    assert venue_client_order_id(spot, "xTKT5PX2Fabc") == "xTKT5PX2Fabc"
+    # A wire id already carrying this account's exact broker prefix is preserved.
+    assert venue_client_order_id(
+        spot, BROKER_ID + "abc", BROKER_ID
+    ) == BROKER_ID + "abc"
 
     class IndodaxSpot:
         id = "indodax"
@@ -268,17 +269,16 @@ async def test_tokocrypto_order_carries_registered_broker_prefix():
         "indodax-btc-idr-entry-1"
     )
 
-    # With no registered broker id the id is still rewritten: sending the raw
-    # dashed id must never happen, because the venue rejects it with 3703.
+    # Never send a guessed client ID when the account broker prefix is unknown.
+    # Failing locally is safer than a rejected order or an uncorrelatable submit.
+    from executor.exchange_common import TokocryptoClientIDConfigurationError
+
     class UnregisteredTokoSpot:
         id = "tokocrypto"
         options = {}
 
-    rewritten = venue_client_order_id(UnregisteredTokoSpot(), raw_id)
-    assert rewritten != raw_id
-    assert len(rewritten) <= 32
-    assert all(c.isalnum() for c in rewritten)
-    assert rewritten.endswith("entry1")
+    with pytest.raises(TokocryptoClientIDConfigurationError, match="broker_id"):
+        venue_client_order_id(UnregisteredTokoSpot(), raw_id)
 
 @pytest.mark.asyncio
 async def test_tokocrypto_broker_prefix_travels_from_credentials_to_wire():
@@ -312,10 +312,10 @@ async def test_tokocrypto_broker_prefix_travels_from_credentials_to_wire():
         amount_spec=AmountSpec(unit="BASE", step=0.001, minimum=0.0, base_per_unit=1.0),
     )
     sent_id = sent["params"]["clientOrderId"]
-    assert sent_id.startswith("xTKT5PX2F")
+    assert sent_id.startswith("x-TKT5PX2F")
     assert sent_id.endswith("entry1")
     assert len(sent_id) <= 32
-    assert all(c.isalnum() for c in sent_id)
+    assert sent_id[len("x-TKT5PX2F"):].isalnum()
 
 
 @pytest.mark.asyncio
