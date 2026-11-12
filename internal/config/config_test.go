@@ -332,7 +332,7 @@ func TestWebSocketFeedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.EnableWebSocketFeed {
+	if cfg.EnableWebSocketFeed == nil || *cfg.EnableWebSocketFeed {
 		t.Fatal("websocket feed must default to off")
 	}
 	if cfg.WebSocketBookMaxAgeSeconds != 2 {
@@ -351,7 +351,7 @@ func TestWebSocketFeedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.EnableWebSocketFeed || cfg.WebSocketBookMaxAgeSeconds != 5 {
+	if cfg.EnableWebSocketFeed == nil || !*cfg.EnableWebSocketFeed || cfg.WebSocketBookMaxAgeSeconds != 5 {
 		t.Fatalf("overrides not applied: %+v", cfg)
 	}
 
@@ -359,6 +359,18 @@ func TestWebSocketFeedConfig(t *testing.T) {
 	invalid.WebSocketBookMaxAgeSeconds = -1
 	if err := invalid.validate(); err == nil || !strings.Contains(err.Error(), "websocket_book_max_age_seconds") {
 		t.Fatalf("expected validation error, got %v", err)
+	}
+
+	liveDefault := Config{Mode: "LIVE"}
+	liveDefault.setDefaults()
+	if liveDefault.EnableWebSocketFeed == nil || !*liveDefault.EnableWebSocketFeed {
+		t.Fatal("LIVE mode must enable venue WebSocket supervisors by default")
+	}
+	disabled := false
+	liveOptOut := Config{Mode: "LIVE", EnableWebSocketFeed: &disabled}
+	liveOptOut.setDefaults()
+	if liveOptOut.EnableWebSocketFeed == nil || *liveOptOut.EnableWebSocketFeed {
+		t.Fatal("explicit LIVE WebSocket opt-out must be preserved")
 	}
 }
 
