@@ -2101,7 +2101,7 @@ async def test_ambiguous_emergency_order_is_submitted_once_then_looked_up(fake_r
             submit, amount_spec=None,
         )
 
-    assert attempts == ["submit", "lookup"]
+    assert attempts == ["submit", "lookup", "lookup", "lookup"]
     assert len(ambiguous) == 1
 
 
