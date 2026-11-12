@@ -14,6 +14,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/contracts"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/shopspring/decimal"
 )
@@ -46,7 +47,7 @@ type OpportunityPersister interface {
 
 type Service struct {
 	cfg            config.Config
-	adapter        exchange.ReadOnlyAdapter
+	adapter        contracts.ReadOnlyAdapter
 	fundingWorker  *exchange.FundingWorker
 	redisClient    *redishandler.Client
 	supabaseClient OpportunityPersister
@@ -56,7 +57,7 @@ type Service struct {
 	lastLiveFXRate float64
 }
 
-func New(cfg config.Config, adapter exchange.ReadOnlyAdapter) *Service {
+func New(cfg config.Config, adapter contracts.ReadOnlyAdapter) *Service {
 	return &Service{
 		cfg:           cfg,
 		adapter:       adapter,
@@ -357,7 +358,7 @@ func (s *Service) fetchMarketData(ctx context.Context, sm, pm domain.Market) (do
 // can silently diverge from the real market and destroy arbitrage profit, so
 // callers must skip IDR pairs whenever the live ticker is unavailable.
 func (s *Service) getUSDTIDRRate(ctx context.Context) (float64, bool) {
-	if rp, ok := s.adapter.(exchange.RateProvider); ok {
+	if rp, ok := s.adapter.(contracts.RateProvider); ok {
 		rate, err := rp.USDTIDRRate(ctx)
 		if err == nil && rate > 0 && !math.IsNaN(rate) && !math.IsInf(rate, 0) {
 			s.mu.Lock()
