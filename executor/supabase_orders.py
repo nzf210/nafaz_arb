@@ -260,6 +260,35 @@ class SupabaseOrderMixin:
             order_state_key, str(uuid.uuid5(_POSITION_NS, f"order:{order_state_key}"))
         )
 
+    def link_orders_to_position(self, pair_key: str) -> int:
+        """Backfill the position UUID onto order rows created before the fill.
+
+        Entry orders are journaled before a position exists. Once the hedge
+        confirms and the position UUID is allocated, replay a minimal idempotent
+        upsert for every known order belonging to that pair so the analytics
+        foreign key is never left NULL.
+        """
+        position_id = self._position_ids.get(pair_key)
+        if not position_id:
+            return 0
+        marker = f":{pair_key}:"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        linked = 0
+        for order_state_key, order_id in tuple(self._order_ids.items()):
+            if marker not in order_state_key:
+                continue
+            if self._emit(
+                "orders",
+                {
+                    "id": order_id,
+                    "position_id": position_id,
+                    "updated_at": now_iso,
+                },
+                on_conflict="id",
+            ):
+                linked += 1
+        return linked
+
     def fill_sync_watermark(self, identity: str) -> Optional[float]:
         if self._outbox is None:
             return None
