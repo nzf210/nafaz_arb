@@ -89,60 +89,13 @@ func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (d
 }
 
 func (l *LiveAdapter) fetchMEXCFundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {
-	rawSymbol := cleanSymbol(symbol)
-	endpoint := fmt.Sprintf("%s/api/v1/contract/funding_rate/%s", l.mexcBaseURL, url.PathEscape(rawSymbol))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return domain.FundingRate{}, fmt.Errorf("mexc funding req: %w", err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return domain.FundingRate{}, fmt.Errorf("mexc funding request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		if classifyHTTPError(resp.StatusCode) {
-			return domain.FundingRate{}, fmt.Errorf("%w: mexc funding status %d", ErrExchangeUnavailable, resp.StatusCode)
-		}
-		return domain.FundingRate{}, fmt.Errorf("mexc funding status: %d", resp.StatusCode)
-	}
-
-	var mexcResp struct {
-		Success bool `json:"success"`
-		Code    int  `json:"code"`
-		Data    struct {
-			FundingRate  float64 `json:"fundingRate"`
-			CollectCycle int     `json:"collectCycle"`
-			Timestamp    int64   `json:"timestamp"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&mexcResp); err != nil {
-		return domain.FundingRate{}, fmt.Errorf("decode mexc funding: %w", err)
-	}
-	if !mexcResp.Success {
-		return domain.FundingRate{}, fmt.Errorf("mexc funding error code: %d", mexcResp.Code)
-	}
-
-	interval := mexcResp.Data.CollectCycle
-	if interval <= 0 {
-		interval = 8
-	}
-
-	ts := time.Now().UTC()
-	if mexcResp.Data.Timestamp > 0 {
-		ts = time.UnixMilli(mexcResp.Data.Timestamp).UTC()
-	}
-
-	return domain.FundingRate{
-		Rate:            mexcResp.Data.FundingRate,
-		IntervalHours:   interval,
-		Timestamp:       ts,
-		NextFundingTime: nextSettlementTime(ts, interval),
-	}, nil
+	l.mu.RLock()
+	client := l.mexcClient
+	l.mu.RUnlock()
+	if client == nil { return domain.FundingRate{}, fmt.Errorf("mexc client is not configured") }
+	rate, err := client.FundingRate(ctx, symbol)
+	if err != nil { return domain.FundingRate{}, err }
+	return rate, nil
 }
 
 func nextSettlementTime(t time.Time, intervalHours int) time.Time {
