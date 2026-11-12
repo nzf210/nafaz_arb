@@ -290,8 +290,9 @@ scanner opportunities, orders/fills, positions/legs, funding payments, closed tr
 balances, risk events, and executor events/status snapshots.
 
 **Runtime persistence:** the Go scanner writes evaluated snapshots to
-`scanner_opportunities`; the Python executor writes `positions`, `orders`,
-`order_fills`, `closed_trades`, `executor_events`, and `risk_events`.
+`scanner_opportunities`; the Python executor writes `positions`, `position_legs`,
+`orders`, `order_fills`, `closed_trades`, `funding_payments`, `balance_snapshots`,
+`executor_status_snapshots`, `executor_events`, and `risk_events`.
 Scanner opportunity snapshots are first committed to a persistent JSONL outbox
 and replayed by a background delivery reconciliation worker; executor events use
 a persistent SQLite outbox. Upserts and order/fill writes use deterministic
@@ -304,8 +305,11 @@ never the anon/publishable key. Do not commit it, put it in the image, or expose
 to frontend/Telegram clients. If credentials are absent, persistence is disabled;
 a database outage does not block exchange risk management.
 
-Still schema-only: `position_legs`, `funding_payments`, `balance_snapshots`,
-and `executor_status_snapshots`. The scanner delivery worker reconciles only
+Still schema-only: `exchange_accounts`, `strategy_configs`, `risk_limits`, and
+`market_pairs`; credentials are never written by this runtime. Confirmed funding
+settlements come only from exchange funding history, balance snapshots include only
+successful read-only venue reports, and status snapshots are emitted on state changes
+plus a 60-second heartbeat. The scanner delivery worker reconciles only
 durable opportunity delivery; it does not reconcile private exchange positions
 or balances. Supabase history is not a complete exchange ledger and must never
 replace authenticated exchange-side exposure verification.
