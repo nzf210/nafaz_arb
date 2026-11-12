@@ -85,6 +85,10 @@ func (c *Client) Markets(ctx context.Context) ([]domain.Market, error) {
 	symbolTypes := make(map[string]int, len(raw.Data.List))
 	for _, item := range raw.Data.List {
 		if item.SpotTradingEnable != 1 || item.Symbol == "" || item.BaseAsset == "" || item.QuoteAsset == "" { continue }
+		symbolType := item.SymbolType
+		if symbolType == 0 { symbolType = 1 } // Older payloads are MBX.
+		symbolTypes[item.Symbol] = symbolType
+		if symbolType != 1 && symbolType != 3 { continue }
 		var amount *domain.AmountSpec
 		for _, filter := range item.Filters {
 			if !strings.EqualFold(filter.FilterType, "LOT_SIZE") && !strings.EqualFold(filter.FilterType, "LOT_SIZE_FILTER") { continue }
@@ -96,12 +100,9 @@ func (c *Client) Markets(ctx context.Context) ([]domain.Market, error) {
 			}
 			break
 		}
-		symbolType := item.SymbolType
-		if symbolType == 0 { symbolType = 1 } // Older payloads are MBX.
 		market := domain.Market{Exchange: "tokocrypto", Symbol: "toko:"+item.Symbol,
 			BaseAsset: strings.ToUpper(item.BaseAsset), QuoteAsset: strings.ToUpper(item.QuoteAsset),
 			MarketType: "SPOT", SymbolType: symbolType, Active: true, AmountSpec: amount}
-		symbolTypes[item.Symbol] = symbolType
 		if amount != nil { market.LotSize, market.MinOrder = amount.Step, amount.Min }
 		markets = append(markets, market)
 	}
