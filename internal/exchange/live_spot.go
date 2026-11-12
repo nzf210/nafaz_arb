@@ -2,12 +2,7 @@ package exchange
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log"
-	"math"
-	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -28,7 +23,9 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 		return 0, fmt.Errorf("indodax client is not configured")
 	}
 	rate, err := client.USDTIDRRate(ctx)
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	l.mu.Lock()
 	l.lastUSDTIDRRate = rate
 	l.lastUSDTIDRTime = time.Now().UTC()
