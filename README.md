@@ -434,13 +434,15 @@ docker compose run --rm --no-deps --entrypoint python nafaz-executor \
   scripts/live_readonly_preflight.py --config /app/config.json \
   --spot-symbol tokocrypto=BTC/IDR \
   --futures-symbol BTC/USDT:USDT
+# Optional: verify an existing order via the signed Tokocrypto detail endpoint:
+#   --spot-order tokocrypto=BTC/IDR=<EXISTING_ORDER_ID>
 
 # Start LIVE services only after the read-only preflight passes:
 docker compose up -d nafaz-scanner nafaz-executor
 ```
 
 It checks configured exchange market metadata/private balances, optional
-symbol-scoped open-order and futures-position reads, Redis, Supabase order and
+symbol-scoped open-order and futures-position reads, optional signed spot order-detail reads, Redis, Supabase order and
 position recovery queries, and the recent fill ledger. It never submits,
 cancels, or modifies an order. Use a real listed symbol for the account and
 global futures venue. This verifies authenticated read access, not trade
