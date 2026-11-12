@@ -62,7 +62,17 @@ async def _run(args) -> None:
         connected = set()
         required = {config.local_exchange_name.lower(), config.global_exchange_name.lower()}
         requested_spot = dict(args.spot_symbol or {})
+        requested_orders = args.spot_order or []
+        if not requested_spot:
+            raise RuntimeError("at least one --spot-symbol is required to verify signed spot open-order access")
+        if config.local_exchange_name.lower() not in requested_spot:
+            raise RuntimeError(
+                f"--spot-symbol must include the configured local venue {config.local_exchange_name}"
+            )
+        if not args.futures_symbol:
+            raise RuntimeError("--futures-symbol is required to verify signed futures positions and open orders")
         required.update(requested_spot)
+        required.update(name for name, _, _ in requested_orders)
 
         for name, entry in sorted(client.balance_exchanges.items()):
             venue = entry.get("client") if isinstance(entry, dict) else None
