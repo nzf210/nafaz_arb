@@ -118,3 +118,4 @@ async def test_open_position_query_overlays_pending_close_without_resurrection()
 
     assert rows == []
     assert queries._session.calls[0][1]["is_mock"] == "eq.false"
+    assert "FAILED" in queries._session.calls[0][1]["status"]
