@@ -275,6 +275,23 @@ func (s *Service) loadExposures(ctx context.Context) ([]domain.OpenExposure, boo
 	if !s.cfg.CheckOpenPositions {
 		return nil, true, nil
 	}
+	// Redis is the executor's authoritative live position/order registry.
+	// Never interpret an empty public-exchange response as proof that accounts
+	// are flat: public CEX market-data clients cannot see private positions.
+	if s.redisClient != nil {
+		positions, err := s.redisClient.ListActivePositions(ctx)
+		if err != nil { return nil, false, fmt.Errorf("read executor active positions: %w", err) }
+		exposures, err := activePositionExposures(positions)
+		if err != nil { return nil, false, err }
+		if s.cfg.ExcludeOpenOrders {
+			records, readErr := s.redisClient.ListActiveOrderRecords(ctx)
+			if readErr != nil { return nil, false, fmt.Errorf("read executor active orders: %w", readErr) }
+			orders, convertErr := activeOrderExposures(records)
+			if convertErr != nil { return nil, false, convertErr }
+			exposures = append(exposures, orders...)
+		}
+		return exposures, true, nil
+	}
 	exposures, err := s.adapter.OpenExposures(ctx)
 	if err != nil {
 		return nil, false, err
