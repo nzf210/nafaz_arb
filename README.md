@@ -398,3 +398,27 @@ The executor remains in paper mode by default (`EXECUTOR_MOCK_MODE=true`). Do no
 quote assets, balance permissions, and venue-specific order/funding/position behavior
 have all been validated in paper mode. Scanner LIVE mode and executor LIVE mode are
 separate switches and must be configured deliberately.
+
+### LIVE executor durability and exchange credentials
+
+LIVE executor startup now requires Supabase durable storage (`SUPABASE_URL` and
+the server-only `SUPABASE_KEY` service-role credential) plus the persistent local
+SQLite outbox at `SUPABASE_OUTBOX_PATH`. The Docker Compose deployment mounts
+`./data/executor` for that outbox. Redis is a cache/coordination layer and must
+not be the only surviving copy of an order, position, or risk state.
+
+Provide exchange credentials through the runtime environment (for example
+`INDODAX_API_KEY`, `TOKOCRYPTO_API_KEY`, `OKX_API_KEY`, their matching
+`*_API_SECRET` values, and `OKX_PASSPHRASE`). Choose venues with
+`LOCAL_EXCHANGE` and `GLOBAL_EXCHANGE`; Compose no longer hardcodes Indodax
+when the operator selects another local venue.
+
+For Tokocrypto LIVE spot execution, also set `TOKOCRYPTO_BROKER_ID` to the
+account-issued broker prefix. The executor preserves that prefix exactly and
+blocks order submission if it is missing. Tokocrypto limit orders are
+maker-only; its `clientId` is a recovery correlation key, not an idempotency
+guarantee, so ambiguous submissions are never blindly retried.
+
+The executor restores active position snapshots from Supabase if Redis state is
+missing, restores unresolved order intents from both Supabase and the local
+outbox, and verifies exchange-side exposure before it can clear startup gates.
