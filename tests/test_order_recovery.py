@@ -2072,3 +2072,58 @@ async def test_stale_durable_active_snapshot_cannot_resurrect_newer_closed_cache
     assert engine.states[PAIR_TAG] == PositionState.CLOSED
     assert PAIR_TAG not in engine.active_positions
     assert await fake_redis.get(key) is None
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_emergency_order_is_submitted_once_then_looked_up(fake_redis):
+    engine = _engine(fake_redis, MockExchangeClient())
+    attempts = []
+    ambiguous = []
+
+    async def submit():
+        attempts.append("submit")
+        raise TimeoutError("acknowledgement lost")
+
+    async def lookup(_client_order_id, _symbol, _amount_spec=None):
+        attempts.append("lookup")
+        return None
+
+    async def mark_ambiguous(pair_tag, exchange, client_order_id, reason):
+        ambiguous.append((pair_tag, exchange, client_order_id, reason))
+
+    engine.client.fetch_local_order_by_client_id = lookup
+    engine._mark_order_submission_ambiguous = mark_ambiguous
+    engine._is_definitive_order_rejection = lambda _error: False
+
+    with pytest.raises(RuntimeError, match="no retry was sent"):
+        await engine._submit_local_order_once_with_recovery(
+            PAIR_TAG, "tokocrypto", "BTC/IDR", "x-TKT5PX2F-entry-1",
+            submit, amount_spec=None,
+        )
+
+    assert attempts == ["submit", "lookup"]
+    assert len(ambiguous) == 1
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_emergency_order_recovers_by_client_id_without_resubmit(fake_redis):
+    engine = _engine(fake_redis, MockExchangeClient())
+    attempts = []
+    recovered = {"id": "98765", "status": "open", "clientOrderId": "logical-id"}
+
+    async def submit():
+        attempts.append("submit")
+        raise TimeoutError("acknowledgement lost")
+
+    async def lookup(_client_order_id, _symbol, _amount_spec=None):
+        attempts.append("lookup")
+        return recovered
+
+    engine.client.fetch_local_order_by_client_id = lookup
+
+    order = await engine._submit_local_order_once_with_recovery(
+        PAIR_TAG, "tokocrypto", "BTC/IDR", "logical-id", submit,
+    )
+
+    assert order["id"] == "98765"
+    assert attempts == ["submit", "lookup"]
