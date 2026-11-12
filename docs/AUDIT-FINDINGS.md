@@ -76,8 +76,10 @@ after the executor was split into mixins.
 | R-17 | Scanner API returned raw Redis/scanner error details to HTTP clients, including status/latest result payloads | API | Return generic 500 responses, sanitize status/latest scan errors, log internal details server-side, and add regression tests
 | R-18 | Repeating force close after futures closed but spot liquidation failed could submit a duplicate futures close and fail to retry spot | Force close | Retry verifies actual futures exposure first; if already flat, skips duplicate close and retries spot; if a short remains, blocks resubmission pending manual reconciliation
 
-These changes are static-code remediations with regression tests added. They have not
-been executed in this environment; CI must pass before the branch is approved.
+The listed remediations have regression coverage and are exercised by the branch CI
+(workflow status is authoritative for each commit). CI does not prove authenticated
+production order placement or real-account recovery; those require a controlled
+CEX account verification before LIVE funds are enabled.
 
 
 | R-10 | Scanner HTTP API was unauthenticated | API | Go API now requires a Bearer token in LIVE mode; health remains public |
