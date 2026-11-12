@@ -22,6 +22,7 @@ type DepthSnapshot struct {
 type DepthUpdate struct {
 	Symbol                    string
 	FirstUpdateID, FinalUpdateID int64
+	PreviousUpdateID          int64
 	Bids, Asks                [][]string
 	EventTime                 time.Time
 }
