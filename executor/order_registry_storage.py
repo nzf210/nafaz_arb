@@ -195,6 +195,7 @@ class OrderRegistryStorageMixin:
                     "market_type": record.market_type,
                     "order_role": record.order_role,
                     "client_order_id": record.client_order_id or None,
+                    "venue_client_order_id": record.venue_client_order_id or None,
                     "exchange_order_id": record.exchange_order_id or None,
                     "position_key": (
                         f"position:{record.pair_key}" if record.pair_key else None
