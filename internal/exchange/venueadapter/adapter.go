@@ -1,6 +1,6 @@
-// Package venueadapter scopes the compatibility LiveAdapter to one CEX.
-// This keeps registry consumers venue-oriented while individual client packages
-// are migrated to implement the neutral contracts directly.
+// Package venueadapter retains the generic scoped wrapper for legacy callers.
+// Production registration uses dedicated adapters in each CEX package.
+// Deprecated: use the venue-specific adapter constructors instead.
 package venueadapter
 
 import (
