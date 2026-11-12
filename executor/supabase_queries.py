@@ -206,6 +206,26 @@ class SupabaseQueryMixin:
             orders, registry = await self._read_fill_candidate_tables(
                 session, headers, cutoff, limit
             )
+            # Include filled rows which are durable locally but have not yet
+            # reached Supabase. They must participate in restart fill replay.
+            if self._outbox is not None:
+                for table, target in (
+                    ("orders", orders),
+                    ("order_registry", registry),
+                ):
+                    for _row_id, _table, _conflict, row in self._outbox.pending_table(table):
+                        if not isinstance(row, dict):
+                            raise RuntimeError(f"pending {table} outbox row is malformed")
+                        if row.get("is_mock") is not False:
+                            continue
+                        try:
+                            filled_qty = float(row.get("filled_qty") or 0.0)
+                        except (TypeError, ValueError) as exc:
+                            raise RuntimeError(
+                                f"pending {table} row has invalid filled_qty"
+                            ) from exc
+                        if filled_qty > 0:
+                            target.append(row)
             candidates = self._build_fill_candidate_map(orders, registry)
             return list(candidates.values())
         except Exception as exc:
