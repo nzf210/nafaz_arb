@@ -17,7 +17,8 @@ per-contract local-book state manager. A per-contract connection supervisor is w
   using the discovered `contractSize`; zero removes a price level.
 - REST bootstrap: `GET /api/v1/contract/depth/{symbol}`.
 - Require exact continuity: the next `begin` must equal previous `end + 1`.
-  On a gap, reinitialize from REST depth history before publishing again.
+  On a gap, invalidate the local book and rebuild from a fresh full REST depth
+  snapshot before publishing again; never stitch a discontinuous book.
 
 Official reference: <https://www.mexc.io/api-docs/futures/update-log> and
 <https://mexcdevelop.github.io/apidocs/contract_v1_en/>.
@@ -31,10 +32,10 @@ version gaps or contract-size changes.
 
 ## Remaining integration work
 
-The connection supervisor must buffer while bootstrapping, replay contiguous
-updates, recover missed versions using depth history where possible, otherwise
-refetch the latest snapshot, ping, reconnect, and resubscribe. Track health per
-contract; a connected socket does not mean every symbol is synchronized.
+The connection supervisor buffers while bootstrapping, replays contiguous
+updates, refetches a full REST snapshot after a version gap, pings, reconnects,
+and resubscribes. Track health per contract; a connected socket does not mean
+every symbol is synchronized.
 
 JSON compression is explicitly disabled in the subscription. Do not decode
 compressed frames as JSON. No authenticated account or order endpoint belongs
