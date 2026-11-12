@@ -59,3 +59,19 @@ func TestIsUnavailable(t *testing.T) {
 	if !IsUnavailable(&StatusError{StatusCode:http.StatusServiceUnavailable}){t.Fatal("503 should be unavailable")}
 	if IsUnavailable(&StatusError{StatusCode:http.StatusBadRequest}){t.Fatal("400 should not be unavailable")}
 }
+
+
+func TestSpotMarketsNormalizeBaseQuantityRules(t *testing.T) {
+	server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		if r.URL.Path!="/api/v3/exchangeInfo"{t.Fatalf("path=%s",r.URL.Path)}
+		_,_=w.Write([]byte(`{"symbols":[{"symbol":"BTCUSDT","status":"1","baseAsset":"BTC","quoteAsset":"USDT","filters":[{"filterType":"PRICE_FILTER","tickSize":"0.01"},{"filterType":"LOT_SIZE","stepSize":"0.0001","minQty":"0.0005"}]},{"symbol":"OLDUSDT","status":"0","baseAsset":"OLD","quoteAsset":"USDT","filters":[]}]}`))
+	}))
+	defer server.Close()
+	markets,err:=New(server.Client(),server.URL,server.URL).SpotMarkets(context.Background())
+	if err!=nil{t.Fatal(err)}
+	if len(markets)!=1{t.Fatalf("markets=%d, want one active market",len(markets))}
+	m:=markets[0]
+	if m.Symbol!="mexc_spot:BTCUSDT"||m.Exchange!="mexc"||m.MarketType!="SPOT"||m.AmountSpec==nil||m.AmountSpec.Step!=0.0001||m.AmountSpec.Min!=0.0005||m.TickSize!=0.01{
+		t.Fatalf("spot market normalization: %+v",m)
+	}
+}
