@@ -506,3 +506,43 @@ func TestOKXWebSocketConfiguration(t *testing.T) {
 		t.Fatalf("expected invalid stale duration error, got %v", err)
 	}
 }
+
+
+func TestLiveRequiresRedisAndExposureSafetyGates(t *testing.T) {
+	path:=filepath.Join(t.TempDir(),"config.json")
+	base:=`{
+		"mode":"LIVE",
+		"api_auth_token":"0123456789abcdef0123456789abcdef",
+		"redis":{"enabled":true,"addr":"localhost:6380"},
+		"check_open_positions":true,
+		"exclude_open_orders":true,
+		"global_futures_exchange":"okx"
+	}`
+	if err:=os.WriteFile(path,[]byte(base),0600);err!=nil{t.Fatal(err)}
+	if _,err:=Load(path);err!=nil{t.Fatalf("valid LIVE safety config rejected: %v",err)}
+
+	for _,field:=range []string{"check_open_positions","exclude_open_orders"}{
+		mutated:=strings.Replace(base,"\""+field+"\":true","\""+field+"\":false",1)
+		if err:=os.WriteFile(path,[]byte(mutated),0600);err!=nil{t.Fatal(err)}
+		if _,err:=Load(path);err==nil||!strings.Contains(err.Error(),field){
+			t.Fatalf("LIVE config with %s disabled must fail, got %v",field,err)
+		}
+	}
+	withoutRedis:=strings.Replace(base,"\"enabled\":true","\"enabled\":false",1)
+	if err:=os.WriteFile(path,[]byte(withoutRedis),0600);err!=nil{t.Fatal(err)}
+	if _,err:=Load(path);err==nil||!strings.Contains(err.Error(),"redis.enabled"){
+		t.Fatalf("LIVE config without Redis must fail, got %v",err)
+	}
+}
+
+func TestDefaultFuturesVenueIsSupportedAndUnsupportedVenueRejected(t *testing.T) {
+	path:=filepath.Join(t.TempDir(),"config.json")
+	if err:=os.WriteFile(path,[]byte(`{"capital_total":100,"allocation_per_pair":0.5}`),0600);err!=nil{t.Fatal(err)}
+	cfg,err:=Load(path)
+	if err!=nil{t.Fatal(err)}
+	if cfg.GlobalFuturesExchange!="okx"{t.Fatalf("default futures venue=%q, want okx",cfg.GlobalFuturesExchange)}
+	if err:=os.WriteFile(path,[]byte(`{"capital_total":100,"allocation_per_pair":0.5,"global_futures_exchange":"binance"}`),0600);err!=nil{t.Fatal(err)}
+	if _,err:=Load(path);err==nil||!strings.Contains(err.Error(),"global_futures_exchange"){
+		t.Fatalf("unsupported futures venue must fail, got %v",err)
+	}
+}
