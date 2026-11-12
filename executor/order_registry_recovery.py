@@ -39,8 +39,9 @@ class OrderRegistryRecoveryMixin:
             0.0, cached.original_quantity - cached.filled_quantity
         )
         for field in (
-            "exchange_order_id", "client_order_id", "pair_key", "position_id",
-            "exchange", "market_type", "symbol", "side", "order_type",
+            "exchange_order_id", "client_order_id", "venue_client_order_id",
+            "pair_key", "position_id", "exchange", "market_type", "symbol",
+            "side", "order_type",
         ):
             if not getattr(cached, field, None):
                 setattr(cached, field, getattr(durable_record, field, None))
