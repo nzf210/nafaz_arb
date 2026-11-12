@@ -44,7 +44,7 @@ type bookState struct {
 // BookManager owns one persistent public connection and validated local books.
 // A socket being connected is deliberately not sufficient: Get only serves a
 // symbol after its initial snapshot and every subsequent sequence check succeeded.
-type OKXBookManager struct {
+type BookManager struct {
 	url string
 	log *slog.Logger
 	contractSize func(string) float64
@@ -56,27 +56,27 @@ type OKXBookManager struct {
 
 	mu sync.RWMutex
 	instruments map[string]struct{}
-	books map[string]*okxBookState
+	books map[string]*bookState
 	connected bool
 	cancel context.CancelFunc
 	done chan struct{}
 	updates chan struct{}
 }
 
-func NewBookManager(url string, log *slog.Logger, contractSize func(string) float64, reconnect, maxBackoff time.Duration) *OKXBookManager {
+func NewBookManager(url string, log *slog.Logger, contractSize func(string) float64, reconnect, maxBackoff time.Duration) *BookManager {
 	if log == nil { log = slog.Default() }
-	if reconnect <= 0 { reconnect = okxWSDefaultReconnect }
-	if maxBackoff <= 0 { maxBackoff = okxWSDefaultMaxBackoff }; if maxBackoff < reconnect { maxBackoff = reconnect }
-	return &OKXBookManager{
+	if reconnect <= 0 { reconnect = defaultReconnect }
+	if maxBackoff <= 0 { maxBackoff = defaultMaxBackoff }; if maxBackoff < reconnect { maxBackoff = reconnect }
+	return &BookManager{
 		url: url, log: log, contractSize: contractSize,
 		reconnect: reconnect, maxBackoff: maxBackoff,
-		heartbeatInterval: okxWSHeartbeat, heartbeatTimeout: okxWSPongTimeout, snapshotTimeout: okxWSSnapshotTimeout,
-		instruments: make(map[string]struct{}), books: make(map[string]*okxBookState),
+		heartbeatInterval: defaultHeartbeat, heartbeatTimeout: defaultPongTimeout, snapshotTimeout: defaultSnapshotTimeout,
+		instruments: make(map[string]struct{}), books: make(map[string]*bookState),
 		updates: make(chan struct{}, 1),
 	}
 }
 
-func (m *OKXBookManager) Start(ctx context.Context) {
+func (m *BookManager) Start(ctx context.Context) {
 	m.mu.Lock()
 	if m.cancel != nil { m.mu.Unlock(); return }
 	runCtx, cancel := context.WithCancel(ctx)
@@ -86,7 +86,7 @@ func (m *OKXBookManager) Start(ctx context.Context) {
 	go func() { defer close(done); m.run(runCtx) }()
 }
 
-func (m *OKXBookManager) Stop() {
+func (m *BookManager) Stop() {
 	m.mu.Lock()
 	cancel, done := m.cancel, m.done
 	m.cancel, m.done = nil, nil
@@ -94,7 +94,7 @@ func (m *OKXBookManager) Stop() {
 	if cancel != nil { cancel(); <-done }
 }
 
-func (m *OKXBookManager) SetInstruments(symbols []string) {
+func (m *BookManager) SetInstruments(symbols []string) {
 	next := make(map[string]struct{}, len(symbols))
 	for _, symbol := range symbols {
 		s := strings.TrimSpace(strings.TrimPrefix(symbol, "okx:"))
@@ -106,7 +106,7 @@ func (m *OKXBookManager) SetInstruments(symbols []string) {
 	select { case m.updates <- struct{}{}: default: }
 }
 
-func (m *OKXBookManager) instrumentList() []string {
+func (m *BookManager) instrumentList() []string {
 	m.mu.RLock()
 	out := make([]string, 0, len(m.instruments))
 	for s := range m.instruments { out = append(out, s) }
@@ -115,18 +115,18 @@ func (m *OKXBookManager) instrumentList() []string {
 	return out
 }
 
-func (m *OKXBookManager) refreshReceiveTimes(received time.Time) {
+func (m *BookManager) refreshReceiveTimes(received time.Time) {
 	m.mu.Lock()
 	for _, state := range m.books { if state.valid { state.received = received.UTC() } }
 	m.mu.Unlock()
 }
 
-func (m *OKXBookManager) IsConnected() bool {
+func (m *BookManager) IsConnected() bool {
 	m.mu.RLock(); defer m.mu.RUnlock()
 	return m.connected
 }
 
-func (m *OKXBookManager) Get(symbol string, maxAge time.Duration) (domain.OrderBook, bool) {
+func (m *BookManager) Get(symbol string, maxAge time.Duration) (domain.OrderBook, bool) {
 	symbol = strings.TrimPrefix(symbol, "okx:")
 	m.mu.RLock()
 	state := m.books[symbol]
@@ -141,7 +141,7 @@ func (m *OKXBookManager) Get(symbol string, maxAge time.Duration) (domain.OrderB
 
 // ApplyFrame applies one OKX books-channel message. Snapshot replaces the local
 // book; updates apply price-level deltas. A broken chain invalidates the book.
-func (m *OKXBookManager) ApplyFrame(payload []byte, received time.Time) (string, bool, error) {
+func (m *BookManager) ApplyFrame(payload []byte, received time.Time) (string, bool, error) {
 	var frame struct {
 		Event string `json:"event"`
 		Code string `json:"code"`
@@ -186,29 +186,29 @@ func (m *OKXBookManager) ApplyFrame(payload []byte, received time.Time) (string,
 	state := m.books[symbol]
 	if frame.Action == "snapshot" {
 		if prevSeqID != -1 {
-			m.books[symbol] = &okxBookState{valid:false}
+			m.books[symbol] = &bookState{valid:false}
 			return symbol, false, fmt.Errorf("OKX snapshot prevSeqId must be -1 for %s, got %d", symbol, prevSeqID)
 		}
 		bids, err := parseOKXBookLevels(data.Bids, contract)
 		if err != nil {
-			m.books[symbol] = &okxBookState{valid:false}
+			m.books[symbol] = &bookState{valid:false}
 			return symbol, false, err
 		}
 		asks, err := parseOKXBookLevels(data.Asks, contract)
 		if err != nil {
-			m.books[symbol] = &okxBookState{valid:false}
+			m.books[symbol] = &bookState{valid:false}
 			return symbol, false, err
 		}
 		if len(bids) == 0 || len(asks) == 0 {
-			m.books[symbol] = &okxBookState{valid:false}
+			m.books[symbol] = &bookState{valid:false}
 			return symbol, false, fmt.Errorf("OKX snapshot is not two-sided for %s", symbol)
 		}
 		ts := parseOKXTimestamp(data.Ts, received)
-		m.books[symbol] = &okxBookState{bids:bids, asks:asks, seq:seqID, ts:ts, received:received.UTC(), lastInstrumentAt:received.UTC(), valid:true}
+		m.books[symbol] = &bookState{bids:bids, asks:asks, seq:seqID, ts:ts, received:received.UTC(), lastInstrumentAt:received.UTC(), valid:true}
 		return symbol, false, nil
 	}
 	if frame.Action != "update" { return symbol, true, nil }
-	if state == nil || !state.valid { return symbol, false, ErrOKXBookNoSnapshot }
+	if state == nil || !state.valid { return symbol, false, ErrBookNoSnapshot }
 	if len(data.Bids) == 0 && len(data.Asks) == 0 {
 		// OKX sends an empty heartbeat with seqId == prevSeqId == last seqId.
 		// The levels and exchange timestamp stay unchanged, but the receive
@@ -220,13 +220,13 @@ func (m *OKXBookManager) ApplyFrame(payload []byte, received time.Time) (string,
 		}
 		state.valid = false
 		state.bids, state.asks = nil, nil
-		return symbol, false, fmt.Errorf("%w: invalid empty update for %s prevSeqId=%d cachedSeqId=%d seqId=%d", ErrOKXBookSequenceGap, symbol, prevSeqID, state.seq, seqID)
+		return symbol, false, fmt.Errorf("%w: invalid empty update for %s prevSeqId=%d cachedSeqId=%d seqId=%d", ErrBookSequenceGap, symbol, prevSeqID, state.seq, seqID)
 	}
 	if seqID == state.seq { return symbol, true, nil }
 	if seqID < state.seq || prevSeqID != state.seq {
 		state.valid = false
 		state.bids, state.asks = nil, nil
-		return symbol, false, fmt.Errorf("%w: %s prevSeqId=%d cachedSeqId=%d seqId=%d", ErrOKXBookSequenceGap, symbol, prevSeqID, state.seq, seqID)
+		return symbol, false, fmt.Errorf("%w: %s prevSeqId=%d cachedSeqId=%d seqId=%d", ErrBookSequenceGap, symbol, prevSeqID, state.seq, seqID)
 	}
 	if err := applyOKXBookDelta(state.bids, data.Bids, contract); err != nil { state.valid=false; return symbol,false,err }
 	if err := applyOKXBookDelta(state.asks, data.Asks, contract); err != nil { state.valid=false; return symbol,false,err }
@@ -238,7 +238,7 @@ func (m *OKXBookManager) ApplyFrame(payload []byte, received time.Time) (string,
 	return symbol, false, nil
 }
 
-func (m *OKXBookManager) invalidateBook(symbol string) {
+func (m *BookManager) invalidateBook(symbol string) {
 	if symbol == "" { return }
 	m.mu.Lock()
 	if state := m.books[symbol]; state != nil {
@@ -286,7 +286,7 @@ func parseOKXTimestamp(raw string, fallback time.Time) time.Time {
 	return fallback.UTC()
 }
 
-func makeOKXBook(symbol string, state *okxBookState, _ float64) domain.OrderBook {
+func makeOKXBook(symbol string, state *bookState, _ float64) domain.OrderBook {
 	bids:=sortedOKXLevels(state.bids,true)
 	asks:=sortedOKXLevels(state.asks,false)
 	return domain.OrderBook{Exchange:"okx",Symbol:symbol,Bids:bids,Asks:asks,Timestamp:state.ts,ReceivedAt:state.received,SequenceID:state.seq,Source:"websocket"}
@@ -297,7 +297,7 @@ func sortedOKXLevels(levels map[string]float64, descending bool) []domain.PriceL
 	items:=make([]item,0,len(levels))
 	for raw,qty:=range levels { p,err:=strconv.ParseFloat(raw,64); if err==nil && p>0 && qty>0 { items=append(items,item{p,qty}) } }
 	sort.Slice(items,func(i,j int)bool { if descending { return items[i].price>items[j].price }; return items[i].price<items[j].price })
-	if len(items)>okxBookDepth { items=items[:okxBookDepth] }
+	if len(items)>bookDepth { items=items[:bookDepth] }
 	out:=make([]domain.PriceLevel,0,len(items))
 	for _,v:=range items { out=append(out,domain.PriceLevel{Price:v.price,Quantity:v.qty}) }
 	return out
@@ -305,7 +305,7 @@ func sortedOKXLevels(levels map[string]float64, descending bool) []domain.PriceL
 
 type okxWSRead struct { typ websocket.MessageType; data []byte; err error }
 
-func (m *OKXBookManager) run(ctx context.Context) {
+func (m *BookManager) run(ctx context.Context) {
 	delay:=m.reconnect
 	for ctx.Err()==nil {
 		err:=m.consume(ctx)
@@ -321,7 +321,7 @@ func (m *OKXBookManager) run(ctx context.Context) {
 	}
 }
 
-func (m *OKXBookManager) consume(ctx context.Context) error {
+func (m *BookManager) consume(ctx context.Context) error {
 	conn,_,err:=websocket.Dial(ctx,m.url,&websocket.DialOptions{HTTPClient:nil})
 	if err!=nil { return fmt.Errorf("dial OKX public WS: %w",err) }
 	defer conn.CloseNow()
@@ -392,12 +392,12 @@ func diffOKXSubscriptions(current map[string]struct{}, next []string) (added,rem
 	return
 }
 
-func (m *OKXBookManager) sendSubscriptions(ctx context.Context, conn *websocket.Conn, op string, symbols []string) error {
+func (m *BookManager) sendSubscriptions(ctx context.Context, conn *websocket.Conn, op string, symbols []string) error {
 	const batchSize=50
 	for start:=0;start<len(symbols);start+=batchSize {
 		end:=start+batchSize; if end>len(symbols){end=len(symbols)}
 		args:=make([]map[string]string,0,end-start)
-		for _,s:=range symbols[start:end] { args=append(args,map[string]string{"channel":okxBooksChannel,"instId":s}) }
+		for _,s:=range symbols[start:end] { args=append(args,map[string]string{"channel":booksChannel,"instId":s}) }
 		payload,err:=json.Marshal(map[string]any{"op":op,"args":args}); if err!=nil{return err}
 		if err:=conn.Write(ctx,websocket.MessageText,payload);err!=nil{return fmt.Errorf("OKX %s subscription: %w",op,err)}
 	}
