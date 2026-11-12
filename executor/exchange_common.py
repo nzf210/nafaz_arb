@@ -16,6 +16,48 @@ _TOKOCRYPTO_ORDER_ARCHIVE_MAX_PAGES = 10
 
 
 
+def exchange_order_id_from(order: Any) -> str:
+    """Extract the venue order id from CCXT and raw venue payloads.
+
+    CCXT normally exposes id. Tokocrypto may expose orderId in info and OKX
+    raw payloads use ordId. Client ids are intentionally never considered.
+    """
+    if not isinstance(order, dict):
+        return ""
+
+    def _from_mapping(payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("id", "orderId", "ordId", "order_id", "orderID", "algoId", "algoOrderId"):
+            value = payload.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return ""
+
+    direct = _from_mapping(order)
+    if direct:
+        return direct
+    info = order.get("info")
+    nested = _from_mapping(info)
+    if nested:
+        return nested
+    if isinstance(info, dict):
+        for key in ("data", "result", "order"):
+            value = info.get(key)
+            candidates = value if isinstance(value, list) else [value]
+            for item in candidates:
+                nested = _from_mapping(item)
+                if nested:
+                    return nested
+    for key in ("data", "result", "order"):
+        value = order.get(key)
+        candidates = value if isinstance(value, list) else [value]
+        for item in candidates:
+            nested = _from_mapping(item)
+            if nested:
+                return nested
+    return ""
+
 def _client_order_params(client_order_id: Optional[str]) -> tuple:
     """
     Builds the positional params argument for a ccxt create_*_order call.
@@ -210,6 +252,9 @@ def acknowledged_order_result(
     would otherwise search for a spelling the venue never stored.
     """
     normalized = _base_order_result(order, spec) if spec is not None else dict(order)
+    exchange_order_id = exchange_order_id_from(order)
+    if exchange_order_id:
+        normalized["id"] = exchange_order_id
     # Order matters: the exposure helper prefers the venue's own alias, so the
     # accepted wire id is written over both after it has run.
     normalized = _expose_client_order_id(normalized)
