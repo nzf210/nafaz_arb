@@ -139,7 +139,7 @@ func (s *venueBookSupervisor) consumeSymbol(ctx context.Context, symbol string) 
 		select {
 		case err := <-readErr: return err
 		case payload := <-frames:
-			if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }; s.markMessage(symbol)
+			if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }; s.markBookMessage(symbol,payload)
 		default:
 			goto synchronized
 		}
@@ -231,6 +231,11 @@ func (s *venueBookSupervisor) setConnected(symbol string, connected bool) {
 }
 func (s *venueBookSupervisor) markMessage(symbol string) {
 	s.mu.Lock(); s.lastMessage[symbol]=time.Now().UTC(); s.mu.Unlock()
+}
+func (s *venueBookSupervisor) markBookMessage(symbol string, payload []byte) {
+	if s.name == "mexc-perpetual" { var frame struct { Channel string `json:"channel"` }; if json.Unmarshal(payload,&frame)!=nil || frame.Channel!="push.depth" { return } }
+	if s.name == "tokocrypto" { var frame struct { Event string `json:"e"` }; if json.Unmarshal(payload,&frame)!=nil || frame.Event!="depthUpdate" { return } }
+	s.markMessage(symbol)
 }
 func (s *venueBookSupervisor) Healthy(maxAge time.Duration) bool {
 	s.mu.Lock(); defer s.mu.Unlock()
