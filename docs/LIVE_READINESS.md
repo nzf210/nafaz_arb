@@ -17,6 +17,13 @@ enable live order submission merely because the scanner reports an opportunity.
       `SONAR_HOST_URL` and secret `SONAR_TOKEN`; not considered passed until
       the workflow reports a successful scan.
 
+LIVE configuration now fails startup unless all of these are explicit:
+- `api_auth_token` is at least 32 characters.
+- `redis.enabled=true`.
+- `check_open_positions=true` and `exclude_open_orders=true`.
+- `enable_executor_signals=true`.
+- `global_futures_exchange` is `okx`, `mexc` or `all` (default: `okx`).
+
 ## Exchange-by-exchange acceptance
 
 For each configured venue (Indodax, Tokocrypto, OKX and MEXC):
