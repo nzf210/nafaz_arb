@@ -227,7 +227,7 @@ class OrderRegistryRecoveryMixin:
         exchange = str(
             order.get("exchange") or order.get("exchange_name") or exchange or ""
         ).lower()
-        exchange_order_id = str(order.get("id") or order.get("exchange_order_id") or "")
+        exchange_order_id = exchange_order_id_from(order) or str(order.get("exchange_order_id") or "")
         client_order_id = str(
             order.get("clientOrderId") or order.get("client_order_id") or ""
         )
