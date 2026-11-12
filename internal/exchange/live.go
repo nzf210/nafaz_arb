@@ -328,11 +328,12 @@ func (l *LiveAdapter) WebSocketStats() (hits, misses int64) {
 // the check passes vacuously so REST-only deployments are never blocked.
 func (l *LiveAdapter) WSConnectionHealthy(exchange string) bool {
 	l.mu.RLock()
-	cache, maxAge := l.wsCache, l.wsMaxAge
+	cache, maxAge, okxManager := l.wsCache, l.wsMaxAge, l.okxVenueBooks
 	l.mu.RUnlock()
-	if cache == nil {
-		return true
+	if strings.EqualFold(exchange, "okx") && okxManager != nil {
+		return okxManager.IsConnected()
 	}
+	if cache == nil { return true }
 	return cache.IsExchangeConnectionHealthy(exchange, maxAge*3)
 }
 
@@ -342,11 +343,12 @@ func (l *LiveAdapter) WSConnectionHealthy(exchange string) bool {
 // activity data" rather than "inactive".
 func (l *LiveAdapter) LastBookUpdate(exchange, symbol string) time.Time {
 	l.mu.RLock()
-	cache := l.wsCache
+	cache, okxManager := l.wsCache, l.okxVenueBooks
 	l.mu.RUnlock()
-	if cache == nil {
-		return time.Time{}
+	if strings.EqualFold(exchange, "okx") && okxManager != nil {
+		if book, ok := okxManager.Get(symbol, 0); ok { return book.ReceivedAt }
 	}
+	if cache == nil { return time.Time{} }
 	return cache.LastBookUpdate(exchange, symbol)
 }
 
