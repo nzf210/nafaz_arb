@@ -18,6 +18,6 @@ func TestPerpetualBookManagerVersionsAndContractScaling(t *testing.T){
 func TestPerpetualBookManagerInvalidatesOnVersionGap(t *testing.T){
 	m:=NewPerpetualBookManager(10)
 	_ = m.Bootstrap("ETH_USDT",PerpetualDepthSnapshot{Version:4,Bids:[][]float64{{10,1}},Asks:[][]float64{{11,1}}},1)
-	if _,err:=m.Apply(PerpetualDepthUpdate{Symbol:"ETH_USDT",Begin:6,End:6,Bids:[][]float64{{10,1}},Asks:[][][]float64{}});err==nil{t.Fatal("expected gap")}
+	if _,err:=m.Apply(PerpetualDepthUpdate{Symbol:"ETH_USDT",Begin:6,End:6,Bids:[][]float64{{10,1}},Asks:[][]float64{}});err==nil{t.Fatal("expected gap")}
 	if _,ok:=m.Get("ETH_USDT",time.Minute);ok{t.Fatal("gap must invalidate book")}
 }
