@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"sync"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/contracts"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange"
 )
 
 type Registry struct {
@@ -49,7 +51,7 @@ type Composite struct{ registry *Registry }
 func NewComposite(r *Registry)*Composite{return &Composite{registry:r}}
 func (c *Composite) adapter(name string)(contracts.ReadOnlyAdapter,error){
 	if c==nil||c.registry==nil{return nil,fmt.Errorf("exchange registry is not configured")}
-	a,ok:=c.registry.Get(name);if !ok{return nil,fmt.Errorf("exchange %q is not registered",name)};return a,nil
+	a,ok:=c.registry.Get(name);if !ok { a,ok=c.registry.Get("default") };if !ok{return nil,fmt.Errorf("exchange %q is not registered",name)};return a,nil
 }
 func (c *Composite) aggregate(ctx context.Context,perpetual bool)([]domain.Market,error){
 	if c==nil||c.registry==nil{return nil,fmt.Errorf("exchange registry is not configured")}
@@ -92,4 +94,35 @@ func(c *Composite)OpenExposures(ctx context.Context)([]domain.OpenExposure,error
 }
 func(c *Composite)USDTIDRRate(ctx context.Context)(float64,error){
 	a,err:=c.adapter("indodax");if err!=nil{return 0,err};provider,ok:=a.(contracts.RateProvider);if !ok{return 0,fmt.Errorf("indodax does not provide USDT/IDR conversion")};return provider.USDTIDRRate(ctx)
+}
+
+
+// ExchangeAvailable forwards optional venue health reporting to the selected
+// adapter. Missing reporters are treated as healthy, matching scanner policy.
+func (c *Composite) ExchangeAvailable(name string) bool {
+	a,err:=c.adapter(name);if err!=nil{return false}
+	reporter,ok:=a.(interface{ExchangeAvailable(string)bool});if !ok{return true}
+	return reporter.ExchangeAvailable(name)
+}
+
+// WSConnectionHealthy forwards optional websocket health reporting.
+func (c *Composite) WSConnectionHealthy(name string) bool {
+	a,err:=c.adapter(name);if err!=nil{return false}
+	reporter,ok:=a.(interface{WSConnectionHealthy(string)bool});if !ok{return true}
+	return reporter.WSConnectionHealthy(name)
+}
+
+// LastBookUpdate forwards optional per-symbol websocket activity timestamps.
+func (c *Composite) LastBookUpdate(name,symbol string) time.Time {
+	a,err:=c.adapter(name);if err!=nil{return time.Time{}}
+	reporter,ok:=a.(interface{LastBookUpdate(string,string)time.Time});if !ok{return time.Time{}}
+	return reporter.LastBookUpdate(name,symbol)
+}
+
+// AccountAvailable forwards the optional wallet-state guard.
+func (c *Composite) AccountAvailable(name string)(exchange.AccountStatus,error) {
+	a,err:=c.adapter(name);if err!=nil{return exchange.AccountStatus{},err}
+	reporter,ok:=a.(interface{AccountAvailable(string)(exchange.AccountStatus,error)})
+	if !ok{return exchange.AccountStatus{DepositEnabled:true,WithdrawalEnabled:true},nil}
+	return reporter.AccountAvailable(name)
 }
