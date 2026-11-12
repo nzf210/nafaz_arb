@@ -3,7 +3,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 
-
 @dataclass
 class ExchangeCredentials:
     api_key: str = ""
@@ -11,7 +10,6 @@ class ExchangeCredentials:
     passphrase: Optional[str] = None
     testnet: bool = False
     options: Dict[str, Any] = field(default_factory=dict)
-
 
 @dataclass
 class SupabaseConfig:
