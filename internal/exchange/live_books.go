@@ -2,9 +2,6 @@ package exchange
 
 import (
 	"context"
-	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
-	"github.com/nafaz/spot-perp-scanner/internal/exchange/mexc"
-	"github.com/nafaz/spot-perp-scanner/internal/exchange/tokocrypto"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,6 +11,9 @@ import (
 	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/mexc"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/tokocrypto"
 )
 
 // trackedBook runs an order-book fetch and records its outcome for maintenance
