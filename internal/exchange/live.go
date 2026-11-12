@@ -69,6 +69,8 @@ type LiveAdapter struct {
 	tokocryptoBooks *tokocrypto.BookManager
 	mexcPerpBooks *mexc.PerpetualBookManager
 	venueWSMaxAge time.Duration
+	tokocryptoSupervisor *venueBookSupervisor
+	mexcPerpSupervisor *venueBookSupervisor
 }
 
 func NewLiveAdapter() *LiveAdapter {
@@ -266,6 +268,8 @@ func (l *LiveAdapter) EnableWebSocketFeed(ctx context.Context, maxAge time.Durat
 	if l.tokocryptoBooks == nil { l.tokocryptoBooks = tokocrypto.NewBookManager(100) }
 	if l.mexcPerpBooks == nil { l.mexcPerpBooks = mexc.NewPerpetualBookManager(100) }
 	l.venueWSMaxAge = maxAge
+	if l.tokocryptoSupervisor == nil { l.tokocryptoSupervisor = l.newTokocryptoSupervisor(); l.tokocryptoSupervisor.Start(ctx) }
+	if l.mexcPerpSupervisor == nil { l.mexcPerpSupervisor = l.newMEXCPerpetualSupervisor(); l.mexcPerpSupervisor.Start(ctx) }
 	stopCleanup := l.wsCache.StartStaleBookCleanup(maxAge, 5*time.Minute)
 	l.wsStopCleanup = stopCleanup
 	l.mu.Unlock()
@@ -380,4 +384,6 @@ func (l *LiveAdapter) Close() {
 	}
 	if l.okxBooks != nil { l.okxBooks.Stop(); l.okxBooks = nil }
 	if l.okxVenueBooks != nil { l.okxVenueBooks.Stop(); l.okxVenueBooks = nil }
+	if l.tokocryptoSupervisor != nil { l.tokocryptoSupervisor.Stop(); l.tokocryptoSupervisor = nil }
+	if l.mexcPerpSupervisor != nil { l.mexcPerpSupervisor.Stop(); l.mexcPerpSupervisor = nil }
 }
