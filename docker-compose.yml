@@ -63,13 +63,36 @@ services:
     environment:
       - TZ=Asia/Jakarta
       - REDIS_URL=redis://nafaz-redis:6380/0
-      - LOCAL_EXCHANGE=indodax
+      - LOCAL_EXCHANGE=${LOCAL_EXCHANGE:-indodax}
       # "all" is a scanner discovery setting, not a valid CCXT exchange id.
-      - GLOBAL_EXCHANGE=okx
+      - GLOBAL_EXCHANGE=${GLOBAL_EXCHANGE:-okx}
+      # Exchange credentials are injected at runtime; never bake them into images.
+      - LOCAL_API_KEY=${LOCAL_API_KEY:-}
+      - LOCAL_API_SECRET=${LOCAL_API_SECRET:-}
+      - GLOBAL_API_KEY=${GLOBAL_API_KEY:-}
+      - GLOBAL_API_SECRET=${GLOBAL_API_SECRET:-}
+      - GLOBAL_PASSPHRASE=${GLOBAL_PASSPHRASE:-}
+      - INDODAX_API_KEY=${INDODAX_API_KEY:-}
+      - INDODAX_API_SECRET=${INDODAX_API_SECRET:-}
+      - TOKOCRYPTO_API_KEY=${TOKOCRYPTO_API_KEY:-}
+      - TOKOCRYPTO_API_SECRET=${TOKOCRYPTO_API_SECRET:-}
+      - TOKOCRYPTO_BROKER_ID=${TOKOCRYPTO_BROKER_ID:-}
+      - OKX_API_KEY=${OKX_API_KEY:-}
+      - OKX_API_SECRET=${OKX_API_SECRET:-}
+      - OKX_PASSPHRASE=${OKX_PASSPHRASE:-}
+      - MEXC_API_KEY=${MEXC_API_KEY:-}
+      - MEXC_API_SECRET=${MEXC_API_SECRET:-}
+      - BYBIT_API_KEY=${BYBIT_API_KEY:-}
+      - BYBIT_API_SECRET=${BYBIT_API_SECRET:-}
+      - OKX_TESTNET=${OKX_TESTNET:-false}
+      - MEXC_TESTNET=${MEXC_TESTNET:-false}
+      - BYBIT_TESTNET=${BYBIT_TESTNET:-false}
       # Executor mode follows config.json mode (MOCK/LIVE).
       # Set EXECUTOR_MOCK_MODE=true only as an explicit emergency override.
       - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-}
-      # Best-effort audit persistence. Unset = disabled, trading unaffected.
+      # Required durable order/position/risk journal in LIVE mode. Missing
+      # credentials are rejected by executor startup; the SQLite outbox lives
+      # on the persistent ./data/executor volume.
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_KEY=${SUPABASE_KEY:-}
       - SUPABASE_OUTBOX_PATH=${SUPABASE_OUTBOX_PATH:-/app/data/executor/supabase-outbox.sqlite3}
