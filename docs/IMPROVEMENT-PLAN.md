@@ -1,4 +1,14 @@
 # Rencana Perbaikan: Scanner & Executor
+# Catatan status NAFAZ V3 — 12 November 2026
+
+Dokumen rencana di bawah ini mencatat pekerjaan historis pada fase audit awal. Status fase yang ditandai selesai di dalamnya tidak otomatis berarti seluruh branch V3 siap LIVE.
+
+Pada awal V3, pekerjaan yang sudah didorong ke branch `V3` meliputi pengaktifan CI untuk branch tersebut, penulisan ulang README, arsitektur dan roadmap V3, matriks cakupan CEX, serta penerjemahan beberapa dokumen operasional. Integrasi seluruh AI, adaptor CEX tambahan, pengujian end-to-end lintas venue, dan deployment VPS belum dinyatakan selesai.
+
+**Gerbang produksi yang masih wajib dibuktikan:** cakupan adaptor scanner dan executor yang konsisten; biaya aktual per fill; rekonsiliasi order/fill/posisi/funding; pemulihan setelah restart; seluruh tes dan build CI pada commit terbaru; paper trading lintas rute; lalu validasi deployment pada VPS. Jangan mengaktifkan semua venue atau AI otonom hanya karena dokumentasi atau konfigurasi sudah tersedia.
+
+---
+
 **Dibuat:** 2026-11-03  
 **Berdasarkan:** [AUDIT-FINDINGS.md](./AUDIT-FINDINGS.md)  
 **Status Keseluruhan:** 🟢 Fase 0 (P0), Fase 1 (P1), Fase 2 (P2) & Fase 3 (P3) selesai
