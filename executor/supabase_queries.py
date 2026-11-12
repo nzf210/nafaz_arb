@@ -275,4 +275,89 @@ class SupabaseQueryMixin:
             raise RuntimeError("order registry read returned a malformed payload")
         return [row for row in rows if isinstance(row, dict)]
 
+    async def fetch_open_position_records(self, limit: int = 500) -> list:
+        """Reads active live positions, including unflushed local outbox writes.
+
+        Redis is a fast cache, not the only recovery source. Position snapshots
+        in Supabase let the executor rebuild its managed exposure after a Redis
+        data loss or container replacement. Pending local outbox rows are
+        overlaid in enqueue order so a not-yet-flushed close cannot resurrect a
+        position that Supabase still shows as active.
+        """
+        if not self.enabled or not self.url or not self.key:
+            return []
+        page_size = max(1, min(int(limit), 1000))
+        params = {
+            "select": "pair_key,status,is_mock,state_snapshot,updated_at",
+            "is_mock": "eq.false",
+            "status": "in.(ENTRY_PENDING,ENTRY_PARTIAL,HEDGED_ACTIVE,EXIT_PENDING,RECONCILIATION_REQUIRED)",
+            "order": "updated_at.asc",
+            "limit": str(page_size),
+        }
+        session = self._session
+        created = False
+        rows_by_pair = {}
+        try:
+            if session is None or session.closed:
+                session = aiohttp.ClientSession(timeout=_TIMEOUT)
+                created = True
+            headers = {
+                "apikey": self.key,
+                "Authorization": _AUTHORIZATION_BEARER_PREFIX + self.key,
+                "Accept": _JSON_CONTENT_TYPE,
+                "Accept-Encoding": "identity",
+            }
+            offset = 0
+            while True:
+                page_params = dict(params)
+                page_params["offset"] = str(offset)
+                async with session.get(
+                    f"{self.url}/rest/v1/positions",
+                    params=page_params,
+                    headers=headers,
+                ) as resp:
+                    if resp.status >= 300:
+                        body = (await resp.text())[:500]
+                        raise RuntimeError(
+                            f"active position read failed with HTTP {resp.status}: {body}"
+                        )
+                    page = await resp.json()
+                if not isinstance(page, list):
+                    raise RuntimeError("active position read returned a malformed payload")
+                for row in page:
+                    if isinstance(row, dict) and row.get("pair_key"):
+                        rows_by_pair[str(row["pair_key"])] = row
+                if len(page) < page_size:
+                    break
+                offset += len(page)
+
+            # Supabase is the durable system of record, but the SQLite outbox
+            # may contain newer state transitions that have not reached it yet.
+            pending = (
+                self._outbox.pending_table("positions")
+                if self._outbox is not None else []
+            )
+            active_statuses = {
+                "ENTRY_PENDING", "ENTRY_PARTIAL", "HEDGED_ACTIVE",
+                "EXIT_PENDING", "RECONCILIATION_REQUIRED",
+            }
+            for _row_id, _table, _conflict, row in pending:
+                pair_key = str(row.get("pair_key") or "")
+                if not pair_key or bool(row.get("is_mock", True)):
+                    continue
+                if str(row.get("status") or "").upper() in active_statuses:
+                    rows_by_pair[pair_key] = row
+                else:
+                    rows_by_pair.pop(pair_key, None)
+            return list(rows_by_pair.values())
+        except Exception as exc:
+            logger.error("active position read failed: %s", exc)
+            raise RuntimeError("durable active positions could not be read") from exc
+        finally:
+            if created and session is not None:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+
     # ------------------------------------------------------------------- flush
