@@ -3,6 +3,7 @@ package tokocrypto
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
