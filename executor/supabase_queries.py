@@ -221,7 +221,7 @@ class SupabaseQueryMixin:
                 "requested_qty,filled_qty,remaining_qty,limit_price,average_fill_price,"
                 "reduce_only,recovery_status,is_mock,raw_payload"
             ),
-            "recovery_status": "in.(MANAGED,ADOPTED,UNVERIFIED)",
+            "recovery_status": "in.(MANAGED,ADOPTED,UNVERIFIED,PHANTOM,ORPHAN_ORDER)",
             "status": "not.in.(closed,filled,canceled,cancelled,rejected,expired)",
             "order": "updated_at.desc",
             "limit": str(max(1, int(limit))),
