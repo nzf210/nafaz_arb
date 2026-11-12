@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 from executor.models import OrderRecord, OrderRole, RecoveryStatus
 from executor.recovery_utils import _spec_dict
+from executor.exchange_common import exchange_order_id_from
 
 logger = logging.getLogger("executor.order_recovery")
 
@@ -196,7 +197,7 @@ class RecoveryDiscoveryMixin:
         """Links one resting venue order to a position, or flags it as an orphan."""
         if not isinstance(order, dict):
             return
-        exchange_order_id = str(order.get("id") or "")
+        exchange_order_id = exchange_order_id_from(order)
         client_order_id = str(order.get("clientOrderId") or order.get("client_order_id") or "")
         symbol = str(order.get("symbol") or requested_symbol or "")
         if not exchange_order_id and not client_order_id:
@@ -271,12 +272,26 @@ class RecoveryDiscoveryMixin:
             )
         return record
 
-    def _complete_venue_record_link(
-        self, record: OrderRecord, exchange: str, symbol: str, market: str
+    async def _complete_venue_record_link(
+        self, record: OrderRecord, order: Dict[str, Any],
+        exchange: str, symbol: str, market: str,
     ) -> tuple:
         pair_tag = record.pair_key or self._match_position_by_catalogue(
             exchange, symbol
         )
+        venue_order_id = exchange_order_id_from(order)
+        if venue_order_id and not record.exchange_order_id:
+            record.exchange_order_id = venue_order_id
+        observed_client_id = str(
+            order.get("clientOrderId") or order.get("client_order_id") or ""
+        )
+        if (
+            observed_client_id
+            and record.client_order_id
+            and observed_client_id != record.client_order_id
+            and not record.venue_client_order_id
+        ):
+            record.venue_client_order_id = observed_client_id
         record.pair_key = pair_tag
         record.position_id = record.position_id or self._position_id_for(pair_tag)
         record.market_type = record.market_type or (
@@ -286,6 +301,8 @@ class RecoveryDiscoveryMixin:
         record.symbol = record.symbol or symbol
         if not record.order_role:
             record.order_role = self._infer_role(pair_tag, market)
+        # Persist the venue identity even when pair ownership is still unknown.
+        await self.order_registry.register(record)
         if not pair_tag:
             return None, ""
         return record, pair_tag
@@ -304,8 +321,8 @@ class RecoveryDiscoveryMixin:
             exchange, exchange_order_id, client_order_id, symbol
         )
         if record is not None:
-            return self._complete_venue_record_link(
-                record, exchange, symbol, market
+            return await self._complete_venue_record_link(
+                record, order, exchange, symbol, market
             )
         # A requested pair is only a scan hint, not proof of ownership.
         pair_tag = self._match_position_by_catalogue(exchange, symbol)
