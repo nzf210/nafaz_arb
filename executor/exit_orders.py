@@ -145,6 +145,11 @@ class ExitOrderManagementMixin:
                 SimpleNamespace(usdt_idr_rate=usdt_idr_rate),
                 limit_sell_idr,
             )
+            recovery_context = {
+                "strategy_price_idr": limit_sell_idr,
+                "exchange_order_price": exchange_limit_sell_price,
+                "exchange_quote_asset": str(pair_info.quote_asset or "").upper(),
+            }
             exit_coid = build_client_order_id(
                 pair_tag, "exit", self._next_order_seq()
             )
@@ -154,6 +159,7 @@ class ExitOrderManagementMixin:
                 symbol=pos.symbol, role=OrderRole.EXIT_SPOT.value,
                 side="sell", order_type="limit", price=limit_sell_idr,
                 quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
+                recovery_context=recovery_context,
                 required=False,
             )
             order = await self.client.place_local_limit_sell(
@@ -187,6 +193,7 @@ class ExitOrderManagementMixin:
                 price=limit_sell_idr,
                 quantity=pos.qty,
                 local_amount_spec=pos.local_amount_spec,
+                recovery_context=recovery_context,
             )
             self.pending_exit_orders[pair_tag] = {
                 "order_id": order_id,
