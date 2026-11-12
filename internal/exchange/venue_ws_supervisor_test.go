@@ -45,3 +45,11 @@ func TestVenueBookSupervisorBuffersUntilSnapshotBootstrap(t *testing.T) {
 	cancel()
 	supervisor.Stop()
 }
+
+
+func TestTokocryptoSupervisorUsesDocumentedRawStreamPath(t *testing.T) {
+	supervisor := (&LiveAdapter{}).newTokocryptoSupervisor()
+	if got, want := supervisor.wsURL("BTCUSDT"), "wss://stream-cloud.tokocrypto.site/stream/ws/btcusdt@depth"; got != want {
+		t.Fatalf("Tokocrypto raw stream URL = %q, want %q", got, want)
+	}
+}
