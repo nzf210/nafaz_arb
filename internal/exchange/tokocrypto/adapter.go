@@ -46,10 +46,10 @@ func(a *Adapter)SpotOrderBook(ctx context.Context,symbol string)(domain.OrderBoo
 func(*Adapter)PerpetualOrderBook(context.Context,string)(domain.OrderBook,error){return domain.OrderBook{},fmt.Errorf("tokocrypto perpetual markets are unsupported")}
 func(*Adapter)FundingRate(context.Context,string)(domain.FundingRate,error){return domain.FundingRate{},fmt.Errorf("tokocrypto funding is unsupported")}
 func(a *Adapter)OpenExposures(ctx context.Context)([]domain.OpenExposure,error){if a.source==nil{return nil,fmt.Errorf("executor exposure provider is unavailable")};return a.source.OpenExposures(ctx)}
-func(a *Adapter)ExchangeAvailable(name string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.ExchangeAvailable("tokocrypto")};return true}
-func(a *Adapter)WSConnectionHealthy(name string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("tokocrypto")};return true}
-func(a *Adapter)LastBookUpdate(name,symbol string)time.Time{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.LastBookUpdate("tokocrypto",symbol)};return time.Time{}}
-func(a *Adapter)AccountAvailable(name string)(contracts.AccountStatus,error){if h,ok:=a.source.(contracts.AccountStatusProvider);ok{return h.AccountAvailable("tokocrypto")};return contracts.AccountStatus{DepositEnabled:true,WithdrawalEnabled:true},nil}
+func(a *Adapter)ExchangeAvailable(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.ExchangeAvailable("tokocrypto")};return false}
+func(a *Adapter)WSConnectionHealthy(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("tokocrypto")};return false}
+func(a *Adapter)LastBookUpdate(_ string,symbol string)time.Time{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.LastBookUpdate("tokocrypto",symbol)};return time.Time{}}
+func(a *Adapter)AccountAvailable(name string)(contracts.AccountStatus,error){if h,ok:=a.source.(contracts.AccountStatusProvider);ok{return h.AccountAvailable("tokocrypto")};return contracts.AccountStatus{},fmt.Errorf("tokocrypto account status provider is unavailable")}
 
 var _ contracts.MarketDataAdapter=(*Adapter)(nil)
 var _ contracts.AccountStatusProvider=(*Adapter)(nil)
