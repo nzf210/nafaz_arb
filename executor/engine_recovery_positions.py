@@ -107,6 +107,13 @@ class EngineRecoveryPositionsMixin:
             if str(pos.state or "").upper() in (
                 PositionState.IDLE.value, PositionState.CLOSED.value
             ):
+                terminal_times = getattr(
+                    self, "_recovery_terminal_position_timestamps", None
+                )
+                if not isinstance(terminal_times, dict):
+                    terminal_times = {}
+                    self._recovery_terminal_position_timestamps = terminal_times
+                terminal_times[pair_tag] = int(pos.updated_at or 0)
                 await self.redis.delete(key)
                 self.active_positions.pop(pair_tag, None)
                 self.states[pair_tag] = PositionState(str(pos.state).upper())
@@ -188,9 +195,16 @@ class EngineRecoveryPositionsMixin:
                     )
                 snapshot = dict(snapshot)
                 snapshot["state"] = str(row.get("status") or snapshot.get("state") or "RECONCILIATION_REQUIRED")
-                cached = self.active_positions.get(pair_tag)
-                if cached is not None and int(snapshot.get("updated_at") or 0) <= int(cached.updated_at or 0):
+                durable_updated = int(snapshot.get("updated_at") or 0)
+                terminal_times = getattr(
+                    self, "_recovery_terminal_position_timestamps", {}
+                )
+                if durable_updated <= int(terminal_times.get(pair_tag, 0) or 0):
                     continue
+                cached = self.active_positions.get(pair_tag)
+                if cached is not None and durable_updated <= int(cached.updated_at or 0):
+                    continue
+                terminal_times.pop(pair_tag, None)
                 key = f"arb:active_pos:{pair_tag}"
                 await self.redis.set(key, json.dumps(snapshot, allow_nan=False))
                 if not await self._recover_active_position_record(key):
