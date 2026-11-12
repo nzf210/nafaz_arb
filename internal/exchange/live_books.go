@@ -2,11 +2,7 @@ package exchange
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,13 +28,10 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 	}
 	if symbol != "" {
 		l.mu.RLock()
-		manager, cache, maxAge, okxMaxAge := l.okxBooks, l.wsCache, l.wsMaxAge, l.okxWSMaxAge
+		manager, legacyManager, cache, maxAge, okxMaxAge := l.okxVenueBooks, l.okxBooks, l.wsCache, l.wsMaxAge, l.okxWSMaxAge
 		l.mu.RUnlock()
-		if exchangeName == "okx" && manager != nil {
-			if book, ok := manager.Get(symbol, okxMaxAge); ok {
-				return book, nil
-			}
-		}
+		if exchangeName == "okx" && manager != nil { if book, ok := manager.Get(symbol, okxMaxAge); ok { return book, nil } }
+		if exchangeName == "okx" && legacyManager != nil { if book, ok := legacyManager.Get(symbol, okxMaxAge); ok { return book, nil } }
 		if cache != nil {
 			book, ok, isDuplicate, isOutOfOrder, isGap, _ := cache.Get(exchangeName, symbol, maxAge)
 			if !ok {
@@ -167,68 +160,16 @@ func cleanSymbol(symbol string) string {
 }
 
 func (l *LiveAdapter) fetchOKXOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
-	rawSymbol := cleanSymbol(symbol)
-	path := fmt.Sprintf("/api/v5/market/books?instId=%s&sz=20", url.QueryEscape(rawSymbol))
-	resp, err := l.okxDo(ctx, path, func() (*http.Request, error) {
-		return l.newOKXRequest(ctx, path)
-	})
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("okx depth request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		if classifyHTTPError(resp.StatusCode) {
-			return domain.OrderBook{}, fmt.Errorf("%w: okx depth status %d", ErrExchangeUnavailable, resp.StatusCode)
-		}
-		return domain.OrderBook{}, fmt.Errorf("okx depth status: %d", resp.StatusCode)
-	}
-
-	var okxResp struct {
-		Code string `json:"code"`
-		Msg  string `json:"msg"`
-		Data []struct {
-			Bids [][]string `json:"bids"`
-			Asks [][]string `json:"asks"`
-			Ts   string     `json:"ts"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&okxResp); err != nil {
-		return domain.OrderBook{}, fmt.Errorf("decode okx depth: %w", err)
-	}
-	if okxResp.Code != "0" || len(okxResp.Data) == 0 {
-		return domain.OrderBook{}, fmt.Errorf("okx depth error: %s (%s)", okxResp.Msg, okxResp.Code)
-	}
-
 	l.mu.RLock()
-	ctVal, ok := l.contractSizes[symbol]
-	if !ok {
-		ctVal, ok = l.contractSizes[rawSymbol]
-	}
+	client := l.okxClient
+	contractSize, ok := l.contractSizes[symbol]
+	if !ok { contractSize, ok = l.contractSizes[cleanSymbol(symbol)] }
 	l.mu.RUnlock()
-	if !ok || ctVal <= 0 {
-		ctVal = 1.0
-	}
-
-	bookData := okxResp.Data[0]
-	bids := parseStringLevels(bookData.Bids, ctVal)
-	asks := parseStringLevels(bookData.Asks, ctVal)
-
-	ts := time.Now().UTC()
-	if ms, err := strconv.ParseInt(bookData.Ts, 10, 64); err == nil && ms > 0 {
-		ts = time.UnixMilli(ms).UTC()
-	}
-
-	return domain.OrderBook{
-		Exchange:   "okx",
-		Symbol:     symbol,
-		Bids:       bids,
-		Asks:       asks,
-		Timestamp:  ts,
-		ReceivedAt: time.Now().UTC(),
-		Source:     "exchange_timestamp",
-	}, nil
+	if !ok || contractSize <= 0 { contractSize = 1 }
+	if client == nil { return domain.OrderBook{}, fmt.Errorf("okx client is not configured") }
+	book, err := client.PerpetualOrderBook(ctx, symbol, contractSize)
+	if err != nil { return domain.OrderBook{}, err }
+	return book, nil
 }
 
 func (l *LiveAdapter) fetchMEXCOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
