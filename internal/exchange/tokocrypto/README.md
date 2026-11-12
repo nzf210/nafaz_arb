@@ -48,6 +48,9 @@ CCXT adapter and requires the account-issued broker prefix:
   symbols from durable order intents and tracked positions rather than calling
   `fetch_open_orders(None)`.
 
-Only MBX symbol type 1 is supported by this public feed. Type 2/3 hosts and
-symbol formats differ and must remain REST-only unless separately implemented.
-No authenticated user WebSocket stream is enabled by this package.
+The public WebSocket feed intentionally subscribes only to MBX symbol type 1.
+NextMe symbol type 3 uses its own REST depth endpoint (`cloudme-toko.2meta.app`)
+and remains REST-only; symbol type 2 is rejected rather than sent to the wrong
+host. The REST client records `symbolType` from market discovery and selects the
+matching endpoint. No authenticated user WebSocket stream is enabled by this
+package.
