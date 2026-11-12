@@ -150,7 +150,16 @@ class EngineRecoveryMixin(EngineRecoveryPositionsMixin):
                 global_symbol, items
             )
             if reason is None:
-                verified_pairs.update(pair_tag for pair_tag, _ in items)
+                # A balance match proves exposure quantity, not that a prior
+                # failed/unknown lifecycle operation is safe to resume. Those
+                # states remain operator-gated until explicitly resolved.
+                verified_pairs.update(
+                    pair_tag for pair_tag, pos in items
+                    if str(getattr(pos, "state", "")).upper() not in (
+                        PositionState.FAILED.value,
+                        PositionState.RECONCILIATION_REQUIRED.value,
+                    )
+                )
                 logger.info(
                     f"[Recovery] verified {global_symbol} short quantity "
                     f"{actual_qty} against Redis snapshot "
