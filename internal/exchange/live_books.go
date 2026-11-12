@@ -32,7 +32,10 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 		tokoBooks, mexcBooks, venueMaxAge := l.tokocryptoBooks, l.mexcPerpBooks, l.venueWSMaxAge
 		l.mu.RUnlock()
 		if exchangeName == "okx" && manager != nil { if book, ok := manager.Get(symbol, okxMaxAge); ok { return book, nil } }
-		if exchangeName == "tokocrypto" && tokoBooks != nil { if book, ok := tokoBooks.Get(strings.TrimPrefix(symbol, "toko:"), venueMaxAge); ok { return book, nil } }
+		if exchangeName == "tokocrypto" && tokoBooks != nil {
+			tokoSymbol := strings.ReplaceAll(strings.TrimPrefix(symbol, "toko:"), "_", "")
+			if book, ok := tokoBooks.Get(tokoSymbol, venueMaxAge); ok { return book, nil }
+		}
 		if exchangeName == "mexc" && isMEXCSymbol(symbol) && mexcBooks != nil { if book, ok := mexcBooks.Get(cleanSymbol(symbol), venueMaxAge); ok { return book, nil } }
 		if exchangeName == "okx" && legacyManager != nil { if book, ok := legacyManager.Get(symbol, okxMaxAge); ok { return book, nil } }
 		if cache != nil {
