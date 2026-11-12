@@ -90,7 +90,7 @@ func (s *Service) Analyze(ctx context.Context) (Result,error) {
 			if !strings.EqualFold(book.Exchange,market.Exchange)||!strings.EqualFold(book.Symbol,market.Symbol) {
 				mu.Lock();result.Errors=append(result.Errors,fmt.Sprintf("%s:%s returned mismatched order book identity",market.Exchange,market.Symbol));mu.Unlock();return
 			}
-			fee,ok,feeErr:=s.resolveFee(ctx,market.Exchange,market.Symbol)
+			fee,ok,feeErr:=s.resolveFee(ctx,market.Exchange,market.BaseAsset+"/"+market.QuoteAsset)
 			if feeErr!=nil {
 				mu.Lock();result.Errors=append(result.Errors,fmt.Sprintf("%s:%s fee profile: %v",market.Exchange,market.Symbol,feeErr));mu.Unlock();return
 			}
