@@ -15,14 +15,15 @@ type Adapter struct {
 	source contracts.MarketDataAdapter
 	enabled bool
 	onMarkets func([]domain.Market)
+	onOutcome func(error)
 	mu sync.RWMutex
 	markets []domain.Market
 	contractSizes map[string]float64
 	fetchedAt time.Time
 }
 
-func NewAdapter(client *Client,source contracts.MarketDataAdapter,enabled bool,onMarkets func([]domain.Market))*Adapter{
-	return &Adapter{client:client,source:source,enabled:enabled,onMarkets:onMarkets,contractSizes:make(map[string]float64)}
+func NewAdapter(client *Client,source contracts.MarketDataAdapter,enabled bool,onMarkets func([]domain.Market),onOutcome func(error))*Adapter{
+	return &Adapter{client:client,source:source,enabled:enabled,onMarkets:onMarkets,onOutcome:onOutcome,contractSizes:make(map[string]float64)}
 }
 func(*Adapter)SpotMarkets(context.Context)([]domain.Market,error){return nil,nil}
 func(a *Adapter)PerpetualMarkets(ctx context.Context)([]domain.Market,error){
