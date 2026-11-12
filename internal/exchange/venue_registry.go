@@ -44,6 +44,7 @@ func (l *LiveAdapter) VenueAdapters() map[string]contracts.MarketDataAdapter {
 		"mexc": mexc.NewAdapter(mexcClient, l, includeMEXC, func(markets []domain.Market) {
 			l.mu.Lock()
 			l.cachedMEXCPerp = append([]domain.Market(nil), markets...)
+			l.lastMEXCPerpFetch = time.Now().UTC()
 			for _, market := range markets {
 				if market.AmountSpec != nil && market.AmountSpec.BasePerUnit > 0 {
 					raw := strings.TrimPrefix(market.Symbol, "mexc:")
