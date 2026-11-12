@@ -65,6 +65,32 @@ class TestDisabledWriter:
         assert writer._task is None
 
 
+class TestPositionRecovery:
+    def test_restore_position_hydrates_identity_without_journaling_stale_snapshot(self):
+        writer = _writer()
+        position = _pos(state="HEDGED_ACTIVE", updated_at=1_700_000_000_123)
+
+        writer.restore_position(
+            "indodax:usdt_idr__okx:usdt_usdt_swap",
+            position,
+            None,
+            is_mock=False,
+        )
+
+        assert writer._outbox.pending(1000) == []
+        assert "indodax:usdt_idr__okx:usdt_usdt_swap" in writer._position_ids
+        restored = writer._position_rows["indodax:usdt_idr__okx:usdt_usdt_swap"]
+        assert restored["qty"] == position.qty
+        assert restored["updated_at"] == _ms_to_iso(position.updated_at)
+
+    def test_new_position_still_journals_normally(self):
+        writer = _writer()
+        writer.position_opened("indodax:usdt_idr", _pos(), None, is_mock=False)
+
+        pending = writer._outbox.pending(1000)
+        assert any(table == "positions" for _, table, _, _ in pending)
+
+
 class TestEventQueue:
     def test_event_has_deterministic_id(self):
         writer = _writer()
