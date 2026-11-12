@@ -95,8 +95,6 @@ func (c *Client) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
 			case "LOT_SIZE":
 				market.LotSize, _ = strconv.ParseFloat(filter.StepSize, 64)
 				market.MinOrder, _ = strconv.ParseFloat(filter.MinQty, 64)
-			case "MIN_NOTIONAL", "NOTIONAL":
-				if market.MinOrder == 0 { market.MinOrder, _ = strconv.ParseFloat(filter.MinNotional, 64) }
 			}
 		}
 		if validPositive(market.LotSize) && validNonNegative(market.MinOrder) {
