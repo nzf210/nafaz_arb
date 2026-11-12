@@ -516,12 +516,13 @@ func TestLiveRequiresRedisAndExposureSafetyGates(t *testing.T) {
 		"redis":{"enabled":true,"addr":"localhost:6380"},
 		"check_open_positions":true,
 		"exclude_open_orders":true,
+		"enable_executor_signals":true,
 		"global_futures_exchange":"okx"
 	}`
 	if err:=os.WriteFile(path,[]byte(base),0600);err!=nil{t.Fatal(err)}
 	if _,err:=Load(path);err!=nil{t.Fatalf("valid LIVE safety config rejected: %v",err)}
 
-	for _,field:=range []string{"check_open_positions","exclude_open_orders"}{
+	for _,field:=range []string{"check_open_positions","exclude_open_orders","enable_executor_signals"}{
 		mutated:=strings.Replace(base,"\""+field+"\":true","\""+field+"\":false",1)
 		if err:=os.WriteFile(path,[]byte(mutated),0600);err!=nil{t.Fatal(err)}
 		if _,err:=Load(path);err==nil||!strings.Contains(err.Error(),field){
