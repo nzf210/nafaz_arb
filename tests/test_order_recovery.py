@@ -1292,6 +1292,34 @@ def test_catalogue_match_refuses_multiple_strategies_on_same_spot_market():
 
     assert engine._match_position_by_catalogue("indodax", "btc_idr") == ""
 
+def test_recovery_catalogue_sweeps_additional_configured_spot_and_perpetual_venues():
+    """Tokocrypto/MEXC credentials must be swept even when not the default pair."""
+    class VenueClient:
+        balance_exchanges = {
+            "indodax": {"market": "spot", "client": object()},
+            "okx": {"market": "futures", "client": object()},
+            "tokocrypto": {"market": "spot", "client": object()},
+            "mexc": {"market": "futures", "client": object()},
+            "bybit": {"market": "futures", "client": None},
+        }
+
+        def for_venue(self, exchange):
+            entry = self.balance_exchanges.get(exchange)
+            return object() if entry and entry.get("client") is not None else None
+
+    engine = _engine(None, VenueClient(), mock_mode=False)
+    catalogues = {
+        (entry["exchange"], entry["market"])
+        for entry in engine._recovery_symbol_catalogues()
+    }
+
+    assert catalogues == {
+        ("indodax", "spot"),
+        ("okx", "futures"),
+        ("tokocrypto", "spot"),
+        ("mexc", "futures"),
+    }
+
 
 @pytest.mark.asyncio
 async def test_durable_registry_read_failure_keeps_global_entry_gate(fake_redis):
