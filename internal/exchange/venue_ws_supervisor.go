@@ -29,6 +29,7 @@ type venueBookSupervisor struct {
 	ctx context.Context
 	cancel context.CancelFunc
 	workers map[string]context.CancelFunc
+	maxWorkers int
 	connected map[string]bool
 	lastMessage map[string]time.Time
 	wg sync.WaitGroup
@@ -44,7 +45,7 @@ func newVenueBookSupervisor(name string, wsURL func(string) string, subscribe fu
 	snapshot func(context.Context, string) error, apply func(string, []byte) error,
 	invalidate func(string), heartbeat []byte) *venueBookSupervisor {
 	return &venueBookSupervisor{name:name, wsURL:wsURL, subscribe:subscribe, snapshot:snapshot,
-		apply:apply, invalidate:invalidate, heartbeat:heartbeat, workers:make(map[string]context.CancelFunc), connected:make(map[string]bool), lastMessage:make(map[string]time.Time)}
+		apply:apply, invalidate:invalidate, heartbeat:heartbeat, maxWorkers:100, workers:make(map[string]context.CancelFunc), connected:make(map[string]bool), lastMessage:make(map[string]time.Time)}
 }
 
 func (s *venueBookSupervisor) Start(parent context.Context) {
@@ -62,10 +63,13 @@ func (s *venueBookSupervisor) SetSymbols(symbols []string) {
 	}
 	s.mu.Lock()
 	if s.ctx == nil || s.ctx.Err() != nil { s.mu.Unlock(); return }
+	ordered:=make([]string,0,len(unique)); for symbol:=range unique { ordered=append(ordered,symbol) }; sort.Strings(ordered)
+	if s.maxWorkers>0 && len(ordered)>s.maxWorkers { slog.Warn("venue WebSocket symbol cap reached; remaining symbols use REST fallback","venue",s.name,"requested",len(ordered),"subscribed",s.maxWorkers); ordered=ordered[:s.maxWorkers] }
+	selected:=make(map[string]struct{},len(ordered)); for _,symbol:=range ordered { selected[symbol]=struct{}{} }
 	for symbol, cancel := range s.workers {
-		if _, keep := unique[symbol]; !keep { cancel(); delete(s.workers, symbol) }
+		if _, keep := selected[symbol]; !keep { cancel(); delete(s.workers, symbol) }
 	}
-	for symbol := range unique {
+	for _, symbol := range ordered {
 		if _, exists := s.workers[symbol]; exists { continue }
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.workers[symbol] = cancel
@@ -193,7 +197,7 @@ func (l *LiveAdapter) newTokocryptoSupervisor() *venueBookSupervisor {
 }
 
 func (l *LiveAdapter) newMEXCPerpetualSupervisor() *venueBookSupervisor {
-	return newVenueBookSupervisor("mexc-perpetual",
+	supervisor := newVenueBookSupervisor("mexc-perpetual",
 		func(string) string { return "wss://contract.mexc.com/edge" },
 		func(symbol string) []byte { frame, _ := json.Marshal(map[string]any{"method":"sub.depth","param":map[string]any{"symbol":symbol,"compress":false}}); return frame },
 		func(ctx context.Context, symbol string) error {
@@ -218,6 +222,8 @@ func (l *LiveAdapter) newMEXCPerpetualSupervisor() *venueBookSupervisor {
 		},
 		func(symbol string) { l.mu.RLock(); m:=l.mexcPerpBooks; l.mu.RUnlock(); if m!=nil { m.Invalidate(symbol) } },
 		[]byte(`{"method":"ping"}`))
+	supervisor.maxWorkers = 20
+	return supervisor
 }
 
 func (s *venueBookSupervisor) setConnected(symbol string, connected bool) {
