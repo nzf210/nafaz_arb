@@ -11,6 +11,7 @@ import (
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/mexc"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/tokocrypto"
 )
 
@@ -24,6 +25,7 @@ type LiveAdapter struct {
 	client            *http.Client
 	indodaxClient     *indodax.Client
 	tokocryptoClient  *tokocrypto.Client
+	mexcClient        *mexc.Client
 	indodaxBaseURL    string
 	tokocryptoBaseURL string
 	okxBaseURL        string
@@ -110,6 +112,7 @@ func NewLiveAdapter() *LiveAdapter {
 	}
 	adapter.indodaxClient = indodax.New(httpClient, adapter.indodaxBaseURL)
 	adapter.tokocryptoClient = tokocrypto.New(httpClient, adapter.tokocryptoBaseURL)
+	adapter.mexcClient = mexc.New(httpClient, adapter.mexcBaseURL, adapter.mexcSpotBaseURL)
 	return adapter
 }
 
@@ -143,9 +146,11 @@ func (l *LiveAdapter) SetBaseURLs(urls ...string) {
 	}
 	if len(urls) > 2 && urls[2] != "" {
 		l.mexcBaseURL = urls[2]
+		l.mexcClient = mexc.New(l.client, l.mexcBaseURL, l.mexcSpotBaseURL)
 	}
 	if len(urls) > 3 && urls[3] != "" {
 		l.mexcSpotBaseURL = urls[3]
+		l.mexcClient = mexc.New(l.client, l.mexcBaseURL, l.mexcSpotBaseURL)
 	}
 	if len(urls) > 4 && urls[4] != "" {
 		l.tokocryptoBaseURL = urls[4]
