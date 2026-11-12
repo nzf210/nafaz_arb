@@ -35,6 +35,8 @@ def missing_live_credentials(config) -> list:
         missing.append("Supabase durable storage (enabled, URL and service-role key)")
     if not str(config.supabase.outbox_path or "").strip():
         missing.append("Supabase durable outbox path")
+    if not str(config.redis_url or "").strip():
+        missing.append("Redis URL")
     if tokocrypto_broker_id_missing(config):
         missing.append(
             "tokocrypto registered broker_id (options.broker_id or options.broker.marketType)"
