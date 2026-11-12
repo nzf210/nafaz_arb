@@ -96,6 +96,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate Docker Compose deployment configuration
+        env:
+          API_AUTH_TOKEN: ci-placeholder
+          TELEGRAM_BOT_TOKEN: ci-placeholder
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_KEY: ci-placeholder
+        run: docker compose -f docker-compose.yml config --quiet
       - name: Build scanner image
         run: docker build -f Dockerfile -t nafaz-scanner:ci .
       - name: Build executor image
