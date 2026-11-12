@@ -51,7 +51,13 @@ class EngineSignalMixin:
         3. If no active position, place Maker Limit Buy at recommended_limit_buy_idr.
         """
         async with self._pair_lock(pair_tag):
-            if not getattr(self, "_recovery_complete", False):
+            # Signal handlers are also called directly by unit tests and
+            # controlled in-process workflows that do not run the service
+            # lifecycle. Enforce the startup gate only once the runtime has
+            # started. EngineRuntime.start() calls initialize() first, and
+            # _running becomes True only after startup recovery has completed
+            # (or has explicitly failed closed).
+            if self._running and not getattr(self, "_recovery_complete", False):
                 logger.warning(
                     "[Recovery] rejecting entry for %s: startup reconciliation is not complete",
                     pair_tag,
