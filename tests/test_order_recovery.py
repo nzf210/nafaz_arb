@@ -2034,3 +2034,49 @@ async def test_tokocrypto_record_lookup_never_touches_the_indodax_leg(fake_redis
     assert seen == ["tokocrypto"], f"lookup hit {seen}, not the owning venue"
     # The scanner venue tag must never reach the wire.
     assert order["symbol"] == "ATH/USDT"
+
+
+@pytest.mark.asyncio
+async def test_durable_registry_restores_tokocrypto_wire_id_and_amount_specs(fake_redis):
+    """Supabase restart recovery must retain venue aliases and execution rules."""
+    class DurableReader:
+        enabled = True
+
+        async def fetch_open_order_records(self):
+            return [{
+                "local_order_id": OrderRecord.local_id_for(
+                    "tokocrypto", "toko-ath-entry-1", ""
+                ),
+                "client_order_id": "toko-ath-entry-1",
+                "venue_client_order_id": "a1b2c3d4entry7",
+                "exchange_order_id": "toko-77",
+                "pair_key": "tokocrypto:ath_usdt__binance:ath_usdt",
+                "position_key": "position:tokocrypto:ath_usdt__binance:ath_usdt",
+                "exchange_name": "tokocrypto",
+                "market_type": "spot",
+                "order_role": "ENTRY",
+                "symbol": "ATH/USDT",
+                "side": "buy",
+                "order_type": "limit",
+                "status": "open",
+                "requested_qty": 12.0,
+                "filled_qty": 0.0,
+                "remaining_qty": 12.0,
+                "recovery_status": "ADOPTED",
+                "is_mock": False,
+                "raw_payload": json.dumps({
+                    "local_amount_spec": LOCAL_SPEC,
+                    "global_amount_spec": GLOBAL_SPEC,
+                    "recovery_context": ENTRY_CONTEXT,
+                    "hedged_quantity": 0.0,
+                }),
+            }]
+
+    registry = UniversalOrderRegistry(fake_redis, DurableReader())
+    restored = await registry._durable_active_records()
+    record = next(iter(restored.values()))
+
+    assert record.venue_client_order_id == "a1b2c3d4entry7"
+    assert record.local_amount_spec == LOCAL_SPEC
+    assert record.global_amount_spec == GLOBAL_SPEC
+    assert record.recovery_context == ENTRY_CONTEXT
