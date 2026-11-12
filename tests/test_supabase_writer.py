@@ -617,6 +617,49 @@ class TestOrderRegistryWriter:
         assert row["position_key"] == "position:indodax:btc_idr__binance:btc_usdt"
         assert "usdt_idr_rate" in row["raw_payload"]
 
+    def test_entry_order_is_linked_to_position_uuid_after_position_is_created(self):
+        writer = _writer()
+        pair_key = "tokocrypto:ath_usdt__binance:ath_usdt"
+        writer.order(
+            pair_key, "spot_entry", "tokocrypto", "spot", "ATH/USDT",
+            {
+                "id": "toko-77", "amount": 12.0, "filled": 12.0,
+                "remaining": 0.0, "price": 1.0, "average": 1.0,
+                "status": "closed", "type": "limit",
+            },
+            client_order_id="logical-ath-entry-7",
+            is_mock=False,
+        )
+        writer.position_opened(
+            pair_key,
+            _pos(
+                local_exchange="tokocrypto",
+                global_exchange="binance",
+                symbol="ATH/USDT",
+                qty=12.0,
+                initial_qty=12.0,
+                opened_at_ms=1_700_000_000_000,
+            ),
+            SimpleNamespace(
+                local_symbol="ATH/USDT",
+                global_symbol="ATHUSDT",
+                base_asset="ATH",
+                quote_asset="USDT",
+            ),
+            is_mock=False,
+        )
+
+        rows = _drain(writer)
+        position_id = [
+            row["id"] for table, _, row in rows if table == "positions"
+        ][0]
+        order_rows = [
+            row for table, _, row in rows if table == "orders"
+        ]
+        assert len(order_rows) == 2
+        assert order_rows[0]["position_id"] is None
+        assert order_rows[-1]["position_id"] == position_id
+
     def test_unlinked_orphan_row_omits_pair_and_position(self):
         writer = _writer()
         writer.order_record(
