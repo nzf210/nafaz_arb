@@ -52,10 +52,9 @@ class PositionState(Enum):
     HEDGED_ACTIVE = "HEDGED_ACTIVE"
     EXIT_PENDING = "EXIT_PENDING"
     CLOSED = "CLOSED"
-    # Terminal error state: the pair is flat but the last operation left the bot
-    # in a state an operator must inspect (e.g. hedge rollback failed, spot leg
-    # could not be liquidated). Distinguishing this from CLOSED means a failure
-    # is observable through the status API instead of looking like a clean exit.
+    # Terminal safety state: automatic management has stopped and exposure may
+    # still require operator reconciliation (for example, a failed rollback or
+    # an unverified liquidation). Never equate FAILED with a clean CLOSED pair.
     FAILED = "FAILED"
     RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
 
