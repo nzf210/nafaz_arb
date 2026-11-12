@@ -36,7 +36,7 @@ func main(){
 			ErrorRateThreshold: cfg.ExchangeErrorRateThreshold,
 			MinRequests:        cfg.ExchangeErrorMinRequests,
 		})
-		if cfg.EnableWebSocketFeed {
+		if cfg.EnableWebSocketFeed != nil && *cfg.EnableWebSocketFeed {
 			live.EnableWebSocketFeed(context.Background(), time.Duration(cfg.WebSocketBookMaxAgeSeconds)*time.Second)
 		}
 		if cfg.OKXWebSocketEnabled != nil && *cfg.OKXWebSocketEnabled {
