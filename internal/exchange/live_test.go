@@ -284,7 +284,9 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{
 				"code": 0,
+				"lastUpdateId": 100,
 				"data": {
+					"lastUpdateId": 100,
 					"bids":[["60020","2.0"]],
 					"asks":[["60030","3.0"]]
 				}
