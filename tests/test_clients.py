@@ -153,6 +153,7 @@ async def test_live_client_resolves_scanner_market_ids_before_orders():
 
     class Spot:
         id = "tokocrypto"
+        options = {"broker": {"marketType": "x-TKT5PX2F"}}
         markets = {
             "BTC/IDR": {
                 "id": "BTCIDR", "symbol": "BTC/IDR", "base": "BTC",
@@ -191,7 +192,8 @@ async def test_live_client_resolves_scanner_market_ids_before_orders():
     )
     client = ExchangeClient(spot, futures, pair_info=pair)
     await client.place_local_limit_buy(
-        "toko:BTC_IDR", 0.001, 1_000_000_000, amount_spec=BASE_AMOUNT_SPEC
+        "toko:BTC_IDR", 0.001, 1_000_000_000,
+        client_order_id="btc-entry-1", amount_spec=BASE_AMOUNT_SPEC,
     )
     await client.open_global_short_market(
         "okx:BTC-USDT-SWAP", 0.001, amount_spec=BASE_AMOUNT_SPEC
