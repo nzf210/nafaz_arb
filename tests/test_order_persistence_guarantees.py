@@ -82,3 +82,20 @@ def test_durable_recovery_query_includes_phantom_and_orphan_incidents():
     assert "PHANTOM" in query["recovery_status"]
     assert "ORPHAN_ORDER" in query["recovery_status"]
     assert "UNVERIFIED" in query["recovery_status"]
+
+
+def test_merge_preserves_durable_phantom_and_orphan_classifications():
+    from executor.models import RecoveryStatus
+    from executor.order_registry_recovery import OrderRegistryRecoveryMixin
+
+    cached = _record()
+    durable = _record()
+    durable.recovery_status = RecoveryStatus.PHANTOM.value
+
+    merged = OrderRegistryRecoveryMixin._merge_durable_order_record(cached, durable)
+
+    assert merged.recovery_status == RecoveryStatus.PHANTOM.value
+
+    durable.recovery_status = RecoveryStatus.ORPHAN_ORDER.value
+    merged = OrderRegistryRecoveryMixin._merge_durable_order_record(cached, durable)
+    assert merged.recovery_status == RecoveryStatus.ORPHAN_ORDER.value
