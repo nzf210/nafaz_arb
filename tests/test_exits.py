@@ -220,6 +220,34 @@ async def test_state4_records_negative_pnl_realistically(engine, fake_redis, moc
     assert stats.get("win_count") is None or stats.get("win_count") == "0"
     assert float(stats.get("total_pnl_usdt", 0.0)) < 0
 
+def test_verified_fee_rate_snapshot_is_not_mislabeled_as_actual_fill_fee(engine):
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        spot_entry_fee_pct=0.2,
+        spot_exit_fee_pct=0.2,
+        perp_entry_fee_pct=0.05,
+        perp_exit_fee_pct=0.05,
+        fee_source="EXCHANGE_API",
+        fee_verified=True,
+    )
+
+    trade, *_ = engine._build_closed_trade_record(
+        pos, 0.01, 1_010_000_000.0, 1_000_000_000.0,
+        65_000.0, 64_900.0, 16_000.0, 0.01,
+    )
+
+    assert trade["fee_rate_verified"] is True
+    assert trade["fee_verified"] is False
+    assert trade["fee_actual_reconciled"] is False
+    assert trade["pnl_complete"] is False
+    assert trade["pnl_source"] == "ESTIMATED_FEE_SNAPSHOT"
+
+
 @pytest.mark.asyncio
 async def test_guaranteed_profit_floor_in_dynamic_exit(engine, fake_redis, mock_client):
     """
