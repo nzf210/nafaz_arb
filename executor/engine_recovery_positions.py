@@ -62,24 +62,40 @@ class EngineRecoveryPositionsMixin:
     def _restore_active_position_state(
         self, pair_tag: str, pos: ActivePosition
     ) -> None:
+        raw_state = str(getattr(pos, "state", "HEDGED_ACTIVE") or "HEDGED_ACTIVE").upper()
+        try:
+            state = PositionState(raw_state)
+        except ValueError:
+            state = PositionState.RECONCILIATION_REQUIRED
+            pos.state = state.value
+
+        if state in (PositionState.IDLE, PositionState.CLOSED):
+            self.active_positions.pop(pair_tag, None)
+            self.states[pair_tag] = state
+            return
+
         self.active_positions[pair_tag] = pos
-        if getattr(pos, "state", "HEDGED_ACTIVE") == "RECONCILIATION_REQUIRED":
-            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
-            self._failure_reasons[pair_tag] = {
-                "reason": "RESTORED_RECONCILIATION_REQUIRED",
+        self.states[pair_tag] = state
+        if state in (PositionState.RECONCILIATION_REQUIRED, PositionState.FAILED):
+            self._failure_reasons.setdefault(pair_tag, {
+                "reason": (
+                    "RESTORED_RECONCILIATION_REQUIRED"
+                    if state == PositionState.RECONCILIATION_REQUIRED
+                    else "RESTORED_FAILED_POSITION"
+                ),
                 "message": (
-                    "Position restored from Redis with RECONCILIATION_REQUIRED state. "
-                    "Manual intervention required."
+                    "Position restored in an unresolved terminal safety state; "
+                    "manual reconciliation is required before new exposure."
                 ),
                 "detail": {"qty": pos.qty, "symbol": pos.symbol},
                 "timestamp_ms": int(time.time() * 1000),
-            }
+            })
             logger.critical(
-                f"[Recovery] Position {pair_tag} has RECONCILIATION_REQUIRED status! "
-                "Manual intervention required; skipping automatic active exit management."
+                f"[Recovery] Position {pair_tag} restored with {state.value}; "
+                "manual reconciliation is required."
             )
         else:
-            self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+            self._failure_reasons.pop(pair_tag, None)
 
     async def _recover_active_position_record(self, key: str) -> bool:
         pair_tag = key.split("arb:active_pos:", 1)[-1]
@@ -88,6 +104,13 @@ class EngineRecoveryPositionsMixin:
             if not raw:
                 return False
             pos = ActivePosition.from_dict(json.loads(raw))
+            if str(pos.state or "").upper() in (
+                PositionState.IDLE.value, PositionState.CLOSED.value
+            ):
+                await self.redis.delete(key)
+                self.active_positions.pop(pair_tag, None)
+                self.states[pair_tag] = PositionState(str(pos.state).upper())
+                return False
             migrated = await self._migrate_active_position_key(pair_tag, key, pos)
             if migrated is None:
                 return False
