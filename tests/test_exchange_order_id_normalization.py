@@ -98,8 +98,7 @@ def test_supabase_order_analytics_persists_native_exchange_id():
         outbox_path=":memory:",
     )
     writer = SupabaseWriter(cfg)
-    try:
-        assert writer.order(
+    assert writer.order(
             "btc-usdt",
             "spot_entry",
             "tokocrypto",
@@ -107,11 +106,9 @@ def test_supabase_order_analytics_persists_native_exchange_id():
             "BTC/USDT",
             {"info": {"orderId": "T-300"}, "status": "open", "amount": 1.0},
             client_order_id="bot-client-2",
-            is_mock=False,
-        )
-        pending = writer._outbox.pending(100)
-        rows = [row for row in pending if row[1] == "orders"]
-        assert rows
-        assert rows[-1][3]["exchange_order_id"] == "T-300"
-    finally:
-        writer.close()
+        is_mock=False,
+    )
+    pending = writer._outbox.pending(100)
+    rows = [row for row in pending if row[1] == "orders"]
+    assert rows
+    assert rows[-1][3]["exchange_order_id"] == "T-300"
