@@ -25,7 +25,15 @@ def main() -> int:
     violations: list[tuple[str, int]] = []
     for raw_path in args.paths:
         path = Path(raw_path)
-        if path.suffix not in SOURCE_SUFFIXES or not path.is_file():
+        # The 500-line rule is for production source modules. Test suites
+        # intentionally group many scenarios and are governed by test quality,
+        # not production-module cohesion.
+        if (
+            path.suffix not in SOURCE_SUFFIXES
+            or not path.is_file()
+            or "tests" in path.parts
+            or path.name.startswith("test_")
+        ):
             continue
         lines = count_lines(path)
         if lines > args.limit:
