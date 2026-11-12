@@ -107,8 +107,16 @@ class SupabasePositionMixin:
     # --------------------------------------------------------------- positions
 
     def position_opened(
-        self, pair_key: str, pos: Any, pair_info: Any, is_mock: bool = True
+        self, pair_key: str, pos: Any, pair_info: Any, is_mock: bool = True,
+        *, persist: bool = True,
     ) -> None:
+        """Register a position snapshot; optionally journal a new lifecycle event.
+
+        Recovery calls this with persist=False. Replaying a stale Redis cache into
+        the outbox while startup is still comparing it with Supabase would make
+        that stale snapshot look newer than the durable database row and could
+        resurrect old quantity/state after a restart.
+        """
         position_id = self._position_ids.get(pair_key)
         if position_id is None:
             position_id = _position_uuid(pair_key, getattr(pos, "opened_at_ms", 0) if pos else 0)
@@ -119,9 +127,9 @@ class SupabasePositionMixin:
             "local_exchange": getattr(pos, "local_exchange", "") or "",
             "global_exchange": getattr(pos, "global_exchange", "") or "",
             "local_symbol": getattr(pair_info, "local_symbol", "") or getattr(pos, "symbol", ""),
-            "global_symbol": getattr(pair_info, "global_symbol", "") or getattr(pos, "symbol", ""),
-            "base_asset": getattr(pair_info, "base_asset", "") or "",
-            "quote_asset": getattr(pair_info, "quote_asset", "") or "",
+            "global_symbol": getattr(pair_info, "global_symbol", "") or getattr(pos, "global_symbol", "") or getattr(pos, "symbol", ""),
+            "base_asset": getattr(pair_info, "base_asset", "") or getattr(pos, "base_asset", "") or "",
+            "quote_asset": getattr(pair_info, "quote_asset", "") or getattr(pos, "quote_asset", "") or "",
             "status": getattr(pos, "state", "HEDGED_ACTIVE") or "HEDGED_ACTIVE",
             "execution_mode": "MAKER_TAKER",
             "is_mock": bool(is_mock),
@@ -134,12 +142,24 @@ class SupabasePositionMixin:
             "accumulated_funding": _num(getattr(pos, "accumulated_funding_usdt", 0.0)),
             "current_funding_rate": _num(getattr(pos, "current_funding_rate", 0.0)),
             "opened_at": _ms_to_iso(getattr(pos, "opened_at_ms", 0)),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": (
+                datetime.now(timezone.utc).isoformat()
+                if persist
+                else (_ms_to_iso(getattr(pos, "updated_at", 0)) or datetime.now(timezone.utc).isoformat())
+            ),
             "state_snapshot": pos.to_dict() if hasattr(pos, "to_dict") else {},
         }
         self._position_rows[pair_key] = row
+        if not persist:
+            return
         self._emit("positions", row, on_conflict="id")
         self._position_legs(pair_key, position_id, pos, pair_info, status=row["status"])
+
+    def restore_position(
+        self, pair_key: str, pos: Any, pair_info: Any, is_mock: bool = False
+    ) -> None:
+        """Hydrate writer identity/cache from recovery without creating a new write."""
+        self.position_opened(pair_key, pos, pair_info, is_mock=is_mock, persist=False)
 
     def _position_legs(
         self, pair_key: str, position_id: str, pos: Any, pair_info: Any,
