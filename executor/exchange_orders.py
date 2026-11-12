@@ -60,8 +60,10 @@ class ExchangeOrderMixin:
         )
         if market_id != normalized_id:
             return False
-        if pair_base and str(market.get("base", "")).upper() != pair_base:
-            return False
+        # The persisted scanner symbol is already a venue-native market id.
+        # During recovery the facade may be bound to a different pair (e.g. UMA),
+        # so pair_base is not authoritative when this exact venue id matches.
+        # Keep quote and contract-kind checks below as independent safeguards.
         market_quote = str(market.get("quote", "")).upper()
         if pair_quote and market_quote != pair_quote:
             quote_aliases = {
