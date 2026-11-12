@@ -56,12 +56,12 @@ func (a *Adapter) USDTIDRRate(ctx context.Context)(float64,error){
 	if a.client==nil{return 0,fmt.Errorf("indodax client is not configured")}
 	return a.client.USDTIDRRate(ctx)
 }
-func (a *Adapter) ExchangeAvailable(name string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.ExchangeAvailable("indodax")};return true}
-func (a *Adapter) WSConnectionHealthy(name string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("indodax")};return true}
-func (a *Adapter) LastBookUpdate(name,symbol string)time.Time{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.LastBookUpdate("indodax",symbol)};return time.Time{}}
+func (a *Adapter) ExchangeAvailable(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.ExchangeAvailable("indodax")};return false}
+func (a *Adapter) WSConnectionHealthy(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("indodax")};return false}
+func (a *Adapter) LastBookUpdate(_ string,symbol string)time.Time{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.LastBookUpdate("indodax",symbol)};return time.Time{}}
 func (a *Adapter) AccountAvailable(name string)(contracts.AccountStatus,error){
 	if h,ok:=a.source.(contracts.AccountStatusProvider);ok{return h.AccountAvailable("indodax")}
-	return contracts.AccountStatus{DepositEnabled:true,WithdrawalEnabled:true},nil
+	return contracts.AccountStatus{},fmt.Errorf("indodax account status provider is unavailable")
 }
 
 var _ contracts.MarketDataAdapter=(*Adapter)(nil)
