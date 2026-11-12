@@ -199,7 +199,10 @@ class EngineRecoveryPositionsMixin:
                 terminal_times = getattr(
                     self, "_recovery_terminal_position_timestamps", {}
                 )
-                if durable_updated <= int(terminal_times.get(pair_tag, 0) or 0):
+                if (
+                    pair_tag in terminal_times
+                    and durable_updated <= int(terminal_times.get(pair_tag) or 0)
+                ):
                     continue
                 cached = self.active_positions.get(pair_tag)
                 if cached is not None and durable_updated <= int(cached.updated_at or 0):
