@@ -425,17 +425,25 @@ func (l *LiveAdapter) getFallbackIndodaxSpot(err error) ([]domain.Market, error)
 	cached := l.cachedIndodaxSpot
 	cacheDir := l.marketCacheDir
 	l.mu.RUnlock()
+
 	if len(cached) > 0 {
 		return cached, nil
 	}
-	if cacheDir != "" {
-		if loaded := l.loadIndodaxSpotCache(cacheDir); len(loaded) > 0 {
+
+	searchDirs := []string{cacheDir, "/app/cache", "cache", "/app/data/scanner/cache", "/app/data/cache"}
+	for _, dir := range searchDirs {
+		if dir == "" {
+			continue
+		}
+		if loaded := l.loadIndodaxSpotCache(dir); len(loaded) > 0 {
 			l.mu.Lock()
 			l.cachedIndodaxSpot = loaded
 			l.mu.Unlock()
+			log.Printf("indodax: loaded %d spot markets from fallback disk cache (%s)", len(loaded), dir)
 			return loaded, nil
 		}
 	}
+
 	return nil, err
 }
 

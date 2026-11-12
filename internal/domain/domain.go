@@ -135,6 +135,7 @@ type ScanResult struct {
 	MatchedPairs              int                   `json:"matched_pairs"`
 	ActivePairs               int                   `json:"active_pairs"`
 	FrozenPairs               int                   `json:"frozen_pairs"`
+	OrphanSpotMarkets         int                   `json:"orphan_spot_markets"`
 	EligiblePairs             int                   `json:"eligible_pairs"`
 	ExcludedPairs             int                   `json:"excluded_pairs"`
 	FailedPairs               int                   `json:"failed_pairs"`

@@ -94,6 +94,7 @@ func (b *Bot) formatStatus() string {
 • <b>Error Terakhir:</b> %s
 • <b>Total Pasar:</b> %d
 • <b>Pasangan Cocok:</b> %d (Aktif: %d, Dibekukan: %d)
+• <b>Koin Orphan (Tanpa Future):</b> %d
 • <b>Pasangan Eligible:</b> %d
 • <b>Pasangan Excluded:</b> %d
 • <b>Target Net ROI:</b> %.2f%% - %.2f%%
@@ -114,6 +115,7 @@ func (b *Bot) formatStatus() string {
 		latest.MatchedPairs,
 		latest.ActivePairs,
 		latest.FrozenPairs,
+		latest.OrphanSpotMarkets,
 		latest.EligiblePairs,
 		latest.ExcludedPairs,
 		b.cfg.MinNetROIPct,

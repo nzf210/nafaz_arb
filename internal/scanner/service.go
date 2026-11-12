@@ -141,6 +141,18 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 	result.MatchedPairs = len(pairs)
 	result.MarketDiscoveryDurationMS = time.Since(marketDiscoveryStarted).Milliseconds()
 
+	matchedSpotSymbols := make(map[string]bool, len(pairs))
+	for _, p := range pairs {
+		matchedSpotSymbols[p[0].Symbol] = true
+	}
+	orphanCount := 0
+	for _, s := range spot {
+		if !matchedSpotSymbols[s.Symbol] {
+			orphanCount++
+		}
+	}
+	result.OrphanSpotMarkets = orphanCount
+
 	activePairs, frozenCount := s.filterActivePairs(pairs, started)
 	result.ActivePairs = len(activePairs)
 	result.FrozenPairs = frozenCount

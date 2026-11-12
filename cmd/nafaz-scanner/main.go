@@ -64,6 +64,16 @@ func main(){
 				live.EnableIndodaxBookWebSocket(context.Background(), cfg.IndodaxWSURL, cfg.IndodaxWSToken, staleAfter, reconnect, maxBackoff)
 			}
 		}
+		cacheDir := os.Getenv("MARKET_CACHE_DIR")
+		if cacheDir == "" {
+			if _, err := os.Stat("cache/indodax_spot_markets.json"); err == nil {
+				cacheDir = "cache"
+			} else {
+				cacheDir = "/app/cache"
+			}
+		}
+		live.SetMarketCacheDir(cacheDir)
+
 		defer live.Close()
 		adapter = live
 	case "MOCK":
