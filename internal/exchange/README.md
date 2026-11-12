@@ -19,28 +19,30 @@ internal/exchange/
 
 ## Migration status
 
-- `indodax.Client`: pair discovery, amount-step normalization, spot depth and
-  USDT/IDR ticker.
-- `tokocrypto.Client`: spot symbol discovery, symbol-type-aware depth, LOT_SIZE normalization; MBX and NextMe depth supervisors.
-- `mexc.Client`: perpetual contract metadata, funding, spot depth and
-  contract-size-adjusted perpetual depth.
-- `okx.Client`: SWAP instrument discovery, funding rate, REST depth recovery,
-  per-endpoint token-bucket limiter, bounded concurrency, retry/backoff and
-  limiter metrics.
+- `indodax.Adapter` owns Indodax spot discovery/cache and uses
+  `indodax.Client` for pair metadata and USDT/IDR ticker.
+- `tokocrypto.Adapter` owns Tokocrypto spot discovery/cache and triggers the
+  MBX/NextMe depth supervisors after discovery.
+- `mexc.Adapter` owns MEXC perpetual discovery/cache and contract metadata;
+  its callback updates contract-size state and the perpetual depth supervisor.
+- `okx.Adapter` owns OKX SWAP discovery/cache and contract metadata; its
+  callback updates contract-size state and the sequence-validated book manager.
+- Each venue adapter routes hot order-book reads through the compatibility
+  transport for now, preserving websocket/REST fallback and shared health
+  accounting. Funding calls also retain the existing facade routing.
 - `okx.BookManager`: persistent public books-channel WebSocket, snapshot plus
   incremental delta application, sequence-chain validation, heartbeat,
   reconnect/resubscribe, subscription batching and stale-book rejection.
 - `registry.Composite`: aggregates market discovery and routes normalized
   symbol requests. It forwards optional health, wallet, WS-activity and FX
   capabilities.
-- `venueadapter.Adapter`: scopes the compatibility facade to one named CEX,
-  filters market discovery by venue, rejects cross-venue symbols and forwards
-  venue health/WS/FX capabilities. LIVE registers Indodax, Tokocrypto, OKX and
-  MEXC separately instead of registering a single `default` adapter.
-- The scoped adapters still share the `LiveAdapter` transport/cache internally.
-  Direct per-venue client ownership is the next migration step; this registry
-  boundary is already in place and tested, but it is not yet four independent
-  transport lifecycles.
+- LIVE registers the four dedicated package adapters
+  (Indodax, Tokocrypto, OKX and MEXC) in `registry.Composite`; each adapter
+  owns its market discovery, cache and venue-specific capability boundary.
+- `LiveAdapter` remains a shared compatibility transport for books, funding,
+  websocket supervisors, REST fallback and health accounting. Moving those
+  transports into the venue packages is the remaining extraction step; the
+  four adapters are not yet fully independent network lifecycles.
 - Scanner service accepts `contracts.ReadOnlyAdapter`. The legacy
   `exchange.ReadOnlyAdapter` remains a type alias for source compatibility.
 
