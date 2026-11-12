@@ -636,6 +636,40 @@ class TestOrderRegistryWriter:
         assert row["recovery_status"] == "ORPHAN_ORDER"
 
 
+    def test_order_registry_persists_tokocrypto_venue_client_id_and_amount_specs(self):
+        writer = _writer()
+        writer.order_record(
+            {
+                "local_order_id": "44444444-4444-4444-4444-444444444444",
+                "exchange_name": "tokocrypto",
+                "market_type": "spot",
+                "order_role": "ENTRY",
+                "client_order_id": "logical-ath-entry-7",
+                "venue_client_order_id": "a1b2c3d4entry7",
+                "exchange_order_id": "toko-77",
+                "symbol": "ATH/USDT",
+                "side": "buy",
+                "order_type": "limit",
+                "status": "open",
+                "original_quantity": 12.0,
+                "filled_quantity": 0.0,
+                "remaining_quantity": 12.0,
+                "pair_key": "tokocrypto:ath_usdt__binance:ath_usdt",
+                "position_key": "position:tokocrypto:ath_usdt__binance:ath_usdt",
+                "local_amount_spec": {"unit": "BASE", "step": 1.0},
+                "global_amount_spec": {"unit": "CONTRACTS", "step": 1.0},
+                "recovery_context": {"usdt_idr_rate": 16000.0},
+            }
+        )
+        rows = _drain(writer)
+        row = [r for table, _, r in rows if table == "order_registry"][0]
+        payload = json.loads(row["raw_payload"])
+
+        assert row["client_order_id"] == "logical-ath-entry-7"
+        assert row["venue_client_order_id"] == "a1b2c3d4entry7"
+        assert payload["local_amount_spec"] == {"unit": "BASE", "step": 1.0}
+        assert payload["global_amount_spec"] == {"unit": "CONTRACTS", "step": 1.0}
+
     def test_order_registry_persists_hedge_watermark_in_raw_payload(self):
         writer = _writer()
         writer.order_record(
