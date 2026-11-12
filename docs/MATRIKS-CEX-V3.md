@@ -22,16 +22,28 @@ Prioritas awal tetap venue yang sudah ada di jalur kode saat ini:
 |---|---|---|---|
 | Indodax | Spot IDR | Adaptor scanner dan jalur private TAPI v2 tersedia | Uji saldo, order, fill, fee, cancel, trade history, minimum, dan pair IDR/USDT |
 | Tokocrypto | Spot IDR/USDT | Adaptor scanner dan jalur executor tersedia | Uji broker/client ID, fee akun, saldo, order, fill, dan pemulihan |
-| Pintu | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan resmi, izin/akses akun, order lifecycle dan fee harus diverifikasi |
-| Reku | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan resmi, order lifecycle, saldo, fill, fee, dan batas rate |
-| Bittime | Kandidat spot lokal | Belum dianggap terintegrasi | API resmi dan kelengkapan endpoint private diverifikasi |
-| Upbit Indonesia | Kandidat spot lokal | Belum dianggap terintegrasi | API lokal, pair IDR, aturan autentikasi, dan endpoint private diverifikasi |
-| Triv | Kandidat spot lokal | Belum dianggap terintegrasi | API resmi dan akses perdagangan otomatis diverifikasi |
-| Ajaib Kripto | Kandidat spot lokal | Belum dianggap terintegrasi | API resmi untuk akun dan order; jangan mengasumsikan API publik berarti API trading |
+| Pintu | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan resmi, akses akun, siklus order, dan biaya harus diverifikasi |
 | Pluang | Kandidat spot lokal | Belum dianggap terintegrasi | Pastikan instrumen spot dapat diperdagangkan melalui API resmi |
-| Luno Indonesia | Kandidat spot lokal | Belum dianggap terintegrasi | Verifikasi ketersediaan pair IDR dan private trading API |
-| BTSE Indonesia | Kandidat spot lokal | Belum dianggap terintegrasi | Verifikasi produk, yurisdiksi akun, dan API private |
-| Nanovest / Nobi / Bitwyre / lainnya | Kandidat evaluasi | Belum dianggap terintegrasi | Masuk registry hanya setelah API dan kapabilitas memenuhi kontrak |
+| Ajaib Kripto | Kandidat spot lokal | Belum dianggap terintegrasi | API akun dan order harus tersedia; API publik tidak otomatis berarti API trading |
+| Triv | Kandidat spot lokal | Belum dianggap terintegrasi | API resmi dan akses perdagangan otomatis diverifikasi |
+| Bitwewe | Kandidat spot lokal | Belum dianggap terintegrasi | API private, pair IDR, saldo, fill, dan biaya diverifikasi |
+| Reku | Kandidat spot lokal | Belum dianggap terintegrasi | API resmi, siklus order, saldo, fill, biaya, dan batas rate diverifikasi |
+| Nobi | Kandidat spot lokal | Belum dianggap terintegrasi | API private dan dukungan pasar spot diverifikasi |
+| One Crypto | Kandidat spot lokal | Belum dianggap terintegrasi | API resmi dan ketersediaan pair IDR diverifikasi |
+| BTSE Indonesia | Kandidat spot lokal | Belum dianggap terintegrasi | Produk yang tersedia untuk akun Indonesia, yurisdiksi akun, dan API private diverifikasi |
+| MAKS | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan dan instrumen spot diverifikasi |
+| Naga Exchange | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan resmi dan kelengkapan endpoint private diverifikasi |
+| Samuel | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan resmi dan pair IDR diverifikasi |
+| Bittime | Kandidat spot lokal | Belum dianggap terintegrasi | API resmi dan kelengkapan endpoint private diverifikasi |
+| Astal | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan dan akses otomatis diverifikasi |
+| Cyra | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan resmi dan market metadata diverifikasi |
+| COINX | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan resmi dan endpoint private diverifikasi |
+| Stockbit Crypto | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan dan akses order otomatis diverifikasi |
+| Coinvest | Kandidat spot lokal | Belum dianggap terintegrasi | API resmi, saldo, fill, dan biaya diverifikasi |
+| Luno Indonesia | Kandidat spot lokal | Belum dianggap terintegrasi | Pair IDR dan private trading API diverifikasi |
+| Indonesia Digital Exchange (DEX) | Kandidat spot lokal | Belum dianggap terintegrasi | API perdagangan resmi dan ketersediaan pair IDR diverifikasi |
+
+Daftar evaluasi di atas mengikuti nama platform yang diumumkan CFX sebagai anggota PAKD per 18 Agustus 2026. Status izin dan nama entitas dapat berubah; verifikasi ulang pada daftar OJK terbaru sebelum integrasi atau penggunaan. Status PAKD bukan bukti bahwa API trading publik tersedia.
 
 Daftar penyelenggara berizin berubah. Status legal harus diperiksa ulang pada daftar resmi OJK saat integrasi dilakukan. Status PAKD tidak otomatis berarti tersedia API perdagangan otomatis, pasar IDR yang sesuai, atau izin produk derivatif.
 
