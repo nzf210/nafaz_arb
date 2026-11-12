@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
@@ -25,7 +24,6 @@ func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (d
 	l.mu.RLock(); client := l.okxClient; l.mu.RUnlock()
 	if client == nil { return domain.FundingRate{}, fmt.Errorf("okx client is not configured") }
 	rate, err := client.FundingRate(ctx, symbol)
-	if err != nil && strings.Contains(err.Error(), "status") { return domain.FundingRate{}, err }
 	return rate, err
 }
 
