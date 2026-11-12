@@ -20,7 +20,7 @@ func TestCrossVenueSpotStrategyFindsNetPositiveDislocation(t *testing.T) {
 			BookKey("tokocrypto","BTC/USDT"):{Exchange:"tokocrypto",Symbol:"BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:100,Quantity:2}},Asks:[]domain.PriceLevel{{Price:100.1,Quantity:1}}},
 			BookKey("indodax","BTC/USDT"):{Exchange:"indodax",Symbol:"BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:102,Quantity:1}},Asks:[]domain.PriceLevel{{Price:102.1,Quantity:2}}},
 		},
-		Fees:map[string]FeeSchedule{"tokocrypto":{TakerPct:.1},"indodax":{TakerPct:.1}},
+		Fees:map[string]FeeSchedule{FeeKey("tokocrypto","BTC/USDT"):{TakerPct:.1},FeeKey("indodax","BTC/USDT"):{TakerPct:.1}},
 		EstimatedSlippagePct:.05,
 	}
 	strategy:=CrossVenueSpotStrategy{MinNetReturnPct:.1}
@@ -45,7 +45,7 @@ func TestCrossVenueSpotStrategyRejectsStaleOrUnpricedBooks(t *testing.T) {
 			BookKey("a","BTC/USDT"):{Exchange:"a",Symbol:"BTC/USDT",Timestamp:now.Add(-time.Minute),Bids:[]domain.PriceLevel{{Price:100,Quantity:1}},Asks:[]domain.PriceLevel{{Price:101,Quantity:1}}},
 			BookKey("b","BTC/USDT"):{Exchange:"b",Symbol:"BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:103,Quantity:1}},Asks:[]domain.PriceLevel{{Price:104,Quantity:1}}},
 		},
-		Fees:map[string]FeeSchedule{"a":{TakerPct:0},"b":{TakerPct:0}},
+		Fees:map[string]FeeSchedule{FeeKey("a","BTC/USDT"):{TakerPct:0},FeeKey("b","BTC/USDT"):{TakerPct:0}},
 	}
 	signals,err:= (CrossVenueSpotStrategy{}).Analyze(context.Background(),snapshot)
 	if err!=nil{t.Fatal(err)}
