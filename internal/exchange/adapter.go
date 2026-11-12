@@ -8,7 +8,10 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/contracts"
 )
 
-// ReadOnlyAdapter is kept as a compatibility alias for venue-neutral contracts.
+// MarketDataAdapter is the preferred scanner-facing contract.
+type MarketDataAdapter = contracts.MarketDataAdapter
+
+// ReadOnlyAdapter remains as a compatibility alias.
 type ReadOnlyAdapter = contracts.ReadOnlyAdapter
 
 // RateProvider is the optional venue-neutral fiat conversion capability.
