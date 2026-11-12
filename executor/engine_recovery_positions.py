@@ -133,12 +133,17 @@ class EngineRecoveryPositionsMixin:
                 f"entry_idr={pos.entry_price_idr}, short_entry_usdt={pos.short_entry_usdt}, "
                 f"state={self.states[pair_tag].value}"
             )
-            self.supabase.position_opened(
-                pair_tag,
-                pos,
-                getattr(self, "_pair_infos", {}).get(pair_tag),
-                is_mock=bool(getattr(self.config, "mock_mode", False)),
-            )
+            restorer = getattr(self.supabase, "restore_position", None)
+            if callable(restorer):
+                # A cache restore is not a new position event. In particular,
+                # do not enqueue stale Redis state before durable Supabase rows
+                # have been read and compared below.
+                restorer(
+                    pair_tag,
+                    pos,
+                    getattr(self, "_pair_infos", {}).get(pair_tag),
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
             return True
         except Exception as exc:
             self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
