@@ -71,3 +71,14 @@ async def test_disabled_durable_writer_keeps_redis_only_mock_compatibility():
     await registry._persist(_record())
 
     assert writer.rows == []
+
+
+def test_durable_recovery_query_includes_phantom_and_orphan_incidents():
+    """Restart must not erase unresolved records merely because they are not MANAGED."""
+    from executor.supabase_queries import SupabaseQueryMixin
+
+    query = SupabaseQueryMixin._open_order_record_query(500)
+
+    assert "PHANTOM" in query["recovery_status"]
+    assert "ORPHAN_ORDER" in query["recovery_status"]
+    assert "UNVERIFIED" in query["recovery_status"]
