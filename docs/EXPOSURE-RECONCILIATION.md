@@ -1,49 +1,25 @@
-# Live exchange exposure reconciliation
+# Rekonsiliasi eksposur bursa LIVE
 
-The executor runs a read-only exposure reconciliation worker in LIVE mode. It
-compares the quantity of managed spot base assets and futures shorts against
-authenticated exchange reads. It never submits, edits, or cancels an order.
+Pada mode LIVE, executor menjalankan worker rekonsiliasi eksposur baca-saja. Worker membandingkan kuantitas aset dasar spot yang dikelola dan short futures dengan hasil pembacaan bursa terautentikasi. Worker tidak pernah mengirim, mengubah, atau membatalkan order.
 
-## Checks
+## Pemeriksaan
 
-- Spot: aggregate managed quantity by local exchange and base asset. The
-  exchange's total base-asset balance must be at least the managed quantity.
-  A larger balance is not treated as a mismatch because the account may hold
-  manual or unrelated inventory.
-- Perpetual: aggregate managed short quantity by global exchange and contract
-  symbol, then compare it with the exchange's actual short quantity. Unexpected
-  long, unsigned, malformed, or unavailable position data is never interpreted
-  as a flat position.
-- Balance snapshots are journaled to the existing Supabase `balance_snapshots`
-  table through the executor's durable local outbox.
+- **Spot:** jumlahkan kuantitas aset dasar yang dikelola berdasarkan bursa lokal dan aset dasar. Total saldo aset dasar di bursa harus minimal sama dengan kuantitas yang dikelola. Saldo lebih besar bukan ketidaksesuaian karena akun dapat memiliki inventaris manual atau aset lain yang tidak terkait.
+- **Perpetual:** jumlahkan kuantitas short terkelola berdasarkan bursa global dan simbol kontrak, lalu bandingkan dengan kuantitas short aktual di bursa. Posisi long yang tidak diharapkan, data bertanda/berformat salah, atau data posisi yang tidak tersedia tidak boleh dianggap sebagai posisi nol.
+- Snapshot saldo dicatat ke tabel Supabase `balance_snapshots` melalui outbox lokal executor yang persisten.
 
-A confirmed mismatch halts new entries on the affected venue and publishes an
-execution-failure event for Telegram/operations. It does not change the active
-position state and does not stop existing position monitoring/exits. When the
-specific mismatch clears, its reconciliation halt is released unless another
-mismatch remains for that venue.
+Ketidaksesuaian yang terkonfirmasi menahan entri baru pada venue terdampak dan menerbitkan peristiwa kegagalan eksekusi untuk Telegram/operasi. Status posisi aktif tidak diubah dan pemantauan/penutupan posisi yang sudah terbuka tetap berjalan. Setelah ketidaksesuaian tertentu hilang, penghentian rekonsiliasi untuk masalah tersebut dilepas kecuali masih ada masalah lain pada venue yang sama.
 
-If the exchange mapping for a restored active position is unavailable, the
-worker skips that spot/contract mapping rather than guessing a symbol. The
-existing startup futures recovery check remains in place.
+Jika pemetaan bursa untuk posisi aktif yang dipulihkan tidak tersedia, worker melewati pemetaan spot/kontrak tersebut dan tidak menebak simbol. Pemeriksaan pemulihan futures saat startup tetap dijalankan.
 
-## Configuration
+## Konfigurasi
 
-- `EXPOSURE_RECONCILIATION_INTERVAL_SECONDS`: default `300`, minimum `60`.
-- `EXPOSURE_RECONCILIATION_REL_TOLERANCE`: default `0.005` (0.5%), capped at
-  `0.05` (5%).
-- `EXPOSURE_RECONCILIATION_ABS_TOLERANCE`: default `1e-8` base units.
+- `EXPOSURE_RECONCILIATION_INTERVAL_SECONDS`: bawaan `300`, minimum `60`.
+- `EXPOSURE_RECONCILIATION_REL_TOLERANCE`: bawaan `0.005` (0,5%), maksimum `0.05` (5%).
+- `EXPOSURE_RECONCILIATION_ABS_TOLERANCE`: bawaan `1e-8` unit aset dasar.
 
-The worker is disabled in MOCK/PAPER mode. It requires the exchange adapters'
-read-only `fetch_balance_report` and `fetch_positions` methods. The current
-executor adapter is configured for one local spot venue and one global
-perpetual venue per executor instance; this worker does not create extra
-exchange clients for other venues. Positions created by this version persist
-their base asset and futures symbol in the Redis active-position record. Older
-records without that metadata are marked as mapping-unavailable and halt new
-entries on their known venues until the mapping is restored or manually
-resolved.
+Worker dinonaktifkan pada mode MOCK/PAPER. Worker memerlukan metode baca-saja adaptor `fetch_balance_report` dan `fetch_positions`.
 
-It does not reconcile individual order/fill history, fees, transfers, deposits,
-withdrawals, or funding settlements; those require separate ledger
-reconciliation.
+**Batasan cakupan saat dokumen ini ditulis:** adaptor executor dikonfigurasi untuk satu venue spot lokal dan satu venue perpetual global per instans executor. Worker ini tidak membuat klien bursa tambahan untuk venue lain. Posisi yang dibuat versi ini menyimpan aset dasar dan simbol futures dalam catatan posisi aktif Redis. Catatan lama tanpa metadata tersebut ditandai sebagai pemetaan tidak tersedia dan menahan entri baru pada venue yang diketahui sampai pemetaan dipulihkan atau diselesaikan manual.
+
+Worker ini tidak merekonsiliasi riwayat order/fill individual, biaya, transfer, deposit, penarikan, atau settlement funding; hal tersebut membutuhkan rekonsiliasi ledger terpisah.
