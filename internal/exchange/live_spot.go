@@ -127,6 +127,12 @@ func (l *LiveAdapter) SubscribeTokocryptoBooks(markets []domain.Market) {
 	l.mu.RLock(); supervisor := l.tokocryptoSupervisor; l.mu.RUnlock()
 	if supervisor == nil { return }
 	symbols := make([]string,0,len(markets))
-	for _, market := range markets { if strings.EqualFold(market.Exchange,"tokocrypto") && market.Active { symbols=append(symbols,strings.TrimPrefix(market.Symbol,"toko:")) } }
+	for _, market := range markets {
+		symbolType := market.SymbolType
+		if symbolType == 0 { symbolType = 1 }
+		if strings.EqualFold(market.Exchange,"tokocrypto") && market.Active && symbolType == 1 {
+			symbols=append(symbols,strings.TrimPrefix(market.Symbol,"toko:"))
+		}
+	}
 	supervisor.SetSymbols(sortedUniqueSymbols(symbols))
 }
