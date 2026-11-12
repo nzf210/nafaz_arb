@@ -359,7 +359,7 @@ func TestMatchMarketsMultiplePerpExchanges(t *testing.T) {
 func TestTokocryptoWebSocketSubscriptionExcludesNonMBXSymbols(t *testing.T) {
 	markets := []domain.Market{
 		{Exchange: "tokocrypto", Symbol: "toko:BTC_USDT", SymbolType: 1, Active: true},
-		{Exchange: "tokocrypto", Symbol: "toko:BTCIDR", SymbolType: 3, Active: true},
+		{Exchange: "tokocrypto", Symbol: "toko:BTC_IDR", SymbolType: 3, Active: true},
 		{Exchange: "tokocrypto", Symbol: "toko:OFFUSDT", SymbolType: 1, Active: false},
 	}
 	got := tokocryptoMBXSymbols(markets)
