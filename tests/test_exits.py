@@ -15,6 +15,32 @@ from executor.engine import ArbitrageEngine
 
 from tests.conftest import MockExchangeClient, engine, fake_redis, mock_client
 
+
+@pytest.mark.asyncio
+async def test_live_maker_exit_refuses_submission_without_durable_intent(engine, mock_client):
+    pair_tag = "toko:ath_usdt"
+    pos = ActivePosition(
+        local_exchange="tokocrypto",
+        global_exchange="okx",
+        symbol="ATH/USDT",
+        entry_price_idr=80.0,
+        short_entry_usdt=0.005,
+        qty=10000.0,
+    )
+    engine.config.mock_mode = False
+
+    async def fail_intent(*_args, **_kwargs):
+        raise RuntimeError("durable order journal unavailable")
+
+    engine._register_order_intent = fail_intent
+
+    await engine._place_dynamic_limit_sell(
+        pair_tag, pos, 80.5, 0.01, 0.0051
+    )
+
+    assert mock_client.placed_sells == []
+    assert pair_tag not in engine.pending_exit_orders
+
 @pytest.mark.asyncio
 async def test_state3_dynamic_exit_limit_sell_and_funding_decay(engine, fake_redis, mock_client):
     """
