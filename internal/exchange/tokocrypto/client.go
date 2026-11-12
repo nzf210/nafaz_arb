@@ -41,6 +41,7 @@ type Client struct {
 func New(httpClient *http.Client, baseURL string) *Client {
 	if httpClient == nil { httpClient = http.DefaultClient }
 	if strings.TrimSpace(baseURL) == "" { baseURL = defaultBaseURL }
+	baseURL = strings.TrimRight(baseURL, "/")
 	depthMBX, depthNextMe := defaultMBXDepthURL, defaultNextMeDepthURL
 	// A custom base URL is used by httptest fixtures; keep depth paths on it.
 	if baseURL != defaultBaseURL {
