@@ -9,6 +9,7 @@ while individual venue capabilities are migrated behind that boundary.
 internal/exchange/
   contracts/    # venue-neutral read-only market-data capabilities
   registry/     # registry, composite adapter and optional capability forwarding
+  venueadapter/ # venue-scoped compatibility adapters registered per CEX
   indodax/      # spot REST market data and USDT/IDR ticker
   tokocrypto/   # spot REST market data
   mexc/         # spot/perpetual REST market data and funding
@@ -31,9 +32,15 @@ internal/exchange/
   reconnect/resubscribe, subscription batching and stale-book rejection.
 - `registry.Composite`: aggregates market discovery and routes normalized
   symbol requests. It forwards optional health, wallet, WS-activity and FX
-  capabilities. The LIVE entrypoint currently registers the compatibility
-  facade as `default`; venue-specific registrations can replace it as adapters
-  reach full interface parity.
+  capabilities.
+- `venueadapter.Adapter`: scopes the compatibility facade to one named CEX,
+  filters market discovery by venue, rejects cross-venue symbols and forwards
+  venue health/WS/FX capabilities. LIVE registers Indodax, Tokocrypto, OKX and
+  MEXC separately instead of registering a single `default` adapter.
+- The scoped adapters still share the `LiveAdapter` transport/cache internally.
+  Direct per-venue client ownership is the next migration step; this registry
+  boundary is already in place and tested, but it is not yet four independent
+  transport lifecycles.
 - Scanner service accepts `contracts.ReadOnlyAdapter`. The legacy
   `exchange.ReadOnlyAdapter` remains a type alias for source compatibility.
 
