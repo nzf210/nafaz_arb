@@ -423,7 +423,12 @@ func TestLiveModeRequiresAPIAuthToken(t *testing.T) {
         "mode":"LIVE",
         "api_auth_token":%q,
         "capital_total":100,
-        "allocation_per_pair":0.5
+        "allocation_per_pair":0.5,
+        "redis":{"enabled":true,"addr":"localhost:6380"},
+        "check_open_positions":true,
+        "exclude_open_orders":true,
+        "enable_executor_signals":true,
+        "global_futures_exchange":"okx"
     }`, token)
     if err := os.WriteFile(path, []byte(validConfig), 0600); err != nil {
         t.Fatal(err)
