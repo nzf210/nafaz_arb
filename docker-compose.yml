@@ -2,10 +2,12 @@ services:
   redis:
     image: docker.io/library/redis:7-alpine
     container_name: nafaz-redis
-    command: redis-server --port 6380
+    command: redis-server --port 6380 --appendonly yes --appendfsync everysec --dir /data
     restart: always
     ports:
       - "127.0.0.1:6380:6380"
+    volumes:
+      - ./data/redis:/data:Z
 
   nafaz-scanner:
     build:
