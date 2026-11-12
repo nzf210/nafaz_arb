@@ -40,6 +40,8 @@ func (r *Registry) Get(name string)(contracts.MarketDataAdapter,bool){
 	r.mu.RLock();a,ok:=r.adapters[strings.ToLower(strings.TrimSpace(name))];r.mu.RUnlock();return a,ok
 }
 
+func (r *Registry) Remove(name string) { r.mu.Lock(); delete(r.adapters, strings.ToLower(strings.TrimSpace(name))); r.mu.Unlock() }
+
 func (r *Registry) Names()[]string{
 	r.mu.RLock();out:=make([]string,0,len(r.adapters));for name:=range r.adapters{out=append(out,name)};r.mu.RUnlock();sort.Strings(out);return out
 }
@@ -49,6 +51,11 @@ func (r *Registry) Names()[]string{
 // symbol. It deliberately does not expose order execution.
 type Composite struct{ registry *Registry }
 func NewComposite(r *Registry)*Composite{return &Composite{registry:r}}
+func (c *Composite) names() []string {
+ names := c.registry.Names()
+ if len(names) > 1 { filtered := names[:0]; for _, name := range names { if name != "default" { filtered = append(filtered, name) } }; return filtered }
+ return names
+}
 func (c *Composite) adapter(name string)(contracts.MarketDataAdapter,error){
 	if c==nil||c.registry==nil{return nil,fmt.Errorf("exchange registry is not configured")}
 	a,ok:=c.registry.Get(name);if !ok { a,ok=c.registry.Get("default") };if !ok{return nil,fmt.Errorf("exchange %q is not registered",name)};return a,nil
@@ -56,7 +63,7 @@ func (c *Composite) adapter(name string)(contracts.MarketDataAdapter,error){
 func (c *Composite) aggregate(ctx context.Context,perpetual bool)([]domain.Market,error){
 	if c==nil||c.registry==nil{return nil,fmt.Errorf("exchange registry is not configured")}
 	var out []domain.Market;var errs []string
-	for _,name:=range c.registry.Names(){a,_:=c.registry.Get(name);var markets []domain.Market;var err error
+	for _,name:=range c.names(){a,_:=c.registry.Get(name);var markets []domain.Market;var err error
 		if perpetual{markets,err=a.PerpetualMarkets(ctx)}else{markets,err=a.SpotMarkets(ctx)}
 		if err!=nil{errs=append(errs,name+": "+err.Error());continue};out=append(out,markets...)
 	}
@@ -89,7 +96,7 @@ func(c *Composite)FundingRate(ctx context.Context,symbol string)(domain.FundingR
 func(c *Composite)OpenExposures(ctx context.Context)([]domain.OpenExposure,error){
 	if c==nil||c.registry==nil{return nil,fmt.Errorf("exchange registry is not configured")}
 	var out []domain.OpenExposure;var errs []string
-	for _,name:=range c.registry.Names(){a,_:=c.registry.Get(name);items,err:=a.OpenExposures(ctx);if err!=nil{errs=append(errs,name+": "+err.Error());continue};out=append(out,items...)}
+	for _,name:=range c.names(){a,_:=c.registry.Get(name);items,err:=a.OpenExposures(ctx);if err!=nil{errs=append(errs,name+": "+err.Error());continue};out=append(out,items...)}
 	if len(out)==0&&len(errs)>0{return nil,fmt.Errorf("no exposure providers available: %s",strings.Join(errs,"; "))};return out,nil
 }
 func(c *Composite)USDTIDRRate(ctx context.Context)(float64,error){
