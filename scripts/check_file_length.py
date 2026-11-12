@@ -19,11 +19,19 @@ def count_lines(path: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("paths", nargs="*", help="source files to inspect")
+    parser.add_argument("--all", action="store_true", help="inspect every production source file in the repository")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     args = parser.parse_args()
 
+    if args.all:
+        paths = [str(path) for path in Path(".").rglob("*") if path.is_file() and path.suffix in SOURCE_SUFFIXES]
+    else:
+        paths = args.paths
+    if not paths:
+        parser.error("provide source paths or use --all")
+
     violations: list[tuple[str, int]] = []
-    for raw_path in args.paths:
+    for raw_path in paths:
         path = Path(raw_path)
         # The 500-line rule is for production source modules. Test suites
         # intentionally group many scenarios and are governed by test quality,
