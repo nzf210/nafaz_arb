@@ -801,7 +801,7 @@ async def test_tokocrypto_broker_prefixed_client_id_is_normalized_for_recovery()
         def __init__(self):
             self.open_rows = []
 
-        async def fetch_open_orders(self, symbol):
+        async def fetch_open_orders(self, symbol, since=None, limit=None):
             return list(self.open_rows)
 
         async def fetch_closed_orders(self, symbol, since=None, limit=None):
