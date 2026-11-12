@@ -19,6 +19,7 @@ type ServiceConfig struct {
 	MaxMarkets int
 	MaxConcurrency int
 	MaxBookAge time.Duration
+	MinInterval time.Duration
 	EstimatedSlippagePct float64
 }
 
@@ -40,6 +41,9 @@ type Service struct {
 	engine *Engine
 	resolveFee FeeResolver
 	cfg ServiceConfig
+	mu sync.Mutex
+	inFlight bool
+	lastStarted time.Time
 }
 
 func NewService(adapter contracts.MarketDataAdapter, engine *Engine, resolver FeeResolver, cfg ServiceConfig) (*Service, error) {
@@ -49,12 +53,31 @@ func NewService(adapter contracts.MarketDataAdapter, engine *Engine, resolver Fe
 	if cfg.MaxMarkets <= 0 { cfg.MaxMarkets = 40 }
 	if cfg.MaxConcurrency <= 0 { cfg.MaxConcurrency = 4 }
 	if cfg.MaxBookAge <= 0 { cfg.MaxBookAge = 3*time.Second }
+	if cfg.MinInterval <= 0 { cfg.MinInterval = 15*time.Second }
 	return &Service{adapter:adapter,engine:engine,resolveFee:resolver,cfg:cfg},nil
 }
 
 func (s *Service) Analyze(ctx context.Context) (Result,error) {
 	started:=time.Now().UTC()
 	result:=Result{StartedAt:started,Signals:[]Signal{},Complete:true}
+	s.mu.Lock()
+	if s.inFlight {
+		s.mu.Unlock()
+		result.Complete=false
+		result.CompletedAt=time.Now().UTC()
+		return result,fmt.Errorf("analysis scan already in progress")
+	}
+	if !s.lastStarted.IsZero() && started.Sub(s.lastStarted)<s.cfg.MinInterval {
+		wait:=s.cfg.MinInterval-started.Sub(s.lastStarted)
+		s.mu.Unlock()
+		result.Complete=false
+		result.CompletedAt=time.Now().UTC()
+		return result,fmt.Errorf("analysis scan cooldown active; retry in %s",wait.Round(time.Second))
+	}
+	s.inFlight=true
+	s.lastStarted=started
+	s.mu.Unlock()
+	defer func(){s.mu.Lock();s.inFlight=false;s.mu.Unlock()}()
 	markets,err:=s.adapter.SpotMarkets(ctx)
 	if err!=nil { result.Complete=false;result.Errors=append(result.Errors,err.Error());result.CompletedAt=time.Now().UTC();return result,fmt.Errorf("spot market discovery: %w",err) }
 	result.DiscoveredMarkets=len(markets)
