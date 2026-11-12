@@ -155,6 +155,23 @@ async def test_restart_drops_stale_closed_position_cache_key(fake_redis):
     assert PAIR_TAG not in engine.active_positions
     assert engine.states[PAIR_TAG] == PositionState.CLOSED
 
+
+@pytest.mark.asyncio
+async def test_verified_balance_does_not_auto_clear_failed_position(fake_redis):
+    engine = await _build(fake_redis, MockExchangeClient(), mock_mode=False)
+    position = _position(state="FAILED")
+    engine.active_positions[PAIR_TAG] = position
+    engine.states[PAIR_TAG] = PositionState.FAILED
+
+    async def matching_short(_symbol, _items):
+        return position.qty, None
+
+    engine._fetch_recovered_short_quantity = matching_short
+    verified = await engine._verify_recovered_active_positions()
+
+    assert PAIR_TAG not in verified
+    assert engine.states[PAIR_TAG] == PositionState.FAILED
+
 # --------------------------------------------------------------- pending entry
 
 @pytest.mark.asyncio
