@@ -3,6 +3,7 @@ package indodax
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -20,6 +21,16 @@ const (
 )
 
 // Client owns Indodax-specific HTTP endpoints and payload normalization.
+type StatusError struct { StatusCode int }
+
+func (e *StatusError) Error() string { return fmt.Sprintf("indodax HTTP status: %d", e.StatusCode) }
+
+func IsUnavailable(err error) bool {
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) { return false }
+	return statusErr.StatusCode == http.StatusBadGateway || statusErr.StatusCode == http.StatusServiceUnavailable || statusErr.StatusCode == http.StatusGatewayTimeout
+}
+
 type Client struct {
 	httpClient *http.Client
 	baseURL string
@@ -46,7 +57,7 @@ func (c *Client) Markets(ctx context.Context) ([]domain.Market, error) {
 	resp, err := c.request(ctx, "/api/pairs")
 	if err != nil { return nil, fmt.Errorf("indodax pairs request: %w", err) }
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK { return nil, fmt.Errorf("indodax pairs status: %d", resp.StatusCode) }
+	if resp.StatusCode != http.StatusOK { return nil, &StatusError{StatusCode: resp.StatusCode} }
 
 	var pairs []struct {
 		ID string `json:"id"`
@@ -78,7 +89,7 @@ func (c *Client) OrderBook(ctx context.Context, symbol string) (domain.OrderBook
 	resp, err := c.request(ctx, "/api/depth/"+url.PathEscape(pair))
 	if err != nil { return domain.OrderBook{}, fmt.Errorf("indodax depth request: %w", err) }
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK { return domain.OrderBook{}, fmt.Errorf("indodax depth status: %d", resp.StatusCode) }
+	if resp.StatusCode != http.StatusOK { return domain.OrderBook{}, &StatusError{StatusCode: resp.StatusCode} }
 
 	var raw struct {
 		Buy [][]any `json:"buy"`
@@ -126,7 +137,7 @@ func (c *Client) USDTIDRRate(ctx context.Context) (float64, error) {
 	resp, err := c.request(ctx, "/api/ticker/usdtidr")
 	if err != nil { return 0, fmt.Errorf("indodax usdtidr ticker request: %w", err) }
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK { return 0, fmt.Errorf("indodax usdtidr ticker status: %d", resp.StatusCode) }
+	if resp.StatusCode != http.StatusOK { return 0, &StatusError{StatusCode: resp.StatusCode} }
 	var raw struct {
 		Ticker struct {
 			Buy string `json:"buy"`
