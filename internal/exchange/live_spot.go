@@ -122,11 +122,32 @@ func (l *LiveAdapter) getFallbackIndodaxSpot(err error) ([]domain.Market, error)
 }
 
 
-// SubscribeTokocryptoBooks dynamically tracks active MBX spot symbols.
+// SubscribeTokocryptoBooks dynamically tracks MBX and NextMe depth streams.
 func (l *LiveAdapter) SubscribeTokocryptoBooks(markets []domain.Market) {
-	l.mu.RLock(); supervisor := l.tokocryptoSupervisor; l.mu.RUnlock()
-	if supervisor == nil { return }
-	supervisor.SetSymbols(tokocryptoMBXSymbols(markets))
+	symbols := make([]string, 0, len(markets))
+	l.mu.Lock()
+	if l.tokocryptoSymbolTypes == nil { l.tokocryptoSymbolTypes = make(map[string]int) }
+	for _, market := range markets {
+		symbolType := market.SymbolType
+		if symbolType == 0 { symbolType = 1 }
+		if !strings.EqualFold(market.Exchange, "tokocrypto") || !market.Active || (symbolType != 1 && symbolType != 3) {
+			continue
+		}
+		symbol := strings.ReplaceAll(strings.TrimPrefix(market.Symbol, "toko:"), "_", "")
+		l.tokocryptoSymbolTypes[symbol] = symbolType
+		symbols = append(symbols, symbol)
+	}
+	supervisor := l.tokocryptoSupervisor
+	l.mu.Unlock()
+	if supervisor != nil { supervisor.SetSymbols(sortedUniqueSymbols(symbols)) }
+}
+
+func (l *LiveAdapter) tokocryptoSymbolType(symbol string) int {
+	l.mu.RLock()
+	symbolType := l.tokocryptoSymbolTypes[symbol]
+	l.mu.RUnlock()
+	if symbolType == 0 { return 1 }
+	return symbolType
 }
 
 func tokocryptoMBXSymbols(markets []domain.Market) []string {
@@ -135,7 +156,7 @@ func tokocryptoMBXSymbols(markets []domain.Market) []string {
 		symbolType := market.SymbolType
 		if symbolType == 0 { symbolType = 1 }
 		if strings.EqualFold(market.Exchange, "tokocrypto") && market.Active && symbolType == 1 {
-			symbols = append(symbols, strings.TrimPrefix(market.Symbol, "toko:"))
+			symbols = append(symbols, strings.ReplaceAll(strings.TrimPrefix(market.Symbol, "toko:"), "_", ""))
 		}
 	}
 	return sortedUniqueSymbols(symbols)
