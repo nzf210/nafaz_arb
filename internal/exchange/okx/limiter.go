@@ -300,9 +300,9 @@ func (l *Client) do(ctx context.Context, path string, build func() (*http.Reques
 	var lastErr error
 	for attempt := 0; attempt <= okxMaxRetries; attempt++ {
 		if attempt > 0 {
-			l.okxLimiter.metrics.recordRetry(class)
+			l.limiter.metrics.recordRetry(class)
 		}
-		if !l.okxLimiter.acquire(ctx, class) {
+		if !l.limiter.acquire(ctx, class) {
 			if lastErr == nil {
 				lastErr = fmt.Errorf("okx %s: limiter slot unavailable", class)
 			}
@@ -312,13 +312,13 @@ func (l *Client) do(ctx context.Context, path string, build func() (*http.Reques
 		started := time.Now()
 		req, err := build()
 		if err != nil {
-			l.okxLimiter.release()
+			l.limiter.release()
 			return nil, err
 		}
 		rctx, cancel := context.WithTimeout(ctx, okxRequestTimeout)
 		resp, err := l.httpClient.Do(req.WithContext(rctx))
 		latency := time.Since(started)
-		l.okxLimiter.release()
+		l.limiter.release()
 
 		if err != nil {
 			cancel()
@@ -326,7 +326,7 @@ func (l *Client) do(ctx context.Context, path string, build func() (*http.Reques
 			if isTimeout(err) {
 				outcome = "timeout"
 			}
-			l.okxLimiter.metrics.record(class, outcome, latency)
+			l.limiter.metrics.record(class, outcome, latency)
 			lastErr = err
 			if ctx.Err() != nil || !retryableTransportErr(err) {
 				return nil, err
@@ -344,7 +344,7 @@ func (l *Client) do(ctx context.Context, path string, build func() (*http.Reques
 		limited, retryAfter, bodyErr := inspectOKXResponse(resp)
 		cancel()
 		if bodyErr != nil {
-			l.okxLimiter.metrics.record(class, "failed", latency)
+			l.limiter.metrics.record(class, "failed", latency)
 			lastErr = bodyErr
 			if ctx.Err() != nil || !retryableTransportErr(bodyErr) {
 				return nil, bodyErr
@@ -356,7 +356,7 @@ func (l *Client) do(ctx context.Context, path string, build func() (*http.Reques
 		}
 
 		if limited {
-			l.okxLimiter.metrics.record(class, "rate_limited", latency)
+			l.limiter.metrics.record(class, "rate_limited", latency)
 			lastErr = &okxRateLimitError{retryAfter: retryAfter}
 			if !l.sleepBackoff(ctx, attempt, retryAfter) {
 				return nil, lastErr
@@ -365,9 +365,9 @@ func (l *Client) do(ctx context.Context, path string, build func() (*http.Reques
 		}
 
 		if resp.StatusCode == http.StatusOK {
-			l.okxLimiter.metrics.record(class, "success", latency)
+			l.limiter.metrics.record(class, "success", latency)
 		} else {
-			l.okxLimiter.metrics.record(class, "failed", latency)
+			l.limiter.metrics.record(class, "failed", latency)
 		}
 		return resp, nil
 	}
