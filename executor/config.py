@@ -482,7 +482,7 @@ class ExecutorConfig:
         missing = missing_live_credentials(self)
         if missing:
             raise ValueError(
-                "LIVE mode requested but required credentials/storage are incomplete: "
+                "LIVE mode requested but credentials are incomplete (exchange keys and durable storage): "
                 + ", ".join(missing)
                 + ". Configure exchanges, Supabase and matching environment variables."
             )
