@@ -80,6 +80,17 @@ class RecoveryDiscoveryMixin:
                 order.get("local_exchange") or getattr(self.active_positions.get(pair_tag), "local_exchange", ""),
                 order.get("symbol"), pair_tag, "spot", order.get("local_amount_spec"),
             )
+        # A pre-submit durable intent may be the ONLY surviving state after a
+        # crash (no Redis pending key and no exchange acknowledgement). Include
+        # its symbol so venues such as Tokocrypto, whose order-list API requires
+        # a symbol, can still be queried by the exact intent key.
+        for record in (getattr(self, "_recovered_order_records", {}) or {}).values():
+            market = "futures" if record.market_type == "perpetual" else "spot"
+            spec = (
+                record.global_amount_spec if market == "futures"
+                else record.local_amount_spec
+            )
+            add(record.exchange, record.symbol, record.pair_key, market, spec)
         return entries
 
     def _recovery_symbol_catalogues(self) -> list:
@@ -109,6 +120,12 @@ class RecoveryDiscoveryMixin:
 
         for exchange, market in sorted(venue_markets.items()):
             if not exchange or self._client_for_exchange(exchange) is None:
+                continue
+            # Tokocrypto's signed GET /open/v1/orders requires symbol. A
+            # symbol-less CCXT fetch_open_orders(None) always fails there.
+            # Its durable intents and tracked positions are swept below using
+            # per-symbol requests instead of falsely declaring the venue down.
+            if exchange == "tokocrypto":
                 continue
             catalogues.append({
                 "exchange": exchange,
