@@ -291,7 +291,12 @@ async def _find_order_by_client_id(
             continue
         try:
             if method_name == "fetch_open_orders":
-                rows = await method(symbol)
+                if str(getattr(exchange, "id", "")).lower() == "tokocrypto":
+                    if not symbol:
+                        raise ValueError("Tokocrypto order lookup requires a symbol")
+                    rows = await method(symbol, None, 1000)
+                else:
+                    rows = await method(symbol)
             else:
                 try:
                     rows = await method(symbol, None, 1000)
