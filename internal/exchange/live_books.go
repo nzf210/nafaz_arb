@@ -3,6 +3,7 @@ package exchange
 import (
 	"context"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/tokocrypto"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -110,51 +111,15 @@ func (l *LiveAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.
 }
 
 func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
-	rawSym := strings.TrimPrefix(symbol, "toko:")
-	endpoint := fmt.Sprintf("%s/open/v1/market/depth?symbol=%s&limit=20", l.tokocryptoBaseURL, url.QueryEscape(rawSym))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth req: %w", err)
+	l.mu.RLock()
+	client := l.tokocryptoClient
+	l.mu.RUnlock()
+	if client == nil { return domain.OrderBook{}, fmt.Errorf("tokocrypto client is not configured") }
+	book, err := client.OrderBook(ctx, symbol)
+	if err != nil && tokocrypto.IsUnavailable(err) {
+		return domain.OrderBook{}, fmt.Errorf("%w: %v", ErrExchangeUnavailable, err)
 	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		if classifyHTTPError(resp.StatusCode) {
-			return domain.OrderBook{}, fmt.Errorf("%w: tokocrypto depth status %d", ErrExchangeUnavailable, resp.StatusCode)
-		}
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth status: %d", resp.StatusCode)
-	}
-
-	var raw struct {
-		Code int `json:"code"`
-		Data struct {
-			Bids [][]string `json:"bids"`
-			Asks [][]string `json:"asks"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return domain.OrderBook{}, fmt.Errorf("decode tokocrypto depth: %w", err)
-	}
-
-	bids := parseStringLevels(raw.Data.Bids, 1.0)
-	asks := parseStringLevels(raw.Data.Asks, 1.0)
-
-	receivedAt := time.Now().UTC()
-	return domain.OrderBook{
-		Exchange:   "tokocrypto",
-		Symbol:     symbol,
-		Bids:       bids,
-		Asks:       asks,
-		Timestamp:  receivedAt,
-		ReceivedAt: receivedAt,
-		Source:     "receive_time",
-	}, nil
+	return book, err
 }
 
 func (l *LiveAdapter) fetchIndodaxSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
