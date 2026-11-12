@@ -47,7 +47,7 @@ type OpportunityPersister interface {
 
 type Service struct {
 	cfg            config.Config
-	adapter        contracts.ReadOnlyAdapter
+	adapter        contracts.MarketDataAdapter
 	fundingWorker  *exchange.FundingWorker
 	redisClient    *redishandler.Client
 	supabaseClient OpportunityPersister
@@ -57,7 +57,7 @@ type Service struct {
 	lastLiveFXRate float64
 }
 
-func New(cfg config.Config, adapter contracts.ReadOnlyAdapter) *Service {
+func New(cfg config.Config, adapter contracts.MarketDataAdapter) *Service {
 	return &Service{
 		cfg:           cfg,
 		adapter:       adapter,
