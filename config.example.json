@@ -112,7 +112,8 @@
     "supabase": {
         "enabled": false,
         "url": "",
-        "key": ""
+        "key": "",
+        "outbox_path": "./data/executor/supabase-outbox.sqlite3"
     },
     "executor": {
         "mock_mode": true,
