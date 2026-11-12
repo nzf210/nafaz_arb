@@ -56,7 +56,9 @@ func TestUnsupportedTokocryptoSymbolTypeDoesNotUseMBXEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 	client := New(server.Client(), server.URL)
-	if _, err := client.Markets(context.Background()); err != nil { t.Fatal(err) }
+	markets, err := client.Markets(context.Background())
+	if err != nil { t.Fatal(err) }
+	if len(markets) != 0 { t.Fatalf("unsupported symbol type leaked into scanner markets: %+v", markets) }
 	if _, err := client.OrderBook(context.Background(), "toko:BTCIDR"); err == nil { t.Fatal("expected unsupported symbol type error") }
 }
 
