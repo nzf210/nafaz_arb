@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from executor.engine_order_intents import EngineOrderIntentMixin
+from executor.models import OrderRecord
+from executor.recovery_discovery import RecoveryDiscoveryMixin
 from executor.exchange_common import (
     acknowledged_order_result,
     exchange_order_id_from,
@@ -112,3 +114,44 @@ def test_supabase_order_analytics_persists_native_exchange_id():
     rows = [row for row in pending if row[1] == "orders"]
     assert rows
     assert rows[-1][3]["exchange_order_id"] == "T-300"
+
+
+class _RecoveryHarness(RecoveryDiscoveryMixin):
+    def __init__(self):
+        self.order_registry = _Registry()
+
+    def _match_position_by_catalogue(self, exchange, symbol):
+        return "btc-usdt"
+
+    def _position_id_for(self, pair_tag):
+        return f"position:{pair_tag}"
+
+    def _infer_role(self, pair_tag, market):
+        return "ENTRY"
+
+
+@pytest.mark.asyncio
+async def test_recovery_backfills_missing_exchange_id_from_tokocrypto_venue_order():
+    recovery = _RecoveryHarness()
+    record = OrderRecord(
+        local_order_id="existing-local-id",
+        client_order_id="logical-client-id",
+        exchange="tokocrypto",
+        market_type="spot",
+        symbol="BTC/USDT",
+        order_role="ENTRY",
+    )
+    order = {
+        "info": {"orderId": "T-RECOVERED-1", "clientId": "wire-client-id"},
+        "clientOrderId": "wire-client-id",
+        "symbol": "BTC/USDT",
+    }
+
+    linked, pair_tag = await recovery._complete_venue_record_link(
+        record, order, "tokocrypto", "BTC/USDT", "spot"
+    )
+
+    assert pair_tag == "btc-usdt"
+    assert linked.exchange_order_id == "T-RECOVERED-1"
+    assert linked.venue_client_order_id == "wire-client-id"
+    assert recovery.order_registry.record.exchange_order_id == "T-RECOVERED-1"
