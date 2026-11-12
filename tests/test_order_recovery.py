@@ -2043,3 +2043,10 @@ async def test_tokocrypto_record_lookup_never_touches_the_indodax_leg(fake_redis
     assert seen == ["tokocrypto"], f"lookup hit {seen}, not the owning venue"
     # The scanner venue tag must never reach the wire.
     assert order["symbol"] == "ATH/USDT"
+
+
+def test_tokocrypto_invalid_client_id_is_a_definitive_rejection():
+    engine = _engine(None, MockExchangeClient())
+    assert engine._is_definitive_order_rejection(
+        RuntimeError('tokocrypto error code 3703: "Invalid client ID"')
+    )
