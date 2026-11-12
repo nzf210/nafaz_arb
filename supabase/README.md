@@ -51,17 +51,24 @@ Implemented writes:
   `scan_id + pair_key` as a deterministic nullable-unique idempotency key. The pair key includes both the local spot venue/symbol and global perpetual venue/symbol, so parallel global routes do not overwrite each other.
   Transient PostgREST/network errors are retried; permanent schema/auth errors
   are logged and do not suppress Redis signal delivery.
-- Python executor: `positions`, `orders`, `order_fills`, `closed_trades`,
-  `executor_events`, and `risk_events`. Client-generated/deterministic keys
-  make retries idempotent; order-fill rows are derived from cumulative filled
+- Python executor: `positions`, `position_legs`, `orders`, `order_fills`,
+  `closed_trades`, `executor_events`, and `risk_events`. Client-generated/deterministic
+  keys make retries idempotent; order-fill rows are derived from cumulative filled
   quantity and only new deltas are emitted.
+- Confirmed `funding_payments` are written only from authenticated exchange funding
+  history after settlement validation; estimated funding is never persisted as paid.
+  A deterministic payment ID is derived when a venue omits its native settlement ID.
+- `balance_snapshots` are written from successful per-asset read-only balance reports.
+  Failed venue reads and invalid/negative values are skipped rather than recorded as zero.
+- `executor_status_snapshots` are written on state changes and at most once per
+  60-second unchanged-state heartbeat, using a stable `EXECUTOR_INSTANCE_ID`.
 - Redis remains authoritative for active-position recovery, locks, live prices,
   balances, pub/sub, and fast coordination. Exchange APIs remain authoritative
   for actual balances, order state, and position exposure.
 
-Still schema-only / not yet connected to runtime writes: `position_legs`,
-`funding_payments`, `balance_snapshots`, and `executor_status_snapshots`.
-Strategy/risk configuration tables are also not read dynamically by this runtime.
+Still schema-only / not yet connected to runtime writes: `exchange_accounts`,
+`strategy_configs`, `risk_limits`, and `market_pairs`. Strategy/risk configuration
+is not read dynamically and credentials are never written by this runtime.
 
 Delivery guarantees and remaining limitations:
 
@@ -117,6 +124,7 @@ Set these variables in the server environment and inject them into both
 - `SUPABASE_KEY=<server-only service_role key>`
 - `SUPABASE_OUTBOX_PATH=/app/data/executor/supabase-outbox.sqlite3` (executor only)
 - `SUPABASE_SCANNER_OUTBOX_PATH=/app/data/scanner/supabase-outbox.jsonl` (scanner only)
+- `EXECUTOR_INSTANCE_ID=nafaz-executor` (optional stable label for status snapshots)
 
 The existing `SUPABASE_KEY` name is retained for compatibility with the executor;
 its value must be the Supabase `service_role` secret, never the anon/publishable
