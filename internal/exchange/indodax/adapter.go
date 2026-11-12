@@ -27,8 +27,9 @@ func (a *Adapter) SpotMarkets(ctx context.Context)([]domain.Market,error){
 	a.mu.RLock()
 	if len(a.markets)>0&&time.Since(a.fetchedAt)<time.Hour{cached:=append([]domain.Market(nil),a.markets...);a.mu.RUnlock();return cached,nil}
 	a.mu.RUnlock()
-	if a.client==nil{return nil,fmt.Errorf("indodax client is not configured")}
+	if a.client==nil{err:=fmt.Errorf("indodax client is not configured");if a.onOutcome!=nil{a.onOutcome(err)};return nil,err}
 	markets,err:=a.client.Markets(ctx)
+	if a.onOutcome!=nil{a.onOutcome(err)}
 	if err!=nil{
 		a.mu.RLock();cached:=append([]domain.Market(nil),a.markets...);a.mu.RUnlock()
 		if len(cached)>0{return cached,nil}
