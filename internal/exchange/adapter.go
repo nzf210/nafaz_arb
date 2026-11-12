@@ -6,22 +6,14 @@ import (
 	"strings"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/contracts"
 )
 
-// ReadOnlyAdapter describes public market-data access only; it has no order methods.
-type ReadOnlyAdapter interface {
-	SpotMarkets(context.Context) ([]domain.Market, error)
-	PerpetualMarkets(context.Context) ([]domain.Market, error)
-	SpotOrderBook(context.Context, string) (domain.OrderBook, error)
-	PerpetualOrderBook(context.Context, string) (domain.OrderBook, error)
-	FundingRate(context.Context, string) (domain.FundingRate, error)
-	OpenExposures(context.Context) ([]domain.OpenExposure, error)
-}
+// ReadOnlyAdapter is kept as a compatibility alias for venue-neutral contracts.
+type ReadOnlyAdapter = contracts.ReadOnlyAdapter
 
-// RateProvider is an optional interface adapters can implement to provide live FX conversion rates (e.g. USDT/IDR).
-type RateProvider interface {
-	USDTIDRRate(context.Context) (float64, error)
-}
+// RateProvider is the optional venue-neutral fiat conversion capability.
+type RateProvider = contracts.RateProvider
 
 func isEligibleMarket(m domain.Market, marketType string, allowedQuotes map[string]bool) bool {
 	return m.Active && strings.EqualFold(m.MarketType, marketType) && allowedQuotes[strings.ToUpper(m.QuoteAsset)]
