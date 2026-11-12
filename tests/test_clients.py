@@ -966,6 +966,37 @@ async def test_tokocrypto_client_id_alias_is_matched_and_duplicate_ids_fail_clos
 
 
 @pytest.mark.asyncio
+async def test_client_id_lookup_falls_back_when_venue_rejects_page_limit():
+    """OKX answers 51000 "Parameter limit error" to limit=1000; lookup must retry."""
+    from executor.exchange_client import ExchangeClient
+
+    logical_id = "okx-limit-entry"
+
+    class OkxSpot:
+        id = "okx"
+        async def fetch_open_orders(self, symbol):
+            return []
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            if limit is not None:
+                raise RuntimeError("okx {\"code\":\"51000\",\"msg\":\"Parameter limit error\"}")
+            return [{
+                "id": "okx-1", "info": {"clOrdId": logical_id}, "symbol": symbol,
+                "side": "buy", "type": "limit", "amount": 1, "filled": 0,
+                "remaining": 1, "status": "open",
+            }]
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            if limit is not None:
+                raise RuntimeError("okx {\"code\":\"51000\",\"msg\":\"Parameter limit error\"}")
+            return []
+
+    client = ExchangeClient(OkxSpot(), object())
+    recovered = await client.fetch_local_order_by_client_id(logical_id, "BTC/USDT")
+    assert recovered is not None
+    assert recovered["id"] == "okx-1"
+    assert recovered["client_order_id"] == logical_id
+
+
+@pytest.mark.asyncio
 async def test_binance_usdm_recovery_uses_all_order_history_and_exact_client_id():
     from executor.exchange_client import ExchangeClient
 

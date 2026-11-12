@@ -452,6 +452,8 @@ def _unique_archive_match(
         return None
     return dict(next(iter(matched.values())))
 
+_CLIENT_ID_HISTORY_LIMIT = 1000
+
 async def _find_order_by_client_id(
     exchange: Any,
     symbol: str,
@@ -529,8 +531,13 @@ async def _find_order_by_client_id(
                 rows = await method(symbol)
             else:
                 try:
-                    rows = await method(symbol, None, 1000)
+                    rows = await method(symbol, None, _CLIENT_ID_HISTORY_LIMIT)
                 except TypeError:
+                    rows = await method(symbol)
+                except Exception:
+                    # Some venues cap the page size well below this request
+                    # (OKX answers `Parameter limit error`), so retry without
+                    # the limit instead of failing the whole lookup.
                     rows = await method(symbol)
             if rows is None or not isinstance(rows, (list, tuple)):
                 raise ValueError(f"{method_name} returned a malformed order collection")
@@ -564,8 +571,10 @@ async def _find_order_by_client_id(
     if callable(trades_method):
         try:
             try:
-                trades = await trades_method(symbol, None, 1000)
+                trades = await trades_method(symbol, None, _CLIENT_ID_HISTORY_LIMIT)
             except TypeError:
+                trades = await trades_method(symbol)
+            except Exception:
                 trades = await trades_method(symbol)
             if trades is None or not isinstance(trades, (list, tuple)):
                 raise ValueError("fetch_my_trades returned a malformed trade collection")
