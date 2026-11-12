@@ -9,16 +9,8 @@ import (
 
 // DecodeDepthUpdate parses one MBX diff-depth event into the manager contract.
 func IsDepthUpdate(payload []byte) bool {
-	var envelope struct {
-		Event string `json:"e"`
-		Data json.RawMessage `json:"data"`
-	}
-	if json.Unmarshal(payload, &envelope) != nil { return false }
-	if envelope.Event == "depthUpdate" { return true }
-	if len(envelope.Data) == 0 || string(envelope.Data) == "null" { return false }
-	var nested struct { Event string `json:"e"` }
-	if json.Unmarshal(envelope.Data, &nested) != nil { return false }
-	return nested.Event == "depthUpdate"
+	_, err := DecodeDepthUpdate(payload)
+	return err == nil
 }
 
 // DecodeDepthUpdate accepts both raw MBX events and combined-stream envelopes.
