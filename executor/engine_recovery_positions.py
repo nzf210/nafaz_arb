@@ -213,6 +213,7 @@ class EngineRecoveryPositionsMixin:
                             "[Recovery] invalid Supabase updated_at for %s: %s",
                             pair_tag, row_updated_at,
                         )
+                snapshot["updated_at"] = durable_updated
                 terminal_times = getattr(
                     self, "_recovery_terminal_position_timestamps", {}
                 )
