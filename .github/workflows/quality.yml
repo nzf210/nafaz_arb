@@ -20,20 +20,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Identify changed source files
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git fetch origin "${{ github.base_ref }}" --depth=1
-            git diff --name-only "origin/${{ github.base_ref }}"...HEAD > changed-files.txt
-          else
-            git diff-tree --no-commit-id --name-only -r HEAD > changed-files.txt
-          fi
-          cat changed-files.txt
-      - name: Enforce maximum 500 lines
-        run: |
-          mapfile -t files < <(grep -E '\.(go|py|sql)$' changed-files.txt || true)
-          python scripts/check_file_length.py "${files[@]}"
+      - name: Enforce maximum 500 lines across production modules
+        run: python scripts/check_file_length.py --all
 
   sonarqube:
     name: SonarQube analysis
