@@ -52,7 +52,7 @@ func(a *Adapter)PerpetualOrderBook(ctx context.Context,symbol string)(domain.Ord
 func(a *Adapter)FundingRate(ctx context.Context,symbol string)(domain.FundingRate,error){if a.source!=nil{return a.source.FundingRate(ctx,symbol)};if a.client==nil{return domain.FundingRate{},fmt.Errorf("okx client is not configured")};return a.client.FundingRate(ctx,symbol)}
 func(a *Adapter)OpenExposures(ctx context.Context)([]domain.OpenExposure,error){if a.source==nil{return nil,fmt.Errorf("executor exposure provider is unavailable")};return a.source.OpenExposures(ctx)}
 undefined
-func(a *Adapter)WSConnectionHealthy(name string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("okx")};return true}
+func(a *Adapter)WSConnectionHealthy(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("okx")};return false}
 func(a *Adapter)LastBookUpdate(_ string,symbol string)time.Time{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.LastBookUpdate("okx",symbol)};return time.Time{}}
 func(a *Adapter)AccountAvailable(name string)(contracts.AccountStatus,error){if h,ok:=a.source.(contracts.AccountStatusProvider);ok{return h.AccountAvailable("okx")};return contracts.AccountStatus{},fmt.Errorf("okx account status provider is unavailable")}
 
