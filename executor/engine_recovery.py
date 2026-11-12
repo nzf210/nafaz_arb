@@ -370,16 +370,35 @@ class EngineRecoveryMixin:
         """Restore persisted pending entries against their exact local venues."""
         try:
             keys = await self.redis.keys(PENDING_ENTRY_KEY_PREFIX + "*")
-        except Exception:
+        except Exception as exc:
             logger.exception("[Recovery] failed to scan arb:pending_entry:* keys")
+            self._halt_exposure_scope(
+                "*",
+                f"pending-entry inventory unavailable: {type(exc).__name__}: {exc}",
+            )
+            self._refresh_entry_gate()
             return
         for key in keys or []:
             try:
                 await self._recover_pending_entry_record(key)
-            except Exception:
+            except Exception as exc:
+                pair_tag = str(key).split(PENDING_ENTRY_KEY_PREFIX, 1)[-1]
                 logger.exception(
-                    f"[Recovery] failed to restore pending entry from {key}"
+                    "[Recovery] failed to restore pending entry from %s", key
                 )
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+                self._halt_exposure_scope(
+                    pair_tag or "*",
+                    "persisted pending-entry record could not be reconciled",
+                )
+                self._mark_failed(
+                    pair_tag or "startup",
+                    "PENDING_ENTRY_RECOVERY_FAILED",
+                    f"Pending entry recovery failed: {type(exc).__name__}: {exc}",
+                    detail={"redis_key": str(key)},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+        self._refresh_entry_gate()
 
     async def _resolve_venue_order_state(
         self, order_id: str, symbol: str, pair_tag: Optional[str] = None
@@ -520,8 +539,13 @@ class EngineRecoveryMixin:
         """Restore Redis positions and preserve unresolved records for reconciliation."""
         try:
             keys = await self.redis.keys("arb:active_pos:*")
-        except Exception:
+        except Exception as exc:
             logger.exception("[Recovery] failed to scan arb:active_pos:* keys")
+            self._halt_exposure_scope(
+                "*",
+                f"active-position inventory unavailable: {type(exc).__name__}: {exc}",
+            )
+            self._refresh_entry_gate()
             return
 
         recovered = 0
