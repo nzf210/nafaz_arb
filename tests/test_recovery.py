@@ -113,16 +113,22 @@ async def test_p0_01_hedge_failure_with_failed_rollback_submits_once_and_alerts(
     assert pair_tag not in engine.active_positions
     assert engine.status_snapshot()["failures"][pair_tag]["reason"]
 
-    msg = None
-    for _ in range(10):
+    messages = []
+    for _ in range(20):
         m = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
         if m and m.get("type") == "message":
-            msg = json.loads(m["data"])
-            break
-    assert msg is not None
-    assert msg["event"] == "HEDGE_FAILED"
-    assert msg["rollback_succeeded"] is False
-    assert "local spot exchange unavailable" in msg["rollback_error"]
+            messages.append(json.loads(m["data"]))
+            if messages[-1].get("event") == "HEDGE_FAILED":
+                break
+    events = [message.get("event") for message in messages]
+    assert "EXECUTION_FAILURE" in events
+    hedge_failure = next(
+        (message for message in messages if message.get("event") == "HEDGE_FAILED"),
+        None,
+    )
+    assert hedge_failure is not None
+    assert hedge_failure["rollback_succeeded"] is False
+    assert "local spot exchange unavailable" in hedge_failure["rollback_error"]
 
 @pytest.mark.asyncio
 async def test_p0_hedge_ambiguity_open_short_blocks_rollback(engine, fake_redis):
