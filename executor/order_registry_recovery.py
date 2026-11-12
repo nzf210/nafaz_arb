@@ -50,8 +50,12 @@ class OrderRegistryRecoveryMixin:
         ):
             if not getattr(cached, field, None):
                 setattr(cached, field, getattr(durable_record, field, None))
-        if durable_record.recovery_status == RecoveryStatus.UNVERIFIED.value:
-            cached.recovery_status = RecoveryStatus.UNVERIFIED.value
+        if durable_record.recovery_status in (
+            RecoveryStatus.UNVERIFIED.value,
+            RecoveryStatus.PHANTOM.value,
+            RecoveryStatus.ORPHAN_ORDER.value,
+        ):
+            cached.recovery_status = durable_record.recovery_status
         return cached
 
     async def active_records(self) -> Dict[str, OrderRecord]:
