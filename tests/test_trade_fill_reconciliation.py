@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from executor.exchange_trades import ExchangeTradeMixin
 from executor.trade_fill_reconciliation import TradeFillReconciliationWorker
 from executor.models import PositionState
 
@@ -288,3 +289,22 @@ async def test_multiple_fee_components_with_missing_currency_remain_unverified()
 
     assert engine._recovery_scope_halts
     assert engine.supabase.watermarks == {}
+
+
+def test_exchange_fee_normalizer_preserves_each_fee_asset():
+    rows = [
+        {"cost": 0.01, "currency": "BTC"},
+        {"cost": 0.02, "currency": "USDT"},
+    ]
+    trade = {"fees": rows}
+
+    assert ExchangeTradeMixin._trade_fee_components(trade, {}) == rows
+    assert ExchangeTradeMixin._trade_fee_payload(trade, {}) is None
+
+
+def test_exchange_fee_normalizer_does_not_discard_malformed_components():
+    rows = [
+        {"cost": 0.01, "currency": "BTC"},
+        "malformed-fee-component",
+    ]
+    assert ExchangeTradeMixin._trade_fee_components({"fees": rows}, {}) == rows
