@@ -17,3 +17,26 @@ def tokocrypto_broker_id_missing(config) -> bool:
         or broker.get("market_type")
     )
     return not bool(str(broker_id or "").strip())
+
+
+
+def missing_live_credentials(config) -> list:
+    """Return every missing live prerequisite without mutating configuration."""
+    missing = []
+    local = config.local_credentials
+    global_credentials = config.global_credentials
+    if not local.api_key or not local.api_secret:
+        missing.append(f"{config.local_exchange_name} API key/secret")
+    if not global_credentials.api_key or not global_credentials.api_secret:
+        missing.append(f"{config.global_exchange_name} API key/secret")
+    if str(config.global_exchange_name or "").lower() == "okx" and not global_credentials.passphrase:
+        missing.append("okx API passphrase")
+    if not config.supabase.enabled or not config.supabase.url or not config.supabase.key:
+        missing.append("Supabase durable storage (enabled, URL and service-role key)")
+    if not str(config.supabase.outbox_path or "").strip():
+        missing.append("Supabase durable outbox path")
+    if tokocrypto_broker_id_missing(config):
+        missing.append(
+            "tokocrypto registered broker_id (options.broker_id or options.broker.marketType)"
+        )
+    return missing
