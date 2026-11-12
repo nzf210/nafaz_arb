@@ -56,7 +56,7 @@ async def test_mexc_futures_factory_and_balance_reads_use_swap(monkeypatch):
         exchange_client.ccxt, "mexc", _FakeCCXTExchange, raising=False
     )
     monkeypatch.setattr(
-        exchange_client.ccxt, "tokocrypto", _FakeCCXTExchange, raising=False
+        exchange_client, "TokocryptoAdapter", _FakeCCXTExchange
     )
 
     local_credentials = ExchangeCredentials(
