@@ -1353,6 +1353,32 @@ def test_tokocrypto_recovery_uses_symbols_from_durable_order_intents():
 
 
 @pytest.mark.asyncio
+async def test_restart_restores_active_position_from_supabase_when_redis_cache_is_empty(fake_redis):
+    """A durable position snapshot survives loss of the Redis active-position key."""
+    engine = await _build(fake_redis, MockExchangeClient(), mock_mode=False)
+    engine.supabase.enabled = True
+    position = _position()
+    engine.supabase.fetch_open_position_records = _async_value([{
+        "pair_key": PAIR_TAG,
+        "status": "HEDGED_ACTIVE",
+        "is_mock": False,
+        "state_snapshot": position.to_dict(),
+    }])
+
+    await engine._recover_active_positions()
+
+    assert PAIR_TAG in engine.active_positions
+    assert engine.active_positions[PAIR_TAG].qty == pytest.approx(position.qty)
+    assert engine.states[PAIR_TAG] == PositionState.HEDGED_ACTIVE
+    persisted = await fake_redis.get("arb:active_pos:" + PAIR_TAG)
+    assert persisted is not None
+
+
+async def _async_value(value):
+    return value
+
+
+@pytest.mark.asyncio
 async def test_durable_registry_read_failure_keeps_global_entry_gate(fake_redis):
     """A Supabase read outage cannot be mistaken for an empty durable registry."""
     engine = await _build(fake_redis, MockExchangeClient())
