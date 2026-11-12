@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
 )
 
 const (
@@ -20,6 +21,7 @@ const (
 
 type LiveAdapter struct {
 	client            *http.Client
+	indodaxClient     *indodax.Client
 	indodaxBaseURL    string
 	tokocryptoBaseURL string
 	okxBaseURL        string
@@ -91,10 +93,11 @@ func NewLiveAdapter() *LiveAdapter {
 			return dialer.DialContext(ctx, network, net.JoinHostPort(resolvedIP, port))
 		},
 	}
-	return &LiveAdapter{
+	httpClient := &http.Client{Transport: tr, Timeout: 15 * time.Second}
+	adapter := &LiveAdapter{
 		health:            newAvailability(HealthPolicy{}, nil),
 		walletStatuses:    make(map[string]walletStatusEntry),
-		client:            &http.Client{Transport: tr, Timeout: 15 * time.Second},
+		client:            httpClient,
 		indodaxBaseURL:    "https://indodax.com",
 		tokocryptoBaseURL: "https://www.tokocrypto.com",
 		okxBaseURL:        "https://www.okx.com",
@@ -103,6 +106,8 @@ func NewLiveAdapter() *LiveAdapter {
 		contractSizes:     make(map[string]float64),
 		okxBookCalls:      make(map[string]*okxBookCall),
 	}
+	adapter.indodaxClient = indodax.New(httpClient, adapter.indodaxBaseURL)
+	return adapter
 }
 
 // SetOKXLimiterConfig installs shared-limiter settings. Call before the first
@@ -128,6 +133,7 @@ func (l *LiveAdapter) SetBaseURLs(urls ...string) {
 	defer l.mu.Unlock()
 	if len(urls) > 0 && urls[0] != "" {
 		l.indodaxBaseURL = urls[0]
+		l.indodaxClient = indodax.New(l.client, l.indodaxBaseURL)
 	}
 	if len(urls) > 1 && urls[1] != "" {
 		l.okxBaseURL = urls[1]
