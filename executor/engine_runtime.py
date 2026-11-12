@@ -58,6 +58,10 @@ class EngineRuntimeMixin:
         await self.publish_status()
         self._running = True
 
+        # Scanner notifications may have been published while startup recovery
+        # was running, before this process subscribed. The ranked Redis queue is
+        # durable, so trigger one drain only after recovery has completed.
+        self._signal_queue_event.set()
         self._tasks.append(asyncio.create_task(self._listen_signals()))
         self._tasks.append(asyncio.create_task(self._process_signal_priority_queue()))
         self._tasks.append(asyncio.create_task(self._listen_emergency_cancel()))
