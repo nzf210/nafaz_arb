@@ -108,7 +108,7 @@ class ExchangeTradeMixin:
         """Normalize every commission component without combining currencies."""
         fee_rows = trade.get("fees")
         if isinstance(fee_rows, list) and fee_rows:
-            return [row for row in fee_rows if isinstance(row, dict)]
+            return fee_rows
         fee = trade.get("fee")
         if not isinstance(fee, dict) or fee.get("cost") is None:
             fee = {

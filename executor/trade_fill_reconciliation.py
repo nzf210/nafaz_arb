@@ -306,7 +306,6 @@ class TradeFillReconciliationWorker:
         return order_id_fn(pair_key, exchange, order_key)
 
     @staticmethod
-    @staticmethod
     def _fee_components_are_verifiable(fee_rows: list) -> bool:
         """Validate all fee amounts and assets; never sum different currencies."""
         if not fee_rows:
