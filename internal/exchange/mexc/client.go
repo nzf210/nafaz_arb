@@ -140,8 +140,8 @@ func (c *Client) PerpetualOrderBook(ctx context.Context,symbol string,contractSi
 }
 
 func cleanSymbol(symbol string) string {
-	symbol=strings.TrimPrefix(symbol,"mexc:")
-	return strings.TrimPrefix(s,"mexc_spot:")
+	symbol = strings.TrimPrefix(symbol, "mexc:")
+	return strings.TrimPrefix(symbol, "mexc_spot:")
 }
 func validPositive(v float64)bool{return v>0&&!math.IsNaN(v)&&!math.IsInf(v,0)}
 func validNonNegative(v float64)bool{return v>=0&&!math.IsNaN(v)&&!math.IsInf(v,0)}
