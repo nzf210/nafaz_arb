@@ -707,7 +707,7 @@ async def test_spot_order_history_lookup_matches_exact_client_id():
     class Spot:
         id = "okx"
 
-        async def fetch_open_orders(self, symbol):
+        async def fetch_open_orders(self, symbol, since=None, limit=None):
             return []
 
         async def fetch_closed_orders(self, symbol, since=None, limit=None):
