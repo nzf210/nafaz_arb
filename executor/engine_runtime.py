@@ -223,6 +223,7 @@ class EngineRuntimeMixin(EngineRuntimeListenersMixin):
         logger.warning("[Risk Control] %s max open spot orders set to %d", venue, limit)
         return True
 
+    @staticmethod
     def _parse_kill_switch_message(message_data: str) -> tuple:
         action = "on"
         reason = "OPERATOR"
