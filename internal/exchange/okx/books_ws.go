@@ -327,7 +327,7 @@ func (m *BookManager) run(ctx context.Context) {
 }
 
 func (m *BookManager) consume(ctx context.Context) error {
-	conn,_,err:=websocket.Dial(ctx,m.url,&websocket.DialOptions{HTTPClient:nil})
+	conn,_,err:=websocket.Dial(ctx,m.url,&websocket.DialOptions{HTTPClient:m.httpClient})
 	if err!=nil { return fmt.Errorf("dial OKX public WS: %w",err) }
 	defer conn.CloseNow()
 	conn.SetReadLimit(4<<20)
