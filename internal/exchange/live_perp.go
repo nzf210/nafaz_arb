@@ -128,52 +128,20 @@ func (l *LiveAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, er
 }
 
 func (l *LiveAdapter) fetchOKXPerpetualMarkets(ctx context.Context) ([]domain.Market, error) {
-	if cached, ok := l.getCachedOKXPerp(); ok {
-		return cached, nil
-	}
-
-	endpoint := "/api/v5/public/instruments?instType=SWAP"
-
-	resp, err := l.okxDo(ctx, endpoint, func() (*http.Request, error) {
-		return l.newOKXRequest(ctx, endpoint)
-	})
-	if err != nil {
-		return l.getFallbackOKXPerp(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return l.getFallbackOKXPerp(fmt.Errorf("okx instruments status: %d", resp.StatusCode))
-	}
-
-	var okxResp struct {
-		Code string              `json:"code"`
-		Msg  string              `json:"msg"`
-		Data []okxInstrumentData `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&okxResp); err != nil {
-		return l.getFallbackOKXPerp(err)
-	}
-	if okxResp.Code != "0" {
-		return l.getFallbackOKXPerp(fmt.Errorf("okx error: %s", okxResp.Msg))
-	}
-
-	var markets []domain.Market
+	if cached, ok := l.getCachedOKXPerp(); ok { return cached, nil }
+	l.mu.RLock(); client := l.okxClient; l.mu.RUnlock()
+	if client == nil { return l.getFallbackOKXPerp(fmt.Errorf("okx client is not configured")) }
+	markets, err := client.PerpetualMarkets(ctx)
+	if err != nil { return l.getFallbackOKXPerp(err) }
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	for _, inst := range okxResp.Data {
-		if m, ok := l.processOKXInstrument(inst); ok {
-			markets = append(markets, m)
+	for _, market := range markets {
+		if market.AmountSpec != nil && market.AmountSpec.BasePerUnit > 0 {
+			l.contractSizes[market.Symbol] = market.AmountSpec.BasePerUnit
+			l.contractSizes["okx:"+market.Symbol] = market.AmountSpec.BasePerUnit
 		}
 	}
-
-	if len(markets) > 0 {
-		l.cachedOKXPerp = markets
-		l.lastOKXPerpFetch = time.Now().UTC()
-	}
-
+	if len(markets) > 0 { l.cachedOKXPerp = markets; l.lastOKXPerpFetch = time.Now().UTC() }
+	l.mu.Unlock()
 	return markets, nil
 }
 
