@@ -364,6 +364,11 @@ func TestTokocryptoWebSocketSubscriptionExcludesNonMBXSymbols(t *testing.T) {
 	}
 	got := tokocryptoMBXSymbols(markets)
 	if len(got) != 1 || got[0] != "BTCUSDT" {
-		t.Fatalf("unexpected MBX subscription symbols: %+v", got)
+		t.Fatalf("unexpected MBX-only symbols helper: %+v", got)
+	}
+	adapter := &LiveAdapter{}
+	adapter.SubscribeTokocryptoBooks(markets)
+	if adapter.tokocryptoSymbolType("BTCUSDT") != 1 || adapter.tokocryptoSymbolType("BTCIDR") != 3 {
+		t.Fatalf("symbol type routing was not retained: %+v", adapter.tokocryptoSymbolTypes)
 	}
 }
