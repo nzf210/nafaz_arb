@@ -84,3 +84,41 @@ async def test_tokocrypto_ccxt_request_uses_registered_prefix_and_spot_order_fie
         assert order["postOnly"] is True
     finally:
         await venue.close()
+
+
+@pytest.mark.asyncio
+async def test_tokocrypto_open_order_discovery_requires_symbol_and_uses_max_page():
+    from executor.exchange_client import ExchangeClient
+
+    class FakeTokocrypto:
+        id = "tokocrypto"
+        options = {"broker_id": "x-TKT5PX2F"}
+        markets = {
+            "BTC/IDR": {
+                "id": "BTC_IDR",
+                "symbol": "BTC/IDR",
+                "base": "BTC",
+                "quote": "IDR",
+                "active": True,
+                "spot": True,
+            }
+        }
+
+        def __init__(self):
+            self.request = None
+
+        async def load_markets(self):
+            return self.markets
+
+        async def fetch_open_orders(self, symbol=None, since=None, limit=None):
+            self.request = (symbol, since, limit)
+            return []
+
+    venue = FakeTokocrypto()
+    client = ExchangeClient(venue, object())
+
+    with pytest.raises(ValueError, match="requires a symbol"):
+        await client.fetch_local_open_orders()
+
+    assert await client.fetch_local_open_orders("BTC/IDR") == []
+    assert venue.request == ("BTC/IDR", None, 1000)
