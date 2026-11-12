@@ -2,6 +2,18 @@
 
 Dokumen ini memisahkan **terdaftar sebagai kandidat**, **tersedia di library**, dan **benar-benar siap LIVE**. Ketiganya bukan status yang sama.
 
+## 0. Kondisi kode yang diverifikasi pada baseline V3
+
+Pemeriksaan berkas branch V3 menunjukkan cakupan berikut; ini adalah status kode, bukan asumsi berdasarkan dokumentasi lama:
+
+- `internal/exchange/live_spot.go` menemukan pasar spot Indodax dan Tokocrypto.
+- `internal/exchange/live_perp.go` menangani pasar perpetual OKX dan MEXC.
+- `executor/pair_registry.py` mengizinkan identitas spot Indodax/Tokocrypto dan perpetual OKX/MEXC/Binance/Bybit.
+- `executor/exchange_client.py` menyiapkan klien baca saldo untuk dua venue spot tersebut dan empat venue perpetual tersebut.
+- Dukungan registry/klien executor untuk Binance dan Bybit tidak sama dengan adaptor discovery Go. Kedua venue belum boleh dianggap sebagai rute end-to-end yang siap diperdagangkan sampai scanner, executor, fee, funding, posisi, fill, dan recovery diuji bersama.
+
+Dengan demikian, cakupan scanner end-to-end yang dapat dibuktikan dari adaptor publik pada baseline ini adalah **2 spot lokal × 2 perpetual global**. Binance dan Bybit merupakan cakupan klien/registry executor yang perlu diselesaikan integrasinya di scanner sebelum rute tersebut diaktifkan.
+
 ## 1. Spot lokal Indonesia
 
 Prioritas awal tetap venue yang sudah ada di jalur kode saat ini:
