@@ -354,3 +354,16 @@ func TestMatchMarketsMultiplePerpExchanges(t *testing.T) {
 		t.Fatalf("expected 4 matched pairs (2 spot * 2 perp), got %d", len(pairs))
 	}
 }
+
+
+func TestTokocryptoWebSocketSubscriptionExcludesNonMBXSymbols(t *testing.T) {
+	markets := []domain.Market{
+		{Exchange: "tokocrypto", Symbol: "toko:BTCUSDT", SymbolType: 1, Active: true},
+		{Exchange: "tokocrypto", Symbol: "toko:BTCIDR", SymbolType: 3, Active: true},
+		{Exchange: "tokocrypto", Symbol: "toko:OFFUSDT", SymbolType: 1, Active: false},
+	}
+	got := tokocryptoMBXSymbols(markets)
+	if len(got) != 1 || got[0] != "BTCUSDT" {
+		t.Fatalf("unexpected MBX subscription symbols: %+v", got)
+	}
+}
