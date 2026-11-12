@@ -213,7 +213,7 @@ class SupabaseQueryMixin:
                     pass
 
     @staticmethod
-    def _open_order_record_query(limit: int) -> dict:
+    def _open_order_record_query(limit: int, offset: int = 0) -> dict:
         return {
             "select": (
                 "local_order_id,client_order_id,exchange_order_id,pair_key,position_key,"
@@ -224,7 +224,8 @@ class SupabaseQueryMixin:
             "recovery_status": "in.(MANAGED,ADOPTED,UNVERIFIED,PHANTOM,ORPHAN_ORDER)",
             "status": "not.in.(closed,filled,canceled,cancelled,rejected,expired)",
             "order": "updated_at.desc",
-            "limit": str(max(1, int(limit))),
+            "limit": str(max(1, min(int(limit), 1000))),
+            "offset": str(max(0, int(offset))),
         }
 
     async def _read_open_order_registry_rows(self, params: dict) -> Any:
@@ -269,11 +270,44 @@ class SupabaseQueryMixin:
         """
         if not self.enabled or not self.url or not self.key:
             return []
-        params = self._open_order_record_query(limit)
-        rows = await self._read_open_order_registry_rows(params)
-        if not isinstance(rows, list):
-            raise RuntimeError("order registry read returned a malformed payload")
-        return [row for row in rows if isinstance(row, dict)]
+        page_size = max(1, min(int(limit), 1000))
+        rows_by_id = {}
+        offset = 0
+        while True:
+            params = self._open_order_record_query(page_size, offset)
+            page = await self._read_open_order_registry_rows(params)
+            if not isinstance(page, list):
+                raise RuntimeError("order registry read returned a malformed payload")
+            for row in page:
+                if not isinstance(row, dict):
+                    continue
+                local_id = str(row.get("local_order_id") or "")
+                if local_id:
+                    rows_by_id[local_id] = row
+            if len(page) < page_size:
+                break
+            offset += len(page)
+
+        # Restore durable intents which are still waiting in the local SQLite
+        # outbox. This closes the crash window between journaling an order and
+        # asynchronous delivery to Supabase, even if the Redis index was lost.
+        pending = (
+            self._outbox.pending_table("order_registry")
+            if self._outbox is not None else []
+        )
+        terminal = {"closed", "filled", "canceled", "cancelled", "rejected", "expired"}
+        recoverable = {"MANAGED", "ADOPTED", "UNVERIFIED", "PHANTOM", "ORPHAN_ORDER"}
+        for _row_id, _table, _conflict, row in pending:
+            local_id = str(row.get("local_order_id") or "")
+            if not local_id or bool(row.get("is_mock", True)):
+                continue
+            status = str(row.get("status") or "").lower()
+            recovery_status = str(row.get("recovery_status") or "MANAGED").upper()
+            if status in terminal or recovery_status not in recoverable:
+                rows_by_id.pop(local_id, None)
+            else:
+                rows_by_id[local_id] = row
+        return list(rows_by_id.values())
 
     async def fetch_open_position_records(self, limit: int = 500) -> list:
         """Reads active live positions, including unflushed local outbox writes.
