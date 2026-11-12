@@ -36,11 +36,14 @@ async def _run(args) -> None:
         config.global_credentials,
         config.exchanges,
     )
+    if client is None:
+        raise RuntimeError("exchange client factory returned no client")
     writer = SupabaseWriter(config.supabase)
     redis = None
     exchanges = []
     try:
         seen = set()
+        connected = set()
         required = {config.local_exchange_name.lower(), config.global_exchange_name.lower()}
         requested_spot = dict(args.spot_symbol or {})
         required.update(requested_spot)
@@ -54,6 +57,7 @@ async def _run(args) -> None:
                         f"{(entry or {}).get('error', 'not configured')}"
                     )
                 continue
+            connected.add(name)
             if id(venue) in seen:
                 continue
             seen.add(id(venue))
@@ -63,6 +67,12 @@ async def _run(args) -> None:
             if not isinstance(balance, dict):
                 raise RuntimeError(f"{name} returned malformed private balance data")
             print(f"PASS exchange={name} markets={len(venue.markets)} private_balance=ok")
+
+        missing = required - connected
+        if missing:
+            raise RuntimeError(
+                "required exchange clients are missing: " + ", ".join(sorted(missing))
+            )
 
         for name, symbol in requested_spot.items():
             entry = client.balance_exchanges.get(name) or {}
