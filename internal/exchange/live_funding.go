@@ -2,10 +2,7 @@ package exchange
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"net/url"
 	"strconv"
 	"time"
 
