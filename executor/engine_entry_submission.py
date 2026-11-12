@@ -197,6 +197,7 @@ class EngineEntrySubmissionMixin:
             "insufficient funds", "insufficient balance", "insufficientfunds",
             "min_notional", "minimum notional", "invalid symbol",
             "unknown symbol", "market is not available",
+            "invalid client id", "invalid clientid", "3703",
         )
         return error_name in definitive_types or any(
             marker in error_text for marker in definitive_messages
