@@ -2,6 +2,7 @@ package exchange
 
 import (
 	"context"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -162,7 +163,7 @@ func (l *LiveAdapter) fetchIndodaxSpotOrderBook(ctx context.Context, symbol stri
 	l.mu.RUnlock()
 	if client == nil { return domain.OrderBook{}, fmt.Errorf("indodax client is not configured") }
 	book, err := client.OrderBook(ctx, symbol)
-	if err != nil && classifyHTTPErrorFromMessage(err.Error()) {
+	if err != nil && indodax.IsUnavailable(err) {
 		return domain.OrderBook{}, fmt.Errorf("%w: %v", ErrExchangeUnavailable, err)
 	}
 	return book, err
