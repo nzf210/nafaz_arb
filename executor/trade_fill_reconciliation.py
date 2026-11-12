@@ -323,7 +323,8 @@ class TradeFillReconciliationWorker:
 
     @staticmethod
     def _persist_exchange_fills(
-        writer, trades: list, order_row_id: str, exchange: str
+        writer, trades: list, order_row_id: str, exchange: str,
+        symbol: str = "",
     ):
         total_qty = 0.0
         unverified_fee_ids = []
@@ -337,10 +338,12 @@ class TradeFillReconciliationWorker:
                 fee_rows = [fee] if fee else []
             if not TradeFillReconciliationWorker._fee_components_are_verifiable(fee_rows):
                 unverified_fee_ids.append(str(trade.get("id") or "unknown"))
+            fill_payload = dict(trade)
+            fill_payload.setdefault("symbol", symbol)
             if writer.order_fill(
                 order_id=order_row_id,
                 exchange=exchange,
-                fill=trade,
+                fill=fill_payload,
             ) is False:
                 raise RuntimeError(
                     f"exchange fill {trade.get('id')} could not be durably journaled"
@@ -491,7 +494,7 @@ class TradeFillReconciliationWorker:
                 symbol, client_order_id, exchange_order_id, filled_qty, submitted,
             )
             total_qty, unverified_fee_ids = self._persist_exchange_fills(
-                writer, trades, order_row_id, exchange
+                writer, trades, order_row_id, exchange, symbol
             )
             await self._verify_candidate_fills(
                 writer, identity, scope, exchange, symbol, exchange_order_id,

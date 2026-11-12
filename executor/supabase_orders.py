@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from executor.fee_conversion import fee_components_in_quote
 from executor.supabase_common import _POSITION_NS, _SIDE_BY_LEG, _canonical_side, _ms_to_iso, _num, _role_catalogue, logger
 
 
@@ -314,10 +315,19 @@ class SupabaseOrderMixin:
             normalized.append({"cost": amount, "currency": asset})
         if not normalized:
             return None
-        # Legacy scalar columns are populated only when one fee currency exists.
+        # Preserve native fee assets and convert only base/quote components.
+        conversion = fee_components_in_quote(
+            normalized, str(fill.get("symbol") or ""), fill.get("price")
+        )
         if len(normalized) == 1:
-            return normalized[0]["cost"], normalized[0]["currency"], normalized, True
-        return None, None, normalized, True
+            fee_amount, fee_asset = normalized[0]["cost"], normalized[0]["currency"]
+        else:
+            fee_amount, fee_asset = None, None
+        return (
+            fee_amount, fee_asset, normalized, True,
+            conversion["quote_amount"], conversion["quote_asset"],
+            conversion["verified"], conversion["components"],
+        )
 
     @staticmethod
     def _order_fill_raw_payload(fill: Dict[str, Any]) -> Dict[str, Any]:
@@ -331,7 +341,11 @@ class SupabaseOrderMixin:
         fill_id: str, quantities: tuple, fee_details: tuple,
     ) -> Dict[str, Any]:
         qty, price, quote_qty, timestamp = quantities
-        fee_amount, fee_asset, fee_rows, fee_verified = fee_details
+        (
+            fee_amount, fee_asset, fee_rows, fee_verified,
+            fee_quote_amount, fee_quote_asset, fee_conversion_verified,
+            fee_conversion_details,
+        ) = fee_details
         return {
             "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
             "order_id": order_id,
@@ -345,6 +359,10 @@ class SupabaseOrderMixin:
             "fee_asset": fee_asset,
             "fee_verified": fee_verified,
             "fee_components": fee_rows,
+            "fee_quote_amount": fee_quote_amount,
+            "fee_quote_asset": fee_quote_asset,
+            "fee_conversion_verified": fee_conversion_verified,
+            "fee_conversion_details": fee_conversion_details,
             "filled_at": datetime.fromtimestamp(
                 timestamp / 1000, tz=timezone.utc
             ).isoformat(),

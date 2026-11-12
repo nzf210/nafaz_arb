@@ -321,6 +321,7 @@ class TestOrdersAndFills:
             "price": 100.0,
             "cost": 25.0,
             "timestamp": 1_700_000_000_000,
+            "symbol": "BTC/IDR",
             "fee": {"cost": 0.01, "currency": "BTC"},
             "info": {"tradeId": "venue-trade-99"},
         }
@@ -340,6 +341,9 @@ class TestOrdersAndFills:
         assert fills[0]["fee_amount"] == 0.01
         assert fills[0]["fee_asset"] == "BTC"
         assert fills[0]["fee_verified"] is True
+        assert fills[0]["fee_quote_amount"] == pytest.approx(1.0)
+        assert fills[0]["fee_quote_asset"] == "IDR"
+        assert fills[0]["fee_conversion_verified"] is True
         assert fills[0]["order_id"] == order_id
 
     def test_exchange_fill_persists_all_fee_components_without_cross_currency_sum(self):
@@ -357,6 +361,7 @@ class TestOrdersAndFills:
             "price": 100.0,
             "cost": 25.0,
             "timestamp": 1_700_000_000_000,
+            "symbol": "BTC/USDT",
             "fees": [
                 {"cost": 0.01, "currency": "BTC"},
                 {"cost": 0.02, "currency": "USDT"},
@@ -369,6 +374,9 @@ class TestOrdersAndFills:
         assert row["fee_amount"] is None
         assert row["fee_asset"] is None
         assert row["fee_verified"] is True
+        assert row["fee_quote_amount"] == pytest.approx(1.02)
+        assert row["fee_quote_asset"] == "USDT"
+        assert row["fee_conversion_verified"] is True
         assert row["fee_components"] == [
             {"cost": 0.01, "currency": "BTC"},
             {"cost": 0.02, "currency": "USDT"},
@@ -751,3 +759,16 @@ class TestFillSyncWatermark:
         reopened = DurableOutbox(path)
         assert reopened.get_numeric_state("fill-sync:exchange:spot:order-1") == pytest.approx(2.5)
         reopened.close()
+
+
+
+def test_third_asset_fee_is_not_converted_without_an_explicit_fx_rate():
+    from executor.fee_conversion import fee_components_in_quote
+
+    result = fee_components_in_quote(
+        [{"cost": 0.5, "currency": "BNB"}], "BTC/USDT", 100.0
+    )
+
+    assert result["verified"] is False
+    assert result["quote_amount"] is None
+    assert result["quote_asset"] == "USDT"
