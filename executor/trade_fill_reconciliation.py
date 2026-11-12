@@ -335,7 +335,7 @@ class TradeFillReconciliationWorker:
             if not fee_rows:
                 fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
                 fee_rows = [fee] if fee else []
-            if not self._fee_components_are_verifiable(fee_rows):
+            if not TradeFillReconciliationWorker._fee_components_are_verifiable(fee_rows):
                 unverified_fee_ids.append(str(trade.get("id") or "unknown"))
             if writer.order_fill(
                 order_id=order_row_id,
