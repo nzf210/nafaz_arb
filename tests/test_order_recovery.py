@@ -2080,3 +2080,31 @@ async def test_durable_registry_restores_tokocrypto_wire_id_and_amount_specs(fak
     assert record.local_amount_spec == LOCAL_SPEC
     assert record.global_amount_spec == GLOBAL_SPEC
     assert record.recovery_context == ENTRY_CONTEXT
+
+
+def test_local_spot_limit_price_uses_the_market_quote_asset(fake_redis):
+    from types import SimpleNamespace
+
+    engine = _engine(fake_redis)
+    snapshot = SimpleNamespace(usdt_idr_rate=16_000.0)
+
+    assert engine._local_order_limit_price(
+        SimpleNamespace(quote_asset="IDR"), snapshot, 16_000_000.0
+    ) == pytest.approx(16_000_000.0)
+    assert engine._local_order_limit_price(
+        SimpleNamespace(quote_asset="USDT"), snapshot, 16_000_000.0
+    ) == pytest.approx(1_000.0)
+    assert engine._local_order_limit_price(
+        SimpleNamespace(quote_asset="USDC"), snapshot, 16_000_000.0
+    ) == pytest.approx(1_000.0)
+
+    with pytest.raises(ValueError, match="USDT/IDR rate"):
+        engine._local_order_limit_price(
+            SimpleNamespace(quote_asset="USDT"),
+            SimpleNamespace(usdt_idr_rate=0.0),
+            16_000_000.0,
+        )
+    with pytest.raises(ValueError, match="unsupported local spot quote asset"):
+        engine._local_order_limit_price(
+            SimpleNamespace(quote_asset="BTC"), snapshot, 16_000_000.0
+        )
