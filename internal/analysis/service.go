@@ -50,7 +50,7 @@ func NewService(adapter contracts.MarketDataAdapter, engine *Engine, resolver Fe
 	if adapter == nil || engine == nil || resolver == nil {
 		return nil, fmt.Errorf("market adapter, analysis engine and verified fee resolver are required")
 	}
-	if cfg.MaxMarkets <= 0 { cfg.MaxMarkets = 40 }
+	if cfg.MaxMarkets < 2 { cfg.MaxMarkets = 40 }
 	if cfg.MaxConcurrency <= 0 { cfg.MaxConcurrency = 4 }
 	if cfg.MaxBookAge <= 0 { cfg.MaxBookAge = 3*time.Second }
 	if cfg.MinInterval <= 0 { cfg.MinInterval = 15*time.Second }
@@ -165,10 +165,11 @@ func (s *Service) selectCrossVenueMarkets(markets []domain.Market) []domain.Mark
 			if group[i].Exchange==group[j].Exchange{return group[i].Symbol<group[j].Symbol}
 			return group[i].Exchange<group[j].Exchange
 		})
-		for _,market:=range group {
-			if s.cfg.MaxMarkets>0&&len(selected)>=s.cfg.MaxMarkets { return selected }
-			selected=append(selected,market)
+		if s.cfg.MaxMarkets>0&&len(selected)+len(group)>s.cfg.MaxMarkets {
+			if len(selected)==0 { selected=append(selected,group[:2]...) }
+			break
 		}
+		selected=append(selected,group...)
 	}
 	return selected
 }
