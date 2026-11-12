@@ -194,6 +194,22 @@ def test_live_mode_requires_supabase_durable_storage():
         cfg.validate_live_credentials()
 
 
+def test_live_mode_requires_redis_coordination_url():
+    from executor.config import ExchangeCredentials, SupabaseConfig
+
+    cfg = ExecutorConfig(mock_mode=False)
+    cfg.local_credentials = ExchangeCredentials(api_key="local-key", api_secret="local-secret")
+    cfg.global_credentials = ExchangeCredentials(
+        api_key="global-key", api_secret="global-secret", passphrase="okx-passphrase"
+    )
+    cfg.supabase = SupabaseConfig(
+        enabled=True, url="https://project.supabase.co", key="service-role-test"
+    )
+    cfg.redis_url = ""
+    with pytest.raises(ValueError, match="Redis URL"):
+        cfg.validate_live_credentials()
+
+
 def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
     cfg = ExecutorConfig()
     assert cfg.max_consecutive_order_failures == 50
