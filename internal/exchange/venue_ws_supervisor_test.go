@@ -2,6 +2,7 @@ package exchange
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,5 +52,23 @@ func TestTokocryptoSupervisorUsesDocumentedRawStreamPath(t *testing.T) {
 	supervisor := (&LiveAdapter{}).newTokocryptoSupervisor()
 	if got, want := supervisor.wsURL("BTCUSDT"), "wss://stream-cloud.tokocrypto.site/stream/ws/btcusdt@depth"; got != want {
 		t.Fatalf("Tokocrypto raw stream URL = %q, want %q", got, want)
+	}
+}
+
+
+func TestTokocryptoNextMeSupervisorUsesDedicatedHostAndSubscription(t *testing.T) {
+	adapter := &LiveAdapter{tokocryptoSymbolTypes: map[string]int{"BTCIDR": 3}}
+	supervisor := adapter.newTokocryptoSupervisor()
+	if got, want := supervisor.wsURL("BTCIDR"), "wss://stream-toko.2meta.app"; got != want {
+		t.Fatalf("NextMe WebSocket URL = %q, want %q", got, want)
+	}
+	var frame struct {
+		Method string `json:"method"`
+		Params []string `json:"params"`
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(supervisor.subscribe("BTCIDR"), &frame); err != nil { t.Fatal(err) }
+	if frame.Method != "SUBSCRIBE" || len(frame.Params) != 1 || frame.Params[0] != "btcidr@depth" || frame.ID != 1 {
+		t.Fatalf("unexpected NextMe subscribe frame: %+v", frame)
 	}
 }
