@@ -69,7 +69,9 @@ func (m *PerpetualBookManager) Apply(update PerpetualDepthUpdate)(bool,error){
 	m.mu.Lock();defer m.mu.Unlock()
 	book:=m.books[update.Symbol];if book==nil{return false,fmt.Errorf("mexc book %s is not bootstrapped",update.Symbol)}
 	if end<=book.version{return false,nil}
-	if begin!=book.version+1{delete(m.books,update.Symbol);return false,fmt.Errorf("mexc sequence gap for %s: expected %d, got %d",update.Symbol,book.version+1,begin)}
+	if !book.synced {
+		if begin > book.version+1 || end < book.version+1 { delete(m.books,update.Symbol); return false,fmt.Errorf("mexc snapshot bridge failed for %s: snapshot=%d range=%d..%d",update.Symbol,book.version,begin,end) }
+	} else if begin!=book.version+1 { delete(m.books,update.Symbol); return false,fmt.Errorf("mexc sequence gap for %s: expected %d, got %d",update.Symbol,book.version+1,begin) }
 	if update.ContractSize>0&&math.Abs(update.ContractSize-book.contractSize)>1e-12{delete(m.books,update.Symbol);return false,fmt.Errorf("mexc contract size changed for %s",update.Symbol)}
 	bids,err:=contractLevelsToMap(update.Bids,book.contractSize);if err!=nil{delete(m.books,update.Symbol);return false,fmt.Errorf("update bids: %w",err)}
 	asks,err:=contractLevelsToMap(update.Asks,book.contractSize);if err!=nil{delete(m.books,update.Symbol);return false,fmt.Errorf("update asks: %w",err)}
