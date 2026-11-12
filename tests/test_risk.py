@@ -384,6 +384,39 @@ async def test_balance_feed_failure_halts_new_entries(engine, fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_pair_auto_blacklist_after_two_consecutive_failures(engine, fake_redis):
+    """A pair that fails 2x consecutively is blacklisted and rejects subsequent signals."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}", json.dumps(_fresh_signal_payload(now_ms))
+    )
+
+    # 1st failure
+    engine._mark_failed(pair_tag, "EXECUTOR_VENUE_MISMATCH", "first failure")
+    assert pair_tag not in getattr(engine, "_pair_halted", {})
+    assert engine._consecutive_pair_failures[pair_tag] == 1
+
+    # 2nd failure triggers blacklist
+    engine._mark_failed(pair_tag, "EXECUTOR_VENUE_MISMATCH", "second failure")
+    assert pair_tag in engine._pair_halted
+    assert "blacklisted" in engine._pair_halted[pair_tag]
+
+    # Signal for blacklisted pair rejected
+    client = BalancesMockClient(spot_available=1000.0, futures_available=1000.0)
+    engine.client = client
+    orders_before = len(client.placed_buys)
+    await engine.handle_signal_notification(pair_tag)
+    assert len(client.placed_buys) == orders_before
+    assert pair_tag not in engine.pending_entry_orders
+
+    # resume_pair clears blacklist and allows entries again
+    assert engine.resume_pair(pair_tag) is True
+    assert pair_tag not in engine._pair_halted
+    assert pair_tag not in engine._consecutive_pair_failures
+
+
+@pytest.mark.asyncio
 async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis):
     """Live order submission, not a balance endpoint, decides whether funds suffice."""
     client = BalancesMockClient()

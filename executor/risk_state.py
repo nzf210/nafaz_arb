@@ -120,6 +120,30 @@ class RiskStateMixin:
             return True
         return False
 
+    def _restore_pair_risk_record(
+        self, kind: str, pair_key: str, reason: str, value
+    ) -> bool:
+        if not pair_key:
+            return False
+        if kind == "pair_blacklist":
+            if isinstance(value, dict) and "expires_at" in value:
+                remaining = float(value.get("expires_at", 0.0)) - time.time()
+                if remaining > 0:
+                    self._pause_pair_for_cooldown(pair_key, remaining, reason=reason)
+                else:
+                    self._persist_risk_state(
+                        "pair_blacklist", scope="pair", pair_key=pair_key, resolved=True
+                    )
+                return True
+            self._pair_halted[pair_key] = reason
+            return True
+        if kind == "consecutive_pair_failures":
+            counts = getattr(self, "_consecutive_pair_failures", None)
+            if counts is not None:
+                counts[pair_key] = max(0, int((value or {}).get("count", 0)))
+            return True
+        return False
+
     def _restore_reconciliation_halt(
         self, scope: str, exchange: str, pair_key: str, reason: str
     ) -> None:
@@ -154,6 +178,10 @@ class RiskStateMixin:
             return
         if scope == "exchange" and self._restore_exchange_risk_record(
             kind, exchange, reason, value
+        ):
+            return
+        if scope == "pair" and self._restore_pair_risk_record(
+            kind, pair_key, reason, value
         ):
             return
         if kind == "reconciliation_halt":
@@ -332,3 +360,113 @@ class RiskStateMixin:
             # No event loop (sync caller): fall back to a plain counter-based
             # halt that the next failure/success path will clear.
             pass
+
+    def _record_pair_failure(self, pair_tag: str, reason: str) -> None:
+        """Counts failures per pair and blacklists pair for 24h when threshold reached."""
+        if not pair_tag:
+            return
+        threshold = int(getattr(self.config, "max_pair_failure_threshold", 2) or 0)
+        if threshold <= 0:
+            return
+        counts = getattr(self, "_consecutive_pair_failures", None)
+        if counts is None:
+            self._consecutive_pair_failures = counts = {}
+        count = counts.get(pair_tag, 0) + 1
+        counts[pair_tag] = count
+        self._persist_risk_state(
+            "consecutive_pair_failures",
+            scope="pair",
+            pair_key=pair_tag,
+            reason=reason,
+            value={"count": count},
+        )
+        if count >= threshold:
+            duration = float(getattr(self.config, "pair_blacklist_cooldown_seconds", 86400.0) or 86400.0)
+            msg = f"{count} consecutive failures ({reason}) - blacklisted {duration/3600:.1f}h"
+            self._pause_pair_for_cooldown(pair_tag, duration, reason=msg)
+            logger.critical(f"[Risk Control] Pair {pair_tag} BLACKLISTED: {msg}")
+
+    def _record_pair_success(self, pair_tag: str) -> None:
+        """Clears failure counter for pair after successful execution."""
+        if not pair_tag:
+            return
+        counts = getattr(self, "_consecutive_pair_failures", None)
+        if counts and pair_tag in counts:
+            del counts[pair_tag]
+            self._persist_risk_state(
+                "consecutive_pair_failures",
+                scope="pair",
+                pair_key=pair_tag,
+                value={"count": 0},
+                resolved=True,
+            )
+
+    def _pause_pair_for_cooldown(self, pair_tag: str, seconds: float, reason: str = "") -> None:
+        """Pauses new entries for a pair for a bounded cooldown (e.g. 24h), then auto-clears."""
+        if not pair_tag:
+            return
+        seconds = max(1.0, float(seconds))
+        halts = getattr(self, "_pair_halted", None)
+        if halts is None:
+            self._pair_halted = halts = {}
+        halt_msg = reason or f"blacklisted ({seconds/3600:.1f}h cooldown)"
+        halts[pair_tag] = halt_msg
+        expires_at = time.time() + seconds
+        self._persist_risk_state(
+            "pair_blacklist",
+            scope="pair",
+            pair_key=pair_tag,
+            reason=halt_msg,
+            value={"source": "failure_threshold", "seconds": seconds, "expires_at": expires_at},
+        )
+        epochs = getattr(self, "_pair_cooldown_epoch", None)
+        if epochs is None:
+            self._pair_cooldown_epoch = epochs = {}
+        token = epochs[pair_tag] = epochs.get(pair_tag, 0) + 1
+
+        async def _clear_after_cooldown():
+            await asyncio.sleep(seconds)
+            if self._pair_cooldown_epoch.get(pair_tag) != token:
+                return
+            if pair_tag in self._pair_halted:
+                del self._pair_halted[pair_tag]
+                self._persist_risk_state(
+                    "pair_blacklist", scope="pair", pair_key=pair_tag, resolved=True
+                )
+                if counts := getattr(self, "_consecutive_pair_failures", None):
+                    counts.pop(pair_tag, None)
+                logger.warning(
+                    f"[Risk Control] Pair {pair_tag} blacklist cooldown elapsed; entries re-enabled"
+                )
+
+        try:
+            loop = asyncio.get_running_loop()
+            tasks = getattr(self, "_pair_cooldown_tasks", None)
+            if tasks is None:
+                self._pair_cooldown_tasks = tasks = {}
+            previous = tasks.get(pair_tag)
+            if previous is not None and not previous.done():
+                previous.cancel()
+            tasks[pair_tag] = loop.create_task(_clear_after_cooldown())
+        except RuntimeError:
+            pass
+
+    def resume_pair(self, pair_tag: str, reason: str = "MANUAL") -> bool:
+        """Clears a pair blacklist manually; returns True when a halt was removed."""
+        halts = getattr(self, "_pair_halted", None)
+        if halts and pair_tag in halts:
+            del halts[pair_tag]
+            self._persist_risk_state(
+                "pair_blacklist", scope="pair", pair_key=pair_tag, resolved=True
+            )
+            if counts := getattr(self, "_consecutive_pair_failures", None):
+                counts.pop(pair_tag, None)
+                self._persist_risk_state(
+                    "consecutive_pair_failures",
+                    scope="pair",
+                    pair_key=pair_tag,
+                    resolved=True,
+                )
+            logger.warning(f"[Risk Control] Pair {pair_tag} resumed manually ({reason})")
+            return True
+        return False

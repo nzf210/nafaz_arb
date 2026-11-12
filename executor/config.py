@@ -82,6 +82,11 @@ class ExecutorConfig:
     # A pricing HTTP 429 on the local venue (rate limit / throttle) pauses new
     # entry placement for this long instead of hammering the endpoint.
     venue_rate_limit_cooldown_seconds: float = 30.0
+    # Consecutive execution failures on a pair before it is blacklisted
+    # for cooldown. 0 disables the auto-blacklist.
+    max_pair_failure_threshold: int = 2
+    # Duration to blacklist a pair once the failure threshold is reached (default 24h).
+    pair_blacklist_cooldown_seconds: float = 86400.0
     local_exchange_name: str = "indodax"
     global_exchange_name: str = "okx"
     execution_mode: str = "TAKER_TAKER"
@@ -146,6 +151,8 @@ class ExecutorConfig:
                 ("max_order_fetch_failures", int),
                 ("order_fetch_backoff_max_seconds", float),
                 ("venue_rate_limit_cooldown_seconds", float),
+                ("max_pair_failure_threshold", int),
+                ("pair_blacklist_cooldown_seconds", float),
             ):
                 if key in exec_cfg:
                     setattr(self, key, conv(exec_cfg[key]))

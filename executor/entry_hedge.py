@@ -369,6 +369,7 @@ class EntryHedgeMixin:
             json.dumps(self.active_positions[pair_tag].to_dict()),
         )
         self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+        self._record_pair_success(pair_tag)
         if not watermark_persisted:
             self._halt_exposure_scope(
                 pair_tag, "entry hedge watermark could not be persisted"

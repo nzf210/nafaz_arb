@@ -128,6 +128,15 @@ def test_pair_key_normalizes_real_tokocrypto_and_okx_symbols(
     )
 
 
+def test_indodax_okbidr_parses_as_okb_base_not_ok_bidr():
+    key = ExchangePairKey.create(
+        "indodax", "okbidr", "okx", "okb_usdt_swap"
+    )
+    assert key.local_symbol == "OKB/IDR"
+    assert key.global_symbol == "OKB/USDT"
+    assert key.tag == "indodax:OKB_IDR__okx:OKB_USDT"
+
+
 def test_pair_key_strips_mexc_adapter_namespace_only_for_mexc():
     key = ExchangePairKey.create(
         "tokocrypto", "toko:ATH_USDT", "mexc", "mexc:ATH_USDT"

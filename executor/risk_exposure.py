@@ -347,6 +347,9 @@ class RiskExposureMixin:
         recovery_halts = getattr(self, "_recovery_scope_halts", None) or {}
         if "*" in recovery_halts:
             return f"global: {recovery_halts['*']}"
+        pair_halts = getattr(self, "_pair_halted", None) or {}
+        if pair_tag in pair_halts:
+            return f"{pair_tag}: {pair_halts[pair_tag]}"
         if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
             failure = (getattr(self, "_failure_reasons", {}) or {}).get(pair_tag) or {}
             return f"{pair_tag}: {failure.get('reason') or 'position reconciliation required'}"

@@ -147,6 +147,11 @@ class ArbitrageEngine(
         # Risk-control: halts keyed by exchange name (venue-level, not global).
         self._exchange_halted: Dict[str, str] = {}
         self._consecutive_order_failures: Dict[str, int] = {}
+        # Risk-control: consecutive execution failures per pair before 24h blacklist.
+        self._consecutive_pair_failures: Dict[str, int] = {}
+        self._pair_halted: Dict[str, str] = {}
+        self._pair_cooldown_epoch: Dict[str, int] = {}
+        self._pair_cooldown_tasks: Dict[str, asyncio.Task] = {}
         # Last observed available balances per venue leg, for mismatch detection.
         self._last_balances: Dict[str, float] = {}
         # Balance snapshot fetched once per signal; reused by entry sizing so the

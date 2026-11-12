@@ -30,6 +30,7 @@ class EngineStatusMixin:
             "timestamp_ms": int(time.time() * 1000),
         }
         self._failure_reasons[pair_tag] = entry
+        self._record_pair_failure(pair_tag, reason)
         self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, reason=reason, value={**entry, "state": state.value})
         if state == PositionState.RECONCILIATION_REQUIRED:
             self._persist_risk_state("reconciliation_halt", scope="pair", pair_key=pair_tag, reason=reason, value={"source": "position_failure"})
@@ -169,6 +170,7 @@ class EngineStatusMixin:
             logger.warning("[Risk] refusing to clear unresolved reconciliation failure for %s", pair_tag)
             return
         if self._failure_reasons.pop(pair_tag, None) is not None:
+            self.resume_pair(pair_tag, reason="clear_failure")
             self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, resolved=True)
             if self.states.get(pair_tag) == PositionState.FAILED:
                 self.states[pair_tag] = PositionState.IDLE
@@ -275,6 +277,7 @@ class EngineStatusMixin:
             "trading_halted": self._trading_halted,
             "halt_reason": self._halt_reason,
             "exchange_halted": dict(self._exchange_halted),
+            "pair_halted": dict(getattr(self, "_pair_halted", {}) or {}),
             "daily_realized_loss_usdt": round(self._daily_realized_loss_usdt, 6),
             "max_daily_loss_usdt": getattr(self.config, "max_daily_loss_usdt", 0.0),
             "loss_day_utc": self._loss_day,
