@@ -13,3 +13,15 @@ func TestDecodeDepthSnapshotEnvelope(t *testing.T){
 	if err!=nil{t.Fatal(err)}
 	if snapshot.LastUpdateID!=22||len(snapshot.Bids)!=1||len(snapshot.Asks)!=1{t.Fatalf("unexpected snapshot: %+v",snapshot)}
 }
+
+
+func TestDecodeCombinedStreamNextMeDepthUpdate(t *testing.T) {
+	payload := []byte(`{"stream":"btcidr@depth","data":{"e":"depthUpdate","E":1700000000000,"T":1699999999990,"s":"BTCIDR","U":120,"u":130,"pu":100,"b":[["100","2"]],"a":[["101","3"]]}}`)
+	if !IsDepthUpdate(payload) { t.Fatal("combined depth frame not recognized") }
+	event, err := DecodeDepthUpdate(payload)
+	if err != nil { t.Fatal(err) }
+	if event.Symbol != "BTCIDR" || event.FirstUpdateID != 120 || event.FinalUpdateID != 130 || event.PreviousUpdateID != 100 || event.EventTime.IsZero() {
+		t.Fatalf("unexpected NextMe update: %+v", event)
+	}
+	if IsDepthUpdate([]byte(`{"result":null,"id":1}`)) { t.Fatal("subscription acknowledgement treated as depth") }
+}
