@@ -18,8 +18,7 @@ func FeeKey(exchange, symbol string) string {
 	return strings.ToLower(strings.TrimSpace(exchange)) + ":" + strings.ToUpper(strings.TrimSpace(symbol))
 }
 
-// Snapshot is normalized market data. It contains no execution instructions and
-// can be consumed by any registered analysis strategy.
+// FeeSchedule contains venue-specific account fee percentages.
 type FeeSchedule struct {
 	MakerPct float64
 	TakerPct float64
