@@ -15,6 +15,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/contracts"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/registry"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/venueadapter"
 	"github.com/nafaz/spot-perp-scanner/internal/history"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
@@ -47,7 +48,13 @@ func main(){
 		}
 		defer live.Close()
 		venues := registry.New()
-		if err := venues.Register("default", live); err != nil { log.Fatalf("register live venue adapter: %v", err) }
+		for _, name := range []string{"indodax", "tokocrypto", "okx", "mexc"} {
+			venue, venueErr := venueadapter.New(name, live)
+			if venueErr != nil { log.Fatalf("create %s venue adapter: %v", name, venueErr) }
+			if venueErr = venues.Register(name, venue); venueErr != nil {
+				log.Fatalf("register %s venue adapter: %v", name, venueErr)
+			}
+		}
 		adapter = registry.NewComposite(venues)
 	case "MOCK":
 		adapter = exchange.NewMockAdapter()
