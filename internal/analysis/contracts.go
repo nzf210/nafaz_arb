@@ -9,11 +9,20 @@ import (
 
 // Snapshot is normalized market data. It contains no execution instructions and
 // can be consumed by any registered analysis strategy.
+type FeeSchedule struct {
+	MakerPct float64
+	TakerPct float64
+}
+
+// Snapshot is normalized, read-only market state shared by independent strategies.
 type Snapshot struct {
-	At       time.Time
-	Markets  []domain.Market
-	OrderBooks map[string]domain.OrderBook
-	Funding  map[string]domain.FundingRate
+	At                   time.Time
+	Markets              []domain.Market
+	OrderBooks           map[string]domain.OrderBook
+	Funding              map[string]domain.FundingRate
+	Fees                 map[string]FeeSchedule
+	EstimatedSlippagePct float64
+	MaxBookAge           time.Duration
 }
 
 // SignalSide describes the direction a strategy wants to research, not an order.
