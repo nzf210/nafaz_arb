@@ -44,3 +44,20 @@ specialized path until a parity-tested migration is complete.
 The engine rejects malformed signals, sorts valid results by confidence and
 returns per-strategy failures separately. Callers must not execute results when
 the required analysis or risk checks failed.
+
+
+## Runtime pipeline
+
+The on-demand service is exposed as `POST /api/v1/analysis/scan`. It selects
+only active spot instruments that have a matching base/quote pair on at least
+two venues, limits the request set, and fetches books with bounded concurrency.
+A fee resolver must return a fresh verified account fee profile for each exact
+venue instrument; missing profiles make the scan incomplete and suppress the
+affected candidate. This endpoint is protected by LIVE API authentication.
+
+The first registered strategy, `CrossVenueSpotStrategy`, is inventory-based:
+buy on one venue and sell already-held inventory on another. It accounts for
+both taker fees and an explicit slippage reserve. It is a research signal only.
+No transfer assumption, balance allocation, portfolio risk approval or order
+routing is performed by this package. Do not connect it to an executor until
+those controls are implemented and separately tested.
