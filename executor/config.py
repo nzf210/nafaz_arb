@@ -477,26 +477,12 @@ class ExecutorConfig:
         """Fail fast instead of starting a live executor with incomplete keys."""
         if self.mock_mode:
             return
-        missing = []
-        if not self.local_credentials.api_key or not self.local_credentials.api_secret:
-            missing.append(f"{self.local_exchange_name} API key/secret")
-        if not self.global_credentials.api_key or not self.global_credentials.api_secret:
-            missing.append(f"{self.global_exchange_name} API key/secret")
-        if self.global_exchange_name.lower() == "okx" and not self.global_credentials.passphrase:
-            missing.append("okx API passphrase")
-        if not self.supabase.enabled or not self.supabase.url or not self.supabase.key:
-            missing.append("Supabase durable storage (enabled, URL and service-role key)")
-        if not str(self.supabase.outbox_path or "").strip():
-            missing.append("Supabase durable outbox path")
+        from executor.config_validation import missing_live_credentials
 
-        from executor.config_validation import tokocrypto_broker_id_missing
-        if tokocrypto_broker_id_missing(self):
-            missing.append(
-                "tokocrypto registered broker_id (options.broker_id or options.broker.marketType)"
-            )
+        missing = missing_live_credentials(self)
         if missing:
             raise ValueError(
-                "LIVE mode requested but exchange credentials are incomplete: "
+                "LIVE mode requested but required credentials/storage are incomplete: "
                 + ", ".join(missing)
-                + ". Configure exchanges.<name> in config.json or matching environment variables."
+                + ". Configure exchanges, Supabase and matching environment variables."
             )
