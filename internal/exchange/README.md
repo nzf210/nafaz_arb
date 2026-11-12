@@ -9,7 +9,7 @@ while individual venue capabilities are migrated behind that boundary.
 internal/exchange/
   contracts/    # venue-neutral read-only market-data capabilities
   registry/     # registry, composite adapter and optional capability forwarding
-  venueadapter/ # venue-scoped compatibility adapters registered per CEX
+  venueadapter/ # transitional generic wrapper retained for compatibility
   indodax/      # spot REST market data and USDT/IDR ticker
   tokocrypto/   # spot REST market data
   mexc/         # spot/perpetual REST market data and funding
