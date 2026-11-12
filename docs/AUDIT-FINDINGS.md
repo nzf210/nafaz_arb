@@ -81,3 +81,10 @@ been executed in this environment; CI must pass before the branch is approved.
 
 
 | R-10 | Scanner HTTP API was unauthenticated | API | Go API now requires a Bearer token in LIVE mode; health remains public |
+
+
+| R-19 | Startup recovery swept only the default local/global venues and omitted unresolved durable states | Recovery | Startup now includes all configured venue clients and reloads PHANTOM/ORPHAN_ORDER records from the durable registry |
+| R-20 | Tokocrypto client IDs stripped the registered broker prefix and were incorrectly treated as venue-idempotent | Tokocrypto execution | Preserve the exact account broker prefix, require it before LIVE submission, keep clientId only as a correlation key, and never retry an ambiguous submit |
+| R-21 | Tokocrypto All Orders requires a symbol, while account-wide CCXT open-order lookup passed None | Recovery | Tokocrypto startup reconciliation now performs per-symbol reads from durable intents and tracked positions |
+| R-22 | Active position restoration depended on Redis keys even though Supabase already stored position snapshots | Recovery | Added durable active-position reads from Supabase with local outbox overlay and Redis cache rehydration |
+
