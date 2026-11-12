@@ -29,8 +29,11 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 	if symbol != "" {
 		l.mu.RLock()
 		manager, legacyManager, cache, maxAge, okxMaxAge := l.okxVenueBooks, l.okxBooks, l.wsCache, l.wsMaxAge, l.okxWSMaxAge
+		tokoBooks, mexcBooks, venueMaxAge := l.tokocryptoBooks, l.mexcPerpBooks, l.venueWSMaxAge
 		l.mu.RUnlock()
 		if exchangeName == "okx" && manager != nil { if book, ok := manager.Get(symbol, okxMaxAge); ok { return book, nil } }
+		if exchangeName == "tokocrypto" && tokoBooks != nil { if book, ok := tokoBooks.Get(strings.TrimPrefix(symbol, "toko:"), venueMaxAge); ok { return book, nil } }
+		if exchangeName == "mexc" && isMEXCSymbol(symbol) && mexcBooks != nil { if book, ok := mexcBooks.Get(cleanSymbol(symbol), venueMaxAge); ok { return book, nil } }
 		if exchangeName == "okx" && legacyManager != nil { if book, ok := legacyManager.Get(symbol, okxMaxAge); ok { return book, nil } }
 		if cache != nil {
 			book, ok, isDuplicate, isOutOfOrder, isGap, _ := cache.Get(exchangeName, symbol, maxAge)
@@ -184,4 +187,33 @@ func (l *LiveAdapter) fetchMEXCOrderBook(ctx context.Context, symbol string) (do
 	book, err := client.PerpetualOrderBook(ctx, symbol, contractSize)
 	if err != nil && mexc.IsUnavailable(err) { return domain.OrderBook{}, fmt.Errorf("%w: %v", ErrExchangeUnavailable, err) }
 	return book, err
+}
+
+
+// BootstrapTokocryptoBook seeds a snapshot after the MBX depth stream has been subscribed.
+func (l *LiveAdapter) BootstrapTokocryptoBook(symbol string, snapshot tokocrypto.DepthSnapshot) error {
+	l.mu.RLock(); manager := l.tokocryptoBooks; l.mu.RUnlock()
+	if manager == nil { return fmt.Errorf("Tokocrypto WebSocket feed is not enabled") }
+	return manager.Bootstrap(strings.TrimPrefix(symbol, "toko:"), snapshot)
+}
+
+// ApplyTokocryptoDepth forwards a decoded MBX diff-depth event to the synchronized book.
+func (l *LiveAdapter) ApplyTokocryptoDepth(update tokocrypto.DepthUpdate) (bool, error) {
+	l.mu.RLock(); manager := l.tokocryptoBooks; l.mu.RUnlock()
+	if manager == nil { return false, fmt.Errorf("Tokocrypto WebSocket feed is not enabled") }
+	return manager.Apply(update)
+}
+
+// BootstrapMEXCPerpetualBook seeds a contract snapshot with its base-quantity multiplier.
+func (l *LiveAdapter) BootstrapMEXCPerpetualBook(symbol string, snapshot mexc.PerpetualDepthSnapshot, contractSize float64) error {
+	l.mu.RLock(); manager := l.mexcPerpBooks; l.mu.RUnlock()
+	if manager == nil { return fmt.Errorf("MEXC WebSocket feed is not enabled") }
+	return manager.Bootstrap(cleanSymbol(symbol), snapshot, contractSize)
+}
+
+// ApplyMEXCPerpetualDepth forwards a decoded push.depth event.
+func (l *LiveAdapter) ApplyMEXCPerpetualDepth(update mexc.PerpetualDepthUpdate) (bool, error) {
+	l.mu.RLock(); manager := l.mexcPerpBooks; l.mu.RUnlock()
+	if manager == nil { return false, fmt.Errorf("MEXC WebSocket feed is not enabled") }
+	return manager.Apply(update)
 }
