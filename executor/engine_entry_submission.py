@@ -242,6 +242,7 @@ class EngineEntrySubmissionMixin:
             recovery_context = self._entry_recovery_context(
                 payload, pair_info, snapshot, directives, actual_cost_usdt
             )
+            recovery_context["strategy_price_idr"] = buy_price_idr
             recovery_context["exchange_order_price"] = exchange_order_price
             recovery_context["exchange_quote_asset"] = str(
                 pair_info.quote_asset or ""
