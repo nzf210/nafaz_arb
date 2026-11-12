@@ -21,26 +21,34 @@ class SupabaseQueryMixin:
         self, session, table: str, select: str, headers: dict,
         cutoff: str, limit: int,
     ) -> list:
-        params = {
-            "select": select,
-            "is_mock": "eq.false",
-            "updated_at": f"gte.{cutoff}",
-            "filled_qty": "gt.0",
-            "order": "updated_at.desc",
-            "limit": str(max(1, min(int(limit), 10000))),
-        }
-        async with session.get(
-            f"{self.url}/rest/v1/{table}", params=params, headers=headers
-        ) as resp:
-            if resp.status >= 300:
-                body = (await resp.text())[:500]
-                raise RuntimeError(
-                    f"{table} read failed with HTTP {resp.status}: {body}"
-                )
-            rows = await resp.json()
-        if not isinstance(rows, list):
-            raise RuntimeError(f"{table} read returned a malformed payload")
-        return [row for row in rows if isinstance(row, dict)]
+        page_size = max(1, min(int(limit), 1000))
+        rows = []
+        offset = 0
+        while True:
+            params = {
+                "select": select,
+                "is_mock": "eq.false",
+                "updated_at": f"gte.{cutoff}",
+                "filled_qty": "gt.0",
+                "order": "updated_at.desc",
+                "limit": str(page_size),
+                "offset": str(offset),
+            }
+            async with session.get(
+                f"{self.url}/rest/v1/{table}", params=params, headers=headers
+            ) as resp:
+                if resp.status >= 300:
+                    body = (await resp.text())[:500]
+                    raise RuntimeError(
+                        f"{table} read failed with HTTP {resp.status}: {body}"
+                    )
+                page = await resp.json()
+            if not isinstance(page, list):
+                raise RuntimeError(f"{table} read returned a malformed payload")
+            rows.extend(row for row in page if isinstance(row, dict))
+            if len(page) < page_size:
+                return rows
+            offset += len(page)
 
     @staticmethod
     def _fill_candidate_identity(row: dict) -> str:
@@ -158,7 +166,7 @@ class SupabaseQueryMixin:
                 rows = []
             results.append(rows)
         orders, registry = results
-        if not orders and not registry and errors:
+        if errors:
             raise RuntimeError("; ".join(errors))
         return orders, registry
 
