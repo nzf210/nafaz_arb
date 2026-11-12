@@ -93,7 +93,8 @@ async def _run(args) -> None:
 
         if not writer.enabled or writer._outbox is None:
             raise RuntimeError("Supabase durable outbox could not be opened")
-        await writer.start()
+        # Do not start the background outbox worker: this command performs
+        # read-only verification and must not flush or mutate queued records.
         durable_orders = await writer.fetch_open_order_records()
         durable_positions = await writer.fetch_open_position_records()
         fill_candidates = await writer.fetch_recent_order_fill_candidates(days=90, limit=10000)
@@ -115,7 +116,10 @@ async def _run(args) -> None:
                 result = closer()
                 if hasattr(result, "__await__"):
                     await result
-        await writer.close()
+        if getattr(writer, "_task", None) is not None:
+            await writer.close()
+        elif getattr(writer, "_outbox", None) is not None:
+            writer._outbox.close()
         for venue in exchanges:
             try:
                 await venue.close()
