@@ -486,6 +486,27 @@ class ExecutorConfig:
             missing.append(f"{self.global_exchange_name} API key/secret")
         if self.global_exchange_name.lower() == "okx" and not self.global_credentials.passphrase:
             missing.append("okx API passphrase")
+
+        # Tokocrypto's CCXT integration uses the account-issued broker
+        # marketType as the prefix for clientId. A guessed/empty prefix causes
+        # venue error 3703 and, more importantly, prevents reliable recovery
+        # of a submit whose acknowledgement is lost.
+        toko_credentials = self.exchanges.get("tokocrypto")
+        if self.local_exchange_name.lower() == "tokocrypto":
+            toko_credentials = self.local_credentials
+        if toko_credentials and toko_credentials.api_key and toko_credentials.api_secret:
+            options = toko_credentials.options if isinstance(toko_credentials.options, dict) else {}
+            broker = options.get("broker") if isinstance(options.get("broker"), dict) else {}
+            broker_id = (
+                options.get("broker_id")
+                or options.get("brokerId")
+                or broker.get("marketType")
+                or broker.get("market_type")
+            )
+            if not str(broker_id or "").strip():
+                missing.append(
+                    "tokocrypto registered broker_id (options.broker_id or options.broker.marketType)"
+                )
         if missing:
             raise ValueError(
                 "LIVE mode requested but exchange credentials are incomplete: "
