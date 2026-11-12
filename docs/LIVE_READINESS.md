@@ -62,9 +62,10 @@ state machine, kill-switch integration and independent risk approval.
 
 ## Current limitations
 
-- The per-CEX registry adapters scope discovery and route health/book requests,
-  but the top-level `LiveAdapter` remains a compatibility facade. Direct
-  per-venue client ownership migration and parity tests are still ongoing.
+- Each CEX package adapter now owns its market discovery/cache and venue
+  capability boundary. The top-level `LiveAdapter` remains the shared book,
+  funding, WebSocket/REST-fallback and health transport. Moving those network
+  lifecycles fully into each CEX package and completing parity tests is ongoing.
 - The read-only analysis endpoint does not authorize execution.
 - SonarQube and real account preflight cannot be certified without repository
   credentials and operator-controlled exchange access.
