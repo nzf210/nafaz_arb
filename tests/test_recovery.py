@@ -808,3 +808,25 @@ async def test_paper_balance_report_is_explicitly_simulated():
     assert len(reports) == 2
     assert all(report["status"] == "ok" for report in reports)
     assert all(report["assets"][0]["asset"] == "USDT" for report in reports)
+
+@pytest.mark.asyncio
+async def test_emergency_rollback_refuses_to_submit_without_durable_intent(engine, mock_client):
+    from executor.quantity import AmountSpec
+
+    async def fail_intent(*_args, **_kwargs):
+        raise RuntimeError("durable order journal unavailable")
+
+    engine._register_order_intent = fail_intent
+    order, error = await engine._liquidate_unhedged_spot(
+        "tokocrypto:btc_idr",
+        "BTC/IDR",
+        0.01,
+        amount_spec=AmountSpec(
+            unit="BASE", step=0.001, minimum=0.001, base_per_unit=1.0
+        ),
+    )
+
+    assert order is None
+    assert "durable order journal unavailable" in str(error)
+    assert mock_client.placed_sells == []
+
