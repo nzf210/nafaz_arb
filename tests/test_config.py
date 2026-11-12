@@ -167,9 +167,12 @@ def test_live_mode_rejects_missing_exchange_credentials():
 
 
 def test_live_mode_accepts_complete_indodax_okx_credentials():
-    from executor.config import ExchangeCredentials
+    from executor.config import ExchangeCredentials, SupabaseConfig
 
     cfg = ExecutorConfig(mock_mode=False)
+    cfg.supabase = SupabaseConfig(
+        enabled=True, url="https://project.supabase.co", key="service-role-test"
+    )
     cfg.local_exchange_name = "indodax"
     cfg.global_exchange_name = "okx"
     cfg.local_credentials = ExchangeCredentials(api_key="local-key", api_secret="local-secret")
@@ -177,6 +180,18 @@ def test_live_mode_accepts_complete_indodax_okx_credentials():
         api_key="global-key", api_secret="global-secret", passphrase="okx-passphrase"
     )
     cfg.validate_live_credentials()
+
+
+def test_live_mode_requires_supabase_durable_storage():
+    from executor.config import ExchangeCredentials
+
+    cfg = ExecutorConfig(mock_mode=False)
+    cfg.local_credentials = ExchangeCredentials(api_key="local-key", api_secret="local-secret")
+    cfg.global_credentials = ExchangeCredentials(
+        api_key="global-key", api_secret="global-secret", passphrase="okx-passphrase"
+    )
+    with pytest.raises(ValueError, match="Supabase durable storage"):
+        cfg.validate_live_credentials()
 
 
 def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
@@ -199,12 +214,15 @@ def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
 
 
 def test_live_tokocrypto_requires_registered_broker_id():
-    from executor.config import ExchangeCredentials
+    from executor.config import ExchangeCredentials, SupabaseConfig
 
     cfg = ExecutorConfig(
         mock_mode=False,
         local_exchange_name="tokocrypto",
         global_exchange_name="okx",
+    )
+    cfg.supabase = SupabaseConfig(
+        enabled=True, url="https://project.supabase.co", key="service-role-test"
     )
     cfg.local_credentials = ExchangeCredentials(api_key="toko-key", api_secret="toko-secret")
     cfg.global_credentials = ExchangeCredentials(
