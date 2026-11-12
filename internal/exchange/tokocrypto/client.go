@@ -118,10 +118,12 @@ func (c *Client) OrderBook(ctx context.Context, symbol string) (domain.OrderBook
 	symbolType := c.symbolTypes[rawSymbol]
 	c.symbolMu.RUnlock()
 	if symbolType == 0 { symbolType = 1 }
-	baseURL, path := c.mbxDepthURL, "/api/v3/depth?symbol="+url.QueryEscape(rawSymbol)+"&limit=20"
+	depthSymbol := rawSymbol
+	if symbolType == 1 { depthSymbol = strings.ReplaceAll(depthSymbol, "_", "") }
+	baseURL, path := c.mbxDepthURL, "/api/v3/depth?symbol="+url.QueryEscape(depthSymbol)+"&limit=20"
 	if symbolType == 3 {
 		baseURL = c.nextMeDepthURL
-		path = "/api/v1/depth?symbol="+url.QueryEscape(rawSymbol)+"&limit=20"
+		path = "/api/v1/depth?symbol="+url.QueryEscape(depthSymbol)+"&limit=20"
 	} else if symbolType != 1 {
 		return domain.OrderBook{}, fmt.Errorf("unsupported Tokocrypto symbolType %d for %s", symbolType, rawSymbol)
 	}
