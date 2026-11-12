@@ -20,6 +20,9 @@
 - The SQLite durable outbox is the synchronous local journal. Startup overlays pending local `risk_state` and PnL rows over Supabase reads so a crash before asynchronous delivery does not erase a newly recorded halt.
 - If durable risk storage cannot be restored or journaled in LIVE mode, new entries are blocked. Position monitoring and de-risking remain available.
 - Redis is not used as the sole source of truth for any risk halt.
+- Active live positions have a durable `state_snapshot` in Supabase. Startup
+  restores missing Redis position keys from these rows before the executor can
+  resume management; unresolved/malformed snapshots keep the entry gate closed.
 
 ## UTC loss accounting and duplicate protection
 
