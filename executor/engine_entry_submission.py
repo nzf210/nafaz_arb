@@ -191,6 +191,7 @@ class EngineEntrySubmissionMixin:
             "insufficientfunds", "invalidorder", "badrequest",
             "authenticationerror", "permissiondenied", "invalidsymbol",
             "marketclosed", "argumentsrequired",
+            "tokocryptoclientidconfigurationerror",
         }
         definitive_messages = (
             "insufficient funds", "insufficient balance", "insufficientfunds",
