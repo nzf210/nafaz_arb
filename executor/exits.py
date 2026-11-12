@@ -140,6 +140,21 @@ class ExitMixin:
                 return False
 
             settled.sort(key=lambda item: item[0])
+            persist_funding = getattr(getattr(self, "supabase", None), "funding_payment", None)
+            if callable(persist_funding):
+                for _timestamp, _amount, payment in settled:
+                    try:
+                        persist_funding(
+                            pair_tag,
+                            pos,
+                            symbol,
+                            payment,
+                            is_mock=bool(getattr(self.config, "mock_mode", False)),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "failed to journal confirmed funding payment for %s", pair_tag
+                        )
             actual_amount = sum(item[1] for item in settled)
             pos.accumulated_funding_usdt += actual_amount
             pos.last_funding_time_ms = settled[-1][0]
