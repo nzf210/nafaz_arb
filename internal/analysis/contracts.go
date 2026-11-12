@@ -2,10 +2,16 @@ package analysis
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
+
+// BookKey returns the stable map key used for normalized order books.
+func BookKey(exchange, symbol string) string {
+	return strings.ToLower(strings.TrimSpace(exchange)) + ":" + strings.ToUpper(strings.TrimSpace(symbol))
+}
 
 // Snapshot is normalized market data. It contains no execution instructions and
 // can be consumed by any registered analysis strategy.
