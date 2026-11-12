@@ -69,9 +69,12 @@ func (c *Client) Markets(ctx context.Context) ([]domain.Market, error) {
 			List []struct {
 				Symbol string `json:"symbol"`
 				SymbolType int `json:"symbolType"`
+				Type int `json:"type"`
+				Status string `json:"status"`
 				BaseAsset string `json:"baseAsset"`
 				QuoteAsset string `json:"quoteAsset"`
-				SpotTradingEnable int `json:"spotTradingEnable"`
+				SpotTradingEnable *int `json:"spotTradingEnable"`
+				IsSpotTradingAllowed *bool `json:"isSpotTradingAllowed"`
 				Filters []struct {
 					FilterType string `json:"filterType"`
 					StepSize string `json:"stepSize"`
@@ -84,11 +87,26 @@ func (c *Client) Markets(ctx context.Context) ([]domain.Market, error) {
 	markets := make([]domain.Market, 0, len(raw.Data.List))
 	symbolTypes := make(map[string]int, len(raw.Data.List))
 	for _, item := range raw.Data.List {
-		if item.SpotTradingEnable != 1 || item.Symbol == "" || item.BaseAsset == "" || item.QuoteAsset == "" { continue }
+		if item.Symbol == "" || item.BaseAsset == "" || item.QuoteAsset == "" { continue }
 		symbolType := item.SymbolType
+		if symbolType == 0 { symbolType = item.Type }
 		if symbolType == 0 { symbolType = 1 } // Older payloads are MBX.
 		symbolTypes[item.Symbol] = symbolType
 		if symbolType != 1 && symbolType != 3 { continue }
+		tradingEnabled := false
+		switch {
+		case item.SpotTradingEnable != nil:
+			tradingEnabled = *item.SpotTradingEnable == 1
+		case item.IsSpotTradingAllowed != nil:
+			tradingEnabled = *item.IsSpotTradingAllowed
+		case item.Status != "":
+			tradingEnabled = strings.EqualFold(item.Status, "TRADING")
+		case symbolType == 3:
+			// The current NextMe symbols response omits spotTradingEnable;
+			// listed type-3 markets are the supported tradable set.
+			tradingEnabled = true
+		}
+		if !tradingEnabled { continue }
 		var amount *domain.AmountSpec
 		for _, filter := range item.Filters {
 			if !strings.EqualFold(filter.FilterType, "LOT_SIZE") && !strings.EqualFold(filter.FilterType, "LOT_SIZE_FILTER") { continue }
