@@ -427,9 +427,14 @@ Before enabling the executor, run the read-only authenticated preflight with the
 same runtime environment and mounted data volume:
 
 ```bash
-docker compose exec nafaz-executor python scripts/live_readonly_preflight.py --config /app/config.json \
+docker compose up -d redis
+docker compose run --rm --no-deps --entrypoint python nafaz-executor \
+  scripts/live_readonly_preflight.py --config /app/config.json \
   --spot-symbol tokocrypto=BTC/IDR \
   --futures-symbol BTC/USDT:USDT
+
+# Start LIVE services only after the read-only preflight passes:
+docker compose up -d nafaz-scanner nafaz-executor
 ```
 
 It checks configured exchange market metadata/private balances, optional
