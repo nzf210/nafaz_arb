@@ -208,6 +208,9 @@ func (c *Config) validate() error {
 		if !c.ExcludeOpenOrders {
 			return fmt.Errorf("exclude_open_orders must be true when mode=LIVE")
 		}
+		if !c.EnableExecutorSignals {
+			return fmt.Errorf("enable_executor_signals must be true when mode=LIVE")
+		}
 	}
 	target := strings.ToLower(strings.TrimSpace(c.GlobalFuturesExchange))
 	if target != "" && target != "okx" && target != "mexc" && target != "all" {
