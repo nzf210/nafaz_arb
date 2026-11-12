@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/contracts"
 )
 
 // ErrExchangeUnavailable is returned when an exchange is believed to be in
@@ -120,21 +122,9 @@ func classifyHTTPError(status int) bool {
 // withdrawals. A suspended wallet means an eventual exit leg (selling spot,
 // transferring funds) cannot settle even if quoting still works, so the
 // scanner should skip pairs on that venue.
-type AccountStatus struct {
-	DepositEnabled    bool
-	WithdrawalEnabled bool
-}
+type AccountStatus = contracts.AccountStatus
 
-// Healthy reports whether the wallet is fully operational.
-func (a AccountStatus) Healthy() bool {
-	return a.DepositEnabled && a.WithdrawalEnabled
-}
-
-// AccountStatusReporter is an optional adapter interface for venues that
-// expose wallet status. Adapters without it are treated as healthy.
-type AccountStatusReporter interface {
-	AccountAvailable(exchange string) (AccountStatus, error)
-}
+type AccountStatusReporter = contracts.AccountStatusProvider
 
 // ErrWalletSuspended wraps errors so callers can tell a suspended wallet from
 // a status-check transport failure. Transport failures must fail open; a real
