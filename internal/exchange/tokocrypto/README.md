@@ -1,8 +1,6 @@
 # Tokocrypto public spot WebSocket
 
-The package now contains a deterministic local-book state manager. Network
-connection orchestration and scanner wiring remain intentionally separate until
-snapshot fetching, buffering, resubscription, and recovery are integrated.
+The package now contains a deterministic local-book state manager. A per-symbol connection supervisor is now wired into `LiveAdapter` when `EnableWebSocketFeed` is enabled. It subscribes before fetching the REST snapshot, buffers up to 512 events during bootstrap, replays buffered events through the sequence bridge, reconnects with exponential backoff, and resubscribes active symbols. The supervisor caps concurrent Tokocrypto connections at 100; excess symbols stay on REST.
 
 ## Verified MBX protocol
 
