@@ -49,7 +49,7 @@ func(a *Adapter)OpenExposures(ctx context.Context)([]domain.OpenExposure,error){
 func(a *Adapter)ExchangeAvailable(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.ExchangeAvailable("tokocrypto")};return false}
 func(a *Adapter)WSConnectionHealthy(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("tokocrypto")};return false}
 func(a *Adapter)LastBookUpdate(_ string,symbol string)time.Time{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.LastBookUpdate("tokocrypto",symbol)};return time.Time{}}
-func(a *Adapter)AccountAvailable(name string)(contracts.AccountStatus,error){if h,ok:=a.source.(contracts.AccountStatusProvider);ok{return h.AccountAvailable("tokocrypto")};return contracts.AccountStatus{},fmt.Errorf("tokocrypto account status provider is unavailable")}
+func(a *Adapter)AccountAvailable(_ string)(contracts.AccountStatus,error){if h,ok:=a.source.(contracts.AccountStatusProvider);ok{return h.AccountAvailable("tokocrypto")};return contracts.AccountStatus{},fmt.Errorf("tokocrypto account status provider is unavailable")}
 
 var _ contracts.MarketDataAdapter=(*Adapter)(nil)
 var _ contracts.AccountStatusProvider=(*Adapter)(nil)
