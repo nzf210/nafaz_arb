@@ -22,3 +22,19 @@ func TestBookManagerRequiresSnapshotBridgeAndInvalidatesOnGap(t *testing.T){
 	if _,err:=m.Apply(DepthUpdate{Symbol:"ETHUSDT",FirstUpdateID:7,FinalUpdateID:7});err==nil{t.Fatal("expected gap")}
 	if _,ok:=m.Get("ETHUSDT",time.Minute);ok{t.Fatal("gap must invalidate book")}
 }
+
+
+func TestBookManagerUsesNextMePreviousUpdateID(t *testing.T) {
+	m := NewBookManager(10)
+	if err := m.Bootstrap("BTCIDR", DepthSnapshot{LastUpdateID:100, Bids:[][]string{{"10","2"}}, Asks:[][]string{{"11","3"}}}); err != nil { t.Fatal(err) }
+	if ok, err := m.Apply(DepthUpdate{Symbol:"BTCIDR", FirstUpdateID:120, FinalUpdateID:130, PreviousUpdateID:100, Bids:[][]string{{"10","4"}}, EventTime:time.Now()}); err != nil || !ok {
+		t.Fatalf("NextMe bridge failed: ok=%v err=%v", ok, err)
+	}
+	if ok, err := m.Apply(DepthUpdate{Symbol:"BTCIDR", FirstUpdateID:150, FinalUpdateID:160, PreviousUpdateID:130, Asks:[][]string{{"11","0"},{"12","1"}}, EventTime:time.Now()}); err != nil || !ok {
+		t.Fatalf("NextMe contiguous delta failed: ok=%v err=%v", ok, err)
+	}
+	if _, err := m.Apply(DepthUpdate{Symbol:"BTCIDR", FirstUpdateID:170, FinalUpdateID:180, PreviousUpdateID:159}); err == nil {
+		t.Fatal("expected NextMe previous-update gap")
+	}
+	if _, ok := m.Get("BTCIDR", time.Minute); ok { t.Fatal("NextMe sequence gap must invalidate book") }
+}
