@@ -2,7 +2,7 @@
 
 Starter Go project for the **read-only** Scanner described in the PRD: discover/match spot and perpetual markets, estimate a buy-spot/short-perpetual opportunity, apply a configurable net-ROI range, and record opportunity counts and observed duration.
 
-> This is a development scaffold, not production trading software. It does not place, cancel, or close orders. Supports both `MOCK` mode and `LIVE` mode (Spot: Tokocrypto, Indodax, MEXC; Perpetual: OKX, MEXC read-only market data). Do not grant trading or withdrawal permissions.
+> This is a development-stage scanner and executor. `MOCK` and `LIVE` execution paths exist; the Python executor can submit, monitor, cancel, and close orders on configured venues. This repository is **not certified for unattended production trading**. LIVE requires complete credentials, a durable order journal, startup recovery, and exchange-side verification. Never grant withdrawal permission; use trade/read scopes only, IP restrictions, and the smallest practical limits.
 
 ## Requirements
 
