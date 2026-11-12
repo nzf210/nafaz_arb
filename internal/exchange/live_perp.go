@@ -168,6 +168,7 @@ func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.M
 			l.contractSizes[market.Symbol] = market.AmountSpec.BasePerUnit
 		}
 	}
+	if len(markets) > 0 { l.cachedMEXCPerp = append([]domain.Market(nil), markets...) }
 	l.mu.Unlock()
 	return markets, nil
 }
