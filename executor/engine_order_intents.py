@@ -124,6 +124,71 @@ class EngineOrderIntentMixin:
             )
         return record
 
+    async def _submit_local_order_once_with_recovery(
+        self,
+        pair_tag: str,
+        exchange: str,
+        symbol: str,
+        client_order_id: str,
+        submit,
+        amount_spec: Any = None,
+    ) -> dict:
+        """Submit once, then resolve a lost acknowledgement by client ID.
+
+        Order-create requests are never retried blindly: Tokocrypto explicitly
+        does not guarantee clientId uniqueness, and other venues may also accept
+        a request whose HTTP acknowledgement is lost.
+        """
+        if not str(client_order_id or "").strip():
+            raise ValueError("durable client_order_id is required for local order submission")
+        try:
+            order = await submit()
+        except Exception as submit_error:
+            definitive = getattr(self, "_is_definitive_order_rejection", None)
+            if callable(definitive) and definitive(submit_error):
+                await self._mark_order_submission_rejected(exchange, client_order_id)
+                raise
+
+            recovered = None
+            lookup = getattr(self.client, "fetch_local_order_by_client_id", None)
+            if callable(lookup):
+                try:
+                    recovered = await lookup(client_order_id, symbol, amount_spec)
+                except Exception:
+                    logger.exception(
+                        "[OrderRecovery] client-id lookup failed after ambiguous submit %s",
+                        client_order_id,
+                    )
+            if isinstance(recovered, dict) and recovered.get("id"):
+                logger.warning(
+                    "[OrderRecovery] recovered local order %s by client ID after lost acknowledgement",
+                    client_order_id,
+                )
+                return recovered
+
+            reason = (
+                f"submit error: {type(submit_error).__name__}: {submit_error}; "
+                "venue lookup did not return a verifiable order"
+            )
+            await self._mark_order_submission_ambiguous(
+                pair_tag, exchange, client_order_id, reason
+            )
+            raise RuntimeError(
+                f"ambiguous local order submission {client_order_id}; no retry was sent"
+            ) from submit_error
+
+        if not isinstance(order, dict) or not order.get("id"):
+            await self._mark_order_submission_ambiguous(
+                pair_tag,
+                exchange,
+                client_order_id,
+                "venue returned an acknowledgement without a verifiable exchange order id",
+            )
+            raise RuntimeError(
+                f"local order {client_order_id} returned no verifiable exchange order id"
+            )
+        return order
+
     async def _mark_order_submission_rejected(
         self, exchange: str, client_order_id: str
     ) -> None:
