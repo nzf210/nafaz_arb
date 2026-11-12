@@ -404,3 +404,28 @@ func TestListActivePositionsRequiresRedis(t *testing.T) {
 		t.Fatal("expected disconnected Redis to fail closed")
 	}
 }
+
+
+func TestListActiveOrderRecordsFailsOnMissingIndexedRecord(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx := context.Background()
+	if err := client.rdb.HSet(ctx, KeyOrderRecoveryIndex, "missing-order", "1").Err(); err != nil { t.Fatal(err) }
+	if _, err := client.ListActiveOrderRecords(ctx); err == nil {
+		t.Fatal("expected inconsistent order index to fail closed")
+	}
+}
+
+func TestListActiveOrderRecordsReturnsIndexedRecord(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx := context.Background()
+	payload := `{"exchange":"okx","market_type":"PERPETUAL","symbol":"BTC-USDT-SWAP","status":"open","remaining_quantity":1}`
+	if err := client.rdb.Set(ctx, KeyPrefixOrderRecord+"order-1", payload, 0).Err(); err != nil { t.Fatal(err) }
+	if err := client.rdb.HSet(ctx, KeyOrderRecoveryIndex, "order-1", "1").Err(); err != nil { t.Fatal(err) }
+	got, err := client.ListActiveOrderRecords(ctx)
+	if err != nil { t.Fatal(err) }
+	if len(got) != 1 || string(got[0]) != payload { t.Fatalf("unexpected order records: %s", got) }
+}
