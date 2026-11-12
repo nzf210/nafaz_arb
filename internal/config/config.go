@@ -73,7 +73,7 @@ type Config struct {
 	MinSpikeScans                 int            `json:"min_spike_scans"`
 	MaxLastTradeAgeSeconds        int            `json:"max_last_trade_age_seconds"`
 	FXRateSanityPct               float64        `json:"fx_rate_sanity_pct"`
-	EnableWebSocketFeed           bool           `json:"enable_websocket_feed"`
+	EnableWebSocketFeed           *bool          `json:"enable_websocket_feed"`
 	OKXWebSocketEnabled           *bool          `json:"okx_ws_enabled,omitempty"`
 	OKXWSURL                      string         `json:"okx_ws_url"`
 	OKXWSStaleAfter               string         `json:"okx_ws_stale_after"`
@@ -124,6 +124,10 @@ func Load(path string) (Config, error) {
 
 func (c *Config) setDefaults() {
 	c.Mode = defaultString(c.Mode, "MOCK")
+	if c.EnableWebSocketFeed == nil {
+		enabled := strings.EqualFold(c.Mode, "LIVE")
+		c.EnableWebSocketFeed = &enabled
+	}
 	c.ExecutionMode = defaultString(c.ExecutionMode, "TAKER_TAKER")
 	c.ListenAddr = defaultString(c.ListenAddr, ":8080")
 	c.ScanIntervalSeconds = defaultInt(c.ScanIntervalSeconds, 30)
@@ -375,7 +379,10 @@ func (c *Config) applyEnvOverrides() {
 	setEnvInt(&c.MinSpikeScans, "MIN_SPIKE_SCANS")
 	setEnvInt(&c.MaxLastTradeAgeSeconds, "MAX_LAST_TRADE_AGE_SECONDS")
 	setEnvFloat(&c.FXRateSanityPct, "FX_RATE_SANITY_PCT")
-	setEnvBool(&c.EnableWebSocketFeed, "ENABLE_WEBSOCKET_FEED")
+	if v := os.Getenv("ENABLE_WEBSOCKET_FEED"); v != "" {
+		enabled := strings.EqualFold(v, "true") || v == "1"
+		c.EnableWebSocketFeed = &enabled
+	}
 	if v := os.Getenv("OKX_WS_ENABLED"); v != "" {
 		enabled := strings.EqualFold(v, "true") || v == "1"
 		c.OKXWebSocketEnabled = &enabled
