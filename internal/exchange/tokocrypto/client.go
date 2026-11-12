@@ -118,8 +118,7 @@ func (c *Client) OrderBook(ctx context.Context, symbol string) (domain.OrderBook
 	symbolType := c.symbolTypes[rawSymbol]
 	c.symbolMu.RUnlock()
 	if symbolType == 0 { symbolType = 1 }
-	depthSymbol := rawSymbol
-	if symbolType == 1 { depthSymbol = strings.ReplaceAll(depthSymbol, "_", "") }
+	depthSymbol := strings.ReplaceAll(rawSymbol, "_", "")
 	baseURL, path := c.mbxDepthURL, "/api/v3/depth?symbol="+url.QueryEscape(depthSymbol)+"&limit=20"
 	if symbolType == 3 {
 		baseURL = c.nextMeDepthURL
