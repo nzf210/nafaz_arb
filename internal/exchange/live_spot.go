@@ -65,100 +65,22 @@ func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) 
 
 func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.Market, error) {
 	l.mu.RLock()
-	if len(l.cachedTokocryptoSpot) > 0 && time.Since(l.lastTokocryptoFetch) < 1*time.Hour {
+	if len(l.cachedTokocryptoSpot) > 0 && time.Since(l.lastTokocryptoFetch) < time.Hour {
 		res := l.cachedTokocryptoSpot
 		l.mu.RUnlock()
 		return res, nil
 	}
+	client := l.tokocryptoClient
 	l.mu.RUnlock()
-
-	endpoint := l.tokocryptoBaseURL + "/open/v1/common/symbols"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return l.getFallbackTokocryptoSpot(err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return l.getFallbackTokocryptoSpot(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return l.getFallbackTokocryptoSpot(fmt.Errorf("tokocrypto symbols status: %d", resp.StatusCode))
-	}
-
-	var raw struct {
-		Code int `json:"code"`
-		Data struct {
-			List []struct {
-				Symbol            string `json:"symbol"`
-				BaseAsset         string `json:"baseAsset"`
-				QuoteAsset        string `json:"quoteAsset"`
-				SpotTradingEnable int    `json:"spotTradingEnable"`
-				Filters           []struct {
-					FilterType string `json:"filterType"`
-					StepSize   string `json:"stepSize"`
-					MinQty     string `json:"minQty"`
-				} `json:"filters"`
-			} `json:"list"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return l.getFallbackTokocryptoSpot(fmt.Errorf("decode tokocrypto symbols: %w", err))
-	}
-
-	var markets []domain.Market
-	for _, s := range raw.Data.List {
-		if s.SpotTradingEnable != 1 || s.Symbol == "" || s.BaseAsset == "" || s.QuoteAsset == "" {
-			continue
-		}
-		var amountSpec *domain.AmountSpec
-		for _, filter := range s.Filters {
-			if strings.EqualFold(filter.FilterType, "LOT_SIZE") ||
-				strings.EqualFold(filter.FilterType, "LOT_SIZE_FILTER") {
-				step, stepErr := strconv.ParseFloat(filter.StepSize, 64)
-				minimum, minErr := strconv.ParseFloat(filter.MinQty, 64)
-				if stepErr == nil && minErr == nil && step > 0 && minimum >= 0 &&
-					!math.IsNaN(step) && !math.IsInf(step, 0) &&
-					!math.IsNaN(minimum) && !math.IsInf(minimum, 0) {
-					amountSpec = &domain.AmountSpec{
-						Unit:        "BASE",
-						Step:        step,
-						Min:         minimum,
-						BasePerUnit: 1,
-					}
-				}
-				break
-			}
-		}
-		if amountSpec == nil {
-			log.Printf("tokocrypto: symbol %s has no valid LOT_SIZE filter; execution disabled for market", s.Symbol)
-		}
-		market := domain.Market{
-			Exchange:   "tokocrypto",
-			Symbol:     "toko:" + s.Symbol,
-			BaseAsset:  strings.ToUpper(s.BaseAsset),
-			QuoteAsset: strings.ToUpper(s.QuoteAsset),
-			MarketType: "SPOT",
-			Active:     true,
-			AmountSpec: amountSpec,
-		}
-		if amountSpec != nil {
-			market.LotSize = amountSpec.Step
-			market.MinOrder = amountSpec.Min
-		}
-		markets = append(markets, market)
-	}
-
+	if client == nil { return l.getFallbackTokocryptoSpot(fmt.Errorf("tokocrypto client is not configured")) }
+	markets, err := client.Markets(ctx)
+	if err != nil { return l.getFallbackTokocryptoSpot(err) }
 	if len(markets) > 0 {
 		l.mu.Lock()
 		l.cachedTokocryptoSpot = markets
 		l.lastTokocryptoFetch = time.Now().UTC()
 		l.mu.Unlock()
 	}
-
 	return markets, nil
 }
 
