@@ -242,3 +242,20 @@ async def test_fills_with_missing_fee_details_are_not_marked_reconciled():
     assert "trade-fill reconciliation:" in engine._recovery_scope_halts[scope]
     assert engine.failures[0][0][1] == "TRADE_FILL_RECONCILIATION_REQUIRED"
     assert engine.supabase.watermarks == {}
+
+
+@pytest.mark.asyncio
+async def test_durable_fill_ledger_read_failure_blocks_live_recovery():
+    engine = FakeEngine([], [])
+
+    async def unavailable(**_kwargs):
+        raise RuntimeError("Supabase read timeout")
+
+    engine.supabase.fetch_recent_order_fill_candidates = unavailable
+    worker = TradeFillReconciliationWorker(engine)
+
+    with pytest.raises(RuntimeError, match="Supabase read timeout"):
+        await worker.reconcile_once()
+
+    assert "trade-fill reconciliation:" in engine._recovery_scope_halts["*"]
+    assert engine.failures
