@@ -157,49 +157,15 @@ func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol s
 }
 
 func (l *LiveAdapter) fetchIndodaxSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
-	pair := strings.ToLower(symbol)
-	endpoint := fmt.Sprintf("%s/api/depth/%s", l.indodaxBaseURL, url.PathEscape(pair))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("indodax depth req: %w", err)
+	l.mu.RLock()
+	client := l.indodaxClient
+	l.mu.RUnlock()
+	if client == nil { return domain.OrderBook{}, fmt.Errorf("indodax client is not configured") }
+	book, err := client.OrderBook(ctx, symbol)
+	if err != nil && classifyHTTPErrorFromMessage(err.Error()) {
+		return domain.OrderBook{}, fmt.Errorf("%w: %v", ErrExchangeUnavailable, err)
 	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("indodax depth request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		if classifyHTTPError(resp.StatusCode) {
-			return domain.OrderBook{}, fmt.Errorf("%w: indodax depth status %d", ErrExchangeUnavailable, resp.StatusCode)
-		}
-		return domain.OrderBook{}, fmt.Errorf("indodax depth status: %d", resp.StatusCode)
-	}
-
-	var rawBook struct {
-		Buy  [][]any `json:"buy"`  // bids
-		Sell [][]any `json:"sell"` // asks
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&rawBook); err != nil {
-		return domain.OrderBook{}, fmt.Errorf("decode indodax depth: %w", err)
-	}
-
-	bids := parseLevels(rawBook.Buy, 1.0)
-	asks := parseLevels(rawBook.Sell, 1.0)
-
-	receivedAt := time.Now().UTC()
-	return domain.OrderBook{
-		Exchange:   "indodax",
-		Symbol:     symbol,
-		Bids:       bids,
-		Asks:       asks,
-		Timestamp:  receivedAt,
-		ReceivedAt: receivedAt,
-		Source:     "receive_time",
-	}, nil
+	return book, err
 }
 
 func (l *LiveAdapter) fetchMEXCSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
