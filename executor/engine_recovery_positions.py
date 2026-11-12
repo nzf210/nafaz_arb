@@ -2,6 +2,7 @@
 
 import json
 import time
+from datetime import datetime, timezone
 
 from executor.models import PositionState, ActivePosition
 from executor.pair_registry import ExchangePairKey
@@ -196,6 +197,22 @@ class EngineRecoveryPositionsMixin:
                 snapshot = dict(snapshot)
                 snapshot["state"] = str(row.get("status") or snapshot.get("state") or "RECONCILIATION_REQUIRED")
                 durable_updated = int(snapshot.get("updated_at") or 0)
+                row_updated_at = str(row.get("updated_at") or "")
+                if row_updated_at:
+                    try:
+                        parsed_updated = datetime.fromisoformat(
+                            row_updated_at.replace("Z", "+00:00")
+                        )
+                        if parsed_updated.tzinfo is None:
+                            parsed_updated = parsed_updated.replace(tzinfo=timezone.utc)
+                        durable_updated = max(
+                            durable_updated, int(parsed_updated.timestamp() * 1000)
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "[Recovery] invalid Supabase updated_at for %s: %s",
+                            pair_tag, row_updated_at,
+                        )
                 terminal_times = getattr(
                     self, "_recovery_terminal_position_timestamps", {}
                 )
