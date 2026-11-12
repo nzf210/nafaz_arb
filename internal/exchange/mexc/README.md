@@ -1,8 +1,7 @@
 # MEXC public perpetual WebSocket
 
 This package owns public REST market data and now includes a deterministic
-per-contract local-book state manager. Network supervision and scanner wiring
-remain separate until snapshot history replay and reconnect recovery are integrated.
+per-contract local-book state manager. A per-contract connection supervisor is wired into `LiveAdapter` when `EnableWebSocketFeed` is enabled. It subscribes before fetching the REST snapshot, buffers up to 512 events during bootstrap, replays contiguous updates, sends JSON ping heartbeats, reconnects with exponential backoff, and resubscribes active contracts. It caps concurrent MEXC connections at 20; excess contracts remain REST-only.
 
 ## Verified contract protocol
 
