@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"strings"
 	"time"
 
 	"github.com/coder/websocket"
