@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from executor.models import OrderRole
 from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt
 from executor import helpers
-from executor.helpers import RetryExhausted, build_client_order_id
+from executor.helpers import build_client_order_id
 
 logger = logging.getLogger("executor.engine")
 
@@ -369,16 +369,18 @@ class ForceCloseLegMixin:
                 quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
                 required=False,
             )
-            spot_order = await helpers.retry_with_backoff(
+            spot_order = await self._submit_local_order_once_with_recovery(
+                pair_key,
+                pos.local_exchange,
+                pos.symbol,
+                client_order_id,
                 lambda: self.client.place_local_market_sell(
                     pos.symbol,
                     pos.qty,
                     client_order_id=client_order_id,
                     amount_spec=pos.local_amount_spec,
                 ),
-                max_retries=4,
-                base_delay=0.5,
-                label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
+                amount_spec=pos.local_amount_spec,
             )
             if isinstance(spot_order, dict):
                 await self._record_force_close_spot_order(
@@ -405,9 +407,10 @@ class ForceCloseLegMixin:
                 f"[Force Close] FAILED to liquidate spot leg for {pair_key}. "
                 f"MANUAL INTERVENTION REQUIRED: {pos.qty} {pos.symbol} is UNHEDGED. Response: {spot_order}"
             )
-        except RetryExhausted:
+        except Exception:
             logger.exception(
-                f"[Force Close] spot liquidation exhausted retries for {pair_key}"
+                "[Force Close] spot liquidation was not verified after one submit for %s",
+                pair_key,
             )
         return 0.0
 
