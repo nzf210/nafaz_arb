@@ -15,6 +15,27 @@ from executor.engine import ArbitrageEngine, RetryExhausted, retry_with_backoff
 
 from tests.conftest import BlockingSellClient, FailingHedgeClient, MockExchangeClient, OpenShortPositionClient, _entry_order_info, _fresh_signal_payload, engine, fake_redis, mock_client
 
+
+def _enable_live_durable_test_storage(engine):
+    """Provide deterministic Supabase reads without opening a real network session."""
+    async def no_rows(*_args, **_kwargs):
+        return []
+
+    async def no_op(*_args, **_kwargs):
+        return None
+
+    engine.supabase.enabled = True
+    engine.supabase._outbox = object()
+    engine.supabase.start = no_op
+    engine.supabase.close = no_op
+    engine.supabase.fetch_open_order_records = no_rows
+    engine.supabase.fetch_open_position_records = no_rows
+    engine.supabase.fetch_recent_order_fill_candidates = no_rows
+    engine.supabase.fetch_risk_state = no_rows
+    engine.supabase.position_opened = lambda *_args, **_kwargs: True
+    engine.supabase.clear_risk_state = no_op
+    engine._restore_risk_state = no_op
+
 @pytest.mark.asyncio
 async def test_p0_01_hedge_failure_rolls_back_spot_leg(fake_redis):
     """BUG-02/P0-01: a failed hedge must market-sell the unhedged spot leg back."""
@@ -583,6 +604,7 @@ async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis)
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
     )
+    _enable_live_durable_test_storage(engine)
     await engine.initialize()
 
     assert engine.states["indodax:btc_idr"] == PositionState.HEDGED_ACTIVE
@@ -608,6 +630,7 @@ async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redi
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
     )
+    _enable_live_durable_test_storage(engine)
     await engine.initialize()
 
     assert engine.states["indodax:btc_idr"] == PositionState.RECONCILIATION_REQUIRED
