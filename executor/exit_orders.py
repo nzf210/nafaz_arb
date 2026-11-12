@@ -3,6 +3,7 @@
 import logging
 import json
 import time
+from types import SimpleNamespace
 
 from executor.models import ActivePosition, OrderRole, PositionState
 from executor import helpers
@@ -124,8 +125,26 @@ class ExitOrderManagementMixin:
         limit_sell_idr: float,
         tick_size: float,
         global_ask_usdt: float,
+        usdt_idr_rate: float,
     ) -> None:
         try:
+            pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
+            if pair_info is None:
+                raw_symbol = str(pos.symbol or "").split(":")[-1]
+                if "/" in raw_symbol:
+                    quote_asset = raw_symbol.rsplit("/", 1)[-1]
+                elif "_" in raw_symbol:
+                    quote_asset = raw_symbol.rsplit("_", 1)[-1]
+                else:
+                    raise ValueError(
+                        f"cannot determine local quote asset for {pos.local_exchange}:{pos.symbol}"
+                    )
+                pair_info = SimpleNamespace(quote_asset=quote_asset)
+            exchange_limit_sell_price = self._local_order_limit_price(
+                pair_info,
+                SimpleNamespace(usdt_idr_rate=usdt_idr_rate),
+                limit_sell_idr,
+            )
             exit_coid = build_client_order_id(
                 pair_tag, "exit", self._next_order_seq()
             )
@@ -140,7 +159,7 @@ class ExitOrderManagementMixin:
             order = await self.client.place_local_limit_sell(
                 pos.symbol,
                 pos.qty,
-                limit_sell_idr,
+                exchange_limit_sell_price,
                 client_order_id=exit_coid,
                 amount_spec=pos.local_amount_spec,
             )
@@ -289,7 +308,8 @@ class ExitOrderManagementMixin:
         if not pos or pos.qty <= 0:
             return
         await self._place_dynamic_limit_sell(
-            pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt
+            pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt,
+            usdt_idr_rate,
         )
 
     async def _check_dynamic_exits(self):
