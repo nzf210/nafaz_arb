@@ -65,7 +65,7 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 
 func (l *LiveAdapter) resolveLiveUSDTIDRRate(ctx context.Context) (float64, error) {
 	started := time.Now()
-	rate, indodaxErr := l.fetchIndodaxUSDTIDRRate(ctx)
+	rate, indodaxErr := l.indodaxVenue().FetchUSDTIDRRate(ctx)
 	l.recordScanMetric("indodax", started, indodaxErr)
 	if indodaxErr == nil && rate > 0 {
 		l.mu.Lock()
@@ -77,7 +77,7 @@ func (l *LiveAdapter) resolveLiveUSDTIDRRate(ctx context.Context) (float64, erro
 
 	l.recordScanError(fmt.Sprintf("indodax usdtidr unavailable (%v); trying tokocrypto USDT_IDR", indodaxErr))
 	tokoStarted := time.Now()
-	tokoRate, tokoErr := l.fetchTokocryptoUSDTIDRRate(ctx)
+	tokoRate, tokoErr := l.tokocryptoVenue().FetchUSDTIDRRate(ctx)
 	l.recordScanMetric("tokocrypto", tokoStarted, tokoErr)
 	if tokoErr == nil && tokoRate > 0 {
 		l.mu.Lock()
@@ -177,7 +177,7 @@ func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) 
 	var errs []string
 
 	tokoStart := time.Now()
-	tokoMarkets, err := l.fetchTokocryptoSpotMarkets(ctx)
+	tokoMarkets, err := l.tokocryptoVenue().FetchSpotMarkets(ctx)
 	l.recordScanMetric("tokocrypto", tokoStart, err)
 	if err == nil {
 		allMarkets = append(allMarkets, tokoMarkets...)
@@ -203,7 +203,7 @@ func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) 
 
 	if strings.TrimSpace(l.mexcSpotBaseURL) != "" {
 		mexcStart := time.Now()
-		mexcMarkets, err := l.fetchMEXCSpotMarkets(ctx)
+		mexcMarkets, err := l.mexcVenue().FetchSpotMarkets(ctx)
 		l.recordScanMetric("mexc", mexcStart, err)
 		if err == nil {
 			allMarkets = append(allMarkets, mexcMarkets...)

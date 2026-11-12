@@ -10,6 +10,7 @@ import ccxt.async_support as ccxt
 from executor.indodax_v2 import IndodaxTAPIv2
 from executor.quantity import AmountSpec, order_amount_to_base
 from executor.exchange_common import venue_client_order_id
+from executor.venues import get_venue
 
 
 
@@ -21,39 +22,10 @@ class ExchangeTradeMixin:
         until: Optional[int], client_order_id: Optional[str],
         order_id: Optional[str],
     ) -> list:
-        end_ms = min(
-            int(time.time() * 1000),
-            int(until) if until is not None else int(time.time() * 1000),
+        return await get_venue("indodax").fetch_trade_history(
+            fetcher, resolved, limit=1000, since=since, until=until,
+            client_order_id=client_order_id, order_id=order_id,
         )
-        cursor = int(
-            since or max(0, end_ms - 7 * 24 * 60 * 60 * 1000)
-        )
-        raw_trades = []
-        first_window = True
-        while cursor <= end_ms:
-            window_end = min(
-                end_ms, cursor + 7 * 24 * 60 * 60 * 1000 - 1
-            )
-            params = {"startTime": cursor, "endTime": window_end, "sort": "asc"}
-            if client_order_id:
-                params["clientOrderId"] = str(client_order_id)
-            elif order_id:
-                params["orderId"] = str(order_id)
-            if not first_window:
-                # Keep historical replay below INDODAX's per-IP request ceiling.
-                await asyncio.sleep(0.25)
-            first_window = False
-            chunk = await fetcher(resolved, cursor, 1000, params)
-            if not isinstance(chunk, list):
-                raise ValueError("exchange returned malformed trade history")
-            if len(chunk) >= 1000:
-                raise RuntimeError(
-                    "INDODAX trade-history window reached its 1000-fill limit; "
-                    "cannot prove complete order fill history"
-                )
-            raw_trades.extend(chunk)
-            cursor = window_end + 1
-        return raw_trades
 
     @staticmethod
     async def _request_ccxt_trade_history(

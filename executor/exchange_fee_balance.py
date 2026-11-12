@@ -5,6 +5,7 @@ import time
 from typing import Optional, Dict, Any
 
 from executor.exchange_common import _fetch_exchange_balance
+from executor.venues import get_venue
 
 
 
@@ -12,32 +13,7 @@ class ExchangeFeeBalanceMixin:
     """Focused asynchronous exchange adapter operations."""
 
     async def _read_tokocrypto_spot_fee(self, exchange, resolved: str):
-        endpoint = (
-            getattr(exchange, "privateGetOpenV1AccountSpot", None)
-            or getattr(exchange, "private_get_open_v1_account_spot", None)
-        )
-        if callable(endpoint):
-            raw = await endpoint()
-            account = raw.get("data", {}) if isinstance(raw, dict) else {}
-            if not isinstance(account, dict):
-                raise ValueError("invalid Tokocrypto account fee response")
-            maker_bips = account.get("makerCommission")
-            taker_bips = account.get("takerCommission")
-            if maker_bips is None or taker_bips is None:
-                raise ValueError(
-                    "Tokocrypto account response omitted commission rates"
-                )
-            return float(maker_bips) / 100.0, float(taker_bips) / 100.0
-        fetcher = getattr(exchange, "fetch_trading_fee", None)
-        if not callable(fetcher):
-            return None
-        raw = await fetcher(resolved)
-        maker, taker = raw.get("maker"), raw.get("taker")
-        if maker is None or taker is None:
-            raise ValueError(
-                "incomplete Tokocrypto spot trading fee response"
-            )
-        return float(maker) * 100.0, float(taker) * 100.0
+        return await get_venue("tokocrypto").fetch_fee(exchange, resolved)
 
     async def _read_ccxt_fee(self, exchange, resolved: str, market_kind: str):
         fetcher = getattr(exchange, "fetch_trading_fee", None)

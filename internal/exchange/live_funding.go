@@ -15,9 +15,9 @@ import (
 // FundingRate retrieves current funding rate from OKX or MEXC.
 func (l *LiveAdapter) FundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {
 	if isMEXCSymbol(symbol) {
-		return l.fetchMEXCFundingRate(ctx, symbol)
+		return l.mexcVenue().FetchFundingRate(ctx, symbol)
 	}
-	return l.fetchOKXFundingRate(ctx, symbol)
+	return l.okxVenue().FetchFundingRate(ctx, symbol)
 }
 
 func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {

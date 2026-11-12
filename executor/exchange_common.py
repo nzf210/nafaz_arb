@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any
 
 from executor.indodax_v2 import IndodaxTAPIv2
 from executor.quantity import AmountSpec, order_amount_to_base
+from executor.venues import get_venue
 
 logger = logging.getLogger("executor.exchange")
 
@@ -218,7 +219,7 @@ def venue_client_order_id(
             TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(broker_prefix)
         ):
             return client_order_id
-    return _tokocrypto_client_order_id(client_order_id, broker_prefix)
+    return get_venue("tokocrypto").format_client_order_id(client_order_id, broker_prefix)
 
 
 def _require_amount_spec(value: Any) -> AmountSpec:
@@ -381,28 +382,12 @@ def futures_position_side_params(exchange: Any, position_side: str) -> Dict[str,
     """
     if str(getattr(exchange, "id", "") or "").lower() != "okx":
         return {}
-    side = _OKX_POSITION_SIDE.get(str(position_side or "").lower())
-    if side is None:
-        raise ValueError(f"unsupported futures position side: {position_side}")
-    return {"posSide": side}
+    okx = get_venue("okx")
+    return okx.position_side_params(position_side)
 
 def _tokocrypto_wire_symbol(venue: Any, symbol: str) -> str:
-    """Translates a CCXT unified symbol to the venue's own market id.
-
-    ``/open/v1/orders`` signs its query string, and a unified symbol such as
-    ``ATH/USDT`` puts a literal slash in the signature payload. Tokocrypto
-    answers that with error 3702 "Invalid signature", which reads like a
-    credential problem but is really a rejected symbol encoding -- so the
-    request must carry the raw id (``ATH_USDT``).
-    """
-    if not symbol or "/" not in symbol:
-        return symbol
-    try:
-        market = venue.market(symbol)
-    except Exception:
-        market = None
-    raw = market.get("id") if isinstance(market, dict) else None
-    return str(raw) if raw else symbol.replace("/", "")
+    """Translates a CCXT unified symbol to the venue's own market id."""
+    return get_venue("tokocrypto").format_wire_symbol(venue, symbol)
 
 
 def _order_archive_page_reader(exchange: Any, symbol: str) -> Any:
@@ -692,8 +677,9 @@ async def _find_order_by_client_id(
 def _balance_fetch_params(exchange: Any, market: str) -> Dict[str, Any]:
     """Return explicit CCXT market params where a venue needs them."""
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
-    if market == "futures" and exchange_id == "mexc":
-        return {"type": "swap"}
+    venue = get_venue(exchange_id)
+    if hasattr(venue, "balance_fetch_params"):
+        return venue.balance_fetch_params(market)
     return {}
 
 

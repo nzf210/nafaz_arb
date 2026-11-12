@@ -76,6 +76,9 @@ type LiveAdapter struct {
 	scanTelemetryMu      sync.Mutex
 	scanTelemetryMetrics map[string]domain.ExchangeScanMetrics
 	scanTelemetryErrors  []string
+
+	venuesOnce    sync.Once
+	venueRegistry *VenueRegistry
 }
 
 type usdtIDRCall struct {
@@ -463,6 +466,36 @@ func (l *LiveAdapter) SetTargetPerpExchange(ex string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.targetPerpExchange = strings.ToLower(strings.TrimSpace(ex))
+}
+
+// venues returns the lazily initialized modular VenueRegistry.
+func (l *LiveAdapter) venues() *VenueRegistry {
+	l.venuesOnce.Do(func() {
+		l.venueRegistry = NewVenueRegistry()
+		l.venueRegistry.RegisterSpot(NewIndodaxVenue(l))
+		l.venueRegistry.RegisterSpot(NewTokocryptoVenue(l))
+		l.venueRegistry.RegisterSpot(NewMEXCVenue(l))
+
+		l.venueRegistry.RegisterPerp(NewOKXVenue(l))
+		l.venueRegistry.RegisterPerp(NewMEXCVenue(l))
+	})
+	return l.venueRegistry
+}
+
+func (l *LiveAdapter) indodaxVenue() *IndodaxVenue {
+	return NewIndodaxVenue(l)
+}
+
+func (l *LiveAdapter) tokocryptoVenue() *TokocryptoVenue {
+	return NewTokocryptoVenue(l)
+}
+
+func (l *LiveAdapter) okxVenue() *OKXVenue {
+	return NewOKXVenue(l)
+}
+
+func (l *LiveAdapter) mexcVenue() *MEXCVenue {
+	return NewMEXCVenue(l)
 }
 
 // Close stops the websocket feed and associated cleanup goroutines. This should

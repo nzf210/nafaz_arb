@@ -102,7 +102,7 @@ func (l *LiveAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, er
 
 	var errs []string
 	if includeOKX {
-		okxMarkets, err := l.fetchOKXPerpetualMarkets(ctx)
+		okxMarkets, err := l.okxVenue().FetchPerpMarkets(ctx)
 		if err == nil {
 			allMarkets = append(allMarkets, okxMarkets...)
 			l.SubscribeOKXBooks(okxMarkets)
@@ -112,7 +112,7 @@ func (l *LiveAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, er
 	}
 
 	if includeMEXC {
-		mexcMarkets, err := l.fetchMEXCPerpetualMarkets(ctx)
+		mexcMarkets, err := l.mexcVenue().FetchPerpMarkets(ctx)
 		if err == nil {
 			allMarkets = append(allMarkets, mexcMarkets...)
 		} else {

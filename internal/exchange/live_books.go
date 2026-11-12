@@ -100,16 +100,16 @@ func (l *LiveAdapter) fetchOKXBookSingleflight(symbol string, fetch func() (doma
 func (l *LiveAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
 	if strings.HasPrefix(symbol, "toko:") {
 		return l.trackedBookForSymbol("tokocrypto", symbol, func() (domain.OrderBook, error) {
-			return l.fetchTokocryptoSpotOrderBook(ctx, symbol)
+			return l.tokocryptoVenue().FetchSpotOrderBook(ctx, symbol)
 		})
 	}
 	if strings.HasPrefix(symbol, MEXC_SPOT) || strings.HasPrefix(symbol, "mexc:") {
 		return l.trackedBookForSymbol("mexc", symbol, func() (domain.OrderBook, error) {
-			return l.fetchMEXCSpotOrderBook(ctx, symbol)
+			return l.mexcVenue().FetchSpotOrderBook(ctx, symbol)
 		})
 	}
 	return l.trackedBookForSymbol("indodax", symbol, func() (domain.OrderBook, error) {
-		return l.fetchIndodaxSpotOrderBook(ctx, symbol)
+		return l.indodaxVenue().FetchSpotOrderBook(ctx, symbol)
 	})
 }
 
@@ -253,11 +253,11 @@ func (l *LiveAdapter) fetchMEXCSpotOrderBook(ctx context.Context, symbol string)
 func (l *LiveAdapter) PerpetualOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
 	if isMEXCSymbol(symbol) {
 		return l.trackedBookForSymbol("mexc", symbol, func() (domain.OrderBook, error) {
-			return l.fetchMEXCOrderBook(ctx, symbol)
+			return l.mexcVenue().FetchPerpOrderBook(ctx, symbol)
 		})
 	}
 	return l.trackedBookForSymbol("okx", symbol, func() (domain.OrderBook, error) {
-		return l.fetchOKXOrderBook(ctx, symbol)
+		return l.okxVenue().FetchPerpOrderBook(ctx, symbol)
 	})
 }
 
