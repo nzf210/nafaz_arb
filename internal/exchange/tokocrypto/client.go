@@ -10,12 +10,15 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
 
 const defaultBaseURL = "https://www.tokocrypto.com"
+const defaultMBXDepthURL = "https://www.tokocrypto.site"
+const defaultNextMeDepthURL = "https://cloudme-toko.2meta.app"
 
 type StatusError struct { StatusCode int }
 func (e *StatusError) Error() string { return fmt.Sprintf("tokocrypto HTTP status: %d", e.StatusCode) }
@@ -26,12 +29,25 @@ func IsUnavailable(err error) bool {
 }
 
 // Client owns Tokocrypto public spot market-data behavior.
-type Client struct { httpClient *http.Client; baseURL string }
+type Client struct {
+	httpClient *http.Client
+	baseURL string
+	mbxDepthURL string
+	nextMeDepthURL string
+	symbolMu sync.RWMutex
+	symbolTypes map[string]int
+}
 
 func New(httpClient *http.Client, baseURL string) *Client {
 	if httpClient == nil { httpClient = http.DefaultClient }
 	if strings.TrimSpace(baseURL) == "" { baseURL = defaultBaseURL }
-	return &Client{httpClient: httpClient, baseURL: strings.TrimRight(baseURL, "/")}
+	depthMBX, depthNextMe := defaultMBXDepthURL, defaultNextMeDepthURL
+	// A custom base URL is used by httptest fixtures; keep depth paths on it.
+	if baseURL != defaultBaseURL {
+		depthMBX, depthNextMe = strings.TrimRight(baseURL, "/"), strings.TrimRight(baseURL, "/")
+	}
+	return &Client{httpClient: httpClient, baseURL: strings.TrimRight(baseURL, "/"),
+		mbxDepthURL: depthMBX, nextMeDepthURL: depthNextMe, symbolTypes: make(map[string]int)}
 }
 
 func (c *Client) request(ctx context.Context, path string) (*http.Response, error) {
@@ -51,6 +67,7 @@ func (c *Client) Markets(ctx context.Context) ([]domain.Market, error) {
 		Data struct {
 			List []struct {
 				Symbol string `json:"symbol"`
+				SymbolType int `json:"symbolType"`
 				BaseAsset string `json:"baseAsset"`
 				QuoteAsset string `json:"quoteAsset"`
 				SpotTradingEnable int `json:"spotTradingEnable"`
@@ -64,6 +81,7 @@ func (c *Client) Markets(ctx context.Context) ([]domain.Market, error) {
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil { return nil, fmt.Errorf("decode tokocrypto symbols: %w", err) }
 	markets := make([]domain.Market, 0, len(raw.Data.List))
+	symbolTypes := make(map[string]int, len(raw.Data.List))
 	for _, item := range raw.Data.List {
 		if item.SpotTradingEnable != 1 || item.Symbol == "" || item.BaseAsset == "" || item.QuoteAsset == "" { continue }
 		var amount *domain.AmountSpec
@@ -77,31 +95,71 @@ func (c *Client) Markets(ctx context.Context) ([]domain.Market, error) {
 			}
 			break
 		}
+		symbolType := item.SymbolType
+		if symbolType == 0 { symbolType = 1 } // Older payloads are MBX.
 		market := domain.Market{Exchange: "tokocrypto", Symbol: "toko:"+item.Symbol,
 			BaseAsset: strings.ToUpper(item.BaseAsset), QuoteAsset: strings.ToUpper(item.QuoteAsset),
-			MarketType: "SPOT", Active: true, AmountSpec: amount}
+			MarketType: "SPOT", SymbolType: symbolType, Active: true, AmountSpec: amount}
+		symbolTypes[item.Symbol] = symbolType
 		if amount != nil { market.LotSize, market.MinOrder = amount.Step, amount.Min }
 		markets = append(markets, market)
 	}
+	c.symbolMu.Lock()
+	c.symbolTypes = symbolTypes
+	c.symbolMu.Unlock()
 	return markets, nil
 }
 
 func (c *Client) OrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
 	rawSymbol := strings.TrimPrefix(symbol, "toko:")
-	path := "/open/v1/market/depth?symbol="+url.QueryEscape(rawSymbol)+"&limit=20"
-	resp, err := c.request(ctx, path)
+	c.symbolMu.RLock()
+	symbolType := c.symbolTypes[rawSymbol]
+	c.symbolMu.RUnlock()
+	if symbolType == 0 { symbolType = 1 }
+	baseURL, path := c.mbxDepthURL, "/api/v3/depth?symbol="+url.QueryEscape(rawSymbol)+"&limit=20"
+	if symbolType == 3 {
+		baseURL = c.nextMeDepthURL
+		path = "/api/v1/depth?symbol="+url.QueryEscape(rawSymbol)+"&limit=20"
+	} else if symbolType != 1 {
+		return domain.OrderBook{}, fmt.Errorf("unsupported Tokocrypto symbolType %d for %s", symbolType, rawSymbol)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
+	if err != nil { return domain.OrderBook{}, fmt.Errorf("build tokocrypto depth request: %w", err) }
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; NafazScanner/1.0)")
+	resp, err := c.httpClient.Do(req)
 	if err != nil { return domain.OrderBook{}, fmt.Errorf("tokocrypto depth request: %w", err) }
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK { return domain.OrderBook{}, &StatusError{StatusCode: resp.StatusCode} }
 	var raw struct {
-		Code int `json:"code"`
-		Data struct { Bids [][]string `json:"bids"`; Asks [][]string `json:"asks"` } `json:"data"`
+		LastUpdateID int64 `json:"lastUpdateId"`
+		Timestamp int64 `json:"timestamp"`
+		EventTime int64 `json:"E"`
+		TradeTime int64 `json:"T"`
+		Bids [][]string `json:"bids"`
+		Asks [][]string `json:"asks"`
+		Data *struct {
+			LastUpdateID int64 `json:"lastUpdateId"`
+			Timestamp int64 `json:"timestamp"`
+			Bids [][]string `json:"bids"`
+			Asks [][]string `json:"asks"`
+		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil { return domain.OrderBook{}, fmt.Errorf("decode tokocrypto depth: %w", err) }
-	now := time.Now().UTC()
+	if raw.Data != nil {
+		raw.LastUpdateID, raw.Bids, raw.Asks = raw.Data.LastUpdateID, raw.Data.Bids, raw.Data.Asks
+		if raw.Data.Timestamp > 0 { raw.Timestamp = raw.Data.Timestamp }
+	}
+	if raw.LastUpdateID <= 0 || len(raw.Bids) == 0 || len(raw.Asks) == 0 {
+		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth snapshot is incomplete for %s", rawSymbol)
+	}
+	timestamp := raw.Timestamp
+	if timestamp <= 0 { timestamp = raw.EventTime }
+	if timestamp <= 0 { timestamp = raw.TradeTime }
+	at := time.Now().UTC()
+	if timestamp > 0 { at = time.UnixMilli(timestamp).UTC() }
 	return domain.OrderBook{Exchange:"tokocrypto", Symbol:symbol,
-		Bids: parseLevels(raw.Data.Bids), Asks: parseLevels(raw.Data.Asks),
-		Timestamp:now, ReceivedAt:now, Source:"receive_time"}, nil
+		Bids: parseLevels(raw.Bids), Asks: parseLevels(raw.Asks),
+		SequenceID: raw.LastUpdateID, Timestamp:at, ReceivedAt:time.Now().UTC(), Source:"rest"}, nil
 }
 
 func parseLevels(rows [][]string) []domain.PriceLevel {
