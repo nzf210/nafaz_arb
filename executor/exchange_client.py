@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 import ccxt.async_support as ccxt
 
 from executor.indodax_v2 import IndodaxTAPIv2
+from executor.tokocrypto_adapter import TokocryptoAdapter
 from executor.helpers import _broker_prefix_for
 from executor.exchange_common import (
     VENUE_CLIENT_ORDER_ID_MAX_LEN, _base_order_result, _client_order_params,
@@ -149,7 +150,7 @@ def _resolve_default_type(exchange_name: str, default_type: str) -> str:
 def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot") -> Any:
     """Helper to initialize a CCXT async exchange with proper credentials and settings."""
     normalized_name = exchange_name.lower()
-    ex_class = getattr(ccxt, normalized_name)
+    ex_class = TokocryptoAdapter if normalized_name == "tokocrypto" else getattr(ccxt, normalized_name)
     resolved_default_type = _resolve_default_type(normalized_name, default_type)
     cfg: Dict[str, Any] = {
         "apiKey": getattr(creds, "api_key", ""),
