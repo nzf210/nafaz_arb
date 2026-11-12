@@ -12,6 +12,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/mexc"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/okx"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/tokocrypto"
 )
 
@@ -26,6 +27,7 @@ type LiveAdapter struct {
 	indodaxClient     *indodax.Client
 	tokocryptoClient  *tokocrypto.Client
 	mexcClient        *mexc.Client
+	okxClient         *okx.Client
 	indodaxBaseURL    string
 	tokocryptoBaseURL string
 	okxBaseURL        string
@@ -60,7 +62,8 @@ type LiveAdapter struct {
 	okxLimiter     *okxLimiter
 	okxLimiterOnce sync.Once
 	okxLimiterCfg  OKXLimiterConfig
-	okxBooks       *OKXBookManager
+	okxBooks       *OKXBookManager // compatibility for existing in-package callers/tests
+	okxVenueBooks  *okx.BookManager
 	okxWSMaxAge    time.Duration
 	okxBookCalls   map[string]*okxBookCall
 }
@@ -113,6 +116,7 @@ func NewLiveAdapter() *LiveAdapter {
 	adapter.indodaxClient = indodax.New(httpClient, adapter.indodaxBaseURL)
 	adapter.tokocryptoClient = tokocrypto.New(httpClient, adapter.tokocryptoBaseURL)
 	adapter.mexcClient = mexc.New(httpClient, adapter.mexcBaseURL, adapter.mexcSpotBaseURL)
+	adapter.okxClient = okx.New(httpClient, adapter.okxBaseURL)
 	return adapter
 }
 
@@ -120,16 +124,17 @@ func NewLiveAdapter() *LiveAdapter {
 // OKX request; settings after the limiter has been created have no effect.
 func (l *LiveAdapter) SetOKXLimiterConfig(cfg OKXLimiterConfig) {
 	l.okxLimiterCfg = cfg
+	l.mu.RLock(); client := l.okxClient; l.mu.RUnlock()
+	if client != nil { client.SetLimiterConfig(okx.OKXLimiterConfig{DefaultRatePer2s:cfg.DefaultRatePer2s,BooksRatePer2s:cfg.BooksRatePer2s,InstrumentsRatePer2s:cfg.InstrumentsRatePer2s,FundingRatePer2s:cfg.FundingRatePer2s,MaxConcurrent:cfg.MaxConcurrent}) }
 }
 
 // OKXMetrics returns the OKX rate-limiter counters for observability. It
 // returns an empty snapshot when no OKX request has been made yet, so callers
 // never see a nil map.
-func (l *LiveAdapter) OKXMetrics() OKXMetricsSnapshot {
-	l.okxLimiterOnce.Do(func() {
-		l.okxLimiter = newOKXLimiter(l.okxLimiterCfg)
-	})
-	return l.okxLimiter.metrics.snapshot()
+func (l *LiveAdapter) OKXMetrics() okx.OKXMetricsSnapshot {
+	l.mu.RLock(); client := l.okxClient; l.mu.RUnlock()
+	if client == nil { return okx.OKXMetricsSnapshot{Endpoints:map[string]okx.OKXEndpointMetrics{}} }
+	return client.Metrics()
 }
 
 
@@ -143,6 +148,8 @@ func (l *LiveAdapter) SetBaseURLs(urls ...string) {
 	}
 	if len(urls) > 1 && urls[1] != "" {
 		l.okxBaseURL = urls[1]
+		l.okxClient = okx.New(l.client, l.okxBaseURL)
+		if l.okxLimiterCfg != (OKXLimiterConfig{}) { l.okxClient.SetLimiterConfig(okx.OKXLimiterConfig{DefaultRatePer2s:l.okxLimiterCfg.DefaultRatePer2s,BooksRatePer2s:l.okxLimiterCfg.BooksRatePer2s,InstrumentsRatePer2s:l.okxLimiterCfg.InstrumentsRatePer2s,FundingRatePer2s:l.okxLimiterCfg.FundingRatePer2s,MaxConcurrent:l.okxLimiterCfg.MaxConcurrent}) }
 	}
 	if len(urls) > 2 && urls[2] != "" {
 		l.mexcBaseURL = urls[2]
@@ -270,38 +277,39 @@ func (l *LiveAdapter) EnableWebSocketFeed(ctx context.Context, maxAge time.Durat
 // EnableOKXBookWebSocket starts the authoritative OKX books-channel feed.
 func (l *LiveAdapter) EnableOKXBookWebSocket(ctx context.Context, wsURL string, staleAfter, reconnect, maxBackoff time.Duration) {
 	l.mu.Lock()
-	if l.okxBooks != nil { l.mu.Unlock(); return }
-	l.okxWSMaxAge = staleAfter
-	if strings.TrimSpace(wsURL) == "" { wsURL = "wss://ws.okx.com/ws/v5/public" }
-	manager := NewOKXBookManager(wsURL, nil, func(symbol string) float64 {
-		l.mu.RLock()
-		defer l.mu.RUnlock()
-		return l.contractSizes[symbol]
+	if l.okxVenueBooks != nil { l.mu.Unlock(); return }
+	if strings.TrimSpace(wsURL) == "" { wsURL = "wss://ws.okx.com:8443/ws/v5/public" }
+	manager := okx.NewBookManager(wsURL, nil, func(symbol string) float64 {
+		l.mu.RLock(); defer l.mu.RUnlock()
+		if v:=l.contractSizes[symbol]; v>0 { return v }
+		if v:=l.contractSizes["okx:"+symbol]; v>0 { return v }
+		return 0
 	}, reconnect, maxBackoff)
-	l.okxBooks = manager
+	l.okxWSMaxAge = staleAfter
+	l.okxVenueBooks = manager
 	l.mu.Unlock()
 	manager.Start(ctx)
 }
 
-// SubscribeOKXBooks replaces the desired instrument set. The manager applies
-// additions/removals on the existing connection and repeats subscriptions after reconnect.
 func (l *LiveAdapter) SubscribeOKXBooks(markets []domain.Market) {
 	l.mu.RLock()
-	manager := l.okxBooks
+	manager := l.okxVenueBooks
+	legacyManager := l.okxBooks
 	l.mu.RUnlock()
-	if manager == nil { return }
+	if manager == nil && legacyManager == nil { return }
 	symbols := make([]string, 0, len(markets))
 	for _, market := range markets {
 		if strings.EqualFold(market.Exchange, "okx") && market.Active {
 			symbols = append(symbols, market.Symbol)
 		}
 	}
-	manager.SetInstruments(symbols)
+	if manager != nil { manager.SetInstruments(symbols) }
+	if legacyManager != nil { legacyManager.SetInstruments(symbols) }
 }
 
 func (l *LiveAdapter) OKXWebSocketConnected() bool {
-	l.mu.RLock(); manager := l.okxBooks; l.mu.RUnlock()
-	return manager != nil && manager.IsConnected()
+	l.mu.RLock(); manager, legacy := l.okxVenueBooks, l.okxBooks; l.mu.RUnlock()
+	return (manager != nil && manager.IsConnected()) || (legacy != nil && legacy.IsConnected())
 }
 
 // WebSocketStats reports (hits, misses) for the cached realtime books.
@@ -360,8 +368,6 @@ func (l *LiveAdapter) Close() {
 		l.wsClient.Stop()
 		l.wsClient = nil
 	}
-	if l.okxBooks != nil {
-		l.okxBooks.Stop()
-		l.okxBooks = nil
-	}
+	if l.okxBooks != nil { l.okxBooks.Stop(); l.okxBooks = nil }
+	if l.okxVenueBooks != nil { l.okxVenueBooks.Stop(); l.okxVenueBooks = nil }
 }
