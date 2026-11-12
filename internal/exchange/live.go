@@ -43,6 +43,7 @@ type LiveAdapter struct {
 	cachedIndodaxSpot    []domain.Market
 	lastIndodaxSpotFetch time.Time
 	cachedTokocryptoSpot []domain.Market
+	cachedMEXCPerp []domain.Market
 	lastTokocryptoFetch  time.Time
 	cachedOKXPerp        []domain.Market
 	lastOKXPerpFetch     time.Time
@@ -274,7 +275,14 @@ func (l *LiveAdapter) EnableWebSocketFeed(ctx context.Context, maxAge time.Durat
 	if l.mexcPerpSupervisor == nil { l.mexcPerpSupervisor = l.newMEXCPerpetualSupervisor(); l.mexcPerpSupervisor.Start(ctx) }
 	stopCleanup := l.wsCache.StartStaleBookCleanup(maxAge, 5*time.Minute)
 	l.wsStopCleanup = stopCleanup
+	cachedTokocrypto := append([]domain.Market(nil), l.cachedTokocryptoSpot...)
+	cachedMEXCPerp := append([]domain.Market(nil), l.cachedMEXCPerp...)
 	l.mu.Unlock()
+
+	// Discovery may have happened before the feed was enabled. Reapply the
+	// cached market sets so workers are not silently left unsubscribed.
+	if len(cachedTokocrypto) > 0 { l.SubscribeTokocryptoBooks(cachedTokocrypto) }
+	if len(cachedMEXCPerp) > 0 { l.SubscribeMEXCPerpetualBooks(cachedMEXCPerp) }
 
 	client := NewWSClient(l.wsCache, nil,
 		indodaxDepthStream(l.indodaxBaseURL),
