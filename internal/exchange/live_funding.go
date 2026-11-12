@@ -48,9 +48,10 @@ func nextSettlementTime(t time.Time, intervalHours int) time.Time {
 	return time.Date(year, month, day, nextSlot, 0, 0, 0, time.UTC)
 }
 
-// OpenExposures returns public scanner open exposure state. Read-only by design.
-func (l *LiveAdapter) OpenExposures(ctx context.Context) ([]domain.OpenExposure, error) {
-	return []domain.OpenExposure{}, nil
+// OpenExposures cannot infer private account positions from public market data.
+// Callers must provide the executor's authoritative Redis exposure registry.
+func (l *LiveAdapter) OpenExposures(_ context.Context) ([]domain.OpenExposure, error) {
+	return nil, fmt.Errorf("private account exposures are unavailable from public CEX clients; configure the executor exposure registry")
 }
 
 // parseLevels decodes Indodax's depth payload. Levels arrive as
