@@ -74,6 +74,13 @@ class RecoveryRegistryMixin:
                 )
             for pair_tag in verified_positions:
                 await self._clear_resolved_pair_failure(pair_tag)
+            for pair_tag, state in list(self.states.items()):
+                if (
+                    state == PositionState.RECONCILIATION_REQUIRED
+                    and pair_tag not in self.active_positions
+                    and (self._failure_reasons.get(pair_tag) or {}).get("reason") == "ORDER_RECOVERY_UNVERIFIED"
+                ):
+                    await self._clear_resolved_pair_failure(pair_tag)
         self._refresh_entry_gate()
 
     async def _run_startup_recovery(self) -> bool:
@@ -96,6 +103,14 @@ class RecoveryRegistryMixin:
         self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
         for pair_tag in verified_positions:
             await self._clear_resolved_pair_failure(pair_tag)
+        if not self._recovery_pending_orders:
+            for pair_tag, state in list(self.states.items()):
+                if (
+                    state == PositionState.RECONCILIATION_REQUIRED
+                    and pair_tag not in self.active_positions
+                    and (self._failure_reasons.get(pair_tag) or {}).get("reason") == "ORDER_RECOVERY_UNVERIFIED"
+                ):
+                    await self._clear_resolved_pair_failure(pair_tag)
         self._refresh_entry_gate()
 
     async def _with_order_recovery_lock(self, recovery_callback) -> bool:

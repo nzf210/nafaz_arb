@@ -519,3 +519,35 @@ async def test_indodax_client_id_recovery_prefers_direct_order_lookup(monkeypatc
     recovered = await client.fetch_local_order_by_client_id("recover-77", "btc_idr")
     assert recovered["id"] == "77"
     assert recovered["client_order_id"] == "recover-77"
+
+
+@pytest.mark.asyncio
+async def test_indodax_v2_client_id_lookup_returns_none_on_2013(monkeypatch):
+    adapter = _adapter()
+
+    async def fake_request(method, path, params=None, signed=True):
+        raise IndodaxAPIError(-2013, "Order not found or not yet available.")
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    assert await adapter.fetch_order_by_client_id("missing-1", "riveridr") is None
+
+
+@pytest.mark.asyncio
+async def test_indodax_v2_create_order_marks_fully_executed_market_order_closed(monkeypatch):
+    adapter = _adapter()
+
+    async def fake_request(method, path, params=None, signed=True):
+        return {
+            "orderId": 9957607,
+            "clientOrderId": params["newClientOrderId"],
+            "origQty": "15",
+            "executedQty": "15",
+            "price": "13300",
+        }
+
+    monkeypatch.setattr(adapter, "_request", fake_request)
+    order = await adapter.create_market_sell_order(
+        "riveridr", 15.0, params={"clientOrderId": "rollback-1"}
+    )
+    assert order["status"] == "closed"
+    assert order["filled"] == pytest.approx(15.0)

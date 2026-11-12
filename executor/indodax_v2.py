@@ -323,9 +323,12 @@ class IndodaxTAPIv2:
 
         created = await self._request("POST", "/api/v2/order", payload)
         # The create payload omits `status` entirely; a successful POST means the
-        # venue accepted the order and it is now live. Defaulting to "open" keeps
-        # the engine's expiry/adverse-selection polling working on the first tick.
-        created["status"] = created.get("status") or "NEW"
+        # venue accepted the order. Market orders (or already-matched creates) may
+        # already have executedQty == origQty, otherwise default to live ("NEW").
+        if not created.get("status"):
+            orig_qty = _to_float(created.get("origQty"))
+            exec_qty = _to_float(created.get("executedQty"))
+            created["status"] = "FILLED" if (orig_qty > 0 and exec_qty >= orig_qty) else "NEW"
         return self._order(created, symbol)
 
     async def cancel_order(self, order_id: str, symbol: Optional[str] = None) -> Dict[str, Any]:
@@ -363,10 +366,17 @@ class IndodaxTAPIv2:
             raise ValueError("fetch_order_by_client_id requires a client order id")
         if not symbol:
             raise ValueError("fetch_order_by_client_id requires a symbol")
-        order = await self._request(
-            "GET", "/api/v2/order",
-            {"symbol": normalize_symbol(symbol), "origClientOrderId": str(client_order_id)},
-        )
+        try:
+            order = await self._request(
+                "GET", "/api/v2/order",
+                {"symbol": normalize_symbol(symbol), "origClientOrderId": str(client_order_id)},
+            )
+        except IndodaxAPIError as exc:
+            # -2013: "Order not found or not yet available." -> let caller
+            # proceed with open/closed/trade history checks rather than failing.
+            if str(exc.code) == "-2013":
+                return None
+            raise
         if not isinstance(order, dict):
             raise ValueError("indodax v2 returned a malformed client-id order payload")
         mapped = self._order(order, symbol)

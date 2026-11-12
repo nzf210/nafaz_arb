@@ -85,7 +85,7 @@ func NewDurableOutbox(path string, maxBytes int64) (*DurableOutbox, error) {
 		return nil, fmt.Errorf("stat scanner outbox at startup: %w", err)
 	}
 	if info.Size() > maxBytes {
-		return nil, fmt.Errorf("%w: existing file size=%d max_bytes=%d", ErrOutboxCapacity, info.Size(), maxBytes)
+		log.Printf("warning: scanner outbox exceeds capacity (%d > %d bytes); opening in drain-only mode until acknowledged", info.Size(), maxBytes)
 	}
 	outbox := &DurableOutbox{
 		path: path, maxBytes: maxBytes,

@@ -405,7 +405,10 @@ class ForceCloseLegMixin:
                 f"[Force Close] FAILED to liquidate spot leg for {pair_key}. "
                 f"MANUAL INTERVENTION REQUIRED: {pos.qty} {pos.symbol} is UNHEDGED. Response: {spot_order}"
             )
-        except RetryExhausted:
+        except RetryExhausted as exhausted:
+            rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+            if callable(rejection_check) and rejection_check(exhausted.last_error):
+                await self._mark_order_submission_rejected(pos.local_exchange, client_order_id)
             logger.exception(
                 f"[Force Close] spot liquidation exhausted retries for {pair_key}"
             )

@@ -395,3 +395,40 @@ func TestScannerReconciliationWorkerRetainsRowsOnRemoteFailure(t *testing.T) {
 		t.Fatalf("failed row should be in retry backoff: due=%d err=%v", len(due), err)
 	}
 }
+
+func TestDurableOutboxOpensOverCapacityToDrainBacklog(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "outbox.jsonl")
+	outbox, err := NewDurableOutbox(path, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := outbox.Enqueue("scan-large-1", []domain.Opportunity{sampleOpportunity()}); err != nil {
+		t.Fatal(err)
+	}
+	op2 := sampleOpportunity()
+	op2.SpotSymbol = "eth_idr"
+	if err := outbox.Enqueue("scan-large-2", []domain.Opportunity{op2}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewDurableOutbox(path, info.Size()-1)
+	if err != nil {
+		t.Fatalf("expected over-capacity outbox to open for draining, got %v", err)
+	}
+	if err := reopened.Enqueue("scan-blocked", []domain.Opportunity{sampleOpportunity()}); !errors.Is(err, ErrOutboxCapacity) {
+		t.Fatalf("expected Enqueue to remain blocked while over capacity, got %v", err)
+	}
+	due, err := reopened.Due(10)
+	if err != nil || len(due) != 2 {
+		t.Fatalf("due=%d err=%v, want 2", len(due), err)
+	}
+	if err := reopened.Ack([]string{due[0].ID, due[1].ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.Enqueue("scan-after-drain", []domain.Opportunity{sampleOpportunity()}); err != nil {
+		t.Fatalf("expected Enqueue to resume after drain, got %v", err)
+	}
+}

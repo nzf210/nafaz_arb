@@ -2132,3 +2132,44 @@ async def test_recovery_catalogues_cover_every_configured_venue(fake_redis):
         ("okx", "futures"),
     }
     assert all(item["pair_tag"] == "" for item in catalogues)
+
+
+@pytest.mark.asyncio
+async def test_rollback_retires_definitively_rejected_intent(fake_redis, monkeypatch):
+    client = MockExchangeClient()
+    engine = _engine(fake_redis, client=client, mock_mode=True)
+
+    async def reject_sell(*args, **kwargs):
+        raise RuntimeError("indodax v2 error -2010: Insufficient balance")
+
+    async def no_sleep(*_):
+        return None
+
+    monkeypatch.setattr(client, "place_local_market_sell", reject_sell)
+    monkeypatch.setattr("executor.helpers.asyncio.sleep", no_sleep)
+
+    order, err = await engine._liquidate_unhedged_spot(
+        "indodax:riveridr__okx:river_usdt_swap",
+        "riveridr",
+        15.0,
+        local_exchange="indodax",
+    )
+    assert order is None
+    assert err is not None
+    assert await engine.order_registry.active_records() == {}
+
+
+@pytest.mark.asyncio
+async def test_periodic_recovery_clears_order_recovery_unverified_without_active_position(fake_redis):
+    client = MockExchangeClient()
+    engine = _engine(fake_redis, client=client, mock_mode=True)
+    pair_tag = "indodax:shellidr__okx:shell_usdt_swap"
+    engine._mark_failed(
+        pair_tag,
+        "ORDER_RECOVERY_UNVERIFIED",
+        "transient phantom",
+        state=PositionState.RECONCILIATION_REQUIRED,
+    )
+    await engine._run_order_recovery_lifecycle_with_lock()
+    assert engine.states[pair_tag] == PositionState.IDLE
+    assert pair_tag not in engine._recovery_scope_halts

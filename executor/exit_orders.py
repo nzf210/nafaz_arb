@@ -162,13 +162,19 @@ class ExitOrderManagementMixin:
                 recovery_context=recovery_context,
                 required=False,
             )
-            order = await self.client.place_local_limit_sell(
-                pos.symbol,
-                pos.qty,
-                exchange_limit_sell_price,
-                client_order_id=exit_coid,
-                amount_spec=pos.local_amount_spec,
-            )
+            try:
+                order = await self.client.place_local_limit_sell(
+                    pos.symbol,
+                    pos.qty,
+                    exchange_limit_sell_price,
+                    client_order_id=exit_coid,
+                    amount_spec=pos.local_amount_spec,
+                )
+            except Exception as submit_err:
+                rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+                if callable(rejection_check) and rejection_check(submit_err):
+                    await self._mark_order_submission_rejected(pos.local_exchange, exit_coid)
+                raise
             order_id = str(order.get("id", ""))
             self.supabase.order(
                 pair_tag,

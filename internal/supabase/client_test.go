@@ -291,3 +291,40 @@ func TestPositionOrderFillsRequiresConfiguredSupabase(t *testing.T) {
 		t.Fatal("expected missing Supabase configuration error")
 	}
 }
+
+func TestSaveOpportunitiesEmitsUniformObjectKeysForMixedRows(t *testing.T) {
+	var decoded []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&decoded); err != nil {
+			t.Errorf("decode batch: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	eligible := sampleOpportunity()
+	eligible.ExecutionMode = ""
+	eligible.ExclusionReasons = nil
+
+	excluded := sampleOpportunity()
+	excluded.SpotSymbol = "eth_idr"
+	excluded.TradingEligible = false
+	excluded.ExecutionMode = "MAKER_TAKER"
+	excluded.ExclusionReasons = []string{"SPREAD_TOO_LOW"}
+
+	client := &Client{baseURL: server.URL, serviceRoleKey: "test", httpClient: server.Client()}
+	if err := client.SaveOpportunities(context.Background(), "scan-mixed", []domain.Opportunity{eligible, excluded}); err != nil {
+		t.Fatalf("SaveOpportunities: %v", err)
+	}
+	if len(decoded) != 2 {
+		t.Fatalf("got %d rows, want 2", len(decoded))
+	}
+	for _, key := range []string{"execution_mode", "reason"} {
+		if _, ok := decoded[0][key]; !ok {
+			t.Fatalf("eligible row missing key %q: %#v", key, decoded[0])
+		}
+		if _, ok := decoded[1][key]; !ok {
+			t.Fatalf("excluded row missing key %q: %#v", key, decoded[1])
+		}
+	}
+}

@@ -72,9 +72,9 @@ type opportunityRow struct {
 	LocalSymbol        string              `json:"local_symbol"`
 	GlobalSymbol       string              `json:"global_symbol"`
 	QuoteAsset         string              `json:"quote_asset"`
-	ExecutionMode      string              `json:"execution_mode,omitempty"`
+	ExecutionMode      string              `json:"execution_mode"`
 	EligibilityStatus  string              `json:"eligibility_status"`
-	Reason             string              `json:"reason,omitempty"`
+	Reason             string              `json:"reason"`
 	SpotPrice          float64             `json:"spot_price"`
 	PerpPrice          float64             `json:"perp_price"`
 	SpreadPct          float64             `json:"spread_pct"`

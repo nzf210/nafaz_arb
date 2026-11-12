@@ -217,6 +217,7 @@ class EngineEntrySubmissionMixin:
             "insufficient funds", "insufficient balance", "insufficientfunds",
             "min_notional", "minimum notional", "invalid symbol",
             "unknown symbol", "market is not available",
+            "does not have trading permission", '"code":"50123"',
         )
         return error_name in definitive_types or any(
             marker in error_text for marker in definitive_messages

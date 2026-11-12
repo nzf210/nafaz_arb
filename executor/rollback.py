@@ -32,6 +32,7 @@ class RollbackMixin:
         unhedged_delta: float,
         amount_spec: Any = None,
         legacy_amount_step: float = 0.0,
+        local_exchange: str = "",
     ) -> tuple[Optional[Dict[str, Any]], Optional[Exception]]:
         """
         Market-sells the unhedged spot quantity back to quote.
@@ -45,9 +46,10 @@ class RollbackMixin:
         # order, so the venue can reject duplicates rather than sell twice.
         seq = self._next_order_seq()
         rollback_coid = build_client_order_id(pair_tag, "rollback", seq)
+        venue_exchange = local_exchange or getattr(self.config, "local_exchange_name", "")
         await self._register_order_intent(
             pair_tag, rollback_coid,
-            exchange=getattr(self.config, "local_exchange_name", ""),
+            exchange=venue_exchange,
             market_type="spot", symbol=symbol,
             role=OrderRole.ROLLBACK.value, side="sell",
             order_type="market", price=0.0, quantity=unhedged_delta,
@@ -77,6 +79,9 @@ class RollbackMixin:
                 label=f"hedge rollback sell {symbol} for {pair_tag}",
             )
         except RetryExhausted as exhausted:
+            rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+            if callable(rejection_check) and rejection_check(exhausted.last_error):
+                await self._mark_order_submission_rejected(venue_exchange, rollback_coid)
             logger.critical(
                 f"[Hedge Rollback] FAILED to liquidate spot leg for {pair_tag} after "
                 f"{exhausted.attempts} attempts: {exhausted.last_error}. "
@@ -85,10 +90,20 @@ class RollbackMixin:
             return None, exhausted.last_error
         if not isinstance(emergency_order, dict):
             return None, RuntimeError("spot rollback returned no verifiable order")
+        status = str(emergency_order.get("status", "")).lower()
+        order_id = str(emergency_order.get("id") or "")
+        if status not in ("closed", "filled") and order_id:
+            try:
+                verified = await self.client.fetch_local_order(order_id, symbol)
+                if isinstance(verified, dict) and verified.get("id"):
+                    emergency_order = verified
+                    status = str(emergency_order.get("status", "")).lower()
+            except Exception:
+                logger.debug("[Hedge Rollback] follow-up order verification failed for %s", order_id)
         self.supabase.order(
             pair_tag,
             "rollback",
-            getattr(self.config, "local_exchange_name", ""),
+            venue_exchange,
             "spot",
             symbol,
             emergency_order,
@@ -97,9 +112,9 @@ class RollbackMixin:
         )
         await self._register_order(
             pair_tag,
-            build_client_order_id(pair_tag, "rollback", seq),
+            rollback_coid,
             emergency_order,
-            exchange=getattr(self.config, "local_exchange_name", ""),
+            exchange=venue_exchange,
             market_type="spot",
             symbol=symbol,
             role=OrderRole.ROLLBACK.value,
@@ -108,7 +123,6 @@ class RollbackMixin:
             price=helpers.extract_fill_price(emergency_order),
             quantity=unhedged_delta,
         )
-        status = str(emergency_order.get("status", "")).lower()
         if status not in ("closed", "filled"):
             return None, RuntimeError(
                 f"spot rollback is not terminal (status={status or 'unknown'})"
@@ -260,6 +274,35 @@ class RollbackMixin:
         await registry.register(record)
         await registry.clear_pending_recovery(record.local_order_id)
 
+    async def _settle_rolled_back_entry_record(
+        self, order_info: dict, rolled_back_qty: float
+    ) -> None:
+        """Retire the spot entry record after a terminal rollback sell settles it."""
+        registry = getattr(self, "order_registry", None)
+        if registry is None:
+            return
+        exchange = str(
+            order_info.get("local_exchange")
+            or getattr(self.config, "local_exchange_name", "")
+            or ""
+        ).lower()
+        order_id = str(order_info.get("order_id") or "")
+        client_id = str(order_info.get("client_order_id") or "")
+        record = None
+        if exchange and order_id:
+            record = await registry.find_by_exchange_id(exchange, order_id)
+        if record is None and exchange and client_id:
+            record = await registry.find_by_client_id(exchange, client_id)
+        if record is None:
+            return
+        record.hedged_quantity = max(
+            float(record.hedged_quantity or 0.0),
+            float(order_info.get("hedged_short_qty", 0.0) or 0.0) + rolled_back_qty,
+        )
+        record.status = "closed"
+        await registry.register(record)
+        await registry.retire(record)
+
     async def _release_unhedged_reserve(
         self,
         pair_tag: str,
@@ -358,6 +401,7 @@ class RollbackMixin:
             unhedged_delta,
             order_info.get("local_amount_spec"),
             float(order_info.get("local_lot_size", 0.0)),
+            local_exchange=str(order_info.get("local_exchange") or ""),
         )
 
         exit_price_idr = (
@@ -369,6 +413,7 @@ class RollbackMixin:
         # Release reserved capital only after the exchange confirms a full,
         # terminal rollback fill. An ambiguous/partial sell must remain blocked.
         if emergency_error is None:
+            await self._settle_rolled_back_entry_record(order_info, unhedged_delta)
             await self._release_unhedged_reserve(
                 pair_tag, order_info, unhedged_delta, price_idr, usdt_rate
             )
