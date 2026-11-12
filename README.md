@@ -449,3 +449,44 @@ global futures venue. This verifies authenticated read access, not trade
 permission or acceptance of a new order; those must be confirmed separately
 with the venue's approved test environment or a manually authorized minimal
 live order. The bot will not place that test order automatically.
+
+## Multi-strategy research scanner (V2)
+
+The legacy arbitrage scanner remains dedicated to its existing spot-long /
+perpetual-short execution path. A separate, authenticated on-demand analysis
+pipeline is available at `POST /api/v1/analysis/scan`. It uses the normalized
+CEX market adapter registry, fetches a bounded set of cross-venue spot books,
+and runs registered `analysis.Strategy` implementations without publishing
+executor signals or placing orders.
+
+The first strategy is `cross_venue_spot_dislocation`: it compares the best ask
+on one spot venue with the best bid on another, subtracts both venues' fresh,
+verified account taker fees and a slippage reserve, and emits a research signal
+only when the remaining spread exceeds the configured minimum. It requires
+pre-funded inventory on both venues. It does not assume that assets can be
+transferred instantly, does not model withdrawal/deposit delays, and is not
+connected to live execution.
+
+The analysis endpoint is deliberately fail-closed: stale/mismatched books,
+missing or expired exchange fee profiles, invalid top-of-book levels, and
+market-data errors are reported as incomplete analysis rather than treated as
+zero-cost opportunities. In LIVE mode it is protected by the same bearer-token
+authentication as the other API routes. It is an on-demand read-only request,
+not another periodic polling loop.
+
+Future strategies (momentum, mean reversion, triangular arbitrage, funding
+carry, grid, market making and options) must provide their own market-data
+requirements, fee/borrow/funding model, inventory and liquidity constraints,
+risk limits, exit rules and backtests before they can be enabled. A research
+signal is never an execution authorization.
+
+### Live-readiness status
+
+The repository has LIVE execution paths and automated preflight/recovery checks,
+but passing unit/CI tests does not certify a production account or VPS. Before
+unattended live operation, operators must complete the read-only authenticated
+preflight for every configured venue, validate market-specific amount/contract
+rules and account permissions, run the venue-approved test environment, verify
+recovery against exchange-side positions and open orders, and complete a
+controlled, manually authorized minimal live order test. Keep withdrawal
+permissions disabled. The software does not submit that test order automatically.
