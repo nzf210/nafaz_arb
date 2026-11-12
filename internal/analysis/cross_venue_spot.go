@@ -83,8 +83,8 @@ func (s CrossVenueSpotStrategy) evaluateDirection(
 	if buyAsk.Price <= 0 || sellBid.Price <= 0 || buyAsk.Quantity <= 0 || sellBid.Quantity <= 0 ||
 		buyAsk.Price >= sellBid.Price { return Signal{}, false }
 
-	buyFees, buyFeeOK := snapshot.Fees[strings.ToLower(buyMarket.Exchange)]
-	sellFees, sellFeeOK := snapshot.Fees[strings.ToLower(sellMarket.Exchange)]
+	buyFees, buyFeeOK := snapshot.Fees[FeeKey(buyMarket.Exchange, buyMarket.Symbol)]
+	sellFees, sellFeeOK := snapshot.Fees[FeeKey(sellMarket.Exchange, sellMarket.Symbol)]
 	if !buyFeeOK || !sellFeeOK ||
 		!finiteNonNegative(buyFees.TakerPct) || !finiteNonNegative(sellFees.TakerPct) {
 		return Signal{}, false
