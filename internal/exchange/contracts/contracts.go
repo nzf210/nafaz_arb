@@ -3,6 +3,7 @@ package contracts
 
 import (
 	"context"
+	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
@@ -20,6 +21,19 @@ type MarketDataAdapter interface {
 
 // ReadOnlyAdapter is retained as a compatibility alias.
 type ReadOnlyAdapter = MarketDataAdapter
+
+// AccountStatus is the venue wallet status used by scanner health gates.
+type AccountStatus struct { DepositEnabled bool; WithdrawalEnabled bool }
+
+// AccountStatusProvider exposes optional wallet status.
+type AccountStatusProvider interface { AccountAvailable(string) (AccountStatus, error) }
+
+// HealthReporter exposes optional venue and websocket health signals.
+type HealthReporter interface {
+	ExchangeAvailable(string) bool
+	WSConnectionHealthy(string) bool
+	LastBookUpdate(string, string) time.Time
+}
 
 // RateProvider is an optional venue capability for fiat conversion.
 type RateProvider interface {
