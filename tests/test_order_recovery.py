@@ -2108,3 +2108,27 @@ def test_local_spot_limit_price_uses_the_market_quote_asset(fake_redis):
         engine._local_order_limit_price(
             SimpleNamespace(quote_asset="BTC"), snapshot, 16_000_000.0
         )
+
+
+@pytest.mark.asyncio
+async def test_recovery_catalogues_cover_every_configured_venue(fake_redis):
+    """Startup sweep includes additional authenticated CEX, not only default pair."""
+    client = MockExchangeClient()
+    client.balance_exchanges = {
+        "indodax": {"market": "spot", "client": object()},
+        "tokocrypto": {"market": "spot", "client": object()},
+        "okx": {"market": "futures", "client": object()},
+        "mexc": {"market": "futures", "client": None},
+    }
+    engine = _engine(fake_redis, client=client, mock_mode=False)
+    available = {"indodax", "tokocrypto", "okx"}
+    engine._client_for_exchange = lambda exchange: client if exchange in available else None
+
+    catalogues = engine._recovery_symbol_catalogues()
+
+    assert {(item["exchange"], item["market"]) for item in catalogues} == {
+        ("indodax", "spot"),
+        ("tokocrypto", "spot"),
+        ("okx", "futures"),
+    }
+    assert all(item["pair_tag"] == "" for item in catalogues)
