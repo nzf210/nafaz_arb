@@ -25,6 +25,9 @@ type ReadOnlyAdapter = MarketDataAdapter
 // AccountStatus is the venue wallet status used by scanner health gates.
 type AccountStatus struct { DepositEnabled bool; WithdrawalEnabled bool }
 
+// Healthy reports whether deposits and withdrawals are both enabled.
+func (a AccountStatus) Healthy() bool { return a.DepositEnabled && a.WithdrawalEnabled }
+
 // AccountStatusProvider exposes optional wallet status.
 type AccountStatusProvider interface { AccountAvailable(string) (AccountStatus, error) }
 
