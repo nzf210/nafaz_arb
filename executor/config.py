@@ -332,6 +332,13 @@ class ExecutorConfig:
                     # client options so exchange_client can prefix client order ids.
                     cred.options.setdefault("broker_id", broker_id)
 
+        # Broker identity is an independent Tokocrypto account setting. Do not
+        # read it only inside the *_API_KEY loop: deployments may keep API keys
+        # in config.json while injecting the broker id from the secret store.
+        if broker_id := os.getenv("TOKOCRYPTO_BROKER_ID"):
+            tokocrypto = self.exchanges.setdefault("tokocrypto", ExchangeCredentials())
+            tokocrypto.options["broker_id"] = broker_id
+
         # Sync local and global credentials from modular exchanges if available
         if self.local_exchange_name.lower() in self.exchanges:
             src = self.exchanges[self.local_exchange_name.lower()]
