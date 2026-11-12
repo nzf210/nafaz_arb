@@ -119,3 +119,39 @@ async def test_open_position_query_overlays_pending_close_without_resurrection()
     assert rows == []
     assert queries._session.calls[0][1]["is_mock"] == "eq.false"
     assert "FAILED" in queries._session.calls[0][1]["status"]
+
+
+@pytest.mark.asyncio
+async def test_recent_fill_candidates_include_pending_durable_outbox_rows():
+    pending = {
+        "local_order_id": "toko-order-1",
+        "exchange_name": "tokocrypto",
+        "market_type": "spot",
+        "leg": "spot_entry",
+        "order_role": "ENTRY",
+        "symbol": "BTC/IDR",
+        "side": "buy",
+        "order_type": "market",
+        "status": "closed",
+        "requested_qty": 0.01,
+        "filled_qty": 0.01,
+        "remaining_qty": 0.0,
+        "exchange_order_id": "98765",
+        "client_order_id": "x-TKT5PX2F-entry1",
+        "is_mock": False,
+        "raw_payload": "{}",
+    }
+    outbox = _Outbox({
+        "order_registry": [(9, "order_registry", "local_order_id", pending)]
+    })
+    queries = _Queries({0: []}, outbox)
+
+    async def no_remote_candidates(*_args, **_kwargs):
+        return [], []
+
+    queries._read_fill_candidate_tables = no_remote_candidates
+    rows = await queries.fetch_recent_order_fill_candidates(days=90, limit=1000)
+
+    assert len(rows) == 1
+    assert rows[0]["exchange_order_id"] == "98765"
+    assert rows[0]["client_order_id"] == "x-TKT5PX2F-entry1"
