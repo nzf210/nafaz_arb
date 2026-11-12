@@ -6,6 +6,7 @@ import math
 from typing import Any, Dict
 
 from executor.models import OrderRecord, OrderRole, PositionState
+from executor.exchange_common import exchange_order_id_from
 
 logger = logging.getLogger("executor.order_recovery")
 
@@ -52,19 +53,19 @@ class RecoveryOrphanMixin:
             "[Recovery] ORPHAN_ORDER %s on %s (%s): %s. Not adopted, not canceled, "
             "not replaced. New entries blocked on %s; monitoring and emergency "
             "de-risking remain available.",
-            str(order.get("id") or order.get("clientOrderId") or "?"),
+            exchange_order_id_from(order) or str(order.get("clientOrderId") or order.get("client_order_id") or "?"),
             exchange, symbol, reason, scope,
         )
         await self._publish_execution_failure(
             f"orphan:{orphan_id}",
             "ORPHAN_ORDER",
-            f"Active order {order.get('id')} on {exchange} ({symbol}) could not be linked to a bot "
+            f"Active order {exchange_order_id_from(order) or order.get('clientOrderId') or '?'} on {exchange} ({symbol}) could not be linked to a bot "
             f"position: {reason}. Manual reconciliation required. It was NOT adopted, replaced or canceled.",
             detail={
                 "orphan_id": orphan_id,
                 "exchange": exchange,
                 "symbol": symbol,
-                "exchange_order_id": str(order.get("id") or ""),
+                "exchange_order_id": exchange_order_id_from(order),
                 "client_order_id": str(order.get("clientOrderId") or order.get("client_order_id") or ""),
                 "side": str(order.get("side") or ""),
                 "price": float(order.get("price") or 0.0),
@@ -105,7 +106,7 @@ class RecoveryOrphanMixin:
             return False
         if not isinstance(venue_order, dict):
             return False
-        if order_id and str(venue_order.get("id") or "") != order_id:
+        if order_id and exchange_order_id_from(venue_order) != order_id:
             return False
         observed_client_id = str(venue_order.get("clientOrderId") or venue_order.get("client_order_id") or "")
         if client_id and observed_client_id != client_id:
