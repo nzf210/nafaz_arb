@@ -172,7 +172,7 @@ class EngineRecoveryPositionsMixin:
                 if not isinstance(row, dict) or bool(row.get("is_mock", False)):
                     continue
                 pair_tag = str(row.get("pair_key") or "").strip()
-                if not pair_tag or pair_tag in self.active_positions:
+                if not pair_tag:
                     continue
                 snapshot = row.get("state_snapshot")
                 if isinstance(snapshot, str):
@@ -188,6 +188,9 @@ class EngineRecoveryPositionsMixin:
                     )
                 snapshot = dict(snapshot)
                 snapshot["state"] = str(row.get("status") or snapshot.get("state") or "RECONCILIATION_REQUIRED")
+                cached = self.active_positions.get(pair_tag)
+                if cached is not None and int(snapshot.get("updated_at") or 0) <= int(cached.updated_at or 0):
+                    continue
                 key = f"arb:active_pos:{pair_tag}"
                 await self.redis.set(key, json.dumps(snapshot, allow_nan=False))
                 if not await self._recover_active_position_record(key):
