@@ -51,6 +51,12 @@ class EngineSignalMixin:
         3. If no active position, place Maker Limit Buy at recommended_limit_buy_idr.
         """
         async with self._pair_lock(pair_tag):
+            if not getattr(self, "_recovery_complete", False):
+                logger.warning(
+                    "[Recovery] rejecting entry for %s: startup reconciliation is not complete",
+                    pair_tag,
+                )
+                return
             if getattr(self, "_risk_persistence_failed", False):
                 logger.critical("[Risk] rejecting %s: durable risk-state persistence is not trustworthy", pair_tag)
                 return
