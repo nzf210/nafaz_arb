@@ -86,7 +86,7 @@ func (s *Service) Analyze(ctx context.Context) (Result,error) {
 	if len(selected)==0 { result.CompletedAt=time.Now().UTC();return result,nil }
 
 	snapshot:=Snapshot{
-		At:time.Now().UTC(),Markets:selected,
+		At:started,Markets:selected,
 		OrderBooks:make(map[string]domain.OrderBook,len(selected)),
 		Fees:make(map[string]FeeSchedule,len(selected)),
 		MaxBookAge:s.cfg.MaxBookAge,
@@ -113,7 +113,7 @@ func (s *Service) Analyze(ctx context.Context) (Result,error) {
 			if !strings.EqualFold(book.Exchange,market.Exchange)||!strings.EqualFold(book.Symbol,market.Symbol) {
 				mu.Lock();result.Errors=append(result.Errors,fmt.Sprintf("%s:%s returned mismatched order book identity",market.Exchange,market.Symbol));mu.Unlock();return
 			}
-			if !validAnalysisBook(book, snapshot.At, s.cfg.MaxBookAge) {
+			if !validAnalysisBook(book, time.Now().UTC(), s.cfg.MaxBookAge) {
 				mu.Lock();result.Errors=append(result.Errors,fmt.Sprintf("%s:%s returned a stale or invalid order book",market.Exchange,market.Symbol));mu.Unlock();return
 			}
 			fee,ok,feeErr:=s.resolveFee(ctx,market.Exchange,market.BaseAsset+"/"+market.QuoteAsset)
@@ -134,6 +134,7 @@ func (s *Service) Analyze(ctx context.Context) (Result,error) {
 		}()
 	}
 	wg.Wait()
+	snapshot.At=time.Now().UTC()
 	if err:=ctx.Err();err!=nil { result.Complete=false;result.Errors=append(result.Errors,err.Error()) }
 	signals,failures:=s.engine.Analyze(ctx,snapshot)
 	result.Signals=signals
