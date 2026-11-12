@@ -1,5 +1,6 @@
 """engine order intent methods for arbitrage engine orchestration."""
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -150,25 +151,33 @@ class EngineOrderIntentMixin:
                 raise
 
             recovered = None
+            lookup_error = None
             lookup = getattr(self.client, "fetch_local_order_by_client_id", None)
             if callable(lookup):
-                try:
-                    recovered = await lookup(client_order_id, symbol, amount_spec)
-                except Exception:
-                    logger.exception(
-                        "[OrderRecovery] client-id lookup failed after ambiguous submit %s",
-                        client_order_id,
-                    )
-            if isinstance(recovered, dict) and recovered.get("id"):
-                logger.warning(
-                    "[OrderRecovery] recovered local order %s by client ID after lost acknowledgement",
-                    client_order_id,
-                )
-                return recovered
+                # Retry only the read-only lookup; never repeat the order-create
+                # request. This allows for short venue indexing delays.
+                for attempt in range(3):
+                    try:
+                        recovered = await lookup(client_order_id, symbol, amount_spec)
+                    except Exception as exc:
+                        lookup_error = exc
+                        logger.warning(
+                            "[OrderRecovery] client-id lookup %s/3 failed for %s: %s",
+                            attempt + 1, client_order_id, exc,
+                        )
+                    if isinstance(recovered, dict) and recovered.get("id"):
+                        logger.warning(
+                            "[OrderRecovery] recovered local order %s by client ID after lost acknowledgement",
+                            client_order_id,
+                        )
+                        return recovered
+                    if attempt < 2:
+                        await asyncio.sleep(0.25 * (2 ** attempt))
 
             reason = (
                 f"submit error: {type(submit_error).__name__}: {submit_error}; "
                 "venue lookup did not return a verifiable order"
+                + (f"; last lookup error: {lookup_error}" if lookup_error else "")
             )
             await self._mark_order_submission_ambiguous(
                 pair_tag, exchange, client_order_id, reason
