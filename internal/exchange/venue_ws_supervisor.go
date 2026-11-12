@@ -154,7 +154,7 @@ synchronized:
 			case <-ctx.Done(): return ctx.Err()
 			case err := <-readErr: return err
 			case payload := <-frames:
-				if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }; s.markMessage(symbol)
+				if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }; s.markBookMessage(symbol, payload)
 			case <-ticker.C:
 				if err := conn.Write(ctx, websocket.MessageText, s.heartbeat); err != nil { return fmt.Errorf("%s %s heartbeat: %w", s.name, symbol, err) }
 			}
@@ -165,17 +165,31 @@ synchronized:
 		case <-ctx.Done(): return ctx.Err()
 		case err := <-readErr: return err
 		case payload := <-frames:
-			if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }; s.markMessage(symbol)
+			if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }; s.markBookMessage(symbol, payload)
 		}
 	}
 }
 
 func (l *LiveAdapter) newTokocryptoSupervisor() *venueBookSupervisor {
 	return newVenueBookSupervisor("tokocrypto",
-		func(symbol string) string { return "wss://stream-cloud.tokocrypto.site/stream/ws/"+strings.ToLower(symbol)+"@depth" },
-		func(string) []byte { return nil },
+		func(symbol string) string {
+			if l.tokocryptoSymbolType(symbol) == 3 { return "wss://stream-toko.2meta.app" }
+			return "wss://stream-cloud.tokocrypto.site/stream/ws/"+strings.ToLower(symbol)+"@depth"
+		},
+		func(symbol string) []byte {
+			if l.tokocryptoSymbolType(symbol) != 3 { return nil }
+			frame, _ := json.Marshal(map[string]any{
+				"method": "SUBSCRIBE",
+				"params": []string{strings.ToLower(symbol)+"@depth"},
+				"id": 1,
+			})
+			return frame
+		},
 		func(ctx context.Context, symbol string) error {
-			req, err := l.client.Get("https://www.tokocrypto.site/api/v3/depth?symbol="+url.QueryEscape(symbol)+"&limit=1000")
+			symbolType := l.tokocryptoSymbolType(symbol)
+			base, path := "https://www.tokocrypto.site", "/api/v3/depth"
+			if symbolType == 3 { base, path = "https://cloudme-toko.2meta.app", "/api/v1/depth" }
+			req, err := l.client.Get(base+path+"?symbol="+url.QueryEscape(symbol)+"&limit=1000")
 			if err != nil { return err }; defer req.Body.Close()
 			if req.StatusCode != 200 { return fmt.Errorf("snapshot HTTP %d", req.StatusCode) }
 			var payload json.RawMessage
@@ -186,8 +200,9 @@ func (l *LiveAdapter) newTokocryptoSupervisor() *venueBookSupervisor {
 			return manager.Bootstrap(symbol, snapshot)
 		},
 		func(symbol string, payload []byte) error {
+			if !tokocrypto.IsDepthUpdate(payload) { return nil } // subscription ACK / non-depth frames
 			update, err := tokocrypto.DecodeDepthUpdate(payload); if err != nil { return err }
-			if update.Symbol != "" && !strings.EqualFold(update.Symbol, symbol) { return nil }
+			if update.Symbol != "" && !strings.EqualFold(strings.ReplaceAll(update.Symbol, "_", ""), symbol) { return nil }
 			update.Symbol = symbol
 			l.mu.RLock(); manager := l.tokocryptoBooks; l.mu.RUnlock()
 			if manager == nil { return fmt.Errorf("Tokocrypto book manager is disabled") }
@@ -234,7 +249,7 @@ func (s *venueBookSupervisor) markMessage(symbol string) {
 }
 func (s *venueBookSupervisor) markBookMessage(symbol string, payload []byte) {
 	if s.name == "mexc-perpetual" { var frame struct { Channel string `json:"channel"` }; if json.Unmarshal(payload,&frame)!=nil || frame.Channel!="push.depth" { return } }
-	if s.name == "tokocrypto" { var frame struct { Event string `json:"e"` }; if json.Unmarshal(payload,&frame)!=nil || frame.Event!="depthUpdate" { return } }
+	if s.name == "tokocrypto" && !tokocrypto.IsDepthUpdate(payload) { return }
 	s.markMessage(symbol)
 }
 func (s *venueBookSupervisor) Healthy(maxAge time.Duration) bool {
