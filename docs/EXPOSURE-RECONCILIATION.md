@@ -47,3 +47,21 @@ resolved.
 It does not reconcile individual order/fill history, fees, transfers, deposits,
 withdrawals, or funding settlements; those require separate ledger
 reconciliation.
+
+
+## Restart recovery coverage
+
+- Active live position snapshots are restored from Redis first and then backfilled
+  from the durable Supabase `positions.state_snapshot` records when a Redis key
+  is missing. Pending local SQLite outbox position transitions are overlaid so a
+  not-yet-flushed close does not resurrect an older active snapshot.
+- Durable non-terminal order records include `PHANTOM` and `ORPHAN_ORDER`
+  recovery states; an unresolved record is never dropped merely because it is
+  not currently marked MANAGED.
+- Startup order discovery includes every configured authenticated venue. For
+  Tokocrypto, discovery is symbol-scoped because its signed All Orders endpoint
+  requires `symbol`; symbols are sourced from durable order intents, pending
+  entries/exits, and restored positions. Tokocrypto cannot provide a true
+  account-wide open-order sweep through CCXT.
+- If the durable position reader or a required symbol-scoped order lookup fails,
+  startup remains gated rather than treating unavailable data as a flat account.
