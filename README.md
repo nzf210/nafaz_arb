@@ -427,7 +427,7 @@ Before enabling the executor, run the read-only authenticated preflight with the
 same runtime environment and mounted data volume:
 
 ```bash
-python scripts/live_readonly_preflight.py --config config.json \
+docker compose exec nafaz-executor python scripts/live_readonly_preflight.py --config /app/config.json \
   --spot-symbol tokocrypto=BTC/IDR \
   --futures-symbol BTC/USDT:USDT
 ```
