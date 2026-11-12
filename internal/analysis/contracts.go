@@ -52,7 +52,7 @@ type Signal struct {
 	Venue          string            `json:"venue"`
 	MarketType     string            `json:"market_type"`
 	Side           SignalSide        `json:"side"`
-	Confidence     float64           `json:"confidence"`
+	Confidence     float64           `json:"confidence"` // normalized ranking score, not a calibrated probability
 	ExpectedReturn float64           `json:"expected_return_pct,omitempty"`
 	StopLoss       float64           `json:"stop_loss,omitempty"`
 	TakeProfit     float64           `json:"take_profit,omitempty"`
