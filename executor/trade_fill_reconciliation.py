@@ -321,6 +321,7 @@ class TradeFillReconciliationWorker:
                 return False
         return True
 
+    @staticmethod
     def _persist_exchange_fills(
         writer, trades: list, order_row_id: str, exchange: str
     ):
