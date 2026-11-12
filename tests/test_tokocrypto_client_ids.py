@@ -160,3 +160,79 @@ async def test_tokocrypto_open_order_discovery_requires_symbol_and_uses_max_page
 
     assert await client.fetch_local_open_orders("BTC/IDR") == []
     assert venue.request == ("BTC/IDR", None, 1000)
+
+
+@pytest.mark.asyncio
+async def test_tokocrypto_fetch_order_uses_documented_order_detail_endpoint():
+    from executor.tokocrypto_adapter import TokocryptoAdapter
+
+    venue = TokocryptoAdapter({
+        "apiKey": "test-key",
+        "secret": "test-secret",
+        "options": {"defaultType": "spot"},
+    })
+    market = {
+        "id": "FLOKI_IDR",
+        "symbol": "FLOKI/IDR",
+        "base": "FLOKI",
+        "quote": "IDR",
+        "baseId": "FLOKI",
+        "quoteId": "IDR",
+        "spot": True,
+        "active": True,
+        "precision": {"amount": 3, "price": 2},
+        "limits": {"amount": {"min": 0.001}, "price": {"min": 0.01}},
+        "info": {"orderTypes": ["LIMIT", "LIMIT_MAKER", "MARKET"]},
+    }
+    venue.markets = {"FLOKI/IDR": market}
+    venue.markets_by_id = {"FLOKI_IDR": [market]}
+    captured = {}
+
+    async def query_order_detail(request):
+        captured.update(request)
+        return {
+            "code": 0,
+            "message": "success",
+            "data": {
+                "orderId": "12345",
+                "clientId": "x-TKT5PX2Fabc123",
+                "symbol": "FLOKI_IDR",
+                "side": 0,
+                "type": 7,
+                "price": "1000",
+                "origQty": "1",
+                "executedQty": "0.25",
+                "executedPrice": "1000",
+                "executedQuoteQty": "250",
+                "timeInForce": 1,
+                "status": 1,
+                "createTime": 1700000000000,
+            },
+        }
+
+    venue.privateGetOpenV1OrdersDetail = query_order_detail
+    try:
+        order = await venue.fetch_order("12345", "FLOKI/IDR")
+        assert captured == {"orderId": "12345"}
+        assert order["id"] == "12345"
+        assert order["symbol"] == "FLOKI/IDR"
+        assert order["filled"] == 0.25
+        assert order["status"] == "open"
+    finally:
+        await venue.close()
+
+
+@pytest.mark.asyncio
+async def test_tokocrypto_fetch_order_rejects_malformed_detail_response():
+    from executor.tokocrypto_adapter import TokocryptoAdapter
+
+    venue = TokocryptoAdapter({"apiKey": "test-key", "secret": "test-secret"})
+    async def malformed(_request):
+        return {"code": 0, "data": {"status": 0}}
+
+    venue.privateGetOpenV1OrdersDetail = malformed
+    try:
+        with pytest.raises(ValueError, match="valid order id"):
+            await venue.fetch_order("12345")
+    finally:
+        await venue.close()
