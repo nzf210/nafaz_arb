@@ -92,14 +92,47 @@ class RecoveryDiscoveryMixin:
         and is invisible in the local spot book.
         """
         catalogues = []
-        for exchange, market in (
-            (str(self.config.local_exchange_name or "").lower(), "spot"),
-            (str(self.config.global_exchange_name or "").lower(), "futures"),
-        ):
-            if not exchange:
+        seen = set()
+
+        # ExchangeClient.balance_exchanges is the authoritative inventory of
+        # authenticated venue adapters. The configured local/global pair is
+        # only the default execution route; scanner opportunities may use
+        # additional configured spot venues (for example Tokocrypto alongside
+        # Indodax). Sweeping only the default pair would miss unregistered
+        # resting orders on those venues after a crash.
+        venue_inventory = getattr(self._base_client, "balance_exchanges", {}) or {}
+        for raw_exchange, entry in venue_inventory.items():
+            exchange = str(raw_exchange or "").strip().lower()
+            if not exchange or not isinstance(entry, dict):
+                continue
+            market = str(entry.get("market") or "").strip().lower()
+            if market not in ("spot", "futures") or entry.get("client") is None:
                 continue
             if self._client_for_exchange(exchange) is None:
                 continue
+            key = (exchange, market)
+            if key in seen:
+                continue
+            seen.add(key)
+            catalogues.append({
+                "exchange": exchange,
+                "market": market,
+                "pair_tag": "",
+                "amount_spec": None,
+            })
+
+        # Preserve compatibility with simple clients and tests that expose no
+        # balance_exchanges inventory. Also include the configured execution
+        # pair if a custom facade omitted it from that inventory.
+        for exchange, market in (
+            (str(self.config.local_exchange_name or "").strip().lower(), "spot"),
+            (str(self.config.global_exchange_name or "").strip().lower(), "futures"),
+        ):
+            if not exchange or (exchange, market) in seen:
+                continue
+            if self._client_for_exchange(exchange) is None:
+                continue
+            seen.add((exchange, market))
             catalogues.append({
                 "exchange": exchange,
                 "market": market,
