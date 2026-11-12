@@ -177,6 +177,7 @@ func (l *LiveAdapter) newTokocryptoSupervisor() *venueBookSupervisor {
 		func(symbol string, payload []byte) error {
 			update, err := tokocrypto.DecodeDepthUpdate(payload); if err != nil { return err }
 			if update.Symbol != "" && !strings.EqualFold(update.Symbol, symbol) { return nil }
+			update.Symbol = symbol
 			l.mu.RLock(); manager := l.tokocryptoBooks; l.mu.RUnlock()
 			if manager == nil { return fmt.Errorf("Tokocrypto book manager is disabled") }
 			_, err = manager.Apply(update); return err
@@ -206,7 +207,7 @@ func (l *LiveAdapter) newMEXCPerpetualSupervisor() *venueBookSupervisor {
 			if envelope.Channel != "" && envelope.Channel != "push.depth" { return nil }
 			l.mu.RLock(); size:=l.contractSizes[symbol]; manager:=l.mexcPerpBooks; l.mu.RUnlock()
 			update,err:=mexc.DecodePerpetualDepthUpdate(payload,size);if err!=nil{return err}
-			if update.Symbol!=symbol{return nil}; _,err=manager.Apply(update);return err
+			if !strings.EqualFold(update.Symbol,symbol){return nil}; update.Symbol=symbol; _,err=manager.Apply(update);return err
 		},
 		func(symbol string) { l.mu.RLock(); m:=l.mexcPerpBooks; l.mu.RUnlock(); if m!=nil { m.Invalidate(symbol) } },
 		[]byte(`{"method":"ping"}`))
