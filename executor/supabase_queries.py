@@ -324,7 +324,7 @@ class SupabaseQueryMixin:
         params = {
             "select": "pair_key,status,is_mock,state_snapshot,updated_at",
             "is_mock": "eq.false",
-            "status": "in.(ENTRY_PENDING,ENTRY_PARTIAL,HEDGED_ACTIVE,EXIT_PENDING,RECONCILIATION_REQUIRED)",
+            "status": "in.(ENTRY_PENDING,ENTRY_PARTIAL,HEDGED_ACTIVE,EXIT_PENDING,RECONCILIATION_REQUIRED,FAILED)",
             "order": "updated_at.asc",
             "limit": str(page_size),
         }
@@ -373,7 +373,7 @@ class SupabaseQueryMixin:
             )
             active_statuses = {
                 "ENTRY_PENDING", "ENTRY_PARTIAL", "HEDGED_ACTIVE",
-                "EXIT_PENDING", "RECONCILIATION_REQUIRED",
+                "EXIT_PENDING", "RECONCILIATION_REQUIRED", "FAILED",
             }
             for _row_id, _table, _conflict, row in pending:
                 pair_key = str(row.get("pair_key") or "")
