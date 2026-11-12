@@ -51,7 +51,7 @@
     "min_spike_scans": 3,
     "max_last_trade_age_seconds": 0,
     "fx_rate_sanity_pct": 0,
-    "enable_websocket_feed": false,
+    "enable_websocket_feed": true,
     "okx_ws_enabled": true,
     "okx_ws_url": "wss://ws.okx.com/ws/v5/public",
     "okx_ws_stale_after": "65s",
