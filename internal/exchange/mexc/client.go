@@ -49,6 +49,64 @@ func (c *Client) get(ctx context.Context, baseURL, path string) (*http.Response,
 	return c.httpClient.Do(req)
 }
 
+func (c *Client) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
+	resp, err := c.get(ctx, c.spotURL, "/api/v3/exchangeInfo")
+	if err != nil { return nil, fmt.Errorf("mexc spot exchange info request: %w", err) }
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK { return nil, &StatusError{StatusCode: resp.StatusCode} }
+	var raw struct {
+		Symbols []struct {
+			Symbol string `json:"symbol"`
+			Status json.RawMessage `json:"status"`
+			BaseAsset string `json:"baseAsset"`
+			QuoteAsset string `json:"quoteAsset"`
+			Filters []struct {
+				FilterType string `json:"filterType"`
+				TickSize string `json:"tickSize"`
+				StepSize string `json:"stepSize"`
+				MinQty string `json:"minQty"`
+				MinNotional string `json:"minNotional"`
+			} `json:"filters"`
+		} `json:"symbols"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, fmt.Errorf("decode mexc spot exchange info: %w", err)
+	}
+	markets := make([]domain.Market, 0, len(raw.Symbols))
+	for _, item := range raw.Symbols {
+		status := ""
+		if err := json.Unmarshal(item.Status, &status); err != nil {
+			var number json.Number
+			if json.Unmarshal(item.Status, &number) == nil { status = number.String() }
+		}
+		if item.Symbol == "" || item.BaseAsset == "" || item.QuoteAsset == "" ||
+			!(status == "1" || strings.EqualFold(status, "TRADING") || strings.EqualFold(status, "ENABLED")) {
+			continue
+		}
+		market := domain.Market{
+			Exchange: "mexc", Symbol: "mexc_spot:" + strings.ToUpper(item.Symbol),
+			BaseAsset: strings.ToUpper(item.BaseAsset), QuoteAsset: strings.ToUpper(item.QuoteAsset),
+			MarketType: "SPOT", Active: true,
+		}
+		for _, filter := range item.Filters {
+			switch strings.ToUpper(filter.FilterType) {
+			case "PRICE_FILTER":
+				market.TickSize, _ = strconv.ParseFloat(filter.TickSize, 64)
+			case "LOT_SIZE":
+				market.LotSize, _ = strconv.ParseFloat(filter.StepSize, 64)
+				market.MinOrder, _ = strconv.ParseFloat(filter.MinQty, 64)
+			case "MIN_NOTIONAL", "NOTIONAL":
+				if market.MinOrder == 0 { market.MinOrder, _ = strconv.ParseFloat(filter.MinNotional, 64) }
+			}
+		}
+		if validPositive(market.LotSize) && validNonNegative(market.MinOrder) {
+			market.AmountSpec = &domain.AmountSpec{Unit:"BASE",Step:market.LotSize,Min:market.MinOrder,BasePerUnit:1}
+		}
+		markets = append(markets, market)
+	}
+	return markets, nil
+}
+
 func (c *Client) PerpetualMarkets(ctx context.Context) ([]domain.Market,error) {
 	resp,err:=c.get(ctx,c.contractURL,"/api/v1/contract/detail")
 	if err!=nil { return nil,fmt.Errorf("mexc contract detail request: %w",err) }
