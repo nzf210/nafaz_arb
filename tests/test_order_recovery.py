@@ -2050,3 +2050,25 @@ def test_tokocrypto_invalid_client_id_is_a_definitive_rejection():
     assert engine._is_definitive_order_rejection(
         RuntimeError('tokocrypto error code 3703: "Invalid client ID"')
     )
+
+
+@pytest.mark.asyncio
+async def test_stale_durable_active_snapshot_cannot_resurrect_newer_closed_cache(fake_redis):
+    engine = await _build(fake_redis, MockExchangeClient(), mock_mode=False)
+    engine.supabase.enabled = True
+    closed = _position(state="CLOSED", updated_at=300)
+    stale_active = _position(state="HEDGED_ACTIVE", updated_at=200)
+    key = "arb:active_pos:" + PAIR_TAG
+    await fake_redis.set(key, json.dumps(closed.to_dict()))
+    engine.supabase.fetch_open_position_records = lambda: _async_value([{
+        "pair_key": PAIR_TAG,
+        "status": "HEDGED_ACTIVE",
+        "is_mock": False,
+        "state_snapshot": stale_active.to_dict(),
+    }])
+
+    await engine._recover_active_positions()
+
+    assert engine.states[PAIR_TAG] == PositionState.CLOSED
+    assert PAIR_TAG not in engine.active_positions
+    assert await fake_redis.get(key) is None
