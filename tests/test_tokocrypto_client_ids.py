@@ -82,6 +82,44 @@ async def test_tokocrypto_ccxt_request_uses_registered_prefix_and_spot_order_fie
         assert captured["clientId"][len(broker_id):].isalnum()
         assert order["id"] == "12345"
         assert order["postOnly"] is True
+
+        captured.clear()
+
+        async def submit_sell_order(request):
+            captured.update(request)
+            return {
+                "data": {
+                    "orderId": 12346,
+                    "clientId": request["clientId"],
+                    "symbol": "FLOKI_IDR",
+                    "side": 1,
+                    "type": 7,
+                    "price": "1000",
+                    "origQty": "1",
+                    "executedQty": "0",
+                    "executedPrice": "0",
+                    "executedQuoteQty": "0",
+                    "timeInForce": 1,
+                    "status": 0,
+                    "createTime": 1700000000000,
+                }
+            }
+
+        venue.privatePostOpenV1Orders = submit_sell_order
+        sell = await client.place_local_limit_sell(
+            "FLOKI/IDR",
+            1.0,
+            1000.0,
+            client_order_id=logical_id.replace("entry", "exit"),
+            amount_spec=AmountSpec(
+                unit="BASE", step=0.001, minimum=0.001, base_per_unit=1.0
+            ),
+        )
+        assert captured["side"] == 1
+        assert captured["type"] == "7"
+        assert "timeInForce" not in captured
+        assert captured["clientId"].startswith(broker_id)
+        assert sell["postOnly"] is True
     finally:
         await venue.close()
 
