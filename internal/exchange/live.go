@@ -66,6 +66,9 @@ type LiveAdapter struct {
 	okxVenueBooks  *okx.BookManager
 	okxWSMaxAge    time.Duration
 	okxBookCalls   map[string]*okxBookCall
+	tokocryptoBooks *tokocrypto.BookManager
+	mexcPerpBooks *mexc.PerpetualBookManager
+	venueWSMaxAge time.Duration
 }
 
 func NewLiveAdapter() *LiveAdapter {
@@ -260,6 +263,9 @@ func (l *LiveAdapter) EnableWebSocketFeed(ctx context.Context, maxAge time.Durat
 		l.wsCache = NewWSBookCache()
 	}
 	l.wsMaxAge = maxAge
+	if l.tokocryptoBooks == nil { l.tokocryptoBooks = tokocrypto.NewBookManager(100) }
+	if l.mexcPerpBooks == nil { l.mexcPerpBooks = mexc.NewPerpetualBookManager(100) }
+	l.venueWSMaxAge = maxAge
 	stopCleanup := l.wsCache.StartStaleBookCleanup(maxAge, 5*time.Minute)
 	l.wsStopCleanup = stopCleanup
 	l.mu.Unlock()
