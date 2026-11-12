@@ -85,7 +85,7 @@ func (m *BookManager) Apply(update DepthUpdate) (bool,error) {
 
 // Get returns only a synchronized, fresh, two-sided local book.
 func (m *BookManager) Get(symbol string,maxAge time.Duration)(domain.OrderBook,bool){
-	m.mu.RLock(); book:=m.books[symbol]; if book==nil{m.mu.RUnlock();return domain.OrderBook{},false}
+	m.mu.RLock(); book:=m.books[symbol]; if book==nil||!book.bridged{m.mu.RUnlock();return domain.OrderBook{},false}
 	bids:=mapToLevels(book.bids,true,m.maxDepth); asks:=mapToLevels(book.asks,false,m.maxDepth)
 	out:=domain.OrderBook{Exchange:"tokocrypto",Symbol:symbol,Bids:bids,Asks:asks,SequenceID:book.lastID,Timestamp:book.updatedAt,ReceivedAt:book.updatedAt,Source:"websocket"}
 	m.mu.RUnlock()
