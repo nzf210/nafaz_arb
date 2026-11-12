@@ -180,6 +180,19 @@ class RecoveryDiscoveryMixin:
             if exchange in (configured_local, configured_global):
                 return self._base_client
             return None
+        # Prefer a venue-neutral adapter (pair_info=None) over borrowing an
+        # arbitrary pair's facade from the registry, whose quote_asset can
+        # reject unrelated markets on the same venue during recovery.
+        resolver = getattr(self._base_client, "for_venue", None)
+        if callable(resolver):
+            try:
+                resolved = resolver(exchange)
+                if resolved is not None:
+                    return resolved
+            except Exception:
+                logger.exception(
+                    "[Recovery] could not resolve a client for venue %s", exchange
+                )
         registry = self._pair_client_registry
         keys_fn = getattr(registry, "keys", None)
         for key in (keys_fn() if callable(keys_fn) else ()):
@@ -192,18 +205,6 @@ class RecoveryDiscoveryMixin:
                     continue
         if exchange in (configured_local, configured_global):
             return self._base_client
-        # Last resort: an order may name a venue that is configured but whose
-        # pair was never bound in this process (e.g. a tokocrypto spot order
-        # restored from the registry at startup). Looking it up on the base
-        # client would query indodax and fail with that venue's invalid symbol.
-        resolver = getattr(self._base_client, "for_venue", None)
-        if callable(resolver):
-            try:
-                return resolver(exchange)
-            except Exception:
-                logger.exception(
-                    "[Recovery] could not resolve a client for venue %s", exchange
-                )
         return None
 
     @staticmethod

@@ -796,3 +796,14 @@ class TestFillSyncWatermark:
         reopened = DurableOutbox(path)
         assert reopened.get_numeric_state("fill-sync:exchange:spot:order-1") == pytest.approx(2.5)
         reopened.close()
+
+    def test_risk_state_defaults_null_value_to_empty_dict(self):
+        writer = _writer()
+        assert writer.risk_state(
+            state_type="trading_resume",
+            scope="global",
+            value=None,
+            reason="operator resume",
+        ) is True
+        rows = _drain(writer)
+        assert rows[0][2]["value"] == {}

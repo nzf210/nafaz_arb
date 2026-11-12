@@ -44,7 +44,7 @@ class SupabaseRiskMixin:
                 "exchange": str(exchange).lower() if exchange else None,
                 "pair_key": pair_key,
                 "reason": str(reason or ""),
-                "value": value if isinstance(value, (dict, list, str, int, float, bool)) or value is None else str(value),
+                "value": {} if value is None else (value if isinstance(value, (dict, list, str, int, float, bool)) else str(value)),
                 "created_at": now,
                 "updated_at": now,
                 "resolved_at": now if resolved else None,

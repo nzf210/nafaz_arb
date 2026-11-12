@@ -8,6 +8,7 @@ from executor.exchange_common import (
     accepted_client_order_id, acknowledged_order_result,
     _base_order_result, _expose_client_order_id, _local_order_params,
     _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
+    _tokocrypto_wire_symbol,
 )
 
 
@@ -255,10 +256,38 @@ class ExchangeOrderMixin:
             self._local_broker_prefix, self._local_scope,
         )
 
+    async def _fetch_tokocrypto_order_fallback(
+        self, order_id: str, order_symbol: str
+    ) -> Dict[str, Any]:
+        # Tokocrypto's fetch_order omits type and defaults to open orders (type=1),
+        # returning an empty id for canceled/filled orders.
+        wire_symbol = _tokocrypto_wire_symbol(self.local, order_symbol)
+        resp = await self.local.privateGetOpenV1Orders(
+            {"symbol": wire_symbol, "type": -1, "limit": 500}
+        )
+        rows = ((resp or {}).get("data") or {}).get("list") or []
+        market = None
+        market_fn = getattr(self.local, "market", None)
+        if callable(market_fn):
+            try:
+                market = market_fn(order_symbol)
+            except Exception:
+                market = None
+        for row in rows:
+            if isinstance(row, dict) and str(row.get("orderId") or "") == str(order_id):
+                return self.local.parse_order(row, market)
+        return {}
+
     async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
         """Fetches status of an order on local spot exchange."""
         order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
         order = await self.local.fetch_order(order_id, order_symbol)
+        if (
+            str(getattr(self.local, "id", "") or "").lower() == "tokocrypto"
+            and (not isinstance(order, dict) or not order.get("id"))
+            and callable(getattr(self.local, "privateGetOpenV1Orders", None))
+        ):
+            order = await self._fetch_tokocrypto_order_fallback(order_id, order_symbol)
         return self._normalize_local_client_order_id(order)
 
     async def fetch_local_order_by_client_id(
@@ -289,7 +318,22 @@ class ExchangeOrderMixin:
         """
         spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
         resolved_symbol = await self._resolve_symbol(self.local, symbol, "spot") if symbol else None
-        raw = await self.local.fetch_open_orders(resolved_symbol)
+        if (
+            resolved_symbol is None
+            and str(getattr(self.local, "id", "") or "").lower() == "tokocrypto"
+            and callable(getattr(self.local, "privateGetOpenV1Orders", None))
+        ):
+            # ccxt.tokocrypto.fetch_open_orders rejects symbol=None client-side
+            # even though /open/v1/orders?type=1 returns account-wide open orders.
+            resp = await self.local.privateGetOpenV1Orders({"type": 1})
+            rows = ((resp or {}).get("data") or {}).get("list")
+            if not isinstance(rows, list):
+                raise ValueError("tokocrypto returned a malformed open orders payload")
+            if not getattr(self.local, "markets", None) and callable(getattr(self.local, "load_markets", None)):
+                await self.local.load_markets()
+            raw = self.local.parse_orders(rows)
+        else:
+            raw = await self.local.fetch_open_orders(resolved_symbol)
         if raw is None or not isinstance(raw, list):
             raise ValueError("local venue returned a malformed open orders payload")
         return [
