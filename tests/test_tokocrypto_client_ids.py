@@ -47,7 +47,7 @@ async def test_tokocrypto_ccxt_request_uses_registered_prefix_and_spot_order_fie
                 "clientId": request["clientId"],
                 "symbol": "FLOKI_IDR",
                 "side": 0,
-                "type": 1,
+                "type": 7,
                 "price": "1000",
                 "origQty": "1",
                 "executedQty": "0",
@@ -73,13 +73,14 @@ async def test_tokocrypto_ccxt_request_uses_registered_prefix_and_spot_order_fie
         )
         assert captured["symbol"] == "FLOKI_IDR"
         assert captured["side"] == 0
-        assert captured["type"] == "1"
+        assert captured["type"] == "7"
         assert captured["quantity"] == "1"
         assert captured["price"] == "1000"
-        assert captured["timeInForce"] == "1"
+        assert "timeInForce" not in captured
         assert captured["clientId"].startswith(broker_id)
         assert len(captured["clientId"]) <= 32
         assert captured["clientId"][len(broker_id):].isalnum()
         assert order["id"] == "12345"
+        assert order["postOnly"] is True
     finally:
         await venue.close()
