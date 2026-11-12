@@ -25,8 +25,11 @@ func (s CrossVenueSpotStrategy) Name() string { return "cross_venue_spot_disloca
 func (s CrossVenueSpotStrategy) Analyze(ctx context.Context, snapshot Snapshot) ([]Signal, error) {
 	if err := ctx.Err(); err != nil { return nil, err }
 	if snapshot.At.IsZero() { return nil, fmt.Errorf("snapshot timestamp is required") }
-	if math.IsNaN(snapshot.EstimatedSlippagePct) || math.IsInf(snapshot.EstimatedSlippagePct, 0) || snapshot.EstimatedSlippagePct < 0 {
-		return nil, fmt.Errorf("estimated slippage must be finite and non-negative")
+	if !validPercentage(snapshot.EstimatedSlippagePct) {
+		return nil, fmt.Errorf("estimated slippage must be finite and within [0,100]")
+	}
+	if !validPercentage(s.MinNetReturnPct) {
+		return nil, fmt.Errorf("minimum net return must be finite and within [0,100]")
 	}
 	maxAge := snapshot.MaxBookAge
 	if maxAge <= 0 { maxAge = 3 * time.Second }
@@ -86,7 +89,7 @@ func (s CrossVenueSpotStrategy) evaluateDirection(
 	buyFees, buyFeeOK := snapshot.Fees[FeeKey(buyMarket.Exchange, buyMarket.Symbol)]
 	sellFees, sellFeeOK := snapshot.Fees[FeeKey(sellMarket.Exchange, sellMarket.Symbol)]
 	if !buyFeeOK || !sellFeeOK ||
-		!finiteNonNegative(buyFees.TakerPct) || !finiteNonNegative(sellFees.TakerPct) {
+		!validPercentage(buyFees.TakerPct) || !validPercentage(sellFees.TakerPct) {
 		return Signal{}, false
 	}
 
@@ -141,6 +144,6 @@ func freshSpotBook(snapshot Snapshot, market domain.Market, maxAge time.Duration
 	return book, true
 }
 
-func finiteNonNegative(value float64) bool {
-	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
+func validPercentage(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 100
 }
