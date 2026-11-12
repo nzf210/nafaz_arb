@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"sort"
 	"strings"
@@ -28,6 +29,8 @@ type venueBookSupervisor struct {
 	ctx context.Context
 	cancel context.CancelFunc
 	workers map[string]context.CancelFunc
+	connected map[string]bool
+	lastMessage map[string]time.Time
 	wg sync.WaitGroup
 	wsURL func(string) string
 	subscribe func(string) []byte
@@ -41,7 +44,7 @@ func newVenueBookSupervisor(name string, wsURL func(string) string, subscribe fu
 	snapshot func(context.Context, string) error, apply func(string, []byte) error,
 	invalidate func(string), heartbeat []byte) *venueBookSupervisor {
 	return &venueBookSupervisor{name:name, wsURL:wsURL, subscribe:subscribe, snapshot:snapshot,
-		apply:apply, invalidate:invalidate, heartbeat:heartbeat, workers:make(map[string]context.CancelFunc)}
+		apply:apply, invalidate:invalidate, heartbeat:heartbeat, workers:make(map[string]context.CancelFunc), connected:make(map[string]bool), lastMessage:make(map[string]time.Time)}
 }
 
 func (s *venueBookSupervisor) Start(parent context.Context) {
@@ -87,7 +90,9 @@ func (s *venueBookSupervisor) runSymbol(ctx context.Context, symbol string) {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		err := s.consumeSymbol(ctx, symbol)
+		s.setConnected(symbol,false)
 		if ctx.Err() != nil { return }
+		if err != nil { slog.Warn("venue WebSocket reconnect scheduled","venue",s.name,"symbol",symbol,"error",err,"backoff",backoff) }
 		if s.invalidate != nil { s.invalidate(symbol) }
 		timer := time.NewTimer(backoff)
 		select { case <-ctx.Done(): timer.Stop(); return; case <-timer.C: }
@@ -100,6 +105,8 @@ func (s *venueBookSupervisor) consumeSymbol(ctx context.Context, symbol string) 
 	conn, _, err := websocket.Dial(ctx, s.wsURL(symbol), &websocket.DialOptions{HTTPClient:wsHTTPClient()})
 	if err != nil { return fmt.Errorf("%s %s dial: %w", s.name, symbol, err) }
 	defer conn.CloseNow()
+	s.setConnected(symbol,true)
+	defer s.setConnected(symbol,false)
 	conn.SetReadLimit(2 << 20)
 	if frame := s.subscribe(symbol); len(frame) > 0 {
 		if err := conn.Write(ctx, websocket.MessageText, frame); err != nil { return fmt.Errorf("%s %s subscribe: %w", s.name, symbol, err) }
@@ -128,7 +135,7 @@ func (s *venueBookSupervisor) consumeSymbol(ctx context.Context, symbol string) 
 		select {
 		case err := <-readErr: return err
 		case payload := <-frames:
-			if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }
+			if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }; s.markMessage(symbol)
 		default:
 			goto synchronized
 		}
@@ -211,6 +218,20 @@ func (l *LiveAdapter) newMEXCPerpetualSupervisor() *venueBookSupervisor {
 		},
 		func(symbol string) { l.mu.RLock(); m:=l.mexcPerpBooks; l.mu.RUnlock(); if m!=nil { m.Invalidate(symbol) } },
 		[]byte(`{"method":"ping"}`))
+}
+
+func (s *venueBookSupervisor) setConnected(symbol string, connected bool) {
+	s.mu.Lock(); s.connected[symbol]=connected; if !connected { delete(s.lastMessage,symbol) }; s.mu.Unlock()
+}
+func (s *venueBookSupervisor) markMessage(symbol string) {
+	s.mu.Lock(); s.lastMessage[symbol]=time.Now().UTC(); s.mu.Unlock()
+}
+func (s *venueBookSupervisor) Healthy(maxAge time.Duration) bool {
+	s.mu.Lock(); defer s.mu.Unlock()
+	if len(s.workers)==0 { return true }
+	now:=time.Now()
+	for symbol:=range s.workers { if !s.connected[symbol] { return false }; last:=s.lastMessage[symbol]; if last.IsZero() || (maxAge>0 && now.Sub(last)>maxAge) { return false } }
+	return true
 }
 
 func decodeMEXCContractRows(rows [][]json.RawMessage) ([][]float64,error) {
