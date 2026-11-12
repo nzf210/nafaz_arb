@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from executor.supabase_common import _POSITION_NS, _SIDE_BY_LEG, _canonical_side, _ms_to_iso, _num, _role_catalogue, logger
+from executor.exchange_common import exchange_order_id_from
 
 
 
@@ -196,7 +197,7 @@ class SupabaseOrderMixin:
         """Upserts the order lifecycle row; individual fills come from venue trade history."""
         if not isinstance(order, dict):
             return False
-        exchange_order_id = str(order.get("id") or "") or None
+        exchange_order_id = exchange_order_id_from(order) or None
         key = client_order_id or exchange_order_id
         if not key:
             return False
