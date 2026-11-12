@@ -1,20 +1,41 @@
 # Exchange adapter boundaries
 
-The current `LiveAdapter` is a compatibility facade. Venue-specific behavior is
-still mixed in the `exchange` package; splitting files by API resource is not
-the same as isolating each CEX. Keep existing behavior stable while migrating
-toward the following structure:
+`LiveAdapter` remains the compatibility facade used by the scanner. Venue
+HTTP implementations are being moved into independent packages. Each package
+owns its payload mapping and returns shared `domain` models.
 
 ```text
 internal/exchange/
-  contracts/       # normalized interfaces and capability types
-  registry/        # venue discovery and adapter selection
-  indodax/         # Indodax spot markets, books, balances and order rules
-  tokocrypto/      # Tokocrypto spot markets, books and order rules
-  okx/             # OKX spot/perpetual, funding, books WS and rate limits
-  mexc/            # MEXC spot/perpetual, funding, books and rate limits
-  facade/          # temporary LiveAdapter compatibility wrapper
+  indodax/       # isolated spot markets, order books, USDT/IDR ticker
+  tokocrypto/    # isolated spot markets and order books
+  okx/           # next extraction: spot/perpetual, funding, books WS and limiter
+  mexc/          # next extraction: spot/perpetual, funding and books
+  contracts/     # future normalized interfaces and capability definitions
+  registry/      # future venue discovery and adapter selection
+  (facade)       # current LiveAdapter compatibility layer
 ```
+
+## Migration status
+
+### Isolated packages
+
+- `indodax.Client`: pair discovery, quantity increment normalization, spot
+  order-book depth and USDT/IDR ticker. Uses the shared HTTP transport from the
+  facade and has independent HTTP normalization tests.
+- `tokocrypto.Client`: symbol discovery, trading-enabled filtering, LOT_SIZE
+  normalization and spot order-book depth. Uses the shared HTTP transport and
+  has independent tests.
+- `LiveAdapter` delegates Indodax and Tokocrypto spot endpoints to these
+  packages. The facade retains health tracking, caching and scanner-facing
+  interfaces for backward compatibility.
+
+### Still in the compatibility facade
+
+- OKX: perpetual discovery, funding, REST order books, websocket book manager,
+  limiter and contract-size metadata.
+- MEXC: spot/perpetual discovery, funding, REST order books and contract-size
+  metadata.
+- Cross-venue market matching, health aggregation and shared websocket cache.
 
 ## Rules
 
@@ -30,16 +51,13 @@ internal/exchange/
   payload structs or secrets into domain or strategy packages.
 - Preserve fail-closed behavior for unknown position state, stale books,
   missing amount rules, sequence gaps and unverified execution capabilities.
-- Migrate one venue at a time behind the existing facade; do not remove the
-  facade until parity tests cover markets, books, funding, exposures and errors.
+- Keep `LiveAdapter` until parity tests cover markets, books, funding,
+  exposures, health and error classification for every migrated venue.
 
-## Current implementation inventory
+## Next migration order
 
-- Indodax and Tokocrypto: spot market discovery and spot order books.
-- OKX and MEXC: perpetual market discovery, funding and perpetual books.
-- MEXC: spot market books are also supported.
-- OKX: dedicated public books websocket manager and REST fallback.
-
-The next safe migration is to extract OKX and MEXC as independent read-only
-venue adapters first, then Indodax and Tokocrypto. Order execution should be a
-separate capability and must not be enabled merely because market data works.
+1. MEXC: spot and perpetual REST market-data client, then funding and depth.
+2. OKX: perpetual REST client, then limiter and websocket manager.
+3. Move cross-venue aggregation into a registry/composite adapter.
+4. Separate authenticated account and execution capabilities from read-only
+   market data. Do not enable order execution just because market data works.
