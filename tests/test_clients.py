@@ -249,8 +249,9 @@ async def test_tokocrypto_order_carries_registered_broker_prefix():
     # Tokocrypto rejects any non-alphanumeric character with error 3703, so the
     # broker id and the pair slug are stripped of punctuation on the wire.
     assert sent_id.startswith("xTKT5PX2F")
-    # The deterministic "{leg}{seq}" tail survives, so a retried submit presents
-    # the same id and the venue drops the duplicate instead of double-filling.
+    # The deterministic "{leg}{seq}" tail survives, so the same intent maps to
+    # the same wire id for reconciliation. Tokocrypto does NOT guarantee that
+    # duplicate client ids are rejected; ambiguous submits must never be retried.
     assert sent_id.endswith("entry1")
     # The venue rejects anything longer than 32 characters.
     assert len(sent_id) <= 32
