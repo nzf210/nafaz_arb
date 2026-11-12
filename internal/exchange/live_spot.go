@@ -22,54 +22,18 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 		l.mu.RUnlock()
 		return rate, nil
 	}
+	client := l.indodaxClient
 	l.mu.RUnlock()
-
-	endpoint := l.indodaxBaseURL + "/api/ticker/usdtidr"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return 0, fmt.Errorf("indodax usdtidr ticker req: %w", err)
+	if client == nil {
+		return 0, fmt.Errorf("indodax client is not configured")
 	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("indodax usdtidr ticker request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("indodax usdtidr ticker status: %d", resp.StatusCode)
-	}
-
-	var raw struct {
-		Ticker struct {
-			Buy  string `json:"buy"`
-			Sell string `json:"sell"`
-			Last string `json:"last"`
-		} `json:"ticker"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return 0, fmt.Errorf("decode indodax usdtidr: %w", err)
-	}
-
-	last, err := strconv.ParseFloat(raw.Ticker.Last, 64)
-	if err != nil || last <= 0 {
-		buy, _ := strconv.ParseFloat(raw.Ticker.Buy, 64)
-		sell, _ := strconv.ParseFloat(raw.Ticker.Sell, 64)
-		if buy > 0 && sell > 0 {
-			last = (buy + sell) / 2
-		}
-	}
-	if last <= 0 {
-		return 0, fmt.Errorf("invalid indodax usdtidr rate: %s", raw.Ticker.Last)
-	}
-
+	rate, err := client.USDTIDRRate(ctx)
+	if err != nil { return 0, err }
 	l.mu.Lock()
-	l.lastUSDTIDRRate = last
+	l.lastUSDTIDRRate = rate
 	l.lastUSDTIDRTime = time.Now().UTC()
 	l.mu.Unlock()
-
-	return last, nil
+	return rate, nil
 }
 
 // SpotMarkets discovers active spot pairs on Tokocrypto and Indodax (and MEXC Spot if target is mexc/all).
@@ -209,76 +173,22 @@ func (l *LiveAdapter) getFallbackTokocryptoSpot(err error) ([]domain.Market, err
 
 func (l *LiveAdapter) fetchIndodaxSpotMarkets(ctx context.Context) ([]domain.Market, error) {
 	l.mu.RLock()
-	if len(l.cachedIndodaxSpot) > 0 && time.Since(l.lastIndodaxSpotFetch) < 1*time.Hour {
+	if len(l.cachedIndodaxSpot) > 0 && time.Since(l.lastIndodaxSpotFetch) < time.Hour {
 		res := l.cachedIndodaxSpot
 		l.mu.RUnlock()
 		return res, nil
 	}
+	client := l.indodaxClient
 	l.mu.RUnlock()
-
-	endpoint := l.indodaxBaseURL + "/api/pairs"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return l.getFallbackIndodaxSpot(err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return l.getFallbackIndodaxSpot(fmt.Errorf("indodax pairs request: %w", err))
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return l.getFallbackIndodaxSpot(fmt.Errorf("indodax pairs status: %d", resp.StatusCode))
-	}
-
-	var indodaxPairs []struct {
-		ID                string  `json:"id"`
-		Symbol            string  `json:"symbol"`
-		BaseCurrency      string  `json:"base_currency"`   // quote currency (e.g. usdt, idr)
-		TradedCurrency    string  `json:"traded_currency"` // base currency (e.g. btc, eth)
-		QuantityIncrement float64 `json:"quantity_increment"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&indodaxPairs); err != nil {
-		return l.getFallbackIndodaxSpot(fmt.Errorf("decode indodax pairs: %w", err))
-	}
-
-	var markets []domain.Market
-	for _, p := range indodaxPairs {
-		if p.ID == "" || p.TradedCurrency == "" || p.BaseCurrency == "" {
-			continue
-		}
-		if p.QuantityIncrement <= 0 || math.IsNaN(p.QuantityIncrement) || math.IsInf(p.QuantityIncrement, 0) {
-			log.Printf("indodax: skipping pair %s with missing or invalid quantity_increment", p.ID)
-			continue
-		}
-		markets = append(markets, domain.Market{
-			Exchange:   "indodax",
-			Symbol:     p.ID,
-			BaseAsset:  strings.ToUpper(p.TradedCurrency),
-			QuoteAsset: strings.ToUpper(p.BaseCurrency),
-			MarketType: "SPOT",
-			Active:     true,
-			LotSize:    p.QuantityIncrement,
-			MinOrder:   p.QuantityIncrement,
-			AmountSpec: &domain.AmountSpec{
-				Unit:        "BASE",
-				Step:        p.QuantityIncrement,
-				Min:         p.QuantityIncrement,
-				BasePerUnit: 1,
-			},
-		})
-	}
-
+	if client == nil { return l.getFallbackIndodaxSpot(fmt.Errorf("indodax client is not configured")) }
+	markets, err := client.Markets(ctx)
+	if err != nil { return l.getFallbackIndodaxSpot(err) }
 	if len(markets) > 0 {
 		l.mu.Lock()
 		l.cachedIndodaxSpot = markets
 		l.lastIndodaxSpotFetch = time.Now().UTC()
 		l.mu.Unlock()
 	}
-
 	return markets, nil
 }
 
