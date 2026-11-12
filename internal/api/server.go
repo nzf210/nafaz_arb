@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nafaz/spot-perp-scanner/internal/analysis"
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/history"
@@ -35,6 +36,7 @@ type Server struct {
 	activeScans   int
 	scanInFlight  atomic.Bool
 	executor      *redishandler.Client
+	analysis      *analysis.Service
 }
 
 type OperationalStatus struct {
@@ -60,6 +62,13 @@ func New(s *scanner.Service, h *history.Store, c config.Config) *Server {
 // SetExecutorClient wires the Redis client used to read executor status.
 func (s *Server) SetExecutorClient(c *redishandler.Client) {
 	s.executor = c
+}
+
+// SetAnalysisService wires the independent, read-only multi-strategy analysis scanner.
+func (s *Server) SetAnalysisService(service *analysis.Service) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.analysis = service
 }
 
 // RegisterScanHook adds a callback invoked whenever a scan completes.
@@ -105,6 +114,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/health", s.health)
 	mux.HandleFunc("/api/v1/scanner/status", s.status)
 	mux.HandleFunc("/api/v1/scanner/scan", s.scan)
+	mux.HandleFunc("/api/v1/analysis/scan", s.analyze)
 	mux.HandleFunc("/api/v1/scanner/latest", s.latestScan)
 	mux.HandleFunc("/api/v1/scanner/opportunities/history", s.opportunityHistory)
 	mux.HandleFunc("/api/v1/scanner/opportunities/metrics", s.opportunityMetrics)
