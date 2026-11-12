@@ -279,6 +279,7 @@ func (l *LiveAdapter) EnableOKXBookWebSocket(ctx context.Context, wsURL string, 
 	l.mu.Lock()
 	if l.okxVenueBooks != nil { l.mu.Unlock(); return }
 	if strings.TrimSpace(wsURL) == "" { wsURL = "wss://ws.okx.com:8443/ws/v5/public" }
+	if staleAfter <= 0 { staleAfter = 5 * time.Second }
 	manager := okx.NewBookManager(wsURL, nil, func(symbol string) float64 {
 		l.mu.RLock(); defer l.mu.RUnlock()
 		if v:=l.contractSizes[symbol]; v>0 { return v }
@@ -288,6 +289,7 @@ func (l *LiveAdapter) EnableOKXBookWebSocket(ctx context.Context, wsURL string, 
 	l.okxWSMaxAge = staleAfter
 	l.okxVenueBooks = manager
 	l.mu.Unlock()
+	manager.SetHTTPClient(wsHTTPClient())
 	manager.Start(ctx)
 }
 
