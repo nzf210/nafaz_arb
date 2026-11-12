@@ -40,3 +40,13 @@ every symbol is synchronized.
 JSON compression is explicitly disabled in the subscription. Do not decode
 compressed frames as JSON. No authenticated account or order endpoint belongs
 in this package.
+
+
+## Spot market data
+
+`Client.SpotMarkets` reads `/api/v3/exchangeInfo`, keeps only active
+symbols, and normalizes `PRICE_FILTER` and `LOT_SIZE` into tick/amount
+metadata. Spot books use `/api/v3/depth` and preserve base-asset quantity.
+The venue adapter exposes these spot markets to the multi-venue analysis
+scanner; unsupported or missing lot rules leave execution disabled for that
+instrument.
