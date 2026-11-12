@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -28,6 +29,7 @@ type venueBookSupervisor struct {
 	ctx context.Context
 	cancel context.CancelFunc
 	workers map[string]context.CancelFunc
+	wg sync.WaitGroup
 	wsURL func(string) string
 	subscribe func(string) []byte
 	snapshot func(context.Context, string) error
@@ -65,7 +67,8 @@ func (s *venueBookSupervisor) SetSymbols(symbols []string) {
 		if _, exists := s.workers[symbol]; exists { continue }
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.workers[symbol] = cancel
-		go s.runSymbol(ctx, symbol)
+		s.wg.Add(1)
+		go func() { defer s.wg.Done(); s.runSymbol(ctx, symbol) }()
 	}
 	s.mu.Unlock()
 }
@@ -78,6 +81,7 @@ func (s *venueBookSupervisor) Stop() {
 	s.ctx = nil
 	s.mu.Unlock()
 	if cancel != nil { cancel() }
+	s.wg.Wait()
 }
 
 func (s *venueBookSupervisor) runSymbol(ctx context.Context, symbol string) {
@@ -199,7 +203,8 @@ func (l *LiveAdapter) newMEXCPerpetualSupervisor() *venueBookSupervisor {
 			return manager.Bootstrap(symbol,mexc.PerpetualDepthSnapshot{Version:raw.Data.Version,Bids:bids,Asks:asks,Timestamp:at},size)
 		},
 		func(symbol string,payload []byte) error {
-			if strings.Contains(string(payload),"\"channel\":\"pong\"") { return nil }
+			var envelope struct { Channel string `json:"channel"` }; _ = json.Unmarshal(payload,&envelope)
+			if envelope.Channel != "" && envelope.Channel != "push.depth" { return nil }
 			l.mu.RLock(); size:=l.contractSizes[symbol]; manager:=l.mexcPerpBooks; l.mu.RUnlock()
 			update,err:=mexc.DecodePerpetualDepthUpdate(payload,size);if err!=nil{return err}
 			if update.Symbol!=symbol{return nil}; _,err=manager.Apply(update);return err
