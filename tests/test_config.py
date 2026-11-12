@@ -229,6 +229,25 @@ def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
     assert cfg.indodax_maker_refresh_cooldown_seconds == 15
 
 
+def test_tokocrypto_broker_id_env_overrides_config_without_api_key_env(monkeypatch):
+    from executor.config import ExchangeCredentials
+
+    cfg = ExecutorConfig(local_exchange_name="tokocrypto")
+    cfg.exchanges["tokocrypto"] = ExchangeCredentials(
+        api_key="from-config",
+        api_secret="secret-from-config",
+        options={"broker_id": "old-prefix"},
+    )
+    monkeypatch.delenv("TOKOCRYPTO_API_KEY", raising=False)
+    monkeypatch.setenv("TOKOCRYPTO_BROKER_ID", "registered-prefix")
+
+    cfg._apply_env()
+
+    assert cfg.exchanges["tokocrypto"].api_key == "from-config"
+    assert cfg.exchanges["tokocrypto"].options["broker_id"] == "registered-prefix"
+    assert cfg.local_credentials.options["broker_id"] == "registered-prefix"
+
+
 def test_live_tokocrypto_requires_registered_broker_id():
     from executor.config import ExchangeCredentials, SupabaseConfig
 
