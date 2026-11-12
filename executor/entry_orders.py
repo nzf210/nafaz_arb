@@ -268,14 +268,29 @@ class EntryOrderManagementMixin:
     def _maker_quote_snapshot_values(snapshot: dict, order_info: dict):
         timestamp_ms = int(snapshot.get("timestamp_ms", 0) or 0)
         now_ms = int(time.time() * 1000)
+        quote_asset = str(order_info.get("quote_asset") or "").strip().upper()
+        if not quote_asset:
+            sym = str(order_info.get("symbol") or "").upper()
+            if "/" in sym:
+                quote_asset = sym.rsplit("/", 1)[-1]
+            elif "_" in sym:
+                quote_asset = sym.rsplit("_", 1)[-1]
+            else:
+                quote_asset = "IDR"
+        fx_rate = float(
+            snapshot.get("usdt_idr_rate", 0.0)
+            or order_info.get("usdt_idr_rate", 0.0)
+        )
+        local_bid = float(snapshot.get("local_best_bid", 0.0) or 0.0)
+        local_ask = float(snapshot.get("local_best_ask", 0.0) or 0.0)
+        if quote_asset in ("USDT", "USDC") and fx_rate > 0:
+            local_bid *= fx_rate
+            local_ask *= fx_rate
         values = {
-            "local_bid": float(snapshot.get("local_best_bid", 0.0) or 0.0),
-            "local_ask": float(snapshot.get("local_best_ask", 0.0) or 0.0),
+            "local_bid": local_bid,
+            "local_ask": local_ask,
             "global_bid": float(snapshot.get("global_best_bid_usdt", 0.0) or 0.0),
-            "fx_rate": float(
-                snapshot.get("usdt_idr_rate", 0.0)
-                or order_info.get("usdt_idr_rate", 0.0)
-            ),
+            "fx_rate": fx_rate,
             "current_price": float(order_info.get("price", 0.0) or 0.0),
             "tick": float(order_info.get("tick_size", 0.0) or 0.0),
             "min_spread": float(

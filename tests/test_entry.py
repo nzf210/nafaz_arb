@@ -769,3 +769,94 @@ async def test_spot_submit_timeout_recovers_existing_order_by_client_id(
     assert engine.pending_entry_orders[pair_tag]["client_order_id"] == submit_calls[0]
     assert engine.pending_entry_orders[pair_tag]["order_id"] == mock_client.placed_buys[0]["id"]
     assert engine.states[pair_tag] == PositionState.ENTRY_PENDING
+
+
+@pytest.mark.asyncio
+async def test_fresh_maker_quote_scales_usdt_local_book_to_idr(engine, fake_redis):
+    """USDT spot live snapshots must be converted to IDR before comparing against IDR-normalized tick/price."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    now_ms = int(time.time() * 1000)
+    await fake_redis.set(
+        f"arb:live_price:{pair_tag}",
+        json.dumps({
+            "local_best_bid": 0.0043,
+            "local_best_ask": 0.0044,
+            "global_best_bid_usdt": 0.0045,
+            "global_best_ask_usdt": 0.0046,
+            "usdt_idr_rate": 18000.0,
+            "timestamp_ms": now_ms,
+        }),
+    )
+    order_info = {
+        "symbol": "toko:ATH_USDT",
+        "quote_asset": "USDT",
+        "price": 75.6,  # 0.0042 * 18000
+        "tick_size": 1.8,  # 0.0001 * 18000
+        "usdt_idr_rate": 18000.0,
+        "min_entry_spread_pct": 0.2,
+    }
+    quote = await engine._fresh_maker_quote(pair_tag, order_info)
+    assert quote is not None
+    assert quote["candidate_price"] > 70.0
+    assert quote["local_bid"] == pytest.approx(0.0043 * 18000.0)
+
+
+@pytest.mark.asyncio
+async def test_early_spot_slot_limit_skips_rest_calls(engine, fake_redis, mock_client):
+    """When venue spot slots are full, reject immediately without burning exchange REST calls."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.max_open_spot_orders_per_exchange = {"tokocrypto": 1}
+    engine.pending_entry_orders["tokocrypto:toko:soon_idr__okx:soon_usdt_swap"] = {
+        "local_exchange": "tokocrypto"
+    }
+    calls = []
+
+    async def fail_if_called(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("REST probe must not run when venue slot limit is already reached")
+
+    mock_client.fetch_global_ticker = fail_if_called
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    payload["pair_info"]["local_exchange"] = "tokocrypto"
+    payload["pair_info"]["global_exchange"] = "okx"
+    payload["pair_info"]["local_symbol"] = "toko:ATH_USDT"
+    payload["pair_info"]["global_symbol"] = "ATH-USDT-SWAP"
+    payload["pair_info"]["quote_asset"] = "USDT"
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert calls == []
+    assert mock_client.placed_buys == []
+    assert pair_tag not in engine._pair_halted
+
+
+@pytest.mark.asyncio
+async def test_prepare_entry_sizing_fetches_balance_once(engine, fake_redis, mock_client):
+    """_prepare_entry_sizing must reuse balance snapshot for dual-leg funding preflight."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.mock_mode = False
+    balance_calls = 0
+
+    async def counted_get_balances(**kwargs):
+        nonlocal balance_calls
+        balance_calls += 1
+        return {
+            "spot_available": 50.0,
+            "futures_available": 100.0,
+            "spot_total": 50.0,
+            "futures_total": 100.0,
+        }
+
+    mock_client.get_balances = counted_get_balances
+    payload_dict = _fresh_signal_payload(int(time.time() * 1000))
+    payload_dict["pair_info"]["local_exchange"] = "tokocrypto"
+    payload_dict["pair_info"]["global_exchange"] = "okx"
+    from executor.models import ExecutorPayload
+    payload = ExecutorPayload.from_dict(payload_dict)
+
+    sizing = await engine._prepare_entry_sizing(
+        pair_tag, payload, payload.pair_info, payload.execution_directives
+    )
+    assert sizing is not None
+    assert balance_calls == 1

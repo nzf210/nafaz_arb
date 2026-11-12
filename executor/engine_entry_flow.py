@@ -210,6 +210,16 @@ class EngineEntryFlowMixin:
         if await self._is_stale_or_duplicate_signal(pair_tag, payload):
             return
 
+        exchange = str(payload.pair_info.local_exchange or "").strip().lower()
+        current_open = self._spot_open_order_count(exchange)
+        max_open = self._spot_order_limit(exchange)
+        if current_open >= max_open:
+            logger.info(
+                "[Entry] skipping %s: %s already has %d/%d open spot positions or pending entries",
+                pair_tag, exchange, current_open, max_open,
+            )
+            return
+
         if not await self._validate_entry_spread(pair_tag, payload):
             return
 

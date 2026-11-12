@@ -363,7 +363,7 @@ class RiskStateMixin:
 
     def _record_pair_failure(self, pair_tag: str, reason: str) -> None:
         """Counts failures per pair and blacklists pair for 24h when threshold reached."""
-        if not pair_tag:
+        if not pair_tag or reason == "SPOT_OPEN_ORDER_LIMIT_REACHED":
             return
         threshold = int(getattr(self.config, "max_pair_failure_threshold", 2) or 0)
         if threshold <= 0:

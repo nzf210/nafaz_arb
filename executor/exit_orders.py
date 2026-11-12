@@ -231,14 +231,23 @@ class ExitOrderManagementMixin:
         if raw:
             try:
                 snapshot = json.loads(raw)
+                raw_bid = float(snapshot.get("local_best_bid", 0.0) or 0.0)
+                raw_ask = float(snapshot.get("local_best_ask", 0.0) or 0.0)
                 if not helpers.snapshot_is_stale(snapshot):
-                    local_bid = float(
-                        snapshot.get("local_best_bid", pos.entry_price_idr)
-                    )
-                    local_ask = float(snapshot.get("local_best_ask", 0.0))
+                    rate = float(snapshot.get("usdt_idr_rate", 0.0) or 0.0)
+                    raw_sym = str(pos.symbol or "").upper()
+                    is_usdt_quote = raw_sym.endswith(("_USDT", "/USDT", "_USDC", "/USDC"))
+                    if is_usdt_quote and rate > 0:
+                        local_bid = raw_bid * rate if raw_bid > 0 else pos.entry_price_idr
+                        local_ask = raw_ask * rate
+                    else:
+                        local_bid = raw_bid if raw_bid > 0 else pos.entry_price_idr
+                        local_ask = raw_ask
                 if hasattr(self.client, "update_market_price"):
                     self.client.update_market_price(
-                        pos.symbol, local_bid, local_ask
+                        pos.symbol,
+                        raw_bid if raw_bid > 0 else pos.entry_price_idr,
+                        raw_ask,
                     )
             except Exception:
                 pass

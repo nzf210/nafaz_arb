@@ -23,7 +23,7 @@ class SupabaseConfig:
 @dataclass
 class ExecutorConfig:
     redis_url: str = "redis://localhost:6380/0"
-    max_stale_latency_ms: int = 500
+    max_stale_latency_ms: int = 2500
     min_partial_fill_usd: float = 10.0
     exit_price_move_threshold: float = 0.0015  # 0.15%
     max_order_ttl_seconds: int = 120  # Max TTL for pending maker entry orders before cancel

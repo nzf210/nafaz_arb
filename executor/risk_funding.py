@@ -118,6 +118,8 @@ class RiskFundingMixin:
             mock_mode,
         )
         if balances is not None:
+            if isinstance(getattr(self, "_balance_snapshots", None), dict):
+                self._balance_snapshots[pair_tag] = dict(balances)
             avail_spot = float(balances["spot_available"])
             avail_fut = float(balances["futures_available"])
             usable_capital = min(avail_spot, avail_fut)
@@ -158,11 +160,14 @@ class RiskFundingMixin:
         Returns False (and publishes the reason) when either leg is short.
         """
         try:
-            balances = await self._get_balance_snapshot(
-                pair_tag=pair_tag,
-                pair_info=pair_info,
-                usdt_idr_rate=usdt_idr_rate,
-            )
+            snapshots = getattr(self, "_balance_snapshots", None)
+            balances = snapshots.pop(pair_tag, None) if isinstance(snapshots, dict) else None
+            if balances is None:
+                balances = await self._get_balance_snapshot(
+                    pair_tag=pair_tag,
+                    pair_info=pair_info,
+                    usdt_idr_rate=usdt_idr_rate,
+                )
         except Exception:
             # A balance probe failure must not silently pass the gate; surface it
             # and let the caller decide, matching the pre-existing fail-open on

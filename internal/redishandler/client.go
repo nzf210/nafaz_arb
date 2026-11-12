@@ -23,7 +23,7 @@ const (
 	// older than this is stale by definition: the executor pegs a maker order
 	// against a quote that no longer exists, so it must expire rather than be
 	// replayed on the next notify/pubsub restart.
-	SignalTTL              = 3 * time.Second
+	SignalTTL              = 10 * time.Second
 	ChannelSignalNotify    = "arb:signal_notify"
 	ChannelEmergencyCancel = "arb:emergency_cancel"
 	ChannelForceClose      = "arb:force_close"
@@ -226,7 +226,7 @@ func (c *Client) PublishSignal(ctx context.Context, payload domain.ExecutorPaylo
 	profit := payload.ExecutionDirectives.EstimatedNetProfitUSDT
 	if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
 		pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
-		pipe.Expire(ctx, KeySignalPriority, SignalTTL+2*time.Second)
+		pipe.Expire(ctx, KeySignalPriority, SignalTTL+5*time.Second)
 	}
 	pipe.Set(ctx, signalKey, signalData, SignalTTL)
 	pipe.Publish(ctx, ChannelSignalNotify, tag)
@@ -286,7 +286,7 @@ func (c *Client) ExecuteBatchUpdates(ctx context.Context, updates []PairUpdate) 
 				profit := u.Payload.ExecutionDirectives.EstimatedNetProfitUSDT
 				if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
 					pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
-					pipe.Expire(ctx, KeySignalPriority, SignalTTL+2*time.Second)
+					pipe.Expire(ctx, KeySignalPriority, SignalTTL+5*time.Second)
 				}
 				pipe.Set(ctx, signalKey, signalData, SignalTTL)
 				pipe.Publish(ctx, ChannelSignalNotify, tag)
