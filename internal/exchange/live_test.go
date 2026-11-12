@@ -280,7 +280,7 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 	defer indodaxServer.Close()
 
 	tokoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/open/v1/market/depth" {
+		if r.URL.Path == "/api/v3/depth" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{
 				"code": 0,
