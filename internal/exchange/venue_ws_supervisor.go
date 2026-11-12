@@ -150,7 +150,7 @@ synchronized:
 			case <-ctx.Done(): return ctx.Err()
 			case err := <-readErr: return err
 			case payload := <-frames:
-				if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }
+				if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }; s.markMessage(symbol)
 			case <-ticker.C:
 				if err := conn.Write(ctx, websocket.MessageText, s.heartbeat); err != nil { return fmt.Errorf("%s %s heartbeat: %w", s.name, symbol, err) }
 			}
@@ -161,7 +161,7 @@ synchronized:
 		case <-ctx.Done(): return ctx.Err()
 		case err := <-readErr: return err
 		case payload := <-frames:
-			if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }
+			if err := s.apply(symbol, payload); err != nil { return fmt.Errorf("%s %s sequence/decode: %w", s.name, symbol, err) }; s.markMessage(symbol)
 		}
 	}
 }
