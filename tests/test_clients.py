@@ -997,6 +997,50 @@ async def test_client_id_lookup_falls_back_when_venue_rejects_page_limit():
 
 
 @pytest.mark.asyncio
+async def test_tokocrypto_archive_signs_the_venue_market_id_not_the_unified_symbol():
+    """A unified symbol puts a slash in the signed query; Tokocrypto answers 3702."""
+    from executor.exchange_client import ExchangeClient
+
+    logical_id = "toko-ath-entry-1"
+    seen_symbols = []
+
+    class TokoSpot:
+        id = "tokocrypto"
+
+        def market(self, symbol):
+            return {"id": "ATH_USDT", "base": "ATH", "quote": "USDT"}
+
+        async def fetch_open_orders(self, symbol):
+            return []
+
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            return []
+
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            return []
+
+        async def privateGetOpenV1Orders(self, params):
+            seen_symbols.append(params["symbol"])
+            if "/" in params["symbol"]:
+                raise RuntimeError(
+                    'tokocrypto {"code":3702,"msg":"Invalid signature."}'
+                )
+            # Already-parsed shape: the venue's own parse_order does the mapping.
+            return {"data": {"list": [{
+                "id": "toko-77", "clientOrderId": logical_id,
+                "symbol": "ATH_USDT", "side": "buy", "type": "limit",
+                "amount": 1.0, "filled": 0.0, "remaining": 1.0, "status": "open",
+            }]}}
+
+    client = ExchangeClient(TokoSpot(), object())
+    recovered = await client.fetch_local_order_by_client_id(logical_id, "ATH/USDT")
+
+    assert seen_symbols == ["ATH_USDT"]
+    assert recovered is not None
+    assert recovered["id"] == "toko-77"
+
+
+@pytest.mark.asyncio
 async def test_binance_usdm_recovery_uses_all_order_history_and_exact_client_id():
     from executor.exchange_client import ExchangeClient
 

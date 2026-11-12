@@ -188,6 +188,24 @@ async def test_restart_with_no_positions_and_no_records_yields_orphan(fake_redis
     assert PAIR_TAG not in engine.pending_entry_orders
 
 @pytest.mark.asyncio
+async def test_pair_incident_without_position_is_cleared_instead_of_stalling_forever(fake_redis):
+    """The halt used to outlive the order: no position means no clear path existed."""
+    engine = await _build(fake_redis, MockExchangeClient())
+    engine.active_positions.clear()
+    engine.pending_entry_orders.clear()
+    engine.states[PAIR_TAG] = PositionState.RECONCILIATION_REQUIRED
+    engine._recovery_pending_orders = []
+    engine._recovery_scope_halts[PAIR_TAG] = "unverifiable order after restart"
+
+    cleared = await engine._clear_resolved_pair_failure(PAIR_TAG)
+
+    assert cleared is True
+    assert engine.states[PAIR_TAG] == PositionState.IDLE
+    assert PAIR_TAG not in engine._recovery_scope_halts
+    assert PAIR_TAG not in engine._failure_reasons
+
+
+@pytest.mark.asyncio
 async def test_restart_links_exchange_order_to_position_by_client_id(fake_redis):
     """An exchange order is linked to its position through the client order id."""
     client = MockExchangeClient()

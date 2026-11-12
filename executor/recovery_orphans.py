@@ -233,7 +233,10 @@ class RecoveryOrphanMixin:
             self._halt_exposure_scope("*", f"full reconciliation retry failed: {type(exc).__name__}: {exc}")
 
         for pair_tag in touched_pairs:
-            if pair_tag in verified_positions:
+            # A pair with no restored position has nothing to verify against the
+            # venue, so it never appears in ``verified_positions``. Attempt the
+            # clear anyway: the function itself refuses when exposure remains.
+            if pair_tag in verified_positions or pair_tag not in self.active_positions:
                 await self._clear_resolved_pair_failure(pair_tag)
 
         self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
@@ -270,7 +273,23 @@ class RecoveryOrphanMixin:
         if any(scope == pair_tag for scope in getattr(self.trade_fill_reconciliation, "_reported", {}).values()):
             return False
         position = self.active_positions.get(pair_tag)
-        if position is None or self.redis is None:
+        if position is None:
+            # Nothing is held or resting for this pair, so there is no state to
+            # restore -- only the incident itself to close. Without this the
+            # record (and its persisted halt) outlived the order forever.
+            if not self._persist_risk_state(
+                "position_failure", scope="position", pair_key=pair_tag, resolved=True
+            ):
+                if not getattr(self.config, "mock_mode", False):
+                    return False
+            self.states[pair_tag] = PositionState.IDLE
+            self._failure_reasons.pop(pair_tag, None)
+            self._clear_exposure_halt(pair_tag, "no held or resting exposure remains")
+            logger.warning(
+                "[Recovery] reconciliation incident cleared for %s (no exposure)", pair_tag
+            )
+            return True
+        if self.redis is None:
             return False
 
         restored_state = PositionState.EXIT_PENDING if pair_tag in self.pending_exit_orders else PositionState.HEDGED_ACTIVE

@@ -341,6 +341,25 @@ def futures_position_side_params(exchange: Any, position_side: str) -> Dict[str,
         raise ValueError(f"unsupported futures position side: {position_side}")
     return {"posSide": side}
 
+def _tokocrypto_wire_symbol(venue: Any, symbol: str) -> str:
+    """Translates a CCXT unified symbol to the venue's own market id.
+
+    ``/open/v1/orders`` signs its query string, and a unified symbol such as
+    ``ATH/USDT`` puts a literal slash in the signature payload. Tokocrypto
+    answers that with error 3702 "Invalid signature", which reads like a
+    credential problem but is really a rejected symbol encoding -- so the
+    request must carry the raw id (``ATH_USDT``).
+    """
+    if not symbol or "/" not in symbol:
+        return symbol
+    try:
+        market = venue.market(symbol)
+    except Exception:
+        market = None
+    raw = market.get("id") if isinstance(market, dict) else None
+    return str(raw) if raw else symbol.replace("/", "")
+
+
 def _order_archive_page_reader(exchange: Any, symbol: str) -> Any:
     """Recent-order reader for venues whose history ignores the client id filter.
 
@@ -360,7 +379,7 @@ def _order_archive_page_reader(exchange: Any, symbol: str) -> Any:
     ) -> tuple:
         # ``fromId``/``direct`` page backwards from a known order id, so one
         # extra row repeats at the boundary; the pager de-duplicates by id.
-        request = {"symbol": symbol, "limit": int(page_size)}
+        request = {"symbol": _tokocrypto_wire_symbol(venue, symbol), "limit": int(page_size)}
         if cursor:
             request["fromId"] = str(cursor)
             request["direct"] = "prev"

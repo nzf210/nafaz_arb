@@ -5,6 +5,8 @@ import time
 
 import pytest
 
+from executor.models import PositionState
+
 from tests.conftest import _entry_order_info
 
 
@@ -132,6 +134,28 @@ async def test_spot_open_order_cap_counts_positions_and_pending_entries_per_venu
     assert engine._spot_open_order_count("tokocrypto") == 1
     assert engine._spot_order_limit("indodax") == 3
     assert engine._spot_order_limit("tokocrypto") == 2
+
+
+def test_spot_open_order_cap_ignores_reconciliation_state_without_exposure(engine):
+    """A pair stuck in RECONCILIATION_REQUIRED must not burn a slot forever."""
+    from types import SimpleNamespace
+
+    engine.config.max_open_spot_orders_per_exchange = {"indodax": 2}
+    for tag in ("indodax:btc_idr", "indodax:eth_idr"):
+        engine.states[tag] = PositionState.RECONCILIATION_REQUIRED
+        engine._pair_infos[tag] = SimpleNamespace(
+            local_exchange="indodax", global_exchange="okx"
+        )
+
+    assert engine.active_positions == {}
+    assert engine.pending_entry_orders == {}
+    assert engine._spot_open_order_count("indodax") == 0
+
+    # Real exposure still counts.
+    engine.active_positions["indodax:btc_idr"] = SimpleNamespace(
+        local_exchange="indodax", qty=0.5
+    )
+    assert engine._spot_open_order_count("indodax") == 1
 
 
 def test_spot_order_limit_update_normalizes_exchange_and_rejects_invalid_values(engine):

@@ -153,9 +153,13 @@ class EngineEntryFlowMixin:
             pair for pair, order in self.pending_entry_orders.items()
             if pair_exchange(pair, order) == venue
         }
+        # RECONCILIATION_REQUIRED is deliberately absent: a pair in that state
+        # with no position and no pending order has nothing outstanding on the
+        # venue, and counting it burned a slot forever because the incident can
+        # never be cleared without a position. Any real exposure is already
+        # covered by ``active_pairs``/``pending_pairs`` above.
         counted_states = {
-            "ENTRY_PENDING", "ENTRY_PARTIAL", "HEDGED_ACTIVE",
-            "EXIT_PENDING", "RECONCILIATION_REQUIRED",
+            "ENTRY_PENDING", "ENTRY_PARTIAL", "HEDGED_ACTIVE", "EXIT_PENDING",
         }
         lifecycle_pairs = {
             pair for pair, state in self.states.items()
