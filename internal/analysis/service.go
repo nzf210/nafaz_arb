@@ -113,12 +113,18 @@ func (s *Service) Analyze(ctx context.Context) (Result,error) {
 			if !strings.EqualFold(book.Exchange,market.Exchange)||!strings.EqualFold(book.Symbol,market.Symbol) {
 				mu.Lock();result.Errors=append(result.Errors,fmt.Sprintf("%s:%s returned mismatched order book identity",market.Exchange,market.Symbol));mu.Unlock();return
 			}
+			if !validAnalysisBook(book, snapshot.At, s.cfg.MaxBookAge) {
+				mu.Lock();result.Errors=append(result.Errors,fmt.Sprintf("%s:%s returned a stale or invalid order book",market.Exchange,market.Symbol));mu.Unlock();return
+			}
 			fee,ok,feeErr:=s.resolveFee(ctx,market.Exchange,market.BaseAsset+"/"+market.QuoteAsset)
 			if feeErr!=nil {
 				mu.Lock();result.Errors=append(result.Errors,fmt.Sprintf("%s:%s fee profile: %v",market.Exchange,market.Symbol,feeErr));mu.Unlock();return
 			}
 			if !ok {
 				mu.Lock();result.Errors=append(result.Errors,fmt.Sprintf("%s:%s has no fresh verified exchange fee profile",market.Exchange,market.Symbol));mu.Unlock();return
+			}
+			if !validPercentage(fee.TakerPct) || !validPercentage(fee.MakerPct) {
+				mu.Lock();result.Errors=append(result.Errors,fmt.Sprintf("%s:%s returned invalid fee percentages",market.Exchange,market.Symbol));mu.Unlock();return
 			}
 			mu.Lock()
 			snapshot.OrderBooks[BookKey(market.Exchange,market.Symbol)]=book
@@ -164,4 +170,12 @@ func (s *Service) selectCrossVenueMarkets(markets []domain.Market) []domain.Mark
 		}
 	}
 	return selected
+}
+
+func validAnalysisBook(book domain.OrderBook, at time.Time, maxAge time.Duration) bool {
+	stamp:=book.ReceivedAt
+	if stamp.IsZero(){stamp=book.Timestamp}
+	if stamp.IsZero()||stamp.After(at.Add(time.Second))||at.Sub(stamp)>maxAge||len(book.Bids)==0||len(book.Asks)==0{return false}
+	bid,ask:=book.Bids[0],book.Asks[0]
+	return bid.Price>0&&ask.Price>0&&bid.Quantity>0&&ask.Quantity>0&&bid.Price<ask.Price
 }
