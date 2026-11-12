@@ -320,17 +320,19 @@ Every numeric executor setting is range-checked at startup by
 warning is printed, and a `0` that disables a safety net (slippage guard, fee
 buffer) is called out explicitly so it is a visible choice rather than an accident.
 
-Order placement sends a deterministic `clientOrderId` (`{pair}-{leg}-{seq}`) on
-every leg so a retried submit is rejected by the venue instead of double-filling.
-The sequence is seeded from wall-clock time at startup, so ids never collide
-across process restarts. Binance Cloud venues such as Tokocrypto validate the id
-against the broker id registered to the account and reject anything else with
-error `3703 Invalid client ID`. That broker id is issued per account, so it is
-configuration, not code: set `exchanges.tokocrypto.options.broker_id` in
-`config.json` or `TOKOCRYPTO_BROKER_ID` in the environment. The executor then
-prepends it at submission time and trims the pair slug (never the
-`-{leg}-{seq}` tail) to stay within the venue's 36-character limit. When it is
-unset, no id is sent and ccxt mints a venue-native one, which the venue accepts.
+Order placement records a deterministic logical `clientOrderId`
+(`{pair}-{leg}-{seq}`) in the durable journal before it contacts a venue. This
+is a recovery correlation key, not a universal idempotency guarantee: in
+particular, Tokocrypto explicitly does not enforce `clientId` uniqueness.
+Therefore an ambiguous submit (timeout or lost response) is reconciled against
+the venue before any retry; it is never blindly resubmitted.
+
+Tokocrypto requires the account-issued Binance Cloud broker prefix. Set
+`exchanges.tokocrypto.options.broker_id` in `config.json` or
+`TOKOCRYPTO_BROKER_ID` in the environment. The executor preserves that prefix
+verbatim and builds a compact suffix within Tokocrypto's 32-character client-id
+budget. LIVE validation refuses to start Tokocrypto execution when the broker
+prefix is missing; it does not silently fall back to a random CCXT-generated id.
 
 
 ## Supabase Database
