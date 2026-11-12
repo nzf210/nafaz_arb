@@ -16,12 +16,12 @@ import (
 
 type Registry struct {
 	mu sync.RWMutex
-	adapters map[string]contracts.ReadOnlyAdapter
+	adapters map[string]contracts.MarketDataAdapter
 }
 
-func New() *Registry { return &Registry{adapters:make(map[string]contracts.ReadOnlyAdapter)} }
+func New() *Registry { return &Registry{adapters:make(map[string]contracts.MarketDataAdapter)} }
 
-func (r *Registry) Register(name string, adapter contracts.ReadOnlyAdapter) error {
+func (r *Registry) Register(name string, adapter contracts.MarketDataAdapter) error {
 	name=strings.ToLower(strings.TrimSpace(name))
 	if name==""||adapter==nil{return fmt.Errorf("exchange name and adapter are required")}
 	r.mu.Lock();defer r.mu.Unlock()
@@ -30,13 +30,13 @@ func (r *Registry) Register(name string, adapter contracts.ReadOnlyAdapter) erro
 	return nil
 }
 
-func (r *Registry) Replace(name string, adapter contracts.ReadOnlyAdapter) error {
+func (r *Registry) Replace(name string, adapter contracts.MarketDataAdapter) error {
 	name=strings.ToLower(strings.TrimSpace(name))
 	if name==""||adapter==nil{return fmt.Errorf("exchange name and adapter are required")}
 	r.mu.Lock();r.adapters[name]=adapter;r.mu.Unlock();return nil
 }
 
-func (r *Registry) Get(name string)(contracts.ReadOnlyAdapter,bool){
+func (r *Registry) Get(name string)(contracts.MarketDataAdapter,bool){
 	r.mu.RLock();a,ok:=r.adapters[strings.ToLower(strings.TrimSpace(name))];r.mu.RUnlock();return a,ok
 }
 
@@ -49,7 +49,7 @@ func (r *Registry) Names()[]string{
 // symbol. It deliberately does not expose order execution.
 type Composite struct{ registry *Registry }
 func NewComposite(r *Registry)*Composite{return &Composite{registry:r}}
-func (c *Composite) adapter(name string)(contracts.ReadOnlyAdapter,error){
+func (c *Composite) adapter(name string)(contracts.MarketDataAdapter,error){
 	if c==nil||c.registry==nil{return nil,fmt.Errorf("exchange registry is not configured")}
 	a,ok:=c.registry.Get(name);if !ok { a,ok=c.registry.Get("default") };if !ok{return nil,fmt.Errorf("exchange %q is not registered",name)};return a,nil
 }
