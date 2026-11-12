@@ -104,15 +104,14 @@ class ExchangeTradeMixin:
         return False
 
     @staticmethod
-    def _trade_fee_payload(trade: dict, info: dict):
+    def _trade_fee_components(trade: dict, info: dict) -> list:
+        """Normalize every commission component without combining currencies."""
+        fee_rows = trade.get("fees")
+        if isinstance(fee_rows, list) and fee_rows:
+            return [row for row in fee_rows if isinstance(row, dict)]
         fee = trade.get("fee")
-        if (
-            not isinstance(fee, dict)
-            or fee.get("cost") is None
-            or not fee.get("currency")
-        ):
-            fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
-            fee = fee_rows[0] if fee_rows and isinstance(fee_rows[0], dict) else {
+        if not isinstance(fee, dict) or fee.get("cost") is None:
+            fee = {
                 "cost": trade.get(
                     "commission", info.get("commission", info.get("execFee"))
                 ),
@@ -121,7 +120,13 @@ class ExchangeTradeMixin:
                     info.get("commissionAsset", info.get("feeCurrency")),
                 ),
             }
-        return fee if isinstance(fee, dict) else None
+        return [fee] if isinstance(fee, dict) else []
+
+    @classmethod
+    def _trade_fee_payload(cls, trade: dict, info: dict):
+        """Return a scalar fee only when it has one unambiguous currency."""
+        components = cls._trade_fee_components(trade, info)
+        return components[0] if len(components) == 1 else None
 
     @staticmethod
     def _trade_order_identity(trade: dict, info: dict) -> tuple:
@@ -192,11 +197,12 @@ class ExchangeTradeMixin:
         fill["amount"] = qty
         fill["price"] = price
         fill["cost"] = cost
-        fill["fee"] = self._trade_fee_payload(trade, info)
+        fill["fees"] = self._trade_fee_components(trade, info)
+        fill["fee"] = fill["fees"][0] if len(fill["fees"]) == 1 else None
         fill["raw_payload"] = {
             "info": info,
             "fee": fill["fee"],
-            "fees": trade.get("fees") if isinstance(trade.get("fees"), list) else [],
+            "fees": fill["fees"],
         }
         fill["timestamp"] = int(
             trade.get("timestamp") or trade.get("time") or info.get("time") or 0

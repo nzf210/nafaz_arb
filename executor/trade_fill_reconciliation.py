@@ -306,6 +306,22 @@ class TradeFillReconciliationWorker:
         return order_id_fn(pair_key, exchange, order_key)
 
     @staticmethod
+    @staticmethod
+    def _fee_components_are_verifiable(fee_rows: list) -> bool:
+        """Validate all fee amounts and assets; never sum different currencies."""
+        if not fee_rows:
+            return False
+        for fee in fee_rows:
+            if not isinstance(fee, dict) or not str(fee.get("currency") or "").strip():
+                return False
+            try:
+                amount = float(fee.get("cost"))
+            except (TypeError, ValueError):
+                return False
+            if not math.isfinite(amount):
+                return False
+        return True
+
     def _persist_exchange_fills(
         writer, trades: list, order_row_id: str, exchange: str
     ):
@@ -315,13 +331,11 @@ class TradeFillReconciliationWorker:
             if not isinstance(trade, dict):
                 raise ValueError("venue returned a malformed individual fill")
             total_qty += float(trade["amount"])
-            fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
             fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
-            if (
-                fee.get("cost") is None
-                or not str(fee.get("currency") or "").strip()
-                or len(fee_rows) > 1
-            ):
+            if not fee_rows:
+                fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
+                fee_rows = [fee] if fee else []
+            if not self._fee_components_are_verifiable(fee_rows):
                 unverified_fee_ids.append(str(trade.get("id") or "unknown"))
             if writer.order_fill(
                 order_id=order_row_id,

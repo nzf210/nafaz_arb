@@ -296,17 +296,28 @@ class SupabaseOrderMixin:
 
     @staticmethod
     def _order_fill_fee_details(fill: Dict[str, Any]):
-        fee = fill.get("fee") if isinstance(fill.get("fee"), dict) else {}
-        fee_cost = fee.get("cost")
-        try:
-            fee_amount = float(fee_cost) if fee_cost is not None else None
-        except (TypeError, ValueError):
-            return None
-        if fee_amount is not None and not math.isfinite(fee_amount):
-            return None
-        fee_asset = str(fee.get("currency") or "").strip().upper() or None
         fee_rows = fill.get("fees") if isinstance(fill.get("fees"), list) else []
-        return fee_amount, fee_asset, fee_rows
+        if not fee_rows:
+            fee = fill.get("fee") if isinstance(fill.get("fee"), dict) else {}
+            fee_rows = [fee] if fee else []
+        normalized = []
+        for fee in fee_rows:
+            if not isinstance(fee, dict):
+                return None
+            try:
+                amount = float(fee.get("cost"))
+            except (TypeError, ValueError):
+                return None
+            asset = str(fee.get("currency") or "").strip().upper()
+            if not math.isfinite(amount) or not asset:
+                return None
+            normalized.append({"cost": amount, "currency": asset})
+        if not normalized:
+            return None
+        # Legacy scalar columns are populated only when one fee currency exists.
+        if len(normalized) == 1:
+            return normalized[0]["cost"], normalized[0]["currency"], normalized, True
+        return None, None, normalized, True
 
     @staticmethod
     def _order_fill_raw_payload(fill: Dict[str, Any]) -> Dict[str, Any]:
@@ -320,7 +331,7 @@ class SupabaseOrderMixin:
         fill_id: str, quantities: tuple, fee_details: tuple,
     ) -> Dict[str, Any]:
         qty, price, quote_qty, timestamp = quantities
-        fee_amount, fee_asset, fee_rows = fee_details
+        fee_amount, fee_asset, fee_rows, fee_verified = fee_details
         return {
             "id": str(uuid.uuid5(_POSITION_NS, f"fill:{exchange}:{fill_id}")),
             "order_id": order_id,
@@ -332,9 +343,8 @@ class SupabaseOrderMixin:
             "quote_qty": quote_qty,
             "fee_amount": fee_amount,
             "fee_asset": fee_asset,
-            "fee_verified": (
-                fee_amount is not None and bool(fee_asset) and len(fee_rows) <= 1
-            ),
+            "fee_verified": fee_verified,
+            "fee_components": fee_rows,
             "filled_at": datetime.fromtimestamp(
                 timestamp / 1000, tz=timezone.utc
             ).isoformat(),

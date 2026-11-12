@@ -242,3 +242,49 @@ async def test_fills_with_missing_fee_details_are_not_marked_reconciled():
     assert "trade-fill reconciliation:" in engine._recovery_scope_halts[scope]
     assert engine.failures[0][0][1] == "TRADE_FILL_RECONCILIATION_REQUIRED"
     assert engine.supabase.watermarks == {}
+
+
+
+@pytest.mark.asyncio
+async def test_multiple_valid_fee_components_are_reconciled_without_currency_aggregation():
+    engine = FakeEngine(
+        [_candidate()],
+        [_trade(
+            fee=None,
+            fees=[
+                {"cost": 0.01, "currency": "BTC"},
+                {"cost": 0.02, "currency": "USDT"},
+            ],
+        )],
+    )
+    worker = TradeFillReconciliationWorker(engine)
+
+    await worker.reconcile_once()
+
+    assert engine.failures == []
+    assert engine.supabase.watermarks["indodax:spot:client-1"] == pytest.approx(0.5)
+    saved = next(iter(engine.supabase.fills.values()))["fill"]
+    assert saved["fees"] == [
+        {"cost": 0.01, "currency": "BTC"},
+        {"cost": 0.02, "currency": "USDT"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_multiple_fee_components_with_missing_currency_remain_unverified():
+    engine = FakeEngine(
+        [_candidate()],
+        [_trade(
+            fee=None,
+            fees=[
+                {"cost": 0.01, "currency": "BTC"},
+                {"cost": 0.02, "currency": ""},
+            ],
+        )],
+    )
+    worker = TradeFillReconciliationWorker(engine)
+
+    await worker.reconcile_once()
+
+    assert engine._recovery_scope_halts
+    assert engine.supabase.watermarks == {}

@@ -342,6 +342,38 @@ class TestOrdersAndFills:
         assert fills[0]["fee_verified"] is True
         assert fills[0]["order_id"] == order_id
 
+    def test_exchange_fill_persists_all_fee_components_without_cross_currency_sum(self):
+        writer = _writer()
+        writer.order(
+            "p", "spot_entry", "okx", "spot", "btc_usdt",
+            {"id": "venue-order-multi-fee", "amount": 1.0, "filled": 0.25, "status": "closed"},
+            client_order_id="client-multi-fee",
+            is_mock=False,
+        )
+        order_id = writer.order_id_for("p", "okx", "client-multi-fee")
+        fill = {
+            "id": "venue-trade-multi-fee",
+            "amount": 0.25,
+            "price": 100.0,
+            "cost": 25.0,
+            "timestamp": 1_700_000_000_000,
+            "fees": [
+                {"cost": 0.01, "currency": "BTC"},
+                {"cost": 0.02, "currency": "USDT"},
+            ],
+        }
+
+        assert writer.order_fill(order_id=order_id, exchange="okx", fill=fill)
+        row = next(row for table, _, row in _drain(writer) if table == "order_fills")
+
+        assert row["fee_amount"] is None
+        assert row["fee_asset"] is None
+        assert row["fee_verified"] is True
+        assert row["fee_components"] == [
+            {"cost": 0.01, "currency": "BTC"},
+            {"cost": 0.02, "currency": "USDT"},
+        ]
+
     def test_side_mapping_per_leg(self):
         writer = _writer()
         for leg, expected in (
