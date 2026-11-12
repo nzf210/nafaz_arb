@@ -196,3 +196,23 @@ def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
     assert cfg.maker_refresh_cooldown_seconds == 300
     assert cfg.indodax_maker_refresh_after_seconds == 15
     assert cfg.indodax_maker_refresh_cooldown_seconds == 15
+
+
+def test_live_tokocrypto_requires_registered_broker_id():
+    from executor.config import ExchangeCredentials
+
+    cfg = ExecutorConfig(
+        mock_mode=False,
+        local_exchange_name="tokocrypto",
+        global_exchange_name="okx",
+    )
+    cfg.local_credentials = ExchangeCredentials(api_key="toko-key", api_secret="toko-secret")
+    cfg.global_credentials = ExchangeCredentials(
+        api_key="okx-key", api_secret="okx-secret", passphrase="okx-pass"
+    )
+
+    with pytest.raises(ValueError, match="tokocrypto registered broker_id"):
+        cfg.validate_live_credentials()
+
+    cfg.local_credentials.options = {"broker": {"marketType": "x-TKT5PX2F"}}
+    cfg.validate_live_credentials()
