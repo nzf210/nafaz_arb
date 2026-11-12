@@ -11,6 +11,7 @@
     "funding_subsidy_floor_pct": 0.08,
     "local_price_tick": 1.0,
     "global_futures_exchange": "okx",
+    "enable_executor_signals": false,
     "redis": {
         "enabled": false,
         "addr": "localhost:6380",
