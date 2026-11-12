@@ -63,10 +63,10 @@ func(a *Adapter)PerpetualOrderBook(ctx context.Context,symbol string)(domain.Ord
 }
 func(a *Adapter)FundingRate(ctx context.Context,symbol string)(domain.FundingRate,error){if a.source!=nil{return a.source.FundingRate(ctx,symbol)};if a.client==nil{return domain.FundingRate{},fmt.Errorf("mexc client is not configured")};return a.client.FundingRate(ctx,symbol)}
 func(a *Adapter)OpenExposures(ctx context.Context)([]domain.OpenExposure,error){if a.source==nil{return nil,fmt.Errorf("executor exposure provider is unavailable")};return a.source.OpenExposures(ctx)}
-func(a *Adapter)ExchangeAvailable(name string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.ExchangeAvailable("mexc")};return true}
-func(a *Adapter)WSConnectionHealthy(name string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("mexc")};return true}
-func(a *Adapter)LastBookUpdate(name,symbol string)time.Time{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.LastBookUpdate("mexc",symbol)};return time.Time{}}
-func(a *Adapter)AccountAvailable(name string)(contracts.AccountStatus,error){if h,ok:=a.source.(contracts.AccountStatusProvider);ok{return h.AccountAvailable("mexc")};return contracts.AccountStatus{DepositEnabled:true,WithdrawalEnabled:true},nil}
+func(a *Adapter)ExchangeAvailable(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.ExchangeAvailable("mexc")};return false}
+func(a *Adapter)WSConnectionHealthy(_ string)bool{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.WSConnectionHealthy("mexc")};return false}
+func(a *Adapter)LastBookUpdate(_ string,symbol string)time.Time{if h,ok:=a.source.(contracts.HealthReporter);ok{return h.LastBookUpdate("mexc",symbol)};return time.Time{}}
+func(a *Adapter)AccountAvailable(name string)(contracts.AccountStatus,error){if h,ok:=a.source.(contracts.AccountStatusProvider);ok{return h.AccountAvailable("mexc")};return contracts.AccountStatus{},fmt.Errorf("mexc account status provider is unavailable")}
 
 var _ contracts.MarketDataAdapter=(*Adapter)(nil)
 var _ contracts.AccountStatusProvider=(*Adapter)(nil)
