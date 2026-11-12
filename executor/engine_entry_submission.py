@@ -1,6 +1,7 @@
 """Spot entry submission, durable intent registration, and failure handling."""
 
 import json
+import math
 import time
 
 from executor.models import OrderRole, PositionState
@@ -10,6 +11,26 @@ from executor.engine_common import logger
 
 class EngineEntrySubmissionMixin:
     """Submits the spot leg through the existing durable order lifecycle."""
+
+    @staticmethod
+    def _local_order_limit_price(pair_info, snapshot, buy_price_idr: float) -> float:
+        """Convert the IDR-normalized strategy price to the venue quote unit."""
+        quote_asset = str(getattr(pair_info, "quote_asset", "") or "").strip().upper()
+        price_idr = float(buy_price_idr)
+        if not math.isfinite(price_idr) or price_idr <= 0:
+            raise ValueError("local spot limit price must be finite and positive")
+        if quote_asset in ("IDR", "BIDR"):
+            return price_idr
+        if quote_asset in ("USDT", "USDC"):
+            usdt_idr = float(getattr(snapshot, "usdt_idr_rate", 0.0) or 0.0)
+            if not math.isfinite(usdt_idr) or usdt_idr <= 0:
+                raise ValueError(
+                    f"{quote_asset} spot order requires a finite positive USDT/IDR rate"
+                )
+            return price_idr / usdt_idr
+        raise ValueError(
+            f"unsupported local spot quote asset for IDR-normalized pricing: {quote_asset or 'unknown'}"
+        )
 
     @staticmethod
     def _entry_recovery_context(payload, pair_info, snapshot, directives, actual_cost):
@@ -215,9 +236,16 @@ class EngineEntrySubmissionMixin:
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
             placed_time = time.time()
+            exchange_order_price = self._local_order_limit_price(
+                pair_info, snapshot, buy_price_idr
+            )
             recovery_context = self._entry_recovery_context(
                 payload, pair_info, snapshot, directives, actual_cost_usdt
             )
+            recovery_context["exchange_order_price"] = exchange_order_price
+            recovery_context["exchange_quote_asset"] = str(
+                pair_info.quote_asset or ""
+            ).upper()
             await self._register_order_intent(
                 pair_tag,
                 entry_coid,
@@ -238,7 +266,7 @@ class EngineEntrySubmissionMixin:
                 order = await self.client.place_local_limit_buy(
                     pair_info.local_symbol,
                     buy_qty,
-                    buy_price_idr,
+                    exchange_order_price,
                     client_order_id=entry_coid,
                     amount_spec=pair_info.local_amount_spec,
                 )
