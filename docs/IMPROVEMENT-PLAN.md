@@ -630,6 +630,38 @@ Go (`internal/scanner/liquidity_test.go`, `internal/exchange/ws_book_test.go`,
 
 ---
 
+
+## Log eksekusi V3 — 12 November 2026
+
+Status di bawah ini adalah status implementasi branch `V3`, bukan klaim bahwa sistem sudah LIVE.
+
+### Selesai pada batch ini
+
+- Ledger fill menyimpan semua komponen komisi aktual pada `fee_components`, tanpa menjumlahkan aset yang berbeda.
+- Komisi per fill dikonversi ke quote asset hanya jika aset fee sama dengan base atau quote market. Fee aset ketiga tetap tidak terkonversi sampai tersedia sumber FX yang eksplisit.
+- Kolom `fee_quote_amount`, `fee_quote_asset`, `fee_conversion_verified`, dan `fee_conversion_details` ditambahkan melalui migrasi idempoten.
+- Catatan penutupan posisi membedakan verifikasi tarif fee (`fee_rate_verified`) dari komisi aktual. Sampai rekonsiliasi empat fill selesai, `fee_verified`, `fee_actual_reconciled`, dan `pnl_complete` tetap false; net PnL yang dicatat adalah estimasi berbasis snapshot tarif.
+- Circuit breaker cooldown diperbaiki agar token timer bersifat per-exchange. Sebelumnya cooldown pada venue kedua dapat membatalkan timer venue pertama dan membuat halt pertama tidak pernah otomatis dibersihkan.
+
+### Commit dan CI
+
+- `e5c6569` — konversi komisi per fill ke quote asset.
+- `08653b3` — pisahkan fee-rate verification dari actual fill-fee reconciliation.
+- `d64d56c` — isolasi cooldown per exchange.
+- `d5d91f3` — regression test metadata PnL.
+
+CI pada commit `d5d91f3` berhasil: Python **445 passed**, Go tests/race/vet berhasil, migrasi Supabase berhasil, dan kedua image Docker berhasil dibangun.
+
+### Belum boleh dianggap selesai
+
+1. Agregasi fee aktual berdasarkan empat leg (spot entry/exit dan futures entry/exit) ke satu posisi.
+2. Konversi fee quote IDR dan fee aset ketiga ke USDT menggunakan kurs bertimestamp yang dapat diaudit.
+3. Rekonsiliasi funding settlement aktual terhadap posisi dan PnL.
+4. Penggantian estimasi PnL dengan PnL aktual hanya setelah seluruh fill, fee, FX, dan funding terverifikasi.
+5. Paper-trading failure injection dan validasi restart lintas venue sebelum release gate.
+
+**Keputusan keselamatan:** jangan mengubah `pnl_complete` menjadi true hanya karena fill dan fee berhasil dicatat. Jangan mengaktifkan LIVE order sebelum seluruh item di atas dan gerbang produksi pada bagian akhir dokumen lulus.
+
 ## Post-refactor safety and Supabase work — 2026-11-07
 
 This section supersedes the older blanket "all phases complete" status for current
