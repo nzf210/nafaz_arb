@@ -232,6 +232,14 @@ class ArbitrageEngine(
                 decode_responses=True,
             )
         self.order_registry.redis = self.redis
+        if not self.config.mock_mode and (
+            not getattr(self.supabase, "enabled", False)
+            or getattr(self.supabase, "_outbox", None) is None
+        ):
+            raise RuntimeError(
+                "LIVE startup blocked: Supabase durable outbox is unavailable; "
+                "order/position state must never fall back to Redis-only persistence"
+            )
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
