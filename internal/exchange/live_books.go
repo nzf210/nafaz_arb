@@ -3,6 +3,7 @@ package exchange
 import (
 	"context"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/mexc"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/tokocrypto"
 	"encoding/json"
 	"fmt"
@@ -135,46 +136,13 @@ func (l *LiveAdapter) fetchIndodaxSpotOrderBook(ctx context.Context, symbol stri
 }
 
 func (l *LiveAdapter) fetchMEXCSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
-	rawSym := strings.TrimPrefix(symbol, MEXC_SPOT)
-	rawSym = strings.TrimPrefix(rawSym, "mexc:")
-	endpoint := fmt.Sprintf("%s/api/v3/depth?symbol=%s&limit=20", l.mexcSpotBaseURL, url.QueryEscape(rawSym))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("mexc spot depth req: %w", err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("mexc spot depth request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		if classifyHTTPError(resp.StatusCode) {
-			return domain.OrderBook{}, fmt.Errorf("%w: mexc spot depth status %d", ErrExchangeUnavailable, resp.StatusCode)
-		}
-		return domain.OrderBook{}, fmt.Errorf("mexc spot depth status: %d", resp.StatusCode)
-	}
-
-	var rawBook struct {
-		Bids [][]string `json:"bids"`
-		Asks [][]string `json:"asks"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&rawBook); err != nil {
-		return domain.OrderBook{}, fmt.Errorf("decode mexc spot depth: %w", err)
-	}
-
-	bids := parseStringLevels(rawBook.Bids, 1.0)
-	asks := parseStringLevels(rawBook.Asks, 1.0)
-
-	return domain.OrderBook{
-		Exchange:  "mexc",
-		Symbol:    symbol,
-		Bids:      bids,
-		Asks:      asks,
-		Timestamp: time.Now().UTC(),
-	}, nil
+	l.mu.RLock()
+	client := l.mexcClient
+	l.mu.RUnlock()
+	if client == nil { return domain.OrderBook{}, fmt.Errorf("mexc client is not configured") }
+	book, err := client.SpotOrderBook(ctx, symbol)
+	if err != nil && mexc.IsUnavailable(err) { return domain.OrderBook{}, fmt.Errorf("%w: %v", ErrExchangeUnavailable, err) }
+	return book, err
 }
 
 // PerpetualOrderBook fetches live order book from OKX or MEXC with contract size normalization.
@@ -264,69 +232,14 @@ func (l *LiveAdapter) fetchOKXOrderBook(ctx context.Context, symbol string) (dom
 }
 
 func (l *LiveAdapter) fetchMEXCOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
-	rawSymbol := cleanSymbol(symbol)
-	endpoint := fmt.Sprintf("%s/api/v1/contract/depth/%s?limit=20", l.mexcBaseURL, url.PathEscape(rawSymbol))
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("mexc depth req: %w", err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("mexc depth request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		if classifyHTTPError(resp.StatusCode) {
-			return domain.OrderBook{}, fmt.Errorf("%w: mexc depth status %d", ErrExchangeUnavailable, resp.StatusCode)
-		}
-		return domain.OrderBook{}, fmt.Errorf("mexc depth status: %d", resp.StatusCode)
-	}
-
-	var mexcResp struct {
-		Success bool `json:"success"`
-		Code    int  `json:"code"`
-		Data    struct {
-			Bids      [][]any `json:"bids"`
-			Asks      [][]any `json:"asks"`
-			Timestamp int64   `json:"timestamp"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&mexcResp); err != nil {
-		return domain.OrderBook{}, fmt.Errorf("decode mexc depth: %w", err)
-	}
-	if !mexcResp.Success {
-		return domain.OrderBook{}, fmt.Errorf("mexc depth error code: %d", mexcResp.Code)
-	}
-
 	l.mu.RLock()
-	ctVal, ok := l.contractSizes[symbol]
-	if !ok {
-		ctVal, ok = l.contractSizes[rawSymbol]
-	}
+	client := l.mexcClient
+	contractSize, ok := l.contractSizes[symbol]
+	if !ok { contractSize, ok = l.contractSizes[cleanSymbol(symbol)] }
 	l.mu.RUnlock()
-	if !ok || ctVal <= 0 {
-		ctVal = 1.0
-	}
-
-	bids := parseLevels(mexcResp.Data.Bids, ctVal)
-	asks := parseLevels(mexcResp.Data.Asks, ctVal)
-
-	ts := time.Now().UTC()
-	if mexcResp.Data.Timestamp > 0 {
-		ts = time.UnixMilli(mexcResp.Data.Timestamp).UTC()
-	}
-
-	return domain.OrderBook{
-		Exchange:   "mexc",
-		Symbol:     symbol,
-		Bids:       bids,
-		Asks:       asks,
-		Timestamp:  ts,
-		ReceivedAt: time.Now().UTC(),
-		Source:     "exchange_timestamp",
-	}, nil
+	if !ok || contractSize <= 0 { contractSize = 1 }
+	if client == nil { return domain.OrderBook{}, fmt.Errorf("mexc client is not configured") }
+	book, err := client.PerpetualOrderBook(ctx, symbol, contractSize)
+	if err != nil && mexc.IsUnavailable(err) { return domain.OrderBook{}, fmt.Errorf("%w: %v", ErrExchangeUnavailable, err) }
+	return book, err
 }
