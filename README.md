@@ -422,3 +422,18 @@ guarantee, so ambiguous submissions are never blindly retried.
 The executor restores active position snapshots from Supabase if Redis state is
 missing, restores unresolved order intents from both Supabase and the local
 outbox, and verifies exchange-side exposure before it can clear startup gates.
+
+Before enabling the executor, run the read-only authenticated preflight with the
+same runtime environment and mounted data volume:
+
+```bash
+python scripts/live_readonly_preflight.py --config config.json \
+  --spot-symbol tokocrypto=BTC/IDR \
+  --futures-symbol BTC/USDT:USDT
+```
+
+It checks configured exchange market metadata/private balances, optional
+symbol-scoped open-order and futures-position reads, Redis, Supabase order and
+position recovery queries, and the recent fill ledger. It never submits,
+cancels, or modifies an order. Use a real listed symbol for the account and
+global futures venue.
