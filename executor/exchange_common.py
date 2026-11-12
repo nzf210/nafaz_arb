@@ -58,12 +58,11 @@ def _tokocrypto_client_order_id(
 ) -> str:
     """Rewrites a logical client id into the form Tokocrypto accepts.
 
-    A dashed ``{pair}-{leg}-{seq}`` id is both too long and wrongly
-    punctuated, so the venue answers 3703 and the order is never accepted.
-    The pair slug is the only free-form part, so it is replaced by a short
-    hash; the ``{leg}{seq}`` tail is kept verbatim so a retried submit still
-    presents the same id and the venue can drop the duplicate instead of
-    double-filling.
+    A dashed ``{pair}-{leg}-{seq}`` logical id is compressed into a bounded
+    wire id. The registered broker prefix is preserved verbatim and the
+    pair slug is replaced by a short hash; the ``{leg}{seq}`` tail remains
+    stable for recovery correlation. An empty prefix is allowed here only to
+    calculate legacy IDs during recovery, never for a new submission.
     """
     parts = client_order_id.rsplit("-", 2)
     if len(parts) == 3:
@@ -72,11 +71,6 @@ def _tokocrypto_client_order_id(
         leg, seq = "", ""
     tail = "".join(c for c in f"{leg}{seq}" if c.isalnum())
     prefix = str(broker_prefix or "")
-    if not prefix:
-        raise TokocryptoClientIDConfigurationError(
-            "Tokocrypto order submission requires the account's registered broker_id "
-            "(exchange credentials options.broker_id or options.broker.marketType)"
-        )
     if len(prefix) >= TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN:
         raise TokocryptoClientIDConfigurationError(
             "Tokocrypto broker_id leaves no room for a client order id suffix"
@@ -98,12 +92,10 @@ def venue_client_order_id(
 ) -> Optional[str]:
     """Adapts a logical client id to the exact form its venue accepts.
 
-    Tokocrypto (Binance Cloud) rejects ids that are longer than 32 characters
-    or contain anything but alphanumerics, so those ids are rewritten instead
-    of being sent unchanged and bouncing with error 3703. Every other venue
-    keeps the id verbatim: a broker prefix is prepended only when the account
-    actually has one registered, because a fabricated prefix is rejected even
-    more reliably than a malformed id.
+    Tokocrypto client IDs must carry the account's registered broker prefix.
+    The prefix is preserved verbatim and the generated suffix is bounded to the
+    venue's 32-character limit. Without that prefix, new submissions fail
+    locally instead of sending an ID the venue may reject with error 3703.
     """
     if not client_order_id:
         return client_order_id
