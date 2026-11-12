@@ -20,7 +20,7 @@ internal/exchange/
 
 - `indodax.Client`: pair discovery, amount-step normalization, spot depth and
   USDT/IDR ticker.
-- `tokocrypto.Client`: spot symbol discovery, LOT_SIZE normalization and depth.
+- `tokocrypto.Client`: spot symbol discovery, symbol-type-aware depth, LOT_SIZE normalization; MBX and NextMe depth supervisors.
 - `mexc.Client`: perpetual contract metadata, funding, spot depth and
   contract-size-adjusted perpetual depth.
 - `okx.Client`: SWAP instrument discovery, funding rate, REST depth recovery,
@@ -72,4 +72,4 @@ internal/exchange/
 - Retire facade compatibility code only after parity tests cover markets,
   books, funding, exposures, health, error classification and recovery.
 \n\n## Tokocrypto and MEXC perpetual WebSocket supervisors\n\nIn LIVE mode, `EnableWebSocketFeed` defaults to enabled (explicit config or
-`ENABLE_WEBSOCKET_FEED=false` can opt out). `LiveAdapter` starts per-symbol supervisors for Tokocrypto MBX spot and MEXC perpetual depth. Each worker subscribes before snapshot retrieval, buffers at most 512 frames while bootstrapping, applies sequence-validated updates, invalidates and resnapshots after gaps/overflow, reconnects with exponential backoff, and shuts down with the adapter. Connection/freshness health is tracked per symbol. Limits are 100 Tokocrypto and 20 MEXC concurrent connections; uncovered symbols use REST. MEXC uses JSON ping heartbeats and `compress:false`; Tokocrypto relies on WebSocket ping/pong control frames. This does not alter authenticated execution paths.\n
+`ENABLE_WEBSOCKET_FEED=false` can opt out). `LiveAdapter` starts per-symbol supervisors for Tokocrypto MBX/NextMe spot and MEXC perpetual depth. Each worker subscribes before snapshot retrieval, buffers at most 512 frames while bootstrapping, applies sequence-validated updates, invalidates and resnapshots after gaps/overflow, reconnects with exponential backoff, and shuts down with the adapter. Connection/freshness health is tracked per symbol. Limits are 100 Tokocrypto and 20 MEXC concurrent connections; uncovered symbols use REST. MEXC uses JSON ping heartbeats and `compress:false`; Tokocrypto relies on WebSocket ping/pong control frames. This does not alter authenticated execution paths.\n
