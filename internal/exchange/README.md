@@ -52,7 +52,8 @@ internal/exchange/
   expose staleness/health.
 - Do not enable a WS-only fail-closed scanner mode until every configured
   spot/perpetual venue has a tested WS book feed and a safe snapshot/recovery
-  path. Tokocrypto and MEXC perpetual are not yet migrated to this WS contract.
+  path. Tokocrypto spot and MEXC perpetual now have bounded supervisors, but
+  REST fallback remains mandatory for unsupported/capped/stale symbols.
 - Authenticated account and order execution remain separate capabilities and
   are not implemented by these public market-data clients.
 
@@ -70,4 +71,5 @@ internal/exchange/
   amount rules, sequence gaps and unverified execution capabilities.
 - Retire facade compatibility code only after parity tests cover markets,
   books, funding, exposures, health, error classification and recovery.
-\n\n## Tokocrypto and MEXC perpetual WebSocket supervisors\n\nWhen `EnableWebSocketFeed` is enabled, `LiveAdapter` starts per-symbol supervisors for Tokocrypto MBX spot and MEXC perpetual depth. Each worker subscribes before snapshot retrieval, buffers at most 512 frames while bootstrapping, applies sequence-validated updates, invalidates and resnapshots after gaps/overflow, reconnects with exponential backoff, and shuts down with the adapter. Connection/freshness health is tracked per symbol. Limits are 100 Tokocrypto and 20 MEXC concurrent connections; uncovered symbols use REST. MEXC uses JSON ping heartbeats and `compress:false`; Tokocrypto relies on WebSocket ping/pong control frames. This does not alter authenticated execution paths.\n
+\n\n## Tokocrypto and MEXC perpetual WebSocket supervisors\n\nIn LIVE mode, `EnableWebSocketFeed` defaults to enabled (explicit config or
+`ENABLE_WEBSOCKET_FEED=false` can opt out). `LiveAdapter` starts per-symbol supervisors for Tokocrypto MBX spot and MEXC perpetual depth. Each worker subscribes before snapshot retrieval, buffers at most 512 frames while bootstrapping, applies sequence-validated updates, invalidates and resnapshots after gaps/overflow, reconnects with exponential backoff, and shuts down with the adapter. Connection/freshness health is tracked per symbol. Limits are 100 Tokocrypto and 20 MEXC concurrent connections; uncovered symbols use REST. MEXC uses JSON ping heartbeats and `compress:false`; Tokocrypto relies on WebSocket ping/pong control frames. This does not alter authenticated execution paths.\n
