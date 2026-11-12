@@ -128,19 +128,20 @@ class TradeFillReconciliationWorker:
             self.engine.supabase, "fetch_recent_order_fill_candidates", None
         )
         if not callable(reader):
-            return
-        try:
-            rows = await reader(days=90, limit=5000)
-            for row in rows or []:
-                if not isinstance(row, dict) or row.get("is_mock") is not False:
-                    continue
-                identity = self._identity(row)
-                if identity:
-                    candidates[identity] = dict(row)
-        except Exception:
-            logger.exception(
-                "could not load durable recent orders for fill reconciliation"
+            raise RuntimeError(
+                "LIVE fill reconciliation requires durable recent-order query support"
             )
+        rows = await reader(days=90, limit=10000)
+        if not isinstance(rows, list):
+            raise RuntimeError("durable recent-order query returned malformed rows")
+        for row in rows:
+            if not isinstance(row, dict):
+                raise RuntimeError("durable recent-order query contains a malformed row")
+            if row.get("is_mock") is not False:
+                continue
+            identity = self._identity(row)
+            if identity:
+                candidates[identity] = dict(row)
 
     async def _load_candidates(self) -> Dict[str, Dict[str, Any]]:
         candidates: Dict[str, Dict[str, Any]] = {}
@@ -524,8 +525,21 @@ class TradeFillReconciliationWorker:
                 "trade-fill reconciliation skipped: durable fill writer is disabled"
             )
             return
-        candidates = await self._load_candidates()
+        try:
+            candidates = await self._load_candidates()
+        except Exception as exc:
+            await self._halt(
+                "durable-ledger-read",
+                "*",
+                f"durable fill ledger could not be read: {exc}",
+                {"error": str(exc)},
+            )
+            raise
+        self._reported.pop("durable-ledger-read", None)
         self._verified_scopes.clear()
+        # A successful complete 90-day read proves the global ledger query is
+        # healthy, even when there are currently no fill candidates.
+        self._verified_scopes.add("*")
         for identity, row in candidates.items():
             await self._reconcile_candidate(writer, identity, row)
         await self._flush_clears()
