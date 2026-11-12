@@ -255,3 +255,25 @@ def test_tokocrypto_order_without_durable_client_id_is_rejected_locally():
             None,
             AmountSpec(unit="BASE", step=0.001, minimum=0.001, base_per_unit=1.0),
         )
+
+
+def test_tokocrypto_factory_uses_corrected_adapter_without_network():
+    from executor.config import ExchangeCredentials
+    from executor.exchange_client import init_ccxt_exchange
+    from executor.tokocrypto_adapter import TokocryptoAdapter
+
+    venue = init_ccxt_exchange(
+        "tokocrypto",
+        ExchangeCredentials(
+            api_key="test-key",
+            api_secret="test-secret",
+            options={"broker_id": "x-TKT5PX2F"},
+        ),
+    )
+    try:
+        assert isinstance(venue, TokocryptoAdapter)
+        assert venue.options["broker_id"] == "x-TKT5PX2F"
+    finally:
+        # The constructor is offline; close still releases the async session.
+        import asyncio
+        asyncio.run(venue.close())
