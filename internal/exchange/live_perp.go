@@ -187,83 +187,20 @@ func (l *LiveAdapter) getFallbackOKXPerp(err error) ([]domain.Market, error) {
 }
 
 func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.Market, error) {
-	endpoint := l.mexcBaseURL + "/api/v1/contract/detail"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("mexc contract detail status: %d", resp.StatusCode)
-	}
-
-	var mexcResp struct {
-		Success bool `json:"success"`
-		Code    int  `json:"code"`
-		Data    []struct {
-			Symbol       string  `json:"symbol"`
-			BaseCoin     string  `json:"baseCoin"`
-			QuoteCoin    string  `json:"quoteCoin"`
-			ContractSize float64 `json:"contractSize"`
-			PriceUnit    float64 `json:"priceUnit"`
-			VolUnit      float64 `json:"volUnit"`
-			MinVol       float64 `json:"minVol"`
-			State        int     `json:"state"` // 0: enabled
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&mexcResp); err != nil {
-		return nil, err
-	}
-	if !mexcResp.Success {
-		return nil, fmt.Errorf("mexc contract detail error code: %d", mexcResp.Code)
-	}
-
-	var markets []domain.Market
+	l.mu.RLock()
+	client := l.mexcClient
+	l.mu.RUnlock()
+	if client == nil { return nil, fmt.Errorf("mexc client is not configured") }
+	markets, err := client.PerpetualMarkets(ctx)
+	if err != nil { return nil, err }
 	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	for _, c := range mexcResp.Data {
-		if c.State != 0 || c.Symbol == "" {
-			continue
+	for _, market := range markets {
+		if market.AmountSpec != nil && market.AmountSpec.BasePerUnit > 0 {
+			raw := strings.TrimPrefix(market.Symbol, "mexc:")
+			l.contractSizes[raw] = market.AmountSpec.BasePerUnit
+			l.contractSizes[market.Symbol] = market.AmountSpec.BasePerUnit
 		}
-
-		market := domain.Market{
-			Exchange:     "mexc",
-			Symbol:       "mexc:" + c.Symbol,
-			BaseAsset:    strings.ToUpper(c.BaseCoin),
-			QuoteAsset:   strings.ToUpper(c.QuoteCoin),
-			MarketType:   "PERPETUAL",
-			Active:       true,
-			ContractSize: c.ContractSize,
-			TickSize:     c.PriceUnit,
-			LotSize:      c.VolUnit,
-			MinOrder:     c.MinVol,
-		}
-		if c.ContractSize > 0 && c.VolUnit > 0 && c.MinVol >= 0 &&
-			!math.IsNaN(c.ContractSize) && !math.IsInf(c.ContractSize, 0) &&
-			!math.IsNaN(c.VolUnit) && !math.IsInf(c.VolUnit, 0) &&
-			!math.IsNaN(c.MinVol) && !math.IsInf(c.MinVol, 0) &&
-			c.BaseCoin != "" {
-			market.AmountSpec = &domain.AmountSpec{
-				Unit:        "CONTRACT",
-				Step:        c.VolUnit,
-				Min:         c.MinVol,
-				BasePerUnit: c.ContractSize,
-			}
-			l.contractSizes[c.Symbol] = c.ContractSize
-			l.contractSizes["mexc:"+c.Symbol] = c.ContractSize
-		} else {
-			log.Printf("mexc: contract %s has incomplete amount rules; execution disabled for market", c.Symbol)
-		}
-		markets = append(markets, market)
 	}
+	l.mu.Unlock()
 	return markets, nil
 }
