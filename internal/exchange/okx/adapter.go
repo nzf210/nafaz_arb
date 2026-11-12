@@ -29,8 +29,9 @@ func(*Adapter)SpotMarkets(context.Context)([]domain.Market,error){return nil,nil
 func(a *Adapter)PerpetualMarkets(ctx context.Context)([]domain.Market,error){
 	if !a.enabled{return nil,nil}
 	a.mu.RLock();if len(a.markets)>0&&time.Since(a.fetchedAt)<time.Hour{cached:=append([]domain.Market(nil),a.markets...);a.mu.RUnlock();return cached,nil};a.mu.RUnlock()
-	if a.client==nil{return nil,fmt.Errorf("okx client is not configured")}
+	if a.client==nil{err:=fmt.Errorf("okx client is not configured");if a.onOutcome!=nil{a.onOutcome(err)};return nil,err}
 	markets,err:=a.client.PerpetualMarkets(ctx)
+	if a.onOutcome!=nil{a.onOutcome(err)}
 	if err!=nil{a.mu.RLock();cached:=append([]domain.Market(nil),a.markets...);a.mu.RUnlock();if len(cached)>0{return cached,nil};return nil,err}
 	if len(markets)>0{
 		a.mu.Lock();a.markets=append([]domain.Market(nil),markets...);a.fetchedAt=time.Now().UTC()
