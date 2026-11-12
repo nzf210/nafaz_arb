@@ -172,7 +172,7 @@ synchronized:
 
 func (l *LiveAdapter) newTokocryptoSupervisor() *venueBookSupervisor {
 	return newVenueBookSupervisor("tokocrypto",
-		func(symbol string) string { return "wss://stream-cloud.tokocrypto.site/ws/"+strings.ToLower(symbol)+"@depth" },
+		func(symbol string) string { return "wss://stream-cloud.tokocrypto.site/stream/ws/"+strings.ToLower(symbol)+"@depth" },
 		func(string) []byte { return nil },
 		func(ctx context.Context, symbol string) error {
 			req, err := l.client.Get("https://www.tokocrypto.site/api/v3/depth?symbol="+url.QueryEscape(symbol)+"&limit=1000")
