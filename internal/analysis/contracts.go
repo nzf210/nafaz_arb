@@ -13,6 +13,11 @@ func BookKey(exchange, symbol string) string {
 	return strings.ToLower(strings.TrimSpace(exchange)) + ":" + strings.ToUpper(strings.TrimSpace(symbol))
 }
 
+// FeeKey returns the stable fee-profile key for one venue instrument.
+func FeeKey(exchange, symbol string) string {
+	return strings.ToLower(strings.TrimSpace(exchange)) + ":" + strings.ToUpper(strings.TrimSpace(symbol))
+}
+
 // Snapshot is normalized market data. It contains no execution instructions and
 // can be consumed by any registered analysis strategy.
 type FeeSchedule struct {
