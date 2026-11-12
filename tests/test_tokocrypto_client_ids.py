@@ -34,6 +34,7 @@ async def test_tokocrypto_ccxt_request_uses_registered_prefix_and_spot_order_fie
         },
         "info": {"orderTypes": ["LIMIT", "MARKET", "LIMIT_MAKER"]},
     }
+    venue.precisionMode = ccxt.DECIMAL_PLACES
     venue.markets = {"FLOKI/IDR": market}
     venue.markets_by_id = {"FLOKI_IDR": [market]}
     captured = {}
