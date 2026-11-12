@@ -13,6 +13,8 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/api"
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/contracts"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/registry"
 	"github.com/nafaz/spot-perp-scanner/internal/history"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
@@ -22,7 +24,7 @@ import (
 func main(){
 	path:=flag.String("config","config.json","path to JSON config");flag.Parse()
 	cfg,err:=config.Load(*path);if err!=nil{log.Fatal(err)}
-	var adapter exchange.ReadOnlyAdapter
+	var adapter contracts.ReadOnlyAdapter
 	switch cfg.Mode {
 	case "LIVE":
 		live := exchange.NewLiveAdapter()
@@ -44,7 +46,9 @@ func main(){
 			live.EnableOKXBookWebSocket(context.Background(), cfg.OKXWSURL, staleAfter, reconnect, maxBackoff)
 		}
 		defer live.Close()
-		adapter = live
+		venues := registry.New()
+		if err := venues.Register("default", live); err != nil { log.Fatalf("register live venue adapter: %v", err) }
+		adapter = registry.NewComposite(venues)
 	case "MOCK":
 		adapter = exchange.NewMockAdapter()
 	default:
