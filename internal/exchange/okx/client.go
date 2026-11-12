@@ -2,6 +2,7 @@ package okx
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -16,6 +17,10 @@ import (
 )
 
 const defaultBaseURL = "https://www.okx.com"
+
+type StatusError struct { StatusCode int }
+func (e *StatusError) Error() string { return fmt.Sprintf("okx HTTP status: %d", e.StatusCode) }
+func IsUnavailable(err error) bool { var status *StatusError; return errors.As(err, &status) && (status.StatusCode == http.StatusBadGateway || status.StatusCode == http.StatusServiceUnavailable || status.StatusCode == http.StatusGatewayTimeout) }
 
 // Client owns public OKX REST and WebSocket market-data capabilities.
 type Client struct {
@@ -59,7 +64,7 @@ func (c *Client) PerpetualMarkets(ctx context.Context) ([]domain.Market,error) {
 	resp,err:=c.do(ctx,path,func()(*http.Request,error){return c.newRequest(ctx,path)})
 	if err!=nil{return nil,fmt.Errorf("okx instruments request: %w",err)}
 	defer resp.Body.Close()
-	if resp.StatusCode!=http.StatusOK{return nil,fmt.Errorf("okx instruments status: %d",resp.StatusCode)}
+	if resp.StatusCode!=http.StatusOK{return nil,&StatusError{StatusCode:resp.StatusCode}}
 	var payload struct{Code string `json:"code"`; Msg string `json:"msg"`; Data []instrument `json:"data"`}
 	if err:=json.NewDecoder(resp.Body).Decode(&payload);err!=nil{return nil,fmt.Errorf("decode okx instruments: %w",err)}
 	if payload.Code!="0"{return nil,fmt.Errorf("okx instruments error: %s (%s)",payload.Msg,payload.Code)}
@@ -84,7 +89,7 @@ func (c *Client) FundingRate(ctx context.Context,symbol string)(domain.FundingRa
 	resp,err:=c.do(ctx,path,func()(*http.Request,error){return c.newRequest(ctx,path)})
 	if err!=nil{return domain.FundingRate{},fmt.Errorf("okx funding request: %w",err)}
 	defer resp.Body.Close()
-	if resp.StatusCode!=http.StatusOK{return domain.FundingRate{},fmt.Errorf("okx funding status: %d",resp.StatusCode)}
+	if resp.StatusCode!=http.StatusOK{return domain.FundingRate{},&StatusError{StatusCode:resp.StatusCode}}
 	var payload struct{Code string `json:"code"`; Msg string `json:"msg"`; Data []struct{FundingRate string `json:"fundingRate"`; FundingTime string `json:"fundingTime"`; PrevFundingTime string `json:"prevFundingTime"`; Ts string `json:"ts"`} `json:"data"`}
 	if err:=json.NewDecoder(resp.Body).Decode(&payload);err!=nil{return domain.FundingRate{},fmt.Errorf("decode okx funding: %w",err)}
 	if payload.Code!="0"||len(payload.Data)==0{return domain.FundingRate{},fmt.Errorf("okx funding error: %s (%s)",payload.Msg,payload.Code)}
@@ -103,7 +108,7 @@ func (c *Client) PerpetualOrderBook(ctx context.Context,symbol string,contractSi
 	resp,err:=c.do(ctx,path,func()(*http.Request,error){return c.newRequest(ctx,path)})
 	if err!=nil{return domain.OrderBook{},fmt.Errorf("okx depth request: %w",err)}
 	defer resp.Body.Close()
-	if resp.StatusCode!=http.StatusOK{return domain.OrderBook{},fmt.Errorf("okx depth status: %d",resp.StatusCode)}
+	if resp.StatusCode!=http.StatusOK{return domain.OrderBook{},&StatusError{StatusCode:resp.StatusCode}}
 	var payload struct{Code string `json:"code"`;Msg string `json:"msg"`;Data []struct{Bids [][]string `json:"bids"`;Asks [][]string `json:"asks"`;Ts string `json:"ts"`} `json:"data"`}
 	if err:=json.NewDecoder(resp.Body).Decode(&payload);err!=nil{return domain.OrderBook{},fmt.Errorf("decode okx depth: %w",err)}
 	if payload.Code!="0"||len(payload.Data)==0{return domain.OrderBook{},fmt.Errorf("okx depth error: %s (%s)",payload.Msg,payload.Code)}
