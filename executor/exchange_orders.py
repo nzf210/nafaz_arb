@@ -270,8 +270,14 @@ class ExchangeOrderMixin:
         committed. ``amount_spec`` normalizes venue units back to base units.
         """
         spec = AmountSpec.from_dict(amount_spec) if amount_spec else None
+        is_tokocrypto = str(getattr(self.local, "id", "")).lower() == "tokocrypto"
+        if is_tokocrypto and not symbol:
+            raise ValueError("Tokocrypto open-order discovery requires a symbol")
         resolved_symbol = await self._resolve_symbol(self.local, symbol, "spot") if symbol else None
-        raw = await self.local.fetch_open_orders(resolved_symbol)
+        if is_tokocrypto:
+            raw = await self.local.fetch_open_orders(resolved_symbol, None, 1000)
+        else:
+            raw = await self.local.fetch_open_orders(resolved_symbol)
         if raw is None or not isinstance(raw, list):
             raise ValueError("local venue returned a malformed open orders payload")
         return [
