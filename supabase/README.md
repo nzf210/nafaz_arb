@@ -1,192 +1,80 @@
-# Supabase database
+# Basis Data Supabase NAFAZ
 
-Supabase stores durable operational history for NAFAZ. Redis remains the
-low-latency coordination layer between the Go scanner and Python executor. Local
-persistent outboxes protect scanner and executor audit writes from process restarts
-and temporary Supabase outages; they do not replace Redis or exchange-side state.
+Supabase menyimpan riwayat operasional NAFAZ secara persisten. Redis tetap menjadi lapisan koordinasi berlatensi rendah antara scanner Go dan executor Python. Outbox lokal menjaga catatan audit agar tidak hilang ketika proses restart atau Supabase sementara tidak tersedia.
 
-## Schema
+## 1. Skema
 
-The initial migration creates:
+Migrasi awal dan migrasi tambahan membentuk tabel utama berikut:
 
-- `exchange_accounts`: exchange account metadata and encrypted credential slots.
-  Credential columns are ciphertext-only; never store API secrets as plaintext.
-- `strategy_configs` and `risk_limits`: versionable strategy parameters and hard risk limits.
-- `market_pairs`: normalized local spot / global perpetual market mapping.
-- `scanner_opportunities`: time-series snapshots of evaluated opportunities.
-- `positions` and `position_legs`: lifecycle and each exchange leg.
-- `orders` and `order_fills`: order lifecycle and immutable fill records.
-- `order_registry`: durable universal order registry (one row per submitted order,
-  keyed by a deterministic local id derived from the client order id). It is the
-  recovery authority after a restart and carries `order_role` (ENTRY / HEDGE /
-  EXIT_SPOT / EXIT_FUTURES / EMERGENCY / FORCE_CLOSE / ROLLBACK) and
-  `recovery_status` (MANAGED / ADOPTED / UNVERIFIED / ORPHAN_ORDER / PHANTOM).
-  `orders` stays the per-leg analytics view.
-- `funding_payments`: exchange funding settlements, with estimated and confirmed
-  records explicitly distinguished and exchange payment IDs deduplicated.
-- `closed_trades`: realized PnL snapshots.
-- `balance_snapshots`: historical balance observations.
-- `risk_events` and `executor_events`: operational and audit event journals.
-- `executor_status_snapshots`: time-series snapshots for monitoring and incident review.
-- Automatic `updated_at` triggers for mutable records; the CI migration check validates RLS, grants, trigger behavior, migration idempotency, and the trade currency/FX columns.
+- `exchange_accounts`: metadata akun bursa dan slot kredensial terenkripsi. Kolom kredensial hanya boleh berisi ciphertext.
+- `strategy_configs` dan `risk_limits`: parameter strategi dan batas risiko yang dapat diberi versi.
+- `market_pairs`: pemetaan pasar spot lokal dengan perpetual global.
+- `scanner_opportunities`: snapshot peluang yang dievaluasi scanner.
+- `positions` dan `position_legs`: siklus hidup posisi dan masing-masing kaki.
+- `orders`, `order_fills`, dan `order_registry`: siklus order, fill individual, serta registri order universal untuk pemulihan setelah restart.
+- `funding_payments`: settlement funding bursa, dengan pemisahan jelas antara estimasi dan catatan terkonfirmasi.
+- `closed_trades`: snapshot PnL transaksi yang telah ditutup.
+- `balance_snapshots`: observasi saldo historis.
+- `risk_events` dan `executor_events`: jurnal peristiwa risiko dan executor.
+- `executor_status_snapshots`: snapshot status untuk pemantauan dan analisis insiden.
 
-All financial quantities are PostgreSQL `NUMERIC`, not floating point. Tables have
-RLS enabled and no grants for `anon` or `authenticated`; server components use
-only the Supabase service-role credential. Never put this credential in Vue, Telegram,
-or any other client-side application.
+Seluruh nilai finansial menggunakan PostgreSQL `NUMERIC`, bukan floating point. Tabel dilindungi RLS dan tidak memberikan akses kepada peran `anon` maupun `authenticated`. Komponen server memakai kredensial service-role saja. Jangan pernah menaruh kunci tersebut pada Vue, Telegram, atau klien lain.
 
-## Apply migration
+## 2. Status persistensi runtime
 
-1. Install Supabase CLI and authenticate.
-2. Link this repository to the intended Supabase project: `supabase link --project-ref <project-ref>`.
-3. Inspect migration status: `supabase migration list --remote`.
-4. Review the SQL, then apply: `supabase db push --remote`.
+Supabase merupakan tujuan audit/riwayat yang bersifat best-effort. Supabase bukan sumber kebenaran eksposur LIVE dan tidak berada pada jalur kritis pengiriman order.
 
-Do not run the migration against a production project until its existing schema and
-migration history have been checked. Do not make ad-hoc remote schema changes in
-Studio after adopting versioned migrations.
+### Penulisan yang sudah tersedia
 
-Before deploying trade-fill reconciliation, ensure
-`20261111000100_add_live_order_fill_reconciliation.sql` has been applied. It adds the `orders.is_mock` discriminator used to prevent paper-trading rows
-from being replayed as live exchange fills, and `order_fills.fill_source` to
-distinguish retained legacy cumulative snapshots from verified exchange trades,
-and `order_fills.fee_verified` to record whether each fill has complete fee
-amount/currency details. Apply it with the same reviewed `supabase db push --remote` workflow above.
+- Scanner Go menulis snapshot peluang ke `scanner_opportunities`. Kunci idempotensi memakai `scan_id + pair_key`; identitas rute mencakup venue dan simbol spot maupun perpetual sehingga rute paralel tidak saling menimpa.
+- Executor Python menulis `positions`, `orders`, `order_fills`, `closed_trades`, `executor_events`, dan `risk_events`.
+- Setiap order registry memastikan baris induk per kaki pada tabel `orders`.
+- Fill individual diambil dari riwayat transaksi bursa yang terautentikasi dan menggunakan ID trade bursa yang tidak berubah. Kuantitas, harga, nilai kuotasi, jumlah/jenis aset biaya, dan waktu eksekusi disimpan.
+- `fee_verified` membedakan detail biaya yang lengkap dari payload biaya yang belum lengkap. Fill historis berbasis snapshot kumulatif diberi label `legacy_cumulative`, bukan dicampur dengan fill bursa yang telah diverifikasi.
+- `position_legs` diperbarui secara terpisah untuk kaki spot dan perpetual.
+- Settlement funding yang dikonfirmasi bursa ditulis ke `funding_payments` dengan ID deterministik.
+- Snapshot saldo spot dan perpetual ditambahkan ke `balance_snapshots`.
+- `executor_status_snapshots` masih sebatas skema dan belum menjadi penulis runtime.
 
-## Runtime persistence status
+### Sumber kebenaran
 
-The runtime uses Supabase as a best-effort audit/history sink. It is not the
-authority for live exposure and is not in the exchange-order critical path.
+Redis dipakai untuk posisi aktif, lock, harga langsung, saldo cache, Pub/Sub, dan koordinasi cepat. API bursa tetap menjadi sumber kebenaran saldo aktual, status order, fill, serta eksposur posisi. Supabase hanya menjadi jurnal audit dan analitik.
 
-Implemented writes:
+Worker rekonsiliasi eksposur membandingkan kecukupan aset dasar spot dengan kuantitas yang dikelola dan membandingkan posisi short perpetual aktual dengan posisi yang tercatat. Ketidaksesuaian terkonfirmasi atau kegagalan pembacaan pada venue yang memiliki eksposur terkelola akan menahan entri baru pada venue tersebut, sementara pengelolaan posisi terbuka tetap berjalan. Saldo spot dipakai sebagai pemeriksaan cakupan minimum; kelebihan saldo manual tidak dianggap sebagai milik bot.
 
-- Go scanner: evaluated opportunities to `scanner_opportunities`, using
-  `scan_id + pair_key` as a deterministic nullable-unique idempotency key. The pair key includes both the local spot venue/symbol and global perpetual venue/symbol, so parallel global routes do not overwrite each other.
-  Transient PostgREST/network errors are retried; permanent schema/auth errors
-  are logged and do not suppress Redis signal delivery.
-- Python executor: `positions`, `orders`, `order_fills`, `closed_trades`,
-  `executor_events`, and `risk_events`. Every universal order-registry write
-  also ensures its per-leg `orders` parent row exists. Individual fills are
-  replayed from authenticated exchange trade history and keyed by immutable
-  exchange trade IDs; quantity, price, quote value, fee amount, fee asset, and
-  venue timestamp are persisted with `fill_source=exchange_trade`. The
-  `fee_verified` flag distinguishes complete fee amount/currency details from
-  incomplete venue payloads; incomplete or multi-asset fee breakdowns keep the
-  affected pair gated until reconciled. Historical cumulative-snapshot rows
-  are retained as `legacy_cumulative`, not deleted or silently mixed into
-  verified execution totals. Durable SQLite idempotency keys prevent the
-  same exchange fill from being enqueued twice across restarts, and a per-order
-  verified cumulative watermark avoids repeated private-history API calls when
-  the order's filled quantity has not changed.
-- Redis remains authoritative for active-position recovery, locks, live prices,
-  balances, pub/sub, and fast coordination. Exchange APIs remain authoritative
-  for actual balances, order state, and position exposure.
+Worker rekonsiliasi fill membaca riwayat trade privat spot dan perpetual saat startup serta setiap 120 detik secara default. Indodax menggunakan endpoint TAPI v2 `/api/v2/myTrades` dalam jendela maksimal tujuh hari; venue CCXT yang didukung memakai `fetch_my_trades`. Riwayat yang tidak tersedia atau tidak lengkap tidak boleh dianggap sebagai nol fill. Pasangan terkait tetap memerlukan rekonsiliasi sebelum entri baru diizinkan.
 
-`position_legs` receives independent spot/perpetual upserts keyed by the parent
-position and leg. Confirmed exchange funding settlements are written to
-`funding_payments` through the durable SQLite outbox, with deterministic IDs so
-replayed ledger rows are idempotent. `executor_status_snapshots` remains
-schema-only. The executor also writes append-only `balance_snapshots` from
-authenticated spot/perpetual balance
-reports. Its live exposure worker checks that spot base-asset totals cover the
-aggregate managed quantity and compares each managed futures short with the
-exchange position. A confirmed mismatch or unavailable read halts new entries
-on the affected venue while leaving existing position management available.
-Spot balances are a minimum-coverage check only; excess wallet inventory is not
-assumed to belong to the bot.
-Strategy/risk configuration tables are also not read dynamically by this runtime.
+## 3. Jaminan outbox dan pemulihan
 
-Delivery guarantees and remaining limitations:
+- Outbox executor menggunakan SQLite dengan WAL dan `synchronous=FULL` pada `SUPABASE_OUTBOX_PATH`, default `/app/data/executor/supabase-outbox.sqlite3`. Berkas wajib berada pada volume persisten lokal.
+- Worker mengirim ulang data ke PostgREST memakai exponential backoff terbatas. Baris baru dihapus setelah upsert idempoten berhasil. Kegagalan skema/perizinan tetap berada di antrean sampai diperbaiki.
+- Fill individual dan penanda idempotensinya disimpan dalam satu transaksi SQLite. Total fill trade unik dibandingkan dengan kuantitas kumulatif order. Riwayat yang hilang, endpoint privat yang tidak didukung, atau jumlah yang tidak cocok memicu status perlu rekonsiliasi; sistem tidak membuat fill sintetis dari harga rata-rata order.
+- Antrean memori hanya menjadi sinyal bangun worker. Antrean penuh tidak membuang catatan yang sudah di-commit ke disk. Outbox executor memiliki batas 50.000 baris; kapasitas atau kegagalan disk harus dipantau sebagai kondisi kritis.
+- Outbox scanner berupa jurnal JSONL append-only pada `SUPABASE_SCANNER_OUTBOX_PATH`, default `/app/data/scanner/supabase-outbox.jsonl`. Setiap append di-fsync sebelum fungsi penyimpanan mengembalikan hasil. Batas bawaan jurnal adalah 128 MiB.
+- Scanner mengakui pengiriman hanya setelah upsert PostgREST berhasil. Kegagalan jaringan/HTTP tetap tersimpan dengan jadwal retry. Catatan committed yang rusak membuat pemulihan gagal secara aman; append terakhir yang belum lengkap dapat dipotong saat pemulihan.
+- Kapasitas penuh, disk penuh, atau izin tulis yang salah harus ditangani operator. Jangan menghapus catatan committed otomatis hanya untuk menyediakan ruang.
+- Kedua jurnal bersifat lokal untuk satu proses/host dan tidak boleh dipakai bersama oleh beberapa replika. Gunakan volume persisten dan buat cadangan sebelum mengganti host atau volume.
 
-- Executor writes are first committed to a local SQLite outbox at
-  `SUPABASE_OUTBOX_PATH` (default:
-  `/app/data/executor/supabase-outbox.sqlite3`) using WAL and
-  `synchronous=FULL`. The database must live on a persistent host volume.
-- The async worker retries failed PostgREST delivery with bounded exponential
-  backoff. Rows are deleted only after a successful idempotent upsert; permanent
-  schema/permission failures remain queued for replay after repair.
-- Individual exchange fills and their idempotency markers are committed in one
-  SQLite transaction. The worker compares the sum of unique venue trade fills
-  with each order's cumulative filled quantity; missing history, unsupported
-  private trade endpoints, or quantity mismatches mark the affected pair for
-  reconciliation instead of inventing synthetic fills from average order price.
-- The in-memory queue is only a wakeup hint. A full wakeup queue does not discard
-  the already committed outbox row. The local outbox has a 50,000-row hard cap;
-  capacity or disk errors are logged as critical and must be monitored.
-- Redis remains the real-time coordination/recovery layer. SQLite is a local
-  delivery journal, not a cross-host shared database; run only one executor
-  writer against a given outbox file and keep that file on persistent local
-  storage. Supabase remains an audit sink, never authority for exchange exposure.
-- Scanner writes are first committed to a local append-only JSONL journal at
-  `SUPABASE_SCANNER_OUTBOX_PATH` (default:
-  `/app/data/scanner/supabase-outbox.jsonl`). Each append is fsynced before
-  `SaveOpportunities` returns; a background reconciliation worker replays due
-  records to PostgREST using the existing idempotency key.
-- Scanner acknowledgements happen only after successful PostgREST upsert.
-  Network/HTTP failures remain on disk with persisted exponential backoff;
-  malformed committed records fail closed, while an incomplete final append is
-  truncated during recovery. The scanner journal has a 128 MiB default hard cap.
-- Full disk, permission errors, and capacity exhaustion are logged as CRITICAL.
-  Scanner evaluation and Redis signalling remain fail-open, so operators must
-  monitor these logs and restore storage before audit history can resume.
-- Both journals are local to one process/host and must not be shared by multiple
-  replicas. Use persistent local volumes and back up journals before replacing
-  hosts or volumes.
-- The executor trade-fill reconciliation worker reads authenticated spot and
-  perpetual trade history at startup and every 120 seconds by default
-  (`TRADE_FILL_RECONCILIATION_INTERVAL_SECONDS`). INDODAX uses
-  the TAPI v2 `/api/v2/myTrades` endpoint with bounded seven-day windows;
-  supported CCXT venues use `fetch_my_trades`. Unsupported or incomplete
-  history is not treated as zero fills and blocks new entries for the affected
-  pair until verified.
-- The scanner reconciliation worker is a delivery reconciler only: it replays
-  scanner opportunity snapshots and confirms durable delivery. Live exchange
-  exposure reconciliation is performed separately by the Python executor; it
-  is read-only and never places/cancels orders. The executor's universal order
-  recovery reconciles order status and cumulative fills, while the exposure
-  worker checks spot base-asset coverage and futures short quantities. A
-  confirmed mismatch or unavailable read halts new entries on the affected
-  venue and publishes an operational event.
-- Supabase remains an audit/history sink, never authority for live exposure.
-  Scanner opportunities and executor history are not a complete exchange ledger
-  unless fills, fees, funding settlements, balances, and position legs are also
-  independently reconciled from authenticated exchange records.
+Worker rekonsiliasi scanner hanya mengirim ulang snapshot peluang. Rekonsiliasi eksposur bursa dilakukan terpisah oleh executor Python dan bersifat baca-saja; worker ini tidak mengirim atau membatalkan order.
 
-## Runtime configuration
+## 4. Konfigurasi runtime
 
-Set these variables in the server environment and inject them into both
-`nafaz-scanner` and `nafaz-executor`:
+Masukkan variabel berikut ke lingkungan server dan teruskan ke container scanner serta executor:
 
 - `SUPABASE_URL=https://<project-ref>.supabase.co`
-- `SUPABASE_KEY=<server-only service_role key>`
-- `SUPABASE_OUTBOX_PATH=/app/data/executor/supabase-outbox.sqlite3` (executor only)
-- `SUPABASE_SCANNER_OUTBOX_PATH=/app/data/scanner/supabase-outbox.jsonl` (scanner only)
+- `SUPABASE_KEY=<kunci service_role khusus server>`
+- `SUPABASE_OUTBOX_PATH=/app/data/executor/supabase-outbox.sqlite3` (executor)
+- `SUPABASE_SCANNER_OUTBOX_PATH=/app/data/scanner/supabase-outbox.jsonl` (scanner)
 
-The existing `SUPABASE_KEY` name is retained for compatibility with the executor;
-its value must be the Supabase `service_role` secret, never the anon/publishable
-key. The scanner also rejects non-HTTPS remote URLs. HTTP is accepted only for
-loopback tests. If both URL/key are absent, persistence stays disabled. If only
-one is supplied, scanner startup logs a warning and continues without persistence.
-Both outbox paths must be on persistent local storage and writable by
-the container UID; Compose mounts `./data` at `/app/data`. The scanner journal
-defaults to a 128 MiB hard cap; capacity or disk errors are critical and require
-operator intervention. No automatic deletion or truncation of committed records
-is performed to make room.
+Nama `SUPABASE_KEY` dipertahankan untuk kompatibilitas. Nilainya wajib berupa secret `service_role`, bukan kunci anon/publishable. Scanner menolak URL remote non-HTTPS; HTTP hanya diizinkan untuk pengujian loopback. Jika URL dan kunci sama-sama tidak tersedia, persistensi dinonaktifkan. Jika hanya salah satu tersedia, scanner memberi peringatan dan berjalan tanpa persistensi.
 
-Do not commit credentials, place them in `config.example.json`, bake them into an
-image, or expose them to Vue/Telegram. Use a host secret manager or a protected
-systemd/container environment. The repository's `.env` is git-ignored, but a
-tracked or shared plaintext secret file is still unsafe.
+Kedua lokasi outbox harus berada pada penyimpanan persisten lokal dan dapat ditulis oleh UID container. Compose memasang `./data` ke `/app/data`. Jangan memasukkan kredensial ke Git, `config.example.json`, image, frontend, atau Telegram. Gunakan pengelola secret host atau environment container/systemd yang terlindungi. Berkas `.env` yang diabaikan Git tetap tidak aman jika dibagikan sebagai teks biasa.
 
-## Apply migrations
+## 5. Menerapkan migrasi
 
-1. Install Supabase CLI and authenticate.
-2. Link the intended project: `supabase link --project-ref <project-ref>`.
-3. Inspect remote history: `supabase migration list --remote`.
-4. Review pending SQL and the remote schema before applying:
-   `supabase db push --remote`.
+1. Pasang Supabase CLI dan lakukan autentikasi.
+2. Hubungkan repositori ke proyek yang benar: `supabase link --project-ref <project-ref>`.
+3. Periksa riwayat remote: `supabase migration list --remote`.
+4. Tinjau SQL dan skema remote sebelum menerapkan: `supabase db push --remote`.
 
-CI applies every versioned migration in lexical order, replays each migration to
-check idempotency, and runs `supabase/tests/schema_smoke.sql` against PostgreSQL 16.
-The original baseline migration remains immutable. Do not apply migrations to the
-production project until its existing migration history and schema have been reviewed.
+CI menerapkan seluruh migrasi berurutan secara leksikografis, menjalankan ulang migrasi untuk memeriksa idempotensi, lalu menjalankan `supabase/tests/schema_smoke.sql` terhadap PostgreSQL 16. Migrasi baseline awal tidak boleh diubah setelah digunakan. Jangan menerapkan migrasi ke proyek produksi sebelum riwayat migrasi dan skema yang sudah ada diperiksa.
