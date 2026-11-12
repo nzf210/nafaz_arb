@@ -81,6 +81,8 @@ async def _run(args) -> None:
                 f"open_orders={len(orders)}"
             )
 
+        if not writer.enabled or writer._outbox is None:
+            raise RuntimeError("Supabase durable outbox could not be opened")
         await writer.start()
         durable_orders = await writer.fetch_open_order_records()
         durable_positions = await writer.fetch_open_position_records()
@@ -98,7 +100,11 @@ async def _run(args) -> None:
         print("READ-ONLY PREFLIGHT PASSED; no order was submitted or cancelled.")
     finally:
         if redis is not None:
-            await redis.aclose()
+            closer = getattr(redis, "aclose", None) or getattr(redis, "close", None)
+            if callable(closer):
+                result = closer()
+                if hasattr(result, "__await__"):
+                    await result
         await writer.close()
         for venue in exchanges:
             try:
