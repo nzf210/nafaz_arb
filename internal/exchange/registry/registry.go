@@ -67,7 +67,7 @@ func (c *Composite) aggregate(ctx context.Context,perpetual bool)([]domain.Marke
 		if perpetual{markets,err=a.PerpetualMarkets(ctx)}else{markets,err=a.SpotMarkets(ctx)}
 		if err!=nil{errs=append(errs,name+": "+err.Error());continue};out=append(out,markets...)
 	}
-	if len(out)==0&&len(errs)>0{return nil,fmt.Errorf("no exchange markets available: %s",strings.Join(errs,"; "))}
+	if len(errs)>0{return out,fmt.Errorf("incomplete exchange market discovery: %s",strings.Join(errs,"; "))}
 	return out,nil
 }
 func(c *Composite)SpotMarkets(ctx context.Context)([]domain.Market,error){return c.aggregate(ctx,false)}
@@ -97,7 +97,7 @@ func(c *Composite)OpenExposures(ctx context.Context)([]domain.OpenExposure,error
 	if c==nil||c.registry==nil{return nil,fmt.Errorf("exchange registry is not configured")}
 	var out []domain.OpenExposure;var errs []string
 	for _,name:=range c.names(){a,_:=c.registry.Get(name);items,err:=a.OpenExposures(ctx);if err!=nil{errs=append(errs,name+": "+err.Error());continue};out=append(out,items...)}
-	if len(out)==0&&len(errs)>0{return nil,fmt.Errorf("no exposure providers available: %s",strings.Join(errs,"; "))};return out,nil
+	if len(errs)>0{return nil,fmt.Errorf("incomplete executor exposure providers: %s",strings.Join(errs,"; "))};return out,nil
 }
 func(c *Composite)USDTIDRRate(ctx context.Context)(float64,error){
 	a,err:=c.adapter("indodax");if err!=nil{return 0,err};provider,ok:=a.(contracts.RateProvider);if !ok{return 0,fmt.Errorf("indodax does not provide USDT/IDR conversion")};return provider.USDTIDRRate(ctx)
