@@ -273,9 +273,9 @@ class EngineRuntimeMixin:
             action = str(request.get("action", "")).strip().lower()
             if not request_id or len(request_id) > 64 or not request_id.isalnum():
                 return
-            if action not in ("retry", "resolve_orphan"):
+            if action not in ("retry", "resolve_orphan", "force_clean_orphan"):
                 return
-            result = {"resolved": False}
+            result = {"resolved": False, "deleted_redis": 0, "deleted_db": 0, "cleared_pairs": []}
             if action == "retry":
                 acquired = await self._with_order_recovery_lock(self.retry_pending_order_recovery)
                 if not acquired:
@@ -291,6 +291,24 @@ class EngineRuntimeMixin:
                         and not self._recovery_scope_halts
                         and not unresolved_states
                     )
+            elif action == "force_clean_orphan":
+                orphan_id = str(request.get("orphan_id", "")).strip()
+                if not orphan_id or len(orphan_id) > 256:
+                    return
+                async def force_clean():
+                    clean_res = await self.force_clean_orphan(
+                        orphan_id, reason="TELEGRAM_OPERATOR"
+                    )
+                    result["resolved"] = bool(clean_res.get("cleaned"))
+                    result["deleted_redis"] = int(clean_res.get("deleted_redis") or 0)
+                    result["deleted_db"] = int(clean_res.get("deleted_db") or 0)
+                    result["cleared_pairs"] = list(clean_res.get("cleared_pairs") or [])
+                    if clean_res.get("error"):
+                        result["error"] = str(clean_res["error"])
+                acquired = await self._with_order_recovery_lock(force_clean)
+                if not acquired:
+                    result["error"] = "Recovery lease sedang dimiliki replica lain; orphan tidak diubah."
+                    result["resolved"] = False
             else:
                 orphan_id = str(request.get("orphan_id", "")).strip()
                 pair_tag = str(request.get("pair_tag", "")).strip()
@@ -311,6 +329,9 @@ class EngineRuntimeMixin:
                 "action": action,
                 "resolved": bool(result["resolved"]),
                 "error": str(result.get("error") or ""),
+                "deleted_redis": int(result.get("deleted_redis") or 0),
+                "deleted_db": int(result.get("deleted_db") or 0),
+                "cleared_pairs": list(result.get("cleared_pairs") or []),
                 "complete": (
                     not result.get("error")
                     and not self._recovery_pending_orders

@@ -198,6 +198,101 @@ class RecoveryOrphanMixin:
         logger.warning("[Orphan] %s resolved manually (%s)", orphan_id, reason)
         return True
 
+    async def force_clean_orphan(
+        self, target_id: str, reason: str = "TELEGRAM_FORCE_CLEAN"
+    ) -> Dict[str, Any]:
+        """Force-delete an orphan/stuck order by any ID from cache, DB, and risk halts."""
+        tid = str(target_id or "").strip()
+        if not tid:
+            return {
+                "cleaned": False,
+                "deleted_redis": 0,
+                "deleted_db": 0,
+                "cleared_pairs": [],
+                "error": "orphan/order ID is empty",
+            }
+
+        res = await self.order_registry.force_delete_order(tid)
+        resolved_ids = set(res.get("resolved_ids") or [tid])
+        pair_keys = set(res.get("pair_keys") or [])
+
+        # Remove from in-memory recovery maps
+        removed_mem = 0
+        for lid, rec in list(self._recovered_order_records.items()):
+            candidates = {
+                str(lid),
+                str(getattr(rec, "client_order_id", "") or ""),
+                str(getattr(rec, "exchange_order_id", "") or ""),
+                str(getattr(rec, "venue_client_order_id", "") or ""),
+            }
+            if resolved_ids & candidates:
+                self._recovered_order_records.pop(lid, None)
+                removed_mem += 1
+                if getattr(rec, "pair_key", None):
+                    pair_keys.add(rec.pair_key)
+
+        for oid, orec in list(self._recovered_orphans.items()):
+            candidates = {
+                str(oid),
+                str(orec.get("client_order_id") or ""),
+                str(orec.get("exchange_order_id") or ""),
+            }
+            if resolved_ids & candidates:
+                self._recovered_orphans.pop(oid, None)
+                removed_mem += 1
+                scope = str(orec.get("scope") or "")
+                if ":" in scope:
+                    pair_keys.add(scope)
+
+        # Refresh pending recovery cache & clear pair halts/blacklists
+        self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
+        remaining_records = await self.order_registry.active_records()
+        cleared_pairs = []
+        for pk in sorted(pair_keys):
+            has_other_pending = any(
+                (r.pair_key == pk and r.local_order_id in self._recovery_pending_orders)
+                for r in remaining_records.values()
+            )
+            if not has_other_pending and self.states.get(pk) == PositionState.RECONCILIATION_REQUIRED:
+                self.states[pk] = PositionState.IDLE
+            if not await self._scope_has_unresolved_recovery(pk):
+                self._clear_exposure_halt(pk, f"force cleaned orphan {tid} ({reason})")
+                cleared_pairs.append(pk)
+            if hasattr(self, "_pair_halted") and isinstance(self._pair_halted, dict):
+                self._pair_halted.pop(pk, None)
+            if hasattr(self, "_record_pair_success"):
+                self._record_pair_success(pk)
+
+        # Also check any scope halt matching resolved_ids directly
+        for scope in list((self._recovery_scope_halts or {}).keys()):
+            if scope in pair_keys or any(rid in scope for rid in resolved_ids):
+                if not await self._scope_has_unresolved_recovery(scope):
+                    self._clear_exposure_halt(scope, f"force cleaned orphan {tid} ({reason})")
+                    if scope not in cleared_pairs:
+                        cleared_pairs.append(scope)
+
+        self._refresh_entry_gate()
+
+        cleaned = (
+            int(res.get("deleted_redis", 0)) > 0
+            or int(res.get("deleted_db", 0)) > 0
+            or removed_mem > 0
+            or bool(cleared_pairs)
+        )
+        logger.warning(
+            "[Orphan] force_clean_orphan(%s): cleaned=%s redis=%s db=%s mem=%s pairs=%s (%s)",
+            tid, cleaned, res.get("deleted_redis", 0), res.get("deleted_db", 0),
+            removed_mem, cleared_pairs, reason,
+        )
+        return {
+            "cleaned": cleaned,
+            "deleted_redis": int(res.get("deleted_redis", 0)) + removed_mem,
+            "deleted_db": int(res.get("deleted_db", 0)),
+            "cleared_pairs": cleared_pairs,
+            "resolved_ids": sorted(resolved_ids),
+            "error": "" if cleaned else f"ID {tid} tidak ditemukan di Redis cache maupun database",
+        }
+
     async def retry_pending_order_recovery(self) -> bool:
         """Re-run read-only recovery; never submit, cancel, or replace orders.
 

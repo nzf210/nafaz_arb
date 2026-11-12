@@ -409,7 +409,11 @@ def _order_archive_page_reader(exchange: Any, symbol: str) -> Any:
     ) -> tuple:
         # ``fromId``/``direct`` page backwards from a known order id, so one
         # extra row repeats at the boundary; the pager de-duplicates by id.
-        request = {"symbol": _tokocrypto_wire_symbol(venue, symbol), "limit": int(page_size)}
+        request = {
+            "symbol": _tokocrypto_wire_symbol(venue, symbol),
+            "type": -1,
+            "limit": int(page_size),
+        }
         if cursor:
             request["fromId"] = str(cursor)
             request["direct"] = "prev"

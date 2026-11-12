@@ -635,10 +635,13 @@ type RecoveryRetryReply struct {
 	Action string `json:"action"`
 	Resolved bool `json:"resolved"`
 	Error string `json:"error"`
-	Complete bool `json:"complete"`
+	DeletedRedis  int               `json:"deleted_redis,omitempty"`
+	DeletedDB     int               `json:"deleted_db,omitempty"`
+	ClearedPairs  []string          `json:"cleared_pairs,omitempty"`
+	Complete      bool              `json:"complete"`
 	PendingOrders map[string]string `json:"pending_orders"`
-	ScopeHalts map[string]string `json:"scope_halts"`
-	TimestampMS int64 `json:"timestamp_ms"`
+	ScopeHalts    map[string]string `json:"scope_halts"`
+	TimestampMS   int64             `json:"timestamp_ms"`
 }
 
 // RequestRecoveryRetry asks the executor to re-run read-only reconciliation.
@@ -653,6 +656,15 @@ func (c *Client) RequestOrphanResolution(ctx context.Context, orphanID, pairTag 
 		return RecoveryRetryReply{}, errors.New("orphan id tidak valid")
 	}
 	return c.requestRecoveryAction(ctx, "resolve_orphan", orphanID, strings.TrimSpace(pairTag))
+}
+
+// RequestForceCleanOrphan asks the executor to delete an orphan/stuck order across Redis cache and Supabase DB.
+func (c *Client) RequestForceCleanOrphan(ctx context.Context, orphanID string) (RecoveryRetryReply, error) {
+	orphanID = strings.TrimSpace(orphanID)
+	if orphanID == "" || len(orphanID) > 256 {
+		return RecoveryRetryReply{}, errors.New("orphan id tidak valid")
+	}
+	return c.requestRecoveryAction(ctx, "force_clean_orphan", orphanID, "")
 }
 
 func (c *Client) requestRecoveryAction(ctx context.Context, action, orphanID, pairTag string) (RecoveryRetryReply, error) {

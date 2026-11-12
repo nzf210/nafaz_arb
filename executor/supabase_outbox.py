@@ -245,3 +245,37 @@ class DurableOutbox:
             ).fetchall()
         return [(int(i), name, conflict, json.loads(payload))
                 for i, name, conflict, payload in rows]
+
+    def delete_matching(self, target_ids: set) -> int:
+        """Delete any pending outbox rows referencing one of target_ids."""
+        cleaned = {str(x).strip() for x in target_ids if str(x).strip()}
+        if not cleaned:
+            return 0
+        to_delete: List[int] = []
+        with self._lock:
+            rows = self._db.execute("SELECT id, row_json FROM pending_outbox").fetchall()
+            for row_id, raw_json in rows:
+                try:
+                    data = json.loads(raw_json)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                candidates = {
+                    str(data.get("id") or ""),
+                    str(data.get("local_order_id") or ""),
+                    str(data.get("client_order_id") or ""),
+                    str(data.get("exchange_order_id") or ""),
+                    str(data.get("venue_client_order_id") or ""),
+                    str(data.get("orphan_id") or ""),
+                }
+                raw_payload = data.get("raw_payload")
+                if isinstance(raw_payload, dict):
+                    candidates.add(str(raw_payload.get("local_order_id") or ""))
+                if candidates & cleaned:
+                    to_delete.append(int(row_id))
+            if to_delete:
+                self._db.executemany(
+                    "DELETE FROM pending_outbox WHERE id=?", [(i,) for i in to_delete]
+                )
+        return len(to_delete)

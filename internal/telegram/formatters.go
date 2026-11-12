@@ -23,6 +23,7 @@ func (b *Bot) formatHelp() string {
 /orders - <i>Lihat active bot orders</i>
 /recovery - <i>Status recovery setelah restart</i>
 /orphans - <i>Order exchange belum teridentifikasi</i>
+/cleanorphan [id] - <i>Force clean orphan/stuck order dari cache Redis &amp; DB</i>
 /reconcile - <i>Mismatch reconciliation terbaru</i>
 /risk - <i>Status risk halt</i>
 /order [internal_order_id] - <i>Detail order dan fills terkait</i>

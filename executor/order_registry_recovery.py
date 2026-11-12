@@ -6,9 +6,14 @@ from typing import Any, Dict
 
 from executor.models import OrderRecord, RecoveryStatus
 from executor.helpers import (
+    ORDER_BY_CLIENT_ID_KEY,
+    ORDER_BY_EXCHANGE_ID_KEY,
     ORDER_PENDING_RECOVERY_KEY,
     ORDER_RECOVERY_INDEX_KEY,
     ORPHAN_INDEX_KEY,
+    order_cid_field,
+    order_record_key,
+    order_xid_field,
     orphan_order_key,
 )
 from executor.order_registry_common import logger
@@ -295,5 +300,160 @@ class OrderRegistryRecoveryMixin:
                 raise RuntimeError(f"orphan record {orphan_id} is not an object")
             result[orphan_id] = record
         return result
+
+    async def force_delete_order(self, target_id: str) -> Dict[str, Any]:
+        """Force-delete an order or orphan across Redis cache, memory, outbox, and Supabase."""
+        tid = str(target_id or "").strip()
+        if not tid:
+            return {"deleted_redis": 0, "deleted_db": 0, "pair_keys": [], "resolved_ids": []}
+
+        matched_ids = {tid}
+        pair_keys = set()
+        records_to_delete: Dict[str, OrderRecord] = {}
+        orphans_to_delete: set = set()
+        deleted_redis = 0
+
+        # 1. Inspect in-memory records
+        for lid, rec in list(self.records.items()):
+            candidates = {
+                str(rec.local_order_id or ""),
+                str(rec.client_order_id or ""),
+                str(rec.exchange_order_id or ""),
+                str(rec.venue_client_order_id or ""),
+            }
+            if tid in candidates or lid == tid:
+                records_to_delete[lid] = rec
+                matched_ids.update(c for c in candidates if c)
+                if rec.pair_key:
+                    pair_keys.add(rec.pair_key)
+
+        # 2. Inspect Redis recovery index & direct record key
+        try:
+            direct = await self.load(tid)
+            if direct is not None:
+                records_to_delete[direct.local_order_id] = direct
+                for c in (
+                    direct.local_order_id,
+                    direct.client_order_id,
+                    direct.exchange_order_id,
+                    direct.venue_client_order_id,
+                ):
+                    if c:
+                        matched_ids.add(str(c))
+                if direct.pair_key:
+                    pair_keys.add(direct.pair_key)
+        except Exception:
+            pass
+
+        try:
+            indexed = await self.redis.hkeys(ORDER_RECOVERY_INDEX_KEY)
+            for raw_id in indexed or []:
+                lid = raw_id.decode() if isinstance(raw_id, bytes) else str(raw_id)
+                rec = await self.load(lid)
+                if rec is None:
+                    if lid == tid:
+                        deleted_redis += int(await self.redis.hdel(ORDER_RECOVERY_INDEX_KEY, lid) or 0)
+                    continue
+                candidates = {
+                    str(rec.local_order_id or ""),
+                    str(rec.client_order_id or ""),
+                    str(rec.exchange_order_id or ""),
+                    str(rec.venue_client_order_id or ""),
+                }
+                if matched_ids & candidates:
+                    records_to_delete[lid] = rec
+                    matched_ids.update(c for c in candidates if c)
+                    if rec.pair_key:
+                        pair_keys.add(rec.pair_key)
+        except Exception:
+            logger.exception("[OrderRegistry] error scanning recovery index for %s", tid)
+
+        # 3. Inspect orphans in Redis
+        try:
+            orphan_map = await self.orphans()
+            for oid, orec in orphan_map.items():
+                candidates = {
+                    str(oid),
+                    str(orec.get("orphan_id") or ""),
+                    str(orec.get("client_order_id") or ""),
+                    str(orec.get("exchange_order_id") or ""),
+                }
+                if matched_ids & candidates:
+                    orphans_to_delete.add(oid)
+                    matched_ids.update(c for c in candidates if c)
+                    scope = str(orec.get("scope") or "")
+                    if ":" in scope:
+                        pair_keys.add(scope)
+        except Exception:
+            # Even if orphan record payload was missing, clear direct key/index if oid matches
+            try:
+                if await self.redis.hexists(ORPHAN_INDEX_KEY, tid):
+                    orphans_to_delete.add(tid)
+            except Exception:
+                pass
+
+        # 4. Delete from Redis cache & indexes
+        for lid, rec in records_to_delete.items():
+            self.records.pop(lid, None)
+            try:
+                deleted_redis += int(await self.redis.delete(order_record_key(lid)) or 0)
+                deleted_redis += int(await self.redis.hdel(ORDER_RECOVERY_INDEX_KEY, lid) or 0)
+                deleted_redis += int(await self.redis.hdel(ORDER_PENDING_RECOVERY_KEY, lid) or 0)
+                if rec.client_order_id and rec.exchange:
+                    deleted_redis += int(
+                        await self.redis.hdel(
+                            ORDER_BY_CLIENT_ID_KEY,
+                            order_cid_field(rec.exchange, rec.client_order_id),
+                        )
+                        or 0
+                    )
+                if rec.exchange_order_id and rec.exchange:
+                    deleted_redis += int(
+                        await self.redis.hdel(
+                            ORDER_BY_EXCHANGE_ID_KEY,
+                            order_xid_field(rec.exchange, rec.exchange_order_id),
+                        )
+                        or 0
+                    )
+            except Exception:
+                logger.exception("[OrderRegistry] error deleting Redis cache for %s", lid)
+
+        # Clean up any dangling pending_recovery / cid / xid / direct keys for tid
+        try:
+            deleted_redis += int(await self.redis.delete(order_record_key(tid)) or 0)
+            deleted_redis += int(await self.redis.hdel(ORDER_RECOVERY_INDEX_KEY, tid) or 0)
+            deleted_redis += int(await self.redis.hdel(ORDER_PENDING_RECOVERY_KEY, tid) or 0)
+            for hkey in (ORDER_BY_CLIENT_ID_KEY, ORDER_BY_EXCHANGE_ID_KEY):
+                all_fields = await self.redis.hgetall(hkey)
+                for f_key, f_val in (all_fields or {}).items():
+                    fk = f_key.decode() if isinstance(f_key, bytes) else str(f_key)
+                    fv = f_val.decode() if isinstance(f_val, bytes) else str(f_val)
+                    suffix = fk.split(":", 1)[-1]
+                    if fv in matched_ids or suffix in matched_ids:
+                        deleted_redis += int(await self.redis.hdel(hkey, fk) or 0)
+        except Exception:
+            pass
+
+        for oid in orphans_to_delete:
+            try:
+                await self.remove_orphan(oid)
+                deleted_redis += 1
+            except Exception:
+                pass
+
+        # 5. Delete from Supabase & local SQLite outbox
+        db_res = {"deleted_db": 0, "deleted_outbox": 0, "pair_keys": [], "resolved_ids": []}
+        deleter = getattr(self.supabase, "force_delete_order_artifacts", None)
+        if callable(deleter):
+            db_res = await deleter(sorted(matched_ids), sorted(pair_keys))
+            pair_keys.update(db_res.get("pair_keys") or [])
+            matched_ids.update(db_res.get("resolved_ids") or [])
+
+        return {
+            "deleted_redis": deleted_redis,
+            "deleted_db": int(db_res.get("deleted_db", 0)) + int(db_res.get("deleted_outbox", 0)),
+            "pair_keys": sorted(pair_keys),
+            "resolved_ids": sorted(matched_ids),
+        }
 
     # --------------------------------------------------------- reconciliation

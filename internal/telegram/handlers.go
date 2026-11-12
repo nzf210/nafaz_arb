@@ -161,10 +161,18 @@ func (b *Bot) handleReconcileCommand(ctx context.Context, msg *Message, parts []
 		b.handleOrphanResolveCommand(ctx, msg, parts)
 		return
 	}
+	if len(parts) > 1 && strings.EqualFold(parts[1], "clean") {
+		targetID := ""
+		if len(parts) > 2 {
+			targetID = parts[2]
+		}
+		b.handleForceCleanOrphanCommand(ctx, msg, targetID)
+		return
+	}
 	if len(parts) > 1 && !strings.EqualFold(parts[1], "status") {
 		b.sendReplyWithMarkup(
 			ctx, msg.Chat.ID, msg.MessageID,
-			"ℹ️ Gunakan <code>/reconcile</code>, <code>/reconcile retry</code>, atau <code>/reconcile resolve ORPHAN_ID [PAIR]</code>.",
+			"ℹ️ Gunakan <code>/reconcile</code>, <code>/reconcile retry</code>, <code>/reconcile resolve ORPHAN_ID [PAIR]</code>, atau <code>/cleanorphan ID</code>.",
 			b.defaultKeyboard(),
 		)
 		return
@@ -286,6 +294,73 @@ func (b *Bot) handleOrphanResolveCommand(ctx context.Context, msg *Message, part
 		b.defaultKeyboard())
 }
 
+func (b *Bot) handleForceCleanOrphanCommand(ctx context.Context, msg *Message, targetID string) {
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"ℹ️ Gunakan <code>/cleanorphan &lt;ID&gt;</code> (bisa memakai local_order_id, order id, client_order_id, atau orphan_id).\n<i>Contoh:</i> <code>/cleanorphan c7c9c437-00b6-5cf2-8a9a-ef6e6e2cf1c8</code>",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	userID := int64(0)
+	if msg.From != nil {
+		userID = msg.From.ID
+	}
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"⛔ <b>Akses ditolak:</b> User tidak diizinkan menghapus orphan/stuck order.",
+			b.defaultKeyboard())
+		return
+	}
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"❌ Redis tidak terhubung; force clean orphan tidak dapat dikirim.",
+			b.defaultKeyboard())
+		return
+	}
+	reply, err := rc.RequestForceCleanOrphan(ctx, targetID)
+	if err != nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"⚠️ <b>Force clean orphan gagal:</b> "+html.EscapeString(err.Error()),
+			b.defaultKeyboard())
+		return
+	}
+	if !reply.Resolved {
+		detail := "ID tidak ditemukan atau sedang terkunci replica lain."
+		if reply.Error != "" {
+			detail = reply.Error
+		}
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"⚠️ <b>ORPHAN TIDAK TERHAPUS</b>\n• ID: <code>"+html.EscapeString(targetID)+"</code>\n• Detail: "+html.EscapeString(detail),
+			b.defaultKeyboard())
+		return
+	}
+	pairsStr := "-"
+	if len(reply.ClearedPairs) > 0 {
+		pairsStr = strings.Join(reply.ClearedPairs, ", ")
+	}
+	status := "⚠️ Scope lain masih memiliki halt."
+	if reply.Complete {
+		status = "🟢 Semua pending recovery dan scope halt bersih."
+	}
+	b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+		fmt.Sprintf(
+			"🧹 <b>ORPHAN FORCE CLEANED</b>\n• ID: <code>%s</code>\n• Cache Redis terhapus: <code>%d</code>\n• Database/Outbox terhapus: <code>%d</code>\n• Pair dibuka kembali: <code>%s</code>\n• %s",
+			html.EscapeString(targetID),
+			reply.DeletedRedis,
+			reply.DeletedDB,
+			html.EscapeString(pairsStr),
+			status,
+		),
+		b.defaultKeyboard(),
+	)
+}
+
 func mustJSONRaw(value interface{}) json.RawMessage {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -317,7 +392,17 @@ func (b *Bot) handleCommand(
 	case "/recovery":
 		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "RECOVERY STATUS", "recovery", "recovery_status", "startup_recovery")
 	case "/orphans":
+		if len(parts) > 2 && strings.EqualFold(parts[1], "clean") {
+			b.handleForceCleanOrphanCommand(ctx, msg, parts[2])
+			return
+		}
 		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "ORPHAN ORDERS", "orphans", "orphan_orders", "orphan_order_details")
+	case "/cleanorphan", "/clean_orphan", "/hapusorphan":
+		targetID := ""
+		if len(parts) > 1 {
+			targetID = parts[1]
+		}
+		b.handleForceCleanOrphanCommand(ctx, msg, targetID)
 	case "/reconcile":
 		b.handleReconcileCommand(ctx, msg, parts)
 	case "/risk":
