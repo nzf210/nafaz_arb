@@ -41,14 +41,6 @@ class RollbackMixin:
         # by client ID; never blindly repeat a non-idempotent sell.
         seq = self._next_order_seq()
         rollback_coid = build_client_order_id(pair_tag, "rollback", seq)
-        await self._register_order_intent(
-            pair_tag, rollback_coid,
-            exchange=getattr(self.config, "local_exchange_name", ""),
-            market_type="spot", symbol=symbol,
-            role=OrderRole.ROLLBACK.value, side="sell",
-            order_type="market", price=0.0, quantity=unhedged_delta,
-            local_amount_spec=amount_spec
-            )
         effective_spec = amount_spec or (
             AmountSpec(
                 unit="BASE",
@@ -60,6 +52,14 @@ class RollbackMixin:
             else None
         )
         try:
+            await self._register_order_intent(
+                pair_tag, rollback_coid,
+                exchange=getattr(self.config, "local_exchange_name", ""),
+                market_type="spot", symbol=symbol,
+                role=OrderRole.ROLLBACK.value, side="sell",
+                order_type="market", price=0.0, quantity=unhedged_delta,
+                local_amount_spec=amount_spec,
+            )
             emergency_order = await self._submit_local_order_once_with_recovery(
                 pair_tag,
                 getattr(self.config, "local_exchange_name", ""),
