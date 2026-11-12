@@ -113,6 +113,7 @@ func (l *LiveAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, er
 		mexcMarkets, err := l.fetchMEXCPerpetualMarkets(ctx)
 		if err == nil {
 			allMarkets = append(allMarkets, mexcMarkets...)
+			l.SubscribeMEXCPerpetualBooks(mexcMarkets)
 		} else {
 			errs = append(errs, fmt.Sprintf("mexc: %v", err))
 		}
@@ -169,4 +170,14 @@ func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.M
 	}
 	l.mu.Unlock()
 	return markets, nil
+}
+
+
+// SubscribeMEXCPerpetualBooks dynamically tracks active MEXC contracts.
+func (l *LiveAdapter) SubscribeMEXCPerpetualBooks(markets []domain.Market) {
+	l.mu.RLock(); supervisor := l.mexcPerpSupervisor; l.mu.RUnlock()
+	if supervisor == nil { return }
+	symbols := make([]string,0,len(markets))
+	for _, market := range markets { if strings.EqualFold(market.Exchange,"mexc") && strings.EqualFold(market.MarketType,"PERPETUAL") && market.Active { symbols=append(symbols,strings.TrimPrefix(market.Symbol,"mexc:")) } }
+	supervisor.SetSymbols(sortedUniqueSymbols(symbols))
 }
