@@ -47,9 +47,8 @@ class RollbackMixin:
             market_type="spot", symbol=symbol,
             role=OrderRole.ROLLBACK.value, side="sell",
             order_type="market", price=0.0, quantity=unhedged_delta,
-            local_amount_spec=amount_spec,
-            required=False,
-        )
+            local_amount_spec=amount_spec
+            )
         effective_spec = amount_spec or (
             AmountSpec(
                 unit="BASE",
