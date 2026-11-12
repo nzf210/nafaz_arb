@@ -18,6 +18,8 @@
 - `risk_state` stores the required `state_id`, `state_type`, `scope`, `exchange`, `pair_key`, `reason`, `value`, `created_at`, `updated_at`, and `resolved_at` fields.
 - `risk_pnl_events` is an append-only, unique-event ledger. Only verified realized trade PnL is admitted by the close paths.
 - The SQLite durable outbox is the synchronous local journal. Startup overlays pending local `risk_state` and PnL rows over Supabase reads so a crash before asynchronous delivery does not erase a newly recorded halt.
+- LIVE startup requires enabled Supabase service-role access and a writable SQLite outbox on persistent storage. A configured but unavailable outbox is not treated as a successful durable store.
+- Order-registry startup reads are paginated and overlay pending local SQLite journal rows. Recent fill-history reads are paginated across both `orders` and `order_registry`; failure of either source blocks startup reconciliation rather than silently omitting executions.
 - If durable risk storage cannot be restored or journaled in LIVE mode, new entries are blocked. Position monitoring and de-risking remain available.
 - Redis is not used as the sole source of truth for any risk halt.
 - Active live positions have a durable `state_snapshot` in Supabase. Startup
