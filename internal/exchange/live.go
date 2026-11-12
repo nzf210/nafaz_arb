@@ -11,6 +11,7 @@ import (
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/tokocrypto"
 )
 
 const (
@@ -22,6 +23,7 @@ const (
 type LiveAdapter struct {
 	client            *http.Client
 	indodaxClient     *indodax.Client
+	tokocryptoClient  *tokocrypto.Client
 	indodaxBaseURL    string
 	tokocryptoBaseURL string
 	okxBaseURL        string
@@ -107,6 +109,7 @@ func NewLiveAdapter() *LiveAdapter {
 		okxBookCalls:      make(map[string]*okxBookCall),
 	}
 	adapter.indodaxClient = indodax.New(httpClient, adapter.indodaxBaseURL)
+	adapter.tokocryptoClient = tokocrypto.New(httpClient, adapter.tokocryptoBaseURL)
 	return adapter
 }
 
@@ -146,6 +149,7 @@ func (l *LiveAdapter) SetBaseURLs(urls ...string) {
 	}
 	if len(urls) > 4 && urls[4] != "" {
 		l.tokocryptoBaseURL = urls[4]
+		l.tokocryptoClient = tokocrypto.New(l.client, l.tokocryptoBaseURL)
 	}
 }
 
