@@ -182,7 +182,6 @@ class ExchangeOrderMixin:
             *_local_order_params(
                 self.local, client_order_id, spec, require_amount_step=True,
                 broker_prefix=self._local_broker_prefix,
-                require_amount_step=True,
                 require_post_only=(
                     isinstance(self.local, IndodaxTAPIv2)
                     or str(getattr(self.local, "id", "")).lower() == "tokocrypto"
@@ -209,6 +208,7 @@ class ExchangeOrderMixin:
             *_local_order_params(
                 self.local, client_order_id, spec,
                 broker_prefix=self._local_broker_prefix,
+                require_amount_step=True,
                 require_post_only=(
                     isinstance(self.local, IndodaxTAPIv2)
                     or str(getattr(self.local, "id", "")).lower() == "tokocrypto"
