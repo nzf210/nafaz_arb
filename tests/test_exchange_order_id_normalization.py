@@ -99,13 +99,13 @@ def test_supabase_order_analytics_persists_native_exchange_id():
     )
     writer = SupabaseWriter(cfg)
     assert writer.order(
-            "btc-usdt",
-            "spot_entry",
-            "tokocrypto",
-            "spot",
-            "BTC/USDT",
-            {"info": {"orderId": "T-300"}, "status": "open", "amount": 1.0},
-            client_order_id="bot-client-2",
+        "btc-usdt",
+        "spot_entry",
+        "tokocrypto",
+        "spot",
+        "BTC/USDT",
+        {"info": {"orderId": "T-300"}, "status": "open", "amount": 1.0},
+        client_order_id="bot-client-2",
         is_mock=False,
     )
     pending = writer._outbox.pending(100)
