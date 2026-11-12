@@ -1358,7 +1358,7 @@ async def test_restart_restores_active_position_from_supabase_when_redis_cache_i
     engine = await _build(fake_redis, MockExchangeClient(), mock_mode=False)
     engine.supabase.enabled = True
     position = _position()
-    engine.supabase.fetch_open_position_records = _async_value([{
+    engine.supabase.fetch_open_position_records = lambda: _async_value([{
         "pair_key": PAIR_TAG,
         "status": "HEDGED_ACTIVE",
         "is_mock": False,
