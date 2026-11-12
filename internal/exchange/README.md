@@ -9,7 +9,7 @@ internal/exchange/
   indodax/       # isolated spot markets, order books, USDT/IDR ticker
   tokocrypto/    # isolated spot markets and order books
   okx/           # next extraction: spot/perpetual, funding, books WS and limiter
-  mexc/          # next extraction: spot/perpetual, funding and books
+  mexc/          # isolated spot/perpetual market data, funding and books
   contracts/     # future normalized interfaces and capability definitions
   registry/      # future venue discovery and adapter selection
   (facade)       # current LiveAdapter compatibility layer
@@ -25,6 +25,10 @@ internal/exchange/
 - `tokocrypto.Client`: symbol discovery, trading-enabled filtering, LOT_SIZE
   normalization and spot order-book depth. Uses the shared HTTP transport and
   has independent tests.
+- `mexc.Client`: perpetual contract discovery and amount-rule normalization,
+  funding rates, spot depth and contract-size-adjusted perpetual depth. The
+  facade delegates MEXC REST calls while retaining health tracking and its
+  contract-size lookup. Independent HTTP fixture tests cover the payloads.
 - `LiveAdapter` delegates Indodax and Tokocrypto spot endpoints to these
   packages. The facade retains health tracking, caching and scanner-facing
   interfaces for backward compatibility.
@@ -33,8 +37,7 @@ internal/exchange/
 
 - OKX: perpetual discovery, funding, REST order books, websocket book manager,
   limiter and contract-size metadata.
-- MEXC: spot/perpetual discovery, funding, REST order books and contract-size
-  metadata.
+- Cross-venue market matching, health aggregation and shared websocket cache.
 - Cross-venue market matching, health aggregation and shared websocket cache.
 
 ## Rules
@@ -56,8 +59,7 @@ internal/exchange/
 
 ## Next migration order
 
-1. MEXC: spot and perpetual REST market-data client, then funding and depth.
-2. OKX: perpetual REST client, then limiter and websocket manager.
+1. OKX: perpetual REST client, then limiter and websocket manager.
 3. Move cross-venue aggregation into a registry/composite adapter.
 4. Separate authenticated account and execution capabilities from read-only
    market data. Do not enable order execution just because market data works.
