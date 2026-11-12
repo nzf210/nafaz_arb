@@ -2,11 +2,9 @@ package exchange
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math"
-	"net/http"
 	"strconv"
 	"strings"
 	"time"
