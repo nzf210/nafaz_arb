@@ -70,6 +70,7 @@ type LiveAdapter struct {
 	mexcPerpBooks *mexc.PerpetualBookManager
 	venueWSMaxAge time.Duration
 	tokocryptoSupervisor *venueBookSupervisor
+	tokocryptoSymbolTypes map[string]int
 	mexcPerpSupervisor *venueBookSupervisor
 }
 
@@ -116,6 +117,7 @@ func NewLiveAdapter() *LiveAdapter {
 		mexcBaseURL:       "https://contract.mexc.com",
 		mexcSpotBaseURL:   "https://api.mexc.com",
 		contractSizes:     make(map[string]float64),
+		tokocryptoSymbolTypes: make(map[string]int),
 		okxBookCalls:      make(map[string]*okxBookCall),
 	}
 	adapter.indodaxClient = indodax.New(httpClient, adapter.indodaxBaseURL)
