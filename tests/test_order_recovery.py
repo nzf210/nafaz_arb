@@ -1316,9 +1316,40 @@ def test_recovery_catalogue_sweeps_additional_configured_spot_and_perpetual_venu
     assert catalogues == {
         ("indodax", "spot"),
         ("okx", "futures"),
-        ("tokocrypto", "spot"),
         ("mexc", "futures"),
     }
+
+
+def test_tokocrypto_recovery_uses_symbols_from_durable_order_intents():
+    """Tokocrypto order history requires a symbol; durable intents supply it."""
+    class VenueClient:
+        balance_exchanges = {
+            "indodax": {"market": "spot", "client": object()},
+            "okx": {"market": "futures", "client": object()},
+            "tokocrypto": {"market": "spot", "client": object()},
+        }
+
+        def for_venue(self, exchange):
+            entry = self.balance_exchanges.get(exchange)
+            return object() if entry and entry.get("client") is not None else None
+
+    engine = _engine(None, VenueClient(), mock_mode=False)
+    record = _entry_record(
+        exchange="tokocrypto",
+        symbol="FLOKI/IDR",
+        client_order_id="toko-intent-entry-77",
+    )
+    engine._recovered_order_records = {record.local_order_id: record}
+
+    targets = engine._recovery_venue_targets()
+
+    assert (
+        "tokocrypto", "FLOKI/IDR", PAIR_TAG, "spot", LOCAL_SPEC
+    ) in targets
+    assert not any(
+        exchange == "tokocrypto" and not symbol
+        for exchange, symbol, *_rest in targets
+    )
 
 
 @pytest.mark.asyncio
