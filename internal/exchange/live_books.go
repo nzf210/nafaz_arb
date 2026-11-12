@@ -9,6 +9,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/indodax"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/mexc"
+	"github.com/nafaz/spot-perp-scanner/internal/exchange/okx"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange/tokocrypto"
 )
 
@@ -168,6 +169,7 @@ func (l *LiveAdapter) fetchOKXOrderBook(ctx context.Context, symbol string) (dom
 	if !ok || contractSize <= 0 { contractSize = 1 }
 	if client == nil { return domain.OrderBook{}, fmt.Errorf("okx client is not configured") }
 	book, err := client.PerpetualOrderBook(ctx, symbol, contractSize)
+	if err != nil && okx.IsUnavailable(err) { return domain.OrderBook{}, fmt.Errorf("%w: %v", ErrExchangeUnavailable, err) }
 	if err != nil { return domain.OrderBook{}, err }
 	return book, nil
 }
