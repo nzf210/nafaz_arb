@@ -319,27 +319,36 @@ func (c *Client) GetExecutorStatus(ctx context.Context) (raw string, found bool,
 	return raw, true, nil
 }
 
-// ListActivePositions retrieves all currently active positions stored in Redis.
+// ListActivePositions retrieves active positions using bounded Redis SCAN.
+// A malformed or unreadable record is an error: silently dropping it could make
+// the scanner believe an account is flat and emit a duplicate entry.
 func (c *Client) ListActivePositions(ctx context.Context) ([]domain.ActivePosition, error) {
 	if c == nil || c.rdb == nil {
-		return nil, nil
-	}
-	keys, err := c.rdb.Keys(ctx, KeyPrefixActivePos+"*").Result()
-	if err != nil {
-		return nil, fmt.Errorf("redis keys active pos: %w", err)
-	}
-	if len(keys) == 0 {
-		return nil, nil
+		return nil, errors.New("redis is not connected")
 	}
 	var out []domain.ActivePosition
-	for _, k := range keys {
-		data, err := c.rdb.Get(ctx, k).Bytes()
-		if err == nil {
+	var cursor uint64
+	for {
+		keys, nextCursor, err := c.rdb.Scan(ctx, cursor, KeyPrefixActivePos+"*", 100).Result()
+		if err != nil { return nil, fmt.Errorf("scan active positions: %w", err) }
+		for _, key := range keys {
+			data, readErr := c.rdb.Get(ctx, key).Bytes()
+			if errors.Is(readErr, redis.Nil) { continue } // closed while the scan was in progress
+			if readErr != nil { return nil, fmt.Errorf("read active position %s: %w", key, readErr) }
 			var pos domain.ActivePosition
-			if json.Unmarshal(data, &pos) == nil && pos.Qty > 0 {
-				out = append(out, pos)
+			if err := json.Unmarshal(data, &pos); err != nil {
+				return nil, fmt.Errorf("decode active position %s: %w", key, err)
 			}
+			if pos.Qty <= 0 { continue }
+			if strings.TrimSpace(pos.LocalExchange) == "" ||
+				strings.TrimSpace(pos.GlobalExchange) == "" ||
+				strings.TrimSpace(pos.Symbol) == "" {
+				return nil, fmt.Errorf("active position %s has incomplete venue identity", key)
+			}
+			out = append(out, pos)
 		}
+		cursor = nextCursor
+		if cursor == 0 { break }
 	}
 	return out, nil
 }
