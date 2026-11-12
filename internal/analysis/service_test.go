@@ -75,3 +75,26 @@ func TestAnalysisServiceFailsClosedWhenFeeProfileMissing(t *testing.T) {
 		t.Fatalf("missing verified fee profile must fail closed: %+v",result)
 	}
 }
+
+func TestAnalysisServiceFailsClosedOnStaleBook(t *testing.T) {
+	now:=time.Now()
+	adapter:=marketAdapterStub{
+		markets:[]domain.Market{
+			{Exchange:"a",Symbol:"A:BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
+			{Exchange:"b",Symbol:"B:BTC/USDT",BaseAsset:"BTC",QuoteAsset:"USDT",MarketType:"SPOT",Active:true},
+		},
+		books:map[string]domain.OrderBook{
+			"a":{Exchange:"a",Symbol:"A:BTC/USDT",Timestamp:now.Add(-time.Minute),Bids:[]domain.PriceLevel{{Price:100,Quantity:1}},Asks:[]domain.PriceLevel{{Price:100.1,Quantity:1}}},
+			"b":{Exchange:"b",Symbol:"B:BTC/USDT",Timestamp:now,Bids:[]domain.PriceLevel{{Price:102,Quantity:1}},Asks:[]domain.PriceLevel{{Price:102.1,Quantity:1}}},
+		},
+	}
+	engine,err:=NewEngine(CrossVenueSpotStrategy{})
+	if err!=nil{t.Fatal(err)}
+	service,err:=NewService(adapter,engine,func(context.Context,string,string)(FeeSchedule,bool,error){return FeeSchedule{TakerPct:.1},true,nil},ServiceConfig{MaxBookAge:time.Second})
+	if err!=nil{t.Fatal(err)}
+	result,err:=service.Analyze(context.Background())
+	if err!=nil{t.Fatal(err)}
+	if result.Complete||len(result.Signals)!=0||len(result.Errors)==0{
+		t.Fatalf("stale order book must fail closed: %+v",result)
+	}
+}
