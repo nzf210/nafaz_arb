@@ -48,9 +48,12 @@ CCXT adapter and requires the account-issued broker prefix:
   symbols from durable order intents and tracked positions rather than calling
   `fetch_open_orders(None)`.
 
-The public WebSocket feed intentionally subscribes only to MBX symbol type 1.
-NextMe symbol type 3 uses its own REST depth endpoint (`cloudme-toko.2meta.app`)
-and remains REST-only; symbol type 2 is rejected rather than sent to the wrong
-host. The REST client records `symbolType` from market discovery and selects the
-matching endpoint. No authenticated user WebSocket stream is enabled by this
-package.
+The public depth supervisor supports both match engines. MBX symbol type 1
+uses the raw stream URL
+`wss://stream-cloud.tokocrypto.site/stream/ws/{symbol}@depth`; NextMe symbol
+type 3 connects to `wss://stream-toko.2meta.app` and sends a SUBSCRIBE frame.
+Both use their matching REST snapshot host. NextMe events carry `pu` (previous
+final update ID), which is enforced for sequence continuity; combined-stream
+`data` envelopes and subscription acknowledgements are decoded/ignored safely.
+Symbol type 2 is excluded rather than sent to the wrong host. No authenticated
+user WebSocket stream is enabled by this package.
