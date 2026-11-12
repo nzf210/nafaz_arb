@@ -222,22 +222,18 @@ async def test_p0_05_force_close_retains_position_on_futures_close_failure(fake_
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "FORCE_CLOSE_PARTIAL_OR_FAILED"
 
 @pytest.mark.asyncio
-async def test_p2_03_force_close_uses_backoff_helper(fake_redis, monkeypatch):
-    """Force close must go through the shared retry helper, not an inline loop."""
-    import executor.helpers as helpers_module
-
-    seen = {"n": 0}
-    real_helper = helpers_module.retry_with_backoff
-
-    async def spy(fn, **kwargs):
-        seen["n"] += 1
-        return await real_helper(fn, **kwargs)
-
-    # Patch the module the force-close path resolves the helper through.
-    monkeypatch.setattr(helpers_module, "retry_with_backoff", spy)
-
+async def test_force_close_submits_emergency_spot_sell_once(fake_redis):
+    """A non-idempotent emergency sell is submitted once, never blindly retried."""
+    attempts = []
     pair_tag = "indodax:btc_idr"
     client = SpotSellFailureClient()
+    original = client.place_local_market_sell
+
+    async def count_submit(*args, **kwargs):
+        attempts.append("submit")
+        return await original(*args, **kwargs)
+
+    client.place_local_market_sell = count_submit
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
     )
@@ -258,7 +254,7 @@ async def test_p2_03_force_close_uses_backoff_helper(fake_redis, monkeypatch):
 
     await engine.handle_force_close(pair_tag)
 
-    assert seen["n"] == 1
+    assert attempts == ["submit"]
 
 
 @pytest.mark.asyncio
