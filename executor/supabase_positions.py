@@ -140,6 +140,12 @@ class SupabasePositionMixin:
         self._position_rows[pair_key] = row
         self._emit("positions", row, on_conflict="id")
         self._position_legs(pair_key, position_id, pos, pair_info, status=row["status"])
+        # Entry orders are first recorded before the position UUID exists.
+        # Link them only after the parent position upsert is queued, preserving
+        # foreign-key ordering in the durable outbox.
+        linker = getattr(self, "link_orders_to_position", None)
+        if callable(linker):
+            linker(pair_key)
 
     def _position_legs(
         self, pair_key: str, position_id: str, pos: Any, pair_info: Any,
