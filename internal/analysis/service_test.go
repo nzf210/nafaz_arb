@@ -48,6 +48,9 @@ func TestAnalysisServiceUsesVerifiedFeesAndBoundedMarketSelection(t *testing.T) 
 	if !result.Complete||result.SelectedMarkets!=2||result.FetchedBooks!=2||len(result.Signals)!=1{
 		t.Fatalf("unexpected analysis result: %+v",result)
 	}
+	if _,err:=service.Analyze(context.Background());err==nil{
+		t.Fatal("a second immediate analysis request must be rate-limited")
+	}
 }
 
 func TestAnalysisServiceFailsClosedWhenFeeProfileMissing(t *testing.T) {
