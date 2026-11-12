@@ -33,12 +33,20 @@ class EngineRuntimeMixin:
                         # A replica that started while another owner held the
                         # lease must retry the full startup restore, not only
                         # order polling, before it can become READY.
+                        was_recovery_complete = self._recovery_complete
                         self._recovery_complete = await self._run_startup_recovery()
                         if not self._recovery_complete:
                             self._halt_exposure_scope(
                                 "*", "startup recovery is waiting for distributed ownership"
                             )
                             self._refresh_entry_gate()
+                        elif not was_recovery_complete:
+                            # Signals may have arrived while this replica was
+                            # waiting for the distributed recovery lease. Wake
+                            # the durable queue only after the full restore pass
+                            # succeeds, so no candidate is popped and discarded
+                            # by the startup entry gate.
+                            self._signal_queue_event.set()
                     else:
                         await self._run_order_recovery()
             except asyncio.CancelledError:
@@ -166,6 +174,12 @@ class EngineRuntimeMixin:
             self._signal_queue_event.clear()
             await self._coalesce_signal_batch()
             while self._running:
+                # Never consume the durable priority queue before startup
+                # recovery has completed. If the Redis lease is temporarily
+                # owned by another replica, the periodic full-recovery retry
+                # will wake this worker after it succeeds.
+                if not self._recovery_complete:
+                    break
                 ranked = await self._claim_ranked_signals(queue_key)
                 if not ranked:
                     break
@@ -313,6 +327,8 @@ class EngineRuntimeMixin:
             await self.redis.set(
                 f"arb:recovery_reply:{request_id}", json.dumps(reply, default=str), ex=30
             )
+            if reply["complete"] and self._recovery_complete:
+                self._signal_queue_event.set()
             await self.publish_status()
         except asyncio.CancelledError:
             raise
