@@ -65,7 +65,6 @@ func (c *Client) SpotMarkets(ctx context.Context) ([]domain.Market, error) {
 				TickSize string `json:"tickSize"`
 				StepSize string `json:"stepSize"`
 				MinQty string `json:"minQty"`
-				MinNotional string `json:"minNotional"`
 			} `json:"filters"`
 		} `json:"symbols"`
 	}
