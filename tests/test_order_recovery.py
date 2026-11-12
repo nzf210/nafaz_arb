@@ -124,6 +124,16 @@ async def _build(fake_redis, client=None, mock_mode=True):
     return engine
 
 
+@pytest.mark.asyncio
+async def test_live_initialize_refuses_redis_only_order_persistence(fake_redis):
+    engine = _engine(fake_redis, MockExchangeClient(), mock_mode=False)
+    engine.supabase.enabled = False
+    engine.supabase._outbox = None
+
+    with pytest.raises(RuntimeError, match="Supabase durable outbox is unavailable"):
+        await engine.initialize()
+
+
 @pytest.mark.parametrize(
     "state",
     ["ENTRY_PARTIAL", "EXIT_PENDING", "FAILED"],
