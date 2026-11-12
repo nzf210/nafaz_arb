@@ -517,17 +517,55 @@ class EngineRecoveryMixin:
             return False
 
     async def _recover_active_positions(self) -> None:
-        """Restore Redis positions and preserve unresolved records for reconciliation."""
+        """Restore Redis positions, then backfill cache misses from durable Supabase."""
         try:
             keys = await self.redis.keys("arb:active_pos:*")
-        except Exception:
+        except Exception as exc:
             logger.exception("[Recovery] failed to scan arb:active_pos:* keys")
-            return
+            raise RuntimeError("active position cache could not be enumerated") from exc
 
         recovered = 0
         for key in keys or []:
             if await self._recover_active_position_record(key):
                 recovered += 1
+
+        if bool(getattr(self.supabase, "enabled", False)):
+            reader = getattr(self.supabase, "fetch_open_position_records", None)
+            if not callable(reader):
+                raise RuntimeError(
+                    "LIVE recovery requires a durable active-position reader"
+                )
+            durable_rows = await reader()
+            if not isinstance(durable_rows, list):
+                raise RuntimeError("durable active-position read returned malformed rows")
+            for row in durable_rows:
+                if not isinstance(row, dict) or bool(row.get("is_mock", False)):
+                    continue
+                pair_tag = str(row.get("pair_key") or "").strip()
+                if not pair_tag or pair_tag in self.active_positions:
+                    continue
+                snapshot = row.get("state_snapshot")
+                if isinstance(snapshot, str):
+                    try:
+                        snapshot = json.loads(snapshot)
+                    except (TypeError, ValueError) as exc:
+                        raise RuntimeError(
+                            f"durable position {pair_tag} has malformed state_snapshot"
+                        ) from exc
+                if not isinstance(snapshot, dict) or not snapshot:
+                    raise RuntimeError(
+                        f"durable position {pair_tag} has no recoverable state_snapshot"
+                    )
+                snapshot = dict(snapshot)
+                snapshot["state"] = str(row.get("status") or snapshot.get("state") or "RECONCILIATION_REQUIRED")
+                key = f"arb:active_pos:{pair_tag}"
+                await self.redis.set(key, json.dumps(snapshot, allow_nan=False))
+                if not await self._recover_active_position_record(key):
+                    raise RuntimeError(
+                        f"durable active position {pair_tag} could not be restored safely"
+                    )
+                recovered += 1
+
         if recovered:
             logger.warning(
                 f"[Recovery] {recovered} active position(s) restored - resuming management"
