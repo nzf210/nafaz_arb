@@ -283,7 +283,7 @@ class RecoveryDiscoveryMixin:
         if venue_order_id and not record.exchange_order_id:
             record.exchange_order_id = venue_order_id
         observed_client_id = str(
-            order.get("clientOrderId") or order.get("client_order_id") or ""
+            order.get("client_order_id") or order.get("clientOrderId") or ""
         )
         if (
             observed_client_id
