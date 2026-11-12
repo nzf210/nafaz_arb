@@ -65,3 +65,11 @@ reconciliation.
   account-wide open-order sweep through CCXT.
 - If the durable position reader or a required symbol-scoped order lookup fails,
   startup remains gated rather than treating unavailable data as a flat account.
+
+
+Order-create requests are single-attempt operations. After an ambiguous
+acknowledgement, the executor queries the venue by the durable client order ID;
+if no verifiable order is found, it marks the pair unresolved and halts new
+exposure. Emergency rollback and force-close market sells follow the same rule:
+they are never blindly retried, including on Tokocrypto where `clientId`
+uniqueness is not guaranteed.
