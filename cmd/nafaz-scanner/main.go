@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nafaz/spot-perp-scanner/internal/analysis"
 	"github.com/nafaz/spot-perp-scanner/internal/api"
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
@@ -130,6 +131,39 @@ func main(){
 	server:=api.New(svc,store,cfg)
 	if redisClient != nil {
 		server.SetExecutorClient(redisClient)
+		engine, analysisErr := analysis.NewEngine(analysis.CrossVenueSpotStrategy{
+			MinNetReturnPct: cfg.MinNetROIPct,
+			MaxCandidates: 25,
+		})
+		if analysisErr != nil {
+			log.Printf("warning: multi-strategy analysis engine disabled: %v", analysisErr)
+		} else {
+			analysisService, serviceErr := analysis.NewService(
+				adapter,
+				engine,
+				func(feeCtx context.Context, venue, symbol string) (analysis.FeeSchedule, bool, error) {
+					profile, feeErr := redisClient.GetDynamicFeeProfile(feeCtx, venue, "spot", symbol)
+					if feeErr != nil { return analysis.FeeSchedule{}, false, feeErr }
+					if profile == nil || !profile.Verified || profile.Source != "EXCHANGE_API" {
+						return analysis.FeeSchedule{}, false, nil
+					}
+					return analysis.FeeSchedule{MakerPct: profile.MakerFeePct, TakerPct: profile.TakerFeePct}, true, nil
+				},
+				analysis.ServiceConfig{
+					QuoteAssets: cfg.QuoteAssets,
+					MaxMarkets: 40,
+					MaxConcurrency: 4,
+					MaxBookAge: time.Duration(cfg.MaxOrderBookAgeSeconds) * time.Second,
+					EstimatedSlippagePct: cfg.MaxSlippagePct,
+				},
+			)
+			if serviceErr != nil {
+				log.Printf("warning: multi-strategy analysis service disabled: %v", serviceErr)
+			} else {
+				server.SetAnalysisService(analysisService)
+				log.Printf("read-only multi-strategy analysis endpoint enabled")
+			}
+		}
 	}
 	go server.RunPeriodic(ctx)
 
