@@ -90,3 +90,8 @@ CEX account verification before LIVE funds are enabled.
 | R-21 | Tokocrypto All Orders requires a symbol, while account-wide CCXT open-order lookup passed None | Recovery | Tokocrypto startup reconciliation now performs per-symbol reads from durable intents and tracked positions |
 | R-22 | Active position restoration depended on Redis keys even though Supabase already stored position snapshots | Recovery | Added durable active-position reads from Supabase with local outbox overlay and Redis cache rehydration |
 
+| R-23 | LIVE executor could start with Supabase disabled and silently persist orders only in Redis | Deployment / recovery | LIVE config and engine initialization now require a working Supabase service-role connection configuration and writable SQLite outbox; Redis-only LIVE startup is blocked |
+| R-24 | Compose hardcoded Indodax and did not pass venue API credentials into the executor container | Deployment | Local/global venue selection is environment-driven and supported CEX API keys, passphrases and Tokocrypto broker ID are injected at runtime |
+| R-25 | Fill reconciliation could continue after one durable history table failed or a page limit truncated history | Ledger recovery | Recent order/fill reads are paginated; any partial table read failure blocks reconciliation and raises a global safety halt |
+| R-26 | Tokocrypto/MEXC depth supervisors were opt-in even in LIVE mode | Market data | WebSocket supervisors now default on in LIVE, with explicit config/environment opt-out and REST fallback retained |
+
