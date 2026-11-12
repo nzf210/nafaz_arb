@@ -484,6 +484,10 @@ class ExecutorConfig:
             missing.append(f"{self.global_exchange_name} API key/secret")
         if self.global_exchange_name.lower() == "okx" and not self.global_credentials.passphrase:
             missing.append("okx API passphrase")
+        if not self.supabase.enabled or not self.supabase.url or not self.supabase.key:
+            missing.append("Supabase durable storage (enabled, URL and service-role key)")
+        if not str(self.supabase.outbox_path or "").strip():
+            missing.append("Supabase durable outbox path")
 
         from executor.config_validation import tokocrypto_broker_id_missing
         if tokocrypto_broker_id_missing(self):
