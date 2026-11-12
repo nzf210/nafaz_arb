@@ -30,6 +30,7 @@ type localBook struct {
 	bids, asks map[float64]float64
 	lastID     int64
 	updatedAt  time.Time
+	bridged    bool
 }
 
 // BookManager maintains synchronized Tokocrypto MBX spot books.
@@ -66,7 +67,13 @@ func (m *BookManager) Apply(update DepthUpdate) (bool,error) {
 	book:=m.books[update.Symbol]
 	if book==nil{return false,fmt.Errorf("tokocrypto book %s is not bootstrapped",update.Symbol)}
 	if update.FinalUpdateID<=book.lastID{return false,nil}
-	if update.FirstUpdateID!=book.lastID+1 {
+	if !book.bridged {
+		if update.FirstUpdateID > book.lastID+1 || update.FinalUpdateID < book.lastID+1 {
+			delete(m.books,update.Symbol)
+			return false,fmt.Errorf("tokocrypto snapshot bridge failed for %s at update %d",update.Symbol,book.lastID+1)
+		}
+		book.bridged = true
+	} else if update.FirstUpdateID != book.lastID+1 {
 		delete(m.books,update.Symbol)
 		return false,fmt.Errorf("tokocrypto sequence gap for %s: expected first update %d, got %d",update.Symbol,book.lastID+1,update.FirstUpdateID)
 	}
