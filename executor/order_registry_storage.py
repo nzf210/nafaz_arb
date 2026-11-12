@@ -90,6 +90,10 @@ class OrderRegistryStorageMixin:
             existing = await self._load_cached(record.local_order_id)
         if existing is None:
             return
+        # Preserve the exact venue-side alias when a later lifecycle snapshot
+        # omits it (Tokocrypto's rewritten ID is not reversible).
+        if not record.venue_client_order_id:
+            record.venue_client_order_id = existing.venue_client_order_id
         record.hedged_quantity = max(
             float(record.hedged_quantity or 0.0), float(existing.hedged_quantity or 0.0)
         )
