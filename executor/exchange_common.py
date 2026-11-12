@@ -39,10 +39,14 @@ def _local_order_params(
         # MOC is attached only by the explicit limit-order call sites.
         if require_post_only:
             params["timeInForce"] = "MOC"
-    elif require_post_only and str(getattr(exchange, "id", "")).lower() == "tokocrypto":
-        # CCXT maps postOnly=True to Tokocrypto's LIMIT_MAKER (type=7), which
-        # the venue rejects if the order would immediately take liquidity.
-        params["postOnly"] = True
+    elif str(getattr(exchange, "id", "")).lower() == "tokocrypto":
+        if amount_spec.unit != "BASE":
+            raise ValueError("Tokocrypto spot amount rules must use BASE units")
+        if amount_spec.step <= 0 and require_amount_step:
+            raise ValueError("Tokocrypto orders require the market quantity increment")
+        if require_post_only:
+            # CCXT maps postOnly=True to Tokocrypto's LIMIT_MAKER (type=7).
+            params["postOnly"] = True
     return (params,) if params else ()
 
 VENUE_CLIENT_ORDER_ID_MAX_LEN = 36
