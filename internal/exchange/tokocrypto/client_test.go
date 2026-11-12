@@ -9,22 +9,25 @@ import (
 
 func TestMarketsNormalizeLotSize(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"code":0,"data":{"list":[{"symbol":"BTCUSDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1,"symbolType":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.002"}]},{"symbol":"OFF","baseAsset":"OFF","quoteAsset":"USDT","spotTradingEnable":0}]}}`))
+		_, _ = w.Write([]byte(`{"code":0,"data":{"list":[{"symbol":"BTC_USDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1,"symbolType":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.002"}]},{"symbol":"OFF","baseAsset":"OFF","quoteAsset":"USDT","spotTradingEnable":0}]}}`))
 	}))
 	defer server.Close()
 	markets, err := New(server.Client(), server.URL).Markets(context.Background())
 	if err != nil { t.Fatal(err) }
-	if len(markets) != 1 || markets[0].Symbol != "toko:BTCUSDT" { t.Fatalf("unexpected markets: %+v", markets) }
+	if len(markets) != 1 || markets[0].Symbol != "toko:BTC_USDT" { t.Fatalf("unexpected markets: %+v", markets) }
 	if markets[0].AmountSpec == nil || markets[0].AmountSpec.Step != .001 { t.Fatalf("unexpected amount spec: %+v", markets[0].AmountSpec) }
 }
 
 func TestOrderBookNormalizesDepth(t *testing.T) {
+	requested := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = r.URL.Path + "?" + r.URL.RawQuery
 		_, _ = w.Write([]byte(`{"lastUpdateId":22,"bids":[["100","2"]],"asks":[["101","3"]]}`))
 	}))
 	defer server.Close()
-	book, err := New(server.Client(), server.URL).OrderBook(context.Background(), "toko:BTCUSDT")
+	book, err := New(server.Client(), server.URL).OrderBook(context.Background(), "toko:BTC_USDT")
 	if err != nil { t.Fatal(err) }
+	if requested != "/api/v3/depth?symbol=BTCUSDT&limit=20" { t.Fatalf("MBX symbol was not normalized: %s", requested) }
 	if book.Exchange != "tokocrypto" || len(book.Bids) != 1 || book.Bids[0].Quantity != 2 { t.Fatalf("unexpected book: %+v", book) }
 }
 
