@@ -15,6 +15,7 @@ from executor.helpers import (
     RetryExhausted,
     build_client_order_id,
     retry_with_backoff,
+    is_explicit_rate_limit_rejection,
 )
 from executor.models import OrderRole, PositionState
 from executor.quantity import AmountSpec
@@ -77,6 +78,7 @@ class RollbackMixin:
                 max_retries=max_retries,
                 base_delay=0.5,
                 label=f"hedge rollback sell {symbol} for {pair_tag}",
+                retry_if=is_explicit_rate_limit_rejection,
             )
         except RetryExhausted as exhausted:
             rejection_check = getattr(self, "_is_definitive_order_rejection", None)
