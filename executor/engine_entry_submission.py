@@ -325,6 +325,8 @@ class EngineEntrySubmissionMixin:
                                 )
                             except Exception as submit_error:
                                 _, normalized_submit_error = self._entry_error_text(submit_error)
+                                if self._is_definitive_order_rejection(submit_error):
+                                    submission_started = False
                                 if self._is_explicit_ip_ban(normalized_submit_error):
                                     ip_ban_state = await self.global_stop.request_stop_in_transaction(
                                         fence_conn, "CEX_IP_BLOCK",
