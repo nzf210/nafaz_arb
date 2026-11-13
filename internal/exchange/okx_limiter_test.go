@@ -227,6 +227,24 @@ func TestNonOKXRequestsNotThrottled(t *testing.T) {
 
 // TestManyWorkersShareOneLimiter proves concurrent workers hitting OKX through
 // one adapter are all admitted and none deadlocks.
+func TestOKXFundingRateDecodesNextFundingTime(t *testing.T) {
+    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        t.Logf("funding fixture request path=%s", r.URL.String())
+        w.Header().Set("Content-Type", "application/json")
+        _, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"fundingRate":"0.0001","fundingTime":"1690028800000","nextFundingTime":"1690057600000","prevFundingTime":"1690000000000","ts":"1690000000000"}]}`))
+    }))
+    defer server.Close()
+
+    adapter := newLimiterTestAdapter(server.URL, OKXLimiterConfig{BooksRatePer2s: 200, FundingRatePer2s: 200, MaxConcurrent: 3})
+    rate, err := adapter.FundingRate(context.Background(), "BTC-USDT-SWAP")
+    if err != nil {
+        t.Fatalf("FundingRate: %v", err)
+    }
+    if rate.NextFundingTime.IsZero() {
+        t.Fatal("expected authoritative next funding timestamp")
+    }
+}
+
 func TestManyWorkersShareOneLimiter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v5/public/funding-rate") {
