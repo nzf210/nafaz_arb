@@ -108,15 +108,56 @@ create index if not exists idx_outbox_pending
 
 -- Prevent accidental direct updates to immutable snapshots at the database level.
 create or replace function public.reject_config_version_mutation()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql as $
 begin
-    raise exception 'config_versions are immutable; create a new version';
+    if new.version is distinct from old.version
+       or new.schema_version is distinct from old.schema_version
+       or new.snapshot is distinct from old.snapshot
+       or new.content_sha256 is distinct from old.content_sha256
+       or new.created_by is distinct from old.created_by
+       or new.created_at is distinct from old.created_at
+       or new.change_reason is distinct from old.change_reason
+       or new.change_diff is distinct from old.change_diff
+       or new.source_version is distinct from old.source_version then
+        raise exception 'config snapshot is immutable; create a new version';
+    end if;
+    return new;
 end;
-$$;
+$;
 drop trigger if exists trg_config_versions_immutable on public.config_versions;
 create trigger trg_config_versions_immutable
 before update or delete on public.config_versions
 for each row execute function public.reject_config_version_mutation();
+
+-- Keep these tables private to server-side database roles. On Supabase, the
+-- service_role bypasses RLS; on plain PostgreSQL, the migration remains valid
+-- even when Supabase-specific roles are absent.
+alter table public.config_versions enable row level security;
+alter table public.active_config_version enable row level security;
+alter table public.config_audit_log enable row level security;
+alter table public.operator_control_state enable row level security;
+alter table public.operator_actions enable row level security;
+alter table public.outbox_events enable row level security;
+
+revoke all on public.config_versions, public.active_config_version,
+    public.config_audit_log, public.operator_control_state,
+    public.operator_actions, public.outbox_events from public;
+
+do $
+begin
+    if exists (select 1 from pg_roles where rolname = 'anon') then
+        execute 'revoke all on public.config_versions, public.active_config_version, public.config_audit_log, public.operator_control_state, public.operator_actions, public.outbox_events from anon';
+    end if;
+    if exists (select 1 from pg_roles where rolname = 'authenticated') then
+        execute 'revoke all on public.config_versions, public.active_config_version, public.config_audit_log, public.operator_control_state, public.operator_actions, public.outbox_events from authenticated';
+    end if;
+    if exists (select 1 from pg_roles where rolname = 'service_role') then
+        execute 'grant select, insert, update on public.config_versions, public.active_config_version, public.operator_control_state, public.operator_actions, public.outbox_events to service_role';
+        execute 'grant select, insert on public.config_audit_log to service_role';
+        execute 'grant usage, select on all sequences in schema public to service_role';
+    end if;
+end;
+$;
 
 -- This schema deliberately starts the trading gate closed. Runtime services must
 -- claim/update it through a transaction that records operator_actions and outbox.
