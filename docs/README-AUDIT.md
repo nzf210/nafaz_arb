@@ -10,7 +10,7 @@ Seluruh penjelasan dan panduan audit pada direktori ini menggunakan Bahasa Indon
 4. [Kontrak Pengujian Regresi](REGRESSION-CONTRACT.md) — perilaku yang wajib dipertahankan dan pengujian yang harus lulus.
 5. [Inventaris Arsitektur per Berkas](FILE-LEVEL-ARCHITECTURE-INVENTORY.md) — daftar berkas dan arahan peninjauan per berkas.
 
-6. [Desain Teknis Executor V2](EXECUTOR-ARCHITECTURE-V2.md) — rancangan coordinator, ranking peluang, eksekusi dua kaki, Pair PnL, exit, reconciliation, schema, pengujian, dan rollout. Status: untuk review; belum diimplementasikan.
+6. [Desain Teknis Executor V2](EXECUTOR-ARCHITECTURE-V2.md) — rancangan enam domain, ranking peluang, capital allocation, orphan discovery, hedge integrity, sertifikasi CEX, Pair PnL, exit/unwind, readiness, keamanan, Telegram, replay, schema, pengujian, dan rollout. Status: untuk review; belum diimplementasikan.
 
 ## Aturan status
 
