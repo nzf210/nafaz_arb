@@ -2,7 +2,7 @@
 
 ## Executive decision
 
-**NOT READY for live trading.** This branch contains defensive implementation changes, but CI has not yet passed and no authenticated exchange smoke test, sandbox execution, paper-trading soak, or recovery drill has been performed. No live orders were sent during this audit.
+**NOT READY for live trading.** The full stacked branch CI passed on commit `83b401734b2afa0c59bf6b16b5fdbc885eb5b071` (run `43418419003`), but no authenticated exchange smoke test, sandbox execution, paper-trading soak, or recovery drill has been performed. No live orders were sent during this audit.
 
 The audit covers execution submission, private account data, position and order reconciliation, sizing and risk limits, emergency rollback/force-close, restart recovery, CEX API compatibility, and CI coverage.
 
@@ -10,8 +10,8 @@ The audit covers execution submission, private account data, position and order 
 
 | Severity | Finding | Change in this branch | Status |
 |---|---|---|---|
-| P0 | Live sizing could continue after a private balance read failed | Fail closed; halt both venues and do not size/submit without a valid spot + futures balance snapshot | Implemented; CI pending |
-| P0 | Final dual-leg funding gate treated missing/invalid balances as fundable | Require finite non-negative available balances and a finite positive per-leg requirement | Implemented; CI pending |
+| P0 | Live sizing could continue after a private balance read failed | Fail closed; halt both venues and do not size/submit without a valid spot + futures balance snapshot | Implemented; CI passed |
+| P0 | Final dual-leg funding gate treated missing/invalid balances as fundable | Require finite non-negative available balances and a finite positive per-leg requirement | Implemented; CI passed |
 | P0 | Futures leverage was not verified before opening a short | Read leverage for the target contract; require short leverage exactly 1x; halt on missing, malformed, or >1x values | Implemented; authenticated runtime verification pending |
 | P0 | Executor assumed account position modes without checking them | Read account position mode before readiness. OKX must be Hedge Mode; MEXC/other supported venues must be One-way Mode | Implemented; authenticated runtime verification pending |
 | P0 | Recovery reconciled bot-tracked symbols but could miss manual/orphan futures positions on other symbols | Enumerate all configured futures positions account-wide and compare actual short quantity to durable managed exposure; unknown rows or missing contract size halt the venue | Implemented; exchange smoke test pending |
@@ -19,7 +19,7 @@ The audit covers execution submission, private account data, position and order 
 | P0 | Emergency market-sell retry could duplicate an accepted order after a lost acknowledgement | Submit once; reconcile by client order ID; never blindly retry; unresolved outcome remains reconciliation-required | Implemented; venue-specific history lookup needs smoke test |
 | P1 | Missing futures contract size could be silently treated as 1 | Require authoritative positive finite `contractSize` in book normalization, recovery, rollback, and force-close verification | Implemented |
 | P1 | Live exposure cap could be disabled with zero | LIVE startup requires a positive cap; runtime rejects invalid cap, planned notional, or non-finite exposure state | Implemented |
-| P1 | Live risk could start after the SQLite outbox failed to initialize even though Supabase config passed validation | Expose `durable_ready` and block LIVE startup unless the durable outbox and delivery worker are active | Implemented in follow-up; CI + deployment storage check pending |
+| P1 | Live risk could start after the SQLite outbox failed to initialize even though Supabase config passed validation | Expose `durable_ready` and block LIVE startup unless the durable outbox and delivery worker are active | Implemented; CI passed; deployment storage check pending |
 | P1 | MEXC Futures adapter used the legacy API base and old contract metadata endpoint | Switch to `https://api.mexc.com`, `/api/v1/contract/detail/country`; accept object/list payloads and filter API-enabled perpetual contracts | Implemented; live public API smoke test pending |
 | P1 | CCXT dependency was floating | Pin CCXT to 4.5.92 for reproducibility | Implemented |
 | P1 | CI did not trigger for audit branches/PRs | Add `audit/**` push and PR triggers; update the PR base workflow so PR #30 receives checks | Implemented |
@@ -48,7 +48,7 @@ These are preconditions, not automatic account mutations:
 
 ## Validation still required
 
-1. CI run for code head 48eb0a1e completed successfully: Python tests, Go unit tests, Go race tests, Go vet, scanner/executor Docker image builds, and Supabase schema/migration/idempotency/RLS checks all passed. A subsequent documentation-only commit is queued for another CI run.
+1. CI run `43418419003` for commit `83b401734b2afa0c59bf6b16b5fdbc885eb5b071` completed successfully: Python executor tests, Go unit tests/race tests/vet, scanner and executor Docker builds, and Supabase schema/migration/idempotency/RLS checks all passed.
 2. Authenticated **read-only** smoke test for each configured CEX: balances, position mode, leverage, all open positions, open orders, order history, and private trade history. No secrets should be placed in source or chat.
 3. Paper trading with real market data and account reads, but no order submission.
 4. Failure-injection/restart drills: spot fill + futures reject, partial fills, lost create-order acknowledgement, lost cancel acknowledgement, process restart with pending orders, Supabase outage, Redis outage, and stale market data.
