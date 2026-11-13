@@ -5,7 +5,7 @@ import json
 import time
 from unittest.mock import AsyncMock
 
-from executor.models import ActivePosition, PositionState
+from executor.models import ActivePosition, ExecutorPayload, PositionState
 
 import fakeredis.aioredis as fake_aioredis
 import pytest
@@ -417,8 +417,8 @@ async def test_pair_auto_blacklist_after_two_consecutive_failures(engine, fake_r
 
 
 @pytest.mark.asyncio
-async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis):
-    """Live order submission, not a balance endpoint, decides whether funds suffice."""
+async def test_live_entry_blocks_when_balance_snapshot_is_unavailable(engine, fake_redis):
+    """Unknown live account balances block entry before any spot order is submitted."""
     client = BalancesMockClient()
 
     def fail_balances():
@@ -427,6 +427,7 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
     client.get_balances = fail_balances
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
+    engine.config.max_exposure_per_exchange_usdt = 1000.0
     engine.client = client
     # This test isolates balance-probe behavior; the separate adaptive-maker
     # tests cover the fresh Indodax book preflight.
@@ -442,8 +443,9 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
 
     await engine.handle_signal_notification(pair_tag)
 
-    assert len(client.placed_buys) == 1
-    assert engine._exchange_halted == {}
+    assert len(client.placed_buys) == 0
+    assert "indodax" in engine._exchange_halted
+    assert "binance" in engine._exchange_halted
 
 
 @pytest.mark.asyncio
@@ -453,16 +455,13 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     """An insufficient-funds rejection is reported with the venue's reason."""
     client = BalancesMockClient()
 
-    def fail_balances():
-        raise TimeoutError("balance endpoint rate limited")
-
     async def reject_order(*args, **kwargs):
         raise RuntimeError("InsufficientFunds: insufficient balance")
 
-    client.get_balances = fail_balances
     client.place_local_limit_buy = reject_order
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
+    engine.config.max_exposure_per_exchange_usdt = 1000.0
     engine.client = client
     # Keep this test focused on mapping the venue rejection to its public
     # failure reason; adaptive-maker book validation is covered separately.
@@ -647,3 +646,26 @@ async def test_venue_cooldown_task_propagates_cancellation(engine):
 
     # Cancellation must not accidentally clear the active venue halt.
     assert "indodax" in engine._exchange_halted
+
+
+def test_live_exposure_cap_fails_closed_for_disabled_or_nonfinite_exposure(fake_redis):
+    engine, _ = _exposure_engine(fake_redis, cap=0.0)
+    engine.config.mock_mode = False
+    payload = ExecutorPayload.from_dict(_fresh_signal_payload(int(time.time() * 1000)))
+
+    assert not engine._exposure_allows("pair", payload.pair_info, 50.0)
+
+    engine.config.max_exposure_per_exchange_usdt = 100.0
+    assert not engine._exposure_allows("pair", payload.pair_info, float("nan"))
+
+    engine.active_positions["existing"] = ActivePosition(
+        local_exchange=payload.pair_info.local_exchange,
+        global_exchange=payload.pair_info.global_exchange,
+        symbol=payload.pair_info.local_symbol,
+        entry_price_idr=1.0,
+        short_entry_usdt=1.0,
+        qty=1.0,
+        spot_cost_usdt=float("nan"),
+        futures_margin_usdt=1.0,
+    )
+    assert not engine._exposure_allows("pair", payload.pair_info, 50.0)

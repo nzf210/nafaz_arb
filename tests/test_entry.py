@@ -836,6 +836,7 @@ async def test_prepare_entry_sizing_fetches_balance_once(engine, fake_redis, moc
     """_prepare_entry_sizing must reuse balance snapshot for dual-leg funding preflight."""
     pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
     engine.config.mock_mode = False
+    engine.config.max_exposure_per_exchange_usdt = 1000.0
     balance_calls = 0
 
     async def counted_get_balances(**kwargs):
@@ -860,3 +861,160 @@ async def test_prepare_entry_sizing_fetches_balance_once(engine, fake_redis, moc
     )
     assert sizing is not None
     assert balance_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_live_entry_sizing_fails_closed_when_balance_probe_errors(
+    engine, fake_redis, mock_client
+):
+    """Unknown live account balances must never produce an uncapped entry size."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.mock_mode = False
+
+    async def unavailable_balances(**kwargs):
+        raise TimeoutError("private balance endpoint unavailable")
+
+    mock_client.get_balances = unavailable_balances
+    payload_dict = _fresh_signal_payload(int(time.time() * 1000))
+    payload_dict["pair_info"]["local_exchange"] = "tokocrypto"
+    payload_dict["pair_info"]["global_exchange"] = "okx"
+    from executor.models import ExecutorPayload
+    payload = ExecutorPayload.from_dict(payload_dict)
+
+    sizing = await engine._prepare_entry_sizing(
+        pair_tag, payload, payload.pair_info, payload.execution_directives
+    )
+
+    assert sizing is None
+    assert "tokocrypto" in engine._exchange_halted
+    assert "okx" in engine._exchange_halted
+    assert pair_tag not in engine.pending_entry_orders
+
+
+@pytest.mark.asyncio
+async def test_live_dual_leg_preflight_fails_closed_when_balance_snapshot_missing(
+    engine, fake_redis, mock_client
+):
+    """A missing snapshot at the final funding gate must block both-leg entry."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.mock_mode = False
+    payload_dict = _fresh_signal_payload(int(time.time() * 1000))
+    payload_dict["pair_info"]["local_exchange"] = "tokocrypto"
+    payload_dict["pair_info"]["global_exchange"] = "okx"
+    from executor.models import ExecutorPayload
+    payload = ExecutorPayload.from_dict(payload_dict)
+
+    async def missing_balances(**kwargs):
+        return None
+
+    mock_client.get_balances = missing_balances
+    funded = await engine._verify_dual_leg_funding(
+        pair_tag, payload.pair_info, 25.0,
+        payload.pricing_snapshot.usdt_idr_rate,
+    )
+
+    assert funded is False
+    assert "tokocrypto" in engine._exchange_halted
+    assert "okx" in engine._exchange_halted
+
+
+@pytest.mark.asyncio
+async def test_emergency_market_sell_is_not_retried_when_acknowledgement_is_ambiguous(
+    engine, fake_redis, mock_client
+):
+    """A timeout after submit must trigger lookup, never a second market sell."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    submit_calls = []
+    lookup_calls = []
+
+    async def submit_then_timeout(*args, **kwargs):
+        submit_calls.append(kwargs.get("client_order_id"))
+        raise TimeoutError("exchange may have accepted the market sell")
+
+    async def lookup_not_found(client_order_id, symbol, amount_spec=None):
+        lookup_calls.append(client_order_id)
+        return None
+
+    mock_client.place_local_market_sell = submit_then_timeout
+    mock_client.fetch_local_order_by_client_id = lookup_not_found
+
+    with pytest.raises(RuntimeError, match="no automatic retry"):
+        await engine._place_local_market_sell_once_or_recover(
+            pair_tag, "tokocrypto", "toko:ATH_USDT", 1.0,
+            "rollback-client-id", None,
+        )
+
+    assert submit_calls == ["rollback-client-id"]
+    assert lookup_calls == ["rollback-client-id"]
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_emergency_market_sell_adopts_order_after_lost_acknowledgement(
+    engine, fake_redis, mock_client
+):
+    """If client-ID lookup finds the accepted order, adopt it without resubmitting."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    submit_calls = []
+    recovered_order = {
+        "id": "venue-order-42",
+        "clientOrderId": "rollback-client-id",
+        "status": "closed",
+        "filled": 1.0,
+    }
+
+    async def submit_then_timeout(*args, **kwargs):
+        submit_calls.append(kwargs.get("client_order_id"))
+        raise TimeoutError("acknowledgement lost")
+
+    async def lookup_found(client_order_id, symbol, amount_spec=None):
+        assert client_order_id == "rollback-client-id"
+        return dict(recovered_order)
+
+    mock_client.place_local_market_sell = submit_then_timeout
+    mock_client.fetch_local_order_by_client_id = lookup_found
+
+    order = await engine._place_local_market_sell_once_or_recover(
+        pair_tag, "tokocrypto", "toko:ATH_USDT", 1.0,
+        "rollback-client-id", None,
+    )
+
+    assert order["id"] == "venue-order-42"
+    assert submit_calls == ["rollback-client-id"]
+
+
+@pytest.mark.asyncio
+async def test_live_entry_fails_closed_when_futures_leverage_is_not_one_x(
+    engine, fake_redis, mock_client
+):
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.mock_mode = False
+    engine.config.max_exposure_per_exchange_usdt = 1000.0
+
+    async def available_balances(**kwargs):
+        return {
+            "spot_available": 500.0,
+            "futures_available": 500.0,
+            "spot_total": 500.0,
+            "futures_total": 500.0,
+        }
+
+    async def unsafe_leverage(symbol):
+        return {"symbol": symbol, "shortLeverage": 5.0, "marginMode": "isolated"}
+
+    mock_client.get_balances = available_balances
+    mock_client.fetch_leverage = unsafe_leverage
+    payload_dict = _fresh_signal_payload(int(time.time() * 1000))
+    payload_dict["pair_info"]["local_exchange"] = "tokocrypto"
+    payload_dict["pair_info"]["global_exchange"] = "okx"
+    from executor.models import ExecutorPayload
+    payload = ExecutorPayload.from_dict(payload_dict)
+
+    sizing = await engine._prepare_entry_sizing(
+        pair_tag, payload, payload.pair_info, payload.execution_directives
+    )
+
+    assert sizing is None
+    assert "okx" in engine._exchange_halted
+    assert "1x" in engine._exchange_halted["okx"]
+    assert pair_tag not in engine.pending_entry_orders

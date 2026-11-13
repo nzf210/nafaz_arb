@@ -1,6 +1,7 @@
 """engine recovery methods for arbitrage engine orchestration."""
 
 import json
+import math
 import time
 from typing import Optional, Any
 
@@ -55,9 +56,17 @@ class EngineRecoveryMixin:
         side = cls._position_side(position, info)
         raw_contracts = position.get("contracts")
         if raw_contracts is not None:
-            size = abs(float(raw_contracts)) * abs(
-                float(position.get("contractSize") or 1.0)
-            )
+            contract_size_raw = position.get("contractSize")
+            if contract_size_raw is None:
+                raise ValueError("position contract size unavailable")
+            contract_size = float(contract_size_raw)
+            contracts = float(raw_contracts)
+            if (
+                not math.isfinite(contract_size) or contract_size <= 0
+                or not math.isfinite(contracts)
+            ):
+                raise ValueError("invalid futures contract quantity/size")
+            size = abs(contracts) * contract_size
             if size <= 1e-12:
                 return 0.0
             if side != "short":

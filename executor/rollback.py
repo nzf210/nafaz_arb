@@ -11,11 +11,7 @@ import time
 from typing import Any, Dict, Optional
 
 from executor import helpers
-from executor.helpers import (
-    RetryExhausted,
-    build_client_order_id,
-    retry_with_backoff,
-)
+from executor.helpers import build_client_order_id
 from executor.models import OrderRole, PositionState
 from executor.quantity import AmountSpec
 
@@ -41,9 +37,8 @@ class RollbackMixin:
         and ``error`` then carries the last failure so the operator event can say
         what went wrong.
         """
-        max_retries = 4  # 5 total attempts
-        # One id for the whole retry sequence: every attempt is the same logical
-        # order, so the venue can reject duplicates rather than sell twice.
+        # Submit exactly once: venue client-order-ID uniqueness is not universal.
+        # Ambiguous acknowledgements are reconciled by client ID, never resubmitted.
         seq = self._next_order_seq()
         rollback_coid = build_client_order_id(pair_tag, "rollback", seq)
         venue_exchange = local_exchange or getattr(self.config, "local_exchange_name", "")
@@ -57,37 +52,31 @@ class RollbackMixin:
             required=False,
         )
         try:
-            emergency_order = await retry_with_backoff(
-                lambda: self.client.place_local_market_sell(
-                    symbol,
-                    unhedged_delta,
-                    client_order_id=rollback_coid,
-                    amount_spec=amount_spec
-                    or (
-                        AmountSpec(
-                            unit="BASE",
-                            step=legacy_amount_step,
-                            minimum=legacy_amount_step,
-                            base_per_unit=1.0,
-                        )
-                        if legacy_amount_step > 0
-                        else None
-                    ),
+            emergency_order = await self._place_local_market_sell_once_or_recover(
+                pair_tag,
+                venue_exchange,
+                symbol,
+                unhedged_delta,
+                rollback_coid,
+                amount_spec
+                or (
+                    AmountSpec(
+                        unit="BASE",
+                        step=legacy_amount_step,
+                        minimum=legacy_amount_step,
+                        base_per_unit=1.0,
+                    )
+                    if legacy_amount_step > 0
+                    else None
                 ),
-                max_retries=max_retries,
-                base_delay=0.5,
-                label=f"hedge rollback sell {symbol} for {pair_tag}",
             )
-        except RetryExhausted as exhausted:
-            rejection_check = getattr(self, "_is_definitive_order_rejection", None)
-            if callable(rejection_check) and rejection_check(exhausted.last_error):
-                await self._mark_order_submission_rejected(venue_exchange, rollback_coid)
+        except Exception as submit_error:
             logger.critical(
-                f"[Hedge Rollback] FAILED to liquidate spot leg for {pair_tag} after "
-                f"{exhausted.attempts} attempts: {exhausted.last_error}. "
-                f"MANUAL INTERVENTION REQUIRED: {unhedged_delta} {symbol} is UNHEDGED."
+                "[Hedge Rollback] market sell was not verifiably acknowledged for %s: %s. "
+                "No blind retry was attempted; manual reconciliation is required.",
+                pair_tag, submit_error,
             )
-            return None, exhausted.last_error
+            return None, submit_error
         if not isinstance(emergency_order, dict):
             return None, RuntimeError("spot rollback returned no verifiable order")
         status = str(emergency_order.get("status", "")).lower()
@@ -184,12 +173,18 @@ class RollbackMixin:
             raw_contracts = position.get("contracts")
             if raw_contracts is not None:
                 try:
-                    qty = abs(float(raw_contracts)) * abs(
-                        float(position.get("contractSize") or 1.0)
-                    )
+                    contract_size_raw = position.get("contractSize")
+                    if contract_size_raw is None:
+                        return True
+                    contract_size = float(contract_size_raw)
+                    contracts = float(raw_contracts)
+                    if (
+                        not math.isfinite(contract_size) or contract_size <= 0
+                        or not math.isfinite(contracts)
+                    ):
+                        return True
+                    qty = abs(contracts) * contract_size
                 except (TypeError, ValueError):
-                    return True
-                if not math.isfinite(qty):
                     return True
                 if qty <= 1e-12:
                     continue

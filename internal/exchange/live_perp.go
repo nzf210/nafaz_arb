@@ -191,7 +191,7 @@ func (l *LiveAdapter) getFallbackOKXPerp(err error) ([]domain.Market, error) {
 }
 
 func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.Market, error) {
-	endpoint := l.mexcBaseURL + "/api/v1/contract/detail"
+	endpoint := l.mexcBaseURL + "/api/v1/contract/detail/country"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -209,33 +209,51 @@ func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.M
 	}
 
 	var mexcResp struct {
-		Success bool `json:"success"`
-		Code    int  `json:"code"`
-		Data    []struct {
-			Symbol       string  `json:"symbol"`
-			BaseCoin     string  `json:"baseCoin"`
-			QuoteCoin    string  `json:"quoteCoin"`
-			ContractSize float64 `json:"contractSize"`
-			PriceUnit    float64 `json:"priceUnit"`
-			VolUnit      float64 `json:"volUnit"`
-			MinVol       float64 `json:"minVol"`
-			State        int     `json:"state"` // 0: enabled
-		} `json:"data"`
+		Success bool            `json:"success"`
+		Code    int             `json:"code"`
+		Data    json.RawMessage `json:"data"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&mexcResp); err != nil {
 		return nil, err
 	}
-	if !mexcResp.Success {
+	if !mexcResp.Success || mexcResp.Code != 0 {
 		return nil, fmt.Errorf("mexc contract detail error code: %d", mexcResp.Code)
+	}
+	type mexcContract struct {
+		Symbol       string  `json:"symbol"`
+		BaseCoin     string  `json:"baseCoin"`
+		QuoteCoin    string  `json:"quoteCoin"`
+		ContractSize float64 `json:"contractSize"`
+		PriceUnit    float64 `json:"priceUnit"`
+		VolUnit      float64 `json:"volUnit"`
+		MinVol       float64 `json:"minVol"`
+		State        int     `json:"state"`
+		FutureType   int     `json:"futureType"`
+		APIAAllowed  bool    `json:"apiAllowed"`
+		PairType     int     `json:"type"`
+	}
+	var contracts []mexcContract
+	if len(mexcResp.Data) == 0 || string(mexcResp.Data) == "null" {
+		return nil, fmt.Errorf("mexc contract detail response has no data")
+	}
+	if mexcResp.Data[0] == '[' {
+		if err := json.Unmarshal(mexcResp.Data, &contracts); err != nil {
+			return nil, fmt.Errorf("decode mexc contract list: %w", err)
+		}
+	} else {
+		var contract mexcContract
+		if err := json.Unmarshal(mexcResp.Data, &contract); err != nil {
+			return nil, fmt.Errorf("decode mexc contract detail: %w", err)
+		}
+		contracts = append(contracts, contract)
 	}
 
 	var markets []domain.Market
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	for _, c := range mexcResp.Data {
-		if c.State != 0 || c.Symbol == "" {
+	for _, c := range contracts {
+		if c.State != 0 || c.Symbol == "" || c.FutureType != 1 || !c.APIAAllowed || c.PairType != 1 {
 			continue
 		}
 

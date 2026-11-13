@@ -50,6 +50,107 @@ class ExchangeFuturesMixin:
                 matched.append(position)
         return matched
 
+    async def fetch_position_mode(self, symbol: Optional[str] = None) -> dict:
+        """Read the account's current futures position mode without changing it."""
+        fetcher = getattr(self.global_fut, "fetch_position_mode", None)
+        if not callable(fetcher):
+            raise RuntimeError("exchange does not expose a verifiable futures position-mode endpoint")
+        if symbol is None:
+            markets = getattr(self.global_fut, "markets", None)
+            if not markets:
+                loader = getattr(self.global_fut, "load_markets", None)
+                if not callable(loader):
+                    raise RuntimeError("futures markets are unavailable for position-mode lookup")
+                markets = await loader()
+            if isinstance(markets, dict):
+                symbol = next(
+                    (
+                        str(market.get("symbol"))
+                        for market in markets.values()
+                        if isinstance(market, dict)
+                        and market.get("symbol")
+                        and (market.get("swap") or market.get("future") or market.get("contract"))
+                    ),
+                    None,
+                )
+        if not symbol:
+            raise RuntimeError("no futures symbol is available for position-mode lookup")
+        mode = await fetcher(symbol)
+        if not isinstance(mode, dict) or not isinstance(mode.get("hedged"), bool):
+            raise ValueError("exchange returned an unknown futures position mode")
+        return mode
+
+    async def _resolve_futures_symbol(self, symbol: str) -> str:
+        raw = str(symbol or "").strip()
+        if not raw:
+            raise ValueError("futures symbol is required for leverage lookup")
+        raw = raw.removeprefix("okx:").removeprefix("mexc:")
+        if ":" in raw:
+            raw = raw.split(":", 1)[0]
+        markets = getattr(self.global_fut, "markets", None)
+        if not markets:
+            loader = getattr(self.global_fut, "load_markets", None)
+            if not callable(loader):
+                raise RuntimeError("futures markets are unavailable for leverage lookup")
+            markets = await loader()
+        if not isinstance(markets, dict):
+            raise ValueError("futures market catalogue is malformed")
+
+        def normalized(value: str) -> str:
+            return "".join(ch for ch in str(value).upper() if ch.isalnum())
+
+        target = normalized(raw)
+        for market in markets.values():
+            if not isinstance(market, dict):
+                continue
+            if not (market.get("swap") or market.get("future") or market.get("contract")):
+                continue
+            market_symbol = str(market.get("symbol") or "")
+            market_id = str(market.get("id") or "")
+            base = str(market.get("base") or "")
+            quote = str(market.get("quote") or "")
+            candidates = {
+                normalized(market_symbol),
+                normalized(market_id),
+                normalized(base + quote),
+            }
+            if target in candidates and market_symbol:
+                return market_symbol
+        raise ValueError(f"unable to resolve futures symbol {symbol!r} on {self.global_fut.id}")
+
+    async def fetch_leverage(self, symbol: str) -> dict:
+        """Read configured leverage for the requested futures market."""
+        fetcher = getattr(self.global_fut, "fetch_leverage", None)
+        if not callable(fetcher):
+            raise RuntimeError("exchange does not expose a verifiable futures leverage endpoint")
+        resolved = await self._resolve_futures_symbol(symbol)
+        leverage = await fetcher(resolved)
+        if not isinstance(leverage, dict):
+            raise ValueError("exchange returned a malformed futures leverage response")
+        return leverage
+
+    async def fetch_all_positions(self) -> list:
+        """Fetch every open futures position on this authenticated venue.
+
+        Account-wide reconciliation must discover positions that are not present
+        in the bot's local state. An empty list is accepted only when the venue
+        returns a well-formed list; errors and malformed rows remain UNKNOWN.
+        """
+        positions = await self.global_fut.fetch_positions()
+        if positions is None or not isinstance(positions, (list, tuple)):
+            raise ValueError("exchange returned an invalid account-wide positions payload")
+        normalized = []
+        for position in positions:
+            if not isinstance(position, dict):
+                raise ValueError("exchange returned a malformed account-wide position")
+            symbol = position.get("symbol")
+            if not isinstance(symbol, str) or not symbol.strip():
+                raise ValueError(
+                    "account-wide futures position is missing its symbol; exposure cannot be classified"
+                )
+            normalized.append(position)
+        return normalized
+
     async def open_global_short_market(
         self, symbol: str, amount: float, client_order_id: Optional[str] = None,
         amount_spec: Any = None, price: float = 0.0,
@@ -83,16 +184,19 @@ class ExchangeFuturesMixin:
         amount_spec: Any = None,
     ) -> Dict[str, Any]:
         """
-        Closes Global Short position by buying back sold coins with reduceOnly=True.
-        STRICT: Must have reduceOnly=True so it can never inadvertently open a Long.
+        Closes the short using the account-mode-specific venue parameters.
+        OKX hedge mode closes by (side=buy, posSide=short); reduceOnly is only
+        supported for OKX FUTURES/SWAP in net mode. Other supported venues use
+        reduceOnly in their required one-way mode. Startup verifies these modes.
         """
         if amount <= 0:
             raise ValueError(f"invalid close amount: {amount}")
         spec = _require_amount_spec(amount_spec)
         order_amount = base_to_order_amount(amount, spec)
         order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
-        params = {"reduceOnly": True}
-        params.update(futures_position_side_params(self.global_fut, "short"))
+        params = futures_position_side_params(self.global_fut, "short")
+        if str(getattr(self.global_fut, "id", "") or "").lower() != "okx":
+            params["reduceOnly"] = True
         if client_order_id:
             params["clientOrderId"] = client_order_id
         order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)

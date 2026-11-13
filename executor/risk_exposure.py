@@ -259,8 +259,13 @@ class RiskExposureMixin:
         venue cannot be concentrated beyond the configured cap.
         """
         cap = float(getattr(self.config, "max_exposure_per_exchange_usdt", 0.0) or 0.0)
-        if cap <= 0:
-            return True
+        if not math.isfinite(cap) or cap <= 0:
+            # Paper mode may intentionally disable this optional cap. LIVE mode
+            # must never interpret an unset/invalid cap as unlimited exposure.
+            return bool(getattr(self.config, "mock_mode", False))
+        if not math.isfinite(float(planned_usdt)) or float(planned_usdt) <= 0:
+            logger.error("[State 1 Exposure Cap] Rejecting %s: planned notional is invalid", pair_tag)
+            return False
 
         local_exposure = 0.0
         global_exposure = 0.0
@@ -268,13 +273,27 @@ class RiskExposureMixin:
             if tag == pair_tag:
                 continue
             if pos.local_exchange == pair_info.local_exchange:
-                local_exposure += pos.spot_cost_usdt
+                value = float(pos.spot_cost_usdt)
+                if not math.isfinite(value) or value < 0:
+                    return False
+                local_exposure += value
             if pos.global_exchange == pair_info.global_exchange:
-                global_exposure += pos.futures_margin_usdt
+                value = float(pos.futures_margin_usdt)
+                if not math.isfinite(value) or value < 0:
+                    return False
+                global_exposure += value
 
-        pending_local, pending_global = self._pending_entry_exposure(
-            pair_tag, pair_info
-        )
+        try:
+            pending_local, pending_global = self._pending_entry_exposure(
+                pair_tag, pair_info
+            )
+        except (TypeError, ValueError):
+            return False
+        if (
+            not math.isfinite(pending_local) or pending_local < 0
+            or not math.isfinite(pending_global) or pending_global < 0
+        ):
+            return False
         local_exposure += pending_local
         global_exposure += pending_global
         # The spot leg and the futures margin each consume their own venue's cap.

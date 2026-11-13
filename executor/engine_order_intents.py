@@ -146,6 +146,81 @@ class EngineOrderIntentMixin:
             )
         return record
 
+    async def _place_local_market_sell_once_or_recover(
+        self,
+        pair_tag: str,
+        exchange: str,
+        symbol: str,
+        quantity: float,
+        client_order_id: str,
+        amount_spec: Any = None,
+    ) -> dict:
+        """Submit one market sell at most once; reconcile an ambiguous acknowledgement.
+
+        Client order IDs are not a universal idempotency primitive: some venues
+        explicitly do not enforce uniqueness, and others only guarantee it while
+        an order is pending. A timeout therefore must never trigger a blind
+        resubmission of an emergency sell.
+        """
+        submit_error = None
+        order = None
+        try:
+            order = await self.client.place_local_market_sell(
+                symbol,
+                quantity,
+                client_order_id=client_order_id,
+                amount_spec=amount_spec,
+            )
+        except Exception as exc:
+            submit_error = exc
+            rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+            if callable(rejection_check) and rejection_check(exc):
+                await self._mark_order_submission_rejected(exchange, client_order_id)
+                raise
+
+        if isinstance(order, dict) and exchange_order_id_from(order):
+            return order
+
+        lookup = getattr(self.client, "fetch_local_order_by_client_id", None)
+        if callable(lookup):
+            try:
+                recovered = await lookup(client_order_id, symbol, amount_spec)
+            except Exception as lookup_error:
+                reason = (
+                    f"market sell submit {type(submit_error).__name__}: {submit_error}; "
+                    f"client-id lookup {type(lookup_error).__name__}: {lookup_error}"
+                )
+            else:
+                if isinstance(recovered, dict) and exchange_order_id_from(recovered):
+                    info = recovered.get("info") if isinstance(recovered.get("info"), dict) else {}
+                    observed = str(
+                        recovered.get("client_order_id")
+                        or recovered.get("clientOrderId")
+                        or info.get("clientId")
+                        or info.get("clientOrderId")
+                        or ""
+                    )
+                    if observed == client_order_id:
+                        logger.warning(
+                            "[Order Recovery] adopted market sell %s after ambiguous acknowledgement",
+                            client_order_id,
+                        )
+                        return recovered
+                    reason = "client-id lookup returned an order with a different or missing client id"
+                else:
+                    reason = "client-id lookup did not find a verifiable market sell"
+        else:
+            reason = "client-id lookup is unavailable for ambiguous market sell"
+
+        if submit_error is not None:
+            reason = f"market sell submit {type(submit_error).__name__}: {submit_error}; {reason}"
+        await self._mark_order_submission_ambiguous(
+            pair_tag, exchange, client_order_id, reason
+        )
+        raise RuntimeError(
+            f"market sell outcome is ambiguous for {pair_tag}; no automatic retry: {reason}"
+        ) from submit_error
+
     async def _mark_order_submission_rejected(
         self, exchange: str, client_order_id: str
     ) -> None:

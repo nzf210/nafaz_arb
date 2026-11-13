@@ -24,16 +24,29 @@ class RiskFundingMixin:
                 pair_info, usdt_idr_rate, pair_tag
             )
         try:
-            return await self._get_balance_snapshot(
+            balances = await self._get_balance_snapshot(
                 pair_tag=pair_tag,
                 pair_info=pair_info,
                 usdt_idr_rate=usdt_idr_rate,
             )
+            if not isinstance(balances, dict):
+                raise ValueError("live balance snapshot is missing")
+            for field in ("spot_available", "futures_available"):
+                value = float(balances.get(field))
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError(f"live balance snapshot has invalid {field}")
+            return balances
         except Exception as exc:
-            logger.warning(
+            logger.error(
                 "[State 1 Balance Check] balance probe failed for %s; "
-                "sizing uncapped and deferred to funding preflight: %s",
+                "blocking entry instead of sizing without account state: %s",
                 pair_tag, exc,
+            )
+            await self._halt_balance_feed_unavailable(
+                pair_tag,
+                str(getattr(pair_info, "local_exchange", "") or ""),
+                str(getattr(pair_info, "global_exchange", "") or ""),
+                exc,
             )
             return None
 
@@ -117,6 +130,8 @@ class RiskFundingMixin:
             pair_tag, pair_info, payload.pricing_snapshot.usdt_idr_rate,
             mock_mode,
         )
+        if balances is None and not mock_mode:
+            return None
         if balances is not None:
             if isinstance(getattr(self, "_balance_snapshots", None), dict):
                 self._balance_snapshots[pair_tag] = dict(balances)
@@ -168,43 +183,94 @@ class RiskFundingMixin:
                     pair_info=pair_info,
                     usdt_idr_rate=usdt_idr_rate,
                 )
-        except Exception:
-            # A balance probe failure must not silently pass the gate; surface it
-            # and let the caller decide, matching the pre-existing fail-open on
-            # unsupported clients while logging loudly.
-            logger.exception(
-                "[State 1 Funding Preflight] balance probe failed for %s",
+            if not isinstance(balances, dict):
+                raise ValueError("live balance snapshot is missing")
+            avail_spot = float(balances.get("spot_available"))
+            avail_fut = float(balances.get("futures_available"))
+            if not (
+                math.isfinite(avail_spot) and avail_spot >= 0
+                and math.isfinite(avail_fut) and avail_fut >= 0
+            ):
+                raise ValueError("live balance snapshot contains invalid available balances")
+        except Exception as exc:
+            logger.error(
+                "[State 1 Funding Preflight] balance state unknown for %s; rejecting entry",
                 pair_tag,
+                exc_info=True,
             )
-            return True
-
-        if not isinstance(balances, dict):
-            return True
+            await self._halt_balance_feed_unavailable(
+                pair_tag,
+                str(getattr(pair_info, "local_exchange", "") or ""),
+                str(getattr(pair_info, "global_exchange", "") or ""),
+                exc,
+            )
+            return False
 
         try:
-            avail_spot = float(balances.get("spot_available", 0.0) or 0.0)
-            avail_fut = float(balances.get("futures_available", 0.0) or 0.0)
+            required = float(required_usdt)
         except (TypeError, ValueError):
-            logger.error(
-                f"[State 1 Funding Preflight] unreadable balance payload for {pair_tag}"
+            required = float("nan")
+        if not math.isfinite(required) or required <= 0:
+            await self._publish_execution_failure(
+                pair_tag,
+                "INVALID_DUAL_LEG_FUNDING_REQUIREMENT",
+                "Entry ditolak karena nilai kebutuhan dana kedua kaki tidak valid.",
+                detail={"required_usdt_per_leg": str(required_usdt)},
             )
-            return True
-
-        if not (math.isfinite(avail_spot) and math.isfinite(avail_fut)):
-            logger.error(
-                f"[State 1 Funding Preflight] non-finite balance for {pair_tag}"
-            )
-            return True
-
-        required = float(required_usdt)
+            return False
         missing = []
         if avail_spot < required:
             missing.append(f"spot ${avail_spot:.2f} < ${required:.2f}")
         if avail_fut < required:
             missing.append(f"futures ${avail_fut:.2f} < ${required:.2f}")
         if not missing:
+            try:
+                venue_client = self.client
+                resolver = getattr(venue_client, "for_venue", None)
+                if callable(resolver):
+                    venue_client = resolver(str(getattr(pair_info, "global_exchange", "") or ""))
+                leverage_fetcher = getattr(venue_client, "fetch_leverage", None)
+                if not callable(leverage_fetcher):
+                    raise RuntimeError("authenticated futures leverage lookup is unavailable")
+                leverage_info = await leverage_fetcher(
+                    str(getattr(pair_info, "global_symbol", "") or "")
+                )
+                if not isinstance(leverage_info, dict):
+                    raise ValueError("futures leverage response is malformed")
+                raw_leverage = leverage_info.get("shortLeverage")
+                if raw_leverage is None:
+                    raw_leverage = leverage_info.get("leverage")
+                if raw_leverage is None:
+                    raise ValueError("short leverage is missing from futures account response")
+                leverage = float(raw_leverage)
+                if not math.isfinite(leverage) or abs(leverage - 1.0) > 1e-9:
+                    raise ValueError(f"futures short leverage is {leverage}; executor requires 1x")
+            except Exception as exc:
+                exchange = str(getattr(pair_info, "global_exchange", "") or "")
+                reason = f"futures leverage unavailable or unsafe: {exc}"
+                self._exchange_halted[exchange] = reason
+                persist = getattr(self, "_persist_risk_state", None)
+                if callable(persist):
+                    persist(
+                        "exchange_halt",
+                        scope="exchange",
+                        exchange=exchange,
+                        reason=reason,
+                        value={"source": "futures_leverage_preflight"},
+                    )
+                logger.error(
+                    "[State 1 Funding Preflight] rejecting %s: %s",
+                    pair_tag, reason,
+                )
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "UNSAFE_FUTURES_LEVERAGE",
+                    "Leverage Futures tidak dapat diverifikasi pada 1x; entry dihentikan.",
+                    detail={"exchange": exchange, "error": str(exc)},
+                )
+                return False
             logger.debug(
-                f"[State 1 Funding Preflight] {pair_tag} funded: "
+                f"[State 1 Funding Preflight] {pair_tag} funded at 1x: "
                 f"spot=${avail_spot:.2f} futures=${avail_fut:.2f} required=${required:.2f}"
             )
             return True

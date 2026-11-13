@@ -364,9 +364,8 @@ async def test_dual_leg_preflight_passes_when_both_legs_are_funded():
 
 
 @pytest.mark.asyncio
-async def test_dual_leg_preflight_fails_open_on_probe_error():
-    """A broken balance probe must not permanently block trading (fail-open),
-    matching the pre-existing behaviour for clients without get_balances."""
+async def test_dual_leg_preflight_fails_closed_on_probe_error():
+    """An unknown account balance must block both legs until the source recovers."""
     pair_tag = "indodax:btc_idr"
     engine, _ = _funded_engine(spot=1000.0, futures=1000.0)
 
@@ -377,7 +376,9 @@ async def test_dual_leg_preflight_fails_open_on_probe_error():
 
     ok = await engine._verify_dual_leg_funding(pair_tag, _pair_info(), 50.0, 16000.0)
 
-    assert ok is True
+    assert ok is False
+    assert "indodax" in engine._exchange_halted
+    assert "okx" in engine._exchange_halted
 
 
 @pytest.mark.asyncio

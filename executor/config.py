@@ -1,5 +1,6 @@
 import os
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 
@@ -54,8 +55,8 @@ class ExecutorConfig:
     # Maximum distinct open spot positions plus pending spot-entry orders per CEX.
     # A missing venue override always falls back to the safe default of two.
     max_open_spot_orders_per_exchange: Dict[str, int] = field(default_factory=dict)
-    # Balance-mismatch guard for simulated entry snapshots. Live entries do not
-    # poll balances before submission; the venue validates available funds.
+    # Balance-mismatch guard for paper snapshots. Live entry sizing also requires
+    # a fresh authenticated spot/futures balance snapshot before either order.
     balance_mismatch_fraction: float = 0.20
     # Consecutive order-placement failures tolerated per exchange before the
     # venue is halted for new entries. 0 disables the breaker.
@@ -498,4 +499,22 @@ class ExecutorConfig:
                 "LIVE mode requested but exchange credentials are incomplete: "
                 + ", ".join(missing)
                 + ". Configure exchanges.<name> in config.json or matching environment variables."
+            )
+
+        unsafe = []
+        if not math.isfinite(float(self.max_exposure_per_exchange_usdt)) or self.max_exposure_per_exchange_usdt <= 0:
+            unsafe.append("executor.max_exposure_per_exchange_usdt must be explicitly greater than 0")
+        if not math.isfinite(float(self.max_daily_loss_usdt)) or self.max_daily_loss_usdt <= 0:
+            unsafe.append("executor.max_daily_loss_usdt must be greater than 0")
+        if not math.isfinite(float(self.max_entry_slippage_pct)) or self.max_entry_slippage_pct <= 0:
+            unsafe.append("executor.max_entry_slippage_pct must be greater than 0")
+        if self.max_consecutive_order_failures <= 0:
+            unsafe.append("executor.max_consecutive_order_failures must be greater than 0")
+        if not math.isfinite(float(self.estimated_round_trip_fee_pct)) or self.estimated_round_trip_fee_pct <= 0:
+            unsafe.append("executor.estimated_round_trip_fee_pct must be greater than 0")
+        if not self.supabase.enabled or not self.supabase.url.strip() or not self.supabase.key.strip():
+            unsafe.append("Supabase durable risk/order journal must be enabled with URL and key")
+        if unsafe:
+            raise ValueError(
+                "LIVE mode safety configuration is incomplete: " + "; ".join(unsafe)
             )

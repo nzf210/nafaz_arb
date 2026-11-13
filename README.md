@@ -39,13 +39,25 @@ go run ./cmd/nafaz-scanner -config config.json
 
 ### Live trading behavior and safeguards
 
-Live entry sizing uses the signal budget, exposure cap, and fee reserve; it does not
-poll private balance endpoints before submitting an order. The exchange validates
-available spot funds when the limit order is sent and validates futures margin when
-the hedge is submitted. Rejection alerts include the exchange error. A spot fill can
-still occur before a futures-margin rejection, so the executor attempts its guarded
-spot rollback and reports any unresolved exposure. Simulated entries continue to use
-the paper account's balance snapshot.
+Live entry sizing requires a fresh authenticated balance snapshot for both spot
+and futures accounts before either leg is submitted. The executor also verifies the
+futures position mode and configured short leverage (1x), restores durable risk/order
+state, and reconciles all account-wide futures positions before it consumes signals.
+Unknown balances, unsupported position modes, unsafe leverage, missing contract
+metadata, and mismatched account exposure fail closed and halt the affected venue.
+
+LIVE mode requires a positive per-exchange exposure cap, daily loss limit, slippage
+limit, fee reserve, order-failure threshold, and a working Supabase durable risk/order
+journal. The exposure cap defaults to disabled and must be configured; review and
+adjust the other defaults against actual account equity and fee tier. OKX is expected to use Hedge Mode (short orders carry
+`posSide=short`); MEXC is expected to use One-way Mode. The executor does not change
+account settings automatically.
+
+Emergency spot market sells are submitted once. If the acknowledgement is ambiguous,
+the executor searches order history by client order ID and never blindly resubmits:
+an unresolved result remains `RECONCILIATION_REQUIRED` for operator intervention.
+Paper mode continues to use simulated balances. These guards are not a substitute
+for authenticated exchange smoke tests, paper trading, and a controlled canary.
 
 INDODAX is the exception: its keys are issued on `indodax.com/trade_api` and are
 TAPIv2-only. The legacy `/tapi` endpoint that CCXT still signs rejects them with
@@ -84,7 +96,7 @@ curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/sc
 curl -H "Authorization: Bearer $API_AUTH_TOKEN" 'http://localhost:8080/api/v1/scanner/opportunities/history'
 ```
 
-The periodic scanner runs at `scan_interval_seconds`. `POST /api/v1/scanner/scan` also triggers a scan immediately. The mock account snapshot contains an untracked BTC perpetual exposure, so BTC/USDT is excluded with `RECONCILIATION_REQUIRED`; ETH is evaluated independently. If the required exposure read fails, candidates are marked `POSITION_STATUS_UNKNOWN` and fail closed. Opportunity history is stored in the configured JSON file using atomic replacement; replace `history.Store` with PostgreSQL (or another durable database) before multi-instance or production deployment.
+The periodic scanner runs at `scan_interval_seconds`. `POST /api/v1/scanner/scan` also triggers a scan immediately. In MOCK mode, the mock account snapshot contains an untracked BTC perpetual exposure, so BTC/USDT is excluded with `RECONCILIATION_REQUIRED`; ETH is evaluated independently. In LIVE mode the Go scanner is public-market-data-only: set `check_open_positions` to `false` so it does not call the unavailable private account adapter. The Python executor is the sole account-state authority and must re-check balances, account-wide positions, position mode, leverage, and risk immediately before entry; scanner opportunities/signals are candidates, never execution authorization. If `check_open_positions` is left `true`, the live scan intentionally fails closed with unknown position state. Do not connect any alternate order executor or give trading credentials to another consumer. Opportunity history is stored in the configured JSON file using atomic replacement; replace `history.Store` with PostgreSQL (or another durable database) before multi-instance or production deployment.
 
 `GET /api/v1/scanner/status` reports the latest scan duration, last successful scan, data age, stale state, and most recent error. Scan results also include total and per-phase timings plus per-exchange order-book/funding request counts, errors, and accumulated request time (microseconds). A successful result becomes stale after two configured scan intervals without another successful scan. The `/health` endpoint remains a process-liveness check.
 

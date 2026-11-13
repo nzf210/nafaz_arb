@@ -15,6 +15,34 @@ from executor.engine import ArbitrageEngine, RetryExhausted, retry_with_backoff
 
 from tests.conftest import BlockingSellClient, FailingHedgeClient, MockExchangeClient, OpenShortPositionClient, _entry_order_info, _fresh_signal_payload, engine, fake_redis, mock_client
 
+
+class _ReadyJournalStub:
+    """No-op durable journal stand-in for tests that exercise live recovery logic."""
+
+    enabled = True
+    durable_ready = True
+
+    async def start(self):
+        return None
+
+    async def close(self):
+        return None
+
+    async def fetch_active_risk_states(self, is_mock=False):
+        return []
+
+    async def fetch_daily_realized_loss_usdt(self, loss_day, *, is_mock=True):
+        return 0.0
+
+    def __getattr__(self, _name):
+        return lambda *args, **kwargs: True
+
+
+def _use_ready_test_journal(engine):
+    engine.supabase = _ReadyJournalStub()
+    engine.order_registry.supabase = engine.supabase
+    return engine
+
 @pytest.mark.asyncio
 async def test_p0_01_hedge_failure_rolls_back_spot_leg(fake_redis):
     """BUG-02/P0-01: a failed hedge must market-sell the unhedged spot leg back."""
@@ -46,16 +74,18 @@ async def test_p0_01_hedge_failure_rolls_back_spot_leg(fake_redis):
     for _ in range(10):
         m = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
         if m and m.get("type") == "message":
-            msg = json.loads(m["data"])
-            break
+            candidate = json.loads(m["data"])
+            if candidate.get("event") == "HEDGE_FAILED":
+                msg = candidate
+                break
     assert msg is not None
     assert msg["event"] == "HEDGE_FAILED"
     assert msg["rollback_succeeded"] is True
     assert msg["symbol"] == "btc_idr"
 
 @pytest.mark.asyncio
-async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_redis):
-    """Rollback retries 5 times and emits a manual-intervention alert when it cannot sell."""
+async def test_p0_01_hedge_failure_with_failed_rollback_submits_once_and_alerts(fake_redis):
+    """Ambiguous rollback submit is reconciled once, never blindly retried."""
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
     client = BlockingSellClient()
@@ -85,7 +115,7 @@ async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_
 
     await engine._check_entry_orders()
 
-    assert attempts == 5
+    assert attempts == 1
     # A failed rollback leaves coins unhedged: the pair must surface as FAILED,
     # not as a clean CLOSED (P1-04).
     assert engine.states[pair_tag] == PositionState.FAILED
@@ -96,8 +126,10 @@ async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_
     for _ in range(10):
         m = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
         if m and m.get("type") == "message":
-            msg = json.loads(m["data"])
-            break
+            candidate = json.loads(m["data"])
+            if candidate.get("event") == "HEDGE_FAILED":
+                msg = candidate
+                break
     assert msg is not None
     assert msg["event"] == "HEDGE_FAILED"
     assert msg["rollback_succeeded"] is False
@@ -583,6 +615,7 @@ async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis)
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
     )
+    _use_ready_test_journal(engine)
     await engine.initialize()
 
     assert engine.states["indodax:btc_idr"] == PositionState.HEDGED_ACTIVE
@@ -608,6 +641,7 @@ async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redi
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
     )
+    _use_ready_test_journal(engine)
     await engine.initialize()
 
     assert engine.states["indodax:btc_idr"] == PositionState.RECONCILIATION_REQUIRED
@@ -785,3 +819,16 @@ async def test_paper_balance_report_is_explicitly_simulated():
     assert len(reports) == 2
     assert all(report["status"] == "ok" for report in reports)
     assert all(report["assets"][0]["asset"] == "USDT" for report in reports)
+
+
+@pytest.mark.asyncio
+async def test_live_startup_fails_closed_when_durable_journal_is_unavailable(fake_redis):
+    client = MockExchangeClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
+    )
+
+    with pytest.raises(RuntimeError, match="durable Supabase journal/outbox is not ready"):
+        await engine.initialize()
+
+    assert engine._recovery_complete is False
