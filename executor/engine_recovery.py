@@ -12,6 +12,7 @@ from executor.engine_common import logger
 
 
 class EngineRecoveryMixin:
+    """Focused orchestration responsibilities, composed by ArbitrageEngine."""
 
     async def _reconcile_durable_submit_attempts(self) -> bool:
         """Resolve exact client-id matches; keep negative/failed lookups fenced."""
@@ -83,8 +84,6 @@ class EngineRecoveryMixin:
             )
             return False
         return True
-
-    """Focused orchestration responsibilities, composed by ArbitrageEngine."""
 
     def _group_recovered_positions(self):
         groups = {}
