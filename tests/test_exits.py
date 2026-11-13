@@ -105,8 +105,8 @@ async def test_ambiguous_exit_sell_is_reconciled_before_any_new_reprice(
         lookup_calls.append((client_order_id, symbol))
         return None
 
-    monkeypatch.setattr(mock_client, "place_local_limit_sell", ambiguous_sell)
-    monkeypatch.setattr(mock_client, "fetch_local_order_by_client_id", not_yet_visible)
+    monkeypatch.setattr(mock_client, "place_local_limit_sell", ambiguous_sell, raising=False)
+    monkeypatch.setattr(mock_client, "fetch_local_order_by_client_id", not_yet_visible, raising=False)
 
     await engine._place_dynamic_limit_sell(
         pair_tag, pos, 1_040_000_000.0, 1000.0, 65_000.0, 16_000.0
