@@ -8,6 +8,7 @@ import pytest
 from types import SimpleNamespace
 
 from executor.force_close_legs import ForceCloseLegMixin
+from executor.order_registry_storage import OrderRegistryStorageMixin
 from executor.exchange_common import _find_order_by_client_id
 
 
@@ -112,3 +113,27 @@ async def test_force_close_prior_reduce_only_intent_not_found_never_resubmits():
     assert fill_price == 0.0
     assert len(engine.client.lookups) == 1
     assert engine.client.submits == 0
+
+
+class UnavailableRedis:
+    async def hget(self, *args):
+        raise ConnectionError("redis unavailable")
+
+
+class EmptyDurableOrderReader:
+    async def fetch_open_order_records(self):
+        return []
+
+
+class RegistryLookupHarness(OrderRegistryStorageMixin):
+    def __init__(self):
+        self.redis = UnavailableRedis()
+        self.supabase = EmptyDurableOrderReader()
+        self.records = {}
+
+
+@pytest.mark.asyncio
+async def test_order_registry_does_not_treat_redis_and_active_journal_gap_as_absence():
+    registry = RegistryLookupHarness()
+    with pytest.raises(RuntimeError, match="lookup is inconclusive"):
+        await registry.find_by_client_id("okx", "possibly-used-close-id")
