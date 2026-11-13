@@ -100,6 +100,7 @@ class ArbitrageEngine(
         self.config = config
         self._base_client = client
         self._client_context: ContextVar[Any] = ContextVar(f"executor_client_{id(self)}", default=None)
+        self._mutation_gateway_clients: Dict[int, MutationGatewayClient] = {}
         self._pair_client_registry = PairClientRegistry()
         self.redis = redis_client
         self._running = False
@@ -201,13 +202,19 @@ class ArbitrageEngine(
         client = self._client_context.get() or self._base_client
         if client is None or bool(getattr(self.config, "mock_mode", False)):
             return client
-        return MutationGatewayClient(
-            client, self.execution_coordinator, self.order_registry, self.config
-        )
+        cache_key = id(client)
+        gateway = self._mutation_gateway_clients.get(cache_key)
+        if gateway is None or gateway._client is not client:
+            gateway = MutationGatewayClient(
+                client, self.execution_coordinator, self.order_registry, self.config
+            )
+            self._mutation_gateway_clients[cache_key] = gateway
+        return gateway
 
     @client.setter
     def client(self, value):
         self._base_client = value
+        self._mutation_gateway_clients.clear()
 
     def _bind_pair_client(self, pair_info):
         key = ExchangePairKey.from_pair_info(pair_info)
@@ -256,6 +263,16 @@ class ArbitrageEngine(
         # before any startup path is allowed to mutate a venue.
         await self.supabase.start()
         if not bool(getattr(self.config, "mock_mode", False)):
+            if not bool(getattr(self.supabase, "enabled", False)):
+                self._halt_exposure_scope(
+                    "*", "LIVE executor requires enabled Postgres persistence and coordinator lease"
+                )
+                self._refresh_entry_gate()
+                # Read-only recovery is still useful for incident visibility,
+                # but this process cannot become READY or mutate an exchange.
+                await self._run_startup_recovery()
+                self._recovery_complete = False
+                return
             try:
                 acquired = await self.execution_coordinator.acquire()
             except Exception as exc:
