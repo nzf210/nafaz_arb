@@ -46,9 +46,10 @@ state, and reconciles all account-wide futures positions before it consumes sign
 Unknown balances, unsupported position modes, unsafe leverage, missing contract
 metadata, and mismatched account exposure fail closed and halt the affected venue.
 
-LIVE mode requires an explicit positive per-exchange exposure cap, daily loss limit,
-slippage limit, fee reserve, order-failure threshold, and a working Supabase durable
-risk/order journal. OKX is expected to use Hedge Mode (short orders carry
+LIVE mode requires a positive per-exchange exposure cap, daily loss limit, slippage
+limit, fee reserve, order-failure threshold, and a working Supabase durable risk/order
+journal. The exposure cap defaults to disabled and must be configured; review and
+adjust the other defaults against actual account equity and fee tier. OKX is expected to use Hedge Mode (short orders carry
 `posSide=short`); MEXC is expected to use One-way Mode. The executor does not change
 account settings automatically.
 
