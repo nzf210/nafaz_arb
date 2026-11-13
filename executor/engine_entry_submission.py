@@ -462,7 +462,11 @@ class EngineEntrySubmissionMixin:
                     f"{type(exc).__name__}: {exc}",
                 )
                 return
-            if entry_coid and self._is_definitive_order_rejection(exc):
+            # No venue request was started in this branch. This includes a
+            # PostgreSQL STOP rejection or a fencing/database failure before
+            # the create-order call, so the durable intent must not remain
+            # SUBMITTING/ambiguous.
+            if entry_coid:
                 await self._mark_order_submission_rejected(
                     pair_info.local_exchange, entry_coid
                 )
