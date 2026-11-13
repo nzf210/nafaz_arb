@@ -201,7 +201,7 @@ begin
         (account_scope, exchange_name, max_open_spot_orders, max_capital_usdt)
     values
         (p_account_scope, lower(p_exchange_name), p_max_open_spot_orders, p_max_capital_usdt)
-    on conflict (account_scope, exchange_name) do update
+    on conflict on constraint execution_capacity_config_pkey do update
        set max_open_spot_orders = excluded.max_open_spot_orders,
            max_capital_usdt = excluded.max_capital_usdt;
     return query
