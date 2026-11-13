@@ -60,7 +60,7 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	adapter := NewLiveAdapter()
 	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL, tokoServer.URL, tokoServer.URL)
 
-	markets, err := adapter.fetchTokocryptoSpotMarkets(context.Background())
+	markets, err := adapter.SpotMarkets(context.Background())
 	if err != nil {
 		t.Fatalf("SpotMarkets: %v", err)
 	}
@@ -143,7 +143,7 @@ func newMockOKXPerpServer() *httptest.Server {
 					{
 						"fundingRate":"0.0001",
 						"fundingTime":"1690028800000",
-						"nextFundingTime":"1690028800000",
+						"nextFundingTime":"1690057600000",
 						"prevFundingTime":"1690000000000",
 						"ts":"1690000000000"
 					}
@@ -159,7 +159,7 @@ func newMockMEXCPerpServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/api/v1/contract/detail":
+		case "/api/v1/contract/detail/country":
 			w.Write([]byte(`{
 				"success": true,
 				"code": 0,
@@ -172,7 +172,10 @@ func newMockMEXCPerpServer() *httptest.Server {
 						"priceUnit": 0.1,
 						"volUnit": 1,
 						"minVol": 1,
-						"state": 0
+						"state": 0,
+						"futureType": 1,
+						"apiAllowed": true,
+						"type": 1
 					}
 				]
 			}`))
@@ -384,7 +387,7 @@ func TestTokocryptoSymbolTypeThreeUsesNextMeDepth(t *testing.T) {
 
 	adapter := NewLiveAdapter()
 	adapter.SetBaseURLs("", "", "", "", server.URL, server.URL, server.URL)
-	markets, err := adapter.SpotMarkets(context.Background())
+	markets, err := adapter.fetchTokocryptoSpotMarkets(context.Background())
 	if err != nil { t.Fatalf("SpotMarkets: %v", err) }
 	if len(markets) != 1 || markets[0].SymbolType != 3 { t.Fatalf("expected symbol type 3 metadata, got %+v", markets) }
 	book, err := adapter.SpotOrderBook(context.Background(), "toko:SOL_IDR")
