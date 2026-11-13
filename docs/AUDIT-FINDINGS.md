@@ -108,3 +108,6 @@ been executed in this environment; CI must pass before the branch is approved.
 - Reconciliation: exact client-ID not-found and lookup failures continue to block entry; they are not proof of rejection because venue history may be eventually consistent. No automatic resubmit is allowed.
 
 Remaining blockers: complete runtime call-site/call-graph audit across all venue configurations and retry/recovery paths; authenticated operator manual resolution; and real PostgreSQL multi-process fault injection proving that a connection loss releases the session lock while the durable SUBMITTING row blocks another process even if the fake venue later accepts the original request. CI status must be checked after the latest commits. The branch remains NOT READY FOR LIVE TRADING.
+
+
+| R-22 | Futures entry-hedge previously persisted UNKNOWN/REJECTED on submit errors but did not escalate explicit venue IP-ban evidence into canonical Global STOP. | Futures entry hedge / CEX IP-block policy | FIXED in commit f6da668: write CEX_IP_BLOCK inside the active submit fence; local halt immediately; notify Redis after the fence; if durable STOP persistence fails, keep the attempt unresolved rather than marking it REJECTED. Generic 429 remains non-ban. |
