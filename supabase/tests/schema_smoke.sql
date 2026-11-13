@@ -400,7 +400,7 @@ insert into public.config_consumers (
     'schema-smoke-executor-1', 'schema-smoke-pid-1', 'ACTIVE',
     9223372036854770000, repeat('a', 64), now(), now()
 );
-do $
+do $consumer$
 begin
     if not exists (
         select 1 from public.config_consumers
@@ -418,7 +418,7 @@ begin
         where instance_id = 'schema-smoke-executor-1') <> 'STARTING' then
         raise exception 'new executor process must return to STARTING before re-acknowledging';
     end if;
-end $;
+end $consumer$;
 
 insert into public.config_audit_log (
     version, action, actor, reason, diff, request_id
