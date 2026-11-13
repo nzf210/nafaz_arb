@@ -1,6 +1,6 @@
 # V2 Bootstrap, Runtime Configuration, STOP Fencing & CEX IP-Block Review
 
-**Status:** Design and implementation checklist — NOT evidence of implementation  
+**Status:** Partial implementation on this branch — remaining checklist items are OPEN until regression/integration evidence exists  
 **Branch target:** `feat/v2-bootstrap-config-stop-fencing`  
 **Baseline:** `audit/architecture-baseline-regression-contract`
 
@@ -62,12 +62,15 @@ Tidak boleh melakukan normalisasi yang mengubah nilai efektif (mis. pembulatan n
 - [ ] PostgreSQL menyimpan canonical executor ownership, lease expiry, monotonic fencing generation, STOP state, STOP epoch, reason, actor/source, timestamps, dan audit event.
 - [ ] Lease acquisition/renewal memakai transaksi dan conditional update; instance dengan token usang tidak boleh memperbarui lease atau mengirim order.
 - [ ] Order intent dibuat durable sebelum network submit dengan idempotency key/client order id yang stabil.
-- [ ] Order submission dan STOP request memakai lock/serialization protocol database yang sama. Buktikan linearization point dengan concurrent integration test.
+- [x] Jalur spot entry `_submit_entry_order` dan STOP request memakai advisory transaction lock PostgreSQL yang sama; transaksi menahan lock selama create-order HTTP call.
+- [ ] Audit dan integrasikan seluruh jalur create-order lain yang membuka exposure; tambahkan concurrent multi-instance integration test.
 - [ ] STOP commit harus mendahului setiap submit yang belum melewati titik serialisasi; submit yang telah memperoleh hak serialisasi lebih dahulu dicatat sebagai in-flight dan diselesaikan/reconcile secara eksplisit.
 - [ ] Jangan menganggap pemeriksaan STOP lalu melepas transaksi sebelum HTTP request sebagai fencing yang cukup.
 - [ ] Redis Pub/Sub hanya mempercepat propagasi STOP. Setiap instance wajib membaca ulang state PostgreSQL sebelum order admission dan pada jalur submit.
-- [ ] STOP idempotent: request berulang tidak menurunkan epoch atau menghapus reason/audit.
-- [ ] Resume memerlukan authorization/operator acknowledgement, verifikasi venue health, tidak ada active IP ban, reconciliation selesai, dan epoch baru.
+- [x] STOP berulang idempotent terhadap epoch/reason pada singleton control row.
+- [ ] Audit trail append-only dan audit actor/authorization belum tersedia.
+- [x] Primitive resume mensyaratkan operator string dan expected epoch, serta menaikkan epoch.
+- [ ] Endpoint authorization, health/ban verification, dan reconciliation gate sebelum resume belum diintegrasikan.
 - [ ] Kehilangan koneksi database saat submit harus gagal tertutup untuk submit baru; status order yang sudah dikirim menjadi unknown dan wajib direconcile memakai client order id.
 
 ## 5. CEX rate limit vs IP block: STOP request policy
@@ -76,9 +79,10 @@ Tidak boleh melakukan normalisasi yang mengubah nilai efektif (mis. pembulatan n
 
 ### 5.1 Classification (jangan menyamakan semua 429 dengan IP ban)
 
-- [ ] Buat classifier per venue dari HTTP status, exchange error code, response headers, dan structured CCXT exception; jangan hanya cocokkan string pesan.
+- [ ] Classifier per venue dari HTTP status, exchange error code, response headers, dan structured CCXT exception; implementasi awal baru mengenali signature teks eksplisit (418/IP banned) dan belum merupakan adapter classifier lengkap.
 - [ ] Kategori `RATE_LIMITED`: HTTP 429 atau exchange-specific throttle yang berarti request dibatasi tetapi tidak membuktikan IP diban. Terapkan venue-scoped cooldown, exponential backoff + jitter, dan hentikan polling yang tidak perlu. Jangan otomatis mengklaim IP ban.
-- [ ] Kategori `IP_BANNED`: status/kode eksplisit dari venue yang menyatakan IP diblokir (contoh Binance HTTP 418 dengan ban response; atau kode/response resmi setara pada venue lain), atau sinyal adapter yang tervalidasi khusus venue. Ini memicu STOP request global.
+- [x] Signature eksplisit HTTP 418 / IP banned pada jalur spot entry memicu `CEX_IP_BLOCK`; STOP ditulis di transaksi submit yang sama sebelum advisory lock dilepas bila PostgreSQL tersedia.
+- [ ] Tambahkan signature tervalidasi per venue dan response/header parser; jangan perluas ke HTTP 403 generik.
 - [ ] HTTP 403/Cloudflare/WAF tidak otomatis dianggap IP ban kecuali adapter dapat membuktikan blok IP; selain itu klasifikasikan sebagai `VENUE_ACCESS_BLOCKED_UNKNOWN`, fail-closed untuk venue tersebut dan minta review operator.
 - [ ] Error jaringan, timeout, 5xx, invalid key, insufficient balance, dan order rejection biasa tidak boleh salah diklasifikasikan sebagai IP ban.
 - [ ] Simpan raw response secara redacted dan bounded: status, venue, error code, response headers allowlist, endpoint category, timestamp, request weight bila tersedia. Jangan simpan credential, signature, atau seluruh header sensitif.
@@ -162,3 +166,16 @@ Sebelum merge/cutover, reviewer wajib membuka dan mencocokkan:
 - [ ] No production/live cutover until all above are checked and an operator explicitly approves it.
 
 **Safety note:** This document specifies required behavior. It does not claim that the code, database migration, live venue classifiers, or tests have already been implemented or executed.
+
+
+## 8. Implementasi yang sudah ada di branch (2026-11-13)
+
+| Komponen | Implementasi saat ini | Batas yang masih OPEN |
+|---|---|---|
+| \`executor/global_stop.py\` | Pool \`asyncpg\`, read state, STOP epoch, advisory transaction lock, idempotent STOP, operator+epoch resume primitive, Redis notification best-effort | Audit journal, authenticated operator API, heartbeat/lease generation, retry/observability hardening |
+| \`executor/engine.py\` / \`engine_runtime.py\` | LIVE startup membutuhkan \`POSTGRES_DSN\`; global STOP dibaca sebelum recovery; pool ditutup saat shutdown | Full bootstrap snapshot/config migration belum ada |
+| \`executor/engine_entry_submission.py\` | Spot entry create-order berada di transaction fence; signature IP-ban eksplisit menulis STOP di transaksi yang sama; 429 tetap venue cooldown | Seluruh create-order path belum diaudit; classifier masih signature-based |
+| \`supabase/migrations/20261113000100_add_global_stop_fencing.sql\` | Singleton canonical control row + epoch | Deployment migration dan live DB integration test belum dijalankan |
+| \`tests/test_global_stop_fencing.py\` | Unit tests untuk advisory lock path, transaction STOP update, classifier separation 429 vs IP-ban | Belum dieksekusi pada runner; belum ada race test multi-process/PostgreSQL nyata |
+
+**Catatan operasi:** \`POSTGRES_DSN\` harus diberikan ke setiap instance LIVE melalui secret/environment manager dan migration harus diterapkan terlebih dahulu. Tanpa DSN, LIVE startup sengaja gagal; mode MOCK tetap dapat berjalan tanpa PostgreSQL. Jangan menganggap branch ini LIVE-certified sebelum checklist tersisa dan integration tests lulus.
