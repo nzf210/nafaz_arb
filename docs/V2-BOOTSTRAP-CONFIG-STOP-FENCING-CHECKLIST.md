@@ -193,5 +193,5 @@ Sebelum merge/cutover, reviewer wajib membuka dan mencocokkan:
 - [ ] Add operator-authenticated/manual resolution requiring independent venue evidence and audit event.
 - [ ] Add disposable PostgreSQL multi-process test: disconnect connection while fake venue still accepts order; prove second instance cannot submit.
 - [ ] Add tests for crash before HTTP boundary (\`PREPARED\`), after request (\`SUBMITTING\`), after venue ack before ledger ack, and delayed exact-ID visibility.
-- [ ] Ensure every exposure-opening create-order path uses this ledger/fence; audit futures entry and any alternate spot entry adapter.
+- [~] Spot-entry and futures entry-hedge submissions now prepare durable attempts and hold the shared session fence across the venue call. Remaining exposure-opening paths and alternate adapters still require a complete call-site audit and integration.
 - [ ] Define retention/archival policy for terminal attempt rows without deleting unresolved rows.
