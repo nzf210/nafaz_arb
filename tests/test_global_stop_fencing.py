@@ -1,4 +1,5 @@
 import pytest
+from types import SimpleNamespace
 
 from executor.engine_entry_submission import EngineEntrySubmissionMixin
 from executor.global_stop import FENCE_LOCK_KEY, GlobalStopError, GlobalStopService
@@ -204,6 +205,101 @@ async def test_live_executor_fails_closed_without_postgres_fencing_dsn():
 
     with pytest.raises(RuntimeError, match="requires POSTGRES_DSN"):
         await engine.initialize()
+
+
+class _FakeSpotStop:
+    def __init__(self):
+        self.prepared = []
+        self.unknown = []
+        self.stop_attempts = []
+
+    async def prepare_submit_attempt(self, **kwargs):
+        self.prepared.append(kwargs)
+
+    def order_submit_fence(self, *, client_order_id):
+        return _AsyncContext(object())
+
+    async def request_stop_in_transaction(self, conn, reason, *, source, metadata):
+        self.stop_attempts.append((reason, source, metadata))
+        raise ConnectionError("postgres disconnected while persisting CEX_IP_BLOCK")
+
+    async def mark_submit_unknown(self, client_order_id, error):
+        self.unknown.append((client_order_id, error))
+
+
+class _SpotIPRestrictedVenue:
+    def __init__(self):
+        self.lookup_calls = 0
+
+    async def place_local_limit_buy(self, *args, **kwargs):
+        raise RuntimeError("IP restricted by venue")
+
+    async def fetch_local_order_by_client_id(self, *args, **kwargs):
+        self.lookup_calls += 1
+        return {"id": "venue-order-that-must-not-release-fence", "status": "open"}
+
+
+class _SpotSubmissionHarness(EngineEntrySubmissionMixin):
+    def __init__(self, stop, venue):
+        self.global_stop = stop
+        self.client = venue
+        self.halts = []
+        self.gate_refreshed = False
+        self.ambiguous = []
+
+    def _next_order_seq(self):
+        return 17
+
+    def _local_order_limit_price(self, pair_info, snapshot, strategy_price):
+        return strategy_price
+
+    def _entry_recovery_context(self, *args):
+        return {"test": "spot-ip-ban"}
+
+    async def _register_order_intent(self, *args, **kwargs):
+        return None
+
+    def _entry_error_text(self, error):
+        value = str(error)
+        return value, value.lower()
+
+    def _halt_exposure_scope(self, scope, reason):
+        self.halts.append((scope, reason))
+
+    def _refresh_entry_gate(self):
+        self.gate_refreshed = True
+
+    async def _mark_order_submission_ambiguous(self, *args):
+        self.ambiguous.append(args)
+
+
+class _FakeAmountSpec:
+    def to_dict(self):
+        return {"unit": "BASE", "step": 0.001}
+
+
+@pytest.mark.asyncio
+async def test_spot_ip_ban_stop_write_failure_never_uses_lookup_to_acknowledge():
+    stop = _FakeSpotStop()
+    venue = _SpotIPRestrictedVenue()
+    engine = _SpotSubmissionHarness(stop, venue)
+    pair_info = SimpleNamespace(
+        local_exchange="binance",
+        local_symbol="BTC/USDT",
+        local_amount_spec=_FakeAmountSpec(),
+        global_amount_spec={"unit": "BASE", "step": 0.001},
+        quote_asset="USDT",
+    )
+
+    await engine._submit_entry_order(
+        "pair-spot-1", {}, pair_info, {}, {}, 0.01, 500.0, 50000.0
+    )
+
+    assert stop.stop_attempts
+    assert stop.unknown
+    assert venue.lookup_calls == 0
+    assert engine.ambiguous
+    assert engine.halts and engine.gate_refreshed
 
 
 class _FakeHedgeStop:
