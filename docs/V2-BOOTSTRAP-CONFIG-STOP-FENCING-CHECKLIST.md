@@ -165,7 +165,7 @@ Sebelum merge/cutover, reviewer wajib membuka dan mencocokkan:
 - [ ] Paper mode passes restart, recovery, throttling, confirmed IP-ban, STOP, and resume scenarios.
 - [ ] No production/live cutover until all above are checked and an operator explicitly approves it.
 
-**Safety note:** This document is a mixed implementation/review checklist. A partial PostgreSQL STOP/fencing implementation, durable in-flight submit ledger, startup exact-client-ID reconciliation, and unit-test files now exist on this branch. The Global STOP migration and earlier schema smoke job passed against CI's disposable PostgreSQL service; the durable-ledger migration passed CI schema validation, and Python suite passed (488 tests) on commit `01b38c07`. No staging/production database or real multi-instance fault-injection test has been exercised. All unchecked items remain OPEN; this branch is not LIVE-certified.
+**Safety note:** PostgreSQL STOP/fencing, durable submit ledger, startup exact-client-ID recovery, signed operator resolution, and a disposable PostgreSQL multi-process backend-disconnect test are now implemented on this branch. The latest workflow must pass before the integration test is marked verified. No staging/production database or real per-venue sandbox/paper contract probes have been exercised. Remaining unchecked items are release gates; this branch is not LIVE-certified.
 
 
 ## 9. Implementasi yang sudah ada di branch (2026-11-13)
@@ -244,7 +244,7 @@ Exit limit SELL is intentionally not subject to the entry Global STOP fence. How
 ### 11.5 Sisa audit khusus futures reduceOnly force-close
 
 - Exit lifecycle futures BUY reduceOnly setelah spot exit fill masuk RECONCILIATION_REQUIRED jika hasil close tidak terminal/terverifikasi; tidak ada retry otomatis.
-- Force-close futures BUY reduceOnly memverifikasi posisi futures flat sebelum melanjutkan spot liquidation. Pada retry, ia membaca posisi aktual terlebih dahulu dan melewati close bila sudah flat. Namun, jika order close sebelumnya diterima tetapi posisi API masih stale/non-zero, jalur retry dapat mengirim close reduceOnly baru dengan client ID baru; exact-client-ID lookup terhadap attempt sebelumnya belum dilakukan.
+- Force-close futures BUY reduceOnly sekarang memakai client ID deterministik berbasis `opened_at_ms` dan memeriksa durable order registry sebelum submit ulang. Intent yang sudah ada hanya boleh diadopsi lewat exact-client-ID lookup; lookup miss/error, order pending, atau fill parsial memblokir submit baru dan memerlukan reconciliation.
 - Karena reduceOnly=True dan fungsi utamanya mengurangi short, jalur ini tidak dimasukkan ke entry STOP fence. Tetap OPEN untuk audit idempotensi/venue pending-order semantics dan penyimpanan client ID close yang bisa direkonsiliasi. Jangan mengubahnya menjadi entry fence tanpa analisis risiko yang eksplisit.
 - Cancel/replace spot exit sudah menunggu order lama mencapai status terminal dan menerapkan fill sebelum membuat replacement; jika cancel/status lookup inconclusive, replacement diblokir.
 
@@ -257,7 +257,7 @@ Exit limit SELL is intentionally not subject to the entry Global STOP fence. How
 - [x] Fake delayed-visibility and pending reduce-only fixtures added for Indodax, Tokocrypto, MEXC and OKX.
 - [ ] Wait for CI run after the dependency/Python-version correction to pass the new PostgreSQL integration job.
 - [ ] Real per-venue sandbox/paper contract probes remain required; fake fixtures do not prove venue-side eventual consistency.
-- [ ] R-26 remains OPEN: force-close reduceOnly close can still be resubmitted under a new client ID after a stale position read. Keep LIVE gate closed until stable close intent and exact-ID recovery are implemented.
+- [x] R-26 duplicate force-close reduceOnly submit is blocked using deterministic client-ID reuse and exact-ID recovery. Pending/partial/not-visible states remain reconciliation-required; per-venue pending-close probes are still open.
 - [ ] HMAC is a shared-secret operator authentication mechanism, not SSO/OIDC. Secret rotation/custody and operator provisioning must be completed by deployment owners.
 
 
