@@ -119,3 +119,31 @@ Remaining blockers: complete runtime call-site/call-graph audit across all venue
 | R-25 | Dynamic spot exit limit SELL logged ambiguous submit failures but left the position eligible for the next repricing cycle, which generated a new client ID and could duplicate a venue-accepted order whose ACK was lost. | Spot exit / cancel-replace lifecycle | FIXED in commit a698308: exact-client-ID lookup adopts a found order; lookup not-found/failure marks pair RECONCILIATION_REQUIRED and blocks new repricing submits. Regression test covers inconclusive lookup. Exit remains outside entry STOP fencing. |
 
 | R-26 | Force-close futures reduceOnly BUY retries verify current position first but do not exact-client-ID reconcile a prior close attempt before submitting a new close ID; a stale/non-zero position response after prior venue acceptance may allow concurrent reduceOnly close orders. | Force-close futures de-risking | OPEN. Position-flat verification and reduceOnly constrain risk, so do not apply entry STOP fencing. Audit venue pending-close behavior and preserve/reconcile prior close client ID before any future retry-policy change. |
+
+
+## R-27 — Operator-authenticated resolution for ambiguous submit attempts
+
+**Status: IMPLEMENTED IN CODE; CI verification pending.**
+
+- Added migration `20261113000300_add_submit_resolution_audit.sql` for an append-only audit table with unique nonce, operator ID, decision, two distinct evidence references, rationale and signed-payload hash.
+- Added `GlobalStopService.resolve_submit_attempt_signed`: HMAC-SHA256 signature verification, bounded timestamp window, nonce replay protection through a unique DB constraint, shared fencing lock, row lock, and atomic transition from SUBMITTING/UNKNOWN to ACKNOWLEDGED/REJECTED/ABORTED.
+- Added `executor/operator_resolution.py` CLI. It reads a signed envelope and requires `POSTGRES_DSN` plus `OPERATOR_RESOLUTION_HMAC_SECRET` from the runtime secret manager.
+- `FOUND` requires the exact venue order ID. `DEFINITIVE_REJECTION` and `PROVEN_NOT_SUBMITTED` require two distinct evidence references and an operator-signed rationale. A plain NOT_FOUND lookup is never accepted as evidence.
+- This is HMAC operator authentication, not an integrated corporate SSO/OIDC identity provider. Secret issuance, rotation and custody remain deployment responsibilities; do not expose the shared secret to the executor's general runtime environment.
+
+## R-28 — PostgreSQL multi-process disconnect/fault injection
+
+**Status: TEST IMPLEMENTED; CI verification pending.**
+
+- Added `tests/test_postgres_submit_fencing_integration.py`: independent executor process commits SUBMITTING and enters a fake venue request; parent kills the executor process while a separate fake venue process remains active; a peer executor process must be rejected by the durable unresolved-attempt gate.
+- The same integration file verifies signed operator resolution against PostgreSQL and confirms the audit row is persisted.
+- CI now provisions PostgreSQL and runs this test after applying all migrations. Initial CI attempts exposed a missing dependency install in the schema job; workflow was corrected to install the repository requirements under Python 3.12. The newest run must pass before marking this item verified.
+
+## R-29 — Venue recovery and pending-close contract coverage
+
+**Status: PARTIAL.**
+
+- Added fake endpoint delayed-visibility and pending reduce-only close fixtures for Indodax, Tokocrypto, MEXC and OKX in `tests/test_venue_recovery_contracts.py`.
+- Added `docs/ORDER-RUNTIME-VENUE-RECOVERY-MATRIX.md` with active adapter/call-site and retry/recovery inventory.
+- Fake fixtures prove executor behavior under delayed visibility; they do not establish live venue eventual-consistency SLAs or each venue's pending-close semantics. Those still require controlled per-venue sandbox/paper probes.
+- R-26 remains OPEN: force-close futures may create a new client ID on a later invocation when a prior reduceOnly close was accepted but the position endpoint remains stale/non-zero. Do not claim all pending-close paths are safe until stable close-intent reuse and exact-ID recovery are implemented and tested.
