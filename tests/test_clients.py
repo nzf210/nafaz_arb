@@ -690,8 +690,8 @@ def test_engine_pair_client_binding_is_task_local_and_restores_previous_binding(
     token_a = engine._bind_pair_client(toko_okx)
     toko_client = engine.client
     token_b = engine._bind_pair_client(indo_mexc)
-    assert engine.client.local is venues["indodax"]["client"]
-    assert engine.client.global_fut is venues["mexc"]["client"]
+    assert engine.client.local._venue is venues["indodax"]["client"]
+    assert engine.client.global_fut._venue is venues["mexc"]["client"]
 
     engine._reset_pair_client(token_b)
     assert engine.client is toko_client

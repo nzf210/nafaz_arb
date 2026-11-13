@@ -3,6 +3,29 @@
 from typing import Any
 
 
+
+
+class ReadOnlyExchangeProxy:
+    """Expose venue reads while preventing raw CCXT mutation bypasses."""
+
+    _BLOCKED_PREFIXES = (
+        "create", "cancel", "edit", "withdraw", "transfer", "borrow", "repay",
+        "privatepost", "privatedelete", "privateput", "fapiprivatepost",
+        "fapiprivatedelete", "fapiprivateput", "sapipost", "sapidelete",
+        "sapiput", "papipost", "papidelete", "papiput",
+    )
+
+    def __init__(self, venue: Any):
+        self._venue = venue
+
+    def __getattr__(self, name):
+        normalized = str(name).replace("_", "").lower()
+        if normalized.startswith(self._BLOCKED_PREFIXES):
+            raise RuntimeError(
+                f"raw exchange mutation blocked outside MutationGateway: {name}"
+            )
+        return getattr(self._venue, name)
+
 _MUTATION_METHODS = {
     "place_local_limit_buy": ("spot_create", "buy", 3),
     "place_local_limit_sell": ("spot_create", "sell", 3),
@@ -24,6 +47,8 @@ class MutationGatewayClient:
 
     def __getattr__(self, name):
         target = getattr(self._client, name)
+        if name in {"local", "global_fut"} and target is not None:
+            return ReadOnlyExchangeProxy(target)
         mutation_contract = _MUTATION_METHODS.get(name)
         if mutation_contract is None or not callable(target):
             return target

@@ -42,10 +42,27 @@ class FakeRegistry:
         return self.exchange_records.get((exchange, order_id))
 
 
+class FakeVenue:
+    def __init__(self, venue_id):
+        self.id = venue_id
+
+    async def fetch_balance(self):
+        return {"free": {"USDT": 10.0}}
+
+    async def create_order(self, *args, **kwargs):
+        return {"id": "raw-order"}
+
+    async def cancel_order(self, *args, **kwargs):
+        return {"id": "raw-order", "status": "canceled"}
+
+    async def private_post_order(self, *args, **kwargs):
+        return {"id": "raw-private-order"}
+
+
 class FakeExchange:
     def __init__(self):
-        self.local = SimpleNamespace(id="indodax")
-        self.global_fut = SimpleNamespace(id="okx")
+        self.local = FakeVenue("indodax")
+        self.global_fut = FakeVenue("okx")
         self.submissions = []
         self.cancellations = []
 
@@ -221,6 +238,25 @@ async def test_mutation_gateway_blocks_cancel_for_terminal_order():
     with pytest.raises(RuntimeError, match="already terminal"):
         await gateway.cancel_local_order("terminal-1", "btc_idr")
     assert exchange.cancellations == []
+    await coordinator.release()
+
+
+@pytest.mark.asyncio
+async def test_mutation_gateway_blocks_raw_ccxt_mutations_but_allows_reads():
+    coordinator = ExecutionCoordinator(FakeSupabase(), renew_interval_seconds=60)
+    assert await coordinator.acquire() is True
+    exchange = FakeExchange()
+    gateway = MutationGatewayClient(
+        exchange, coordinator, FakeRegistry(),
+        SimpleNamespace(mock_mode=False, local_exchange_name="indodax", global_exchange_name="okx"),
+    )
+    assert await gateway.local.fetch_balance() == {"free": {"USDT": 10.0}}
+    with pytest.raises(RuntimeError, match="raw exchange mutation"):
+        gateway.local.create_order
+    with pytest.raises(RuntimeError, match="raw exchange mutation"):
+        gateway.local.cancel_order
+    with pytest.raises(RuntimeError, match="raw exchange mutation"):
+        gateway.global_fut.private_post_order
     await coordinator.release()
 
 
