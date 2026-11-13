@@ -290,3 +290,147 @@ delete from public.reconciliation_audit
 where event_id = 'schema-smoke-reconcile-1';
 
 drop table pg_temp._smoke_constants;
+
+
+-- Nafazbot V2 durable config and operator control schema.
+begin;
+
+do $$
+declare
+    tbl text;
+begin
+    foreach tbl in array array[
+        'config_versions','active_config_version','config_audit_log',
+        'operator_control_state','operator_actions','outbox_events','config_consumers'
+    ] loop
+        if not exists (
+            select 1 from pg_class c
+            join pg_namespace n on n.oid = c.relnamespace
+            where n.nspname = 'public' and c.relname = tbl and c.relrowsecurity
+        ) then
+            raise exception 'RLS is not enabled on public.%', tbl;
+        end if;
+        if has_table_privilege('anon', format('public.%I', tbl), 'select')
+           or has_table_privilege('authenticated', format('public.%I', tbl), 'select') then
+            raise exception 'client role unexpectedly has SELECT on public.%', tbl;
+        end if;
+        if not has_table_privilege('service_role', format('public.%I', tbl), 'select')
+           or not has_table_privilege('service_role', format('public.%I', tbl), 'insert') then
+            raise exception 'service_role lacks expected access on public.%', tbl;
+        end if;
+    end loop;
+end $$;
+
+insert into public.config_versions (
+    version, schema_version, snapshot, content_sha256, status,
+    created_by, change_reason, change_diff
+) values (
+    9223372036854770000, 2,
+    '{"schema_version":2,"mode":"LIVE","secrets":{"okx_api_key":"secret://nafaz/okx/key"}}'::jsonb,
+    repeat('a', 64), 'draft', 'schema-smoke', 'test immutable config snapshot',
+    '{"mode":{"from":"MOCK","to":"LIVE"}}'::jsonb
+);
+update public.config_versions set status = 'validated',
+    validated_by = 'schema-smoke', validated_at = now()
+where version = 9223372036854770000;
+
+do $$
+begin
+    begin
+        update public.config_versions
+        set snapshot = '{"schema_version":2,"mode":"MOCK"}'::jsonb
+        where version = 9223372036854770000;
+        raise exception 'immutable config snapshot update unexpectedly succeeded';
+    exception when raise_exception then
+        if sqlerrm = 'immutable config snapshot update unexpectedly succeeded' then
+            raise;
+        end if;
+    end;
+    if (select status from public.config_versions where version = 9223372036854770000) <> 'validated' then
+        raise exception 'config validation metadata update did not persist';
+    end if;
+end $$;
+
+insert into public.active_config_version(singleton, version, updated_by, reason)
+values (true, 9223372036854770000, 'schema-smoke', 'activate test snapshot');
+
+do $$
+begin
+    if not exists (
+        select 1 from public.operator_control_state
+        where singleton = true and state = 'STOPPED' and trading_enabled = false
+    ) then
+        raise exception 'operator control state must initialize STOPPED and disabled';
+    end if;
+    if (select count(*) from public.active_config_version) <> 1 then
+        raise exception 'active config pointer must be a singleton';
+    end if;
+end $$;
+
+insert into public.operator_actions (
+    command_id, telegram_update_id, command, actor_user_id, actor_chat_id,
+    reason, status, requested_config_version
+) values (
+    'schema-smoke-command-1', 9223372036854770000, 'trade_stop',
+    10001, -10001, 'schema smoke test STOP', 'ACCEPTED', 9223372036854770000
+)
+on conflict (command_id) do nothing;
+
+insert into public.operator_actions (
+    command_id, telegram_update_id, command, actor_user_id, actor_chat_id,
+    reason, status, requested_config_version
+) values (
+    'schema-smoke-command-1', 9223372036854770000, 'trade_stop',
+    10001, -10001, 'schema smoke test duplicate', 'ACCEPTED', 9223372036854770000
+)
+on conflict (command_id) do nothing;
+
+do $$
+begin
+    if (select count(*) from public.operator_actions
+        where command_id = 'schema-smoke-command-1') <> 1 then
+        raise exception 'operator command idempotency key admitted a duplicate';
+    end if;
+end $$;
+
+insert into public.config_consumers (
+    instance_id, process_id, status, acknowledged_version, acknowledged_sha256,
+    last_ack_at, last_seen_at
+) values (
+    'schema-smoke-executor-1', 'schema-smoke-pid-1', 'ACTIVE',
+    9223372036854770000, repeat('a', 64), now(), now()
+);
+do $consumer$
+begin
+    if not exists (
+        select 1 from public.config_consumers
+        where instance_id = 'schema-smoke-executor-1'
+          and status = 'ACTIVE'
+          and acknowledged_version = 9223372036854770000
+          and acknowledged_sha256 = repeat('a', 64)
+    ) then
+        raise exception 'executor config acknowledgement was not persisted';
+    end if;
+    update public.config_consumers
+       set status = 'STARTING', process_id = 'schema-smoke-pid-2'
+     where instance_id = 'schema-smoke-executor-1';
+    if (select status from public.config_consumers
+        where instance_id = 'schema-smoke-executor-1') <> 'STARTING' then
+        raise exception 'new executor process must return to STARTING before re-acknowledging';
+    end if;
+end $consumer$;
+
+insert into public.config_audit_log (
+    version, action, actor, reason, diff, request_id
+) values (
+    9223372036854770000, 'validated', 'schema-smoke',
+    'validate test snapshot', '{"validated":true}'::jsonb, 'schema-smoke-config-1'
+);
+insert into public.outbox_events (
+    event_key, aggregate_type, aggregate_version, event_type, payload
+) values (
+    'schema-smoke-config-event-1', 'config', 9223372036854770000,
+    'config.activated', '{"version":9223372036854770000}'::jsonb
+);
+
+rollback;
