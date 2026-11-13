@@ -12,8 +12,23 @@ from executor.v2_config import (
 )
 
 
+def _valid_snapshot():
+    return {
+        "schema_version": 2,
+        "mode": "LIVE",
+        "execution": {"engine": "python", "signals_enabled": False},
+        "storage": {"driver": "postgres"},
+        "redis": {"enabled": True},
+        "venues": [],
+        "accounts": [],
+        "routes": [],
+        "risk_profiles": {},
+        "scanner": {"public_market_data_only": True, "synthetic_fx": {"static_fallback_allowed_in_live": False}},
+    }
+
+
 def _row(snapshot=None):
-    snapshot = snapshot or {"schema_version": 2, "mode": "LIVE", "execution": {"signals_enabled": False}}
+    snapshot = snapshot or _valid_snapshot()
     return {
         "version": 7,
         "schema_version": 2,
@@ -131,10 +146,8 @@ async def test_redis_failure_fails_closed_after_database_read():
 
 
 def test_rejects_inline_secret_values_but_allows_secret_references():
-    referenced = {
-        "schema_version": 2,
-        "credentials": {"api_key_env": "OKX_API_KEY", "api_secret_env": "OKX_API_SECRET"},
-    }
+    referenced = _valid_snapshot()
+    referenced["credentials"] = {"api_key_env": "OKX_API_KEY", "api_secret_env": "OKX_API_SECRET"}
     assert validate_snapshot_row({
         "version": 8,
         "schema_version": 2,
@@ -142,7 +155,8 @@ def test_rejects_inline_secret_values_but_allows_secret_references():
         "content_sha256": calculate_snapshot_sha256(referenced),
     }).version == 8
 
-    inline = {"schema_version": 2, "credentials": {"api_key": "must-not-be-stored"}}
+    inline = _valid_snapshot()
+    inline["credentials"] = {"api_key": "must-not-be-stored"}
     with pytest.raises(ConfigSnapshotError, match="inline secret"):
         validate_snapshot_row({
             "version": 9,
