@@ -164,3 +164,65 @@ def test_rejects_inline_secret_values_but_allows_secret_references():
             "snapshot": inline,
             "content_sha256": calculate_snapshot_sha256(inline),
         })
+
+
+def test_v2_contract_rejects_unknown_root_keys():
+    snapshot = _valid_snapshot()
+    snapshot["mystery_setting"] = True
+    from executor.v2_config import validate_v2_snapshot
+    with pytest.raises(ConfigSnapshotError, match="unsupported root keys"):
+        validate_v2_snapshot(snapshot)
+
+
+def test_v2_contract_rejects_signals_and_non_public_scanner():
+    from executor.v2_config import validate_v2_snapshot
+    snapshot = _valid_snapshot()
+    snapshot["execution"]["signals_enabled"] = True
+    with pytest.raises(ConfigSnapshotError, match="signals"):
+        validate_v2_snapshot(snapshot)
+
+    snapshot = _valid_snapshot()
+    snapshot["scanner"]["public_market_data_only"] = False
+    with pytest.raises(ConfigSnapshotError, match="public-market-data-only"):
+        validate_v2_snapshot(snapshot)
+
+
+def test_v2_contract_rejects_duplicate_and_dangling_references():
+    from executor.v2_config import validate_v2_snapshot
+    snapshot = _valid_snapshot()
+    snapshot["venues"] = [
+        {"id": "spot_a", "market_type": "spot", "account_id": "account_a"},
+        {"id": "spot_a", "market_type": "spot", "account_id": "account_a"},
+    ]
+    snapshot["accounts"] = [{"id": "account_a", "venue_id": "spot_a"}]
+    with pytest.raises(ConfigSnapshotError, match="duplicate venue"):
+        validate_v2_snapshot(snapshot)
+
+    snapshot = _valid_snapshot()
+    snapshot["venues"] = [{"id": "spot_a", "market_type": "spot", "account_id": "missing"}]
+    snapshot["accounts"] = [{"id": "account_a", "venue_id": "spot_a"}]
+    with pytest.raises(ConfigSnapshotError, match="unknown account"):
+        validate_v2_snapshot(snapshot)
+
+
+def test_v2_contract_rejects_route_account_venue_mismatch():
+    from executor.v2_config import validate_v2_snapshot
+    snapshot = _valid_snapshot()
+    snapshot["venues"] = [
+        {"id": "spot_a", "market_type": "spot", "account_id": "account_a"},
+        {"id": "perp_b", "market_type": "linear_perpetual", "account_id": "account_b"},
+    ]
+    snapshot["accounts"] = [
+        {"id": "account_a", "venue_id": "spot_a"},
+        {"id": "account_b", "venue_id": "perp_b"},
+        {"id": "account_wrong", "venue_id": "spot_a"},
+    ]
+    snapshot["risk_profiles"] = {"default": {}}
+    snapshot["routes"] = [{
+        "id": "route_a",
+        "spot": {"venue_id": "spot_a", "account_id": "account_wrong"},
+        "futures": {"venue_id": "perp_b", "account_id": "account_b"},
+        "risk_profile": "default",
+    }]
+    with pytest.raises(ConfigSnapshotError, match="account/venue mismatch"):
+        validate_v2_snapshot(snapshot)
