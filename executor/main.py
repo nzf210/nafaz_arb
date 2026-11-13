@@ -41,10 +41,12 @@ async def main():
     # engine.start() performs the complete startup recovery before it
     # starts signal consumers, then owns the single periodic reconciliation
     # workers. Do not create a second independent exposure worker here.
-    await engine.start()
     try:
+        await engine.start()
         await stop_event.wait()
     finally:
+        # Also closes partially initialized PostgreSQL/Redis resources if
+        # startup fails before the executor begins waiting for shutdown.
         await engine.stop()
 
 
