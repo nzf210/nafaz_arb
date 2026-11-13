@@ -260,6 +260,10 @@ class ArbitrageEngine(
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
+        if self.global_stop is not None:
+            # Resolve any SUBMITTING/UNKNOWN rows before entry admission. A
+            # negative or failed lookup deliberately remains globally blocking.
+            await self._reconcile_durable_submit_attempts()
         self._recovery_complete = await self._run_startup_recovery()
         if not self._recovery_complete:
             self._halt_exposure_scope(
