@@ -190,8 +190,8 @@ def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
     cfg = ExecutorConfig()
     assert cfg.max_consecutive_order_failures == 50
     assert cfg.max_order_ttl_seconds == 120
-    assert cfg.maker_refresh_after_seconds == 45
-    assert cfg.maker_refresh_cooldown_seconds == 300
+    assert cfg.maker_refresh_after_seconds == 8
+    assert cfg.maker_refresh_cooldown_seconds == 12
     assert cfg.indodax_maker_refresh_after_seconds == 15
     assert cfg.indodax_maker_refresh_cooldown_seconds == 15
     assert cfg.adaptive_maker_min_net_profit_pct == 0.10
@@ -199,8 +199,8 @@ def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
     cfg.sanitize()
     assert cfg.max_consecutive_order_failures == 50
     assert cfg.max_order_ttl_seconds == 120
-    assert cfg.maker_refresh_after_seconds == 45
-    assert cfg.maker_refresh_cooldown_seconds == 300
+    assert cfg.maker_refresh_after_seconds == 8
+    assert cfg.maker_refresh_cooldown_seconds == 12
     assert cfg.indodax_maker_refresh_after_seconds == 15
     assert cfg.indodax_maker_refresh_cooldown_seconds == 15
 
