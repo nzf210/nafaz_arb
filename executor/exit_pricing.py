@@ -87,16 +87,15 @@ class ExitPricingMixin:
                 if rate_data.get("fundingRate") is not None:
                     current_rate = float(rate_data["fundingRate"])
 
-                # CCXT's unified fundingRate is the best available estimate on
-                # many venues. Prefer an explicit nextFundingRate when exposed;
-                # some venue payloads expose the same estimate as
-                # info.lastFundingRate. Keep this separate from settled funding.
+                # Prefer an explicit nextFundingRate. Otherwise use CCXT's
+                # unified fundingRate as the venue's current/predicted rate;
+                # never interpret a historical lastFundingRate as a forecast.
                 info = rate_data.get("info")
                 info = info if isinstance(info, dict) else {}
                 next_rate_raw = (
                     rate_data.get("nextFundingRate")
                     if rate_data.get("nextFundingRate") is not None
-                    else info.get("lastFundingRate")
+                    else info.get("nextFundingRate")
                 )
                 if next_rate_raw is None:
                     next_rate_raw = rate_data.get("fundingRate")
