@@ -226,3 +226,10 @@ def test_v2_contract_rejects_route_account_venue_mismatch():
     }]
     with pytest.raises(ConfigSnapshotError, match="account/venue mismatch"):
         validate_v2_snapshot(snapshot)
+
+
+def test_rejects_telegram_token_value_but_allows_env_reference():
+    from executor.v2_config import _reject_inline_secrets
+    _reject_inline_secrets({"telegram": {"bot_token_env": "NAFAZ_TELEGRAM_TOKEN"}})
+    with pytest.raises(ConfigSnapshotError, match="inline secret"):
+        _reject_inline_secrets({"telegram": {"bot_token": "not-allowed"}})
