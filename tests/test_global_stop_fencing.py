@@ -242,10 +242,14 @@ class _FakeHedgeStop:
 
 
 class _IPBannedFuturesVenue:
+    def __init__(self):
+        self.lookup_calls = 0
+
     async def open_global_short_market(self, *args, **kwargs):
         raise RuntimeError("HTTP_418: IP address banned until reset")
 
     async def fetch_global_order_by_client_id(self, *args, **kwargs):
+        self.lookup_calls += 1
         return None
 
 
@@ -328,6 +332,7 @@ async def test_futures_hedge_ip_ban_keeps_attempt_unresolved_if_stop_write_fails
     assert stop.stop_requests
     assert stop.unknown and not stop.rejected
     assert not stop.notifications
+    assert engine.client.lookup_calls == 0
 
 
 class _VenueLookup:
