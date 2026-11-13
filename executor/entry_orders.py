@@ -322,22 +322,21 @@ class EntryOrderManagementMixin:
             max_buy_price = float(
                 order_info.get("adaptive_max_buy_price_idr", 0.0) or 0.0
             )
+            # Re-peg one tick above LocalBestBid, but never cross the ask
+            # or exceed the persisted adaptive profit ceiling. This is an
+            # evaluation quote only; actual submission still goes through the
+            # scanner's fresh payload, sizing, risk gates and durable fence.
+            raw_candidate = min(
+                values["local_bid"] + values["tick"],
+                values["local_ask"] - values["tick"],
+            )
             if max_buy_price > 0:
-                raw_candidate = min(
-                    values["local_ask"] - values["tick"], max_buy_price
-                )
-                candidate = math.floor(
-                    (raw_candidate + 1e-12) / values["tick"]
-                ) * values["tick"]
-                # If the best bid has already moved above the profit ceiling,
-                # there is no safe maker quote: cancel the stale order.
-                if candidate < values["local_bid"]:
-                    candidate = 0.0
-            else:
-                # Legacy pending orders have no persisted profit ceiling.
-                candidate = math.floor(
-                    (values["local_bid"] + 1e-12) / values["tick"]
-                ) * values["tick"]
+                raw_candidate = min(raw_candidate, max_buy_price)
+            candidate = math.floor(
+                (raw_candidate + 1e-12) / values["tick"]
+            ) * values["tick"]
+            if candidate <= 0 or candidate < values["local_bid"]:
+                candidate = 0.0
 
             if candidate > 0 and candidate >= values["local_ask"]:
                 candidate = 0.0
@@ -366,6 +365,40 @@ class EntryOrderManagementMixin:
             }
         except (TypeError, ValueError, KeyError):
             return None
+
+    async def _requeue_fresh_signal_after_maker_refresh(self, pair_tag: str) -> bool:
+        """Re-admit a refreshed pair only through a fresh scanner payload.
+
+        The replacement is deliberately not submitted here: the normal signal
+        handler re-runs all risk, spread, fee, sizing, spot-cap and submit-fence
+        checks. A fill racing the cancel leaves an active position and blocks
+        this requeue.
+        """
+        try:
+            if await self._has_active_or_pending_position(pair_tag):
+                return False
+            payload = await self._load_signal_payload(pair_tag)
+            if payload is None or payload.pricing_snapshot.is_stale(
+                getattr(self.config, "max_stale_latency_ms", 500)
+            ):
+                return False
+            added = await self.redis.zadd(
+                "arb:signal_priority", {pair_tag: 0.0}, nx=True
+            )
+            if added:
+                self._signal_queue_event.set()
+                logger.info(
+                    "[Maker Refresh] %s re-queued using fresh scanner signal; "
+                    "normal admission and fencing checks will run again",
+                    pair_tag,
+                )
+                return True
+        except Exception:
+            logger.exception(
+                "[Maker Refresh] failed to re-queue fresh scanner signal for %s",
+                pair_tag,
+            )
+        return False
 
     async def _refresh_stale_maker_quote(
         self, pair_tag: str, order_info: dict, order: dict
@@ -421,9 +454,12 @@ class EntryOrderManagementMixin:
             "Canceling through the existing reconciliation lifecycle; "
             "a fresh scanner signal is required before replacement."
         )
-        return await self._cancel_entry_order_and_reconcile(
+        cancelled = await self._cancel_entry_order_and_reconcile(
             pair_tag, order_info, "Maker Quote Refresh"
         )
+        if cancelled:
+            await self._requeue_fresh_signal_after_maker_refresh(pair_tag)
+        return cancelled
 
     async def _check_adverse_selection(self, pair_tag: str, order_info: dict) -> bool:
         """Cancel a maker entry on adverse movement, but only resolve after verification."""
