@@ -194,16 +194,71 @@ class EntryHedgeMixin:
             required=True,
         )
         order_info["hedge_submit_started"] = True
-        try:
-            short_order = await self.client.open_global_short_market(
-                global_symbol,
-                unhedged_delta,
-                price=expected_short_price,
+        amount_spec = AmountSpec.from_dict(
+            order_info.get("global_amount_spec")
+        )
+        global_stop = getattr(self, "global_stop", None)
+        if global_stop is not None:
+            await global_stop.prepare_submit_attempt(
                 client_order_id=hedge_coid,
-                amount_spec=AmountSpec.from_dict(
-                    order_info.get("global_amount_spec")
-                ),
+                exchange=str(order_info.get("global_exchange") or ""),
+                market_type="perpetual",
+                symbol=global_symbol,
+                side="sell",
+                order_type="market",
+                quantity=unhedged_delta,
+                price=expected_short_price,
+                pair_key=pair_tag,
+                recovery_context=recovery_context,
+                amount_spec=order_info.get("global_amount_spec"),
             )
+        try:
+            if global_stop is None:
+                short_order = await self.client.open_global_short_market(
+                    global_symbol,
+                    unhedged_delta,
+                    price=expected_short_price,
+                    client_order_id=hedge_coid,
+                    amount_spec=amount_spec,
+                )
+            else:
+                async with global_stop.order_submit_fence(
+                    client_order_id=hedge_coid
+                ):
+                    try:
+                        short_order = await self.client.open_global_short_market(
+                            global_symbol,
+                            unhedged_delta,
+                            price=expected_short_price,
+                            client_order_id=hedge_coid,
+                            amount_spec=amount_spec,
+                        )
+                    except Exception as fenced_error:
+                        rejection_check = getattr(
+                            self, "_is_definitive_order_rejection", None
+                        )
+                        if callable(rejection_check) and rejection_check(fenced_error):
+                            await global_stop.mark_submit_rejected(
+                                hedge_coid, str(fenced_error)
+                            )
+                            raise
+                        await global_stop.mark_submit_unknown(
+                            hedge_coid, str(fenced_error)
+                        )
+                        raise
+                    if not isinstance(short_order, dict) or not short_order.get("id"):
+                        await global_stop.mark_submit_unknown(
+                            hedge_coid,
+                            "futures hedge acknowledgement missing exchange order id",
+                        )
+                        raise AmbiguousOrderSubmission(
+                            "futures hedge acknowledgement has no exchange order id; "
+                            "reconciliation required"
+                        )
+                    await global_stop.mark_submit_acknowledged(
+                        hedge_coid, exchange_order_id=str(short_order["id"]),
+                        response=short_order,
+                    )
         except Exception as submit_error:
             rejection_check = getattr(
                 self, "_is_definitive_order_rejection", None
