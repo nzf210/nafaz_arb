@@ -6,6 +6,7 @@ import time
 
 from executor.models import OrderRole, PositionState
 from executor.helpers import build_client_order_id
+from executor.order_slots import SlotExhaustedError
 from executor.engine_common import logger
 
 
@@ -317,6 +318,12 @@ class EngineEntrySubmissionMixin:
                 global_amount_spec=pair_info.global_amount_spec,
                 recovery_context=recovery_context,
             )
+            if getattr(self, "slot_manager", None) is not None:
+                await self.slot_manager.reserve_slot(
+                    pair_info.local_exchange,
+                    client_order_id=entry_coid,
+                    market_type="spot",
+                )
             if self.global_stop is not None:
                 await self.global_stop.prepare_submit_attempt(
                     client_order_id=entry_coid,
@@ -484,6 +491,10 @@ class EngineEntrySubmissionMixin:
                 return
 
             order_id = str(order["id"])
+            if getattr(self, "slot_manager", None) is not None:
+                await self.slot_manager.activate_slot(
+                    pair_info.local_exchange, client_order_id=entry_coid
+                )
             self._record_order_success(pair_info.local_exchange)
             self.supabase.order(
                 pair_tag,
@@ -574,6 +585,10 @@ class EngineEntrySubmissionMixin:
                 await self._mark_order_submission_rejected(
                     pair_info.local_exchange, entry_coid
                 )
+                if getattr(self, "slot_manager", None) is not None:
+                    await self.slot_manager.release_slot(
+                        pair_info.local_exchange, client_order_id=entry_coid, reason="SUBMISSION_ABORTED"
+                    )
             await self._handle_entry_submission_failure(
                 pair_tag, pair_info, actual_cost_usdt, exc
             )

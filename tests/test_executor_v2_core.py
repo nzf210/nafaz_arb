@@ -519,3 +519,50 @@ def test_exchange_capability_registry():
     # Unregistered venue blocked
     assert registry.is_operation_permitted("unknown_cex", "spot", "client_order_id") is False
 
+
+# =====================================================================
+# 11. Engine Runtime Slot & Command Journal Loop Integration Tests
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_engine_runtime_slot_reservation_and_command_journal(fake_redis):
+    from executor.engine import ArbitrageEngine
+    from executor.config import ExecutorConfig
+    from tests.conftest import MockExchangeClient
+
+    client = MockExchangeClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True),
+        client=client,
+        redis_client=fake_redis,
+    )
+
+    # Slot manager is instantiated
+    assert engine.slot_manager is not None
+    assert engine.command_processor is not None
+
+    # Test limit update propagation
+    assert engine._apply_spot_order_limit("tokocrypto", 3) is True
+    # Allow async task to complete
+    await asyncio.sleep(0.01)
+    assert await engine.slot_manager.get_max_slots("tokocrypto") == 3
+
+    # Command processor polling triggered
+    proc_mock = AsyncMock()
+    proc_mock.poll_and_execute_pending_commands.return_value = 1
+    engine.command_processor = proc_mock
+    engine._running = True
+
+    # Run loop for 1 iteration
+    loop_task = asyncio.create_task(engine._command_journal_loop())
+    await asyncio.sleep(0.05)
+    engine._running = False
+    loop_task.cancel()
+    try:
+        await loop_task
+    except asyncio.CancelledError:
+        pass
+
+    assert proc_mock.poll_and_execute_pending_commands.called
+
+

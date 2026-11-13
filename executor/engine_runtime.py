@@ -112,6 +112,8 @@ class EngineRuntimeMixin:
         self._tasks.append(asyncio.create_task(self._exchange_reconciliation_loop()))
         self._tasks.append(asyncio.create_task(self.exposure_reconciliation.run()))
         self._tasks.append(asyncio.create_task(self.trade_fill_reconciliation.run()))
+        if getattr(self, "command_processor", None) is not None and getattr(self.command_processor, "pool", None) is not None:
+            self._tasks.append(asyncio.create_task(self._command_journal_loop()))
         logger.info("Hybrid Arbitrage Engine started")
 
     async def stop(self):
@@ -446,8 +448,24 @@ class EngineRuntimeMixin:
             limits = {}
             self.config.max_open_spot_orders_per_exchange = limits
         limits[venue] = limit
+        if getattr(self, "slot_manager", None) is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(self.slot_manager.set_max_slots(venue, limit))
+            except RuntimeError:
+                pass
         logger.warning("[Risk Control] %s max open spot orders set to %d", venue, limit)
         return True
+
+    async def _command_journal_loop(self):
+        """Poll and execute operator commands from PostgreSQL command_journal."""
+        while self._running:
+            try:
+                if self.command_processor is not None:
+                    await self.command_processor.poll_and_execute_pending_commands()
+            except Exception:
+                logger.exception("Error in command journal processing loop")
+            await asyncio.sleep(2.0)
 
     async def _listen_spot_order_limits(self):
         """Apply Telegram limit changes immediately without restarting executor."""

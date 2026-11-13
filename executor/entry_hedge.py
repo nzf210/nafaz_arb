@@ -730,6 +730,12 @@ class EntryHedgeMixin:
             if unused_spot > 0 or unused_fut > 0:
                 self.client.unlock_funds(unused_spot, unused_fut)
 
+        if getattr(self, "slot_manager", None) is not None:
+            venue = str(order_info.get("local_exchange") or "").lower()
+            coid = str(order_info.get("client_order_id") or "")
+            if venue and coid:
+                await self.slot_manager.release_slot(venue, client_order_id=coid, reason=status.upper())
+
         del self.pending_entry_orders[pair_tag]
         await self._clear_pending_entry(pair_tag)
         if pair_tag in self.active_positions and self.active_positions[pair_tag].qty > 0:
