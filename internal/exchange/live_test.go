@@ -428,3 +428,10 @@ func TestParseStringLevelsRejectsNonFiniteValues(t *testing.T) {
 		t.Fatalf("expected only finite level to survive, got %+v", levels)
 	}
 }
+
+func TestLiveOpenExposuresFailsClosedWithoutAccountSource(t *testing.T) {
+	adapter := NewLiveAdapter()
+	if exposures, err := adapter.OpenExposures(context.Background()); err == nil || exposures != nil {
+		t.Fatalf("expected unknown account exposure state, got exposures=%+v err=%v", exposures, err)
+	}
+}
