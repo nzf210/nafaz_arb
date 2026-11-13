@@ -118,6 +118,10 @@ async def test_ambiguous_exit_sell_is_reconciled_before_any_new_reprice(
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
     assert pair_tag not in engine.pending_exit_orders
 
+    # A subsequent pricing cycle must not create a fresh client ID or SELL.
+    await engine._check_dynamic_exit_pair_bound(pair_tag)
+    assert len(submit_calls) == 1
+
 
 @pytest.mark.asyncio
 async def test_state4_exit_execution_and_position_cleanup(engine, fake_redis, mock_client):
