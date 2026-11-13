@@ -301,7 +301,7 @@ declare
 begin
     foreach tbl in array array[
         'config_versions','active_config_version','config_audit_log',
-        'operator_control_state','operator_actions','outbox_events'
+        'operator_control_state','operator_actions','outbox_events','config_consumers'
     ] loop
         if not exists (
             select 1 from pg_class c
@@ -392,6 +392,33 @@ begin
         raise exception 'operator command idempotency key admitted a duplicate';
     end if;
 end $$;
+
+insert into public.config_consumers (
+    instance_id, process_id, status, acknowledged_version, acknowledged_sha256,
+    last_ack_at, last_seen_at
+) values (
+    'schema-smoke-executor-1', 'schema-smoke-pid-1', 'ACTIVE',
+    9223372036854770000, repeat('a', 64), now(), now()
+);
+do $
+begin
+    if not exists (
+        select 1 from public.config_consumers
+        where instance_id = 'schema-smoke-executor-1'
+          and status = 'ACTIVE'
+          and acknowledged_version = 9223372036854770000
+          and acknowledged_sha256 = repeat('a', 64)
+    ) then
+        raise exception 'executor config acknowledgement was not persisted';
+    end if;
+    update public.config_consumers
+       set status = 'STARTING', process_id = 'schema-smoke-pid-2'
+     where instance_id = 'schema-smoke-executor-1';
+    if (select status from public.config_consumers
+        where instance_id = 'schema-smoke-executor-1') <> 'STARTING' then
+        raise exception 'new executor process must return to STARTING before re-acknowledging';
+    end if;
+end $;
 
 insert into public.config_audit_log (
     version, action, actor, reason, diff, request_id
