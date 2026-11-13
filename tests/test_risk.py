@@ -428,6 +428,7 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
     client.get_balances = fail_balances
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
+    engine.config.local_credentials.account_scope = "test-indodax-account"
     engine.client = client
     engine.execution_coordinator.active = True
     engine.execution_coordinator.fencing_token = 1
@@ -488,6 +489,7 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     client.place_local_limit_buy = reject_order
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
+    engine.config.local_credentials.account_scope = "test-indodax-account"
     engine.client = client
     engine.execution_coordinator.active = True
     engine.execution_coordinator.fencing_token = 1
