@@ -56,6 +56,8 @@ from executor.engine_signal import EngineSignalMixin
 from executor.engine_status import EngineStatusMixin
 from executor.engine_entry_flow import EngineEntryFlowMixin
 from executor.engine_fee_preflight import EngineFeePreflightMixin
+from executor.execution_coordinator import ExecutionCoordinator
+from executor.mutation_gateway import MutationGatewayClient
 from executor.engine_entry_sizing import EngineEntrySizingMixin
 from executor.engine_entry_submission import EngineEntrySubmissionMixin
 
@@ -171,6 +173,9 @@ class ArbitrageEngine(
         # Universal order registry: durable identity for every order the bot
         # submits, so a restart can re-attach venue orders to their positions.
         self.order_registry = UniversalOrderRegistry(self.redis, self.supabase)
+        self.execution_coordinator = ExecutionCoordinator(
+            self.supabase, on_lost=self._on_execution_coordinator_lost
+        )
         self._recovered_order_records: Dict[str, Any] = {}
         self._recovered_orphans: Dict[str, Any] = {}
         self._recovery_pending_orders: Dict[str, str] = {}
@@ -185,10 +190,19 @@ class ArbitrageEngine(
         self.exposure_reconciliation = ExposureReconciliationWorker(self)
         self.trade_fill_reconciliation = TradeFillReconciliationWorker(self)
 
+    async def _on_execution_coordinator_lost(self, reason: str) -> None:
+        self._halt_exposure_scope("*", f"execution coordinator lease lost: {reason}")
+        self._refresh_entry_gate()
+
     @property
     def client(self):
-        """Task-local exchange facade; concurrent pairs never switch shared clients."""
-        return self._client_context.get() or self._base_client
+        """Task-local exchange facade; live mutations pass through the fenced gateway."""
+        client = self._client_context.get() or self._base_client
+        if client is None or bool(getattr(self.config, "mock_mode", False)):
+            return client
+        return MutationGatewayClient(
+            client, self.execution_coordinator, self.order_registry, self.config
+        )
 
     @client.setter
     def client(self, value):
@@ -237,9 +251,23 @@ class ArbitrageEngine(
                 decode_responses=True,
             )
         self.order_registry.redis = self.redis
-        # Start the writer before recovery so positions and orders restored from
-        # Redis are re-registered in Supabase instead of only existing in Redis.
+        # Start the writer, then acquire the durable global coordinator lease
+        # before any startup path is allowed to mutate a venue.
         await self.supabase.start()
+        if not bool(getattr(self.config, "mock_mode", False)):
+            try:
+                acquired = await self.execution_coordinator.acquire()
+            except Exception as exc:
+                logger.exception("[Coordinator] failed to acquire Postgres execution lease")
+                acquired = False
+                coordinator_error = f"{type(exc).__name__}: {exc}"
+            else:
+                coordinator_error = "another executor owns the active Postgres lease"
+            if not acquired:
+                self._halt_exposure_scope("*", f"execution coordinator unavailable: {coordinator_error}")
+                self._refresh_entry_gate()
+                self._recovery_complete = False
+                return
         self._recovery_complete = await self._run_startup_recovery()
         if not self._recovery_complete:
             self._halt_exposure_scope(

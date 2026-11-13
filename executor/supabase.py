@@ -25,6 +25,7 @@ from executor.supabase_queries import SupabaseQueryMixin
 from executor.supabase_risk import SupabaseRiskMixin
 from executor.supabase_trades import SupabaseTradeMixin
 from executor.supabase_worker import SupabaseWorkerMixin
+from executor.supabase_coordination import SupabaseCoordinationMixin
 
 
 class SupabaseWriter(
@@ -34,6 +35,7 @@ class SupabaseWriter(
     SupabaseQueryMixin,
     SupabaseWorkerMixin,
     SupabaseRiskMixin,
+    SupabaseCoordinationMixin,
 ):
     """Journaled writer for the nafaz core schema."""
 

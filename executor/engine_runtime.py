@@ -30,9 +30,13 @@ class EngineRuntimeMixin:
             try:
                 async with self._exchange_reconciliation_lock:
                     if not self._recovery_complete:
-                        # A replica that started while another owner held the
-                        # lease must retry the full startup restore, not only
-                        # order polling, before it can become READY.
+                        # Standby replicas may restore/mutate only after acquiring
+                        # the durable Postgres execution-coordinator lease.
+                        if not bool(getattr(self.config, "mock_mode", False)) and not self.execution_coordinator.active:
+                            acquired = await self.execution_coordinator.acquire()
+                            if not acquired:
+                                await asyncio.sleep(interval)
+                                continue
                         was_recovery_complete = self._recovery_complete
                         self._recovery_complete = await self._run_startup_recovery()
                         if not self._recovery_complete:
@@ -90,6 +94,10 @@ class EngineRuntimeMixin:
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        try:
+            await self.execution_coordinator.release()
+        except Exception:
+            logger.exception("Execution Coordinator lease release failed during shutdown")
         if self.supabase.enabled:
             await self.supabase.close()
         if self.client:
