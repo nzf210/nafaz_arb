@@ -1436,3 +1436,8 @@ Commit 1183d4e memperketat idempotency PREPARED: selain exchange, market, symbol
 Risk-reducing paths tetap dipisahkan dari entry gate: spot limit SELL exit, spot market SELL rollback/force-close, dan futures market BUY reduceOnly=True close. Ketiganya memerlukan idempotency dan reconciliation tersendiri, tetapi tidak boleh diblokir secara generik oleh Global STOP karena dapat memperburuk eksposur terbuka. Cancel bukan create-order dan juga tidak otomatis tunduk pada entry gate.
 
 Status audit masih PARTIAL. Static inventory dan dua regression cases telah ditambahkan, tetapi full runtime adapter/call-graph audit, operator-authenticated manual resolution, serta real PostgreSQL multi-process disconnect/fault-injection belum selesai. Tidak ada klaim LIVE-ready, merge, deployment, atau cutover.
+
+
+### Futures venue IP-ban behavior
+
+Futures entry-hedge kini mengklasifikasikan signature IP-ban eksplisit dengan classifier yang sama seperti spot entry. Ketika terdeteksi, ia meminta canonical CEX_IP_BLOCK STOP melalui koneksi fence yang sedang memegang session advisory lock, lalu mengirim notifikasi Redis best-effort setelah lock scope selesai. Jika STOP tidak dapat dipersist, attempt tidak boleh diselesaikan sebagai REJECTED; status UNKNOWN/SUBMITTING tetap menahan peer admission. HTTP 429 generik tetap bukan bukti IP ban. Perubahan ini tidak mengubah futures close reduceOnly.
