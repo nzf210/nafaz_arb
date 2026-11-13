@@ -370,7 +370,10 @@ class EngineEntrySubmissionMixin:
                         amount_spec=pair_info.local_amount_spec,
                     )
             except Exception as submit_error:
-                if self._is_definitive_order_rejection(submit_error):
+                if not submission_started or self._is_definitive_order_rejection(submit_error):
+                    # A STOP/database failure before the create-order call is
+                    # not an ambiguous venue submission and must not trigger a
+                    # client-id lookup or leave the intent SUBMITTING.
                     submission_started = False
                     raise
                 lookup = getattr(
