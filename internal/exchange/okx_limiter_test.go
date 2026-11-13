@@ -231,7 +231,7 @@ func TestManyWorkersShareOneLimiter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/v5/public/funding-rate") {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"fundingRate":"0.0001","fundingTime":"1690028800000","prevFundingTime":"1690000000000","ts":"1690000000000"}]}`))
+			_, _ = w.Write([]byte(`{"code":"0","msg":"","data":[{"fundingRate":"0.0001","fundingTime":"1690028800000","nextFundingTime":"1690057600000","prevFundingTime":"1690000000000","ts":"1690000000000"}]}`))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
