@@ -23,6 +23,8 @@ class SupabaseConfig:
 @dataclass
 class ExecutorConfig:
     redis_url: str = "redis://localhost:6380/0"
+    # Direct PostgreSQL DSN for transactional global STOP and submit fencing.
+    postgres_dsn: str = ""
     max_stale_latency_ms: int = 2500
     min_partial_fill_usd: float = 10.0
     exit_price_move_threshold: float = 0.0015  # 0.15%
@@ -189,6 +191,9 @@ class ExecutorConfig:
     def _apply_env(self) -> None:
         if redis_env := os.getenv("REDIS_URL"):
             self.redis_url = redis_env
+
+        if postgres_dsn := os.getenv("POSTGRES_DSN"):
+            self.postgres_dsn = postgres_dsn
 
         if mode := os.getenv("EXECUTION_MODE"):
             self.execution_mode = mode.strip().upper()
