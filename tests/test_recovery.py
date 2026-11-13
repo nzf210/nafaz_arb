@@ -564,7 +564,7 @@ async def test_partial_futures_hedge_fill_is_not_recorded_as_fully_hedged(fake_r
 
 
 @pytest.mark.asyncio
-async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis):
+async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis, monkeypatch):
     """A restored live position is active only when the exchange confirms its short size."""
     client = MockExchangeClient()
     pos = ActivePosition(
@@ -580,8 +580,19 @@ async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis)
     client.fetch_positions = matching_short
     await fake_redis.set("arb:active_pos:indodax:btc_idr", json.dumps(pos.to_dict()))
 
+    from executor.global_stop import GlobalStopService
+
+    async def fake_start(self):
+        self.pool = object()
+
+    async def fake_read_state(self):
+        return {"is_stopped": False, "epoch": 0, "reason": None}
+
+    monkeypatch.setattr(GlobalStopService, "start", fake_start)
+    monkeypatch.setattr(GlobalStopService, "read_state", fake_read_state)
     engine = ArbitrageEngine(
-        config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
+        config=ExecutorConfig(mock_mode=False, postgres_dsn="postgresql://test"),
+        client=client, redis_client=fake_redis
     )
     await engine.initialize()
 
@@ -589,7 +600,7 @@ async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis)
 
 
 @pytest.mark.asyncio
-async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redis):
+async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redis, monkeypatch):
     """A Redis snapshot must not resume automatic exits if exchange size differs."""
     client = MockExchangeClient()
     pos = ActivePosition(
@@ -605,8 +616,19 @@ async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redi
     client.fetch_positions = mismatched_short
     await fake_redis.set("arb:active_pos:indodax:btc_idr", json.dumps(pos.to_dict()))
 
+    from executor.global_stop import GlobalStopService
+
+    async def fake_start(self):
+        self.pool = object()
+
+    async def fake_read_state(self):
+        return {"is_stopped": False, "epoch": 0, "reason": None}
+
+    monkeypatch.setattr(GlobalStopService, "start", fake_start)
+    monkeypatch.setattr(GlobalStopService, "read_state", fake_read_state)
     engine = ArbitrageEngine(
-        config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
+        config=ExecutorConfig(mock_mode=False, postgres_dsn="postgresql://test"),
+        client=client, redis_client=fake_redis
     )
     await engine.initialize()
 
