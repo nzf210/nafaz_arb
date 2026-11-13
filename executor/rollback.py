@@ -173,12 +173,18 @@ class RollbackMixin:
             raw_contracts = position.get("contracts")
             if raw_contracts is not None:
                 try:
-                    qty = abs(float(raw_contracts)) * abs(
-                        float(position.get("contractSize") or 1.0)
-                    )
+                    contract_size_raw = position.get("contractSize")
+                    if contract_size_raw is None:
+                        return True
+                    contract_size = float(contract_size_raw)
+                    contracts = float(raw_contracts)
+                    if (
+                        not math.isfinite(contract_size) or contract_size <= 0
+                        or not math.isfinite(contracts)
+                    ):
+                        return True
+                    qty = abs(contracts) * contract_size
                 except (TypeError, ValueError):
-                    return True
-                if not math.isfinite(qty):
                     return True
                 if qty <= 1e-12:
                     continue
