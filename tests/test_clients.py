@@ -127,7 +127,7 @@ async def test_okx_futures_legs_declare_the_short_position_side():
     assert open_params["reduceOnly"] is False
     close_params = futures.calls[1][3]
     assert close_params["posSide"] == "short"
-    assert close_params["reduceOnly"] is True
+    assert "reduceOnly" not in close_params
 
 def test_futures_position_side_params_only_targets_okx():
     from executor.exchange_common import futures_position_side_params
@@ -335,6 +335,7 @@ async def test_dual_leg_sizing_caps_by_thinner_balance():
             self._balance_snapshots = {}
             self._last_balances = {}
             self._exchange_halted = {}
+            self.failures = []
 
         async def _get_balance_snapshot(self, **kwargs):
             return {"spot_available": 80.0, "futures_available": 30.0}
@@ -348,7 +349,7 @@ async def test_dual_leg_sizing_caps_by_thinner_balance():
     engine = Engine()
     payload = SimpleNamespace(
         execution_directives=SimpleNamespace(max_position_usdt=50.0),
-        pair_info=SimpleNamespace(),
+        pair_info=SimpleNamespace(local_exchange="indodax", global_exchange="okx"),
         pricing_snapshot=SimpleNamespace(usdt_idr_rate=16000.0),
     )
     sized = await engine._compute_entry_sizing("pair", payload)
@@ -358,8 +359,8 @@ async def test_dual_leg_sizing_caps_by_thinner_balance():
 
 
 @pytest.mark.asyncio
-async def test_live_sizing_probe_failure_does_not_halt_venues():
-    """A transient live balance read must not halt venues; the preflight decides."""
+async def test_live_sizing_probe_failure_halts_both_venues():
+    """An unreadable live balance snapshot must block entry sizing immediately."""
     from types import SimpleNamespace
 
     from executor.risk import RiskMixin
@@ -383,7 +384,10 @@ async def test_live_sizing_probe_failure_does_not_halt_venues():
             return True
 
         async def _publish_execution_failure(self, *args, **kwargs):
-            raise AssertionError("an unreadable balance must not reject here")
+            self.failures.append((args, kwargs))
+
+        async def _persist_risk_state(self, *args, **kwargs):
+            return None
 
     engine = Engine()
     payload = SimpleNamespace(
@@ -392,10 +396,10 @@ async def test_live_sizing_probe_failure_does_not_halt_venues():
         pricing_snapshot=SimpleNamespace(usdt_idr_rate=16000.0),
     )
     sized = await engine._compute_entry_sizing("pair", payload)
-    assert sized is not None
-    # Sizing is left uncapped and the funding preflight owns the decision.
-    assert sized[0] == 50.0
-    assert engine._exchange_halted == {}
+    assert sized is None
+    assert "indodax" in engine._exchange_halted
+    assert "okx" in engine._exchange_halted
+    assert engine.failures[0][0][1] == "BALANCE_FEED_UNAVAILABLE"
 
 
 @pytest.mark.asyncio
