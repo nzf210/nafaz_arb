@@ -68,6 +68,9 @@ class ExecutorConfig:
     # proven path. When on, stale or missing entries still fall back to REST.
     private_stream_enabled: bool = False
     private_stream_max_age_seconds: float = 5.0
+    # Fraction of accumulated funding retained for realized PnL; only the
+    # complementary fraction may decay the target exit spread.
+    funding_decay_retention_ratio: float = 0.60
     # Monitoring loop cadence. The venue rate-limits per IP, so a sub-second tick
     # with several pending orders drains the quota and the order-status poll
     # starts answering HTTP 429 with an HTML body. 500ms stays responsive while
@@ -149,6 +152,7 @@ class ExecutorConfig:
                 ("mock_mode", bool),
                 ("private_stream_enabled", bool),
                 ("private_stream_max_age_seconds", float),
+                ("funding_decay_retention_ratio", float),
                 ("monitor_interval_seconds", float),
                 ("max_order_fetch_failures", int),
                 ("order_fetch_backoff_max_seconds", float),
@@ -411,6 +415,7 @@ class ExecutorConfig:
         "max_consecutive_order_failures": (0, 100, 50),
         "estimated_round_trip_fee_pct": (0.0, 1.0, 0.001),
         "private_stream_max_age_seconds": (0.5, 60.0, 5.0),
+        "funding_decay_retention_ratio": (0.0, 1.0, 0.60),
         "monitor_interval_seconds": (0.05, 60.0, 0.5),
         "max_order_fetch_failures": (1, 1000, 10),
         "order_fetch_backoff_max_seconds": (0.1, 600.0, 60.0),
