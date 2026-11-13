@@ -1441,3 +1441,7 @@ Status audit masih PARTIAL. Static inventory dan dua regression cases telah dita
 ### Futures venue IP-ban behavior
 
 Futures entry-hedge kini mengklasifikasikan signature IP-ban eksplisit dengan classifier yang sama seperti spot entry. Ketika terdeteksi, ia meminta canonical CEX_IP_BLOCK STOP melalui koneksi fence yang sedang memegang session advisory lock, lalu mengirim notifikasi Redis best-effort setelah lock scope selesai. Jika STOP tidak dapat dipersist, attempt tidak boleh diselesaikan sebagai REJECTED; status UNKNOWN/SUBMITTING tetap menahan peer admission. HTTP 429 generik tetap bukan bukti IP ban. Perubahan ini tidak mengubah futures close reduceOnly.
+
+### Spot IP-ban STOP persistence failure guard
+
+Spot entry now records whether canonical CEX_IP_BLOCK persistence failed inside the active submit fence. In that case, it must not run the post-submit exact-client-ID lookup (which could otherwise ACK an order while cross-instance STOP is absent). It best-effort marks the attempt UNKNOWN, records local ambiguity, and returns without retrying or acknowledging. If PostgreSQL is unavailable, the committed SUBMITTING row remains the durable peer guard. Regression test injects a venue lookup that would return an order and asserts it is never called after STOP persistence failure.
