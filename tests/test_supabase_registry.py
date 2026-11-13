@@ -83,7 +83,7 @@ def test_runtime_configuration_persists_only_non_secret_account_metadata():
     assert "api_key" not in json.dumps(risk)
 
 
-def test_runtime_registry_ids_and_upsert_targets_are_stable():
+def test_runtime_registry_business_keys_are_stable_across_restarts():
     config = _config()
     first = SupabaseWriter(config)
     first.runtime_configuration(config, instance_id="stable")
@@ -93,11 +93,14 @@ def test_runtime_registry_ids_and_upsert_targets_are_stable():
     restarted.runtime_configuration(config, instance_id="stable")
     restarted_rows = _rows(restarted)
 
-    first_ids = {(table, row.get("exchange_name", row.get("name"))): row["id"]
-                 for table, _, row in first_rows}
-    restarted_ids = {(table, row.get("exchange_name", row.get("name"))): row["id"]
-                     for table, _, row in restarted_rows}
-    assert first_ids == restarted_ids
+    def business_rows(rows):
+        return {
+            (table, row.get("exchange_name"), row.get("market_type"),
+             row.get("name"), row.get("pair_key")): row
+            for table, _, row in rows
+        }
+
+    assert business_rows(first_rows) == business_rows(restarted_rows)
     assert {conflict for table, conflict, _ in first_rows if table == "exchange_accounts"} == {
         "exchange_name,market_type,account_label"
     }
@@ -140,8 +143,8 @@ def test_market_pair_is_persisted_with_exact_spot_and_perpetual_quotes():
     assert market["price_tick"] == 1000.0
     assert market["lot_size"] == 0.0001
     assert market["metadata"]["is_mock"] is False
-    assert market["local_exchange_account_id"]
-    assert market["global_exchange_account_id"]
+    assert "local_exchange_account_id" not in market
+    assert "global_exchange_account_id" not in market
 
 
 def test_market_pair_requires_complete_symbols_and_is_idempotent():
@@ -170,8 +173,8 @@ def test_market_pair_requires_complete_symbols_and_is_idempotent():
     first = [row for table, _, row in _rows(writer) if table == "market_pairs"][0]
     writer.position_opened(pair_key, position, pair)
     second = [row for table, _, row in _rows(writer) if table == "market_pairs"][0]
-    assert first["id"] == second["id"]
-    assert first["pair_key"] == second["pair_key"]
+    assert first == second
+    assert second["pair_key"] == pair_key
     assert second["global_quote_asset"] == "USDT"
 
     invalid = PairInfo(
