@@ -47,6 +47,7 @@ from executor.models import OrderRecord, OrderRole
 from executor.risk import RiskMixin
 from executor.rollback import RollbackMixin
 from executor.supabase import SupabaseWriter
+from executor.global_stop import GlobalStopService
 from executor.exposure_reconciliation import ExposureReconciliationWorker
 from executor.trade_fill_reconciliation import TradeFillReconciliationWorker
 from executor.engine_order_intents import EngineOrderIntentMixin
@@ -167,6 +168,10 @@ class ArbitrageEngine(
         # Best-effort audit persistence. Writes are queued and flushed by a
         # background task, so an unreachable database can never delay a hedge.
         self.supabase = SupabaseWriter(getattr(config, "supabase", None))
+        self.global_stop = (
+            GlobalStopService(getattr(config, "postgres_dsn", ""), redis_client)
+            if getattr(config, "postgres_dsn", "") else None
+        )
 
         # Universal order registry: durable identity for every order the bot
         # submits, so a restart can re-attach venue orders to their positions.
