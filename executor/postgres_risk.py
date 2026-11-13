@@ -93,12 +93,18 @@ class PostgresRiskStateService:
         if not self.enabled:
             return 0.0
         try:
+            day_val = loss_day
+            if isinstance(loss_day, str):
+                try:
+                    day_val = datetime.strptime(loss_day, "%Y-%m-%d").date()
+                except ValueError:
+                    pass
             async with self.pool.acquire() as conn:
                 row = await conn.fetchrow(
                     "SELECT coalesce(sum(pnl_usdt), 0.0) AS total_loss "
                     "FROM public.risk_pnl_events "
                     "WHERE loss_day_utc = $1 AND is_mock = $2 AND pnl_usdt < 0",
-                    str(loss_day),
+                    day_val,
                     bool(is_mock),
                 )
                 val = float(row["total_loss"] if row and row["total_loss"] is not None else 0.0)
@@ -185,6 +191,12 @@ class PostgresRiskStateService:
         """Insert immutable realized-PnL event into public.risk_pnl_events."""
         if not self.enabled:
             return "failed"
+        day_val = loss_day
+        if isinstance(loss_day, str):
+            try:
+                day_val = datetime.strptime(loss_day, "%Y-%m-%d").date()
+            except ValueError:
+                pass
         now = datetime.now(timezone.utc)
         query = """
             INSERT INTO public.risk_pnl_events
@@ -200,7 +212,7 @@ class PostgresRiskStateService:
                     str(event_id),
                     str(pair_key),
                     float(pnl_usdt),
-                    str(loss_day),
+                    day_val,
                     bool(is_mock),
                     now,
                 )
