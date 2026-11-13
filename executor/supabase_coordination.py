@@ -107,6 +107,19 @@ class SupabaseCoordinationMixin:
         )
         return value is True
 
+    async def release_execution_capacity_for_order(
+        self, account_scope: str, exchange_name: str, client_order_id: str
+    ) -> bool:
+        value = await self._call_rpc(
+            "release_execution_capacity_for_order",
+            {
+                "p_account_scope": account_scope,
+                "p_exchange_name": exchange_name,
+                "p_client_order_id": client_order_id,
+            },
+        )
+        return value is True
+
     async def release_execution_capacity_for_pair(
         self, account_scope: str, exchange_name: str, pair_key: str
     ) -> bool:
