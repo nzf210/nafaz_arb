@@ -55,52 +55,69 @@ amount/currency details. Apply it with the same reviewed `supabase db push --rem
 
 ## VPS migration runner
 
-For an existing VPS, run the script from the checked-out branch. It defaults
-to a read-only dry-run and never restarts application services.
+The VPS runner targets the **local PostgreSQL server on the VPS by default**.
+It does not silently fall back to Supabase remote if localhost is unavailable.
+Supabase remote is an explicit opt-in target.
 
-Prerequisites: Supabase CLI installed/authenticated; this repository linked to
-the intended project; PostgreSQL client tools (`pg_dump`, `pg_restore`) for
-apply mode; and enough protected disk space for a full database backup.
+Prerequisites for local PostgreSQL:
 
-Inspect the target and pending plan first:
+- PostgreSQL is running and accepting TCP connections on the VPS (default
+  `127.0.0.1:5432`).
+- The target database already exists (default database name: `nafaz`).
+- The connection user can inspect the schema, create tables/extensions, and
+  apply the reviewed migrations.
+- PostgreSQL roles `anon`, `authenticated`, and `service_role` already
+  exist. The runner deliberately does not create or alter security roles.
+- `psql`, `pg_isready`, `pg_dump`, `pg_restore`, `sha256sum`, and
+  `flock` are installed.
+
+Set the local connection through standard libpq environment variables. For
+example, use a protected `.pgpass` file or a secret manager rather than
+putting a password in shell history:
 
 ```sh
-EXPECTED_SUPABASE_PROJECT_REF=<expected-project-ref> bash scripts/vps-migrate.sh --dry-run
+export PGHOST=127.0.0.1
+export PGPORT=5432
+export PGDATABASE=nafaz
+export PGUSER=postgres
+# Configure password using ~/.pgpass (chmod 600) or protected secret injection.
+
+bash scripts/vps-migrate.sh --dry-run
 ```
 
-Review the project ref, remote migration history, pending SQL, and dry-run
-output. Then, only after approval:
+Dry-run checks the local server identity, role prerequisites, existing
+migration ledger, and pending migration checksums. It makes no schema changes.
+If NAFAZ tables already exist but the runner's migration ledger does not, it
+stops rather than replaying the baseline over an unknown existing installation.
+Existing installations must be schema-reviewed and explicitly baseline-adopted
+before this runner can manage their migration history.
+
+After reviewing the target and pending files, apply with:
 
 ```sh
-export DATABASE_URL='postgresql://...'
-export EXPECTED_SUPABASE_PROJECT_REF='<expected-project-ref>'
-# Set only after verifying DATABASE_URL points to this exact Supabase project.
-export BACKUP_DATABASE_PROJECT_REF='<expected-project-ref>'
 bash scripts/vps-migrate.sh --apply
-unset DATABASE_URL
 ```
 
-Apply mode repeats the dry-run, requires an explicit confirmation that the
-backup DSN targets the same project, creates a full PostgreSQL custom-format
-`pg_dump` archive, verifies that it can be listed by `pg_restore`, then
-runs `supabase db push --remote --yes` and re-reads migration history.
-Backups are stored in `/var/backups/nafaz-db-migrations/` by default with
-restrictive permissions (override with `MIGRATION_BACKUP_DIR`). Protect and
-copy backups to independent storage; the script does not prune them.
+Apply mode first creates and verifies a full custom-format `pg_dump` archive
+under `/var/backups/nafaz-db-migrations/` (override with
+`MIGRATION_BACKUP_DIR`), then applies each pending migration in its own
+transaction and records its SHA-256 checksum in
+`public.nafaz_schema_migrations`. A changed checksum for an already-applied
+migration causes a hard stop. No application containers or services are
+restarted. A successful archive listing is not a tested restore; protect the
+backup off-host and test restoration separately. No automatic rollback is
+attempted.
 
-**Operator gates and limitations:**
+To explicitly target a linked Supabase remote project instead:
 
-- The runner does not repair an unknown legacy schema, baseline mismatch,
-  manually applied SQL, or inconsistent `supabase_migrations` history.
-  Stop on drift or unexpected pending migrations and reconcile manually.
-- A successful archive listing is not a tested restore. Test restore through
-  a separate recovery procedure before relying on the backup.
-- No automatic rollback/restore is attempted after a failed migration.
-  Preserve the backup and follow a reviewed recovery plan.
-- It does not restart containers, deploy code, migrate Redis/local SQLite
-  outboxes, or change application configuration.
-- Do not use production apply mode until the current schema and migration
-  history have been inspected and the exact dry-run plan approved.
+```sh
+EXPECTED_SUPABASE_PROJECT_REF=<expected-project-ref> \
+  bash scripts/vps-migrate.sh --target supabase --dry-run
+```
+
+Remote apply additionally requires `DATABASE_URL` for the backup and
+`BACKUP_DATABASE_PROJECT_REF` to confirm that the backup DSN targets the
+linked project. Remote mode is never selected automatically.
 
 ## Runtime persistence status
 
