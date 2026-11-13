@@ -25,7 +25,8 @@ declare
         'exchange_accounts','strategy_configs','risk_limits','market_pairs',
         'positions','orders','order_fills','position_legs','funding_payments',
         'closed_trades','balance_snapshots','risk_events','executor_events',
-        'executor_status_snapshots','scanner_opportunities','order_registry','reconciliation_audit'
+        'executor_status_snapshots','scanner_opportunities','order_registry','reconciliation_audit',
+        'execution_coordinator_leases','execution_capacity_config','execution_capacity_reservations'
     ];
 begin
     foreach tbl in array mutable_tables loop
@@ -288,5 +289,103 @@ end $audit$;
 
 delete from public.reconciliation_audit
 where event_id = 'schema-smoke-reconcile-1';
+
+
+-- Durable coordinator lease: one active owner, monotonic fencing token on takeover.
+do $coordinator$
+declare
+    owner_one uuid := '33333333-3333-3333-3333-333333333331';
+    owner_two uuid := '33333333-3333-3333-3333-333333333332';
+    acquired_value boolean;
+    first_token bigint;
+    second_token bigint;
+begin
+    select acquired, fencing_token into acquired_value, first_token
+      from public.acquire_execution_coordinator_lease('schema-smoke-global', owner_one, 30);
+    if not acquired_value or first_token < 1 then raise exception 'first coordinator lease was not acquired'; end if;
+    select acquired into acquired_value
+      from public.acquire_execution_coordinator_lease('schema-smoke-global', owner_two, 30);
+    if acquired_value then raise exception 'second coordinator acquired an unexpired lease'; end if;
+    if not public.assert_execution_coordinator_lease('schema-smoke-global', owner_one, first_token) then
+        raise exception 'current coordinator fencing token was not accepted';
+    end if;
+    if not public.renew_execution_coordinator_lease('schema-smoke-global', owner_one, first_token, 30) then
+        raise exception 'current coordinator lease could not be renewed';
+    end if;
+    if not public.release_execution_coordinator_lease('schema-smoke-global', owner_one, first_token) then
+        raise exception 'current coordinator lease could not be released';
+    end if;
+    select acquired, fencing_token into acquired_value, second_token
+      from public.acquire_execution_coordinator_lease('schema-smoke-global', owner_two, 30);
+    if not acquired_value or second_token <= first_token then
+        raise exception 'coordinator takeover did not advance the fencing token';
+    end if;
+    if public.assert_execution_coordinator_lease('schema-smoke-global', owner_one, first_token) then
+        raise exception 'stale coordinator fencing token was accepted';
+    end if;
+    perform public.release_execution_coordinator_lease('schema-smoke-global', owner_two, second_token);
+end
+$coordinator$;
+
+delete from public.execution_coordinator_leases where scope = 'schema-smoke-global';
+
+-- Atomic capacity reservation: idempotent per pair, slot cap and capital cap
+-- are checked under one account+venue transaction lock.
+do $capacity$
+declare
+    accepted_value boolean;
+    first_id uuid;
+    returned_id uuid;
+    reason_value text;
+    active_count integer;
+    capital_value numeric;
+begin
+    perform public.set_execution_capacity_config('schema-smoke-account', 'indodax', 2, 100);
+    select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
+      into accepted_value, first_id, reason_value, active_count, capital_value
+      from public.reserve_execution_capacity(
+        'schema-smoke-account', 'indodax', 'schema-smoke-pair-1', 'schema-smoke-order-1', 40, null
+      );
+    if not accepted_value or reason_value <> 'reserved' then raise exception 'first capacity reservation was rejected'; end if;
+
+    select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
+      into accepted_value, returned_id, reason_value, active_count, capital_value
+      from public.reserve_execution_capacity(
+        'schema-smoke-account', 'indodax', 'schema-smoke-pair-1', 'schema-smoke-order-1', 40, null
+      );
+    if not accepted_value or returned_id <> first_id or active_count <> 1 then
+        raise exception 'same pair reservation is not idempotent';
+    end if;
+
+    select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
+      into accepted_value, returned_id, reason_value, active_count, capital_value
+      from public.reserve_execution_capacity(
+        'schema-smoke-account', 'indodax', 'schema-smoke-pair-2', 'schema-smoke-order-2', 70, null
+      );
+    if accepted_value or reason_value <> 'capital_limit_reached' then
+        raise exception 'capital limit did not reject excess reservation';
+    end if;
+
+    select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
+      into accepted_value, returned_id, reason_value, active_count, capital_value
+      from public.reserve_execution_capacity(
+        'schema-smoke-account', 'indodax', 'schema-smoke-pair-2', 'schema-smoke-order-2', 10, null
+      );
+    if not accepted_value or active_count <> 2 then raise exception 'second independent slot was not reserved'; end if;
+
+    select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
+      into accepted_value, returned_id, reason_value, active_count, capital_value
+      from public.reserve_execution_capacity(
+        'schema-smoke-account', 'indodax', 'schema-smoke-pair-3', 'schema-smoke-order-3', 10, null
+      );
+    if accepted_value or reason_value <> 'spot_order_limit_reached' then
+        raise exception 'spot slot cap did not reject the third active pair';
+    end if;
+    if not public.release_execution_capacity(first_id) then raise exception 'capacity reservation release failed'; end if;
+    delete from public.execution_capacity_reservations where account_scope = 'schema-smoke-account';
+    delete from public.execution_capacity_config where account_scope = 'schema-smoke-account';
+end
+$capacity$;
+
 
 drop table pg_temp._smoke_constants;
