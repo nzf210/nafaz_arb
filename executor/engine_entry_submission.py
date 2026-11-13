@@ -252,7 +252,7 @@ class EngineEntrySubmissionMixin:
             if not bool(getattr(self.config, "mock_mode", False)):
                 try:
                     capacity_reservation_id = await self._reserve_spot_capacity(
-                        pair_tag, pair_info.local_exchange, entry_coid, actual_cost_usdt
+                        pair_tag, pair_info.local_exchange, entry_coid, actual_cost_usdt * 2.0
                     )
                 except Exception as reserve_error:
                     self._mark_failed(
@@ -264,6 +264,7 @@ class EngineEntrySubmissionMixin:
                     await self.publish_status()
                     return
                 recovery_context["capacity_reservation_id"] = capacity_reservation_id
+                recovery_context["pair_capital_reservation_usdt"] = actual_cost_usdt * 2.0
             await self._register_order_intent(
                 pair_tag,
                 entry_coid,
