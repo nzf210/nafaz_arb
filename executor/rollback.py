@@ -11,11 +11,7 @@ import time
 from typing import Any, Dict, Optional
 
 from executor import helpers
-from executor.helpers import (
-    RetryExhausted,
-    build_client_order_id,
-    retry_with_backoff,
-)
+from executor.helpers import build_client_order_id
 from executor.models import OrderRole, PositionState
 from executor.quantity import AmountSpec
 
@@ -41,9 +37,7 @@ class RollbackMixin:
         and ``error`` then carries the last failure so the operator event can say
         what went wrong.
         """
-        max_retries = 4  # 5 total attempts
-        # One id for the whole retry sequence: every attempt is the same logical
-        # order, so the venue can reject duplicates rather than sell twice.
+        # Submit one logical market mutation once; resolve lost acknowledgements by client id.
         seq = self._next_order_seq()
         rollback_coid = build_client_order_id(pair_tag, "rollback", seq)
         venue_exchange = local_exchange or getattr(self.config, "local_exchange_name", "")
@@ -54,40 +48,38 @@ class RollbackMixin:
             role=OrderRole.ROLLBACK.value, side="sell",
             order_type="market", price=0.0, quantity=unhedged_delta,
             local_amount_spec=amount_spec,
-            required=False,
         )
         try:
-            emergency_order = await retry_with_backoff(
-                lambda: self.client.place_local_market_sell(
-                    symbol,
-                    unhedged_delta,
-                    client_order_id=rollback_coid,
-                    amount_spec=amount_spec
-                    or (
-                        AmountSpec(
-                            unit="BASE",
-                            step=legacy_amount_step,
-                            minimum=legacy_amount_step,
-                            base_per_unit=1.0,
-                        )
-                        if legacy_amount_step > 0
-                        else None
-                    ),
+            emergency_order = await self.client.place_local_market_sell(
+                symbol, unhedged_delta, client_order_id=rollback_coid,
+                amount_spec=amount_spec or (
+                    AmountSpec(unit="BASE", step=legacy_amount_step,
+                               minimum=legacy_amount_step, base_per_unit=1.0)
+                    if legacy_amount_step > 0 else None
                 ),
-                max_retries=max_retries,
-                base_delay=0.5,
-                label=f"hedge rollback sell {symbol} for {pair_tag}",
             )
-        except RetryExhausted as exhausted:
+        except Exception as submit_error:
             rejection_check = getattr(self, "_is_definitive_order_rejection", None)
-            if callable(rejection_check) and rejection_check(exhausted.last_error):
+            if callable(rejection_check) and rejection_check(submit_error):
                 await self._mark_order_submission_rejected(venue_exchange, rollback_coid)
-            logger.critical(
-                f"[Hedge Rollback] FAILED to liquidate spot leg for {pair_tag} after "
-                f"{exhausted.attempts} attempts: {exhausted.last_error}. "
-                f"MANUAL INTERVENTION REQUIRED: {unhedged_delta} {symbol} is UNHEDGED."
-            )
-            return None, exhausted.last_error
+                return None, submit_error
+            lookup = getattr(self.client, "fetch_local_order_by_client_id", None)
+            emergency_order = None
+            if callable(lookup):
+                try:
+                    emergency_order = await lookup(rollback_coid, symbol, amount_spec)
+                except Exception:
+                    logger.exception("[Hedge Rollback] client-id lookup failed after ambiguous submit %s", rollback_coid)
+            if not isinstance(emergency_order, dict) or not emergency_order.get("id"):
+                await self._mark_order_submission_ambiguous(
+                    pair_tag, venue_exchange, rollback_coid,
+                    f"spot rollback submit ambiguous: {type(submit_error).__name__}: {submit_error}; "
+                    "client-id lookup did not return a verifiable order",
+                )
+                return None, RuntimeError(
+                    f"spot rollback submission is ambiguous; reconciliation required: {submit_error}"
+                )
+            logger.warning("[Hedge Rollback] recovered spot rollback %s by client id", rollback_coid)
         if not isinstance(emergency_order, dict):
             return None, RuntimeError("spot rollback returned no verifiable order")
         status = str(emergency_order.get("status", "")).lower()

@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from executor.models import OrderRole
 from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt
 from executor import helpers
-from executor.helpers import RetryExhausted, build_client_order_id
+from executor.helpers import build_client_order_id
 
 logger = logging.getLogger("executor.engine")
 
@@ -358,6 +358,8 @@ class ForceCloseLegMixin:
         only if the order actually filled. Never falls back to entry price.
         """
         logger.warning(f"[Force Close] Selling {pos.qty} {pos.symbol} spot leg...")
+        client_order_id = ""
+        submission_started = False
         try:
             seq = self._next_order_seq()
             client_order_id = build_client_order_id(pair_key, "force-liq", seq)
@@ -367,19 +369,35 @@ class ForceCloseLegMixin:
                 symbol=pos.symbol, role=OrderRole.FORCE_CLOSE.value,
                 side="sell", order_type="market", price=0.0,
                 quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
-                required=False,
             )
-            spot_order = await helpers.retry_with_backoff(
-                lambda: self.client.place_local_market_sell(
-                    pos.symbol,
-                    pos.qty,
-                    client_order_id=client_order_id,
+            # Market-order mutations are never blindly retried after transport errors.
+            submission_started = True
+            try:
+                spot_order = await self.client.place_local_market_sell(
+                    pos.symbol, pos.qty, client_order_id=client_order_id,
                     amount_spec=pos.local_amount_spec,
-                ),
-                max_retries=4,
-                base_delay=0.5,
-                label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
-            )
+                )
+            except Exception as submit_error:
+                rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+                if callable(rejection_check) and rejection_check(submit_error):
+                    await self._mark_order_submission_rejected(pos.local_exchange, client_order_id)
+                    raise
+                lookup = getattr(self.client, "fetch_local_order_by_client_id", None)
+                spot_order = None
+                if callable(lookup):
+                    try:
+                        spot_order = await lookup(client_order_id, pos.symbol, pos.local_amount_spec)
+                    except Exception:
+                        logger.exception("[Force Close] client-id lookup failed after ambiguous submit %s", client_order_id)
+                if not isinstance(spot_order, dict) or not spot_order.get("id"):
+                    await self._mark_order_submission_ambiguous(
+                        pair_key, pos.local_exchange, client_order_id,
+                        f"force-close spot submit ambiguous: {type(submit_error).__name__}: {submit_error}; "
+                        "client-id lookup did not return a verifiable order",
+                    )
+                    logger.critical("[Force Close] ambiguous spot market sell %s for %s; resubmit prohibited", client_order_id, pair_key)
+                    return 0.0
+                logger.warning("[Force Close] recovered spot market sell %s by client id", client_order_id)
             if isinstance(spot_order, dict):
                 await self._record_force_close_spot_order(
                     pair_key, pos, spot_order, client_order_id
@@ -405,13 +423,17 @@ class ForceCloseLegMixin:
                 f"[Force Close] FAILED to liquidate spot leg for {pair_key}. "
                 f"MANUAL INTERVENTION REQUIRED: {pos.qty} {pos.symbol} is UNHEDGED. Response: {spot_order}"
             )
-        except RetryExhausted as exhausted:
-            rejection_check = getattr(self, "_is_definitive_order_rejection", None)
-            if callable(rejection_check) and rejection_check(exhausted.last_error):
-                await self._mark_order_submission_rejected(pos.local_exchange, client_order_id)
-            logger.exception(
-                f"[Force Close] spot liquidation exhausted retries for {pair_key}"
-            )
+        except Exception as submit_error:
+            if submission_started:
+                rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+                if callable(rejection_check) and rejection_check(submit_error):
+                    await self._mark_order_submission_rejected(pos.local_exchange, client_order_id)
+                else:
+                    await self._mark_order_submission_ambiguous(
+                        pair_key, pos.local_exchange, client_order_id,
+                        f"force-close spot processing failed after submit began: {type(submit_error).__name__}: {submit_error}",
+                    )
+            logger.exception("[Force Close] spot liquidation failed for %s", pair_key)
         return 0.0
 
     async def _resolve_force_close_prices(self, pair_key: str, pos, spot_exit_price_idr: float):
