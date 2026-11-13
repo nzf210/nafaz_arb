@@ -1,7 +1,8 @@
 """Real PostgreSQL, multi-process crash test for the durable submit fence.
 
-The fake venue and executor run in separate processes. PostgreSQL terminates the
-executor's backend while its venue request remains in flight. A peer must
+The executor and peer run in separate processes. The test process simulates an
+active venue request, terminates the executor's PostgreSQL backend mid-request,
+and then releases a simulated venue acceptance. A peer must
 still be blocked by the committed SUBMITTING ledger row.
 """
 from __future__ import annotations
@@ -20,17 +21,7 @@ import pytest
 from executor.global_stop import GlobalStopError, GlobalStopService
 
 
-def _fake_venue(request_received, active, release, accepted):
-    if not request_received.wait(30):
-        return
-    active.set()
-    if not release.wait(30):
-        return
-    # This represents the venue accepting the request after the executor died.
-    accepted.set()
-
-
-def _submitter(dsn, client_id, venue_request, venue_active, venue_release, backend_queue):
+def _submitter(dsn, client_id, venue_active, venue_release, backend_queue):
     async def run():
         service = GlobalStopService(dsn, min_size=1, max_size=1)
         await service.start()
@@ -41,14 +32,13 @@ def _submitter(dsn, client_id, venue_request, venue_active, venue_release, backe
                 quantity=0.001, price=60000, pair_key="mexc:BTC_USDT",
             )
             async with service.order_submit_fence(client_order_id=client_id) as conn:
-                venue_request.set()
-                if not venue_active.wait(10):
-                    raise RuntimeError("fake venue did not receive request")
+                # The parent process acts as the fake venue and keeps this
+                # request open until after it terminates our PostgreSQL backend.
                 backend_queue.put(await conn.fetchval("select pg_backend_pid()"))
-                # Simulated HTTP call remains active after PostgreSQL terminates this session.
+                venue_active.set()
                 await asyncio.to_thread(venue_release.wait, 30)
         except Exception:
-            # Connection termination during the active venue request is expected.
+            # PostgreSQL backend termination during the in-flight venue call is expected.
             pass
         finally:
             await service.close()
@@ -74,7 +64,7 @@ def _peer_submitter(dsn, client_id, result_queue):
 
 
 @pytest.mark.integration
-def test_process_death_during_live_venue_request_keeps_peer_fenced():
+def test_postgres_disconnect_during_active_venue_request_keeps_peer_fenced():
     dsn = os.getenv("TEST_POSTGRES_DSN")
     if not dsn:
         pytest.skip("TEST_POSTGRES_DSN is not configured")
@@ -83,29 +73,73 @@ def test_process_death_during_live_venue_request_keeps_peer_fenced():
     suffix = uuid.uuid4().hex[:16]
     first_id = "pg-crash-" + suffix
     second_id = "pg-peer-" + suffix
-    venue_request = ctx.Event()
     venue_active = ctx.Event()
     venue_release = ctx.Event()
-    venue_accepted = ctx.Event()
-    result_queue = ctx.Queue()
     backend_queue = ctx.Queue()
-
-    # A separate venue process remains alive after the executor process dies.
-    venue = ctx.Process(
-        target=_fake_venue, args=(venue_request, venue_active, venue_release, venue_accepted)
-    )
-    venue.start()
+    result_queue = ctx.Queue()
     submitter = ctx.Process(
-        target=_submitter, args=(dsn, first_id, venue_request, venue_active, venue_release, backend_queue)
+        target=_submitter,
+        args=(dsn, first_id, venue_active, venue_release, backend_queue),
     )
+    peer = None
     submitter.start()
-    assert venue_active.wait(10), "fake venue did not receive the in-flight request"
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        if not submitter.is_alive():
-            pytest.fail("submitter exited before fault injection")
-        # The test waits until the durable row has crossed the HTTP boundary.
-        async def read_status():
+    try:
+        assert venue_active.wait(15), "executor never entered the fake venue request"
+        backend_pid = backend_queue.get(timeout=5)
+
+        async def terminate_backend():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                return await conn.fetchval("select pg_terminate_backend($1)", backend_pid)
+            finally:
+                await conn.close()
+
+        assert asyncio.run(terminate_backend()) is True
+
+        async def wait_backend_exit():
+            import asyncpg
+            deadline = time.monotonic() + 10
+            conn = await asyncpg.connect(dsn)
+            try:
+                while time.monotonic() < deadline:
+                    active = await conn.fetchval(
+                        "select exists(select 1 from pg_stat_activity where pid=$1)",
+                        backend_pid,
+                    )
+                    if not active:
+                        return True
+                    await asyncio.sleep(0.1)
+                return False
+            finally:
+                await conn.close()
+
+        assert asyncio.run(wait_backend_exit()), "PostgreSQL backend did not disconnect"
+        assert submitter.is_alive(), "executor must remain inside the venue request"
+
+        peer = ctx.Process(
+            target=_peer_submitter, args=(dsn, second_id, result_queue)
+        )
+        peer.start()
+        peer.join(15)
+        if peer.is_alive():
+            peer.terminate()
+            peer.join(5)
+            pytest.fail("peer did not finish its fenced admission attempt")
+        assert peer.exitcode == 0
+        outcome = result_queue.get(timeout=3)
+        assert outcome.startswith("BLOCKED:")
+        assert "unresolved in-flight submit" in outcome
+
+        # The fake venue returns acceptance only after the DB connection is gone.
+        venue_release.set()
+        submitter.join(15)
+        if submitter.is_alive():
+            submitter.terminate()
+            submitter.join(5)
+            pytest.fail("executor did not leave the simulated venue request")
+        assert submitter.exitcode == 0
+        async def final_status():
             import asyncpg
             conn = await asyncpg.connect(dsn)
             try:
@@ -115,56 +149,15 @@ def test_process_death_during_live_venue_request_keeps_peer_fenced():
                 )
             finally:
                 await conn.close()
-        if asyncio.run(read_status()) == "SUBMITTING":
-            break
-        time.sleep(0.1)
-    else:
-        pytest.fail("submitter never committed SUBMITTING")
-
-    # Terminate only the PostgreSQL backend. The executor process and its
-    # simulated HTTP request remain alive while the venue side effect is pending.
-    backend_pid = backend_queue.get(timeout=5)
-    async def terminate_backend():
-        import asyncpg
-        conn = await asyncpg.connect(dsn)
-        try:
-            return await conn.fetchval("select pg_terminate_backend($1)", backend_pid)
-        finally:
-            await conn.close()
-    assert asyncio.run(terminate_backend()) is True
-    assert submitter.is_alive()
-    assert venue.is_alive()
-    assert not venue_accepted.is_set()
-
-    peer = ctx.Process(
-        target=_peer_submitter, args=(dsn, second_id, result_queue)
-    )
-    peer.start()
-    peer.join(15)
-    assert peer.exitcode == 0
-    outcome = result_queue.get(timeout=3)
-    assert outcome.startswith("BLOCKED:")
-    assert "unresolved in-flight submit" in outcome
-
-    # The venue can still accept the request after executor death; no peer submit
-    # was admitted while that side effect was outstanding.
-    venue_release.set()
-    venue.join(10)
-    submitter.join(10)
-    assert not submitter.is_alive()
-    assert venue_accepted.is_set()
-
-    async def final_status():
-        import asyncpg
-        conn = await asyncpg.connect(dsn)
-        try:
-            return await conn.fetchval(
-                "select status from public.executor_submit_attempts where client_order_id=$1",
-                first_id,
-            )
-        finally:
-            await conn.close()
-    assert asyncio.run(final_status()) == "SUBMITTING"
+        assert asyncio.run(final_status()) == "SUBMITTING"
+    finally:
+        venue_release.set()
+        if peer is not None and peer.is_alive():
+            peer.terminate()
+            peer.join(5)
+        if submitter.is_alive():
+            submitter.terminate()
+            submitter.join(5)
 
 
 @pytest.mark.integration
