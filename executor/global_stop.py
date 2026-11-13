@@ -103,7 +103,7 @@ class GlobalStopService:
                     raise GlobalStopError(
                         f"global STOP active (epoch={row['epoch']} reason={row['reason'] or 'unspecified'})"
                     )
-                yield int(row["epoch"])
+                yield conn
 
     async def request_stop(
         self, reason: str, *, source: str, metadata: Optional[dict] = None
