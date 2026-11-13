@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -47,6 +48,7 @@ func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (d
 			FundingTime     string `json:"fundingTime"`
 			PrevFundingTime string `json:"prevFundingTime"`
 			Ts              string `json:"ts"`
+			NextFundingTime string `json:"nextFundingTime"`
 		} `json:"data"`
 	}
 
@@ -58,11 +60,14 @@ func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (d
 	}
 
 	item := okxResp.Data[0]
-	rate, _ := strconv.ParseFloat(item.FundingRate, 64)
-
+	rate, err := strconv.ParseFloat(item.FundingRate, 64)
+	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) { return domain.FundingRate{}, fmt.Errorf("invalid OKX funding rate %q", item.FundingRate) }
 	intervalHours := 8
-	ft, _ := strconv.ParseInt(item.FundingTime, 10, 64)
+	ft, ftErr := strconv.ParseInt(item.FundingTime, 10, 64)
 	pft, _ := strconv.ParseInt(item.PrevFundingTime, 10, 64)
+	if ftErr != nil || ft <= 0 { return domain.FundingRate{}, fmt.Errorf("invalid OKX fundingTime %q", item.FundingTime) }
+	nextMS := ft
+	if item.NextFundingTime != "" { parsed, parseErr := strconv.ParseInt(item.NextFundingTime, 10, 64); if parseErr != nil || parsed <= 0 { return domain.FundingRate{}, fmt.Errorf("invalid OKX nextFundingTime %q", item.NextFundingTime) }; nextMS = parsed }
 	if ft > 0 && pft > 0 && ft > pft {
 		diffHours := int((ft - pft) / (1000 * 3600))
 		if diffHours > 0 {
@@ -70,15 +75,10 @@ func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (d
 		}
 	}
 
-	ts := time.Now().UTC()
-	if ms, err := strconv.ParseInt(item.Ts, 10, 64); err == nil && ms > 0 {
-		ts = time.UnixMilli(ms).UTC()
-	}
-
-	var nextFunding time.Time
-	if ft > 0 {
-		nextFunding = time.UnixMilli(ft).UTC()
-	}
+	tsMS, tsErr := strconv.ParseInt(item.Ts, 10, 64)
+	if tsErr != nil || tsMS <= 0 { return domain.FundingRate{}, fmt.Errorf("invalid OKX funding response timestamp %q", item.Ts) }
+	ts := time.UnixMilli(tsMS).UTC()
+	nextFunding := time.UnixMilli(nextMS).UTC()
 
 	return domain.FundingRate{
 		Rate:            rate,
@@ -114,35 +114,25 @@ func (l *LiveAdapter) fetchMEXCFundingRate(ctx context.Context, symbol string) (
 		Success bool `json:"success"`
 		Code    int  `json:"code"`
 		Data    struct {
-			FundingRate  float64 `json:"fundingRate"`
-			CollectCycle int     `json:"collectCycle"`
-			Timestamp    int64   `json:"timestamp"`
+			FundingRate  *float64 `json:"fundingRate"`
+			CollectCycle int      `json:"collectCycle"`
+			NextSettleTime int64  `json:"nextSettleTime"`
+			Timestamp    int64    `json:"timestamp"`
 		} `json:"data"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&mexcResp); err != nil {
 		return domain.FundingRate{}, fmt.Errorf("decode mexc funding: %w", err)
 	}
-	if !mexcResp.Success {
-		return domain.FundingRate{}, fmt.Errorf("mexc funding error code: %d", mexcResp.Code)
-	}
-
+	if !mexcResp.Success { return domain.FundingRate{}, fmt.Errorf("mexc funding error code: %d", mexcResp.Code) }
+	if mexcResp.Data.FundingRate == nil || math.IsNaN(*mexcResp.Data.FundingRate) || math.IsInf(*mexcResp.Data.FundingRate, 0) { return domain.FundingRate{}, fmt.Errorf("mexc funding response has invalid or missing fundingRate") }
+	if mexcResp.Data.Timestamp <= 0 || mexcResp.Data.NextSettleTime <= 0 { return domain.FundingRate{}, fmt.Errorf("mexc funding response missing authoritative timestamp or nextSettleTime") }
 	interval := mexcResp.Data.CollectCycle
-	if interval <= 0 {
-		interval = 8
-	}
-
-	ts := time.Now().UTC()
-	if mexcResp.Data.Timestamp > 0 {
-		ts = time.UnixMilli(mexcResp.Data.Timestamp).UTC()
-	}
-
-	return domain.FundingRate{
-		Rate:            mexcResp.Data.FundingRate,
-		IntervalHours:   interval,
-		Timestamp:       ts,
-		NextFundingTime: nextSettlementTime(ts, interval),
-	}, nil
+	if interval <= 0 { return domain.FundingRate{}, fmt.Errorf("mexc funding response has invalid collectCycle %d", interval) }
+	ts := time.UnixMilli(mexcResp.Data.Timestamp).UTC()
+	next := time.UnixMilli(mexcResp.Data.NextSettleTime).UTC()
+	if !next.After(ts) { return domain.FundingRate{}, fmt.Errorf("mexc nextSettleTime is not after response timestamp") }
+	return domain.FundingRate{Rate:*mexcResp.Data.FundingRate, IntervalHours:interval, Timestamp:ts, NextFundingTime:next}, nil
 }
 
 func nextSettlementTime(t time.Time, intervalHours int) time.Time {
