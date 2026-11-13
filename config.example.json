@@ -79,7 +79,7 @@
         "alert_min_net_roi_pct": 0,
         "alert_min_net_profit_quote": 0
     },
-    "check_open_positions": true,
+    "check_open_positions": false,
     "exclude_open_orders": true,
     "exchanges": {
         "indodax": {
