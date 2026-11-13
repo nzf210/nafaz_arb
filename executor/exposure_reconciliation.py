@@ -231,11 +231,7 @@ class ExposureReconciliationWorker:
                 self._clear_issue(issue_key, exchange)
             elif reason in ("EXPOSURE_BALANCE_UNAVAILABLE", "EXPOSURE_BALANCE_INVALID") and exchange not in active_spot_venues:
                 self._clear_issue(issue_key, exchange)
-            elif reason == "EXPOSURE_POSITION_UNAVAILABLE" and exchange not in active_futures_venues:
-                self._clear_issue(issue_key, exchange)
             elif reason == "SPOT_BASE_BALANCE_DEFICIT" and (exchange, identifier) not in active_spot_keys:
-                self._clear_issue(issue_key, exchange)
-            elif reason == "FUTURES_POSITION_MISMATCH" and (exchange, identifier) not in active_futures_keys:
                 self._clear_issue(issue_key, exchange)
 
         for (exchange, asset), expected in spot_expected.items():
