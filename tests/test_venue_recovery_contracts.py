@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 from executor.force_close_legs import ForceCloseLegMixin
 from executor.order_registry_storage import OrderRegistryStorageMixin
+from executor.order_registry_recovery import OrderRegistryRecoveryMixin
 from executor.exchange_common import _find_order_by_client_id
 
 
@@ -125,7 +126,7 @@ class EmptyDurableOrderReader:
         return []
 
 
-class RegistryLookupHarness(OrderRegistryStorageMixin):
+class RegistryLookupHarness(OrderRegistryStorageMixin, OrderRegistryRecoveryMixin):
     def __init__(self):
         self.redis = UnavailableRedis()
         self.supabase = EmptyDurableOrderReader()
