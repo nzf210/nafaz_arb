@@ -716,7 +716,7 @@ class TestOrderRegistryWriter:
         assert row["leg"] == "futures_exit"
         assert row["pair_key"].startswith("indodax:btc_idr")
         assert row["position_key"] == "position:indodax:btc_idr__binance:btc_usdt"
-        assert "usdt_idr_rate" in row["raw_payload"]
+        assert row["raw_payload"]["recovery_context"]["usdt_idr_rate"] == 16000.0
 
     def test_entry_order_is_linked_to_position_uuid_after_position_is_created(self):
         writer = _writer()
@@ -807,7 +807,7 @@ class TestOrderRegistryWriter:
         )
         rows = _drain(writer)
         row = [r for table, _, r in rows if table == "order_registry"][0]
-        payload = json.loads(row["raw_payload"])
+        payload = row["raw_payload"]
 
         assert row["client_order_id"] == "logical-ath-entry-7"
         assert row["venue_client_order_id"] == "a1b2c3d4entry7"
@@ -833,7 +833,7 @@ class TestOrderRegistryWriter:
             }
         )
         row = [r for t, _, r in _drain(writer) if t == "order_registry"][0]
-        payload = json.loads(row["raw_payload"])
+        payload = row["raw_payload"]
         assert payload["hedged_quantity"] == pytest.approx(0.006)
 
 
