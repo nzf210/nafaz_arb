@@ -59,7 +59,7 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	adapter := NewLiveAdapter()
 	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL, tokoServer.URL, tokoServer.URL)
 
-	markets, err := adapter.SpotMarkets(context.Background())
+	markets, err := adapter.fetchTokocryptoSpotMarkets(context.Background())
 	if err != nil {
 		t.Fatalf("SpotMarkets: %v", err)
 	}
