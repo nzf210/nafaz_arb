@@ -203,3 +203,21 @@ def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
     assert cfg.maker_refresh_cooldown_seconds == 300
     assert cfg.indodax_maker_refresh_after_seconds == 15
     assert cfg.indodax_maker_refresh_cooldown_seconds == 15
+
+
+
+def test_funding_decay_retention_ratio_default_and_sanitization():
+    cfg = ExecutorConfig()
+    assert cfg.funding_decay_retention_ratio == pytest.approx(0.60)
+    assert cfg.sanitize() == []
+    assert cfg.funding_decay_retention_ratio == pytest.approx(0.60)
+
+    cfg.funding_decay_retention_ratio = 1.5
+    warnings = cfg.sanitize()
+    assert cfg.funding_decay_retention_ratio == 1.0
+    assert any("funding_decay_retention_ratio" in warning for warning in warnings)
+
+    cfg.funding_decay_retention_ratio = -0.1
+    warnings = cfg.sanitize()
+    assert cfg.funding_decay_retention_ratio == pytest.approx(0.60)
+    assert any("funding_decay_retention_ratio" in warning for warning in warnings)
