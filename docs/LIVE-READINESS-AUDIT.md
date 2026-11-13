@@ -54,9 +54,13 @@ These are preconditions, not automatic account mutations:
 4. Failure-injection/restart drills: spot fill + futures reject, partial fills, lost create-order acknowledgement, lost cancel acknowledgement, process restart with pending orders, Supabase outage, Redis outage, and stale market data.
 5. Controlled canary only after all prior gates pass, with a user-defined minimal notional and operator monitoring.
 
-## Remaining account-source gap: Go scanner
+## Account-source architecture decision: option 2 adopted
 
-The Python executor now performs authenticated account-wide position/mode/leverage checks, but the Go scanner's `LiveAdapter.OpenExposures()` still deliberately returns an error because the Go adapter has no authenticated account-data implementation. In `config.example.json`, `check_open_positions` defaults to true; with that setting, the scanner marks position state UNKNOWN and suppresses eligible opportunities. Turning that setting off would let the public-data scanner produce candidates, but is safe only if every candidate is consumed by this Python executor, which independently performs the account checks. It is not safe for any alternate execution consumer. Implementing private account APIs in Go is a separate scope requiring an explicit decision about credential ownership and which CEX accounts the scanner must inspect.
+The user selected **option 2**: keep the Go scanner public-market-data-only and make the Python executor the sole account-state and execution gate. No Go private CEX account APIs will be added in this scope. `LiveAdapter.OpenExposures()` deliberately returns an error; `config.example.json` now sets `check_open_positions` to `false` so LIVE scanning can produce market candidates without pretending it has private account visibility. If an operator explicitly sets it to `true`, the scanner continues to fail closed with unknown position state.
+
+This is a strict trust boundary: scanner output and Redis signals are candidate information only, never permission to place orders. Only the Python executor may hold trade-capable CEX credentials or submit/cancel orders. Before entry it must independently validate balances, account-wide futures positions (including unmanaged symbols), pending/open orders, position mode, leverage, exposure and loss limits, durable journal health, and current market/risk gates. Any unknown or failed account read blocks new entry. Redis `active_pos` is a duplicate-signal hint, not a substitute for exchange account reconciliation. Do not attach another trading consumer to the signal channel or distribute trade-capable keys to alternate consumers.
+
+The sample scanner config leaves `enable_executor_signals` disabled unless explicitly enabled by the operator. To run the integrated scanner→executor flow, enable it only after confirming that the Python executor is the sole subscriber with trade permissions. The deployed runtime `config.json` is not tracked and must be updated separately; this repository change does not alter a running deployment.
 
 ## Explicitly not done
 
