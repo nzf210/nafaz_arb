@@ -583,6 +583,22 @@ class TestOutboxDelivery:
 class TestOrderRegistryWriter:
     """The registry row must describe the real order, not just its role."""
 
+    def test_mock_order_intent_does_not_allocate_live_confirmation_tracking(self):
+        writer = _writer()
+        local_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        assert writer.order_record({
+            "local_order_id": local_id,
+            "exchange_name": "indodax",
+            "market_type": "spot",
+            "order_role": "ENTRY",
+            "symbol": "btc_idr",
+            "side": "buy",
+            "status": "submitting",
+            "is_mock": True,
+        }) is True
+        assert local_id not in writer._order_registry_outbox_ids
+        writer._outbox.close()
+
     @pytest.mark.asyncio
     async def test_order_registry_confirmation_flushes_exact_row(self):
         writer = _writer()

@@ -178,7 +178,10 @@ class SupabaseOrderMixin:
                 registry_outbox_id = self._outbox.enqueue(
                     "order_registry", "local_order_id", payload
                 )
-                if str(payload.get("status") or "").lower() == "submitting":
+                if (
+                    str(payload.get("status") or "").lower() == "submitting"
+                    and not bool(payload.get("is_mock", True))
+                ):
                     self._order_registry_outbox_ids[local_order_id] = registry_outbox_id
             except Exception:
                 self._dropped += 1
