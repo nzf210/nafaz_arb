@@ -131,7 +131,7 @@ func NewLiveAdapter() *LiveAdapter {
 		tokocryptoMainMarketURL: "https://www.tokocrypto.site",
 		tokocryptoNextMarketURL: "https://cloudme-toko.2meta.app",
 		okxBaseURL:        "https://www.okx.com",
-		mexcBaseURL:       "https://contract.mexc.com",
+		mexcBaseURL:       "https://api.mexc.com",
 		mexcSpotBaseURL:   "https://api.mexc.com",
 		contractSizes:     make(map[string]float64),
 		okxBookCalls:      make(map[string]*okxBookCall),
