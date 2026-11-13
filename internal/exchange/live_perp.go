@@ -70,8 +70,9 @@ func (l *LiveAdapter) processOKXInstrument(inst okxInstrumentData) (domain.Marke
 		LotSize:      lotSz,
 		MinOrder:     minSz,
 	}
-	if ctVal > 0 && lotSz > 0 && minSz >= 0 &&
+	if ctVal > 0 && tickSz > 0 && lotSz > 0 && minSz >= 0 &&
 		!math.IsNaN(ctVal) && !math.IsInf(ctVal, 0) &&
+		!math.IsNaN(tickSz) && !math.IsInf(tickSz, 0) &&
 		!math.IsNaN(lotSz) && !math.IsInf(lotSz, 0) &&
 		!math.IsNaN(minSz) && !math.IsInf(minSz, 0) &&
 		strings.EqualFold(inst.CtValCcy, baseAsset) {
@@ -247,8 +248,9 @@ func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.M
 			LotSize:      c.VolUnit,
 			MinOrder:     c.MinVol,
 		}
-		if c.ContractSize > 0 && c.VolUnit > 0 && c.MinVol >= 0 &&
+		if c.ContractSize > 0 && c.PriceUnit > 0 && c.VolUnit > 0 && c.MinVol >= 0 &&
 			!math.IsNaN(c.ContractSize) && !math.IsInf(c.ContractSize, 0) &&
+			!math.IsNaN(c.PriceUnit) && !math.IsInf(c.PriceUnit, 0) &&
 			!math.IsNaN(c.VolUnit) && !math.IsInf(c.VolUnit, 0) &&
 			!math.IsNaN(c.MinVol) && !math.IsInf(c.MinVol, 0) &&
 			c.BaseCoin != "" {
