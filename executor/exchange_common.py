@@ -63,9 +63,11 @@ def _client_order_params(client_order_id: Optional[str]) -> tuple:
     """
     Builds the positional params argument for a ccxt create_*_order call.
 
-    Passing a client order id makes retries idempotent at the venue: a duplicate
-    submit is rejected instead of double-filling. When no id is supplied the
-    argument is omitted entirely so ccxt does not see an empty params dict.
+    A client order id is a correlation/recovery key, not a universal idempotency
+    guarantee. Venue rules differ (Tokocrypto explicitly does not enforce
+    uniqueness), so ambiguous order submissions must be reconciled by client id
+    and must never be blindly retried. When no id is supplied the argument is
+    omitted entirely so ccxt does not see an empty params dict.
     """
     return ({"clientOrderId": client_order_id},) if client_order_id else ()
 
