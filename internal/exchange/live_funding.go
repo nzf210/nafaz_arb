@@ -66,10 +66,10 @@ func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (d
 	ft, ftErr := strconv.ParseInt(item.FundingTime, 10, 64)
 	pft, _ := strconv.ParseInt(item.PrevFundingTime, 10, 64)
 	if ftErr != nil || ft <= 0 { return domain.FundingRate{}, fmt.Errorf("invalid OKX fundingTime %q", item.FundingTime) }
-	nextMS := ft
-	if item.NextFundingTime != "" { parsed, parseErr := strconv.ParseInt(item.NextFundingTime, 10, 64); if parseErr != nil || parsed <= 0 { return domain.FundingRate{}, fmt.Errorf("invalid OKX nextFundingTime %q", item.NextFundingTime) }; nextMS = parsed }
-	if ft > 0 && pft > 0 && ft > pft {
-		diffHours := int((ft - pft) / (1000 * 3600))
+	nextMS, nextErr := strconv.ParseInt(item.NextFundingTime, 10, 64)
+	if nextErr != nil || nextMS <= ft { return domain.FundingRate{}, fmt.Errorf("invalid OKX nextFundingTime %q", item.NextFundingTime) }
+	if nextMS > ft {
+		diffHours := int((nextMS - ft) / (1000 * 3600))
 		if diffHours > 0 {
 			intervalHours = diffHours
 		}
