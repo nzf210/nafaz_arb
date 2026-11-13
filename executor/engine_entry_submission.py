@@ -230,6 +230,9 @@ class EngineEntrySubmissionMixin:
         submission_started = False
         entry_coid = ""
         try:
+            if not await self._v2_entry_admission_allowed():
+                logger.warning("[V2 Admission] refusing spot submit for %s", pair_tag)
+                return
             logger.info(
                 f"[State 1] Placing Maker Limit Buy on {pair_info.local_exchange} for {pair_info.local_symbol}: "
                 f"qty={buy_qty}, price_idr={buy_price_idr}, cost_usd=${actual_cost_usdt:.2f}"
@@ -263,6 +266,15 @@ class EngineEntrySubmissionMixin:
                 global_amount_spec=pair_info.global_amount_spec,
                 recovery_context=recovery_context,
             )
+            # Re-check immediately before the external side effect. If STOP,
+            # config activation or convergence changed while preparing the intent,
+            # retire the unsubmitted intent and do not call the exchange.
+            if not await self._v2_entry_admission_allowed():
+                await self._mark_order_submission_rejected(
+                    pair_info.local_exchange, entry_coid
+                )
+                logger.warning("[V2 Admission] final pre-submit check denied %s", pair_tag)
+                return
             submission_started = True
             try:
                 order = await self.client.place_local_limit_buy(
