@@ -267,7 +267,7 @@ async def test_force_close_requires_verified_flat_futures_position(fake_redis):
     client = MockExchangeClient()
 
     async def residual_short(symbol):
-        return [{"symbol": symbol, "contracts": 0.005, "side": "short"}]
+        return [{"symbol": symbol, "contracts": 0.005, "contractSize": 1.0, "side": "short"}]
 
     client.fetch_positions = residual_short
     engine = ArbitrageEngine(
