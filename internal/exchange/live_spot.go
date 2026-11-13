@@ -134,41 +134,14 @@ func (l *LiveAdapter) fetchIndodaxUSDTIDRRate(ctx context.Context) (float64, err
 }
 
 func (l *LiveAdapter) fetchTokocryptoUSDTIDRRate(ctx context.Context) (float64, error) {
-	if strings.TrimSpace(l.tokocryptoBaseURL) == "" {
-		return 0, fmt.Errorf("tokocrypto base URL not configured")
-	}
-	endpoint := l.tokocryptoBaseURL + "/open/v1/market/depth?symbol=USDT_IDR&limit=5"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return 0, fmt.Errorf("tokocrypto usdtidr depth req: %w", err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-	resp, err := l.tokocryptoDo(ctx, req)
-	if err != nil {
-		return 0, fmt.Errorf("tokocrypto usdtidr depth request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("tokocrypto usdtidr depth status: %d", resp.StatusCode)
-	}
-
-	var raw struct {
-		Code int `json:"code"`
-		Data struct {
-			Bids [][]string `json:"bids"`
-			Asks [][]string `json:"asks"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return 0, fmt.Errorf("decode tokocrypto usdtidr depth: %w", err)
-	}
-	bids := parseStringLevels(raw.Data.Bids, 1.0)
-	asks := parseStringLevels(raw.Data.Asks, 1.0)
-	if len(bids) == 0 || len(asks) == 0 || bids[0].Price <= 0 || asks[0].Price <= bids[0].Price {
+	book, err := l.fetchTokocryptoSpotOrderBook(ctx, "toko:USDT_IDR")
+	if err != nil { return 0, fmt.Errorf("tokocrypto usdtidr order book: %w", err) }
+	if len(book.Bids) == 0 || len(book.Asks) == 0 || book.Bids[0].Price <= 0 || book.Asks[0].Price <= book.Bids[0].Price {
 		return 0, fmt.Errorf("tokocrypto usdtidr book invalid or one-sided")
 	}
-	return (bids[0].Price + asks[0].Price) / 2, nil
+	rate := (book.Bids[0].Price + book.Asks[0].Price) / 2
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= 0 { return 0, fmt.Errorf("tokocrypto usdtidr midpoint is invalid") }
+	return rate, nil
 }
 
 // SpotMarkets discovers active spot pairs on Tokocrypto, Indodax, and MEXC Spot.
