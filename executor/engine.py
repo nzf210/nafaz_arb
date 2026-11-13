@@ -269,7 +269,7 @@ class ArbitrageEngine(
                 self._recovery_complete = False
         if not self._recovery_complete:
             self._halt_exposure_scope(
-                "*", "startup recovery did not acquire and complete the distributed lease"
+                "*", "startup recovery or durable submit reconciliation is incomplete"
             )
             self._refresh_entry_gate()
         logger.info(
