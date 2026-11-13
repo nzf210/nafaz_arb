@@ -1457,3 +1457,12 @@ The dynamic spot exit SELL remains outside the entry STOP fence because it reduc
 ### Remaining force-close reduceOnly caveat
 
 The force-close futures BUY is explicitly reduceOnly and checks authoritative futures position state before spot liquidation. A retry first checks whether the short is already flat. There is still a race if a previous close order was accepted but the venue position endpoint is stale/non-zero: a subsequent force-close attempt may submit another reduceOnly close with a new client ID without first resolving the prior close client ID. This is not treated as an entry STOP bypass because reduceOnly is risk-reducing, but remains OPEN for venue pending-order semantics and close-order idempotency testing. The regular exit lifecycle instead moves to RECONCILIATION_REQUIRED after an unverified futures close and does not automatically retry.
+
+
+### Operator resolution and multi-process test
+
+The durable submit ledger now has a signed manual-resolution path. The operator envelope is HMAC-SHA256 signed over canonical JSON and contains an operator ID, attempt ID, decision, nonce, issue time, rationale, and two distinct evidence references. The database enforces nonce uniqueness and stores an append-only resolution audit row in the same transaction as the attempt transition. The CLI is `python -m executor.operator_resolution --envelope <file>`; the DSN and HMAC key must be supplied from a secret manager.
+
+The integration suite now runs independent executor/venue processes against disposable PostgreSQL. It kills the executor after the durable SUBMITTING commit while the fake venue request remains active, then asserts a second process is blocked. Fake delayed-visibility and pending reduceOnly tests exist for the four configured venue modules. They are not substitutes for real venue sandbox/paper tests.
+
+See `docs/ORDER-RUNTIME-VENUE-RECOVERY-MATRIX.md` for the runtime adapter/call-site and retry matrix. R-26 remains open: force-close reduceOnly close can still be submitted again with a new client ID if a previous accepted close is followed by a stale non-zero position response. This branch remains NOT LIVE-CERTIFIED until that path and live venue contracts are closed.
