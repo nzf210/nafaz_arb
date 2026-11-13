@@ -241,11 +241,24 @@ class ArbitrageEngine(
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
         self._recovery_complete = await self._run_startup_recovery()
+        if self._recovery_complete and not bool(getattr(self.config, "mock_mode", False)):
+            # Do not mark the executor ready after verifying only bot-managed
+            # symbols. Enumerate every configured futures account before any
+            # entry is admitted so manual/orphan positions are discovered too.
+            try:
+                await self.exposure_reconciliation.reconcile_once()
+            except Exception as exc:
+                logger.exception("[Recovery] startup account-wide exposure reconciliation failed")
+                self._halt_exposure_scope(
+                    "*",
+                    f"startup account-wide exposure reconciliation failed: {type(exc).__name__}: {exc}",
+                )
+                self._recovery_complete = False
         if not self._recovery_complete:
             self._halt_exposure_scope(
                 "*", "startup recovery did not acquire and complete the distributed lease"
             )
-            self._refresh_entry_gate()
+        self._refresh_entry_gate()
         logger.info(
             "[Recovery] startup reconciliation finished: ready=%s, pending=%d, orphans=%d",
             not self._entry_blocked, len(self._recovery_pending_orders), len(self._recovered_orphans),
