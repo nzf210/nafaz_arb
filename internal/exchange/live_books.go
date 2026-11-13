@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"math"
 	"strings"
 	"time"
 
@@ -310,8 +311,8 @@ func (l *LiveAdapter) fetchOKXOrderBook(ctx context.Context, symbol string) (dom
 		ctVal, ok = l.contractSizes[rawSymbol]
 	}
 	l.mu.RUnlock()
-	if !ok || ctVal <= 0 {
-		ctVal = 1.0
+	if !ok || ctVal <= 0 || math.IsNaN(ctVal) || math.IsInf(ctVal, 0) {
+		return domain.OrderBook{}, fmt.Errorf("okx contract size metadata missing for %s; refusing guessed quantity normalization", symbol)
 	}
 
 	bookData := okxResp.Data[0]
@@ -379,8 +380,8 @@ func (l *LiveAdapter) fetchMEXCOrderBook(ctx context.Context, symbol string) (do
 		ctVal, ok = l.contractSizes[rawSymbol]
 	}
 	l.mu.RUnlock()
-	if !ok || ctVal <= 0 {
-		ctVal = 1.0
+	if !ok || ctVal <= 0 || math.IsNaN(ctVal) || math.IsInf(ctVal, 0) {
+		return domain.OrderBook{}, fmt.Errorf("mexc contract size metadata missing for %s; refusing guessed quantity normalization", symbol)
 	}
 
 	bids := parseLevels(mexcResp.Data.Bids, ctVal)
