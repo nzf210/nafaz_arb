@@ -503,3 +503,136 @@ class PostgresConfigWriter:
             change_diff={"rollback_from_version": source_version},
             source_version=source_version,
         )
+
+
+class PostgresOutboxPublisher:
+    """At-least-once PostgreSQL outbox delivery to Redis.
+
+    Consumers must deduplicate by event_key. A crash after Redis publish but
+    before the PostgreSQL acknowledgement can intentionally cause redelivery.
+    """
+
+    CLAIM_SQL = """
+        with candidates as (
+            select event_id
+              from public.outbox_events
+             where published_at is null
+               and next_attempt_at <= now()
+               and (locked_at is null or locked_at < now() - make_interval(secs => $3))
+             order by event_id
+             for update skip locked
+             limit $1
+        )
+        update public.outbox_events as event
+           set locked_at = now(),
+               locked_by = $2,
+               attempts = event.attempts + 1
+          from candidates
+         where event.event_id = candidates.event_id
+        returning event.event_id, event.event_key, event.aggregate_type,
+                  event.aggregate_version, event.event_type, event.payload,
+                  event.attempts
+    """
+
+    def __init__(
+        self,
+        pool: Any,
+        redis: Any,
+        *,
+        worker_id: str,
+        channel: str = "nafaz:v2:events",
+        batch_size: int = 50,
+        lease_seconds: int = 60,
+        max_backoff_seconds: int = 300,
+    ):
+        if not worker_id or not worker_id.strip():
+            raise ValueError("outbox worker_id is required")
+        if batch_size < 1 or lease_seconds < 1 or max_backoff_seconds < 1:
+            raise ValueError("outbox batch, lease and backoff settings must be positive")
+        self._pool = pool
+        self._redis = redis
+        self._worker_id = worker_id
+        self._channel = channel
+        self._batch_size = batch_size
+        self._lease_seconds = lease_seconds
+        self._max_backoff_seconds = max_backoff_seconds
+
+    async def _claim(self) -> list[Mapping[str, Any]]:
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                self.CLAIM_SQL,
+                self._batch_size,
+                self._worker_id,
+                self._lease_seconds,
+            )
+        return list(rows or [])
+
+    async def _acknowledge(self, event_id: int) -> bool:
+        async with self._pool.acquire() as connection:
+            result = await connection.execute(
+                """
+                update public.outbox_events
+                   set published_at = now(), locked_at = null, locked_by = null,
+                       last_error = null
+                 where event_id = $1 and locked_by = $2 and published_at is null
+                """,
+                event_id,
+                self._worker_id,
+            )
+        return str(result).endswith(" 1")
+
+    async def _retry(self, event_id: int, attempts: int, error: Exception) -> None:
+        delay = min(self._max_backoff_seconds, 2 ** min(max(attempts, 1), 8))
+        # Do not persist arbitrary exception strings: they can contain connection
+        # details. Store only the exception class as a bounded diagnostic.
+        safe_error = type(error).__name__[:80]
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                update public.outbox_events
+                   set next_attempt_at = now() + make_interval(secs => $3),
+                       locked_at = null, locked_by = null, last_error = $4
+                 where event_id = $1 and locked_by = $2 and published_at is null
+                """,
+                event_id,
+                self._worker_id,
+                delay,
+                safe_error,
+            )
+
+    async def publish_pending(self) -> dict[str, int]:
+        """Publish one bounded batch; return counts without hiding failures."""
+        events = await self._claim()
+        result = {"claimed": len(events), "published": 0, "failed": 0, "ack_lost": 0}
+        for event in events:
+            event_id = int(event["event_id"])
+            attempts = int(event["attempts"])
+            envelope = {
+                "event_id": event_id,
+                "event_key": str(event["event_key"]),
+                "aggregate_type": str(event["aggregate_type"]),
+                "aggregate_version": int(event["aggregate_version"]),
+                "event_type": str(event["event_type"]),
+                "payload": event["payload"],
+            }
+            try:
+                await self._redis.publish(
+                    self._channel,
+                    json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+                )
+            except Exception as exc:
+                result["failed"] += 1
+                await self._retry(event_id, attempts, exc)
+                logger.warning(
+                    "v2 outbox publish failed event_id=%s error_type=%s",
+                    event_id,
+                    type(exc).__name__,
+                )
+                continue
+            if await self._acknowledge(event_id):
+                result["published"] += 1
+            else:
+                # Redis may already have received the event. Report the lost
+                # acknowledgement so monitoring can detect likely redelivery.
+                result["ack_lost"] += 1
+        return result
