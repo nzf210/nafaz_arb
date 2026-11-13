@@ -47,13 +47,16 @@
 - [ ] Verify Redis payload includes version, schema version and content hash.
 - [ ] Verify stale, malformed, wrong-version and wrong-hash Redis payloads are rejected.
 - [ ] Verify Redis outage blocks LIVE readiness (no stale-cache fallback).
-- [ ] Verify invalidation causes a PostgreSQL refetch before in-memory swap.
-- [ ] Verify in-memory snapshot swap is atomic; active requests never observe partial config.
+- [x] Implement Redis invalidation consumer that treats event payloads as hints and refetches the active snapshot from PostgreSQL.
+- [x] Implement serialized, atomic in-process snapshot reference swap after PostgreSQL/hash validation and Redis mirror verification.
+- [ ] Wire the consumer/store into executor startup and every order-admission path; runtime integration proof pending.
 - [x] Implement outbox row claiming with PostgreSQL `FOR UPDATE SKIP LOCKED` and expiring worker leases; multi-worker DB integration test pending.
 - [x] Implement bounded exponential retry/backoff and lease release for Redis publish failures; poison-event policy and outage replay integration tests pending.
 - [x] Publish stable `event_key` in every event envelope for consumer deduplication; idempotent consumer implementation/tests pending.
-- [ ] Verify every executor instance acknowledges the activated version (not implemented).
-- [ ] Verify partial propagation is visible and blocks new LIVE entries until convergence (not implemented).
+- [x] Add PostgreSQL executor membership/lease table and per-instance version/hash acknowledgement API.
+- [x] Implement a lease-scoped convergence report and fail-closed `require_converged` API.
+- [ ] Run multi-process PostgreSQL integration tests for heartbeat, restart fencing, stale lease expiry and acknowledgement races.
+- [ ] Wire convergence gate into every LIVE entry admission and START readiness path; until then this is not an enforced runtime barrier.
 - [ ] Verify old cache keys and snapshots expire only after all consumers have advanced.
 
 ## 4. Runtime configuration cutover
@@ -205,6 +208,7 @@
 
 | Date (UTC) | Candidate SHA | CI run | Checklist section | Evidence / artifact | Result | Reviewer |
 |---|---|---|---|---|---|---|
-| 2026-11-13 | `850db4e92f57bb26cb78293f3ab7bbc8a423f0fd` | Pending | Outbox publisher + regression tests | Added SKIP LOCKED lease, Redis publish, acknowledgement and retry tests; CI not yet checked | Pending | Pending |
+| 2026-11-13 | `850db4e92f57bb26cb78293f3ab7bbc8a423f0fd` | `43433436237` | Outbox publisher + regression tests | Python, Go, Docker images and PostgreSQL migration/idempotency/RLS jobs all succeeded | Pass | Pending |
+| 2026-11-13 | `759b9b54cdf73118e667931888e120a927582f1a` + follow-up fixes/tests | Pending | Config invalidation + consumer leases + convergence API | Added PostgreSQL consumer registry, process restart resets to STARTING, verified DB refetch/Redis mirror/atomic swap/ack path and lease-scoped convergence API; CI pending | Pending | Pending |
 
-**Current release decision:** NOT LIVE-READY. The V2 database schema and snapshot-reader foundation do not yet constitute a deployed, verified trading control plane.
+**Current release decision:** NOT LIVE-READY. The invalidation consumer and convergence API are implemented as standalone components but are not wired into executor startup, START readiness or the final order-admission path. The V2 database schema and snapshot-reader foundation do not yet constitute a deployed, verified trading control plane.
