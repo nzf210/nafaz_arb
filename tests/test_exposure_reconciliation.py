@@ -52,6 +52,9 @@ class FakeClient:
     async def fetch_all_positions(self):
         return []
 
+    async def fetch_position_mode(self):
+        return {"hedged": True}
+
     async def place_local_limit_buy(self, *args, **kwargs):
         self.order_calls += 1
 
@@ -408,3 +411,38 @@ async def test_reconciliation_halts_when_account_wide_positions_api_is_unavailab
 def test_position_short_qty_requires_authoritative_contract_size():
     with pytest.raises(ValueError, match="contract size unavailable"):
         _position_short_qty([{"side": "short", "contracts": 1.0}])
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_halts_when_futures_position_mode_is_incompatible(
+    monkeypatch,
+):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
+
+    class WrongModeClient(FakeClient):
+        async def fetch_position_mode(self):
+            return {"hedged": False}
+
+    engine = SimpleNamespace(
+        config=SimpleNamespace(mock_mode=False, global_exchange_name="okx"),
+        client=WrongModeClient(),
+        active_positions={},
+        _pair_infos={},
+        _exchange_halted={},
+        supabase=FakeSupabase(),
+        failures=[],
+    )
+
+    async def publish_failure(*args, **kwargs):
+        engine.failures.append((args, kwargs))
+
+    engine._publish_execution_failure = publish_failure
+    await ExposureReconciliationWorker(engine).reconcile_once()
+
+    assert engine._exchange_halted["okx"].startswith("exposure reconciliation:")
+    assert any(
+        args[1] == "EXPOSURE_POSITION_MODE_MISMATCH"
+        and kwargs["detail"]["expected_hedged"] is True
+        and kwargs["detail"]["actual_hedged"] is False
+        for args, kwargs in engine.failures
+    )
