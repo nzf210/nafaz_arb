@@ -319,20 +319,21 @@ class GlobalStopService:
     async def request_stop_in_transaction(
         self, conn: Any, reason: str, *, source: str, metadata: Optional[dict] = None
     ) -> dict:
-        """Commit STOP inside the already-held submit-fence transaction."""
+        """Commit STOP while the caller holds the shared session advisory lock."""
         reason = str(reason or "").strip().upper()
         source = str(source or "").strip()[:100]
         payload = json.dumps(metadata or {}, separators=(",", ":"), default=str)
-        row = await conn.fetchrow(
-            "update public.executor_global_control "
-            "set is_stopped = true, epoch = epoch + case when is_stopped then 0 else 1 end, "
-            "reason = case when is_stopped then reason else $1 end, "
-            "source = case when is_stopped then source else $2 end, "
-            "metadata = case when is_stopped then metadata else $3::jsonb end, updated_at = now() "
-            "where singleton_id = 1 "
-            "returning is_stopped, epoch, reason, source, metadata, updated_at",
-            reason, source, payload,
-        )
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "update public.executor_global_control "
+                "set is_stopped = true, epoch = epoch + case when is_stopped then 0 else 1 end, "
+                "reason = case when is_stopped then reason else $1 end, "
+                "source = case when is_stopped then source else $2 end, "
+                "metadata = case when is_stopped then metadata else $3::jsonb end, updated_at = now() "
+                "where singleton_id = 1 "
+                "returning is_stopped, epoch, reason, source, metadata, updated_at",
+                reason, source, payload,
+            )
         if row is None:
             raise GlobalStopError("global control row is missing; STOP was not persisted")
         return dict(row)
