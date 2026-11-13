@@ -8,7 +8,6 @@ stable client order id and reconcile ambiguous acknowledgements.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -51,12 +50,16 @@ class GlobalStopService:
             dsn=self.dsn, min_size=self.min_size, max_size=self.max_size,
             command_timeout=10,
         )
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "select is_stopped, epoch, reason from public.executor_global_control where singleton_id = 1"
-            )
-            if row is None:
-                raise GlobalStopError("global control row is missing; apply PostgreSQL fencing migration")
+        try:
+            async with self.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "select is_stopped, epoch, reason from public.executor_global_control where singleton_id = 1"
+                )
+                if row is None:
+                    raise GlobalStopError("global control row is missing; apply PostgreSQL fencing migration")
+        except Exception:
+            await self.close()
+            raise
         logger.info("PostgreSQL global STOP/fencing service connected (epoch=%s stopped=%s)", row["epoch"], row["is_stopped"])
 
     async def close(self) -> None:
@@ -80,10 +83,11 @@ class GlobalStopService:
         return dict(row)
 
     @asynccontextmanager
-    async def order_submit_fence(self, *, client_order_id: str) -> AsyncIterator[int]:
+    async def order_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
         """Serialize one create-order HTTP request against every global STOP.
 
-        The yielded epoch is the generation observed while holding the lock.
+        Yields the locked connection so an explicit IP-ban response can persist
+        STOP in the same transaction before another instance can submit.
         Keep the scope limited to a single venue submit; do not do recovery or
         unrelated work while holding this transaction.
         """
