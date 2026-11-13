@@ -588,8 +588,12 @@ async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis,
     async def fake_read_state(self):
         return {"is_stopped": False, "epoch": 0, "reason": None}
 
+    async def fake_list_unresolved(self, *, limit=100):
+        return []
+
     monkeypatch.setattr(GlobalStopService, "start", fake_start)
     monkeypatch.setattr(GlobalStopService, "read_state", fake_read_state)
+    monkeypatch.setattr(GlobalStopService, "list_unresolved_submit_attempts", fake_list_unresolved)
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False, postgres_dsn="postgresql://test"),
         client=client, redis_client=fake_redis
@@ -624,8 +628,12 @@ async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redi
     async def fake_read_state(self):
         return {"is_stopped": False, "epoch": 0, "reason": None}
 
+    async def fake_list_unresolved(self, *, limit=100):
+        return []
+
     monkeypatch.setattr(GlobalStopService, "start", fake_start)
     monkeypatch.setattr(GlobalStopService, "read_state", fake_read_state)
+    monkeypatch.setattr(GlobalStopService, "list_unresolved_submit_attempts", fake_list_unresolved)
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False, postgres_dsn="postgresql://test"),
         client=client, redis_client=fake_redis
