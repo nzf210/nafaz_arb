@@ -57,7 +57,13 @@ class _FakeConnection:
             self.attempts[client_order_id] = {
                 "client_order_id": client_order_id,
                 "exchange": args[1],
+                "market_type": args[2],
                 "symbol": args[3],
+                "side": args[4],
+                "order_type": args[5],
+                "quantity": args[6],
+                "price": args[7],
+                "pair_key": args[8],
                 "status": "PREPARED",
                 "amount_spec": args[10],
             }
