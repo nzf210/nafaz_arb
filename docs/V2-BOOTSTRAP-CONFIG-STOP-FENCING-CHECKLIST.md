@@ -240,3 +240,10 @@ Ditemukan bahwa generic retry_with_backoff mengulang setiap exception. Dua peman
 ### 11.4 Spot exit limit SELL ambiguous acknowledgement
 
 Exit limit SELL is intentionally not subject to the entry Global STOP fence. However, the previous exception handler only logged an ambiguous submit and left the position eligible for another repricing cycle with a new client ID. That could create duplicate sell orders if the first order was accepted but its ACK was lost. Commit a698308 now performs exact-client-ID lookup; if a verifiable order is found, normal exit registration continues. If not found or lookup fails, the pair is marked RECONCILIATION_REQUIRED and is not automatically repriced/submitted again. Regression test verifies lookup-not-found prevents a second exit attempt. This is a pair-level reconciliation gate, not a block on emergency risk-reducing actions.
+
+### 11.5 Sisa audit khusus futures reduceOnly force-close
+
+- Exit lifecycle futures BUY reduceOnly setelah spot exit fill masuk RECONCILIATION_REQUIRED jika hasil close tidak terminal/terverifikasi; tidak ada retry otomatis.
+- Force-close futures BUY reduceOnly memverifikasi posisi futures flat sebelum melanjutkan spot liquidation. Pada retry, ia membaca posisi aktual terlebih dahulu dan melewati close bila sudah flat. Namun, jika order close sebelumnya diterima tetapi posisi API masih stale/non-zero, jalur retry dapat mengirim close reduceOnly baru dengan client ID baru; exact-client-ID lookup terhadap attempt sebelumnya belum dilakukan.
+- Karena reduceOnly=True dan fungsi utamanya mengurangi short, jalur ini tidak dimasukkan ke entry STOP fence. Tetap OPEN untuk audit idempotensi/venue pending-order semantics dan penyimpanan client ID close yang bisa direkonsiliasi. Jangan mengubahnya menjadi entry fence tanpa analisis risiko yang eksplisit.
+- Cancel/replace spot exit sudah menunggu order lama mencapai status terminal dan menerapkan fill sebelum membuat replacement; jika cancel/status lookup inconclusive, replacement diblokir.
