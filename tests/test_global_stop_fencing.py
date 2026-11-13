@@ -42,6 +42,13 @@ class _FakeConnection:
         self.fetches.append((query, args))
         if "select is_stopped, epoch, reason" in query:
             return dict(self.control)
+        if "update public.executor_global_control" in query:
+            self.control["is_stopped"] = True
+            self.control["epoch"] += 1
+            return {
+                "is_stopped": True, "epoch": self.control["epoch"],
+                "reason": args[0], "source": args[1], "metadata": args[2],
+            }
         if "insert into public.executor_submit_attempts" in query:
             client_order_id = args[0]
             self.attempts.setdefault(client_order_id, {
