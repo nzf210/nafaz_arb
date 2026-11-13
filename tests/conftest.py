@@ -163,6 +163,7 @@ class MockExchangeClient:
 
     async def close_global_short_market(self, symbol: str, amount: float, client_order_id=None, amount_spec=None):
         record = {
+            "id": f"mock-global-close-{len(self.global_close_buys) + 1}",
             "symbol": symbol,
             "side": "buy",
             "amount": amount,
