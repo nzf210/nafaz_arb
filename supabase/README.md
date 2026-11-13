@@ -74,16 +74,19 @@ output. Then, only after approval:
 ```sh
 export DATABASE_URL='postgresql://...'
 export EXPECTED_SUPABASE_PROJECT_REF='<expected-project-ref>'
+# Set only after verifying DATABASE_URL points to this exact Supabase project.
+export BACKUP_DATABASE_PROJECT_REF='<expected-project-ref>'
 bash scripts/vps-migrate.sh --apply
 unset DATABASE_URL
 ```
 
-Apply mode repeats the dry-run, creates a full PostgreSQL custom-format
+Apply mode repeats the dry-run, requires an explicit confirmation that the
+backup DSN targets the same project, creates a full PostgreSQL custom-format
 `pg_dump` archive, verifies that it can be listed by `pg_restore`, then
 runs `supabase db push --remote --yes` and re-reads migration history.
-Backups are stored in `backups/db-migrations/` by default with restrictive
-permissions. Protect and copy backups to independent storage; the script
-does not prune them.
+Backups are stored in `/var/backups/nafaz-db-migrations/` by default with
+restrictive permissions (override with `MIGRATION_BACKUP_DIR`). Protect and
+copy backups to independent storage; the script does not prune them.
 
 **Operator gates and limitations:**
 
