@@ -53,6 +53,52 @@ distinguish retained legacy cumulative snapshots from verified exchange trades,
 and `order_fills.fee_verified` to record whether each fill has complete fee
 amount/currency details. Apply it with the same reviewed `supabase db push --remote` workflow above.
 
+## VPS migration runner
+
+For an existing VPS, run the script from the checked-out branch. It defaults
+to a read-only dry-run and never restarts application services.
+
+Prerequisites: Supabase CLI installed/authenticated; this repository linked to
+the intended project; PostgreSQL client tools (`pg_dump`, `pg_restore`) for
+apply mode; and enough protected disk space for a full database backup.
+
+Inspect the target and pending plan first:
+
+```sh
+EXPECTED_SUPABASE_PROJECT_REF=<expected-project-ref> bash scripts/vps-migrate.sh --dry-run
+```
+
+Review the project ref, remote migration history, pending SQL, and dry-run
+output. Then, only after approval:
+
+```sh
+export DATABASE_URL='postgresql://...'
+export EXPECTED_SUPABASE_PROJECT_REF='<expected-project-ref>'
+bash scripts/vps-migrate.sh --apply
+unset DATABASE_URL
+```
+
+Apply mode repeats the dry-run, creates a full PostgreSQL custom-format
+`pg_dump` archive, verifies that it can be listed by `pg_restore`, then
+runs `supabase db push --remote --yes` and re-reads migration history.
+Backups are stored in `backups/db-migrations/` by default with restrictive
+permissions. Protect and copy backups to independent storage; the script
+does not prune them.
+
+**Operator gates and limitations:**
+
+- The runner does not repair an unknown legacy schema, baseline mismatch,
+  manually applied SQL, or inconsistent `supabase_migrations` history.
+  Stop on drift or unexpected pending migrations and reconcile manually.
+- A successful archive listing is not a tested restore. Test restore through
+  a separate recovery procedure before relying on the backup.
+- No automatic rollback/restore is attempted after a failed migration.
+  Preserve the backup and follow a reviewed recovery plan.
+- It does not restart containers, deploy code, migrate Redis/local SQLite
+  outboxes, or change application configuration.
+- Do not use production apply mode until the current schema and migration
+  history have been inspected and the exact dry-run plan approved.
+
 ## Runtime persistence status
 
 The runtime uses Supabase as a best-effort audit/history sink. It is not the
