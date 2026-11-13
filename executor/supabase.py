@@ -68,6 +68,16 @@ class SupabaseWriter(
 
     # ---------------------------------------------------------------- lifecycle
 
+    @property
+    def durable_ready(self) -> bool:
+        """True only when the durable local journal and its delivery worker are live."""
+        return bool(
+            self.enabled
+            and self._outbox is not None
+            and self._task is not None
+            and not self._task.done()
+        )
+
     async def start(self) -> None:
         if not self.enabled or self._task is not None:
             return
