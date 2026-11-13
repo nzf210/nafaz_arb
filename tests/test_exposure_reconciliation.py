@@ -49,6 +49,9 @@ class FakeClient:
     async def fetch_positions(self, symbol):
         return [{"symbol": symbol, "side": "short", "contracts": 0.5, "contractSize": 1}]
 
+    async def fetch_all_positions(self):
+        return []
+
     async def place_local_limit_buy(self, *args, **kwargs):
         self.order_calls += 1
 
@@ -148,6 +151,9 @@ async def test_unavailable_exchange_reads_halt_new_entries(monkeypatch):
 
         async def fetch_positions(self, symbol):
             raise RuntimeError("private endpoint unavailable")
+
+        async def fetch_all_positions(self):
+            raise RuntimeError("account-wide positions endpoint unavailable")
 
     client = UnavailableClient()
     position = SimpleNamespace(
@@ -267,6 +273,14 @@ async def test_reconciliation_restores_preexisting_operator_halt_after_issue_cle
         async def fetch_positions(self, symbol):
             return [{"symbol": symbol, "side": "short", "contracts": self.short_qty}]
 
+        async def fetch_all_positions(self):
+            return [{
+                "symbol": "BTC/USDT:USDT",
+                "side": "short",
+                "contracts": self.short_qty,
+                "contractSize": 1,
+            }] if self.short_qty > 0 else []
+
     client = MutableClient()
     position = SimpleNamespace(
         qty=1.0, local_exchange="indodax", global_exchange="okx",
@@ -319,3 +333,78 @@ def test_reconciliation_blank_environment_values_use_defaults(monkeypatch):
     assert _env_interval() == 300
     assert _env_float("EXPOSURE_RECONCILIATION_REL_TOLERANCE", 0.005, 0.0, 0.05) == 0.005
     assert _env_float("EXPOSURE_RECONCILIATION_ABS_TOLERANCE", 1e-8, 1e-12, 1.0) == 1e-8
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_detects_unmanaged_futures_position_without_local_position(
+    monkeypatch,
+):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
+
+    class UnmanagedPositionClient(FakeClient):
+        async def fetch_all_positions(self):
+            return [{
+                "symbol": "ETH/USDT:USDT",
+                "side": "short",
+                "contracts": 2.0,
+                "contractSize": 1.0,
+            }]
+
+    client = UnmanagedPositionClient()
+    engine = SimpleNamespace(
+        config=SimpleNamespace(mock_mode=False, global_exchange_name="okx"),
+        client=client,
+        active_positions={},
+        _pair_infos={},
+        _exchange_halted={},
+        supabase=FakeSupabase(),
+        failures=[],
+    )
+
+    async def publish_failure(*args, **kwargs):
+        engine.failures.append((args, kwargs))
+
+    engine._publish_execution_failure = publish_failure
+    await ExposureReconciliationWorker(engine).reconcile_once()
+
+    assert engine._exchange_halted["okx"].startswith("exposure reconciliation:")
+    assert any(
+        args[1] == "FUTURES_POSITION_MISMATCH"
+        and kwargs["detail"]["symbol"] == "ETH/USDT:USDT"
+        for args, kwargs in engine.failures
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_halts_when_account_wide_positions_api_is_unavailable(
+    monkeypatch,
+):
+    monkeypatch.setenv("EXPOSURE_RECONCILIATION_INTERVAL_SECONDS", "60")
+
+    class UnavailablePositionClient(FakeClient):
+        async def fetch_all_positions(self):
+            raise RuntimeError("positions endpoint unavailable")
+
+    engine = SimpleNamespace(
+        config=SimpleNamespace(mock_mode=False, global_exchange_name="okx"),
+        client=UnavailablePositionClient(),
+        active_positions={},
+        _pair_infos={},
+        _exchange_halted={},
+        supabase=FakeSupabase(),
+        failures=[],
+    )
+
+    async def publish_failure(*args, **kwargs):
+        engine.failures.append((args, kwargs))
+
+    engine._publish_execution_failure = publish_failure
+    await ExposureReconciliationWorker(engine).reconcile_once()
+
+    assert engine._exchange_halted["okx"].startswith("exposure reconciliation:")
+    assert any(args[1] == "EXPOSURE_POSITION_UNAVAILABLE" for args, kwargs in engine.failures)
+
+
+def test_position_short_qty_requires_authoritative_contract_size():
+    with pytest.raises(ValueError, match="contract size unavailable"):
+        _position_short_qty([{"side": "short", "contracts": 1.0}])
