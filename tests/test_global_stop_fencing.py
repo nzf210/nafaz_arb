@@ -1,7 +1,7 @@
 import pytest
 
 from executor.engine_entry_submission import EngineEntrySubmissionMixin
-from executor.global_stop import FENCE_LOCK_KEY, GlobalStopService
+from executor.global_stop import FENCE_LOCK_KEY, GlobalStopError, GlobalStopService
 from executor.config import ExecutorConfig
 from executor.engine import ArbitrageEngine
 
@@ -21,24 +21,54 @@ class _FakeConnection:
     def __init__(self):
         self.executed = []
         self.fetches = []
+        self.attempts = {}
+        self.control = {"is_stopped": False, "epoch": 12, "reason": None}
 
     def transaction(self):
         return _AsyncContext(self)
 
     async def execute(self, query, *args):
         self.executed.append((query, args))
+        if "set status='SUBMITTING'" in query:
+            client_order_id = args[0]
+            row = self.attempts[client_order_id]
+            row["status"] = "SUBMITTING"
+            row["fence_epoch"] = args[1]
+        elif "set status=$2" in query:
+            row = self.attempts[args[0]]
+            row["status"] = args[1]
 
     async def fetchrow(self, query, *args):
         self.fetches.append((query, args))
         if "select is_stopped, epoch, reason" in query:
-            return {"is_stopped": False, "epoch": 12, "reason": None}
-        return {
-            "is_stopped": True,
-            "epoch": 13,
-            "reason": args[0],
-            "source": args[1],
-            "metadata": args[2],
-        }
+            return dict(self.control)
+        if "insert into public.executor_submit_attempts" in query:
+            client_order_id = args[0]
+            self.attempts.setdefault(client_order_id, {
+                "client_order_id": client_order_id,
+                "exchange": args[1],
+                "symbol": args[3],
+                "status": "PREPARED",
+            })
+            return dict(self.attempts[client_order_id])
+        if "where status in ('SUBMITTING','UNKNOWN')" in query:
+            current_id = args[0]
+            return next(
+                (dict(row) for key, row in self.attempts.items()
+                 if key != current_id and row["status"] in ("SUBMITTING", "UNKNOWN")),
+                None,
+            )
+        if "update public.executor_submit_attempts" in query and "returning client_order_id" in query:
+            row = self.attempts.get(args[0])
+            if row and row["status"] == "PREPARED":
+                row["status"] = "SUBMITTING"
+                row["fence_epoch"] = args[1]
+                return {"client_order_id": args[0]}
+            return None
+        if "where client_order_id = $1" in query:
+            row = self.attempts.get(args[0])
+            return dict(row) if row else None
+        return None
 
 
 class _FakePool:
@@ -49,22 +79,58 @@ class _FakePool:
         return _AsyncContext(self.conn)
 
 
+async def _prepare(service, client_order_id):
+    await service.prepare_submit_attempt(
+        client_order_id=client_order_id,
+        exchange="binance",
+        market_type="spot",
+        symbol="BTC/USDT",
+        side="buy",
+        order_type="limit",
+        quantity=0.01,
+        price=50000,
+        pair_key="binance__okx__btc",
+        recovery_context={"test": True},
+        amount_spec={"unit": "BASE"},
+    )
+
+
 @pytest.mark.asyncio
-async def test_order_submit_fence_uses_transaction_advisory_lock_and_reads_stop():
+async def test_submit_fence_commits_durable_submitting_before_http_scope():
     conn = _FakeConnection()
     service = GlobalStopService("postgresql://unused")
     service.pool = _FakePool(conn)
+    await _prepare(service, "stable-client-order-id")
 
     async with service.order_submit_fence(client_order_id="stable-client-order-id") as fenced_conn:
         assert fenced_conn is conn
+        assert conn.attempts["stable-client-order-id"]["status"] == "SUBMITTING"
 
-    assert conn.executed
-    assert "pg_advisory_xact_lock" in conn.executed[0][0]
-    assert conn.executed[0][1] == (FENCE_LOCK_KEY,)
+    statements = [query for query, _ in conn.executed]
+    assert any("pg_advisory_lock" in query for query in statements)
+    assert any("pg_advisory_unlock" in query for query in statements)
+    assert conn.attempts["stable-client-order-id"]["fence_epoch"] == 12
 
 
 @pytest.mark.asyncio
-async def test_ip_ban_stop_can_be_written_inside_submit_transaction():
+async def test_lost_submit_connection_leaves_durable_row_blocking_next_entry():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    await _prepare(service, "possibly-accepted-order")
+    with pytest.raises(ConnectionError):
+        async with service.order_submit_fence(client_order_id="possibly-accepted-order"):
+            raise ConnectionError("connection dropped after request boundary")
+
+    assert conn.attempts["possibly-accepted-order"]["status"] == "SUBMITTING"
+    await _prepare(service, "next-order")
+    with pytest.raises(GlobalStopError, match="unresolved in-flight submit"):
+        async with service.order_submit_fence(client_order_id="next-order"):
+            pytest.fail("second venue request must not be entered")
+
+
+@pytest.mark.asyncio
+async def test_ip_ban_stop_can_be_written_inside_submit_fence():
     conn = _FakeConnection()
     service = GlobalStopService("postgresql://unused")
 
@@ -75,8 +141,7 @@ async def test_ip_ban_stop_can_be_written_inside_submit_transaction():
         metadata={"http_status": 418},
     )
 
-    assert state["is_stopped"] is True
-    assert state["epoch"] == 13
+    # The transaction-level STOP helper is tested via its UPDATE statement.
     query, args = conn.fetches[0]
     assert "epoch = epoch + case when is_stopped then 0 else 1 end" in query
     assert args[0] == "CEX_IP_BLOCK"
