@@ -97,6 +97,21 @@ async def test_coordinator_blocks_mutation_when_fencing_token_is_stale():
 
 
 @pytest.mark.asyncio
+async def test_coordinator_can_reacquire_after_lease_loss():
+    supabase = FakeSupabase()
+    coordinator = ExecutionCoordinator(supabase, renew_interval_seconds=60)
+    assert await coordinator.acquire() is True
+    await coordinator._lose("simulated lease loss")
+    assert coordinator.active is False
+
+    assert await coordinator.acquire() is True
+    assert coordinator.active is True
+    assert coordinator.fencing_token == 17
+    assert coordinator._heartbeat_task is not None
+    await coordinator.release()
+
+
+@pytest.mark.asyncio
 async def test_coordinator_does_not_start_without_lease_owner():
     supabase = FakeSupabase(acquired=False)
     coordinator = ExecutionCoordinator(
