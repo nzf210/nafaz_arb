@@ -96,6 +96,9 @@ class ArbitrageEngine(
         redis_client: Optional[aioredis.Redis] = None,
     ):
         self.config = config
+        # LIVE entry admission requires an explicitly wired PostgreSQL V2 gate.
+        # Until runtime config cutover is complete, missing gate means deny.
+        self.v2_admission_gate = None
         self._base_client = client
         self._client_context: ContextVar[Any] = ContextVar(f"executor_client_{id(self)}", default=None)
         self._pair_client_registry = PairClientRegistry()
@@ -221,6 +224,26 @@ class ArbitrageEngine(
 
     def _reset_pair_client(self, token) -> None:
         self._client_context.reset(token)
+
+    async def _v2_entry_admission_allowed(self) -> bool:
+        """Fail closed for LIVE until the PostgreSQL control-plane gate is wired."""
+        if bool(getattr(self.config, "mock_mode", False)):
+            return True
+        gate = getattr(self, "v2_admission_gate", None)
+        if gate is None:
+            logger.error(
+                "[V2 Admission] LIVE entry blocked: PostgreSQL control-plane gate is not wired"
+            )
+            return False
+        try:
+            await gate.require_entry_allowed()
+            return True
+        except Exception as exc:
+            logger.error(
+                "[V2 Admission] LIVE entry blocked by control-plane gate error_type=%s",
+                type(exc).__name__,
+            )
+            return False
 
     async def initialize(self):
         """Initializes Redis and restores in-flight state before trading.
