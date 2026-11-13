@@ -118,13 +118,8 @@ class GlobalStopService:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute("select pg_advisory_xact_lock($1)", FENCE_LOCK_KEY)
-                row = await conn.fetchrow(
-                    "update public.executor_global_control "
-                    "set is_stopped = true, epoch = epoch + 1, reason = $1, source = $2, "
-                    "metadata = $3::jsonb, updated_at = now() "
-                    "where singleton_id = 1 "
-                    "returning is_stopped, epoch, reason, source, metadata, updated_at",
-                    reason, source, payload,
+                row = await self.request_stop_in_transaction(
+                    conn, reason, source=source, metadata=metadata
                 )
                 if row is None:
                     raise GlobalStopError("global control row is missing; STOP was not persisted")
@@ -139,6 +134,42 @@ class GlobalStopService:
             except Exception:
                 logger.exception("STOP committed to PostgreSQL but Redis notification failed")
         return result
+
+
+    async def request_stop_in_transaction(
+        self, conn: Any, reason: str, *, source: str, metadata: Optional[dict] = None
+    ) -> dict:
+        """Commit STOP inside the already-held submit-fence transaction."""
+        reason = str(reason or "").strip().upper()
+        source = str(source or "").strip()[:100]
+        payload = json.dumps(metadata or {}, separators=(",", ":"), default=str)
+        row = await conn.fetchrow(
+            "update public.executor_global_control "
+            "set is_stopped = true, epoch = epoch + case when is_stopped then 0 else 1 end, "
+            "reason = case when is_stopped then reason else $1 end, "
+            "source = case when is_stopped then source else $2 end, "
+            "metadata = case when is_stopped then metadata else $3::jsonb end, updated_at = now() "
+            "where singleton_id = 1 "
+            "returning is_stopped, epoch, reason, source, metadata, updated_at",
+            reason, source, payload,
+        )
+        if row is None:
+            raise GlobalStopError("global control row is missing; STOP was not persisted")
+        return dict(row)
+
+    async def notify_state(self, state: dict) -> None:
+        """Best-effort Redis notification after PostgreSQL transaction commits."""
+        if self.redis is None:
+            return
+        try:
+            await self.redis.publish(STOP_CHANNEL, json.dumps({
+                "is_stopped": bool(state.get("is_stopped")),
+                "epoch": int(state.get("epoch", 0)),
+                "reason": state.get("reason"),
+                "source": state.get("source"),
+            }))
+        except Exception:
+            logger.exception("Global STOP committed to PostgreSQL but Redis notification failed")
 
     async def acknowledge_resume(self, *, operator: str, expected_epoch: int) -> dict:
         """Clear STOP only by explicit operator acknowledgement of current epoch."""
