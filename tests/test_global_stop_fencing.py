@@ -52,12 +52,15 @@ class _FakeConnection:
             }
         if "insert into public.executor_submit_attempts" in query:
             client_order_id = args[0]
-            self.attempts.setdefault(client_order_id, {
+            if client_order_id in self.attempts:
+                return None
+            self.attempts[client_order_id] = {
                 "client_order_id": client_order_id,
                 "exchange": args[1],
                 "symbol": args[3],
                 "status": "PREPARED",
-            })
+                "amount_spec": args[10],
+            }
             return dict(self.attempts[client_order_id])
         if "where status in ('SUBMITTING','UNKNOWN')" in query:
             current_id = args[0]
@@ -101,6 +104,29 @@ async def _prepare(service, client_order_id):
         recovery_context={"test": True},
         amount_spec={"unit": "BASE"},
     )
+
+
+@pytest.mark.asyncio
+async def test_prepared_client_id_reuse_rejects_changed_amount_spec():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    await _prepare(service, "stable-intent-id")
+
+    with pytest.raises(GlobalStopError, match="different order intent"):
+        await service.prepare_submit_attempt(
+            client_order_id="stable-intent-id",
+            exchange="binance",
+            market_type="spot",
+            symbol="BTC/USDT",
+            side="buy",
+            order_type="limit",
+            quantity=0.01,
+            price=50000,
+            pair_key="binance__okx__btc",
+            recovery_context={"test": True},
+            amount_spec={"unit": "CONTRACTS", "contract_size": 0.001},
+        )
 
 
 @pytest.mark.asyncio
