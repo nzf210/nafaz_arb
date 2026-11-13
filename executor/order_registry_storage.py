@@ -273,9 +273,13 @@ class OrderRegistryStorageMixin:
                 if matches_field:
                     self.records[record.local_order_id] = record
                     return record
-            # A successful full active-record read is authoritative for the
-            # active journal; no active intent matches this index.
-            return None
+            # The durable reader only returns active rows. A terminal
+            # record may still exist in the venue/client-id index, so an empty
+            # active result cannot prove that the id was never used.
+            raise RuntimeError(
+                f"order registry lookup is inconclusive for {field}: Redis index is unavailable "
+                "and the durable active journal has no matching record"
+            )
         if not local_id:
             if isinstance(local_id, bytes):
                 local_id = local_id.decode()
