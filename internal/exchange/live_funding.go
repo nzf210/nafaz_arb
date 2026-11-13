@@ -64,7 +64,6 @@ func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (d
 	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) { return domain.FundingRate{}, fmt.Errorf("invalid OKX funding rate %q", item.FundingRate) }
 	intervalHours := 8
 	ft, ftErr := strconv.ParseInt(item.FundingTime, 10, 64)
-	pft, _ := strconv.ParseInt(item.PrevFundingTime, 10, 64)
 	if ftErr != nil || ft <= 0 { return domain.FundingRate{}, fmt.Errorf("invalid OKX fundingTime %q", item.FundingTime) }
 	nextMS, nextErr := strconv.ParseInt(item.NextFundingTime, 10, 64)
 	if nextErr != nil || nextMS <= ft { return domain.FundingRate{}, fmt.Errorf("invalid OKX nextFundingTime %q", item.NextFundingTime) }
