@@ -14,7 +14,7 @@ create table if not exists public.executor_submit_attempts (
     amount_spec jsonb not null default '{}'::jsonb,
     recovery_context jsonb not null default '{}'::jsonb,
     status text not null check (
-        status in ('PREPARED', 'SUBMITTING', 'UNKNOWN', 'ACKNOWLEDGED', 'REJECTED')
+        status in ('PREPARED', 'SUBMITTING', 'UNKNOWN', 'ACKNOWLEDGED', 'REJECTED', 'ABORTED')
     ),
     submit_count integer not null default 0 check (submit_count >= 0),
     fence_epoch bigint,
