@@ -206,8 +206,8 @@ def validate_runtime_venue_pair(local_name: str, global_name: str) -> None:
 
 
 def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds, configured_exchanges=None) -> ExchangeClient:
-    validate_runtime_venue_pair(local_name, global_name)
     """Create the active trading pair clients and independent read-only balance clients."""
+    validate_runtime_venue_pair(local_name, global_name)
     local_ex = init_local_exchange(local_name, local_creds, default_type="spot")
     global_ex = init_ccxt_exchange(global_name, global_creds, default_type="future")
     balance_exchanges = {
