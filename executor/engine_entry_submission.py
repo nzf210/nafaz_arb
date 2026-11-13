@@ -281,6 +281,7 @@ class EngineEntrySubmissionMixin:
         buy_qty, actual_cost_usdt, buy_price_idr,
     ) -> None:
         submission_started = False
+        submit_attempt_acknowledged = False
         entry_coid = ""
         try:
             logger.info(
@@ -316,6 +317,20 @@ class EngineEntrySubmissionMixin:
                 global_amount_spec=pair_info.global_amount_spec,
                 recovery_context=recovery_context,
             )
+            if self.global_stop is not None:
+                await self.global_stop.prepare_submit_attempt(
+                    client_order_id=entry_coid,
+                    exchange=pair_info.local_exchange,
+                    market_type="spot",
+                    symbol=pair_info.local_symbol,
+                    side="buy",
+                    order_type="limit",
+                    quantity=buy_qty,
+                    price=exchange_order_price,
+                    pair_key=pair_tag,
+                    recovery_context=recovery_context,
+                    amount_spec=pair_info.local_amount_spec.to_dict(),
+                )
             try:
                 if self.global_stop is not None:
                     ip_ban_state = None
@@ -392,6 +407,13 @@ class EngineEntrySubmissionMixin:
                             entry_coid,
                         )
                 if not isinstance(order, dict) or not order.get("id"):
+                    if self.global_stop is not None:
+                        try:
+                            await self.global_stop.mark_submit_unknown(
+                                entry_coid, "venue acknowledgement did not include an exchange order id"
+                            )
+                        except Exception:
+                            logger.exception("durable submit ledger remains unresolved for %s", entry_coid)
                     await self._mark_order_submission_ambiguous(
                         pair_tag, pair_info.local_exchange, entry_coid,
                         f"submit error: {type(submit_error).__name__}: {submit_error}; "
@@ -402,6 +424,19 @@ class EngineEntrySubmissionMixin:
                     "[State 1] recovered spot order %s by client id after lost acknowledgement",
                     entry_coid,
                 )
+
+            if self.global_stop is not None:
+                try:
+                    await self.global_stop.mark_submit_acknowledged(entry_coid, order)
+                    submit_attempt_acknowledged = True
+                except Exception:
+                    # The CEX may have accepted the order. Do not retry it;
+                    # leave the durable SUBMITTING row to block other entries.
+                    logger.exception(
+                        "CRITICAL: venue acknowledged %s but PostgreSQL submit ledger update failed; "
+                        "entry admission remains fenced",
+                        entry_coid,
+                    )
 
             if not isinstance(order, dict) or not order.get("id"):
                 await self._mark_order_submission_ambiguous(
@@ -459,6 +494,16 @@ class EngineEntrySubmissionMixin:
                 )
         except Exception as exc:
             if submission_started:
+                if self.global_stop is not None and not submit_attempt_acknowledged:
+                    try:
+                        await self.global_stop.mark_submit_unknown(
+                            entry_coid, f"{type(exc).__name__}: {exc}"
+                        )
+                    except Exception:
+                        logger.exception(
+                            "CRITICAL: durable submit attempt %s remains unresolved",
+                            entry_coid,
+                        )
                 await self._mark_order_submission_ambiguous(
                     pair_tag, pair_info.local_exchange, entry_coid,
                     f"post-submit persistence or processing failed: "
@@ -470,6 +515,18 @@ class EngineEntrySubmissionMixin:
             # the create-order call, so the durable intent must not remain
             # SUBMITTING/ambiguous.
             if entry_coid:
+                if self.global_stop is not None:
+                    try:
+                        if self._is_definitive_order_rejection(exc):
+                            await self.global_stop.mark_submit_rejected(entry_coid, str(exc))
+                        else:
+                            await self.global_stop.mark_submit_aborted(entry_coid, str(exc))
+                    except Exception:
+                        logger.exception(
+                            "CRITICAL: could not resolve pre-submit ledger row %s; "
+                            "it may continue blocking new entries",
+                            entry_coid,
+                        )
                 await self._mark_order_submission_rejected(
                     pair_info.local_exchange, entry_coid
                 )
