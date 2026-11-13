@@ -884,3 +884,442 @@ Desain dianggap siap menjadi implementation specification setelah:
 - audit source terbaru menyelesaikan pemetaan file/fungsi dan caller;
 - capability matrix per CEX diverifikasi.
 
+
+
+---
+
+## 21. Arsitektur domain tanggung jawab — pemetaan lengkap
+
+Enam domain berikut adalah batas tanggung jawab logis, bukan keputusan untuk memecah sistem menjadi enam microservice. Pada tahap awal semuanya dapat berjalan dalam satu deployment executor dengan interface internal yang tegas. Execution Coordinator tetap menjadi satu otoritas orkestrasi.
+
+| Domain | Komponen | Tanggung jawab utama | Batas keselamatan |
+|---|---|---|---|
+| 1. Opportunity Intelligence | Scanner, Normalizer, Market Data Quality Gate, Net Profit Estimator, Ranker | Menghasilkan kandidat valid, terukur, berperingkat, dan memiliki expiry | Tidak memiliki akses mutation/private order |
+| 2. Execution Orchestration | Coordinator, Session Manager, Admission/Risk Gate, Capital Allocation, Slot Reservation | Mengotorisasi session, mengalokasikan modal/slot secara atomik, mengelola ownership | Tidak mengirim order langsung; semua mutation melalui Gateway |
+| 3. Leg Execution | Spot Leg Manager, Futures Leg Manager, Two-Leg Controller | Lifecycle tiap leg, fill delta, hedge, cancel/replace, residual exposure | Tidak mengasumsikan order submitted sama dengan filled atau posisi terlindungi |
+| 4. Pair Economics & Position | Pair PnL, Fee/Funding, Hedge Drift, Exit Decision, Unwind Planner | Menilai ekonomi pasangan, kesehatan hedge, dan rencana keluar | Tidak menggunakan harga ticker sebagai jaminan harga eksekusi |
+| 5. Exchange Connectivity | Exchange Adapter, Mutation Gateway, Private WS, REST Reconciliation | Normalisasi perilaku CEX, private read, create/cancel terkontrol, fallback | Capability per venue harus terverifikasi; tidak ada blind retry |
+| 6. Durability & Operations | Postgres, Inbox/Outbox, Event Ledger, Recovery, Ownership, Readiness, Telegram, Incident | State durable, pemulihan, command operator, observability dan fail-safe | Redis bukan canonical; tindakan operator harus tercatat dan terotorisasi |
+
+### 21.1 Alur lintas domain
+
+1. Opportunity Intelligence menerbitkan candidate snapshot yang lolos hard filters.
+2. Coordinator meminta revalidation; Admission Gate memeriksa risk, ownership, readiness, saldo, modal dan slot.
+3. Capital Allocation dan Slot Reservation melakukan reservasi atomik sebelum intent dibuat.
+4. Leg Managers menjalankan order melalui Mutation Gateway.
+5. Private WS/REST memberi bukti order, fill, fee, balance dan position.
+6. Two-Leg Controller mengubah Spot fill delta menjadi hedge obligation dan memantau drift.
+7. Pair Economics menghitung PnL gabungan dan Unwind Planner menilai risiko keluar.
+8. Semua perubahan state dan event penting disimpan durable; Telegram hanya membaca atau mengirim command melalui journal.
+
+### 21.2 Aturan dependency
+
+- Domain tingkat atas boleh menggunakan kontrak domain di bawahnya, tetapi adapter CEX tidak boleh memanggil strategi atau Telegram.
+- Tidak boleh ada siklus dependency, misalnya Pair PnL memanggil Coordinator untuk mengubah fill.
+- Exchange Adapter tidak memiliki wewenang membuat keputusan entry/exit.
+- Telegram tidak boleh memanggil CCXT/TAPI atau mengubah database lifecycle di luar command service.
+- Domain baru harus memakai kontrak yang sama; jangan membuat jalur order kedua.
+
+## 22. P0 tambahan — wajib sebelum LIVE
+
+### 22.1 Portfolio & Capital Allocation Manager
+
+Tujuan: mencegah penggunaan modal ganda dan overcommit lintas session, pair, market, serta CEX.
+
+Wajib mengelola:
+- Spot free/used/locked balance dan saldo yang telah direservasi oleh bot;
+- Futures available margin, initial/maintenance margin, leverage, margin mode dan buffer;
+- modal untuk open order, partial fill, posisi terbuka, fee cadangan dan protective close;
+- batas per account, CEX, asset, symbol, strategy, pair, dan total portfolio;
+- reservasi yang sedang dibuat, aktif, dilepas, kedaluwarsa, atau perlu rekonsiliasi.
+
+Aturan:
+1. Reservasi dilakukan dalam transaksi database atomik sebelum order intent dapat dikirim.
+2. Dua coordinator/session tidak boleh mengalokasikan saldo yang sama.
+3. Partial fill mengubah reserved amount menjadi committed exposure; sisa order tetap memegang reservasi sampai cancel/terminal state terverifikasi.
+4. Cancel acknowledgement saja tidak cukup untuk melepas seluruh modal jika ada cancel/fill race yang belum direkonsiliasi.
+5. Modal Futures dihitung menurut margin mode dan contract specification CEX, bukan notional generik.
+6. Fee buffer, slippage buffer dan margin safety buffer harus eksplisit serta configurable.
+7. Bila saldo exchange dan ledger internal berbeda, gunakan nilai konservatif dan tahan admission pada scope terdampak.
+8. Tidak boleh mengandalkan balance cache stale untuk reservasi baru.
+
+Konsep data minimum: capital_reservations, capital_reservation_events, account_risk_limits, asset_exposure_limits, dan balance_snapshots. Unique/idempotency key harus mengikat reservation ke session/leg/intent. Pelepasan reservation harus memiliki alasan dan bukti terminal/reconciliation.
+
+Acceptance:
+- Dua session bersamaan tidak dapat menghabiskan saldo yang sama.
+- Restart tidak menghilangkan reservasi aktif.
+- Partial fill/cancel race menghasilkan committed dan reserved amount yang benar.
+- Futures margin buffer tidak dapat digunakan untuk entry baru.
+- DB unavailable berarti tidak ada reservasi baru dan tidak ada new exposure.
+
+### 22.2 Orphan Order & Position Discovery
+
+Tujuan: menemukan perbedaan antara exchange dan database sebelum sistem mengirim order baru atau mengambil tindakan berisiko.
+
+Discovery harus membandingkan:
+- open orders;
+- order history dan closed/canceled/rejected orders;
+- trades/fills dengan pagination dan overlap window;
+- posisi Futures dan position mode;
+- saldo Spot/asset yang relevan;
+- local intents, registry, session dan ledger.
+
+Klasifikasi minimal:
+- BOT_MATCHED: ditemukan bukti kuat mengikat order ke intent/session bot;
+- MANUAL: diketahui dibuat operator/manual melalui bukti yang tersedia;
+- ORPHAN_UNKNOWN: ada di exchange tetapi tidak dapat diidentifikasi;
+- DB_ONLY: tercatat lokal tetapi tidak ditemukan di exchange setelah pencarian yang memadai;
+- POSITION_UNOWNED: posisi exchange tidak mempunyai ownership yang terbukti;
+- IDENTITY_CONFLICT: beberapa intent atau account scope cocok secara ambigu.
+
+Aturan keselamatan:
+1. Client order ID adalah petunjuk korelasi, bukan satu-satunya bukti universal.
+2. Cocokkan venue, account, market type, symbol, side, quantity, timestamp, exchange order ID, trade IDs dan client ID.
+3. Jangan auto-adopt, cancel, atau close ORPHAN_UNKNOWN/MANUAL/POSITION_UNOWNED.
+4. Tandai scope terkait HOLD/RECONCILIATION_REQUIRED sampai operator/policy menyelesaikan ownership.
+5. DB_ONLY tidak boleh langsung dianggap order gagal; periksa history, fills, retention window dan endpoint pagination.
+6. Discovery berjalan saat startup sebelum READY, secara periodik, setelah WS gap, dan setelah hasil mutation ambigu.
+7. Simpan bukti, waktu pemeriksaan, endpoint/source, pagination cursor, serta alasan klasifikasi.
+
+Acceptance:
+- Order manual tidak pernah diadopsi sebagai order bot hanya karena symbol/side sama.
+- Order bot yang hilang dari cache ditemukan kembali lewat history/client ID/trade reconciliation.
+- Posisi Futures tanpa ownership memblokir entry yang dapat memperbesar risiko.
+- Pagination dan overlapping query tidak menggandakan fill.
+
+### 22.3 Pair Integrity & Hedge Drift Monitor
+
+Monitor ini memeriksa apakah exposure Spot dan Futures benar-benar seimbang setelah konversi contract size dan denomination.
+
+Metrik wajib:
+- Spot net exposure terverifikasi;
+- Futures net exposure ekuivalen dalam base quantity;
+- target hedge ratio;
+- hedge coverage ratio;
+- residual unhedged quantity/notional;
+- in-flight hedge quantity (ditampilkan terpisah, tidak dihitung sebagai filled hedge);
+- rounding/lot-size remainder;
+- exposure age dan hedge latency;
+- confidence serta freshness sumber posisi/fill.
+
+Aturan:
+- Perubahan posisi harus bersumber dari fill/position evidence, bukan submitted quantity.
+- Contract multiplier, linear/inverse, quanto, settlement currency dan position mode harus diketahui.
+- Threshold quantity dan notional harus configurable per pair/venue; jangan menetapkan angka universal tanpa data.
+- Drift di atas warning threshold memicu alert; di atas hard threshold menghentikan penambahan exposure dan memulai protective workflow.
+- Jika position snapshot stale atau bertentangan dengan fill ledger, status hedge menjadi UNKNOWN, bukan HEDGED.
+- Perubahan manual pada salah satu kaki harus memicu ownership conflict dan rekonsiliasi.
+
+Acceptance:
+- Partial fills di kedua kaki menghasilkan residual yang benar.
+- Contract rounding menghasilkan sisa terukur dan dibatasi.
+- WS gap, duplicate fill dan restart tidak membuat drift hilang atau dihitung dua kali.
+- Hedge dianggap pulih hanya setelah bukti posisi/fill memadai.
+
+### 22.4 Exchange Capability Certification
+
+Jangan menyimpulkan sebuah CEX siap LIVE hanya karena create order pernah berhasil. Sertifikasi dilakukan per kombinasi venue, account type, market type, symbol/instrument class, dan capability.
+
+State:
+UNVERIFIED -> TESTING -> VERIFIED -> DEGRADED -> DISABLED.
+Perubahan state menyimpan bukti, versi adapter/CCXT, tanggal, environment, dan alasan.
+
+Capability yang diuji:
+- authentication/signature dan permission;
+- create, cancel, fetch order, open/closed history, trades dan pagination;
+- client order ID: format, uniqueness scope, lookup dan retention;
+- private WebSocket: auth, subscription, reconnect, sequence/gap, duplicate/out-of-order;
+- partial fill dan cancel/fill race;
+- post-only behavior, reject semantics dan maker classification;
+- IOC/FOK/GTC dan amend/replace bila dipakai;
+- reduce-only, hedge/one-way position mode, side mapping;
+- contract size, precision, min amount/notional, tick/lot size;
+- fee/funding retrieval dan balance/position consistency;
+- rate limits, retry-after, ban behavior dan error classification;
+- timestamp drift dan server time.
+
+Sertifikasi harus memiliki fixture dan contract tests yang dapat diulang. Sandbox/testnet tidak selalu identik dengan production; hasilnya harus diberi label lingkungan. LIVE capability baru aktif setelah smoke test aman dan persetujuan operator. Capability yang tidak diuji tetap UNSUPPORTED/UNVERIFIED, bukan diasumsikan tersedia.
+
+### 22.5 Financial Reconciliation Engine
+
+Tujuan: membuktikan bahwa internal ledger cocok dengan aktivitas keuangan exchange.
+
+Rekonsiliasi meliputi:
+- trade fills dan cumulative order fills;
+- fee amount/currency dan maker/taker;
+- funding payment;
+- realized PnL Futures;
+- posisi, average entry, margin dan saldo;
+- transfer/adjustment yang relevan bila account mengizinkannya;
+- conversion dan rounding.
+
+Setiap mismatch harus memiliki:
+- entity/account/instrument;
+- internal value vs exchange value;
+- source records dan query window;
+- amount/currency delta;
+- severity dan status;
+- root cause jika diketahui;
+- operator resolution dan audit trail.
+
+Aturan:
+- Exchange trade/funding record menjadi bukti aktual untuk komponen yang disediakan venue; internal snapshot dapat dibangun ulang.
+- Jangan menimpa ledger immutable untuk menyembunyikan mismatch. Gunakan adjustment record dengan reason dan source.
+- Gunakan pagination, overlap window, deduplication key, dan checkpoint per endpoint.
+- Mismatch material menahan entry pada scope terkait; jangan mengubah posisi otomatis untuk membuat angka tampak cocok.
+- PnL dashboard harus memisahkan actual, estimated, projected dan unreconciled.
+
+Acceptance:
+- Ledger dapat dibangun ulang dari fills/fees/funding tanpa double count.
+- Fee currency non-quote dan funding tercatat tepat.
+- Mismatch tidak hilang setelah restart.
+- Semua adjustment dapat diaudit.
+
+## 23. P1 tambahan — wajib sebelum ekspansi LIVE
+
+### 23.1 Market Data Quality & Execution Readiness Gate
+
+Validasi data sebelum admission:
+- age exchange timestamp dan receive timestamp;
+- sequence continuity dan gap detection;
+- bid/ask valid, crossed/locked book, depth cukup;
+- source consistency untuk harga dan FX;
+- spread/depth abnormal dan volatilitas;
+- clock synchronization;
+- subscription health dan reconnect state.
+
+Data stale/gap tidak boleh dipakai seolah-olah valid. REST resync harus menandai snapshot baru dan tidak menyambung sequence secara fiktif. Gate menghasilkan status READY/DEGRADED/REJECTED beserta alasan dan umur data.
+
+### 23.2 Execution Cost & Slippage Prediction
+
+Estimasi berdasarkan ukuran order dan book depth:
+- executable VWAP per sisi;
+- market impact dan depth depletion;
+- maker fill probability dan expected waiting time;
+- cancel/replace cost;
+- latency dan adverse selection;
+- expected vs actual slippage per venue/market/size bucket.
+
+Model awal harus transparan dan konservatif. Jangan menggunakan machine learning atau bobot adaptif tanpa dataset, calibration, drift monitoring dan fallback yang dapat dijelaskan. Prediksi tidak boleh melewati hard risk gates.
+
+### 23.3 Per-CEX Order Lifecycle Policy
+
+Semua perilaku venue harus dinyatakan dalam capability/policy contract, bukan if/else tersebar:
+- supported order types dan time-in-force;
+- post-only semantics dan reject behavior;
+- cancel/replace/amend semantics;
+- client ID constraints;
+- precision/minimums;
+- cancel timeout dan SUBMISSION_UNKNOWN recovery window;
+- reduce-only dan position mode;
+- rate-limit class serta retry policy;
+- fetch history coverage dan retention.
+
+Policy memiliki version dan effective date. Default capability yang tidak diketahui adalah deny/unsupported untuk tindakan yang berisiko.
+
+### 23.4 Position Ownership & Manual Intervention
+
+Ownership minimal: BOT_SESSION, MANUAL_CONFIRMED, EXTERNAL_UNKNOWN, dan SHARED/CONFLICT bila venue/account tidak dapat memisahkan ownership.
+
+- Jangan menggabungkan manual position/order ke session bot otomatis.
+- Operator intervention wajib menjadi journal event dengan actor, scope, reason, before/after evidence.
+- Perubahan manual pada posisi/order yang terkait bot menandai session sebagai INTERVENTION_DETECTED dan memicu reconciliation.
+- Force close hanya menyentuh resource yang ownership dan scope-nya jelas, kecuali emergency policy eksplisit yang memerlukan konfirmasi.
+- Jika ownership ambigu, HOLD dan eskalasi; jangan menebak.
+
+### 23.5 Adaptive Exit & Unwind Risk Planner
+
+Exit Decision Engine menghasilkan target tindakan; Unwind Planner menentukan urutan dan cara penutupan berdasarkan:
+- net liquidation PnL kedua kaki;
+- executable depth dan expected close slippage;
+- liquidation/margin risk Futures;
+- residual directional exposure jika satu kaki lebih dahulu tertutup;
+- funding/holding cost dan deadline;
+- fee, rate limit, venue health dan order policy;
+- close sequence yang diizinkan strategi.
+
+Bandingkan skenario Spot-first, Futures-first, dan coordinated/near-simultaneous hanya jika didukung venue dan strategi. Pilih skenario dengan batas worst-case exposure yang dapat diterima, bukan sekadar expected PnL tertinggi. Tidak boleh mengubah urutan close existing tanpa parity test dan persetujuan. Partial exit tetap nonaktif kecuali strategi saat ini secara eksplisit mengizinkannya.
+
+### 23.6 Operational Safety & Incident Management
+
+Status sistem global dan per-scope:
+- READY;
+- DEGRADED;
+- ENTRY_PAUSED;
+- PROTECTIVE_ONLY;
+- RECOVERY;
+- HALTED.
+
+Transisi harus memiliki trigger, owner, allowed actions, recovery condition dan audit event. Sinyal pemicu termasuk DB, Redis, private WS, REST, rate limit, clock drift, disk/log pressure, coordinator lease, standby lag, stale balances, reconciliation mismatch dan Telegram command backlog.
+
+Kebijakan:
+- READY bukan hanya process alive; seluruh readiness gates harus lulus.
+- ENTRY_PAUSED melarang exposure baru tetapi memungkinkan monitoring.
+- PROTECTIVE_ONLY hanya mengizinkan tindakan yang telah ditentukan untuk mengurangi risiko dan state-nya dapat diverifikasi.
+- RECOVERY tidak menerima entry sampai startup reconciliation selesai.
+- HALTED memerlukan operator acknowledgement sesuai severity.
+- Jangan otomatis kembali READY hanya karena koneksi pulih; jalankan resync dan reconciliation.
+
+### 23.7 Configuration Versioning & Strategy Snapshot
+
+Setiap session menyimpan snapshot immutable atas:
+- strategy ID/version;
+- fee assumptions/source/version;
+- target profit dan stop policy;
+- maker pegging/aggressive policy;
+- sizing dan capital limits;
+- hedge ratio/tolerance/deadline;
+- exit/unwind policy;
+- venue capability/adapter version;
+- risk limits dan configuration revision.
+
+Perubahan konfigurasi berlaku untuk session baru secara default. Session aktif mempertahankan snapshot awal, kecuali ada explicit migration procedure yang tervalidasi, tercatat, dan disetujui. Telegram config change harus divalidasi, versioned, journaled, dan tidak mengubah session aktif diam-diam.
+
+## 24. P2 tambahan — penguatan dan optimasi bertahap
+
+### 24.1 Historical/Event Replay dan Shadow Validation
+
+Sediakan replay deterministik dari market snapshots, exchange events, fills, fees, funding dan config snapshot. Replay harus dapat:
+- mengulang keputusan ranking/admission/hedge/exit;
+- membandingkan hasil versi lama dan baru;
+- mensimulasikan event duplicate, delayed, missing dan out-of-order;
+- melakukan fault injection pada timeout, DB outage, WS disconnect dan restart;
+- menjalankan shadow decision tanpa mutation.
+
+Replay harus menyimpan versi kode/config dan seed/input agar hasil dapat direproduksi. Shadow mode tidak boleh mempunyai credential permission untuk create/cancel.
+
+### 24.2 Security & Permission Boundary
+
+- Exchange API key tidak memiliki withdrawal permission.
+- Pisahkan credential per account/environment dan batasi IP bila didukung.
+- Secret/token/signature tidak boleh masuk log, exception, event payload, telemetry atau Telegram.
+- Telegram menerapkan RBAC, allowlist, command scope dan confirmation untuk tindakan berisiko.
+- Force-close/cancel-all membutuhkan scope eksplisit, idempotency dan audit.
+- Command memiliki expiry/replay protection.
+- Rotasi key dan revocation diuji.
+- Database role mengikuti least privilege; read path dan mutation path dipisah bila memungkinkan.
+- Incident/security event disimpan dengan akses terbatas.
+
+### 24.3 Economic Performance Analytics
+
+Metrik:
+- opportunities seen/qualified/ranked/accepted;
+- conversion per tahap dan rejection reasons;
+- estimated vs actual entry/exit slippage;
+- gross vs net profit setelah seluruh fee/funding/conversion;
+- hedge latency dan unhedged exposure duration;
+- orphan/mismatch rate;
+- exit decision vs realized outcome;
+- PnL per venue, market, strategy, symbol dan size bucket;
+- failure/rate-limit/unknown submission statistics.
+
+Analytics adalah observability, bukan sumber keputusan trading kecuali model yang menggunakannya melewati validasi dan approval terpisah.
+
+## 25. Integrasi dengan batas order Spot per CEX
+
+Persyaratan operasional: batas maksimum order Spot pending/open harus dapat diatur per CEX melalui Telegram, dengan default awal **2 per CEX**.
+
+Definisi slot:
+- slot dihitung untuk order Spot nonterminal milik bot pada scope account/CEX yang ditentukan;
+- OPEN, PARTIALLY_FILLED, PENDING_SUBMISSION, SUBMISSION_UNKNOWN, CANCEL_PENDING dan status ambigu tetap memegang slot;
+- slot dilepas hanya setelah terminal state dan kemungkinan fill/cancel race direkonsiliasi;
+- order manual tidak dihitung sebagai slot bot, tetapi tetap masuk ownership/discovery dan dapat memblokir admission melalui risk policy;
+- limit berlaku lintas seluruh session yang berbagi account/CEX scope, bukan per process.
+
+Implementasi desain:
+1. Simpan konfigurasi max_spot_open_orders per venue/account scope dengan default 2.
+2. Reservasi slot secara atomik sebelum create intent; unique/locking strategy harus mencegah race antarsession.
+3. Slot reservation mengikat session, leg, intent, exchange order identity dan lifecycle state.
+4. Saat order menjadi terminal, lakukan release idempotent setelah reconciliation.
+5. SUBMISSION_UNKNOWN mempertahankan slot sampai hasil diketahui.
+6. Startup discovery menghitung ulang slot dari order exchange dan registry; mismatch menahan entry.
+7. Perubahan limit melalui Telegram menjadi durable command, RBAC, validasi integer/range, audit log dan config revision.
+8. Menurunkan limit di bawah jumlah order aktif tidak membatalkan order otomatis; sistem masuk limit-overcommitted dan melarang slot baru sampai jumlah turun.
+9. Menaikkan limit tidak boleh melewati portfolio/capital/risk gates lain.
+10. Konfigurasi harus jelas apakah scope per CEX global atau per account. Rekomendasi: per account+CEX, dengan tampilan Telegram yang dapat merangkum total per CEX.
+
+Acceptance:
+- Dua process/session bersamaan tidak dapat melampaui cap.
+- Default 2 diterapkan saat konfigurasi belum tersedia.
+- Setiap CEX dapat memiliki nilai berbeda.
+- Telegram change durable dan survive restart.
+- Pending/unknown/cancel-pending tetap dihitung.
+- Limit turun tidak memicu cancel otomatis.
+- Recovery menemukan slot yang hilang/duplikat dan tidak membuka entry saat hitungan belum pasti.
+
+## 26. Readiness gate dan matriks tindakan
+
+Readiness dihitung per account/venue/market dan global. Status global tidak boleh menutupi satu venue yang degraded.
+
+| Kondisi | Entry baru | Monitoring/read | Protective action |
+|---|---|---|---|
+| READY, semua evidence fresh | Diizinkan setelah admission | Diizinkan | Diizinkan sesuai policy |
+| Market data stale/gap | Ditolak untuk scope terkait | Diizinkan | Hanya bila harga/state alternatif tervalidasi |
+| Private WS down, REST fallback sehat | Sesuai policy dan fallback freshness | Diizinkan | Diizinkan jika state cukup terverifikasi |
+| Balance/position unknown | Ditolak | Resync | Hanya tindakan dengan state terverifikasi |
+| Orphan/ownership conflict | Ditolak pada scope terdampak | Discovery | Tidak auto-adopt/close |
+| Pair hedge drift hard breach | Ditolak; stop adding exposure | Diizinkan | Jalankan hedge repair/unwind policy |
+| Supabase unavailable | Ditolak | Cache/read-only terbatas | Hanya protective exception terverifikasi |
+| Coordinator lease/fencing tidak valid | Ditolak | Standby/recovery | Tidak ada mutation oleh owner stale |
+| Financial mismatch material | Ditolak sesuai scope | Diizinkan | Sesuai incident policy |
+| Capability DEGRADED/DISABLED | Ditolak untuk capability terkait | Diizinkan | Hanya capability yang masih VERIFIED |
+
+Setiap gate mengembalikan machine-readable reason codes, evidence timestamps dan scope. Operator harus dapat melihat mengapa entry dihentikan; tidak cukup hanya menampilkan status merah.
+
+## 27. Penambahan schema konseptual dan invariant
+
+Tambahan konsep schema (nama final harus dicocokkan dengan tabel existing sebelum migration):
+- capital_reservations dan capital_reservation_events;
+- portfolio_limits/account_risk_limits;
+- exchange_capability_profiles dan capability_test_evidence;
+- exchange_discovery_runs dan ownership_classifications;
+- hedge_integrity_snapshots dan hedge_incidents;
+- financial_reconciliation_runs dan reconciliation_differences;
+- market_data_quality_snapshots;
+- execution_cost_estimates dan slippage_observations;
+- venue_order_policies;
+- operator_interventions;
+- system_readiness_snapshots dan incidents;
+- configuration_revisions dan session_config_snapshots;
+- replay_runs dan shadow_decisions;
+- security_audit_events;
+- spot_order_slot_config (atau perluasan konfigurasi yang sudah ada) dan order_slot_reservations.
+
+Invariant lintas domain:
+1. Tidak ada order mutation tanpa durable intent, ownership lease/fencing yang valid, dan admission yang lulus.
+2. Tidak ada capital/slot reservation ganda untuk resource yang sama.
+3. Unknown bukan terminal dan tidak membebaskan modal/slot.
+4. Fill hanya dihitung sekali berdasarkan identitas trade/source yang unik.
+5. Submitted/in-flight quantity bukan filled exposure.
+6. Tidak ada hedge claim tanpa bukti fill/position yang memadai.
+7. Tidak ada close mutation pada ownership yang ambigu.
+8. Tidak ada entry jika pair economics, balance, market data atau capability berada di luar threshold.
+9. Ledger finansial immutable; koreksi memakai adjustment beralasan.
+10. Semua command/operator intervention memiliki actor, scope, idempotency dan hasil terverifikasi.
+
+## 28. Tahapan implementasi yang diperbarui dan gerbang kelulusan
+
+Urutan rekomendasi:
+- **Tahap A — audit kontrak dan source**: petakan schema existing, ownership setiap state, semua private mutation path, adapter capability, caller dan regression tests. Hasil wajib berupa matriks KEEP/MODIFY/REUSE/NEW per file/fungsi; belum ada perubahan kode.
+- **Tahap B — safety foundation**: readiness state, ownership classification, capability profile, capital reservation, slot reservation dan fencing. Tidak boleh lanjut ke live mutation sebelum race/restart tests lulus.
+- **Tahap C — durable lifecycle**: inbox/outbox, order intent/registry, event/fill dedupe, orphan discovery dan startup/periodic reconciliation.
+- **Tahap D — two-leg integrity**: leg managers, hedge obligation, hedge drift, deadline dan protective policy.
+- **Tahap E — financial truth**: fee/funding/FX ledger, financial reconciliation, Pair PnL dan net liquidation.
+- **Tahap F — exit/unwind**: exit decision dan unwind planner dengan replay parity; partial exit tetap mengikuti strategi existing.
+- **Tahap G — operator/operations**: Telegram durable commands, RBAC, configuration revision, incident workflow dan analytics.
+- **Tahap H — replay/shadow/paper**: historical replay, deterministic fault injection, shadow compare dan paper validation.
+- **Tahap I — controlled LIVE**: per-CEX capability VERIFIED, per-scope flags, one writer, explicit operator sign-off, rollback rehearsal.
+
+Tidak boleh melewati gerbang hanya karena CI hijau. LIVE readiness memerlukan bukti gabungan: unit/integration/contract tests, SQL migration smoke, crash/restart matrix, concurrency/race tests, adapter evidence, paper/shadow report, dan operator approval. Setiap tahap harus memiliki commit kecil dan rollback boundary sendiri.
+
+## 29. Keputusan desain yang masih perlu dikunci
+
+Tambahan pertanyaan untuk review sebelum implementation specification:
+1. Batas modal: apakah limit utama ditetapkan per account, per CEX, per asset, per strategy, dan total portfolio sekaligus? Rekomendasi: dukung seluruh scope dengan inheritance; nilai paling ketat berlaku.
+2. Spot order cap: rekomendasi default 2 per account+CEX; konfirmasi apakah akun berbeda pada CEX yang sama harus memiliki cap terpisah.
+3. Ownership manual: rekomendasi tidak auto-adopt dan tidak auto-close; hanya operator/policy eksplisit yang dapat mengubah klasifikasi.
+4. Hedge drift: tetapkan toleransi berbasis quantity dan notional per instrument setelah contract size dan lot-size diverifikasi.
+5. Incident recovery: tentukan siapa yang berhak mengakui incident dan mengembalikan HALTED ke READY.
+6. Reporting currency dan cost basis tetap mengikuti pertanyaan pada bagian 19; jangan mengunci asumsi sebelum review.
+7. Replay data retention dan security audit retention perlu ditentukan sesuai kebutuhan operasional dan biaya.
+
