@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
+import hmac
+import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
@@ -304,6 +307,101 @@ class GlobalStopService:
                 client_order_id, str(evidence)[:2000],
             )
 
+
+    async def resolve_submit_attempt_signed(
+        self, envelope: dict, *, secret: str, max_age_seconds: int = 300
+    ) -> dict:
+        """Apply an operator-authenticated resolution with replay protection.
+
+        The operator signs the canonical JSON payload with the out-of-band
+        HMAC key. A resolution always requires two independent evidence
+        references; a venue lookup returning NOT_FOUND is never sufficient.
+        """
+        self._require_pool()
+        if not isinstance(envelope, dict) or not isinstance(envelope.get("payload"), dict):
+            raise GlobalStopError("signed operator resolution payload is required")
+        if not secret or len(secret.encode("utf-8")) < 32:
+            raise GlobalStopError("OPERATOR_RESOLUTION_HMAC_SECRET must be at least 32 bytes")
+        payload = envelope["payload"]
+        signature = str(envelope.get("signature") or "").lower()
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        expected = hmac.new(secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise GlobalStopError("operator resolution signature is invalid")
+        try:
+            issued_at = int(payload["issued_at"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise GlobalStopError("operator resolution issued_at is invalid") from exc
+        if abs(int(time.time()) - issued_at) > max(1, min(int(max_age_seconds), 600)):
+            raise GlobalStopError("operator resolution signature is expired or not yet valid")
+
+        client_id = str(payload.get("client_order_id") or "").strip()
+        operator = str(payload.get("operator_id") or "").strip()
+        nonce = str(payload.get("nonce") or "").strip()
+        decision = str(payload.get("decision") or "").strip().upper()
+        evidence_a = str(payload.get("venue_evidence_ref") or "").strip()
+        evidence_b = str(payload.get("independent_evidence_ref") or "").strip()
+        order_id = str(payload.get("exchange_order_id") or "").strip()
+        rationale = str(payload.get("rationale") or "").strip()
+        if not all((client_id, operator, nonce, evidence_a, evidence_b, rationale)):
+            raise GlobalStopError("operator, attempt, nonce, two evidence references and rationale are required")
+        if evidence_a == evidence_b:
+            raise GlobalStopError("venue and independent evidence must be distinct")
+        if len(nonce) > 128 or len(operator) > 160 or len(evidence_a) > 1000 or len(evidence_b) > 1000:
+            raise GlobalStopError("operator resolution fields exceed their limits")
+        decisions = {
+            "FOUND": ("ACKNOWLEDGED", order_id),
+            "DEFINITIVE_REJECTION": ("REJECTED", ""),
+            "PROVEN_NOT_SUBMITTED": ("ABORTED", ""),
+        }
+        if decision not in decisions:
+            raise GlobalStopError("decision must be FOUND, DEFINITIVE_REJECTION, or PROVEN_NOT_SUBMITTED")
+        target_status, _ = decisions[decision]
+        if decision == "FOUND" and not order_id:
+            raise GlobalStopError("FOUND resolution requires the exact venue order id")
+        payload_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        venue_response = None
+        if decision == "FOUND":
+            venue_response = {
+                "id": order_id, "manual_resolution": True,
+                "venue_evidence_ref": evidence_a,
+                "independent_evidence_ref": evidence_b,
+            }
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("select pg_advisory_xact_lock($1)", FENCE_LOCK_KEY)
+                row = await conn.fetchrow(
+                    "select status from public.executor_submit_attempts "
+                    "where client_order_id=$1 for update", client_id,
+                )
+                if row is None or row["status"] not in ("SUBMITTING", "UNKNOWN"):
+                    raise GlobalStopError("attempt is missing or no longer unresolved")
+                await conn.execute(
+                    "insert into public.executor_submit_resolution_audit "
+                    "(client_order_id, operator_id, decision, venue_evidence_ref, "
+                    "independent_evidence_ref, rationale, nonce, signed_payload_sha256) "
+                    "values ($1,$2,$3,$4,$5,$6,$7,$8)",
+                    client_id, operator, decision, evidence_a, evidence_b,
+                    rationale[:2000], nonce, payload_hash,
+                )
+                result = await conn.execute(
+                    "update public.executor_submit_attempts set status=$2, "
+                    "exchange_order_id=case when $3='' then exchange_order_id else $3 end, "
+                    "venue_response=case when $4::jsonb is null then venue_response else $4::jsonb end, "
+                    "last_error=$5, resolved_at=now(), updated_at=now() "
+                    "where client_order_id=$1 and status in ('SUBMITTING','UNKNOWN')",
+                    client_id, target_status, order_id,
+                    json.dumps(venue_response, separators=(",", ":")) if venue_response else None,
+                    ("operator resolution: " + rationale)[:2000],
+                )
+                if result.endswith(" 0"):
+                    raise GlobalStopError("attempt changed during operator resolution")
+        return {
+            "client_order_id": client_id, "status": target_status,
+            "operator_id": operator, "decision": decision,
+            "signed_payload_sha256": payload_hash,
+        }
 
     async def request_stop(
         self, reason: str, *, source: str, metadata: Optional[dict] = None
