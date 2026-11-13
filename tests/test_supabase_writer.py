@@ -926,3 +926,46 @@ def test_order_registry_raw_payload_is_json_object():
     assert payload["raw_payload"]["recovery_context"]["capacity_account_scope"] == "indodax:main"
 
 
+
+
+def test_order_registry_parent_preserves_first_terminal_timestamp():
+    writer = _writer()
+    base = {
+        "exchange_name": "indodax",
+        "market_type": "spot",
+        "order_role": "ENTRY",
+        "symbol": "btc_idr",
+        "side": "buy",
+        "pair_key": "indodax:btc_idr",
+        "client_order_id": "client-registry-1",
+        "is_mock": False,
+        "original_quantity": 1.0,
+        "filled_quantity": 0.0,
+    }
+    assert writer.order_record({
+        **base,
+        "local_order_id": "local-registry-1",
+        "status": "open",
+        "created_at": 1_700_000_000_000,
+    }) is True
+    first = [row for table, _, row in _drain(writer) if table == "orders"][0]
+
+    assert writer.order_record({
+        **base,
+        "local_order_id": "local-registry-1",
+        "status": "canceled",
+        "created_at": 1_700_000_000_000,
+    }) is True
+    terminal = [row for table, _, row in _drain(writer) if table == "orders"][0]
+    assert terminal["submitted_at"] == first["submitted_at"]
+    assert terminal["completed_at"] is not None
+
+    assert writer.order_record({
+        **base,
+        "local_order_id": "local-registry-1",
+        "status": "open",
+        "created_at": 1_700_000_000_000,
+    }) is True
+    reopened = [row for table, _, row in _drain(writer) if table == "orders"][0]
+    assert reopened["submitted_at"] == first["submitted_at"]
+    assert reopened["completed_at"] == terminal["completed_at"]
