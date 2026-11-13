@@ -340,6 +340,14 @@ declare
     active_count integer;
     capital_value numeric;
 begin
+    select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
+      into accepted_value, returned_id, reason_value, active_count, capital_value
+      from public.reserve_execution_capacity(
+        'schema-smoke-account', 'indodax', 'schema-smoke-unconfigured', 'schema-smoke-order-unconfigured', 10, null
+      );
+    if accepted_value or reason_value <> 'capital_limit_not_configured' then
+        raise exception 'live capacity reservation was accepted without a capital limit';
+    end if;
     perform public.set_execution_capacity_config('schema-smoke-account', 'indodax', 2, 100);
     select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
       into accepted_value, first_id, reason_value, active_count, capital_value
