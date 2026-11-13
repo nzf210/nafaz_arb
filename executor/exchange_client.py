@@ -191,7 +191,22 @@ BALANCE_MARKETS = {
 }
 
 
+def validate_runtime_venue_pair(local_name: str, global_name: str) -> None:
+    """Reject unsupported or wrong-market venue combinations before LIVE clients start."""
+    local_key = str(local_name or "").strip().lower()
+    global_key = str(global_name or "").strip().lower()
+    if local_key not in BALANCE_MARKETS:
+        raise ValueError(f"unsupported local venue: {local_name!r}; supported venues: {sorted(BALANCE_MARKETS)}")
+    if global_key not in BALANCE_MARKETS:
+        raise ValueError(f"unsupported global venue: {global_name!r}; supported venues: {sorted(BALANCE_MARKETS)}")
+    if BALANCE_MARKETS[local_key] != "spot":
+        raise ValueError(f"local venue {local_key} is not configured for spot execution")
+    if BALANCE_MARKETS[global_key] != "futures":
+        raise ValueError(f"global venue {global_key} is not configured for futures execution")
+
+
 def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds, configured_exchanges=None) -> ExchangeClient:
+    validate_runtime_venue_pair(local_name, global_name)
     """Create the active trading pair clients and independent read-only balance clients."""
     local_ex = init_local_exchange(local_name, local_creds, default_type="spot")
     global_ex = init_ccxt_exchange(global_name, global_creds, default_type="future")
