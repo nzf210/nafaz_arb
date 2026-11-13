@@ -225,8 +225,7 @@ class ConfigInvalidationConsumer:
             raise ConfigSnapshotError("config invalidation event_key is required")
         return data
 
-    async def handle_event(self, message: Any) -> ConfigSnapshot:
-        event = self._parse_event(message)
+    async def reload_authoritative(self) -> ConfigSnapshot:
         # Serialize reloads within this process. Duplicate/out-of-order events are
         # harmless because the authoritative active pointer is read each time.
         async with self._reload_lock:
@@ -236,22 +235,57 @@ class ConfigInvalidationConsumer:
                 await self._registry.acknowledge(config)
                 return config
             except Exception as exc:
-                await self._registry.mark_degraded(exc)
+                try:
+                    await self._registry.mark_degraded(exc)
+                except Exception:
+                    logger.error("could not persist degraded consumer state")
                 raise
 
-    async def run(self, redis_client: Any, *, stop_event: Optional[asyncio.Event] = None) -> None:
-        """Consume Redis Pub/Sub; caller owns heartbeat scheduling and shutdown."""
+    async def handle_event(self, message: Any) -> ConfigSnapshot:
+        self._parse_event(message)
+        # Event contents are deliberately not used to construct a config snapshot.
+        return await self.reload_authoritative()
+
+    async def run(
+        self,
+        redis_client: Any,
+        *,
+        stop_event: Optional[asyncio.Event] = None,
+        heartbeat_interval: float = 5.0,
+        reconcile_interval: float = 10.0,
+    ) -> None:
+        """Consume hints and periodically reconcile to recover missed Pub/Sub events."""
+        if heartbeat_interval <= 0 or reconcile_interval <= 0:
+            raise ValueError("heartbeat_interval and reconcile_interval must be positive")
         pubsub = redis_client.pubsub()
         await pubsub.subscribe(CONFIG_EVENTS_CHANNEL)
+        loop = asyncio.get_running_loop()
+        next_heartbeat = loop.time() + heartbeat_interval
+        next_reconcile = loop.time() + reconcile_interval
         try:
+            await self._registry.heartbeat()
+            # A fresh process must load and acknowledge before it can count as converged.
+            await self.reload_authoritative()
             while stop_event is None or not stop_event.is_set():
+                now = loop.time()
+                if now >= next_heartbeat:
+                    try:
+                        await self._registry.heartbeat()
+                    except Exception as exc:
+                        logger.error("config consumer heartbeat failed error_type=%s", type(exc).__name__)
+                    next_heartbeat = now + heartbeat_interval
+                if now >= next_reconcile:
+                    try:
+                        await self.reload_authoritative()
+                    except Exception as exc:
+                        logger.error("periodic config reconciliation failed error_type=%s", type(exc).__name__)
+                    next_reconcile = now + reconcile_interval
                 item = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                if not item:
-                    continue
-                try:
-                    await self.handle_event(item.get("data"))
-                except Exception as exc:
-                    logger.error("config invalidation reload failed error_type=%s", type(exc).__name__)
+                if item:
+                    try:
+                        await self.handle_event(item.get("data"))
+                    except Exception as exc:
+                        logger.error("config invalidation reload failed error_type=%s", type(exc).__name__)
         finally:
             await pubsub.unsubscribe(CONFIG_EVENTS_CHANNEL)
             close = getattr(pubsub, "aclose", None) or getattr(pubsub, "close", None)
