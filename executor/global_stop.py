@@ -210,6 +210,13 @@ class GlobalStopService:
             venue_response=None, error=str(error)[:2000],
         )
 
+    async def mark_submit_aborted(self, client_order_id: str, reason: str) -> None:
+        """Retire an intent proven not to have crossed the venue HTTP boundary."""
+        await self._update_submit_attempt(
+            client_order_id, "ABORTED", exchange_order_id=None,
+            venue_response=None, error=str(reason)[:2000],
+        )
+
     async def mark_submit_unknown(self, client_order_id: str, error: str) -> None:
         """Annotate an ambiguous attempt; if DB is down SUBMITTING remains blocking."""
         await self._update_submit_attempt(
@@ -222,15 +229,15 @@ class GlobalStopService:
         venue_response: Optional[dict], error: Optional[str],
     ) -> None:
         self._require_pool()
-        if status not in {"ACKNOWLEDGED", "REJECTED", "UNKNOWN"}:
+        if status not in {"ACKNOWLEDGED", "REJECTED", "UNKNOWN", "ABORTED"}:
             raise ValueError("invalid submit-attempt transition")
         async with self.pool.acquire() as conn:
             result = await conn.execute(
                 "update public.executor_submit_attempts set status=$2, "
                 "exchange_order_id=coalesce($3, exchange_order_id), "
                 "venue_response=case when $4::jsonb is null then venue_response else $4::jsonb end, "
-                "last_error=$5, resolved_at=case when $2 in ('ACKNOWLEDGED','REJECTED') then now() else null end, "
-                "updated_at=now() where client_order_id=$1 and status in ('SUBMITTING','UNKNOWN')",
+                "last_error=$5, resolved_at=case when $2 in ('ACKNOWLEDGED','REJECTED','ABORTED') then now() else null end, "
+                "updated_at=now() where client_order_id=$1 and status in ('PREPARED','SUBMITTING','UNKNOWN')",
                 client_order_id, status, exchange_order_id,
                 json.dumps(venue_response, separators=(",", ":"), default=str) if venue_response is not None else None,
                 error,
