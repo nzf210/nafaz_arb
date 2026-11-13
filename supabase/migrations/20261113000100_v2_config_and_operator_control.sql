@@ -146,7 +146,7 @@ revoke all on public.config_versions, public.active_config_version,
     public.config_audit_log, public.operator_control_state,
     public.operator_actions, public.outbox_events from public;
 
-do $
+do $grant$
 begin
     if exists (select 1 from pg_roles where rolname = 'anon') then
         execute 'revoke all on public.config_versions, public.active_config_version, public.config_audit_log, public.operator_control_state, public.operator_actions, public.outbox_events from anon';
@@ -160,7 +160,7 @@ begin
         execute 'grant usage, select on sequence public.config_audit_log_audit_id_seq, public.operator_actions_action_id_seq, public.outbox_events_event_id_seq to service_role';
     end if;
 end;
-$;
+$grant$;
 
 -- This schema deliberately starts the trading gate closed. Runtime services must
 -- claim/update it through a transaction that records operator_actions and outbox.
