@@ -247,3 +247,15 @@ Exit limit SELL is intentionally not subject to the entry Global STOP fence. How
 - Force-close futures BUY reduceOnly memverifikasi posisi futures flat sebelum melanjutkan spot liquidation. Pada retry, ia membaca posisi aktual terlebih dahulu dan melewati close bila sudah flat. Namun, jika order close sebelumnya diterima tetapi posisi API masih stale/non-zero, jalur retry dapat mengirim close reduceOnly baru dengan client ID baru; exact-client-ID lookup terhadap attempt sebelumnya belum dilakukan.
 - Karena reduceOnly=True dan fungsi utamanya mengurangi short, jalur ini tidak dimasukkan ke entry STOP fence. Tetap OPEN untuk audit idempotensi/venue pending-order semantics dan penyimpanan client ID close yang bisa direkonsiliasi. Jangan mengubahnya menjadi entry fence tanpa analisis risiko yang eksplisit.
 - Cancel/replace spot exit sudah menunggu order lama mencapai status terminal dan menerapkan fill sebelum membuat replacement; jika cancel/status lookup inconclusive, replacement diblokir.
+
+
+## 12. Latest hardening status — 2026-11-13
+
+- [x] HMAC-signed operator resolution implemented with bounded timestamp, unique nonce, exact attempt-state precondition, two distinct evidence references, atomic row transition and append-only audit.
+- [x] CLI entry point added: `python -m executor.operator_resolution --envelope <signed-envelope.json>`. Requires `POSTGRES_DSN` and `OPERATOR_RESOLUTION_HMAC_SECRET` supplied from a secret manager.
+- [x] Real PostgreSQL multi-process test added: executor killed during a fake venue request; peer must remain blocked by durable SUBMITTING.
+- [x] Fake delayed-visibility and pending reduce-only fixtures added for Indodax, Tokocrypto, MEXC and OKX.
+- [ ] Wait for CI run after the dependency/Python-version correction to pass the new PostgreSQL integration job.
+- [ ] Real per-venue sandbox/paper contract probes remain required; fake fixtures do not prove venue-side eventual consistency.
+- [ ] R-26 remains OPEN: force-close reduceOnly close can still be resubmitted under a new client ID after a stale position read. Keep LIVE gate closed until stable close intent and exact-ID recovery are implemented.
+- [ ] HMAC is a shared-secret operator authentication mechanism, not SSO/OIDC. Secret rotation/custody and operator provisioning must be completed by deployment owners.
