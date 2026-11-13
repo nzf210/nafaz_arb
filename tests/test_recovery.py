@@ -28,6 +28,9 @@ class _ReadyJournalStub:
     async def close(self):
         return None
 
+    async def fetch_active_risk_states(self, is_mock=False):
+        return []
+
     def __getattr__(self, _name):
         return lambda *args, **kwargs: True
 
@@ -635,6 +638,7 @@ async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redi
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
     )
+    _use_ready_test_journal(engine)
     await engine.initialize()
 
     assert engine.states["indodax:btc_idr"] == PositionState.RECONCILIATION_REQUIRED
