@@ -7,6 +7,7 @@ import time
 from executor.models import OrderRole, PositionState
 from executor.helpers import build_client_order_id
 from executor.engine_common import logger
+from executor.global_stop import GlobalStopError
 
 
 class EngineEntrySubmissionMixin:
@@ -128,6 +129,11 @@ class EngineEntrySubmissionMixin:
         )
 
     @staticmethod
+    def _is_explicit_ip_ban(normalized_error: str) -> bool:
+        markers = ("http_418", "status code 418", "ip banned", "ip address banned", "banned until")
+        return any(marker in normalized_error for marker in markers)
+
+    @staticmethod
     def _entry_failure_reason(normalized_error: str) -> str:
         markers = {
             "INSUFFICIENT_BALANCE": (
@@ -158,6 +164,45 @@ class EngineEntrySubmissionMixin:
         ):
             self.client.unlock_funds(actual_cost_usdt, actual_cost_usdt)
         exchange_error, normalized_error = self._entry_error_text(exc)
+        if self._is_explicit_ip_ban(normalized_error):
+            reason = "CEX_IP_BLOCK"
+            stop_error = None
+            if self.global_stop is not None:
+                try:
+                    await self.global_stop.request_stop(
+                        reason, source="exchange:" + str(pair_info.local_exchange),
+                        metadata={
+                            "exchange": pair_info.local_exchange,
+                            "symbol": pair_info.local_symbol,
+                            "error_type": type(exc).__name__,
+                            "exchange_error": exchange_error[:1000],
+                        },
+                    )
+                except Exception as persist_exc:
+                    stop_error = persist_exc
+            self._halt_exposure_scope("*", "CEX IP block: " + str(pair_info.local_exchange))
+            self._refresh_entry_gate()
+            logger.critical(
+                "CEX IP block detected on %s; local admission closed%s",
+                pair_info.local_exchange,
+                " and durable global STOP persisted" if self.global_stop is not None and stop_error is None else "",
+            )
+            if stop_error is not None:
+                logger.critical("CRITICAL: PostgreSQL global STOP persistence failed: %s", stop_error)
+            await self._publish_execution_failure(
+                pair_tag, reason,
+                "Venue mengindikasikan IP diblokir; admission entry ditutup. "
+                + ("STOP global tersimpan di PostgreSQL." if self.global_stop is not None and stop_error is None else "STOP global belum terkonfirmasi di PostgreSQL."),
+                detail={
+                    "exchange": pair_info.local_exchange,
+                    "symbol": pair_info.local_symbol,
+                    "error_type": type(exc).__name__,
+                    "exchange_error": exchange_error[:1000],
+                    "global_stop_persisted": self.global_stop is not None and stop_error is None,
+                },
+            )
+            return
+
         if self._is_entry_rate_limited(exc, normalized_error):
             cooldown = float(
                 getattr(exc, "retry_after", None)
@@ -218,6 +263,7 @@ class EngineEntrySubmissionMixin:
             "min_notional", "minimum notional", "invalid symbol",
             "unknown symbol", "market is not available",
             "does not have trading permission", '"code":"50123"',
+            "http_418", "status code 418", "ip banned", "ip address banned", "banned until",
         )
         return error_name in definitive_types or any(
             marker in error_text for marker in definitive_messages
@@ -263,15 +309,28 @@ class EngineEntrySubmissionMixin:
                 global_amount_spec=pair_info.global_amount_spec,
                 recovery_context=recovery_context,
             )
-            submission_started = True
             try:
-                order = await self.client.place_local_limit_buy(
-                    pair_info.local_symbol,
-                    buy_qty,
-                    exchange_order_price,
-                    client_order_id=entry_coid,
-                    amount_spec=pair_info.local_amount_spec,
-                )
+                if self.global_stop is not None:
+                    async with self.global_stop.order_submit_fence(client_order_id=entry_coid):
+                        submission_started = True
+                        order = await self.client.place_local_limit_buy(
+                            pair_info.local_symbol,
+                            buy_qty,
+                            exchange_order_price,
+                            client_order_id=entry_coid,
+                            amount_spec=pair_info.local_amount_spec,
+                        )
+                else:
+                    # Compatibility mode only: cross-instance fencing is inactive
+                    # until POSTGRES_DSN is configured on every executor instance.
+                    submission_started = True
+                    order = await self.client.place_local_limit_buy(
+                        pair_info.local_symbol,
+                        buy_qty,
+                        exchange_order_price,
+                        client_order_id=entry_coid,
+                        amount_spec=pair_info.local_amount_spec,
+                    )
             except Exception as submit_error:
                 if self._is_definitive_order_rejection(submit_error):
                     submission_started = False
