@@ -224,8 +224,53 @@ class RiskFundingMixin:
         if avail_fut < required:
             missing.append(f"futures ${avail_fut:.2f} < ${required:.2f}")
         if not missing:
+            try:
+                venue_client = self.client
+                resolver = getattr(venue_client, "for_venue", None)
+                if callable(resolver):
+                    venue_client = resolver(str(getattr(pair_info, "global_exchange", "") or ""))
+                leverage_fetcher = getattr(venue_client, "fetch_leverage", None)
+                if not callable(leverage_fetcher):
+                    raise RuntimeError("authenticated futures leverage lookup is unavailable")
+                leverage_info = await leverage_fetcher(
+                    str(getattr(pair_info, "global_symbol", "") or "")
+                )
+                if not isinstance(leverage_info, dict):
+                    raise ValueError("futures leverage response is malformed")
+                raw_leverage = leverage_info.get("shortLeverage")
+                if raw_leverage is None:
+                    raw_leverage = leverage_info.get("leverage")
+                if raw_leverage is None:
+                    raise ValueError("short leverage is missing from futures account response")
+                leverage = float(raw_leverage)
+                if not math.isfinite(leverage) or abs(leverage - 1.0) > 1e-9:
+                    raise ValueError(f"futures short leverage is {leverage}; executor requires 1x")
+            except Exception as exc:
+                exchange = str(getattr(pair_info, "global_exchange", "") or "")
+                reason = f"futures leverage unavailable or unsafe: {exc}"
+                self._exchange_halted[exchange] = reason
+                persist = getattr(self, "_persist_risk_state", None)
+                if callable(persist):
+                    await persist(
+                        "exchange_halt",
+                        scope="exchange",
+                        exchange=exchange,
+                        reason=reason,
+                        value={"source": "futures_leverage_preflight"},
+                    )
+                logger.error(
+                    "[State 1 Funding Preflight] rejecting %s: %s",
+                    pair_tag, reason,
+                )
+                await self._publish_execution_failure(
+                    pair_tag,
+                    "UNSAFE_FUTURES_LEVERAGE",
+                    "Leverage Futures tidak dapat diverifikasi pada 1x; entry dihentikan.",
+                    detail={"exchange": exchange, "error": str(exc)},
+                )
+                return False
             logger.debug(
-                f"[State 1 Funding Preflight] {pair_tag} funded: "
+                f"[State 1 Funding Preflight] {pair_tag} funded at 1x: "
                 f"spot=${avail_spot:.2f} futures=${avail_fut:.2f} required=${required:.2f}"
             )
             return True
