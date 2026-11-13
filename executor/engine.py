@@ -104,9 +104,9 @@ class ArbitrageEngine(
         self._running = False
         self._startup_time_ms = int(time.time() * 1000)
         self.ARB_TRADE_EVENTS = "arb:trade_events"
-        # Seeded from wall-clock so client order ids stay unique across restarts;
-        # a zero-based counter could regenerate ids used by a previous process.
-        self._order_seq = int(time.time()) % 1_000_000_000
+        # Seeded at nanosecond resolution to reduce client-order-id collisions
+        # between replicas starting in the same wall-clock second.
+        self._order_seq = int(time.time_ns() % 1_000_000_000)
         # Populated only when private_stream_enabled is set; None keeps the
         # engine on pure REST polling.
         self.private_stream: Optional[PrivateStreamCache] = None
