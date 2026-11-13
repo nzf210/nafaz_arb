@@ -318,7 +318,7 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 	defer mexcSpotServer.Close()
 
 	adapter := NewLiveAdapter()
-	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL)
+	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL, tokoServer.URL, tokoServer.URL)
 
 	// Tokocrypto spot depth
 	tbook, err := adapter.SpotOrderBook(context.Background(), "toko:BTC_USDT")
@@ -361,5 +361,47 @@ func TestMatchMarketsMultiplePerpExchanges(t *testing.T) {
 	pairs := MatchMarkets(spot, perp, []string{"USDT"})
 	if len(pairs) != 4 {
 		t.Fatalf("expected 4 matched pairs (2 spot * 2 perp), got %d", len(pairs))
+	}
+}
+
+// Tokocrypto symbol type is authoritative: MAIN and NextMe use different
+// market-data hosts and paths. Unknown/legacy types fail closed.
+func TestTokocryptoSymbolTypeThreeUsesNextMeDepth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/open/v1/common/symbols":
+			w.Write([]byte(`{"code":0,"data":{"list":[{"type":3,"symbol":"SOL_IDR","baseAsset":"SOL","quoteAsset":"IDR","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"}]}]}}`))
+		case "/api/v1/depth":
+			if r.URL.Query().Get("symbol") != "SOLIDR" { t.Errorf("unexpected NextMe symbol: %s", r.URL.Query().Get("symbol")) }
+			w.Write([]byte(`{"lastUpdateId":12,"E":1762758825812,"T":1762758825807,"symbol":"SOLIDR","bids":[["100","2"]],"asks":[["101","3"]]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", "", "", "", server.URL, server.URL, server.URL)
+	markets, err := adapter.SpotMarkets(context.Background())
+	if err != nil { t.Fatalf("SpotMarkets: %v", err) }
+	if len(markets) != 1 || markets[0].SymbolType != 3 { t.Fatalf("expected symbol type 3 metadata, got %+v", markets) }
+	book, err := adapter.SpotOrderBook(context.Background(), "toko:SOL_IDR")
+	if err != nil { t.Fatalf("NextMe order book: %v", err) }
+	if book.Source != "exchange_timestamp" || book.Timestamp.UnixMilli() != 1762758825812 {
+		t.Fatalf("expected exchange event timestamp, got %+v", book)
+	}
+}
+
+func TestTokocryptoUnknownSymbolTypeFailsClosed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":0,"data":{"list":[{"type":2,"symbol":"ABC_USDT","baseAsset":"ABC","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"1","minQty":"1"}]}]}}`))
+	}))
+	defer server.Close()
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", "", "", "", server.URL, server.URL, server.URL)
+	if _, err := adapter.SpotOrderBook(context.Background(), "toko:ABC_USDT"); err == nil {
+		t.Fatal("expected unknown Tokocrypto symbol type to fail closed")
 	}
 }
