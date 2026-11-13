@@ -255,7 +255,26 @@ class OrderRegistryStorageMixin:
         try:
             local_id = await self.redis.hget(index_key, field)
         except Exception:
-            logger.exception("[OrderRegistry] lookup failed for %s", field)
+            logger.exception("[OrderRegistry] Redis lookup failed for %s; consulting durable journal", field)
+            reader = getattr(self.supabase, "fetch_open_order_records", None)
+            if not callable(reader):
+                raise RuntimeError(
+                    f"order registry lookup is inconclusive for {field}: Redis unavailable "
+                    "and durable reader is not configured"
+                )
+            durable_records = await self._durable_active_records()
+            for record in durable_records.values():
+                if index_key == ORDER_BY_CLIENT_ID_KEY:
+                    matches_field = order_cid_field(record.exchange, record.client_order_id) == field
+                elif index_key == ORDER_BY_EXCHANGE_ID_KEY:
+                    matches_field = order_xid_field(record.exchange, record.exchange_order_id) == field
+                else:
+                    matches_field = record.local_order_id == field
+                if matches_field:
+                    self.records[record.local_order_id] = record
+                    return record
+            # A successful full active-record read is authoritative for the
+            # active journal; no active intent matches this index.
             return None
         if not local_id:
             if isinstance(local_id, bytes):
