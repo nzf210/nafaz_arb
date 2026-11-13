@@ -1410,3 +1410,17 @@ Branch \`feat/v2-bootstrap-config-stop-fencing\` menambahkan implementasi awal b
 - Jalur hedge/exit/de-risking tidak dimasukkan ke entry STOP gate agar exposure yang sudah terbentuk tetap dapat di-hedge atau dikurangi. Semua jalur pembuka exposure lain masih harus diaudit dan difence sebelum cutover.
 
 Status: fondasi awal, **belum LIVE-certified**. Belum ada heartbeat/lease generation PostgreSQL, config runtime PostgreSQL, audit journal append-only, operator API yang terotorisasi, adapter classifier per venue yang lengkap, maupun integration race test multi-instance. Referensi acceptance gate: [V2 Bootstrap/STOP checklist](./V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md).
+
+
+## 15. Durable in-flight submit ledger dan restart reconciliation
+
+Implementasi lanjutan pada branch ini menambahkan:
+
+- Migration \`20261113000200_add_durable_submit_attempts.sql\` membuat \`executor_submit_attempts\`, dengan status \`PREPARED\`, \`SUBMITTING\`, \`UNKNOWN\`, \`ACKNOWLEDGED\`, \`REJECTED\`, dan \`ABORTED\`.
+- Sebelum HTTP create-order, executor menulis \`PREPARED\` ke PostgreSQL. Di bawah session-level advisory lock yang sama, ia memeriksa Global STOP dan unresolved attempt lain, lalu mengubah row menjadi \`SUBMITTING\` dan commit **sebelum** melewati batas HTTP.
+- Session lock ditahan selama request venue. Jika koneksi/proses mati, PostgreSQL melepaskan session lock tetapi row \`SUBMITTING\` tetap durable. Instance lain melihat row tersebut dan menolak entry baru.
+- Acknowledgement positif mengubah row menjadi \`ACKNOWLEDGED\`; rejection venue yang definitif menjadi \`REJECTED\`; intent yang terbukti belum pernah melewati batas HTTP menjadi \`ABORTED\`. Timeout/transport ambiguity menjadi \`UNKNOWN\` jika database masih tersedia; bila tidak, row tetap \`SUBMITTING\`.
+- Saat startup, executor mencari setiap unresolved attempt menggunakan exact client order ID pada venue yang tercatat. Order yang ditemukan diadopsi sebagai \`ACKNOWLEDGED\`. Hasil lookup "not found" atau lookup yang gagal **tidak** membebaskan gate karena endpoint venue dapat eventually consistent; entry tetap diblokir untuk rekonsiliasi manual.
+- Tidak ada automatic resubmit untuk \`SUBMITTING\`/\`UNKNOWN\`. Redis tidak digunakan sebagai sumber kebenaran ledger.
+
+**Batas penting:** Ini masih fondasi konservatif. Belum ada prosedur operator terotorisasi untuk menyelesaikan unresolved attempt setelah bukti venue independen, dan belum ada real PostgreSQL multi-process fault-injection test. Implementasi spot-entry ini juga belum membuktikan seluruh jalur create-order lain telah memakai ledger yang sama. Jangan LIVE-cutover sebelum dua hal itu ditutup.
