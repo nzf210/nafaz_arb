@@ -49,6 +49,31 @@ class MutationGatewayClient:
         target = getattr(self._client, name)
         if name in {"local", "global_fut"} and target is not None:
             return ReadOnlyExchangeProxy(target)
+        if name == "balance_exchanges" and isinstance(target, dict):
+            # ExchangeClient keeps raw venue instances in this registry for
+            # read-only balance/report methods. Never leak those instances to
+            # callers: they would otherwise bypass the mutation gateway.
+            protected = {}
+            for venue, entry in target.items():
+                if isinstance(entry, dict):
+                    item = dict(entry)
+                    if item.get("client") is not None:
+                        item["client"] = ReadOnlyExchangeProxy(item["client"])
+                    protected[venue] = item
+                else:
+                    protected[venue] = entry
+            return protected
+        if name in {"for_pair", "for_venue"} and callable(target):
+            # These ExchangeClient factories return fresh facades containing
+            # raw CCXT clients. Re-wrap the returned facade before exposing it.
+            def bind(*args, **kwargs):
+                bound = target(*args, **kwargs)
+                if bound is None:
+                    return None
+                return MutationGatewayClient(
+                    bound, self._coordinator, self._registry, self._config
+                )
+            return bind
         mutation_contract = _MUTATION_METHODS.get(name)
         if mutation_contract is None or not callable(target):
             return target
