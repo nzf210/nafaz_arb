@@ -1,0 +1,241 @@
+# Nafazbot V2 — Multi-CEX Configuration Contract
+
+**Status:** Proposed schema v2; current runtime does not yet consume this format. JSON is retained to align with the existing project configuration style.
+
+## 1. Normative principles
+
+- schema_version is mandatory and must be supported by the binary.
+- IDs are stable, unique lowercase identifiers; references use IDs, not display names.
+- Exchange, venue/product family, account, market and route are separate concepts.
+- There is no global_futures_exchange or local_exchange singleton in v2.
+- venues is an array containing any number of spot and futures venue instances.
+- routes explicitly declare allowed spot/futures pairings.
+- enabled means configured for discovery/eligibility, not automatically authorized to trade.
+- Private credential references are resolved only by Python executor. Go scanner ignores private credential blocks and receives no trade-capable secrets.
+- Unknown keys, duplicate IDs, dangling references and unsupported capabilities fail closed.
+
+## 2. Illustrative schema v2 configuration
+
+The sample represents two spot venues and one currently active futures venue. More venues can be appended without changing the structure. Values are illustrative, not verified account settings or recommended risk limits.
+
+~~~json
+{
+  "schema_version": 2,
+  "mode": "LIVE",
+  "execution": {
+    "engine": "python",
+    "execution_mode": "MAKER_TAKER",
+    "signals_enabled": false,
+    "startup_reconciliation_required": true
+  },
+  "storage": {
+    "driver": "postgres",
+    "dsn_env": "NAFAZ_DATABASE_URL",
+    "migrations": "required",
+    "outbox": { "enabled": true, "delivery": "redis" }
+  },
+  "redis": {
+    "enabled": true,
+    "url_env": "NAFAZ_REDIS_URL",
+    "purpose": ["candidate_queue", "transient_cache", "coordination"]
+  },
+  "venues": [
+    {
+      "id": "indodax_spot_primary",
+      "exchange": "indodax",
+      "market_type": "spot",
+      "account_id": "indodax_account_1",
+      "enabled": true,
+      "market_data": { "enabled": true, "adapter": "indodax" },
+      "execution": {
+        "enabled": true,
+        "adapter": "indodax",
+        "credentials": {
+          "api_key_env": "INDODAX_API_KEY",
+          "api_secret_env": "INDODAX_API_SECRET"
+        }
+      }
+    },
+    {
+      "id": "tokocrypto_spot_primary",
+      "exchange": "tokocrypto",
+      "market_type": "spot",
+      "account_id": "tokocrypto_account_1",
+      "enabled": true,
+      "market_data": { "enabled": true, "adapter": "tokocrypto" },
+      "execution": {
+        "enabled": true,
+        "adapter": "tokocrypto",
+        "credentials": {
+          "api_key_env": "TOKOCRYPTO_API_KEY",
+          "api_secret_env": "TOKOCRYPTO_API_SECRET"
+        }
+      }
+    },
+    {
+      "id": "okx_swap_primary",
+      "exchange": "okx",
+      "market_type": "linear_perpetual",
+      "account_id": "okx_account_1",
+      "enabled": true,
+      "market_data": { "enabled": true, "adapter": "okx" },
+      "execution": {
+        "enabled": true,
+        "adapter": "okx",
+        "credentials": {
+          "api_key_env": "OKX_API_KEY",
+          "api_secret_env": "OKX_API_SECRET",
+          "passphrase_env": "OKX_API_PASSPHRASE"
+        },
+        "position_mode": "hedge",
+        "margin_mode": "isolated",
+        "required_leverage": 1
+      }
+    }
+  ],
+  "accounts": [
+    { "id": "indodax_account_1", "venue_id": "indodax_spot_primary", "label": "Indodax primary", "enabled": true },
+    { "id": "tokocrypto_account_1", "venue_id": "tokocrypto_spot_primary", "label": "Tokocrypto primary", "enabled": true },
+    { "id": "okx_account_1", "venue_id": "okx_swap_primary", "label": "OKX futures primary", "enabled": true }
+  ],
+  "routes": [
+    {
+      "id": "indodax_to_okx",
+      "spot": { "venue_id": "indodax_spot_primary", "account_id": "indodax_account_1", "quote_assets": ["IDR", "USDT"] },
+      "futures": { "venue_id": "okx_swap_primary", "account_id": "okx_account_1", "settle_assets": ["USDT"] },
+      "enabled": true,
+      "symbols": { "allow": ["BTC", "ETH"], "deny": [] },
+      "risk_profile": "default_live"
+    },
+    {
+      "id": "tokocrypto_to_okx",
+      "spot": { "venue_id": "tokocrypto_spot_primary", "account_id": "tokocrypto_account_1", "quote_assets": ["USDT", "IDR"] },
+      "futures": { "venue_id": "okx_swap_primary", "account_id": "okx_account_1", "settle_assets": ["USDT"] },
+      "enabled": true,
+      "symbols": { "allow": ["BTC", "ETH"], "deny": [] },
+      "risk_profile": "default_live"
+    }
+  ],
+  "risk_profiles": {
+    "default_live": {
+      "max_daily_loss_usdt": 5,
+      "max_exposure_per_account_usdt": 100,
+      "max_exposure_per_route_usdt": 50,
+      "max_entry_slippage_pct": 0.2,
+      "max_consecutive_order_failures": 5,
+      "max_open_spot_orders": 2,
+      "max_open_futures_orders": 2,
+      "require_fresh_balance": true,
+      "require_position_reconciliation": true
+    }
+  },
+  "scanner": {
+    "enabled": true,
+    "public_market_data_only": true,
+    "scan_interval_seconds": 30,
+    "quote_assets": ["USDT", "USDC"],
+    "synthetic_fx": {
+      "enabled": true,
+      "source": "configured_live_fx_market",
+      "max_age_seconds": 5,
+      "static_fallback_allowed_in_live": false
+    }
+  },
+  "observability": { "log_level": "INFO", "metrics_enabled": true }
+}
+~~~
+
+The sample illustrates shape only. Market type, hedge mode, margin mode, leverage, symbols and quote/settle combinations must be verified against each actual account and instrument. Do not copy the sample risk values as a recommendation. LIVE does not automatically enable signals or make routes ready.
+
+## 3. Field contract
+
+### Root
+
+| Field | Type | Required | Meaning |
+|---|---|---:|---|
+| schema_version | integer | yes | Must equal supported version 2. |
+| mode | MOCK or LIVE | yes | Deployment intent; not blanket order authorization. |
+| execution | object | yes | Execution owner, signal gate and startup reconciliation policy. |
+| storage | object | yes | Durable database configuration. |
+| redis | object | yes | Transient queue/cache configuration. |
+| venues | array | yes | Configured venue instances. |
+| accounts | array | yes | Logical account identities. |
+| routes | array | yes | Explicit spot/futures pairings. |
+| risk_profiles | object | yes | Named risk policies. |
+| scanner | object | yes | Public discovery settings. |
+
+### Venue
+
+| Field | Contract |
+|---|---|
+| id | Globally unique stable ID, e.g. okx_swap_primary. |
+| exchange | Adapter registry key, e.g. okx, mexc, bybit. |
+| market_type | spot, linear_perpetual or inverse_perpetual; only implemented types accepted. |
+| account_id | References one account. |
+| enabled | Venue participates in validation/discovery when true. |
+| market_data | Public adapter/discovery toggle. |
+| execution | Executor-only execution adapter and secret references. |
+
+One exchange can have multiple venue IDs and accounts. Do not use exchange brand as a unique key.
+
+### Account and route
+
+Account IDs are unique. Account-to-venue references must be consistent. A unified account spanning products must not be duplicated in a way that double-counts exposure.
+
+Each route has exactly one spot and one futures leg. The spot leg must reference a spot venue; futures leg must reference a supported futures venue. Quote assets and settle assets are allowlists, not FX conversion instructions. Symbol filters apply to canonical base assets. risk_profile must exist. Routes are explicit; adding a venue does not enable all possible pairings automatically.
+
+## 4. Secrets
+
+Fields ending in _env contain environment variable names, never secret values. The executor resolves them from its own environment/secret store. Only executor receives trade-capable credentials. Scanner gets public market configuration only. Missing required secrets make that execution venue not-ready; never fall back silently to another account. Redact values in logs and errors. API keys must not have withdrawal or transfer permissions.
+
+## 5. LIVE readiness
+
+mode LIVE means live clients are intended, not that every route may trade. A route becomes READY only after config validation, PostgreSQL/migrations, secret resolution, fresh unambiguous market metadata, private account reconciliation, position/margin/leverage verification, valid risk profile, no unresolved order/halt, and explicit operator enablement. signals_enabled remains false until Python is verified as the sole consumer capable of causing orders.
+
+## 6. PostgreSQL and Redis
+
+Production storage.driver is postgres; dsn_env names the executor DB connection-string variable. Apply versioned migrations before reconciliation. Use NUMERIC/decimal, unique constraints for venue/account/order IDs and client-order idempotency within documented venue scope, append-only journal and transactional outbox. A PostgreSQL outage blocks new entries.
+
+Redis is non-authoritative. Queue payloads include event_id, schema_version, route_id, canonical symbol, observation timestamp and candidate version. Delivery is at-least-once and executor deduplicates in PostgreSQL. Queue loss must be recoverable from outbox/republication or fresh scanner passes. No private balances, positions, orders, fills or execution authorization may be sourced solely from Redis.
+
+## 7. Validation rules
+
+Reject unsupported schema versions; duplicate IDs; dangling or inconsistent references; wrong route market types; unsupported adapters/capabilities; embedded secret values; invalid/non-finite or negative limits; LIVE without PostgreSQL/migrations/risk profiles/required secrets; static FX fallback in LIVE; enabled execution routes whose legs are disabled/not execution-capable; ambiguous symbols; missing contract size, amount step, price tick or minimums.
+
+Config reload is atomic: validate the entire snapshot, persist version/audit record, then swap active registry. Partial application is forbidden. Disabling a route blocks new entries but does not abandon existing orders/positions.
+
+## 8. Legacy migration
+
+Current baseline uses singleton LOCAL_EXCHANGE/GLOBAL_EXCHANGE, root global_futures_exchange and exchange-keyed credentials. V2 replaces these with venues, accounts and routes.
+
+1. Build a one-time converter from legacy config to a v2 candidate.
+2. Never infer unsupported routes or enable all pairings.
+3. Move secret values to executor environment variables and emit references only.
+4. Map legacy local/global settings to explicit route entries.
+5. Preserve existing risk values as migration input; validate and do not widen silently.
+6. Reject legacy all as an execution venue; it may only be a scanner discovery selector if separately defined.
+7. Keep v1/v2 loaders separate during transition; never partially parse v2 with legacy defaults.
+8. Remove legacy singleton environment overrides only after deployments migrate and tests prove no hidden dependency.
+
+## 9. Conformance matrix
+
+| Scenario | Expected result |
+|---|---|
+| 2 spot + 2 futures venues | Valid; fan-out independent of count. |
+| 2 accounts on same exchange | Valid; isolated credentials and state. |
+| Enabled route references disabled venue | Not ready / rejected. |
+| Spot leg references futures venue | Rejected. |
+| Duplicate IDs or dangling account | Rejected. |
+| Unsupported capability | Route not ready; no guessed fallback. |
+| Missing contract size or amount step | Futures route not ready. |
+| Static FX fallback in LIVE | Rejected. |
+| Duplicate candidate delivery | One execution intent. |
+| PostgreSQL unavailable | No new entries. |
+| Redis unavailable | Durable order state retained; queue recovery required. |
+| Ambiguous order acknowledgement | UNKNOWN and reconcile; never blind retry. |
+| Route disabled with open position | Block new entries; continue managing existing exposure. |
+| Scanner process has no private credentials | Verified by deployment test. |
+
+## 10. Implementation boundary
+
+This is a target contract for a later implementation PR, not runtime support. Before implementation, review exchange capability matrix, executor client factory, order lifecycle and DB migration strategy. No LIVE order is enabled by this specification change.
