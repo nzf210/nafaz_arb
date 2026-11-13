@@ -710,7 +710,7 @@ func (b *Bot) handleSpotMaxCommand(ctx context.Context, msg *Message, parts []st
 		return
 	}
 	b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-		fmt.Sprintf("✅ <b>BATAS OPEN SPOT ORDER DIPERBARUI</b>\n\n• CEX: <b>%s</b>\n• Maksimum: <b>%d</b> order/posisi Spot\n\nPerubahan disimpan di Redis dan dikirim ke Executor tanpa restart. Order/posisi yang sudah terbuka tidak dibatalkan; batas baru hanya mencegah entry baru sampai jumlah turun di bawah batas.", html.EscapeString(strings.ToUpper(parts[1])), limit), b.defaultKeyboard())
+		fmt.Sprintf("✅ <b>BATAS OPEN SPOT ORDER DIPERBARUI</b>\n\n• CEX: <b>%s</b>\n• Maksimum: <b>%d</b> order/posisi Spot\n\nPerubahan dikonfirmasi Executor dan disimpan di Postgres sebelum diterapkan; tidak perlu restart. Order/posisi yang sudah terbuka tidak dibatalkan; batas baru hanya mencegah entry baru sampai jumlah turun di bawah batas.", html.EscapeString(strings.ToUpper(parts[1])), limit), b.defaultKeyboard())
 }
 
 func (b *Bot) handleKillSwitchCommand(ctx context.Context, chatID int64, userID int64, replyToID int64, parts []string) {

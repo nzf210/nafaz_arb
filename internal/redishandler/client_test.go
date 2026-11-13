@@ -351,19 +351,56 @@ func TestSpotOrderLimitPersistsAndBroadcasts(t *testing.T) {
 	sub := client.rdb.Subscribe(ctx, ChannelSpotOrderLimitUpdate)
 	defer sub.Close()
 	if _, err := sub.Receive(ctx); err != nil { t.Fatalf("subscribe spot order limit: %v", err) }
+
+	updates := make(chan map[string]interface{}, 1)
+	go func() {
+		message := <-sub.Channel()
+		var update map[string]interface{}
+		if err := json.Unmarshal([]byte(message.Payload), &update); err != nil { return }
+		updates <- update
+		requestID, _ := update["request_id"].(string)
+		if requestID == "" { return }
+		ack, _ := json.Marshal(map[string]interface{}{"success": true})
+		_ = client.rdb.LPush(ctx, KeyPrefixSpotOrderLimitReply+requestID, string(ack)).Err()
+		_ = client.rdb.HSet(ctx, KeySpotOrderLimits, "tokocrypto", 4).Err()
+	}()
 	if err := client.SetSpotOrderLimit(ctx, "TOKOCRYPTO", 4); err != nil { t.Fatalf("SetSpotOrderLimit: %v", err) }
+	update := <-updates
+	if update["exchange"] != "tokocrypto" || update["max_open_spot_orders"] != float64(4) {
+		t.Fatalf("unexpected spot order limit event: %#v", update)
+	}
+	if update["request_id"] == "" { t.Fatalf("request_id missing from durable update: %#v", update) }
 	limits, err := client.GetSpotOrderLimits(ctx)
 	if err != nil { t.Fatalf("GetSpotOrderLimits: %v", err) }
-	if limits["tokocrypto"] != 4 { t.Fatalf("persisted limits = %#v, want tokocrypto=4", limits) }
-	select {
-	case message := <-sub.Channel():
-		var update map[string]interface{}
-		if err := json.Unmarshal([]byte(message.Payload), &update); err != nil { t.Fatal(err) }
-		if update["exchange"] != "tokocrypto" || update["max_open_spot_orders"] != float64(4) {
-			t.Fatalf("unexpected spot order limit event: %#v", update)
-		}
-	case <-ctx.Done():
-		t.Fatal("spot order limit update was not broadcast")
-	}
+	if limits["tokocrypto"] != 4 { t.Fatalf("cached limits = %#v, want tokocrypto=4", limits) }
 	if err := client.SetSpotOrderLimit(ctx, "indodax", 0); err == nil { t.Fatal("expected invalid limit to be rejected") }
+}
+
+func TestSpotOrderLimitReturnsExecutorPersistenceFailure(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub := client.rdb.Subscribe(ctx, ChannelSpotOrderLimitUpdate)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil { t.Fatalf("subscribe spot order limit: %v", err) }
+	go func() {
+		message := <-sub.Channel()
+		var update map[string]interface{}
+		if json.Unmarshal([]byte(message.Payload), &update) != nil { return }
+		requestID, _ := update["request_id"].(string)
+		ack, _ := json.Marshal(map[string]interface{}{
+			"success": false, "error": "Postgres coordinator lease unavailable",
+		})
+		_ = client.rdb.LPush(ctx, KeyPrefixSpotOrderLimitReply+requestID, string(ack)).Err()
+	}()
+	if err := client.SetSpotOrderLimit(ctx, "indodax", 3); err == nil {
+		t.Fatal("expected executor persistence failure to be returned to Telegram")
+	}
+	limits, err := client.GetSpotOrderLimits(ctx)
+	if err != nil { t.Fatalf("GetSpotOrderLimits: %v", err) }
+	if _, exists := limits["indodax"]; exists {
+		t.Fatalf("failed durable update must not populate Redis cache: %#v", limits)
+	}
 }

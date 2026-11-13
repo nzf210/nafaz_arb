@@ -464,10 +464,41 @@ func (c *Client) SetSpotOrderLimit(ctx context.Context, exchange string, limit i
 	if exchange == "" || len(exchange) > 64 { return errors.New("exchange name is invalid") }
 	for _, r := range exchange { if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-') { return errors.New("exchange name may contain only letters, digits, '_' or '-'") } }
 	if limit < 1 || limit > 100 { return errors.New("max open spot orders must be between 1 and 100") }
-	if err := c.rdb.HSet(ctx, KeySpotOrderLimits, exchange, limit).Err(); err != nil { return fmt.Errorf("persist spot order limit: %w", err) }
-	payload, err := json.Marshal(map[string]interface{}{"exchange": exchange, "max_open_spot_orders": limit, "updated_at_ms": time.Now().UnixMilli()})
+
+	var requestBytes [16]byte
+	if _, err := rand.Read(requestBytes[:]); err != nil {
+		return fmt.Errorf("create spot order limit request id: %w", err)
+	}
+	requestID := hex.EncodeToString(requestBytes[:])
+	replyKey := KeyPrefixSpotOrderLimitReply + requestID
+	payload, err := json.Marshal(map[string]interface{}{
+		"request_id": requestID,
+		"exchange": exchange,
+		"max_open_spot_orders": limit,
+		"updated_at_ms": time.Now().UnixMilli(),
+	})
 	if err != nil { return fmt.Errorf("marshal spot order limit: %w", err) }
-	if err := c.rdb.Publish(ctx, ChannelSpotOrderLimitUpdate, string(payload)).Err(); err != nil { return fmt.Errorf("publish spot order limit: %w", err) }
+	if err := c.rdb.Publish(ctx, ChannelSpotOrderLimitUpdate, string(payload)).Err(); err != nil {
+		return fmt.Errorf("publish spot order limit: %w", err)
+	}
+	reply, err := c.rdb.BLPop(ctx, 20*time.Second, replyKey).Result()
+	if err != nil {
+		return fmt.Errorf("executor did not confirm durable Spot capacity update: %w", err)
+	}
+	if len(reply) < 2 {
+		return errors.New("executor returned an empty Spot capacity acknowledgement")
+	}
+	var acknowledgement struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(reply[1]), &acknowledgement); err != nil {
+		return fmt.Errorf("decode executor Spot capacity acknowledgement: %w", err)
+	}
+	if !acknowledgement.Success {
+		if acknowledgement.Error == "" { acknowledgement.Error = "Postgres persistence or coordinator validation failed" }
+		return fmt.Errorf("executor rejected Spot capacity update: %s", acknowledgement.Error)
+	}
 	return nil
 }
 
