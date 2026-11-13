@@ -239,3 +239,32 @@ Current baseline uses singleton LOCAL_EXCHANGE/GLOBAL_EXCHANGE, root global_futu
 ## 10. Implementation boundary
 
 This is a target contract for a later implementation PR, not runtime support. Before implementation, review exchange capability matrix, executor client factory, order lifecycle and DB migration strategy. No LIVE order is enabled by this specification change.
+
+
+## 9. V2 database activation and Telegram control extensions
+
+### Database-backed configuration
+
+PostgreSQL stores immutable config snapshots in `config_versions` and the active pointer in `active_config_version`. A snapshot includes every operational setting listed in this contract, excluding secret values. Secret fields are references such as `secret://nafaz/okx/primary/api-key` or an environment variable name; they are resolved only by the Python executor/control plane. Do not store API keys, API secrets, passphrases, Telegram bot tokens, database passwords or Redis passwords in JSONB snapshots.
+
+A config update is staged and validated before activation. Activation is one transaction with an expected-version compare-and-swap, immutable version insert, actor/time/reason/diff audit and transactional outbox event. The active pointer changes only in that transaction. A rollback is a new version cloned from a previously validated snapshot and passes the same validator; no history is rewritten. Competing writers receive a version conflict and must re-read/rebase; never use last-write-wins.
+
+On every startup/restart, services read the active version and snapshot directly from PostgreSQL, validate schema and hash, then populate Redis with an immutable versioned cache. Redis restart/loss is repaired by reloading PostgreSQL. Config-change notifications are hints only: consumers fetch the authoritative version from PostgreSQL, validate, refresh Redis and atomically swap their in-process snapshot. If PostgreSQL is unavailable or version/hash verification fails, LIVE entry remains disabled. Redis outage also blocks LIVE entry until the required cache/version state is restored and verified. Stale config is never used silently.
+
+### Trading control state and Telegram
+
+The durable control row is initialized to `STOPPED` / `trading_enabled=false`; restart never auto-starts. Process health is a separate liveness signal. Telegram token comes from an external secret reference/environment. Mutating commands require both user-ID and chat-ID allowlists; either empty list denies control. Audit records include actor IDs, reason, update/command ID, config version, UTC timestamps, transition and result. Commands are idempotent by Telegram update ID and explicit command ID. START uses one-time confirmation; STOP is immediately accepted for an authorized operator and does not require confirmation.
+
+Commands: `/trade_status`, `/trade_start <reason>`, `/trade_stop <reason>`, `/trade_confirm <confirmation_id>`. START readiness requires database/migrations, active config version/hash, Redis version, resolved venue credentials, fresh market metadata, live FX with freshness/spread/fee bounds, successful account/order/position reconciliation, valid risk limits and no active kill switch/venue halt. A failed or unknown check leaves STOPPED. STOP enters durable STOPPING before acknowledgement, blocks new entry admission, publishes a versioned event and waits for executor instances to close their entry gates and resolve in-flight submissions before STOPPED. If the barrier is incomplete, status must say so. STOP never closes positions. Default open-order policy is `keep_and_manage`; optional cancellation of unfilled entries must be explicitly configured and reconciled. No automatic position close.
+
+### Open-order policy values
+
+- `keep_and_manage`: do not cancel existing orders; continue monitoring/reconciliation and managing existing positions.
+- `cancel_unfilled_entries`: after durable STOPPING, cancel only verified unfilled entry orders, reconcile cancellation/fill races, and keep all position management active.
+- No policy may infer that STOP means force-close. Force-close remains a separate, separately authorized emergency operation.
+
+The scanner's Go Telegram component is read-only alerting in V2. Trading control and PostgreSQL authority live in a Python control-plane component with the executor; the scanner receives no private credentials and cannot enable trading.
+
+### Migration and runtime status
+
+Migration `20261113000100_v2_config_and_operator_control.sql` establishes the durable schema only. It does not automatically migrate existing JSON/SQLite/Supabase settings, enable Telegram control, or activate LIVE. Runtime cutover, snapshot loading, Redis refresh, Python command handling and readiness integration require subsequent implementation and tests. Until then the existing runtime must not be described as V2 database-config or Telegram START/STOP complete.
