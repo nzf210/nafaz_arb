@@ -239,7 +239,9 @@ class EntryHedgeMixin:
                             error_text = (
                                 f"{type(fenced_error).__name__} {fenced_error}"
                             ).lower()
-                            if self._is_explicit_ip_ban(error_text):
+                            ip_ban_detected = self._is_explicit_ip_ban(error_text)
+                            ip_ban_persisted = False
+                            if ip_ban_detected:
                                 self._halt_exposure_scope(
                                     "*",
                                     "CEX IP block: "
@@ -259,11 +261,21 @@ class EntryHedgeMixin:
                                             "exchange_error": str(fenced_error)[:1000],
                                         },
                                     )
+                                    ip_ban_persisted = True
                                 except Exception:
                                     logger.exception(
                                         "CRITICAL: failed to persist futures CEX IP-ban STOP "
                                         "inside submit fence"
                                     )
+                            if ip_ban_detected and not ip_ban_persisted:
+                                # Keep the durable attempt unresolved so peers cannot
+                                # proceed if canonical STOP persistence failed.
+                                await global_stop.mark_submit_unknown(
+                                    hedge_coid,
+                                    "confirmed futures venue IP ban; Global STOP persistence failed: "
+                                    + str(fenced_error),
+                                )
+                                raise
                             rejection_check = getattr(
                                 self, "_is_definitive_order_rejection", None
                             )
