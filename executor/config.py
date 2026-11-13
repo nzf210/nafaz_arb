@@ -23,8 +23,6 @@ class SupabaseConfig:
 @dataclass
 class ExecutorConfig:
     redis_url: str = "redis://localhost:6380/0"
-    # Direct PostgreSQL DSN for transactional global STOP and submit fencing.
-    postgres_dsn: str = ""
     max_stale_latency_ms: int = 2500
     min_partial_fill_usd: float = 10.0
     exit_price_move_threshold: float = 0.0015  # 0.15%
@@ -96,6 +94,8 @@ class ExecutorConfig:
     local_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
     global_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
     supabase: SupabaseConfig = field(default_factory=SupabaseConfig)
+    # Direct PostgreSQL DSN for transactional global STOP and submit fencing.
+    postgres_dsn: str = ""
 
     def _apply_file(self, config_path: str) -> None:
         if not os.path.exists(config_path):
