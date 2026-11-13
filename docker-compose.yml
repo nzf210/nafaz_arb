@@ -63,6 +63,8 @@ services:
     environment:
       - TZ=Asia/Jakarta
       - REDIS_URL=redis://nafaz-redis:6380/0
+      # Required for LIVE mode: direct PostgreSQL connection for global STOP fencing.
+      - POSTGRES_DSN=${POSTGRES_DSN:-}
       - LOCAL_EXCHANGE=indodax
       # "all" is a scanner discovery setting, not a valid CCXT exchange id.
       - GLOBAL_EXCHANGE=okx
