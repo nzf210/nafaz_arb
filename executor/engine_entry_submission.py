@@ -7,7 +7,6 @@ import time
 from executor.models import OrderRole, PositionState
 from executor.helpers import build_client_order_id
 from executor.engine_common import logger
-from executor.global_stop import GlobalStopError
 
 
 class EngineEntrySubmissionMixin:
