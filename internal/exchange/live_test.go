@@ -405,3 +405,26 @@ func TestTokocryptoUnknownSymbolTypeFailsClosed(t *testing.T) {
 		t.Fatal("expected unknown Tokocrypto symbol type to fail closed")
 	}
 }
+
+func TestPerpetualOrderBooksFailClosedWithoutContractMetadata(t *testing.T) {
+	okxServer := newMockOKXPerpServer()
+	defer okxServer.Close()
+	mexcServer := newMockMEXCPerpServer()
+	defer mexcServer.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", okxServer.URL, mexcServer.URL)
+	if _, err := adapter.PerpetualOrderBook(context.Background(), "BTC-USDT-SWAP"); err == nil {
+		t.Fatal("expected OKX depth to fail without authoritative contract size metadata")
+	}
+	if _, err := adapter.PerpetualOrderBook(context.Background(), "mexc:BTC_USDT"); err == nil {
+		t.Fatal("expected MEXC depth to fail without authoritative contract size metadata")
+	}
+}
+
+func TestParseStringLevelsRejectsNonFiniteValues(t *testing.T) {
+	levels := parseStringLevels([][]string{{"1", "2"}, {"Inf", "1"}, {"2", "NaN"}, {"3", "Inf"}}, 1)
+	if len(levels) != 1 || levels[0].Price != 1 || levels[0].Quantity != 2 {
+		t.Fatalf("expected only finite level to survive, got %+v", levels)
+	}
+}
