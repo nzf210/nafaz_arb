@@ -718,3 +718,47 @@ async def test_cancel_replace_reconciles_racing_partial_fill_before_resizing(
     assert engine.active_positions[pair_tag].qty == pytest.approx(0.006)
     assert len(mock_client.placed_sells) == 2
     assert mock_client.placed_sells[1]["amount"] == pytest.approx(0.006)
+
+
+
+def test_funding_spread_decay_retains_sixty_percent_by_default(engine):
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="BTC/IDR",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        accumulated_funding_usdt=10.0,
+    )
+    assert engine.config.funding_decay_retention_ratio == pytest.approx(0.60)
+    # Position value $1,000; only $4 of $10 may decay the target spread.
+    assert engine._funding_decay_pct("indodax:btc_idr", pos, 1_000.0) == pytest.approx(0.4)
+
+
+def test_positive_next_funding_rate_at_point_zero_three_percent_disables_decay(engine):
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="BTC/IDR",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        accumulated_funding_usdt=10.0,
+    )
+    engine._next_funding_rate_by_pair = {"indodax:btc_idr": 0.0003}
+    assert engine._funding_decay_pct("indodax:btc_idr", pos, 1_000.0) == 0.0
+
+
+def test_funding_decay_resumes_below_positive_rate_guard(engine):
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="BTC/IDR",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        accumulated_funding_usdt=10.0,
+    )
+    engine._next_funding_rate_by_pair = {"indodax:btc_idr": 0.00029}
+    assert engine._funding_decay_pct("indodax:btc_idr", pos, 1_000.0) == pytest.approx(0.4)
