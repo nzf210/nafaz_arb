@@ -24,7 +24,7 @@ Unknown venue names resolve to the generic venue metadata object, but this is no
 | Futures hedge SELL market | `open_global_short_market` → `global_fut.create_market_sell_order` | Opens short exposure | Durable ledger/fence; recovery routes to futures exact-client-ID lookup. |
 | Spot exit SELL limit | `place_local_limit_sell` → `local.create_limit_sell_order` | Reduces spot exposure | Exact client-ID lookup after ambiguous ACK; if not found/inconclusive, pair becomes RECONCILIATION_REQUIRED and dynamic repricing is blocked. |
 | Spot rollback/emergency SELL market | `place_local_market_sell` → `local.create_market_sell_order` | De-risking | Only explicit HTTP 429 rejection may be retried. Timeout, reset, 503 and other ambiguous errors are not blindly retried. |
-| Futures close BUY market | `close_global_short_market` → `global_fut.create_market_buy_order` with `reduceOnly=True` | Reduces short exposure | Regular exit path blocks on unverified close. Force-close verifies position flat, but a stale non-zero position response after a prior accepted close can still lead a later invocation to submit a new client ID. This remains OPEN. |
+| Futures close BUY market | `close_global_short_market` → `global_fut.create_market_buy_order` with `reduceOnly=True` | Reduces short exposure | Regular exit path blocks on unverified close. Force-close verifies position flat, but a stale non-zero position response after a prior accepted close can still lead a later invocation to submit a new client ID. This is fixed fail-closed: LIVE force-close uses a deterministic position-scoped client ID, requires a durable order registry and exact-ID lookup, and blocks new submissions when the prior close is pending, partial, not found or inconclusive. It does not automatically submit a residual close. |
 
 Cancel/replace paths are not create-order retries: the existing exit flow waits for a terminal old-order state and applies fills before replacement; inconclusive cancel/status blocks replacement. A cancel acknowledgement alone is not proof that no fill occurred.
 
@@ -53,8 +53,13 @@ Cancel/replace paths are not create-order retries: the existing exit flow waits 
 - Added PostgreSQL test for HMAC-authenticated manual resolution, invalid signature rejection, and append-only evidence audit.
 - Added delayed visibility fixtures for Indodax, Tokocrypto, MEXC and OKX, plus pending reduce-only close visibility fixtures. These are deterministic fake endpoint tests, not live venue contract evidence.
 - Still required before claiming venue contract completion: controlled sandbox/live-paper probes per configured venue for (a) delayed client-ID visibility after ACK loss, (b) open/pending reduce-only close, (c) partial fill followed by cancel/close, (d) duplicate client ID behavior, (e) order-history pagination/retention, and (f) status endpoint staleness.
-- Force-close futures needs durable reuse/reconciliation of its previous close client ID before any later invocation can submit another reduce-only close. Until implemented and tested, R-26 remains OPEN.
+- Force-close futures now uses deterministic client-ID reuse and exact-ID recovery; its regression test blocks a duplicate when visibility is delayed. Partial/pending outcomes still require reconciliation.
 
 ## Release conclusion
 
 The source-level inventory and fake contract tests improve regression coverage, but they do not prove every exchange API's consistency or pending-close semantics. Do not use this matrix as a LIVE certification. The remaining force-close reduce-only retry gap and the absence of real per-venue probes keep this release gate closed.
+
+
+### R-26 implementation note
+
+The force-close futures path now uses a deterministic client-order ID based on the persisted position open timestamp. A prior order intent must be located in the durable registry and resolved through exact-ID lookup before the path can proceed. Missing visibility, lookup failure, pending status or partial fill blocks another submit. This closes the duplicate-new-client-ID retry path, but does not replace venue-specific pending-close probes.
