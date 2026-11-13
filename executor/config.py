@@ -28,8 +28,8 @@ class ExecutorConfig:
     exit_price_move_threshold: float = 0.0015  # 0.15%
     max_order_ttl_seconds: int = 120  # Max TTL for pending maker entry orders before cancel
     # Refresh stale, unfilled maker quotes by canceling them and waiting for a fresh scanner signal.
-    maker_refresh_after_seconds: int = 45
-    maker_refresh_cooldown_seconds: int = 300
+    maker_refresh_after_seconds: int = 8
+    maker_refresh_cooldown_seconds: int = 12
     # Minimum projected net return retained by Indodax IDR adaptive maker quotes.
     adaptive_maker_min_net_profit_pct: float = 0.10
     indodax_maker_refresh_after_seconds: int = 15
@@ -397,8 +397,8 @@ class ExecutorConfig:
     _NUMERIC_BOUNDS = {
         "max_stale_latency_ms": (1, 60000, 500),
         "max_order_ttl_seconds": (1, 86400, 120),
-        "maker_refresh_after_seconds": (0, 86400, 45),
-        "maker_refresh_cooldown_seconds": (1, 86400, 300),
+        "maker_refresh_after_seconds": (0, 86400, 8),
+        "maker_refresh_cooldown_seconds": (1, 86400, 12),
         "indodax_maker_refresh_after_seconds": (0, 86400, 15),
         "indodax_maker_refresh_cooldown_seconds": (1, 86400, 15),
         "adaptive_maker_min_net_profit_pct": (0.0, 10.0, 0.10),
