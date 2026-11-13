@@ -361,8 +361,8 @@ func TestSpotOrderLimitPersistsAndBroadcasts(t *testing.T) {
 		requestID, _ := update["request_id"].(string)
 		if requestID == "" { return }
 		ack, _ := json.Marshal(map[string]interface{}{"success": true})
-		_ = client.rdb.LPush(ctx, KeyPrefixSpotOrderLimitReply+requestID, string(ack)).Err()
 		_ = client.rdb.HSet(ctx, KeySpotOrderLimits, "tokocrypto", 4).Err()
+		_ = client.rdb.LPush(ctx, KeyPrefixSpotOrderLimitReply+requestID, string(ack)).Err()
 	}()
 	if err := client.SetSpotOrderLimit(ctx, "TOKOCRYPTO", 4); err != nil { t.Fatalf("SetSpotOrderLimit: %v", err) }
 	update := <-updates
