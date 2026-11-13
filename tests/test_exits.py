@@ -762,3 +762,23 @@ def test_funding_decay_resumes_below_positive_rate_guard(engine):
     )
     engine._next_funding_rate_by_pair = {"indodax:btc_idr": 0.00029}
     assert engine._funding_decay_pct("indodax:btc_idr", pos, 1_000.0) == pytest.approx(0.4)
+
+
+
+@pytest.mark.asyncio
+async def test_funding_schedule_prefers_explicit_next_rate(engine, mock_client, monkeypatch):
+    async def funding_rate(_symbol):
+        return {
+            "fundingRate": 0.0001,
+            "nextFundingRate": 0.0004,
+            "nextFundingTimestamp": int(time.time() * 1000) + 3_600_000,
+            "info": {"lastFundingRate": -0.0002},
+        }
+
+    monkeypatch.setattr(mock_client, "fetch_funding_rate", funding_rate, raising=False)
+    next_ms, current_rate = await engine._refresh_funding_schedule(
+        "indodax:btc_idr", "BTC-USDT-SWAP", 0.0
+    )
+    assert next_ms > int(time.time() * 1000)
+    assert current_rate == pytest.approx(0.0001)
+    assert engine._next_funding_rate_by_pair["indodax:btc_idr"] == pytest.approx(0.0004)
