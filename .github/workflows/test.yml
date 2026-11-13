@@ -91,6 +91,14 @@ jobs:
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
             -f supabase/tests/schema_smoke.sql
+      - name: Install Python integration-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio asyncpg
+      - name: Exercise real PostgreSQL multi-process submit disconnect
+        env:
+          TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
+        run: pytest -q tests/test_postgres_submit_fencing_integration.py
 
   docker-images:
     runs-on: ubuntu-latest
