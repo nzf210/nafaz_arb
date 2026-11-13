@@ -4,12 +4,12 @@ from typing import Any
 
 
 _MUTATION_METHODS = {
-    "place_local_limit_buy": "spot_create",
-    "place_local_limit_sell": "spot_create",
-    "place_local_market_sell": "spot_create",
-    "open_global_short_market": "futures_create",
-    "close_global_short_market": "futures_create",
-    "cancel_local_order": "spot_cancel",
+    "place_local_limit_buy": ("spot_create", "buy", 3),
+    "place_local_limit_sell": ("spot_create", "sell", 3),
+    "place_local_market_sell": ("spot_create", "sell", 2),
+    "open_global_short_market": ("futures_create", "sell", 2),
+    "close_global_short_market": ("futures_create", "buy", 2),
+    "cancel_local_order": ("spot_cancel", "", -1),
 }
 
 
@@ -24,9 +24,10 @@ class MutationGatewayClient:
 
     def __getattr__(self, name):
         target = getattr(self._client, name)
-        mutation_kind = _MUTATION_METHODS.get(name)
-        if mutation_kind is None or not callable(target):
+        mutation_contract = _MUTATION_METHODS.get(name)
+        if mutation_contract is None or not callable(target):
             return target
+        mutation_kind, expected_side, client_id_index = mutation_contract
 
         async def guarded(*args, **kwargs):
             if bool(getattr(self._config, "mock_mode", False)):
@@ -44,8 +45,16 @@ class MutationGatewayClient:
                         raise RuntimeError(
                             f"mutation gateway blocked cancel: no owned registry record for {exchange}/{order_id}"
                         )
+                    if str(getattr(record, "market_type", "")).lower() != "spot":
+                        raise RuntimeError("mutation gateway blocked cancel: owned order is not a spot order")
+                    if bool(getattr(record, "is_terminal", False)):
+                        raise RuntimeError("mutation gateway blocked cancel: order is already terminal")
                 else:
-                    client_order_id = str(kwargs.get("client_order_id") or "")
+                    client_order_id = str(
+                        kwargs.get("client_order_id")
+                        or (args[client_id_index] if len(args) > client_id_index else "")
+                        or ""
+                    )
                     if not client_order_id:
                         raise RuntimeError(
                             f"mutation gateway blocked {name}: client_order_id is required"
@@ -65,6 +74,28 @@ class MutationGatewayClient:
                         raise RuntimeError(
                             f"mutation gateway blocked {name}: durable order intent "
                             f"{exchange}/{client_order_id} is missing"
+                        )
+                    expected_market = (
+                        "spot" if mutation_kind == "spot_create" else "perpetual"
+                    )
+                    actual_market = str(getattr(record, "market_type", "")).lower()
+                    if expected_market == "perpetual":
+                        market_matches = actual_market in {"perpetual", "future", "futures", "swap"}
+                    else:
+                        market_matches = actual_market == expected_market
+                    if not market_matches:
+                        raise RuntimeError(
+                            f"mutation gateway blocked {name}: intent market {actual_market!r} "
+                            f"does not match {expected_market!r}"
+                        )
+                    if str(getattr(record, "side", "")).lower() != expected_side:
+                        raise RuntimeError(
+                            f"mutation gateway blocked {name}: intent side does not match "
+                            f"expected {expected_side!r}"
+                        )
+                    if bool(getattr(record, "is_terminal", False)):
+                        raise RuntimeError(
+                            f"mutation gateway blocked {name}: order intent is already terminal"
                         )
                 return await target(*args, **kwargs)
 

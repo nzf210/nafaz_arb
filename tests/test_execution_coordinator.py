@@ -69,7 +69,7 @@ async def test_coordinator_requires_postgres_lease_and_fencing():
 
     result = await coordinator.execute_mutation(lambda: _resolved("ok"))
     assert result == "ok"
-    assert supabase.assert_calls == 1
+    assert supabase.assert_calls == 2
 
     assert await coordinator.release() is True
     assert supabase.release_calls == 1
@@ -92,6 +92,27 @@ async def test_coordinator_blocks_mutation_when_fencing_token_is_stale():
         await coordinator.execute_mutation(operation)
 
     assert called is False
+    assert coordinator.active is False
+    await coordinator.release()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_rechecks_fencing_after_venue_mutation():
+    supabase = FakeSupabase()
+    coordinator = ExecutionCoordinator(supabase, renew_interval_seconds=60)
+    assert await coordinator.acquire() is True
+    called = False
+
+    async def operation():
+        nonlocal called
+        called = True
+        supabase.valid = False
+        return {"id": "possibly-accepted"}
+
+    with pytest.raises(RuntimeError, match="fencing token is stale"):
+        await coordinator.execute_mutation(operation)
+    assert called is True
+    assert supabase.assert_calls == 2
     assert coordinator.active is False
     await coordinator.release()
 
@@ -142,12 +163,64 @@ async def test_mutation_gateway_requires_registered_intent_before_live_create():
         )
     assert exchange.submissions == []
 
-    registry.client_records[("indodax", "intent-1")] = object()
+    registry.client_records[("indodax", "intent-1")] = SimpleNamespace(
+        exchange="indodax", market_type="spot", side="buy",
+        client_order_id="intent-1", is_terminal=False,
+    )
     result = await gateway.place_local_limit_buy(
         "btc_idr", 1.0, 100.0, client_order_id="intent-1"
     )
     assert result["id"] == "spot-1"
     assert len(exchange.submissions) == 1
+    await coordinator.release()
+
+
+@pytest.mark.asyncio
+async def test_mutation_gateway_rejects_intent_with_wrong_side_or_market():
+    coordinator = ExecutionCoordinator(FakeSupabase(), renew_interval_seconds=60)
+    assert await coordinator.acquire() is True
+    registry = FakeRegistry()
+    exchange = FakeExchange()
+    config = SimpleNamespace(
+        mock_mode=False, local_exchange_name="indodax", global_exchange_name="okx"
+    )
+    gateway = MutationGatewayClient(exchange, coordinator, registry, config)
+    registry.client_records[("indodax", "wrong-side")] = SimpleNamespace(
+        exchange="indodax", market_type="spot", side="sell",
+        client_order_id="wrong-side", is_terminal=False,
+    )
+    with pytest.raises(RuntimeError, match="intent side"):
+        await gateway.place_local_limit_buy(
+            "btc_idr", 1.0, 100.0, client_order_id="wrong-side"
+        )
+    registry.client_records[("indodax", "wrong-market")] = SimpleNamespace(
+        exchange="indodax", market_type="perpetual", side="buy",
+        client_order_id="wrong-market", is_terminal=False,
+    )
+    with pytest.raises(RuntimeError, match="intent market"):
+        await gateway.place_local_limit_buy(
+            "btc_idr", 1.0, 100.0, client_order_id="wrong-market"
+        )
+    assert exchange.submissions == []
+    await coordinator.release()
+
+
+@pytest.mark.asyncio
+async def test_mutation_gateway_blocks_cancel_for_terminal_order():
+    coordinator = ExecutionCoordinator(FakeSupabase(), renew_interval_seconds=60)
+    assert await coordinator.acquire() is True
+    registry = FakeRegistry()
+    exchange = FakeExchange()
+    config = SimpleNamespace(
+        mock_mode=False, local_exchange_name="indodax", global_exchange_name="okx"
+    )
+    gateway = MutationGatewayClient(exchange, coordinator, registry, config)
+    registry.exchange_records[("indodax", "terminal-1")] = SimpleNamespace(
+        exchange="indodax", market_type="spot", is_terminal=True,
+    )
+    with pytest.raises(RuntimeError, match="already terminal"):
+        await gateway.cancel_local_order("terminal-1", "btc_idr")
+    assert exchange.cancellations == []
     await coordinator.release()
 
 

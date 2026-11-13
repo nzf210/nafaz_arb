@@ -104,7 +104,12 @@ class ExecutionCoordinator:
     async def execute_mutation(self, operation: Callable[[], Awaitable[T]]) -> T:
         async with self._mutation_lock:
             await self.assert_active()
-            return await operation()
+            result = await operation()
+            # If the lease expired while the venue request was in flight, do not
+            # report the mutation as cleanly committed. Callers must reconcile by
+            # client order id instead of assuming the acknowledgement is safe.
+            await self.assert_active()
+            return result
 
     async def release(self) -> bool:
         task = self._heartbeat_task
