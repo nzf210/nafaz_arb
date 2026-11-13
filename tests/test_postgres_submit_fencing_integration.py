@@ -7,6 +7,9 @@ still be blocked by the committed SUBMITTING ledger row.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
+import json
 import multiprocessing as mp
 import os
 import time
@@ -146,3 +149,65 @@ def test_process_death_during_live_venue_request_keeps_peer_fenced():
         finally:
             await conn.close()
     assert asyncio.run(final_status()) == "SUBMITTING"
+
+
+@pytest.mark.integration
+def test_signed_operator_resolution_requires_auth_and_independent_evidence():
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    async def run():
+        service = GlobalStopService(dsn, min_size=1, max_size=1)
+        await service.start()
+        client_id = "pg-manual-" + uuid.uuid4().hex[:16]
+        secret = "test-only-hmac-secret-with-at-least-32-bytes"
+        try:
+            await service.prepare_submit_attempt(
+                client_order_id=client_id, exchange="okx", market_type="perpetual",
+                symbol="BTC/USDT:USDT", side="sell", order_type="market",
+                quantity=0.001, price=0, pair_key="okx:BTC_USDT",
+            )
+            async with service.order_submit_fence(client_order_id=client_id):
+                pass
+            await service.mark_submit_unknown(client_id, "simulated lost acknowledgement")
+
+            payload = {
+                "client_order_id": client_id,
+                "operator_id": "ci-operator",
+                "decision": "PROVEN_NOT_SUBMITTED",
+                "venue_evidence_ref": "venue-case:confirmed-no-order",
+                "independent_evidence_ref": "support-ticket:independent-confirmation",
+                "rationale": "venue support and account ledger independently confirm no order",
+                "nonce": uuid.uuid4().hex,
+                "issued_at": int(time.time()),
+            }
+            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            signature = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+            bad = {"payload": payload, "signature": "0" * 64}
+            with pytest.raises(GlobalStopError, match="signature is invalid"):
+                await service.resolve_submit_attempt_signed(bad, secret=secret)
+
+            resolved = await service.resolve_submit_attempt_signed(
+                {"payload": payload, "signature": signature}, secret=secret
+            )
+            assert resolved["status"] == "ABORTED"
+            assert resolved["operator_id"] == "ci-operator"
+
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                audit = await conn.fetchrow(
+                    "select operator_id, decision, venue_evidence_ref, independent_evidence_ref "
+                    "from public.executor_submit_resolution_audit where client_order_id=$1",
+                    client_id,
+                )
+                assert audit["operator_id"] == "ci-operator"
+                assert audit["decision"] == "PROVEN_NOT_SUBMITTED"
+                assert audit["venue_evidence_ref"] != audit["independent_evidence_ref"]
+            finally:
+                await conn.close()
+        finally:
+            await service.close()
+
+    asyncio.run(run())
