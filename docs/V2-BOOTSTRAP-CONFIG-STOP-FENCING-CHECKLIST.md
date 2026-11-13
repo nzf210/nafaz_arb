@@ -223,3 +223,8 @@ Audit statis pada branch ini menelusuri facade, wrapper venue, serta lifecycle c
 4. ACK persistence failure / DB disconnect setelah request tidak boleh diubah menjadi REJECTED berdasarkan dugaan. Row SUBMITTING tetap durable dan harus direconcile; fake connection test yang ada menguji ledger survival, tetapi belum menguji proses PostgreSQL multi-process nyata saat fake venue masih menerima request.
 
 Sisa OPEN: full runtime call-site/call-graph audit lintas seluruh adapter/konfigurasi, authenticated operator manual resolution, durable fencing untuk seluruh order-open path yang mungkin ditemukan berikutnya, real PostgreSQL multi-process disconnect/fault injection, serta uji venue contract dan eventual-consistency tertunda. Exit/close/cancel/de-risking sengaja tidak dimasukkan ke entry STOP fence tanpa policy khusus yang membuktikan aman untuk risk reduction.
+
+
+### 11.1 Futures hedge IP-ban escalation
+
+Audit lanjutan menemukan bahwa futures entry-hedge sudah memakai durable fence, tetapi explicit IP-ban response dari venue futures belum menulis canonical CEX_IP_BLOCK STOP. Commit f6da668 menambahkan request_stop_in_transaction di dalam session fence yang sama, local global-admission halt, dan Redis notification best-effort setelah transaksi. Jika persistensi STOP gagal, attempt dipertahankan UNKNOWN (atau SUBMITTING bila koneksi DB sudah putus), bukan ditandai REJECTED, agar instance peer tetap terblokir. Generic 429 tetap tidak dianggap IP ban.
