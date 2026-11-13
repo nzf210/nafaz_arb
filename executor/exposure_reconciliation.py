@@ -324,6 +324,26 @@ class ExposureReconciliationWorker:
                 if venue_client is None:
                     raise RuntimeError(f"authenticated futures client unavailable for {exchange}")
 
+                mode_fetcher = getattr(venue_client, "fetch_position_mode", None)
+                if not callable(mode_fetcher):
+                    raise RuntimeError("account futures position mode cannot be verified")
+                mode = await mode_fetcher()
+                if not isinstance(mode, dict) or not isinstance(mode.get("hedged"), bool):
+                    raise ValueError("account futures position mode response is malformed")
+                # The order adapter intentionally uses OKX long/short mode
+                # (posSide=short) and one-way mode for MEXC/other venues.
+                expected_hedged = exchange == "okx"
+                if mode["hedged"] != expected_hedged:
+                    self._set_halt(exchange, "futures position mode does not match order adapter")
+                    await self._alert(
+                        "EXPOSURE_POSITION_MODE_MISMATCH",
+                        exchange,
+                        f"Futures account mode on {exchange} is incompatible with the executor order parameters.",
+                        {"expected_hedged": expected_hedged, "actual_hedged": mode["hedged"]},
+                    )
+                    continue
+                self._clear_issue(f"EXPOSURE_POSITION_MODE_MISMATCH:{exchange}", exchange)
+
                 fetch_all = getattr(venue_client, "fetch_all_positions", None)
                 if not callable(fetch_all):
                     raise RuntimeError("account-wide futures position endpoint is unavailable")
