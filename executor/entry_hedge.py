@@ -256,8 +256,7 @@ class EntryHedgeMixin:
                             "reconciliation required"
                         )
                     await global_stop.mark_submit_acknowledged(
-                        hedge_coid, exchange_order_id=str(short_order["id"]),
-                        response=short_order,
+                        hedge_coid, order=short_order,
                     )
         except Exception as submit_error:
             rejection_check = getattr(
@@ -296,6 +295,10 @@ class EntryHedgeMixin:
                 hedge_coid,
             )
             short_order = recovered
+            if global_stop is not None:
+                await global_stop.mark_submit_acknowledged(
+                    hedge_coid, order=short_order
+                )
         if not isinstance(short_order, dict) or not short_order.get("id"):
             raise AmbiguousOrderSubmission(
                 "futures hedge acknowledgement has no exchange order id; "
