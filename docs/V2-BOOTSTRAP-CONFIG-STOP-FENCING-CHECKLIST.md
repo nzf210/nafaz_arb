@@ -165,17 +165,17 @@ Sebelum merge/cutover, reviewer wajib membuka dan mencocokkan:
 - [ ] Paper mode passes restart, recovery, throttling, confirmed IP-ban, STOP, and resume scenarios.
 - [ ] No production/live cutover until all above are checked and an operator explicitly approves it.
 
-**Safety note:** This document specifies required behavior. It does not claim that the code, database migration, live venue classifiers, or tests have already been implemented or executed.
+**Safety note:** This document is a mixed implementation/review checklist. A partial PostgreSQL STOP/fencing implementation and unit-test files now exist on this branch, but neither the migration nor tests have been executed against a real PostgreSQL instance. All unchecked items remain OPEN; this branch is not LIVE-certified.
 
 
-## 8. Implementasi yang sudah ada di branch (2026-11-13)
+## 9. Implementasi yang sudah ada di branch (2026-11-13)
 
 | Komponen | Implementasi saat ini | Batas yang masih OPEN |
 |---|---|---|
-| \`executor/global_stop.py\` | Pool \`asyncpg\`, read state, STOP epoch, advisory transaction lock, idempotent STOP, operator+epoch resume primitive, Redis notification best-effort | Audit journal, authenticated operator API, heartbeat/lease generation, retry/observability hardening |
-| \`executor/engine.py\` / \`engine_runtime.py\` | LIVE startup membutuhkan \`POSTGRES_DSN\`; global STOP dibaca sebelum recovery; pool ditutup saat shutdown | Full bootstrap snapshot/config migration belum ada |
-| \`executor/engine_entry_submission.py\` | Spot entry create-order berada di transaction fence; signature IP-ban eksplisit menulis STOP di transaksi yang sama; 429 tetap venue cooldown | Seluruh create-order path belum diaudit; classifier masih signature-based |
-| \`supabase/migrations/20261113000100_add_global_stop_fencing.sql\` | Singleton canonical control row + epoch | Deployment migration dan live DB integration test belum dijalankan |
-| \`tests/test_global_stop_fencing.py\` | Unit tests untuk advisory lock path, transaction STOP update, classifier separation 429 vs IP-ban | Belum dieksekusi pada runner; belum ada race test multi-process/PostgreSQL nyata |
+| `executor/global_stop.py` | Pool `asyncpg`, read state, STOP epoch, advisory transaction lock, idempotent STOP, operator+epoch resume primitive, Redis notification best-effort | Audit journal, authenticated operator API, heartbeat/lease generation, retry/observability hardening |
+| `executor/engine.py` / `engine_runtime.py` | LIVE startup membutuhkan `POSTGRES_DSN`; global STOP dibaca sebelum recovery; pool ditutup saat shutdown | Full bootstrap snapshot/config migration belum ada |
+| `executor/engine_entry_submission.py` | Spot entry create-order berada di transaction fence; signature IP-ban eksplisit menulis STOP di transaksi yang sama; 429 tetap venue cooldown | Seluruh create-order path belum diaudit; classifier masih signature-based |
+| `supabase/migrations/20261113000100_add_global_stop_fencing.sql` | Singleton canonical control row + epoch | Deployment migration dan live DB integration test belum dijalankan |
+| `tests/test_global_stop_fencing.py` | Unit tests untuk advisory lock path, transaction STOP update, classifier separation 429 vs IP-ban | Belum dieksekusi pada runner; belum ada race test multi-process/PostgreSQL nyata |
 
-**Catatan operasi:** \`POSTGRES_DSN\` harus diberikan ke setiap instance LIVE melalui secret/environment manager dan migration harus diterapkan terlebih dahulu. Tanpa DSN, LIVE startup sengaja gagal; mode MOCK tetap dapat berjalan tanpa PostgreSQL. Jangan menganggap branch ini LIVE-certified sebelum checklist tersisa dan integration tests lulus.
+**Catatan operasi:** `POSTGRES_DSN` harus diberikan ke setiap instance LIVE melalui secret/environment manager dan migration harus diterapkan terlebih dahulu. Tanpa DSN, LIVE startup sengaja gagal; mode MOCK tetap dapat berjalan tanpa PostgreSQL. Jangan menganggap branch ini LIVE-certified sebelum checklist tersisa dan integration tests lulus.
