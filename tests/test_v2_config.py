@@ -233,3 +233,94 @@ def test_rejects_telegram_token_value_but_allows_env_reference():
     _reject_inline_secrets({"telegram": {"bot_token_env": "NAFAZ_TELEGRAM_TOKEN"}})
     with pytest.raises(ConfigSnapshotError, match="inline secret"):
         _reject_inline_secrets({"telegram": {"bot_token": "not-allowed"}})
+
+
+
+class _OutboxConnection:
+    def __init__(self, events):
+        self.events = events
+        self.acked = []
+        self.retried = []
+
+    async def fetch(self, _query, _batch_size, _worker_id, _lease_seconds):
+        return self.events
+
+    async def execute(self, query, *args):
+        if "published_at = now()" in query:
+            self.acked.append(args)
+        elif "next_attempt_at = now()" in query:
+            self.retried.append(args)
+        return "UPDATE 1"
+
+
+class _OutboxPool:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def acquire(self):
+        return _Acquire(self.connection)
+
+
+class _PublishRedis:
+    def __init__(self, fail=False):
+        self.messages = []
+        self.fail = fail
+
+    async def publish(self, channel, message):
+        if self.fail:
+            raise OSError("redis connection detail must not be persisted")
+        self.messages.append((channel, json.loads(message)))
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_outbox_publisher_delivers_and_acknowledges_event():
+    from executor.v2_config import PostgresOutboxPublisher
+
+    event = {
+        "event_id": 41,
+        "event_key": "config:8:activated",
+        "aggregate_type": "config",
+        "aggregate_version": 8,
+        "event_type": "config.activated",
+        "payload": {"version": 8, "content_sha256": "a" * 64},
+        "attempts": 1,
+    }
+    connection = _OutboxConnection([event])
+    redis = _PublishRedis()
+    publisher = PostgresOutboxPublisher(
+        _OutboxPool(connection), redis, worker_id="outbox-test-worker"
+    )
+
+    result = await publisher.publish_pending()
+
+    assert result == {"claimed": 1, "published": 1, "failed": 0, "ack_lost": 0}
+    assert redis.messages[0][0] == "nafaz:v2:events"
+    assert redis.messages[0][1]["event_key"] == "config:8:activated"
+    assert len(connection.acked) == 1
+
+
+@pytest.mark.asyncio
+async def test_outbox_publisher_retries_and_does_not_persist_exception_details():
+    from executor.v2_config import PostgresOutboxPublisher
+
+    event = {
+        "event_id": 42,
+        "event_key": "config:9:activated",
+        "aggregate_type": "config",
+        "aggregate_version": 9,
+        "event_type": "config.activated",
+        "payload": {"version": 9},
+        "attempts": 2,
+    }
+    connection = _OutboxConnection([event])
+    publisher = PostgresOutboxPublisher(
+        _OutboxPool(connection), _PublishRedis(fail=True), worker_id="outbox-test-worker"
+    )
+
+    result = await publisher.publish_pending()
+
+    assert result == {"claimed": 1, "published": 0, "failed": 1, "ack_lost": 0}
+    assert len(connection.retried) == 1
+    assert connection.retried[0][2] == 4
+    assert connection.retried[0][3] == "OSError"
