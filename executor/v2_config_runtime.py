@@ -56,7 +56,8 @@ class ConfigConsumerRegistry:
                    set process_id = excluded.process_id,
                        last_seen_at = now(),
                        status = case
-                           when public.config_consumers.status = 'STOPPED' then 'STARTING'
+                           when public.config_consumers.process_id is distinct from excluded.process_id
+                             or public.config_consumers.status = 'STOPPED' then 'STARTING'
                            else public.config_consumers.status
                        end,
                        stopped_at = null
@@ -133,13 +134,16 @@ class ConfigConsumerRegistry:
                 lease_seconds,
             )
         active = list(rows or [])
-        lagging = tuple(
+        lagging_items = [
             str(row["instance_id"])
             for row in active
             if row["status"] != "ACTIVE"
             or row["acknowledged_version"] != target.version
             or str(row["acknowledged_sha256"] or "").strip() != target.content_sha256
-        )
+        ]
+        if len(active) < minimum_instances:
+            lagging_items.append(f"insufficient_instances:{len(active)}/{minimum_instances}")
+        lagging = tuple(lagging_items)
         converged = len(active) >= minimum_instances and not lagging
         return ConvergenceReport(
             converged=converged,
