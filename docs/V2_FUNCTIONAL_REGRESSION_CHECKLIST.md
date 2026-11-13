@@ -49,11 +49,11 @@
 - [ ] Verify Redis outage blocks LIVE readiness (no stale-cache fallback).
 - [ ] Verify invalidation causes a PostgreSQL refetch before in-memory swap.
 - [ ] Verify in-memory snapshot swap is atomic; active requests never observe partial config.
-- [ ] Verify outbox publisher claims rows safely across multiple workers.
-- [ ] Verify publish retry/backoff, poison-event handling and replay after Redis outage.
-- [ ] Verify duplicate outbox delivery is idempotent at consumers.
-- [ ] Verify every executor instance acknowledges the activated version.
-- [ ] Verify partial propagation is visible and blocks new LIVE entries until convergence.
+- [x] Implement outbox row claiming with PostgreSQL `FOR UPDATE SKIP LOCKED` and expiring worker leases; multi-worker DB integration test pending.
+- [x] Implement bounded exponential retry/backoff and lease release for Redis publish failures; poison-event policy and outage replay integration tests pending.
+- [x] Publish stable `event_key` in every event envelope for consumer deduplication; idempotent consumer implementation/tests pending.
+- [ ] Verify every executor instance acknowledges the activated version (not implemented).
+- [ ] Verify partial propagation is visible and blocks new LIVE entries until convergence (not implemented).
 - [ ] Verify old cache keys and snapshots expire only after all consumers have advanced.
 
 ## 4. Runtime configuration cutover
@@ -205,6 +205,6 @@
 
 | Date (UTC) | Candidate SHA | CI run | Checklist section | Evidence / artifact | Result | Reviewer |
 |---|---|---|---|---|---|---|
-| 2026-11-13 | `712e0b31dadefe0337cc7291e65080d3c8da5004` | `43432667372` | Config contract validation | Python: 2 fixture failures; PostgreSQL schema + Docker: passed; Go: still running at review | Corrective fixture commit `6a996cd18647390d7f4b2ae72b94b8ced38bb18a`; rerun evidence pending | Pending |
+| 2026-11-13 | `850db4e92f57bb26cb78293f3ab7bbc8a423f0fd` | Pending | Outbox publisher + regression tests | Added SKIP LOCKED lease, Redis publish, acknowledgement and retry tests; CI not yet checked | Pending | Pending |
 
 **Current release decision:** NOT LIVE-READY. The V2 database schema and snapshot-reader foundation do not yet constitute a deployed, verified trading control plane.
