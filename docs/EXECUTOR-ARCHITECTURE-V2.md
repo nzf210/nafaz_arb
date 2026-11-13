@@ -1449,3 +1449,7 @@ Spot entry now records whether canonical CEX_IP_BLOCK persistence failed inside 
 ### De-risking order retry policy
 
 Risk-reducing rollback and force-close spot market sells are not subject to the entry Global STOP fence. Their retry policy is nevertheless conservative: generic retry previously repeated any exception, including timeout/connection reset/HTTP 503 after a possible venue-side acceptance. Both call sites now pass an explicit retry predicate and retry only a confirmed HTTP 429 rejection. Ambiguous transport outcomes and HTTP 503 stop after the first attempt and remain for order-registry/manual reconciliation; they are not blindly resubmitted. This preserves the ability to reduce risk without risking duplicate market sells.
+
+### Spot exit limit-sell ambiguity
+
+The dynamic spot exit SELL remains outside the entry STOP fence because it reduces spot exposure. Its submit failure path now performs exact-client-ID lookup. A match is adopted and registered; a not-found or failed lookup is treated as inconclusive (venue history may be eventually consistent), so the pair is moved to RECONCILIATION_REQUIRED and no new repricing order is sent. This avoids duplicate SELL orders while preserving the separate risk-reducing policy. Futures reduceOnly close already enters RECONCILIATION_REQUIRED after any unverified close result and does not automatically retry.
