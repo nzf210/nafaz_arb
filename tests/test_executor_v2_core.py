@@ -28,6 +28,10 @@ from executor.command_processor import CommandProcessor, CommandType, CommandSta
 from executor.event_inbox import EventInbox, EventNormalizer, StreamEventType
 from executor.financial_reconciliation import FinancialReconciliationEngine, ReconciliationSeverity
 from executor.exchange_capabilities import ExchangeCapabilityRegistry, CapabilityStatus
+from executor.capital_manager import CapitalManager, CapitalExceededError
+from executor.market_data_gate import MarketDataGate, GateVerdict
+from executor.unwind_planner import UnwindPlanner, UnwindSequence
+from executor.system_readiness import SystemReadinessGate, ActionPermission
 
 
 # =====================================================================
@@ -564,5 +568,161 @@ async def test_engine_runtime_slot_reservation_and_command_journal(fake_redis):
         pass
 
     assert proc_mock.poll_and_execute_pending_commands.called
+
+
+# =====================================================================
+# 12. CapitalManager Tests (Section 22.1)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_capital_manager_reservations_and_limits():
+    mgr = CapitalManager(
+        max_portfolio_capital_usdt=500.0,
+        max_capital_per_venue_usdt=300.0,
+        max_capital_per_pair_usdt=150.0,
+        futures_margin_buffer_ratio=0.20,
+    )
+
+    # 1. Successful reservation: 100 USDT + 20 buffer = 120 total
+    res1 = await mgr.reserve_capital(
+        "res-1",
+        pair_key="toko_okx:BTC",
+        local_venue="tokocrypto",
+        global_venue="okx",
+        notional_usdt=100.0,
+    )
+    assert res1.allocated_usdt == 100.0
+    assert res1.margin_buffer_usdt == 20.0
+    assert await mgr.get_allocated_capital() == 120.0
+
+    # 2. Exceeds per-pair limit (150 max; used 120 + req 60 = 180 > 150)
+    with pytest.raises(CapitalExceededError):
+        await mgr.reserve_capital(
+            "res-2",
+            pair_key="toko_okx:BTC",
+            local_venue="tokocrypto",
+            global_venue="okx",
+            notional_usdt=50.0,
+        )
+
+    # 3. Release res-1, then reservation succeeds
+    await mgr.release_capital("res-1")
+    assert await mgr.get_allocated_capital() == 0.0
+
+    res2 = await mgr.reserve_capital(
+        "res-3",
+        pair_key="toko_okx:BTC",
+        local_venue="tokocrypto",
+        global_venue="okx",
+        notional_usdt=50.0,
+    )
+    assert res2.status == "ACTIVE"
+
+
+# =====================================================================
+# 13. MarketDataGate Tests (Section 23.1 & 23.2)
+# =====================================================================
+
+def test_market_data_gate_vwap_and_slippage():
+    gate = MarketDataGate(max_quote_age_ms=2000.0, max_acceptable_slippage_pct=0.005)
+    now_ms = int(time.time() * 1000)
+
+    # Bids / Asks: [[price, qty], ...]
+    bids = [[100.0, 1.0], [99.0, 2.0], [98.0, 5.0]]
+    asks = [[101.0, 1.0], [102.0, 2.0], [103.0, 5.0]]
+
+    # 1. Healthy book with sufficient depth
+    res_ready = gate.validate_book(
+        bids=bids, asks=asks, book_timestamp_ms=now_ms - 100, target_quantity=1.5, side="buy"
+    )
+    assert res_ready.verdict == GateVerdict.READY
+    assert res_ready.is_depth_sufficient is True
+    # 1.0 @ 101 + 0.5 @ 102 = 152 / 1.5 = 101.333
+    assert res_ready.executable_vwap == pytest.approx(101.333, rel=1e-3)
+
+    # 2. Stale book -> REJECTED
+    res_stale = gate.validate_book(
+        bids=bids, asks=asks, book_timestamp_ms=now_ms - 5000, target_quantity=1.0, side="buy"
+    )
+    assert res_stale.verdict == GateVerdict.REJECTED
+    assert "STALE" in res_stale.reason
+
+    # 3. Crossed book -> REJECTED
+    crossed_bids = [[105.0, 1.0]]
+    crossed_asks = [[101.0, 1.0]]
+    res_crossed = gate.validate_book(
+        bids=crossed_bids, asks=crossed_asks, book_timestamp_ms=now_ms, target_quantity=1.0, side="buy"
+    )
+    assert res_crossed.verdict == GateVerdict.REJECTED
+    assert "CROSSED" in res_crossed.reason
+
+
+# =====================================================================
+# 14. UnwindPlanner Tests (Section 23.5)
+# =====================================================================
+
+def test_unwind_planner_sequences():
+    planner = UnwindPlanner(thin_liquidity_slippage_threshold=0.003)
+
+    # 1. Emergency -> Concurrent Market
+    plan_em = planner.plan_unwind(
+        pair_key="toko_okx:BTC",
+        spot_slippage_pct=0.001,
+        futures_slippage_pct=0.001,
+        is_emergency=True,
+    )
+    assert plan_em.sequence == UnwindSequence.CONCURRENT_MARKET
+    assert plan_em.spot_order_type == "market"
+
+    # 2. Spot liquidity is thin -> Spot Limit Sell First
+    plan_spot_first = planner.plan_unwind(
+        pair_key="toko_okx:BTC",
+        spot_slippage_pct=0.008,
+        futures_slippage_pct=0.001,
+        is_emergency=False,
+    )
+    assert plan_spot_first.sequence == UnwindSequence.SPOT_FIRST_THEN_FUTURES
+    assert plan_spot_first.spot_order_type == "limit"
+
+    # 3. Balanced liquidity -> Concurrent Market
+    plan_balanced = planner.plan_unwind(
+        pair_key="toko_okx:BTC",
+        spot_slippage_pct=0.001,
+        futures_slippage_pct=0.001,
+        is_emergency=False,
+    )
+    assert plan_balanced.sequence == UnwindSequence.CONCURRENT_MARKET
+
+
+# =====================================================================
+# 15. SystemReadinessGate Tests (Section 26)
+# =====================================================================
+
+def test_system_readiness_gate_verdicts():
+    gate = SystemReadinessGate()
+    mock_eng = MagicMock()
+    mock_eng._trading_halted = False
+    mock_eng._risk_persistence_failed = False
+    mock_eng._recovery_complete = True
+    mock_eng._recovery_scope_halts = {}
+    mock_eng._exchange_halted = {}
+    mock_eng._pair_halted = {}
+    mock_eng._recovered_orphans = {}
+    mock_eng.two_leg_coordinator = None
+
+    # Healthy engine -> READY, FULL_EXECUTION
+    rep_ready = gate.evaluate_readiness(mock_eng, pair_tag="tokocrypto:BTC_BIDR", venue="tokocrypto")
+    assert rep_ready.is_ready is True
+    assert rep_ready.permission == ActionPermission.FULL_EXECUTION
+    assert len(rep_ready.blocking_reasons) == 0
+
+    # Trading halted -> BLOCKED / READ_AND_PROTECT_ONLY
+    mock_eng._trading_halted = True
+    mock_eng._halt_reason = "MANUAL_OPERATOR_HALT"
+    rep_halted = gate.evaluate_readiness(mock_eng, pair_tag="tokocrypto:BTC_BIDR", venue="tokocrypto")
+    assert rep_halted.is_ready is False
+    assert rep_halted.permission == ActionPermission.READ_AND_PROTECT_ONLY
+    assert any("TRADING_HALTED" in r for r in rep_halted.blocking_reasons)
+
 
 

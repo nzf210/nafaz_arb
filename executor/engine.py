@@ -59,6 +59,10 @@ from executor.command_processor import CommandProcessor
 from executor.event_inbox import EventInbox
 from executor.financial_reconciliation import FinancialReconciliationEngine
 from executor.exchange_capabilities import ExchangeCapabilityRegistry
+from executor.capital_manager import CapitalManager
+from executor.market_data_gate import MarketDataGate
+from executor.unwind_planner import UnwindPlanner
+from executor.system_readiness import SystemReadinessGate
 from executor.exposure_reconciliation import ExposureReconciliationWorker
 from executor.trade_fill_reconciliation import TradeFillReconciliationWorker
 from executor.engine_order_intents import EngineOrderIntentMixin
@@ -201,6 +205,10 @@ class ArbitrageEngine(
         self.event_inbox = EventInbox()
         self.financial_reconciliation = FinancialReconciliationEngine()
         self.capability_registry = ExchangeCapabilityRegistry()
+        self.capital_manager = CapitalManager()
+        self.market_data_gate = MarketDataGate()
+        self.unwind_planner = UnwindPlanner()
+        self.system_readiness_gate = SystemReadinessGate()
 
         # Universal order registry: durable identity for every order the bot
         # submits, so a restart can re-attach venue orders to their positions.
