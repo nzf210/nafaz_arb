@@ -293,3 +293,48 @@ class ConfigInvalidationConsumer:
                 result = close()
                 if hasattr(result, "__await__"):
                     await result
+
+
+class PostgresEntryAdmissionGate:
+    """Fail-closed final admission check against PostgreSQL control state.
+
+    The gate deliberately refuses snapshots whose scanner signals remain
+    disabled. It also verifies the DB active pointer and RUNNING operator state
+    on every check, then requires every live executor lease to acknowledge the
+    same version/hash. A caller must invoke it immediately before each entry
+    submission; it is not a substitute for the future transactional STOP fence.
+    """
+
+    def __init__(self, pool: Any, store: AtomicConfigSnapshot, registry: ConfigConsumerRegistry):
+        self._pool = pool
+        self._store = store
+        self._registry = registry
+
+    async def require_entry_allowed(self) -> ConvergenceReport:
+        config = self._store.current
+        if config is None:
+            raise ConfigSnapshotError("no verified V2 config snapshot is loaded")
+        execution = config.snapshot.get("execution")
+        if not isinstance(execution, dict) or execution.get("signals_enabled") is not True:
+            raise ConfigSnapshotError("V2 execution signals are disabled; entry admission is closed")
+
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                select s.state, s.trading_enabled, s.config_version,
+                       v.version as active_version, v.content_sha256 as active_sha256
+                  from public.operator_control_state s
+                  join public.active_config_version p on p.singleton = true
+                  join public.config_versions v on v.version = p.version
+                 where s.singleton = true and v.status = 'active'
+                """
+            )
+        if not row:
+            raise ConfigSnapshotError("durable operator state or active config pointer is missing")
+        if row["state"] != "RUNNING" or row["trading_enabled"] is not True:
+            raise ConfigSnapshotError("durable operator state is not RUNNING")
+        if row["config_version"] != config.version or row["active_version"] != config.version:
+            raise ConfigSnapshotError("executor snapshot is not the active operator config version")
+        if str(row["active_sha256"]).strip() != config.content_sha256:
+            raise ConfigSnapshotError("active PostgreSQL config hash differs from executor snapshot")
+        return await self._registry.require_converged(config)
