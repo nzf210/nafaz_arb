@@ -85,6 +85,8 @@ class ExecutorConfig:
     # A pricing HTTP 429 on the local venue (rate limit / throttle) pauses new
     # entry placement for this long instead of hammering the endpoint.
     venue_rate_limit_cooldown_seconds: float = 30.0
+    # Cadence for background periodic reconciliation of resting orders with exchange.
+    exchange_reconciliation_interval_seconds: float = 60.0
     # Consecutive execution failures on a pair before it is blacklisted
     # for cooldown. 0 disables the auto-blacklist.
     max_pair_failure_threshold: int = 2
@@ -157,6 +159,7 @@ class ExecutorConfig:
                 ("max_order_fetch_failures", int),
                 ("order_fetch_backoff_max_seconds", float),
                 ("venue_rate_limit_cooldown_seconds", float),
+                ("exchange_reconciliation_interval_seconds", float),
                 ("max_pair_failure_threshold", int),
                 ("pair_blacklist_cooldown_seconds", float),
             ):
@@ -247,6 +250,12 @@ class ExecutorConfig:
         if ttl_env := os.getenv("MAX_ORDER_TTL_SECONDS"):
             try:
                 self.max_order_ttl_seconds = int(ttl_env)
+            except ValueError:
+                pass
+
+        if recon_env := os.getenv("EXCHANGE_RECONCILIATION_INTERVAL_SECONDS"):
+            try:
+                self.exchange_reconciliation_interval_seconds = float(recon_env)
             except ValueError:
                 pass
 

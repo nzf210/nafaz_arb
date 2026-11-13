@@ -122,6 +122,8 @@ class EngineRuntimeMixin:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         if self.global_stop is not None:
             await self.global_stop.close()
+        if getattr(self, "postgres_risk", None) is not None:
+            await self.postgres_risk.close()
         if self.supabase.enabled:
             await self.supabase.close()
         if self.client:

@@ -48,6 +48,12 @@ from executor.risk import RiskMixin
 from executor.rollback import RollbackMixin
 from executor.supabase import SupabaseWriter
 from executor.global_stop import GlobalStopService
+from executor.postgres_risk import PostgresRiskStateService
+from executor.order_slots import OrderSlotManager
+from executor.mutation_gateway import MutationGateway
+from executor.leg_managers import TwoLegCoordinator
+from executor.pair_pnl_engine import PairPnLEngine
+from executor.exit_decision_engine import ExitDecisionEngine
 from executor.exposure_reconciliation import ExposureReconciliationWorker
 from executor.trade_fill_reconciliation import TradeFillReconciliationWorker
 from executor.engine_order_intents import EngineOrderIntentMixin
@@ -168,10 +174,23 @@ class ArbitrageEngine(
         # Best-effort audit persistence. Writes are queued and flushed by a
         # background task, so an unreachable database can never delay a hedge.
         self.supabase = SupabaseWriter(getattr(config, "supabase", None))
+        pg_dsn = str(getattr(config, "postgres_dsn", "") or "")
         self.global_stop = (
-            GlobalStopService(getattr(config, "postgres_dsn", ""), redis_client)
-            if getattr(config, "postgres_dsn", "") else None
+            GlobalStopService(pg_dsn, redis_client)
+            if pg_dsn else None
         )
+        self.postgres_risk = (
+            PostgresRiskStateService(dsn=pg_dsn)
+            if pg_dsn else None
+        )
+        self.slot_manager = OrderSlotManager()
+        self.mutation_gateway = MutationGateway(
+            global_stop=self.global_stop,
+            slot_manager=self.slot_manager,
+        )
+        self.two_leg_coordinator = TwoLegCoordinator()
+        self.pair_pnl_engine = PairPnLEngine()
+        self.exit_decision_engine = ExitDecisionEngine()
 
         # Universal order registry: durable identity for every order the bot
         # submits, so a restart can re-attach venue orders to their positions.
@@ -251,6 +270,10 @@ class ArbitrageEngine(
             # PostgreSQL is the canonical admission authority and must be ready
             # before recovery/listeners can make the executor READY.
             await self.global_stop.start()
+            if self.postgres_risk is not None:
+                self.postgres_risk.pool = self.global_stop.pool
+            if self.slot_manager is not None:
+                self.slot_manager.pool = self.global_stop.pool
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
