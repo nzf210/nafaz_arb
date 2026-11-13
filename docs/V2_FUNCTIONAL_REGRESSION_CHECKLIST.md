@@ -222,3 +222,10 @@
 - The engine checks the gate before entry preparation and again immediately before the spot order API call. Missing gate or any check error denies LIVE entry; MOCK behavior is unchanged.
 - The current V2 snapshot validator still requires signals_enabled=false pending sole-consumer proof, so the admission gate correctly remains closed under the present contract.
 - This is not yet a transactional fencing lock shared with STOP. Do not interpret the final DB read as proof that a concurrent STOP can never race an external submit.
+
+
+### CI correction record
+- Run `43435508858` / `43435713928` exposed two legacy LIVE unit tests that bypassed the new required gate and a malformed SQL DO delimiter in the consumer smoke test.
+- The two unit tests now inject an explicit test-only allow gate; production LIVE admission remains fail-closed.
+- The SQL smoke block now uses the named `$consumer$` delimiter. The migration itself had applied and replayed successfully; the failure was in the smoke-test block.
+- Re-run CI on the corrected branch head is required before treating these fixes as verified.
