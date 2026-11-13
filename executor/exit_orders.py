@@ -174,7 +174,37 @@ class ExitOrderManagementMixin:
                 rejection_check = getattr(self, "_is_definitive_order_rejection", None)
                 if callable(rejection_check) and rejection_check(submit_err):
                     await self._mark_order_submission_rejected(pos.local_exchange, exit_coid)
-                raise
+                    raise
+                # An exit SELL is risk-reducing, so it is not gated by Global
+                # STOP. But an ambiguous acknowledgement must not cause the
+                # next pricing cycle to submit a second SELL with a new id.
+                lookup = getattr(
+                    self.client, "fetch_local_order_by_client_id", None
+                )
+                recovered = None
+                if callable(lookup):
+                    try:
+                        recovered = await lookup(
+                            exit_coid, pos.symbol, pos.local_amount_spec
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[Exit] exact client-id lookup failed after ambiguous submit %s",
+                            exit_coid,
+                        )
+                if not isinstance(recovered, dict) or not recovered.get("id"):
+                    await self._mark_order_submission_ambiguous(
+                        pair_tag, pos.local_exchange, exit_coid,
+                        f"exit limit sell submit outcome ambiguous: "
+                        f"{type(submit_err).__name__}: {submit_err}; "
+                        "exact client-id lookup did not return a verifiable order",
+                    )
+                    return
+                logger.warning(
+                    "[Exit] recovered limit sell %s by exact client id after lost acknowledgement",
+                    exit_coid,
+                )
+                order = recovered
             order_id = str(order.get("id", ""))
             self.supabase.order(
                 pair_tag,
