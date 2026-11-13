@@ -59,7 +59,12 @@ def _reject_inline_secrets(value: Any, path: str = "snapshot") -> None:
     if isinstance(value, dict):
         for key, child in value.items():
             normalized = str(key).strip().lower()
-            if normalized in forbidden:
+            is_reference = normalized.endswith("_env") or normalized.endswith("_ref")
+            is_secret_name = normalized in forbidden or normalized.endswith((
+                "_api_key", "_api_secret", "_secret", "_password", "_passphrase",
+                "_token", "_private_key", "_access_key",
+            ))
+            if is_secret_name and not is_reference:
                 raise ConfigSnapshotError(
                     f"inline secret field is forbidden in V2 config: {path}.{normalized}"
                 )
