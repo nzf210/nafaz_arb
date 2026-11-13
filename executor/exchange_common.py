@@ -110,9 +110,10 @@ def _tokocrypto_client_order_id(
     A dashed ``{pair}-{leg}-{seq}`` id is both too long and wrongly
     punctuated, so the venue answers 3703 and the order is never accepted.
     The pair slug is the only free-form part, so it is replaced by a short
-    hash; the ``{leg}{seq}`` tail is kept verbatim so a retried submit still
-    presents the same id and the venue can drop the duplicate instead of
-    double-filling.
+    hash; the {leg}{seq} tail is kept verbatim to retain a compact, deterministic
+    correlation key for order-history reconciliation. Tokocrypto does not
+    promise uniqueness enforcement, so this id must never justify a blind
+    resubmission after an ambiguous acknowledgement.
     """
     parts = client_order_id.rsplit("-", 2)
     if len(parts) == 3:
@@ -124,7 +125,7 @@ def _tokocrypto_client_order_id(
     digest = hashlib.sha256(client_order_id.encode("utf-8")).hexdigest()
     room = TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - len(tail)
     if room < 1:
-        # Keep the tail: it carries the idempotency guarantee.
+        # Preserve the tail for deterministic correlation, not deduplication.
         tail = tail[: TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - 1]
         room = TOKOCRYPTO_CLIENT_ORDER_ID_MAX_LEN - len(prefix) - len(tail)
         if room < 1:
