@@ -240,20 +240,10 @@ class ArbitrageEngine(
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
+        # _run_startup_recovery() restores durable risk state and runs the
+        # account-wide exposure reconciliation under the recovery lease before
+        # this process is allowed to consume the signal queue.
         self._recovery_complete = await self._run_startup_recovery()
-        if self._recovery_complete and not bool(getattr(self.config, "mock_mode", False)):
-            # Do not mark the executor ready after verifying only bot-managed
-            # symbols. Enumerate every configured futures account before any
-            # entry is admitted so manual/orphan positions are discovered too.
-            try:
-                await self.exposure_reconciliation.reconcile_once()
-            except Exception as exc:
-                logger.exception("[Recovery] startup account-wide exposure reconciliation failed")
-                self._halt_exposure_scope(
-                    "*",
-                    f"startup account-wide exposure reconciliation failed: {type(exc).__name__}: {exc}",
-                )
-                self._recovery_complete = False
         if not self._recovery_complete:
             self._halt_exposure_scope(
                 "*", "startup recovery did not acquire and complete the distributed lease"
