@@ -69,6 +69,100 @@ def _reject_inline_secrets(value: Any, path: str = "snapshot") -> None:
             _reject_inline_secrets(child, f"{path}[{index}]")
 
 
+
+
+_ALLOWED_ROOT_KEYS = {
+    "schema_version", "mode", "execution", "storage", "redis",
+    "venues", "accounts", "routes", "risk_profiles", "scanner",
+    "observability", "telegram", "fx",
+}
+_REQUIRED_ROOT_KEYS = {
+    "schema_version", "mode", "execution", "storage", "redis",
+    "venues", "accounts", "routes", "risk_profiles", "scanner",
+}
+
+
+def validate_v2_snapshot(snapshot: Mapping[str, Any]) -> None:
+    """Validate the V2 root contract and all stable cross-object references."""
+    if not isinstance(snapshot, dict):
+        raise ConfigSnapshotError("V2 config must be a JSON object")
+    missing = sorted(_REQUIRED_ROOT_KEYS - set(snapshot))
+    unknown = sorted(set(snapshot) - _ALLOWED_ROOT_KEYS)
+    if missing:
+        raise ConfigSnapshotError(f"V2 config missing required root keys: {', '.join(missing)}")
+    if unknown:
+        raise ConfigSnapshotError(f"V2 config has unsupported root keys: {', '.join(unknown)}")
+    if snapshot.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
+        raise ConfigSnapshotError("V2 config schema_version is not supported")
+    if str(snapshot.get("mode", "")).upper() not in {"LIVE", "MOCK"}:
+        raise ConfigSnapshotError("V2 config mode must be LIVE or MOCK")
+
+    execution = snapshot.get("execution")
+    scanner = snapshot.get("scanner")
+    if not isinstance(execution, dict) or execution.get("engine") != "python":
+        raise ConfigSnapshotError("V2 execution.engine must be python")
+    if execution.get("signals_enabled") is not False:
+        raise ConfigSnapshotError("V2 signals must remain disabled until sole-consumer proof")
+    if not isinstance(scanner, dict) or scanner.get("public_market_data_only") is not True:
+        raise ConfigSnapshotError("V2 scanner must be public-market-data-only")
+    if str(snapshot["mode"]).upper() == "LIVE":
+        synthetic_fx = scanner.get("synthetic_fx", {})
+        if isinstance(synthetic_fx, dict) and synthetic_fx.get("static_fallback_allowed_in_live") is True:
+            raise ConfigSnapshotError("static FX fallback is forbidden for LIVE")
+
+    venues = snapshot.get("venues")
+    accounts = snapshot.get("accounts")
+    routes = snapshot.get("routes")
+    risk_profiles = snapshot.get("risk_profiles")
+    if not all(isinstance(value, list) for value in (venues, accounts, routes)):
+        raise ConfigSnapshotError("venues, accounts and routes must be arrays")
+    if not isinstance(risk_profiles, dict):
+        raise ConfigSnapshotError("risk_profiles must be an object")
+
+    def unique_index(items: list, label: str) -> dict:
+        index = {}
+        for item in items:
+            if not isinstance(item, dict):
+                raise ConfigSnapshotError(f"{label} entries must be objects")
+            identifier = item.get("id")
+            if not isinstance(identifier, str) or not identifier or identifier.strip() != identifier:
+                raise ConfigSnapshotError(f"{label} entry has invalid id")
+            if identifier in index:
+                raise ConfigSnapshotError(f"duplicate {label} id: {identifier}")
+            index[identifier] = item
+        return index
+
+    venue_index = unique_index(venues, "venue")
+    account_index = unique_index(accounts, "account")
+    route_index = unique_index(routes, "route")
+    del route_index
+
+    for venue_id, venue in venue_index.items():
+        if venue.get("market_type") not in {"spot", "linear_perpetual", "inverse_perpetual"}:
+            raise ConfigSnapshotError(f"venue {venue_id} has unsupported market_type")
+        account_id = venue.get("account_id")
+        if account_id not in account_index:
+            raise ConfigSnapshotError(f"venue {venue_id} references unknown account {account_id!r}")
+    for account_id, account in account_index.items():
+        if account.get("venue_id") not in venue_index:
+            raise ConfigSnapshotError(f"account {account_id} references unknown venue")
+    for route in routes:
+        route_id = route["id"]
+        spot = route.get("spot")
+        futures = route.get("futures")
+        if not isinstance(spot, dict) or not isinstance(futures, dict):
+            raise ConfigSnapshotError(f"route {route_id} must define spot and futures objects")
+        for leg_name, leg in (("spot", spot), ("futures", futures)):
+            venue_id = leg.get("venue_id")
+            account_id = leg.get("account_id")
+            if venue_id not in venue_index or account_id not in account_index:
+                raise ConfigSnapshotError(f"route {route_id} {leg_name} references unknown venue/account")
+            if account_index[account_id].get("venue_id") != venue_id:
+                raise ConfigSnapshotError(f"route {route_id} {leg_name} account/venue mismatch")
+        if not route.get("risk_profile") or route["risk_profile"] not in risk_profiles:
+            raise ConfigSnapshotError(f"route {route_id} references unknown risk_profile")
+
+
 def validate_snapshot_row(row: Mapping[str, Any]) -> ConfigSnapshot:
     try:
         version = int(row["version"])
@@ -94,6 +188,7 @@ def validate_snapshot_row(row: Mapping[str, Any]) -> ConfigSnapshot:
         raise ConfigSnapshotError("active configuration snapshot must be a JSON object")
 
     _reject_inline_secrets(snapshot)
+    validate_v2_snapshot(snapshot)
     actual_hash = calculate_snapshot_sha256(snapshot)
     if len(expected_hash) != 64 or actual_hash != expected_hash:
         raise ConfigSnapshotError("active configuration SHA-256 does not match stored hash")
