@@ -399,6 +399,14 @@ begin
     if accepted_value or reason_value <> 'spot_order_limit_reached' then
         raise exception 'spot slot cap did not reject the third active pair';
     end if;
+    perform public.set_execution_capacity_config('schema-smoke-account', 'indodax', 3, null);
+    select c.max_capital_usdt into capital_value
+      from public.execution_capacity_config c
+     where c.account_scope = 'schema-smoke-account' and c.exchange_name = 'indodax';
+    if capital_value <> 100 then raise exception 'spot limit update unexpectedly cleared capital cap'; end if;
+    if not public.release_execution_capacity_for_pair(
+        'schema-smoke-account', 'indodax', 'schema-smoke-pair-2'
+    ) then raise exception 'capacity reservation release by pair failed'; end if;
     if not public.release_execution_capacity(first_id) then raise exception 'capacity reservation release failed'; end if;
     delete from public.execution_capacity_reservations where account_scope = 'schema-smoke-account';
     delete from public.execution_capacity_config where account_scope = 'schema-smoke-account';

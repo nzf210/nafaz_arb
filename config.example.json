@@ -83,10 +83,12 @@
     "exclude_open_orders": true,
     "exchanges": {
         "indodax": {
+            "account_scope": "",
             "api_key": "",
             "api_secret": ""
         },
         "tokocrypto": {
+            "account_scope": "",
             "api_key": "",
             "api_secret": "",
             "options": {
@@ -94,6 +96,7 @@
             }
         },
         "okx": {
+            "account_scope": "",
             "api_key": "",
             "api_secret": "",
             "passphrase": "",
@@ -103,11 +106,13 @@
             }
         },
         "mexc": {
+            "account_scope": "",
             "api_key": "",
             "api_secret": "",
             "testnet": false
         },
         "bybit": {
+            "account_scope": "",
             "api_key": "",
             "api_secret": "",
             "testnet": false

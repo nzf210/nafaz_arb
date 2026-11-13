@@ -65,6 +65,7 @@ async def test_modular_exchanges_config_and_env(monkeypatch):
                 "okx": {
                     "api_key": "okx_key_1",
                     "api_secret": "okx_secret_1",
+                    "account_scope": "main-okx-account",
                     "passphrase": "pass_1",
                     "testnet": True,
                     "options": {"defaultType": "swap"}
@@ -81,6 +82,7 @@ async def test_modular_exchanges_config_and_env(monkeypatch):
         cfg._apply_file(f_path)
         assert "okx" in cfg.exchanges
         assert cfg.exchanges["okx"].api_key == "okx_key_1"
+        assert cfg.exchanges["okx"].account_scope == "main-okx-account"
         assert cfg.exchanges["okx"].options.get("defaultType") == "swap"
         assert "bybit" in cfg.exchanges
         assert cfg.exchanges["bybit"].api_key == "bybit_key_1"

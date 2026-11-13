@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 class ExchangeCredentials:
     api_key: str = ""
     api_secret: str = ""
+    account_scope: str = ""
     passphrase: Optional[str] = None
     testnet: bool = False
     options: Dict[str, Any] = field(default_factory=dict)
@@ -169,6 +170,7 @@ class ExecutorConfig:
                         self.exchanges[ex_name.lower()] = ExchangeCredentials(
                             api_key=str(ex_data.get("api_key", "")),
                             api_secret=str(ex_data.get("api_secret", "")),
+                            account_scope=str(ex_data.get("account_scope", "")),
                             passphrase=ex_data.get("passphrase"),
                             testnet=bool(ex_data.get("testnet", False)),
                             options=dict(ex_data.get("options", {})),
@@ -315,9 +317,11 @@ class ExecutorConfig:
 
         self.local_credentials.api_key = os.getenv("LOCAL_API_KEY", self.local_credentials.api_key)
         self.local_credentials.api_secret = os.getenv("LOCAL_API_SECRET", self.local_credentials.api_secret)
+        self.local_credentials.account_scope = os.getenv("LOCAL_ACCOUNT_SCOPE", self.local_credentials.account_scope)
 
         self.global_credentials.api_key = os.getenv("GLOBAL_API_KEY", self.global_credentials.api_key)
         self.global_credentials.api_secret = os.getenv("GLOBAL_API_SECRET", self.global_credentials.api_secret)
+        self.global_credentials.account_scope = os.getenv("GLOBAL_ACCOUNT_SCOPE", self.global_credentials.account_scope)
         self.global_credentials.passphrase = os.getenv("GLOBAL_PASSPHRASE", self.global_credentials.passphrase)
 
         if os.getenv("GLOBAL_TESTNET", "").lower() in ("true", "1"):
@@ -332,6 +336,8 @@ class ExecutorConfig:
                 cred.api_key = env_v
                 if secret := os.getenv(f"{env_k[:-8]}_API_SECRET"):
                     cred.api_secret = secret
+                if scope := os.getenv(f"{env_k[:-8]}_ACCOUNT_SCOPE"):
+                    cred.account_scope = scope
                 if passp := os.getenv(f"{env_k[:-8]}_PASSPHRASE"):
                     cred.passphrase = passp
                 if testnet_val := os.getenv(f"{env_k[:-8]}_TESTNET"):
@@ -348,6 +354,8 @@ class ExecutorConfig:
                 self.local_credentials.api_key = src.api_key
             if src.api_secret:
                 self.local_credentials.api_secret = src.api_secret
+            if src.account_scope:
+                self.local_credentials.account_scope = src.account_scope
             if src.passphrase:
                 self.local_credentials.passphrase = src.passphrase
             if src.testnet:
@@ -363,6 +371,8 @@ class ExecutorConfig:
                 self.global_credentials.api_key = src.api_key
             if src.api_secret:
                 self.global_credentials.api_secret = src.api_secret
+            if src.account_scope:
+                self.global_credentials.account_scope = src.account_scope
             if src.passphrase:
                 self.global_credentials.passphrase = src.passphrase
             if src.testnet:
