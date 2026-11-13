@@ -48,7 +48,7 @@ These are preconditions, not automatic account mutations:
 
 ## Validation still required
 
-1. All GitHub Actions jobs must pass on the latest PR head: Go tests, Python tests, Docker images, Supabase schema/migration tests, and Go race/vet jobs.
+1. Latest CI run for head 48eb0a1e: Python tests passed, Go unit tests passed, and Supabase schema/migration checks passed. Docker executor image build, Go race tests, and Go vet were still running at the time of this update; do not treat the pipeline as fully green until all jobs finish successfully.
 2. Authenticated **read-only** smoke test for each configured CEX: balances, position mode, leverage, all open positions, open orders, order history, and private trade history. No secrets should be placed in source or chat.
 3. Paper trading with real market data and account reads, but no order submission.
 4. Failure-injection/restart drills: spot fill + futures reject, partial fills, lost create-order acknowledgement, lost cancel acknowledgement, process restart with pending orders, Supabase outage, Redis outage, and stale market data.
