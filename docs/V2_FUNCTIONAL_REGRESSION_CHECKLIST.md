@@ -205,6 +205,6 @@
 
 | Date (UTC) | Candidate SHA | CI run | Checklist section | Evidence / artifact | Result | Reviewer |
 |---|---|---|---|---|---|---|
-| 2026-11-13 | `3a7d83eb9562480de7585fe24999ea9d65036098` | Pending for latest SHA | Config contract + lifecycle + checklist | Implementation and regression tests added; CI evidence not yet confirmed | Pending | Pending |
+| 2026-11-13 | `712e0b31dadefe0337cc7291e65080d3c8da5004` | `43432667372` | Config contract validation | Python: 2 fixture failures; PostgreSQL schema + Docker: passed; Go: still running at review | Corrective fixture commit `6a996cd18647390d7f4b2ae72b94b8ced38bb18a`; rerun evidence pending | Pending |
 
 **Current release decision:** NOT LIVE-READY. The V2 database schema and snapshot-reader foundation do not yet constitute a deployed, verified trading control plane.
