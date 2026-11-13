@@ -1396,3 +1396,17 @@ Wajib ada tests untuk:
 - resume ditolak sebelum unblock verification + reconciliation + operator acknowledgement.
 
 Detail acceptance checklist ada di [V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md](./V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md).
+
+
+## 14. Implementasi awal PostgreSQL Global STOP / fencing (2026-11-13)
+
+Branch \`feat/v2-bootstrap-config-stop-fencing\` menambahkan implementasi awal berikut:
+
+- \`executor/global_stop.py\` mengelola pool \`asyncpg\`, membaca singleton STOP state, meminta STOP dengan epoch monotonik, dan menyediakan resume primitive yang mensyaratkan operator serta expected epoch.
+- \`supabase/migrations/20261113000100_add_global_stop_fencing.sql\` membuat \`executor_global_control\` sebagai canonical STOP row.
+- STOP request dan spot-entry submit memakai PostgreSQL transaction advisory lock yang sama (\`731904221\`). Lock ditahan selama satu create-order HTTP call; IP-ban response eksplisit dapat menulis STOP di transaksi tersebut sebelum lock dilepas.
+- Redis Pub/Sub hanya notifikasi; PostgreSQL tetap canonical. HTTP 429 biasa tetap melalui venue cooldown dan tidak otomatis menjadi global STOP.
+- LIVE startup menolak berjalan tanpa \`POSTGRES_DSN\` atau ketika migration/control row tidak tersedia. MOCK dapat berjalan tanpa PostgreSQL.
+- Jalur hedge/exit/de-risking tidak dimasukkan ke entry STOP gate agar exposure yang sudah terbentuk tetap dapat di-hedge atau dikurangi. Semua jalur pembuka exposure lain masih harus diaudit dan difence sebelum cutover.
+
+Status: fondasi awal, **belum LIVE-certified**. Belum ada heartbeat/lease generation PostgreSQL, config runtime PostgreSQL, audit journal append-only, operator API yang terotorisasi, adapter classifier per venue yang lengkap, maupun integration race test multi-instance. Referensi acceptance gate: [V2 Bootstrap/STOP checklist](./V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md).
