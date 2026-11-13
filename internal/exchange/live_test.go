@@ -158,7 +158,7 @@ func newMockMEXCPerpServer() *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/api/v1/contract/detail":
+		case "/api/v1/contract/detail/country":
 			w.Write([]byte(`{
 				"success": true,
 				"code": 0,
@@ -171,7 +171,10 @@ func newMockMEXCPerpServer() *httptest.Server {
 						"priceUnit": 0.1,
 						"volUnit": 1,
 						"minVol": 1,
-						"state": 0
+						"state": 0,
+						"futureType": 1,
+						"apiAllowed": true,
+						"type": 1
 					}
 				]
 			}`))
@@ -448,4 +451,46 @@ func TestMarketMetadataFallbackRejectsExpiredCache(t *testing.T) {
 	if _, err := adapter.getFallbackOKXPerp(context.Canceled); err == nil {
 		t.Fatal("expected expired OKX metadata cache to be rejected")
 	}
+}
+
+
+func TestMEXCPerpMarketRequiresAPIPermissionAndPerpetualType(t *testing.T) {
+    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        if r.URL.Path != "/api/v1/contract/detail/country" {
+            http.NotFound(w, r)
+            return
+        }
+        w.Write([]byte(`{
+            "success": true,
+            "code": 0,
+            "data": {
+                "symbol": "BTC_USDT",
+                "baseCoin": "BTC",
+                "quoteCoin": "USDT",
+                "contractSize": 0.0001,
+                "priceUnit": 0.1,
+                "volUnit": 1,
+                "minVol": 1,
+                "state": 0,
+                "futureType": 1,
+                "apiAllowed": true,
+                "type": 1
+            }
+        }`))
+    }))
+    defer server.Close()
+
+    adapter := NewLiveAdapter()
+    adapter.SetBaseURLs("", "", server.URL)
+    markets, err := adapter.fetchMEXCPerpetualMarkets(context.Background())
+    if err != nil {
+        t.Fatalf("fetchMEXCPerpetualMarkets: %v", err)
+    }
+    if len(markets) != 1 || markets[0].Symbol != "mexc:BTC_USDT" {
+        t.Fatalf("expected one API-enabled perpetual contract, got %+v", markets)
+    }
+    if markets[0].AmountSpec == nil || markets[0].AmountSpec.BasePerUnit != 0.0001 {
+        t.Fatalf("unexpected MEXC contract amount spec: %+v", markets[0].AmountSpec)
+    }
 }
