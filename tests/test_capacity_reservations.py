@@ -32,7 +32,10 @@ class AtomicCapacityStore:
             if len(active_for_exchange) >= self.max_orders:
                 return {"accepted": False, "reason": "spot_order_limit_reached"}
             total = sum(item["amount"] for item in active_for_exchange)
-            cap = max_capital_usdt if max_capital_usdt is not None else self.capital_limit
+            if max_capital_usdt is not None and self.capital_limit is not None:
+                cap = min(self.capital_limit, max_capital_usdt)
+            else:
+                cap = max_capital_usdt if max_capital_usdt is not None else self.capital_limit
             if cap is not None and total + amount_usdt > cap:
                 return {"accepted": False, "reason": "capital_limit_reached"}
             self.next_id += 1
