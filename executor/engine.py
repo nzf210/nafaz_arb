@@ -236,12 +236,27 @@ class ArbitrageEngine(
         orders, 7. reconciliation, 8/9 handled by position verification and the
         exposure worker, 10. ``READY`` only when nothing is left unclassified.
         """
+        if not getattr(self.config, "mock_mode", False) and self.global_stop is None:
+            raise RuntimeError(
+                "LIVE executor requires POSTGRES_DSN; refusing to start without cross-instance STOP fencing"
+            )
         if self.redis is None:
             self.redis = aioredis.from_url(
                 self.config.redis_url,
                 decode_responses=True,
             )
         self.order_registry.redis = self.redis
+        if self.global_stop is not None:
+            self.global_stop.redis = self.redis
+            # PostgreSQL is the canonical admission authority and must be ready
+            # before recovery/listeners can make the executor READY.
+            await self.global_stop.start()
+            global_state = await self.global_stop.read_state()
+            if global_state["is_stopped"]:
+                self._halt_exposure_scope(
+                    "*", "global STOP active: " + str(global_state.get("reason") or "unspecified")
+                )
+                self._refresh_entry_gate()
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
