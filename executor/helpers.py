@@ -89,11 +89,32 @@ class RetryExhausted(Exception):
         self.last_error = last_error
 
 
+def is_explicit_rate_limit_rejection(exc: Exception) -> bool:
+    """True only for a venue response that explicitly rejected a request with HTTP 429.
+
+    HTTP 503, timeouts, connection resets, and generic transport failures are
+    ambiguous after an order POST and must never trigger an automatic resubmit.
+    """
+    error_name = type(exc).__name__.lower()
+    error_text = str(exc).lower()
+    if error_name == "ratelimitexceeded":
+        return True
+    if error_name == "indodaxratelimiterror":
+        code = str(getattr(exc, "code", "") or "").lower()
+        return code in {"http_429", "429"}
+    return (
+        "http_429" in error_text
+        or "status code 429" in error_text
+        or "429 too many requests" in error_text
+    )
+
+
 async def retry_with_backoff(
     fn: Callable[[], Awaitable[T]],
     max_retries: int = 3,
     base_delay: float = 0.5,
     label: str = "operation",
+    retry_if: Optional[Callable[[Exception], bool]] = None,
 ) -> T:
     """
     Calls an async callable, retrying with exponential backoff (base_delay * 2^n).
@@ -111,6 +132,8 @@ async def retry_with_backoff(
             last_error = exc
             logger.warning(f"[Retry] {label} attempt {attempt}/{attempts} failed: {exc}")
             if attempt < attempts:
+                if retry_if is not None and not retry_if(exc):
+                    raise RetryExhausted(attempt, last_error) from exc
                 await asyncio.sleep(base_delay * (2 ** (attempt - 1)))
     raise RetryExhausted(attempts, last_error) from last_error
 
