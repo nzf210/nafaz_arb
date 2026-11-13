@@ -184,6 +184,10 @@ class EngineEntryFlowMixin:
         if payload is None:
             return
 
+        if not await self._v2_entry_admission_allowed():
+            logger.warning("[V2 Admission] rejecting candidate %s before entry preparation", pair_tag)
+            return
+
         # IDR sizing is only valid with the live FX rate carried by this scan.
         # Never let mock-mode defaults or a static fallback turn an invalid
         # FX snapshot into a tradable order.
