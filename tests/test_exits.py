@@ -76,6 +76,50 @@ async def test_state3_dynamic_exit_limit_sell_and_funding_decay(engine, fake_red
     assert (first_exit_order["id"], "btc_idr") in mock_client.cancelled_orders
 
 @pytest.mark.asyncio
+async def test_ambiguous_exit_sell_is_reconciled_before_any_new_reprice(
+    engine, fake_redis, mock_client, monkeypatch
+):
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="BTC/IDR",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        accumulated_funding_usdt=0.0,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(
+        f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+    )
+    submit_calls = []
+    lookup_calls = []
+
+    async def ambiguous_sell(*args, **kwargs):
+        submit_calls.append((args, kwargs))
+        raise TimeoutError("connection reset after exit order request")
+
+    async def not_yet_visible(client_order_id, symbol, amount_spec=None):
+        lookup_calls.append((client_order_id, symbol))
+        return None
+
+    monkeypatch.setattr(mock_client, "place_local_limit_sell", ambiguous_sell)
+    monkeypatch.setattr(mock_client, "fetch_local_order_by_client_id", not_yet_visible)
+
+    await engine._place_dynamic_limit_sell(
+        pair_tag, pos, 1_040_000_000.0, 1000.0, 65_000.0, 16_000.0
+    )
+
+    assert len(submit_calls) == 1
+    assert len(lookup_calls) == 1
+    assert lookup_calls[0][0]
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert pair_tag not in engine.pending_exit_orders
+
+
+@pytest.mark.asyncio
 async def test_state4_exit_execution_and_position_cleanup(engine, fake_redis, mock_client):
     """
     Test State 4: When local Limit Sell is filled:
