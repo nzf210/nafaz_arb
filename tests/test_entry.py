@@ -836,6 +836,7 @@ async def test_prepare_entry_sizing_fetches_balance_once(engine, fake_redis, moc
     """_prepare_entry_sizing must reuse balance snapshot for dual-leg funding preflight."""
     pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
     engine.config.mock_mode = False
+    engine.config.max_exposure_per_exchange_usdt = 1000.0
     balance_calls = 0
 
     async def counted_get_balances(**kwargs):
