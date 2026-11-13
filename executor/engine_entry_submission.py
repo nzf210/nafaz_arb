@@ -533,7 +533,13 @@ class EngineEntrySubmissionMixin:
             if entry_coid:
                 if self.global_stop is not None:
                     try:
-                        if self._is_definitive_order_rejection(exc):
+                        _, normalized_error = self._entry_error_text(exc)
+                        if self._is_explicit_ip_ban(normalized_error):
+                            # If Global STOP persistence failed, this unresolved
+                            # row still fences every other instance. Do not retire
+                            # the attempt merely because the venue returned a ban.
+                            await self.global_stop.mark_submit_unknown(entry_coid, str(exc))
+                        elif self._is_definitive_order_rejection(exc):
                             await self.global_stop.mark_submit_rejected(entry_coid, str(exc))
                         else:
                             await self.global_stop.mark_submit_aborted(entry_coid, str(exc))
