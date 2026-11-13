@@ -58,7 +58,7 @@ These are open requirements, not completed remediations.
 
 | ID | Current finding | Area | Required remediation / verification | Status |
 |---|---|---|---|---|
-| R-19 | A CEX may block the executor's shared egress IP after rate-limit abuse; current per-venue cooldown alone does not establish a durable cross-instance stop. A generic HTTP 429 is not proof of an IP ban. | Exchange adapter / global STOP / distributed admission | Classify venue-specific explicit IP-ban evidence (e.g. Binance 418), persist idempotent `CEX_IP_BLOCK` STOP in PostgreSQL, advance fencing epoch for all instances sharing egress, close new-entry admission, back off requests, preserve unresolved exposure for reconciliation, and require verified unblock + operator acknowledgement before resume. Add 429/418/403 and multi-instance regression tests. | PARTIAL — PostgreSQL STOP singleton + durable PREPARED/SUBMITTING ledger, session advisory fence, exact client-order-ID startup lookup, and spot-entry and futures entry-hedge IP-ban triggers added; operator resolution, venue-specific classifier, full submit-path audit, and real multi-instance fault-injection tests remain OPEN |
+| R-19 | A CEX may block the executor's shared egress IP after rate-limit abuse; current per-venue cooldown alone does not establish a durable cross-instance stop. A generic HTTP 429 is not proof of an IP ban. | Exchange adapter / global STOP / distributed admission | Classify venue-specific explicit IP-ban evidence (e.g. Binance 418), persist idempotent `CEX_IP_BLOCK` STOP in PostgreSQL, advance fencing epoch for all instances sharing egress, close new-entry admission, back off requests, preserve unresolved exposure for reconciliation, and require verified unblock + operator acknowledgement before resume. Add 429/418/403 and multi-instance regression tests. | PARTIAL — PostgreSQL STOP singleton + durable submit ledger/fence, exact-ID startup recovery, spot/futures IP-ban STOP, HMAC-signed operator resolution, and real PostgreSQL fault-injection test are implemented; latest CI must verify the new integration job, and live venue contract probes remain OPEN |
 
 ## Post-refactor review — 2026-11-07
 
@@ -118,7 +118,7 @@ Remaining blockers: complete runtime call-site/call-graph audit across all venue
 
 | R-25 | Dynamic spot exit limit SELL logged ambiguous submit failures but left the position eligible for the next repricing cycle, which generated a new client ID and could duplicate a venue-accepted order whose ACK was lost. | Spot exit / cancel-replace lifecycle | FIXED in commit a698308: exact-client-ID lookup adopts a found order; lookup not-found/failure marks pair RECONCILIATION_REQUIRED and blocks new repricing submits. Regression test covers inconclusive lookup. Exit remains outside entry STOP fencing. |
 
-| R-26 | Force-close futures reduceOnly BUY retries verify current position first but do not exact-client-ID reconcile a prior close attempt before submitting a new close ID; a stale/non-zero position response after prior venue acceptance may allow concurrent reduceOnly close orders. | Force-close futures de-risking | OPEN. Position-flat verification and reduceOnly constrain risk, so do not apply entry STOP fencing. Audit venue pending-close behavior and preserve/reconcile prior close client ID before any future retry-policy change. |
+| R-26 | Force-close futures reduceOnly BUY previously could submit a new client ID after a stale position read. | Force-close futures de-risking | FIXED FAIL-CLOSED. LIVE now derives a deterministic position-scoped ID, requires durable registry lookup, and exact-ID reconciles any prior intent. Missing/pending/partial/inconclusive outcomes block resubmission; residual close is manual reconciliation. Per-venue pending-close probes remain OPEN. |
 
 
 ## R-27 — Operator-authenticated resolution for ambiguous submit attempts
@@ -146,7 +146,7 @@ Remaining blockers: complete runtime call-site/call-graph audit across all venue
 - Added fake endpoint delayed-visibility and pending reduce-only close fixtures for Indodax, Tokocrypto, MEXC and OKX in `tests/test_venue_recovery_contracts.py`.
 - Added `docs/ORDER-RUNTIME-VENUE-RECOVERY-MATRIX.md` with active adapter/call-site and retry/recovery inventory.
 - Fake fixtures prove executor behavior under delayed visibility; they do not establish live venue eventual-consistency SLAs or each venue's pending-close semantics. Those still require controlled per-venue sandbox/paper probes.
-- R-26 remains OPEN: force-close futures may create a new client ID on a later invocation when a prior reduceOnly close was accepted but the position endpoint remains stale/non-zero. Do not claim all pending-close paths are safe until stable close-intent reuse and exact-ID recovery are implemented and tested.
+- R-26 duplicate-new-client-ID retry is fixed fail-closed with deterministic ID reuse and exact-ID lookup. Pending/partial/not-visible outcomes remain reconciliation-required; live per-venue pending-close semantics are still unverified.
 
 
 ## R-26 update — Force-close reduceOnly duplicate submit blocked
