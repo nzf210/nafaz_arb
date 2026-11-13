@@ -387,8 +387,8 @@ async def test_live_sizing_probe_failure_halts_both_venues():
         async def _publish_execution_failure(self, *args, **kwargs):
             self.failures.append((args, kwargs))
 
-        async def _persist_risk_state(self, *args, **kwargs):
-            return None
+        def _persist_risk_state(self, *args, **kwargs):
+            return True
 
     engine = Engine()
     payload = SimpleNamespace(
