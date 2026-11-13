@@ -90,3 +90,34 @@ Acceptance tests include at least two spot and two futures venues concurrently; 
 ## 11. Current-state gaps
 
 The baseline repository describes a Go read-only scanner and Python executor, but also describes JSON-file scanner history, a Supabase-oriented executor outbox, and executor settings centered on local_exchange_name/global_exchange_name. Those are not yet a PostgreSQL-backed multi-venue registry. This document is a target design, not an implementation claim.
+
+
+## 12. Operator control plane and durable configuration activation
+
+The control plane is a separate Python-owned service/module alongside the executor. The Go scanner's Telegram integration is alert/read-only only: it must not own trading state, authorize START, or be the authority for STOP. The Python control plane owns Telegram polling, PostgreSQL writes, and publication of control events. The executor remains the only process that can submit/cancel exchange orders.
+
+### Telegram command contract
+
+Use explicit commands that do not collide with Telegram's built-in `/start`: `/trade_status`, `/trade_stop <reason>`, `/trade_start <reason>`, and `/trade_confirm <confirmation_id>`. Require both an allowlisted Telegram user ID and allowlisted chat ID for every mutating command. Empty allowlists mean deny all; never fall back to "authorized chat implies authorized user". Resolve bot token only from a secret reference/environment at runtime; never store its value in PostgreSQL, JSON, logs, callback data or audit rows.
+
+Every update is deduplicated by Telegram `update_id` and persisted with command ID, actor user/chat IDs, command, reason, received/committed timestamps, previous/new state, config version, result and status. Replays return the persisted result and never repeat the transition. Expose pending/confirmed/rejected/completed status. START requires a short-lived, one-time confirmation bound to the actor, chat, requested config version and confirmation ID. STOP is always available to an authorized operator and is never delayed by START confirmation.
+
+### Durable trading state
+
+`process_alive` and `trading_enabled` are independent. The singleton PostgreSQL control row starts disabled and is authoritative across restarts. Executor startup always loads it; it must never infer enabled from process liveness, LIVE mode, Redis contents or a prior in-memory value. States are `STOPPED`, `START_PENDING`, `STARTING`, `RUNNING`, `STOPPING`, and `ERROR_HALTED`. Only a successful readiness transaction may move STARTING to RUNNING.
+
+STOP first commits STOPPING (which immediately denies new entry authorization), broadcasts a versioned control event, and waits for all executor instances to close their entry-admission gates and drain/resolve already-submitting entry requests. It then commits STOPPED. If Redis or an instance is unreachable, the durable STOPPING state continues to deny entries on reconnect/restart; the command must report that the distributed stop barrier is incomplete rather than claim fully stopped. STOP does not close positions. Open-order policy is explicit and versioned: default `keep_and_manage` (retain and continue managing existing orders/positions); optional `cancel_unfilled_entries` requires separate operator policy and reconciled cancellation. No automatic force-close or position-closing orders.
+
+START may move to RUNNING only if PostgreSQL/migrations, active config version/hash, Redis cache version, secret references, venue credentials, market metadata, live FX source freshness/spread/fees, account/order/position reconciliation, risk limits, all venue/route halts and kill-switch state pass. A failed or unknown check leaves trading disabled and records a reason. LIVE mode alone never enables trading.
+
+### Configuration versioning and cache protocol
+
+PostgreSQL is authoritative for all non-secret operational configuration, including venue/account/route/strategy/risk definitions, feature flags, FX source and thresholds, execution/order policies, and Telegram allowlists/policies. Store only secret reference names/identifiers. Credential and Telegram token values remain in an external secret manager or injected environment.
+
+Each proposed snapshot is immutable and versioned. Validate schema, references, adapter capabilities, risk invariants, secret-reference names and LIVE FX constraints before activation. In one transaction: compare expected active version (optimistic concurrency), insert the immutable snapshot and content hash, append actor/time/reason/diff audit, advance active version, and insert an outbox event. After commit, publish the version/invalidation event to Redis. Redis contains a versioned cache copy only. Every service loads the active snapshot from PostgreSQL at startup/restart, validates it and its hash, writes/refreshes Redis, and atomically swaps its in-process immutable snapshot. On event, a service fetches PostgreSQL (not Redis) and only swaps after validation. If DB is unavailable, hash/version cannot be verified, or Redis cannot be refreshed/verified for a LIVE service, fail closed for new entries; never silently use stale config. Outbox replay repairs lost Redis notifications.
+
+Rollback creates a new version whose snapshot is copied from a previously validated version; it never rewinds/deletes version history. Require expected active version and explicit actor/reason. Multi-instance reload acknowledgements and active-version metrics make partial propagation visible. Configuration changes never mutate an already loaded object in place.
+
+### Deployment boundary
+
+This is a target contract until runtime wiring, migration application and integration tests are complete. Existing JSON/SQLite/Redis/Supabase paths are legacy compatibility paths, not silently promoted to authoritative V2 config. Cutover must be explicit and fail closed; do not dual-write conflicting authorities.
