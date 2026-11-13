@@ -195,3 +195,31 @@ Sebelum merge/cutover, reviewer wajib membuka dan mencocokkan:
 - [ ] Add tests for crash before HTTP boundary (\`PREPARED\`), after request (\`SUBMITTING\`), after venue ack before ledger ack, and delayed exact-ID visibility.
 - [~] Spot-entry and futures entry-hedge submissions now prepare durable attempts and hold the shared session fence across the venue call. Remaining exposure-opening paths and alternate adapters still require a complete call-site audit and integration.
 - [ ] Define retention/archival policy for terminal attempt rows without deleting unresolved rows.
+
+## 11. Audit eksekusi call-site order — 2026-11-13
+
+Audit statis pada branch ini menelusuri facade, wrapper venue, serta lifecycle caller berikut. Ini adalah inventaris dari source yang diperiksa, bukan bukti bahwa semua kombinasi runtime venue sudah diuji.
+
+| Jalur | Implementasi/caller | Klasifikasi STOP | Status durable ledger/fence |
+|---|---|---|---|
+| Spot entry BUY | engine_entry_submission.py → ExchangeOrderMixin.place_local_limit_buy → local.create_limit_buy_order | Membuka eksposur; wajib PREPARED/SUBMITTING + shared session fence | Terintegrasi; LIVE startup mensyaratkan PostgreSQL |
+| Futures entry hedge SELL | entry_hedge.py → ExchangeFuturesMixin.open_global_short_market → global_fut.create_market_sell_order | Menambah short exposure; wajib PREPARED/SUBMITTING + shared session fence | Terintegrasi; exact-ID recovery sebelumnya salah memilih lookup spot, diperbaiki pada commit a8eaee3 |
+| Spot exit SELL LIMIT | exit_orders.py → ExchangeOrderMixin.place_local_limit_sell → local.create_limit_sell_order | Mengurangi/menutup spot exposure; jangan otomatis diblokir oleh entry STOP | Tidak memakai entry ledger/fence; perlu audit terpisah untuk idempotensi, cancel/fill race, dan exit recovery |
+| Spot rollback/emergency SELL MARKET | rollback.py dan force_close_legs.py → place_local_market_sell → local.create_market_sell_order | De-risking/rollback; jangan otomatis diblokir oleh entry STOP | Tidak memakai entry ledger/fence; tetap perlu verifikasi hasil venue dan larangan blind retry |
+| Futures close BUY | exit_execution.py / force_close_legs.py → close_global_short_market → global_fut.create_market_buy_order dengan reduceOnly=True | Reduce-only close; bukan pembuka short/long dan tidak boleh diperlakukan sebagai entry | Tidak memakai entry ledger/fence; perlu audit idempotensi/reconciliation khusus close |
+
+### Adapter dan wrapper
+
+- ExchangeClient mengikat spot/futures client berdasarkan venue. for_venue() memilih client sesuai registry market; for_pair() memilih pasangan spot/futures.
+- IndodaxTAPIv2 menyediakan create_limit_buy_order, create_limit_sell_order, dan create_market_sell_order yang semuanya melewati _create_order. Jalur pembuka spot BUY melewati wrapper spot entry; SELL digunakan oleh exit/de-risking.
+- Adapter modular di executor/venues/{indodax,mexc,okx,tokocrypto}.py tidak menunjukkan direct create-order invocation pada source yang diperiksa; belum ada bukti bahwa modul-modul tersebut terpasang sebagai jalur submit aktif pada facade ini.
+- Pencarian juga memeriksa create_order, create_market_order, create_limit_order, market/limit buy/sell, serta wrapper place_local_* dan open/close_global_*. Hasil statis tidak menggantikan runtime instrumentation untuk plugin/CCXT internal.
+
+### Temuan dan perbaikan
+
+1. R-20 — market-aware durable submit recovery. Sebelumnya semua unresolved attempt diarahkan ke fetch_local_order_by_client_id, termasuk market_type=perpetual. Startup dapat gagal mengadopsi futures hedge yang sebenarnya sudah diterima. Recovery sekarang memilih fetch_global_order_by_client_id untuk perpetual/future/futures/swap, dan lookup lokal untuk spot/local; market type tidak dikenal tetap fail-closed. Regression test menguji futures exact-client-ID lookup.
+2. R-21 — amount specification adalah bagian dari idempotency intent. Reuse client order ID dengan quantity/price sama tetapi amount_spec berbeda dapat mengubah konversi jumlah order di adapter. Pemeriksaan reuse PREPARED sekarang membandingkan amount_spec JSONB juga; regression test menolak perubahan spesifikasi.
+3. Hasil lookup not-found atau exception tetap unresolved dan menahan global entry gate. Tidak ada automatic resubmit; eventual consistency venue tetap dianggap mungkin.
+4. ACK persistence failure / DB disconnect setelah request tidak boleh diubah menjadi REJECTED berdasarkan dugaan. Row SUBMITTING tetap durable dan harus direconcile; fake connection test yang ada menguji ledger survival, tetapi belum menguji proses PostgreSQL multi-process nyata saat fake venue masih menerima request.
+
+Sisa OPEN: full runtime call-site/call-graph audit lintas seluruh adapter/konfigurasi, authenticated operator manual resolution, durable fencing untuk seluruh order-open path yang mungkin ditemukan berikutnya, real PostgreSQL multi-process disconnect/fault injection, serta uji venue contract dan eventual-consistency tertunda. Exit/close/cancel/de-risking sengaja tidak dimasukkan ke entry STOP fence tanpa policy khusus yang membuktikan aman untuk risk reduction.
