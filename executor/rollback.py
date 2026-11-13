@@ -37,9 +37,8 @@ class RollbackMixin:
         and ``error`` then carries the last failure so the operator event can say
         what went wrong.
         """
-        max_retries = 4  # 5 total attempts
-        # One id for the whole retry sequence: every attempt is the same logical
-        # order, so the venue can reject duplicates rather than sell twice.
+        # Submit exactly once: venue client-order-ID uniqueness is not universal.
+        # Ambiguous acknowledgements are reconciled by client ID, never resubmitted.
         seq = self._next_order_seq()
         rollback_coid = build_client_order_id(pair_tag, "rollback", seq)
         venue_exchange = local_exchange or getattr(self.config, "local_exchange_name", "")
