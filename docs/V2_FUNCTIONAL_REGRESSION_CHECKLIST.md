@@ -209,6 +209,6 @@
 | Date (UTC) | Candidate SHA | CI run | Checklist section | Evidence / artifact | Result | Reviewer |
 |---|---|---|---|---|---|---|
 | 2026-11-13 | `850db4e92f57bb26cb78293f3ab7bbc8a423f0fd` | `43433436237` | Outbox publisher + regression tests | Python, Go, Docker images and PostgreSQL migration/idempotency/RLS jobs all succeeded | Pass | Pending |
-| 2026-11-13 | `759b9b54cdf73118e667931888e120a927582f1a` + follow-up fixes/tests | Pending | Config invalidation + consumer leases + convergence API | Added PostgreSQL consumer registry, process restart resets to STARTING, verified DB refetch/Redis mirror/atomic swap/ack path and lease-scoped convergence API; CI pending | Pending | Pending |
+| 2026-11-13 | `81e9196b54838ab105ac1e7166bc042f9459659d` | `43434420893` (earlier head only) | Config invalidation + consumer leases + convergence API | Added PostgreSQL consumer registry, process restart resets to STARTING, DB refetch/Redis mirror/atomic swap/ack path, periodic reconciliation, lease-scoped convergence API and SQL smoke assertions. Run `43434420893` was triggered at earlier head `058ee031`; latest SHA has no confirmed CI run yet | Pending | Pending |
 
 **Current release decision:** NOT LIVE-READY. The invalidation consumer and convergence API are implemented as standalone components but are not wired into executor startup, START readiness or the final order-admission path. The V2 database schema and snapshot-reader foundation do not yet constitute a deployed, verified trading control plane.
