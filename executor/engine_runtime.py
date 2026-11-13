@@ -405,6 +405,9 @@ class EngineRuntimeMixin:
             self._halt_exposure_scope("*", "Spot capacity config unavailable: Postgres is disabled")
             self._refresh_entry_gate()
             return
+        # In LIVE mode Postgres is authoritative; do not let a stale YAML/Redis
+        # override silently disagree with the atomic reservation RPC.
+        self.config.max_open_spot_orders_per_exchange = {}
         exchanges = set((getattr(self.config, "exchanges", {}) or {}).keys())
         exchanges.add(str(getattr(self.config, "local_exchange_name", "") or "").lower())
         exchanges.discard("")
