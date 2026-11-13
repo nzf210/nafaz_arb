@@ -251,6 +251,16 @@ class ArbitrageEngine(
             account_scope, exchange, pair_key
         )
 
+    async def _release_spot_capacity_reservation_for_order(
+        self, exchange: str, client_order_id: str
+    ) -> bool:
+        if bool(getattr(self.config, "mock_mode", False)):
+            return True
+        account_scope = self._account_scope_for_exchange(exchange)
+        return await self.supabase.release_execution_capacity_for_order(
+            account_scope, exchange, client_order_id
+        )
+
     async def _on_execution_coordinator_lost(self, reason: str) -> None:
         self._recovery_complete = False
         self._halt_exposure_scope("*", f"execution coordinator lease lost: {reason}")

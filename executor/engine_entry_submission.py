@@ -230,6 +230,7 @@ class EngineEntrySubmissionMixin:
         submission_started = False
         entry_coid = ""
         capacity_reservation_id = ""
+        capacity_account_scope = ""
         try:
             logger.info(
                 f"[State 1] Placing Maker Limit Buy on {pair_info.local_exchange} for {pair_info.local_symbol}: "
@@ -251,10 +252,29 @@ class EngineEntrySubmissionMixin:
             ).upper()
             if not bool(getattr(self.config, "mock_mode", False)):
                 try:
+                    capacity_account_scope = self._account_scope_for_exchange(
+                        pair_info.local_exchange
+                    )
                     capacity_reservation_id = await self._reserve_spot_capacity(
                         pair_tag, pair_info.local_exchange, entry_coid, actual_cost_usdt * 2.0
                     )
                 except Exception as reserve_error:
+                    # The reservation RPC may commit before its response is lost.
+                    # No venue mutation has started, so release by logical order id.
+                    try:
+                        if capacity_account_scope and entry_coid:
+                            await self._release_spot_capacity_reservation_for_order(
+                                pair_info.local_exchange, entry_coid
+                            )
+                        else:
+                            await self._release_spot_capacity_reservation(
+                                pair_tag, pair_info.local_exchange
+                            )
+                    except Exception:
+                        logger.exception(
+                            "[State 1] failed to release uncertain pre-submit capacity reservation for %s",
+                            pair_tag,
+                        )
                     self._mark_failed(
                         pair_tag,
                         "SPOT_CAPACITY_RESERVATION_FAILED",
@@ -264,6 +284,7 @@ class EngineEntrySubmissionMixin:
                     await self.publish_status()
                     return
                 recovery_context["capacity_reservation_id"] = capacity_reservation_id
+                recovery_context["capacity_account_scope"] = capacity_account_scope
                 recovery_context["pair_capital_reservation_usdt"] = actual_cost_usdt * 2.0
             await self._register_order_intent(
                 pair_tag,
