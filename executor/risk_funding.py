@@ -206,7 +206,18 @@ class RiskFundingMixin:
             )
             return False
 
-        required = float(required_usdt)
+        try:
+            required = float(required_usdt)
+        except (TypeError, ValueError):
+            required = float("nan")
+        if not math.isfinite(required) or required <= 0:
+            await self._publish_execution_failure(
+                pair_tag,
+                "INVALID_DUAL_LEG_FUNDING_REQUIREMENT",
+                "Entry ditolak karena nilai kebutuhan dana kedua kaki tidak valid.",
+                detail={"required_usdt_per_leg": str(required_usdt)},
+            )
+            return False
         missing = []
         if avail_spot < required:
             missing.append(f"spot ${avail_spot:.2f} < ${required:.2f}")
