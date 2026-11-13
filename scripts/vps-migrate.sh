@@ -99,13 +99,11 @@ if [[ "$TARGET" == local ]]; then
     [[ "$exists" == "1" ]] || die "Required PostgreSQL role '$role' is missing. Create/review it explicitly before applying these migrations."
   done
 
-  psql -X -v ON_ERROR_STOP=1 -c "
-    create table if not exists public.nafaz_schema_migrations (
-      version text primary key,
-      name text not null,
-      sha256 text not null,
-      applied_at timestamptz not null default now()
-    );" >/dev/null
+  ledger_exists="$(psql -X -v ON_ERROR_STOP=1 -Atqc "select to_regclass('public.nafaz_schema_migrations') is not null")"
+  if [[ "$ledger_exists" != "t" ]]; then
+    legacy_tables="$(psql -X -v ON_ERROR_STOP=1 -Atqc "select count(*) from pg_tables where schemaname='public' and tablename in ('positions','orders','scanner_opportunities','executor_global_control')")"
+    [[ "$legacy_tables" == "0" ]] || die "Existing NAFAZ tables found but migration ledger is absent. Refusing to replay baseline automatically; inspect and baseline-adopt the current schema first."
+  fi
 
   pending=()
   for file in supabase/migrations/*.sql; do
@@ -149,6 +147,14 @@ if [[ "$TARGET" == local ]]; then
   pg_restore --list "$tmp_backup" >/dev/null || die "Backup archive verification failed."
   mv "$tmp_backup" "$backup"; chmod 600 "$backup"
   log "Verified backup: $backup"
+
+  psql -X -v ON_ERROR_STOP=1 -c "
+    create table if not exists public.nafaz_schema_migrations (
+      version text primary key,
+      name text not null,
+      sha256 text not null,
+      applied_at timestamptz not null default now()
+    );" >/dev/null
 
   for file in "${pending[@]}"; do
     base="$(basename "$file")"
