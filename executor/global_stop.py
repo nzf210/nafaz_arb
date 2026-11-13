@@ -98,7 +98,7 @@ class GlobalStopService:
             str(side or "").lower()[:16], str(order_type or "").lower()[:24],
             float(quantity), float(price), str(pair_key or "")[:200],
             json.dumps(recovery_context or {}, separators=(",", ":"), default=str),
-            json.dumps(amount_spec or {}, separators=(",", ":"), default=str),
+            json.dumps(amount_spec or {}, separators=(",", ":"), sort_keys=True, default=str),
         )
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -113,7 +113,7 @@ class GlobalStopService:
             if row is None:
                 existing = await conn.fetchrow(
                     "select client_order_id, status, created_at, exchange, market_type, symbol, "
-                    "side, order_type, quantity, price, pair_key from public.executor_submit_attempts "
+                    "side, order_type, quantity, price, pair_key, amount_spec from public.executor_submit_attempts "
                     "where client_order_id = $1",
                     client_order_id,
                 )
@@ -126,7 +126,17 @@ class GlobalStopService:
                     "side": values[4], "order_type": values[5], "quantity": values[6],
                     "price": values[7], "pair_key": values[8],
                 }
-                if any(existing[key] != value for key, value in expected.items()):
+                stored_amount_spec = existing.get("amount_spec")
+                if isinstance(stored_amount_spec, str):
+                    try:
+                        stored_amount_spec = json.loads(stored_amount_spec)
+                    except (TypeError, ValueError):
+                        stored_amount_spec = None
+                expected_amount_spec = json.loads(values[10])
+                if (
+                    any(existing[key] != value for key, value in expected.items())
+                    or stored_amount_spec != expected_amount_spec
+                ):
                     raise GlobalStopError(
                         f"client order id collision with a different order intent: {client_order_id}"
                     )
