@@ -34,7 +34,7 @@ These are preconditions, not automatic account mutations:
 - **Other supported futures venues:** One-way Mode and 1x leverage unless the adapter is explicitly revised and tested for another mode.
 - API credentials must have the minimum read permissions for balances, positions, open orders, order history, and trades, plus trade permission for order placement/cancellation. Do not grant withdrawal permission.
 - Configure exchange IP allowlists where supported.
-- Configure positive per-exchange exposure cap, daily loss limit, slippage limit, fee reserve, and order-failure threshold appropriate to the actual account equity. The code does not choose these monetary limits for the operator.
+- Configure a positive per-exchange exposure cap (zero disables it and is rejected in LIVE). Review/override the current defaults for daily loss (50 USDT), slippage (0.3%), fee reserve (0.1%), and consecutive order failures (50) against account equity, fee tier, and strategy. These defaults are not calibrated to your account.
 - Supabase must be reachable and able to read/write the durable risk state and order-intent journal. Keep its server-side key outside the repository.
 - Run **one active executor instance only**. Pair execution locks are process-local; the recovery lease protects startup recovery but is not a live-trading leader/fencing lease. Do not horizontally scale the executor until a distributed live-execution lease is implemented and tested.
 
