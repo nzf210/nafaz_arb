@@ -39,7 +39,12 @@ begin
     values (p_account_scope, lower(p_exchange_name))
     on conflict (account_scope, exchange_name) do nothing;
 
-    select c.max_open_spot_orders, coalesce(p_max_capital_usdt, c.max_capital_usdt)
+    select c.max_open_spot_orders,
+           case
+               when p_max_capital_usdt is not null and c.max_capital_usdt is not null
+                   then least(p_max_capital_usdt, c.max_capital_usdt)
+               else coalesce(p_max_capital_usdt, c.max_capital_usdt)
+           end
       into v_max_orders, v_capital_limit
       from public.execution_capacity_config c
      where c.account_scope = p_account_scope

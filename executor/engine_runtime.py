@@ -414,6 +414,7 @@ class EngineRuntimeMixin:
         restored = {}
         try:
             for exchange in sorted(exchanges):
+                restored[exchange] = 2
                 try:
                     account_scope = self._account_scope_for_exchange(exchange)
                 except RuntimeError:
@@ -484,6 +485,13 @@ class EngineRuntimeMixin:
                     if isinstance(data, bytes):
                         data = data.decode("utf-8")
                     request_id = ""
+                    if (
+                        not bool(getattr(self.config, "mock_mode", False))
+                        and not self.execution_coordinator.active
+                    ):
+                        # Standby replicas ignore config commands; only the fenced
+                        # coordinator may acknowledge a durable Telegram update.
+                        continue
                     try:
                         update = json.loads(data or "{}")
                         if not isinstance(update, dict):
