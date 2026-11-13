@@ -61,7 +61,13 @@ def _position_short_qty(positions: Iterable[dict]) -> float:
         ).lower()
         contracts = position.get("contracts")
         if contracts is not None:
-            qty = abs(_finite(contracts)) * abs(_finite(position.get("contractSize") or 1))
+            contract_size_raw = position.get("contractSize")
+            if contract_size_raw is None:
+                raise ValueError("futures contract size unavailable")
+            contract_size = _finite(contract_size_raw)
+            if contract_size <= 0:
+                raise ValueError("invalid futures contract size")
+            qty = abs(_finite(contracts)) * contract_size
             if qty <= 1e-12:
                 continue
             if side != "short":
@@ -265,46 +271,125 @@ class ExposureReconciliationWorker:
             else:
                 self._clear_issue(f"SPOT_BASE_BALANCE_DEFICIT:{exchange}:{asset}", exchange)
 
+        # Reconcile every configured futures account, not only symbols already
+        # represented in active_positions. Manual or orphan positions on another
+        # contract are still real account exposure and must block new entries.
+        base_client = getattr(self.engine, "_base_client", client)
+        venue_inventory = getattr(base_client, "balance_exchanges", {}) or {}
+        configured_futures = {
+            str(name).strip().lower()
+            for name, entry in venue_inventory.items()
+            if isinstance(entry, dict)
+            and str(entry.get("market") or "").lower() == "futures"
+            and entry.get("client") is not None
+        }
+        configured_futures.update(active_futures_venues)
+        default_global = str(
+            getattr(self.engine.config, "global_exchange_name", "") or ""
+        ).strip().lower()
+        if default_global:
+            configured_futures.add(default_global)
+
+        def normalize_position_symbol(value: str) -> str:
+            return (
+                str(value).split(":")[0]
+                .replace("/", "")
+                .replace("-", "")
+                .replace("_", "")
+                .upper()
+            )
+
+        expected_by_venue = defaultdict(dict)
+        expected_labels = defaultdict(dict)
         for (exchange, symbol), expected in futures_expected.items():
+            symbol_key = normalize_position_symbol(symbol)
+            expected_by_venue[exchange][symbol_key] = (
+                expected_by_venue[exchange].get(symbol_key, 0.0) + expected
+            )
+            expected_labels[exchange][symbol_key] = symbol
+
+        for exchange in sorted(configured_futures):
             try:
                 venue_report = report_map.get((exchange, "futures"))
                 if not venue_report or venue_report.get("status") != "ok":
                     raise RuntimeError("configured futures venue balance report unavailable")
-                pair_key = futures_pairs[(exchange, symbol)][0]
-                pair_client = client
-                base_client = getattr(self.engine, "_base_client", client)
-                pair_resolver = getattr(base_client, "for_pair", None)
-                pair_info_resolver = getattr(self.engine, "_pair_info_for_tag", None)
-                if callable(pair_resolver) and callable(pair_info_resolver):
-                    pair_info = pair_info_resolver(pair_key)
-                    pair_client = pair_resolver(pair_info)
-                else:
-                    configured_venue = str(
-                        getattr(getattr(client, "global_fut", None), "id", exchange)
-                    ).lower()
-                    if configured_venue and configured_venue != exchange:
-                        raise RuntimeError(
-                            f"executor is connected to {configured_venue}, not {exchange}"
-                        )
-                actual = _position_short_qty(await pair_client.fetch_positions(symbol))
+
+                venue_client = None
+                resolver = getattr(base_client, "for_venue", None)
+                if callable(resolver):
+                    venue_client = resolver(exchange)
+                if venue_client is None:
+                    candidate = getattr(client, "global_fut", None)
+                    candidate_name = str(getattr(candidate, "id", "") or "").lower()
+                    if candidate is not None and (not candidate_name or candidate_name == exchange):
+                        venue_client = client
+                if venue_client is None:
+                    raise RuntimeError(f"authenticated futures client unavailable for {exchange}")
+
+                fetch_all = getattr(venue_client, "fetch_all_positions", None)
+                if not callable(fetch_all):
+                    raise RuntimeError("account-wide futures position endpoint is unavailable")
+                positions = await fetch_all()
+                if positions is None or not isinstance(positions, (list, tuple)):
+                    raise ValueError("account-wide futures positions response is malformed")
+
+                actual_by_symbol = defaultdict(float)
+                actual_labels = {}
+                for position in positions:
+                    if not isinstance(position, dict):
+                        raise ValueError("account-wide futures position row is malformed")
+                    symbol = position.get("symbol")
+                    if not isinstance(symbol, str) or not symbol.strip():
+                        raise ValueError("account-wide futures position is missing symbol")
+                    symbol_key = normalize_position_symbol(symbol)
+                    if not symbol_key:
+                        raise ValueError("account-wide futures position symbol is invalid")
+                    qty = _position_short_qty([position])
+                    if qty > 0:
+                        actual_by_symbol[symbol_key] += qty
+                        actual_labels[symbol_key] = symbol
+
             except Exception as exc:
-                self._set_halt(exchange, "futures position unavailable")
+                self._set_halt(exchange, "account-wide futures positions unavailable")
                 await self._alert(
                     "EXPOSURE_POSITION_UNAVAILABLE", exchange,
-                    f"Cannot verify futures position {symbol} on {exchange}.",
-                    {"symbol": symbol, "error": str(exc), "pair_keys": futures_pairs[(exchange, symbol)]},
+                    f"Cannot enumerate all futures positions on {exchange}; account exposure is unknown.",
+                    {"error": str(exc)},
                 )
                 continue
+
             self._clear_issue(f"EXPOSURE_POSITION_UNAVAILABLE:{exchange}", exchange)
-            if abs(actual - expected) > self._tolerance(expected):
-                await self._mismatch(
-                    "FUTURES_POSITION_MISMATCH", exchange,
-                    f"Futures short quantity does not match NAFAZ managed exposure on {exchange}.",
-                    {"symbol": symbol, "expected_short_qty": expected, "actual_short_qty": actual,
-                     "pair_keys": futures_pairs[(exchange, symbol)]},
-                )
-            else:
-                self._clear_issue(f"FUTURES_POSITION_MISMATCH:{exchange}:{symbol}", exchange)
+            # A complete account-wide snapshot supersedes all previous per-symbol
+            # mismatch reports for this venue; re-add any mismatch still present.
+            for issue_key in list(self._reported):
+                if issue_key.startswith(f"FUTURES_POSITION_MISMATCH:{exchange}:"):
+                    self._clear_issue(issue_key, exchange)
+
+            symbol_keys = (
+                set(expected_by_venue.get(exchange, {}))
+                | set(actual_by_symbol)
+            )
+            for symbol_key in sorted(symbol_keys):
+                expected = expected_by_venue.get(exchange, {}).get(symbol_key, 0.0)
+                actual = actual_by_symbol.get(symbol_key, 0.0)
+                tolerance = self._tolerance(expected)
+                if abs(actual - expected) > tolerance:
+                    symbol = (
+                        expected_labels.get(exchange, {}).get(symbol_key)
+                        or actual_labels.get(symbol_key)
+                        or symbol_key
+                    )
+                    await self._mismatch(
+                        "FUTURES_POSITION_MISMATCH", exchange,
+                        f"Futures short quantity does not match NAFAZ managed exposure on {exchange}.",
+                        {
+                            "symbol": symbol,
+                            "expected_short_qty": expected,
+                            "actual_short_qty": actual,
+                            "pair_keys": futures_pairs.get((exchange, symbol), []),
+                            "account_wide": True,
+                        },
+                    )
 
     async def _halt_active_venues(
         self, reason: str, message: str, detail: dict
