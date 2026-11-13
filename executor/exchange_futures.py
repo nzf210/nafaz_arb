@@ -115,16 +115,19 @@ class ExchangeFuturesMixin:
         amount_spec: Any = None,
     ) -> Dict[str, Any]:
         """
-        Closes Global Short position by buying back sold coins with reduceOnly=True.
-        STRICT: Must have reduceOnly=True so it can never inadvertently open a Long.
+        Closes the short using the account-mode-specific venue parameters.
+        OKX hedge mode closes by (side=buy, posSide=short); reduceOnly is only
+        supported for OKX FUTURES/SWAP in net mode. Other supported venues use
+        reduceOnly in their required one-way mode. Startup verifies these modes.
         """
         if amount <= 0:
             raise ValueError(f"invalid close amount: {amount}")
         spec = _require_amount_spec(amount_spec)
         order_amount = base_to_order_amount(amount, spec)
         order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
-        params = {"reduceOnly": True}
-        params.update(futures_position_side_params(self.global_fut, "short"))
+        params = futures_position_side_params(self.global_fut, "short")
+        if str(getattr(self.global_fut, "id", "") or "").lower() != "okx":
+            params["reduceOnly"] = True
         if client_order_id:
             params["clientOrderId"] = client_order_id
         order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)
