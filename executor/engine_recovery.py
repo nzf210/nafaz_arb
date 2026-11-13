@@ -12,6 +12,78 @@ from executor.engine_common import logger
 
 
 class EngineRecoveryMixin:
+
+    async def _reconcile_durable_submit_attempts(self) -> bool:
+        """Resolve exact client-id matches; keep negative/failed lookups fenced."""
+        service = getattr(self, "global_stop", None)
+        if service is None:
+            return True
+        attempts = await service.list_unresolved_submit_attempts()
+        for attempt in attempts:
+            client_order_id = str(attempt.get("client_order_id") or "")
+            exchange = str(attempt.get("exchange") or "").lower()
+            symbol = str(attempt.get("symbol") or "")
+            try:
+                resolver = getattr(self._base_client, "for_venue", None)
+                venue_client = resolver(exchange) if callable(resolver) else None
+                lookup = getattr(venue_client, "fetch_local_order_by_client_id", None)
+                if not callable(lookup):
+                    raise RuntimeError(
+                        f"no client-order-id lookup client configured for venue {exchange}"
+                    )
+                order = await lookup(
+                    client_order_id, symbol, attempt.get("amount_spec") or None
+                )
+                if isinstance(order, dict) and order.get("id"):
+                    await service.reconcile_submit_attempt_found(client_order_id, order)
+                    logger.warning(
+                        "[Submit Recovery] found unresolved venue order %s on %s; "
+                        "durable ledger marked ACKNOWLEDGED",
+                        client_order_id, exchange,
+                    )
+                else:
+                    await service.reconcile_submit_attempt_not_found(
+                        client_order_id,
+                        evidence="exact client-order-id lookup returned no order; "
+                        "retained unresolved because absence is not proof of rejection",
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "[Submit Recovery] could not reconcile client order %s on %s",
+                    client_order_id, exchange,
+                )
+                try:
+                    await service.reconcile_submit_attempt_not_found(
+                        client_order_id,
+                        evidence=f"lookup unavailable/failed: {type(exc).__name__}: {exc}",
+                    )
+                except Exception:
+                    logger.exception(
+                        "[Submit Recovery] could not persist lookup result for %s",
+                        client_order_id,
+                    )
+
+        unresolved = await service.list_unresolved_submit_attempts()
+        if unresolved:
+            first = unresolved[0]
+            reason = (
+                "durable in-flight submit outcome unresolved; new entries are fenced "
+                f"(exchange={first.get('exchange')} symbol={first.get('symbol')} "
+                f"client_order_id={first.get('client_order_id')} status={first.get('status')})"
+            )
+            self._halt_exposure_scope("*", reason)
+            self._refresh_entry_gate()
+            await self._publish_execution_failure(
+                "global-submit-recovery",
+                "DURABLE_SUBMIT_RECONCILIATION_REQUIRED",
+                "Ada submit order yang belum dapat dipastikan hasilnya. Entry baru diblokir; "
+                "tidak ada retry otomatis. Periksa order melalui client order ID dan rekonsiliasi exposure.",
+                detail={"unresolved_attempts": len(unresolved), "first": first},
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+            return False
+        return True
+
     """Focused orchestration responsibilities, composed by ArbitrageEngine."""
 
     def _group_recovered_positions(self):
