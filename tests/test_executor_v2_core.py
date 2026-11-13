@@ -23,6 +23,11 @@ from executor.leg_managers import (
 from executor.pair_pnl_engine import PairPnLEngine, PairPnLSnapshot
 from executor.exit_decision_engine import ExitDecisionEngine, ExitAction
 from executor.postgres_risk import PostgresRiskStateService
+from executor.opportunity_ranker import OpportunityRanker, OpportunityCandidate
+from executor.command_processor import CommandProcessor, CommandType, CommandState
+from executor.event_inbox import EventInbox, EventNormalizer, StreamEventType
+from executor.financial_reconciliation import FinancialReconciliationEngine, ReconciliationSeverity
+from executor.exchange_capabilities import ExchangeCapabilityRegistry, CapabilityStatus
 
 
 # =====================================================================
@@ -306,3 +311,211 @@ async def test_postgres_risk_state_service():
     )
     assert ok is True
     assert fake_conn.execute.called
+
+
+# =====================================================================
+# 6. OpportunityRanker Tests (Hard filters & Lexicographic Ranking)
+# =====================================================================
+
+def test_opportunity_ranker_hard_filters_and_scoring():
+    ranker = OpportunityRanker(
+        max_quote_age_ms=2000.0,
+        min_net_profit_usdt=0.30,
+        min_net_roi_pct=0.20,
+    )
+    now_ms = int(time.time() * 1000)
+
+    # 1. Valid high-profit candidate
+    c_good = OpportunityCandidate(
+        opportunity_id="opp-1",
+        pair_key="toko_okx:SOL",
+        local_venue="tokocrypto",
+        local_symbol="SOL/BIDR",
+        global_venue="okx",
+        global_symbol="SOL/USDT:USDT",
+        local_bid=150.0,
+        local_ask=150.1,
+        global_bid=152.0,
+        global_ask=152.1,
+        gross_spread_pct=1.3,
+        expected_net_profit_usdt=1.20,
+        expected_net_roi_pct=0.80,
+        allocated_capital_usdt=150.0,
+        quote_age_ms=100.0,
+        timestamp_ms=now_ms,
+        expiry_ms=now_ms + 5000,
+    )
+
+    # 2. Stale quote candidate
+    c_stale = OpportunityCandidate(
+        opportunity_id="opp-2",
+        pair_key="toko_okx:ETH",
+        local_venue="tokocrypto",
+        local_symbol="ETH/BIDR",
+        global_venue="okx",
+        global_symbol="ETH/USDT:USDT",
+        local_bid=3000.0,
+        local_ask=3001.0,
+        global_bid=3020.0,
+        global_ask=3021.0,
+        gross_spread_pct=0.6,
+        expected_net_profit_usdt=2.00,
+        expected_net_roi_pct=0.50,
+        allocated_capital_usdt=300.0,
+        quote_age_ms=4500.0,  # Stale!
+        timestamp_ms=now_ms - 4500,
+        expiry_ms=now_ms + 5000,
+    )
+
+    # 3. Low profit candidate
+    c_low = OpportunityCandidate(
+        opportunity_id="opp-3",
+        pair_key="toko_okx:XRP",
+        local_venue="tokocrypto",
+        local_symbol="XRP/BIDR",
+        global_venue="okx",
+        global_symbol="XRP/USDT:USDT",
+        local_bid=0.50,
+        local_ask=0.51,
+        global_bid=0.51,
+        global_ask=0.52,
+        gross_spread_pct=0.2,
+        expected_net_profit_usdt=0.05,  # Below 0.30!
+        expected_net_roi_pct=0.10,
+        allocated_capital_usdt=50.0,
+        quote_age_ms=50.0,
+        timestamp_ms=now_ms,
+        expiry_ms=now_ms + 5000,
+    )
+
+    ranked = ranker.rank_candidates([c_good, c_stale, c_low])
+    assert len(ranked) == 1
+    assert ranked[0].opportunity_id == "opp-1"
+
+    # Revalidation for admission
+    admit_ok, reason = ranker.revalidate_for_admission(c_good, current_local_bid=150.0, current_global_ask=152.1)
+    assert admit_ok is True
+
+    # Slippage breach on admission
+    admit_fail, reason = ranker.revalidate_for_admission(c_good, current_local_bid=140.0, current_global_ask=152.1)
+    assert admit_fail is False
+    assert "SLIPPED" in reason
+
+
+# =====================================================================
+# 7. CommandProcessor Tests (Durable Operator Commands)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_command_processor_pause_resume():
+    mock_engine = MagicMock()
+    mock_engine._halt_exposure_scope = MagicMock()
+    mock_engine._persist_risk_state = MagicMock()
+
+    proc = CommandProcessor(engine=mock_engine, pool=None)
+
+    # Process PAUSE_NEW_ENTRIES
+    pause_row = {
+        "command_id": "cmd-pause-1",
+        "command_type": CommandType.PAUSE_NEW_ENTRIES,
+        "scope": "tokocrypto",
+        "payload": {"reason": "Maintenance"},
+    }
+    ok_pause = await proc.process_one_command(pause_row)
+    assert ok_pause is True
+    assert mock_engine._halt_exposure_scope.called
+
+    # Process RESUME_NEW_ENTRIES
+    mock_engine._clear_resolved_pair_failure = AsyncMock()
+    resume_row = {
+        "command_id": "cmd-resume-1",
+        "command_type": CommandType.RESUME_NEW_ENTRIES,
+        "scope": "*",
+        "payload": {},
+    }
+    ok_resume = await proc.process_one_command(resume_row)
+    assert ok_resume is True
+    assert mock_engine._trading_halted is False
+
+
+# =====================================================================
+# 8. EventInbox & EventNormalizer Tests
+# =====================================================================
+
+def test_event_normalizer_and_deduplicating_inbox():
+    inbox = EventInbox()
+    received = []
+    inbox.register_handler(lambda ev: received.append(ev))
+
+    raw_trade = {
+        "id": "tr-999",
+        "order": "ord-111",
+        "symbol": "BTC/USDT",
+        "side": "buy",
+        "price": 60000.0,
+        "amount": 0.05,
+        "fee": {"cost": 0.00005, "currency": "BTC"},
+    }
+
+    norm = EventNormalizer.normalize_trade("okx", raw_trade)
+    assert norm.event_type == StreamEventType.FILL
+    assert norm.venue == "okx"
+    assert norm.quantity == 0.05
+
+    # First ingestion -> True
+    assert inbox.ingest_event(norm) is True
+    assert len(received) == 1
+
+    # Exact duplicate ingestion -> False (deduped!)
+    assert inbox.ingest_event(norm) is False
+    assert len(received) == 1
+
+
+# =====================================================================
+# 9. FinancialReconciliationEngine Tests
+# =====================================================================
+
+def test_financial_reconciliation_detects_mismatches():
+    engine = FinancialReconciliationEngine(material_qty_threshold=0.001)
+
+    internal_fills = [{"amount": 0.05, "fee": {"cost": 0.5}}]
+    # Exchange has partial trade missing -> mismatch!
+    exchange_trades = [{"amount": 0.03, "fee": {"cost": 0.3}}]
+
+    diffs = engine.reconcile_order_fills(
+        venue="tokocrypto",
+        symbol="BTC/BIDR",
+        order_id="ord-1",
+        internal_fills=internal_fills,
+        exchange_trades=exchange_trades,
+    )
+    assert len(diffs) >= 1
+    qty_diff = next(d for d in diffs if d.difference_type == "FILL_QTY_MISMATCH")
+    assert qty_diff.severity == ReconciliationSeverity.MATERIAL_MISMATCH
+    assert qty_diff.delta == pytest.approx(0.02)
+
+
+# =====================================================================
+# 10. ExchangeCapabilityRegistry Tests
+# =====================================================================
+
+def test_exchange_capability_registry():
+    registry = ExchangeCapabilityRegistry()
+
+    # Tokocrypto Spot is verified with limits
+    toko = registry.get_profile("tokocrypto", "spot")
+    assert toko is not None
+    assert toko.status == CapabilityStatus.VERIFIED_WITH_LIMITS
+    assert registry.is_operation_permitted("tokocrypto", "spot", "client_order_id") is True
+    assert registry.is_operation_permitted("tokocrypto", "spot", "private_ws") is False  # REST only
+
+    # OKX Futures supports reduce_only and private_ws
+    okx = registry.get_profile("okx", "futures")
+    assert okx is not None
+    assert okx.status == CapabilityStatus.VERIFIED
+    assert registry.is_operation_permitted("okx", "futures", "reduce_only") is True
+    assert registry.is_operation_permitted("okx", "futures", "private_ws") is True
+
+    # Unregistered venue blocked
+    assert registry.is_operation_permitted("unknown_cex", "spot", "client_order_id") is False
+

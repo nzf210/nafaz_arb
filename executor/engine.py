@@ -54,6 +54,11 @@ from executor.mutation_gateway import MutationGateway
 from executor.leg_managers import TwoLegCoordinator
 from executor.pair_pnl_engine import PairPnLEngine
 from executor.exit_decision_engine import ExitDecisionEngine
+from executor.opportunity_ranker import OpportunityRanker
+from executor.command_processor import CommandProcessor
+from executor.event_inbox import EventInbox
+from executor.financial_reconciliation import FinancialReconciliationEngine
+from executor.exchange_capabilities import ExchangeCapabilityRegistry
 from executor.exposure_reconciliation import ExposureReconciliationWorker
 from executor.trade_fill_reconciliation import TradeFillReconciliationWorker
 from executor.engine_order_intents import EngineOrderIntentMixin
@@ -191,6 +196,11 @@ class ArbitrageEngine(
         self.two_leg_coordinator = TwoLegCoordinator()
         self.pair_pnl_engine = PairPnLEngine()
         self.exit_decision_engine = ExitDecisionEngine()
+        self.opportunity_ranker = OpportunityRanker()
+        self.command_processor = CommandProcessor(engine=self, pool=None)
+        self.event_inbox = EventInbox()
+        self.financial_reconciliation = FinancialReconciliationEngine()
+        self.capability_registry = ExchangeCapabilityRegistry()
 
         # Universal order registry: durable identity for every order the bot
         # submits, so a restart can re-attach venue orders to their positions.
@@ -274,6 +284,8 @@ class ArbitrageEngine(
                 self.postgres_risk.pool = self.global_stop.pool
             if self.slot_manager is not None:
                 self.slot_manager.pool = self.global_stop.pool
+            if self.command_processor is not None:
+                self.command_processor.pool = self.global_stop.pool
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
