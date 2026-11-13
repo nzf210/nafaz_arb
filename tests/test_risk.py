@@ -450,6 +450,7 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
 
     engine.execution_coordinator.execute_mutation = execute_with_test_lease
     engine.order_registry.find_by_client_id = find_test_intent
+    engine._reserve_spot_capacity = AsyncMock(return_value="test-reservation")
 
     # This test isolates balance-probe behavior; the separate adaptive-maker
     # tests cover the fresh Indodax book preflight.
@@ -498,6 +499,7 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
 
     engine.execution_coordinator.execute_mutation = execute_with_test_lease
     engine.order_registry.find_by_client_id = find_test_intent
+    engine._reserve_spot_capacity = AsyncMock(return_value="test-reservation")
     engine._persist_risk_state = lambda *args, **kwargs: True
     # Keep this test focused on mapping the venue rejection to its public
     # failure reason; adaptive-maker book validation is covered separately.

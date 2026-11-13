@@ -30,6 +30,7 @@ const (
 	ChannelKillSwitch      = "arb:kill_switch"
 	ChannelSpotOrderLimitUpdate = "arb:executor:spot_order_limit_update"
 	KeySpotOrderLimits = "arb:executor:spot_order_limits"
+	KeyPrefixSpotOrderLimitReply = "arb:executor:spot_order_limit_reply:"
 	ChannelTradeEvents     = "arb:trade_events"
 	KeyPrefixSignal        = "arb:signal:"
 	KeySignalPriority      = "arb:signal_priority"
