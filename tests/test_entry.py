@@ -981,3 +981,40 @@ async def test_emergency_market_sell_adopts_order_after_lost_acknowledgement(
 
     assert order["id"] == "venue-order-42"
     assert submit_calls == ["rollback-client-id"]
+
+
+@pytest.mark.asyncio
+async def test_live_entry_fails_closed_when_futures_leverage_is_not_one_x(
+    engine, fake_redis, mock_client
+):
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.mock_mode = False
+    engine.config.max_exposure_per_exchange_usdt = 1000.0
+
+    async def available_balances(**kwargs):
+        return {
+            "spot_available": 500.0,
+            "futures_available": 500.0,
+            "spot_total": 500.0,
+            "futures_total": 500.0,
+        }
+
+    async def unsafe_leverage(symbol):
+        return {"symbol": symbol, "shortLeverage": 5.0, "marginMode": "isolated"}
+
+    mock_client.get_balances = available_balances
+    mock_client.fetch_leverage = unsafe_leverage
+    payload_dict = _fresh_signal_payload(int(time.time() * 1000))
+    payload_dict["pair_info"]["local_exchange"] = "tokocrypto"
+    payload_dict["pair_info"]["global_exchange"] = "okx"
+    from executor.models import ExecutorPayload
+    payload = ExecutorPayload.from_dict(payload_dict)
+
+    sizing = await engine._prepare_entry_sizing(
+        pair_tag, payload, payload.pair_info, payload.execution_directives
+    )
+
+    assert sizing is None
+    assert "okx" in engine._exchange_halted
+    assert "1x" in engine._exchange_halted["okx"]
+    assert pair_tag not in engine.pending_entry_orders
