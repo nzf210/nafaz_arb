@@ -17,7 +17,9 @@ import pytest
 from executor.global_stop import GlobalStopError, GlobalStopService
 
 
-def _fake_venue(active, release, accepted):
+def _fake_venue(request_received, active, release, accepted):
+    if not request_received.wait(30):
+        return
     active.set()
     if not release.wait(30):
         return
@@ -25,7 +27,7 @@ def _fake_venue(active, release, accepted):
     accepted.set()
 
 
-def _submitter(dsn, client_id, venue_active, venue_release):
+def _submitter(dsn, client_id, venue_request, venue_active, venue_release):
     async def run():
         service = GlobalStopService(dsn, min_size=1, max_size=1)
         await service.start()
@@ -35,6 +37,7 @@ def _submitter(dsn, client_id, venue_active, venue_release):
             quantity=0.001, price=60000, pair_key="mexc:BTC_USDT",
         )
         async with service.order_submit_fence(client_order_id=client_id):
+            venue_request.set()
             if not venue_active.wait(10):
                 raise RuntimeError("fake venue did not receive request")
             # Keep the session lock and HTTP call active until the parent kills us.
@@ -72,6 +75,7 @@ def test_process_death_during_live_venue_request_keeps_peer_fenced():
     suffix = uuid.uuid4().hex[:16]
     first_id = "pg-crash-" + suffix
     second_id = "pg-peer-" + suffix
+    venue_request = ctx.Event()
     venue_active = ctx.Event()
     venue_release = ctx.Event()
     venue_accepted = ctx.Event()
@@ -79,15 +83,14 @@ def test_process_death_during_live_venue_request_keeps_peer_fenced():
 
     # A separate venue process remains alive after the executor process dies.
     venue = ctx.Process(
-        target=_fake_venue, args=(venue_active, venue_release, venue_accepted)
+        target=_fake_venue, args=(venue_request, venue_active, venue_release, venue_accepted)
     )
     venue.start()
-    assert venue_active.wait(10), "fake venue did not become active"
-
     submitter = ctx.Process(
-        target=_submitter, args=(dsn, first_id, venue_active, venue_release)
+        target=_submitter, args=(dsn, first_id, venue_request, venue_active, venue_release)
     )
     submitter.start()
+    assert venue_active.wait(10), "fake venue did not receive the in-flight request"
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         if not submitter.is_alive():
