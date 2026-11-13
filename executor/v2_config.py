@@ -294,3 +294,207 @@ async def create_postgres_pool(database_url: str, *, min_size: int = 1, max_size
         )
     except Exception as exc:
         raise ConfigSnapshotError(f"cannot initialize PostgreSQL config pool: {exc}") from exc
+
+
+class PostgresConfigWriter:
+    """Transactional draft/validate/activate API with CAS, audit and outbox."""
+
+    def __init__(self, pool: Any):
+        self._pool = pool
+
+    @staticmethod
+    def _require_actor_reason(actor: str, reason: str) -> None:
+        if not actor or not actor.strip():
+            raise ConfigSnapshotError("config change actor is required")
+        if not reason or not reason.strip():
+            raise ConfigSnapshotError("config change reason is required")
+
+    async def create_draft(
+        self,
+        snapshot: Mapping[str, Any],
+        *,
+        actor: str,
+        reason: str,
+        change_diff: Optional[Mapping[str, Any]] = None,
+        source_version: Optional[int] = None,
+    ) -> int:
+        self._require_actor_reason(actor, reason)
+        normalized = dict(snapshot)
+        _reject_inline_secrets(normalized)
+        validate_v2_snapshot(normalized)
+        digest = calculate_snapshot_sha256(normalized)
+        payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    "select pg_advisory_xact_lock(hashtextextended('nafaz:v2:config_versions', 0))"
+                )
+                version = await connection.fetchval(
+                    "select coalesce(max(version), 0) + 1 from public.config_versions"
+                )
+                await connection.execute(
+                    """
+                    insert into public.config_versions
+                        (version, schema_version, snapshot, content_sha256, status,
+                         created_by, change_reason, change_diff, source_version)
+                    values ($1, $2, $3::jsonb, $4, 'draft', $5, $6, $7::jsonb, $8)
+                    """,
+                    version, SUPPORTED_SCHEMA_VERSION, payload, digest, actor, reason,
+                    json.dumps(dict(change_diff or {}), sort_keys=True), source_version,
+                )
+                await connection.execute(
+                    """
+                    insert into public.config_audit_log
+                        (version, action, actor, reason, diff)
+                    values ($1, 'created', $2, $3, $4::jsonb)
+                    """,
+                    version, actor, reason, json.dumps(dict(change_diff or {}), sort_keys=True),
+                )
+                await connection.execute(
+                    """
+                    insert into public.outbox_events
+                        (event_key, aggregate_type, aggregate_version, event_type, payload)
+                    values ($1, 'config', $2, 'config.draft_created', $3::jsonb)
+                    """,
+                    f"config:{version}:draft_created", version,
+                    json.dumps({"version": version, "content_sha256": digest}, sort_keys=True),
+                )
+        return int(version)
+
+    async def validate_version(self, version: int, *, actor: str, report: Optional[Mapping[str, Any]] = None) -> ConfigSnapshot:
+        self._require_actor_reason(actor, "validation")
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    """
+                    select version, schema_version, snapshot, content_sha256, status
+                      from public.config_versions where version = $1 for update
+                    """,
+                    version,
+                )
+                if row is None:
+                    raise ConfigSnapshotError(f"config version {version} does not exist")
+                if row["status"] not in {"draft", "validated"}:
+                    raise ConfigSnapshotError(f"config version {version} cannot be validated from status {row['status']}")
+                config = validate_snapshot_row(row)
+                await connection.execute(
+                    """
+                    update public.config_versions
+                       set status = 'validated', validated_by = $2,
+                           validated_at = now(), validation_report = $3::jsonb
+                     where version = $1
+                    """,
+                    version, actor, json.dumps(dict(report or {"result": "passed"}), sort_keys=True),
+                )
+                await connection.execute(
+                    """
+                    insert into public.config_audit_log(version, action, actor, reason, diff)
+                    values ($1, 'validated', $2, 'snapshot contract validation passed', $3::jsonb)
+                    """,
+                    version, actor, json.dumps(dict(report or {"result": "passed"}), sort_keys=True),
+                )
+        return config
+
+    async def activate_version(
+        self,
+        version: int,
+        *,
+        expected_current_version: Optional[int],
+        actor: str,
+        reason: str,
+    ) -> ConfigSnapshot:
+        self._require_actor_reason(actor, reason)
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    "select pg_advisory_xact_lock(hashtextextended('nafaz:v2:active_config', 0))"
+                )
+                current = await connection.fetchval(
+                    "select version from public.active_config_version where singleton = true for update"
+                )
+                if current != expected_current_version:
+                    raise ConfigSnapshotError(
+                        f"stale config activation: expected current {expected_current_version}, found {current}"
+                    )
+                row = await connection.fetchrow(
+                    """
+                    select version, schema_version, snapshot, content_sha256, status
+                      from public.config_versions where version = $1 for update
+                    """,
+                    version,
+                )
+                if row is None or row["status"] != "validated":
+                    raise ConfigSnapshotError("only an existing validated config version can be activated")
+                config = validate_snapshot_row(row)
+                if current is not None:
+                    await connection.execute(
+                        "update public.config_versions set status = 'superseded' where version = $1",
+                        current,
+                    )
+                await connection.execute(
+                    """
+                    insert into public.active_config_version(singleton, version, updated_by, reason)
+                    values (true, $1, $2, $3)
+                    on conflict (singleton) do update
+                       set version = excluded.version, updated_at = now(),
+                           updated_by = excluded.updated_by, reason = excluded.reason
+                    """,
+                    version, actor, reason,
+                )
+                await connection.execute(
+                    """
+                    update public.config_versions set status = 'active'
+                     where version = $1
+                    """,
+                    version,
+                )
+                await connection.execute(
+                    """
+                    insert into public.config_audit_log
+                        (version, previous_version, action, actor, reason, diff)
+                    values ($1, $2, 'activated', $3, $4, $5::jsonb)
+                    """,
+                    version, current, actor, reason,
+                    json.dumps({"expected_previous_version": expected_current_version}, sort_keys=True),
+                )
+                await connection.execute(
+                    """
+                    insert into public.outbox_events
+                        (event_key, aggregate_type, aggregate_version, event_type, payload)
+                    values ($1, 'config', $2, 'config.activated', $3::jsonb)
+                    """,
+                    f"config:{version}:activated", version,
+                    json.dumps({
+                        "version": version,
+                        "previous_version": current,
+                        "content_sha256": config.content_sha256,
+                    }, sort_keys=True),
+                )
+        return config
+
+    async def create_rollback_draft(
+        self,
+        source_version: int,
+        *,
+        actor: str,
+        reason: str,
+    ) -> int:
+        self._require_actor_reason(actor, reason)
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                select version, schema_version, snapshot, content_sha256, status
+                  from public.config_versions where version = $1
+                """,
+                source_version,
+            )
+        if row is None:
+            raise ConfigSnapshotError(f"rollback source version {source_version} does not exist")
+        source = validate_snapshot_row(row)
+        return await self.create_draft(
+            source.snapshot,
+            actor=actor,
+            reason=reason,
+            change_diff={"rollback_from_version": source_version},
+            source_version=source_version,
+        )
