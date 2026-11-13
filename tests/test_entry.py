@@ -860,3 +860,58 @@ async def test_prepare_entry_sizing_fetches_balance_once(engine, fake_redis, moc
     )
     assert sizing is not None
     assert balance_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_live_entry_sizing_fails_closed_when_balance_probe_errors(
+    engine, fake_redis, mock_client
+):
+    """Unknown live account balances must never produce an uncapped entry size."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.mock_mode = False
+
+    async def unavailable_balances(**kwargs):
+        raise TimeoutError("private balance endpoint unavailable")
+
+    mock_client.get_balances = unavailable_balances
+    payload_dict = _fresh_signal_payload(int(time.time() * 1000))
+    payload_dict["pair_info"]["local_exchange"] = "tokocrypto"
+    payload_dict["pair_info"]["global_exchange"] = "okx"
+    from executor.models import ExecutorPayload
+    payload = ExecutorPayload.from_dict(payload_dict)
+
+    sizing = await engine._prepare_entry_sizing(
+        pair_tag, payload, payload.pair_info, payload.execution_directives
+    )
+
+    assert sizing is None
+    assert "tokocrypto" in engine._exchange_halted
+    assert "okx" in engine._exchange_halted
+    assert pair_tag not in engine.pending_entry_orders
+
+
+@pytest.mark.asyncio
+async def test_live_dual_leg_preflight_fails_closed_when_balance_snapshot_missing(
+    engine, fake_redis, mock_client
+):
+    """A missing snapshot at the final funding gate must block both-leg entry."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.mock_mode = False
+    payload_dict = _fresh_signal_payload(int(time.time() * 1000))
+    payload_dict["pair_info"]["local_exchange"] = "tokocrypto"
+    payload_dict["pair_info"]["global_exchange"] = "okx"
+    from executor.models import ExecutorPayload
+    payload = ExecutorPayload.from_dict(payload_dict)
+
+    async def missing_balances(**kwargs):
+        return None
+
+    mock_client.get_balances = missing_balances
+    funded = await engine._verify_dual_leg_funding(
+        pair_tag, payload.pair_info, 25.0,
+        payload.pricing_snapshot.usdt_idr_rate,
+    )
+
+    assert funded is False
+    assert "tokocrypto" in engine._exchange_halted
+    assert "okx" in engine._exchange_halted
