@@ -280,7 +280,7 @@ class ForceCloseLegMixin:
                 pair_key,
             )
             return False, 0.0
-        force_seq = (opened_at_ms % 1_000_000_000) or 1 if not is_mock else self._next_order_seq()
+        force_seq = ((opened_at_ms % 1_000_000_000) or 1) if not is_mock else self._next_order_seq()
         force_coid = build_client_order_id(pair_key, "force-close", force_seq)
 
         # The order registry is the durable marker that this deterministic close
