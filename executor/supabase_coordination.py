@@ -66,6 +66,23 @@ class SupabaseCoordinationMixin:
         )
         return value is True
 
+    async def fetch_execution_capacity_configs(self, account_scope: str):
+        if not self.enabled or not self.url or not self.key:
+            raise RuntimeError("Supabase capacity config unavailable: persistence is disabled")
+        self._ensure_session()
+        url = f"{self.url}/rest/v1/execution_capacity_config"
+        params = {
+            "select": "exchange_name,max_open_spot_orders,max_capital_usdt",
+            "account_scope": f"eq.{account_scope}",
+        }
+        async with self._session.get(url, params=params) as response:
+            if response.status >= 300:
+                body = (await response.text())[:1000]
+                raise RuntimeError(
+                    f"Supabase capacity config read failed with HTTP {response.status}: {body}"
+                )
+            return await response.json()
+
     async def reserve_execution_capacity(
         self, account_scope: str, exchange_name: str, pair_key: str,
         client_order_id: str, reserved_amount_usdt: float,
@@ -87,6 +104,19 @@ class SupabaseCoordinationMixin:
     async def release_execution_capacity(self, reservation_id: str) -> bool:
         value = await self._call_rpc(
             "release_execution_capacity", {"p_reservation_id": reservation_id}
+        )
+        return value is True
+
+    async def release_execution_capacity_for_pair(
+        self, account_scope: str, exchange_name: str, pair_key: str
+    ) -> bool:
+        value = await self._call_rpc(
+            "release_execution_capacity_for_pair",
+            {
+                "p_account_scope": account_scope,
+                "p_exchange_name": exchange_name,
+                "p_pair_key": pair_key,
+            },
         )
         return value is True
 

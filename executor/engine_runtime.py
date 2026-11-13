@@ -388,17 +388,49 @@ class EngineRuntimeMixin:
             await pubsub.close()
 
     async def _load_spot_order_limits(self) -> None:
-        """Restore Telegram-managed per-venue limits from durable Redis hash."""
+        """Restore per-account/per-venue limits from canonical Postgres config."""
         if self.redis is None:
             return
+        if bool(getattr(self.config, "mock_mode", False)):
+            try:
+                stored = await self.redis.hgetall("arb:executor:spot_order_limits")
+                for raw_exchange, raw_limit in (stored or {}).items():
+                    exchange = raw_exchange.decode() if isinstance(raw_exchange, bytes) else str(raw_exchange)
+                    value = raw_limit.decode() if isinstance(raw_limit, bytes) else str(raw_limit)
+                    self._apply_spot_order_limit(exchange, value)
+            except Exception:
+                logger.exception("failed to restore simulated spot order limits from Redis")
+            return
+        if not bool(getattr(self.supabase, "enabled", False)):
+            self._halt_exposure_scope("*", "Spot capacity config unavailable: Postgres is disabled")
+            self._refresh_entry_gate()
+            return
+        exchanges = set((getattr(self.config, "exchanges", {}) or {}).keys())
+        exchanges.add(str(getattr(self.config, "local_exchange_name", "") or "").lower())
+        exchanges.discard("")
+        restored = {}
         try:
-            stored = await self.redis.hgetall("arb:executor:spot_order_limits")
-            for raw_exchange, raw_limit in (stored or {}).items():
-                exchange = raw_exchange.decode() if isinstance(raw_exchange, bytes) else str(raw_exchange)
-                value = raw_limit.decode() if isinstance(raw_limit, bytes) else str(raw_limit)
-                self._apply_spot_order_limit(exchange, value)
-        except Exception:
-            logger.exception("failed to restore per-exchange spot order limits from Redis")
+            for exchange in sorted(exchanges):
+                try:
+                    account_scope = self._account_scope_for_exchange(exchange)
+                except RuntimeError:
+                    logger.info("skipping capacity config without configured account credentials: %s", exchange)
+                    continue
+                rows = await self.supabase.fetch_execution_capacity_configs(account_scope)
+                for row in rows or []:
+                    venue = str(row.get("exchange_name") or "").strip().lower()
+                    limit = row.get("max_open_spot_orders", 2)
+                    restored[venue] = limit
+            await self.redis.delete("arb:executor:spot_order_limits")
+            for exchange, limit in restored.items():
+                if self._apply_spot_order_limit(exchange, limit):
+                    await self.redis.hset("arb:executor:spot_order_limits", exchange, int(limit))
+        except Exception as exc:
+            logger.exception("failed to restore canonical Spot capacity config from Postgres")
+            self._halt_exposure_scope(
+                "*", f"Postgres Spot capacity config restore failed: {type(exc).__name__}: {exc}"
+            )
+            self._refresh_entry_gate()
 
     def _apply_spot_order_limit(self, exchange: str, raw_limit) -> bool:
         venue = str(exchange or "").strip().lower()
@@ -423,8 +455,22 @@ class EngineRuntimeMixin:
         logger.warning("[Risk Control] %s max open spot orders set to %d", venue, limit)
         return True
 
+    async def _reply_spot_order_limit_request(
+        self, request_id: str, success: bool, error: str = ""
+    ) -> None:
+        request_id = str(request_id or "").strip()
+        if not request_id:
+            return
+        key = f"arb:executor:spot_order_limit_reply:{request_id}"
+        payload = json.dumps({"success": bool(success), "error": str(error or "")[:500]})
+        try:
+            await self.redis.lpush(key, payload)
+            await self.redis.expire(key, 60)
+        except Exception:
+            logger.exception("failed to acknowledge Telegram Spot limit request %s", request_id)
+
     async def _listen_spot_order_limits(self):
-        """Apply Telegram limit changes immediately without restarting executor."""
+        """Persist Telegram changes to Postgres before applying or acknowledging them."""
         pubsub = self.redis.pubsub()
         await pubsub.subscribe("arb:executor:spot_order_limit_update")
         try:
@@ -434,14 +480,38 @@ class EngineRuntimeMixin:
                     data = message.get("data")
                     if isinstance(data, bytes):
                         data = data.decode("utf-8")
+                    request_id = ""
                     try:
                         update = json.loads(data or "{}")
-                        if isinstance(update, dict) and self._apply_spot_order_limit(
-                            update.get("exchange"), update.get("max_open_spot_orders")
+                        if not isinstance(update, dict):
+                            raise ValueError("request payload must be an object")
+                        request_id = str(update.get("request_id") or "")
+                        exchange = str(update.get("exchange") or "").strip().lower()
+                        limit = int(update.get("max_open_spot_orders"))
+                        if not request_id:
+                            raise ValueError("request_id is required for durable acknowledgement")
+                        if (
+                            not exchange or len(exchange) > 64
+                            or any(not (char.isalnum() or char in "_-") for char in exchange)
+                            or limit < 1 or limit > 100
                         ):
-                            await self.publish_status()
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        logger.warning("ignoring malformed spot order limit update")
+                            raise ValueError("exchange or max_open_spot_orders is invalid")
+                        if not bool(getattr(self.config, "mock_mode", False)):
+                            await self.execution_coordinator.assert_active()
+                            account_scope = self._account_scope_for_exchange(exchange)
+                            await self.supabase.set_execution_capacity_config(
+                                account_scope, exchange, limit, None
+                            )
+                        if not self._apply_spot_order_limit(exchange, limit):
+                            raise ValueError("Spot order limit could not be applied")
+                        await self.redis.hset("arb:executor:spot_order_limits", exchange, limit)
+                        await self.publish_status()
+                        await self._reply_spot_order_limit_request(request_id, True)
+                    except Exception as exc:
+                        logger.exception("Telegram Spot capacity update failed")
+                        await self._reply_spot_order_limit_request(
+                            request_id, False, f"{type(exc).__name__}: {exc}"
+                        )
                 await asyncio.sleep(0.01)
         finally:
             await pubsub.unsubscribe("arb:executor:spot_order_limit_update")

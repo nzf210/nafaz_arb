@@ -314,6 +314,16 @@ class ExitExecutionMixin:
                 pair_tag, pos, closed_trade, spot_cost, futures_margin,
                 spot_pnl_usdt, usdt_rate,
             )
+            if pos.qty <= max(1e-12, total_qty_before * 1e-8):
+                try:
+                    await self._release_spot_capacity_reservation(
+                        pair_tag, pos.local_exchange
+                    )
+                except Exception:
+                    logger.exception(
+                        "[State 4] fully closed pair capacity release failed for %s",
+                        pair_tag,
+                    )
         except Exception as ee:
             pos.state = "RECONCILIATION_REQUIRED"
             pos.updated_at = int(time.time() * 1000)

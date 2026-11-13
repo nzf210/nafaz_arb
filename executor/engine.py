@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from contextvars import ContextVar
 from decimal import Decimal, ROUND_DOWN
 import json
@@ -190,6 +191,65 @@ class ArbitrageEngine(
         self._exchange_reconciliation_lock = asyncio.Lock()
         self.exposure_reconciliation = ExposureReconciliationWorker(self)
         self.trade_fill_reconciliation = TradeFillReconciliationWorker(self)
+
+    def _account_scope_for_exchange(self, exchange: str) -> str:
+        """Return a stable, non-secret account scope for durable capacity accounting."""
+        venue = str(exchange or "").strip().lower()
+        if not venue:
+            raise ValueError("exchange name is required for account scope")
+        credentials = (getattr(self.config, "exchanges", {}) or {}).get(venue)
+        if credentials is None:
+            if venue == str(getattr(self.config, "local_exchange_name", "")).lower():
+                credentials = getattr(self.config, "local_credentials", None)
+            elif venue == str(getattr(self.config, "global_exchange_name", "")).lower():
+                credentials = getattr(self.config, "global_credentials", None)
+        explicit_scope = str(getattr(credentials, "account_scope", "") or "").strip()
+        if explicit_scope:
+            if len(explicit_scope) > 96:
+                raise ValueError("configured account_scope exceeds 96 characters")
+            identity = explicit_scope
+        else:
+            api_key = str(getattr(credentials, "api_key", "") or "")
+            if not api_key:
+                raise RuntimeError(
+                    f"cannot establish durable account scope for {venue}: API key/account_scope missing"
+                )
+            identity = "key-" + hashlib.sha256(
+                f"{venue}:{api_key}".encode("utf-8")
+            ).hexdigest()[:32]
+        return f"{venue}:{identity}"
+
+    async def _reserve_spot_capacity(
+        self, pair_key: str, exchange: str, client_order_id: str, amount_usdt: float
+    ) -> str:
+        if bool(getattr(self.config, "mock_mode", False)):
+            return ""
+        account_scope = self._account_scope_for_exchange(exchange)
+        capital_limit = float(
+            getattr(self.config, "max_exposure_per_exchange_usdt", 0.0) or 0.0
+        )
+        result = await self.supabase.reserve_execution_capacity(
+            account_scope, exchange, pair_key, client_order_id, amount_usdt,
+            capital_limit if capital_limit > 0 else None,
+        )
+        if not bool(result.get("accepted")):
+            raise RuntimeError(
+                f"atomic spot capacity reservation rejected: {result.get('reason') or 'unknown'} "
+                f"(active={result.get('active_spot_orders')}, "
+                f"reserved_capital_usdt={result.get('reserved_capital_usdt')})"
+            )
+        reservation_id = str(result.get("reservation_id") or "")
+        if not reservation_id:
+            raise RuntimeError("capacity reservation RPC accepted without returning reservation_id")
+        return reservation_id
+
+    async def _release_spot_capacity_reservation(self, pair_key: str, exchange: str) -> bool:
+        if bool(getattr(self.config, "mock_mode", False)):
+            return True
+        account_scope = self._account_scope_for_exchange(exchange)
+        return await self.supabase.release_execution_capacity_for_pair(
+            account_scope, exchange, pair_key
+        )
 
     async def _on_execution_coordinator_lost(self, reason: str) -> None:
         self._recovery_complete = False

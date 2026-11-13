@@ -249,6 +249,16 @@ class ForceCloseLifecycleMixin:
 
     async def _handle_force_close_success(self, pair_key: str, pos, pnl: dict) -> None:
         """Cleans up active state in Redis and memory when force close fully succeeds."""
+        try:
+            if pos is not None:
+                await self._release_spot_capacity_reservation(
+                    pair_key, str(pos.local_exchange or "")
+                )
+        except Exception:
+            logger.exception(
+                "[Force Close] verified flat position capacity release failed for %s",
+                pair_key,
+            )
         await self.redis.delete(f"arb:active_pos:{pair_key}")
         self.active_positions.pop(pair_key, None)
         self.last_pegged_global_ask.pop(pair_key, None)

@@ -588,6 +588,18 @@ class EntryHedgeMixin:
             return
 
         order_info = self.pending_entry_orders.get(pair_tag, {})
+        position = self.active_positions.get(pair_tag)
+        filled_qty = float(order_info.get("filled", 0.0) or 0.0)
+        if position is None and filled_qty <= 1e-12:
+            try:
+                await self._release_spot_capacity_reservation(
+                    pair_tag, str(order_info.get("local_exchange") or "")
+                )
+            except Exception:
+                logger.exception(
+                    "[Entry] terminal unfilled capacity reservation release failed for %s",
+                    pair_tag,
+                )
         # If partial fill left unused reserved funds, release the remainder
         if hasattr(self.client, "unlock_funds"):
             pos = self.active_positions.get(pair_tag)
