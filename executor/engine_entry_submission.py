@@ -311,15 +311,35 @@ class EngineEntrySubmissionMixin:
             )
             try:
                 if self.global_stop is not None:
-                    async with self.global_stop.order_submit_fence(client_order_id=entry_coid):
-                        submission_started = True
-                        order = await self.client.place_local_limit_buy(
-                            pair_info.local_symbol,
-                            buy_qty,
-                            exchange_order_price,
-                            client_order_id=entry_coid,
-                            amount_spec=pair_info.local_amount_spec,
-                        )
+                    ip_ban_state = None
+                    try:
+                        async with self.global_stop.order_submit_fence(client_order_id=entry_coid) as fence_conn:
+                            submission_started = True
+                            try:
+                                order = await self.client.place_local_limit_buy(
+                                    pair_info.local_symbol,
+                                    buy_qty,
+                                    exchange_order_price,
+                                    client_order_id=entry_coid,
+                                    amount_spec=pair_info.local_amount_spec,
+                                )
+                            except Exception as submit_error:
+                                _, normalized_submit_error = self._entry_error_text(submit_error)
+                                if self._is_explicit_ip_ban(normalized_submit_error):
+                                    ip_ban_state = await self.global_stop.request_stop_in_transaction(
+                                        fence_conn, "CEX_IP_BLOCK",
+                                        source="exchange:" + str(pair_info.local_exchange),
+                                        metadata={
+                                            "exchange": pair_info.local_exchange,
+                                            "symbol": pair_info.local_symbol,
+                                            "error_type": type(submit_error).__name__,
+                                            "exchange_error": str(submit_error)[:1000],
+                                        },
+                                    )
+                                raise
+                    finally:
+                        if ip_ban_state is not None:
+                            await self.global_stop.notify_state(ip_ban_state)
                 else:
                     # Compatibility mode only: cross-instance fencing is inactive
                     # until POSTGRES_DSN is configured on every executor instance.
