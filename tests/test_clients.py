@@ -696,7 +696,7 @@ def test_engine_pair_client_binding_is_task_local_and_restores_previous_binding(
     engine._reset_pair_client(token_b)
     assert engine.client is toko_client
     engine._reset_pair_client(token_a)
-    assert engine.client is base
+    assert engine.client._client is base
 
 @pytest.mark.asyncio
 async def test_spot_order_history_lookup_matches_exact_client_id():

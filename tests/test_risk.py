@@ -440,18 +440,6 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
     engine.execution_coordinator.execute_mutation = execute_with_test_lease
     engine.order_registry.find_by_client_id = find_test_intent
 
-    engine.execution_coordinator.active = True
-    engine.execution_coordinator.fencing_token = 1
-
-    async def execute_with_test_lease(operation):
-        return await operation()
-
-    async def find_test_intent(exchange, client_order_id):
-        return object()
-
-    engine.execution_coordinator.execute_mutation = execute_with_test_lease
-    engine.order_registry.find_by_client_id = find_test_intent
-
     # This test isolates balance-probe behavior; the separate adaptive-maker
     # tests cover the fresh Indodax book preflight.
     engine._apply_indodax_adaptive_maker_quote = AsyncMock(return_value=True)
@@ -488,6 +476,18 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
     engine.client = client
+    engine.execution_coordinator.active = True
+    engine.execution_coordinator.fencing_token = 1
+
+    async def execute_with_test_lease(operation):
+        return await operation()
+
+    async def find_test_intent(exchange, client_order_id):
+        return object()
+
+    engine.execution_coordinator.execute_mutation = execute_with_test_lease
+    engine.order_registry.find_by_client_id = find_test_intent
+    engine._persist_risk_state = lambda *args, **kwargs: True
     # Keep this test focused on mapping the venue rejection to its public
     # failure reason; adaptive-maker book validation is covered separately.
     engine._apply_indodax_adaptive_maker_quote = AsyncMock(return_value=True)
