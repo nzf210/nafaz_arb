@@ -50,6 +50,25 @@ def calculate_snapshot_sha256(snapshot: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_snapshot_bytes(snapshot)).hexdigest()
 
 
+def _reject_inline_secrets(value: Any, path: str = "snapshot") -> None:
+    """Reject raw credential material while allowing *_env and *_ref pointers."""
+    forbidden = {
+        "api_key", "api_secret", "secret", "password", "passphrase",
+        "token", "private_key", "access_key", "refresh_token",
+    }
+    if isinstance(value, dict):
+        for key, child in value.items():
+            normalized = str(key).strip().lower()
+            if normalized in forbidden:
+                raise ConfigSnapshotError(
+                    f"inline secret field is forbidden in V2 config: {path}.{normalized}"
+                )
+            _reject_inline_secrets(child, f"{path}.{normalized}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _reject_inline_secrets(child, f"{path}[{index}]")
+
+
 def validate_snapshot_row(row: Mapping[str, Any]) -> ConfigSnapshot:
     try:
         version = int(row["version"])
@@ -74,6 +93,7 @@ def validate_snapshot_row(row: Mapping[str, Any]) -> ConfigSnapshot:
     if not isinstance(snapshot, dict):
         raise ConfigSnapshotError("active configuration snapshot must be a JSON object")
 
+    _reject_inline_secrets(snapshot)
     actual_hash = calculate_snapshot_sha256(snapshot)
     if len(expected_hash) != 64 or actual_hash != expected_hash:
         raise ConfigSnapshotError("active configuration SHA-256 does not match stored hash")
@@ -92,10 +112,10 @@ class PostgresConfigRepository:
     """Read the active immutable snapshot from PostgreSQL."""
 
     _ACTIVE_SQL = """
-        select v.version, v.schema_version, v.snapshot, v.content_sha256
+        select v.version, v.schema_version, v.snapshot, v.content_sha256, v.status
           from public.active_config_version a
           join public.config_versions v on v.version = a.version
-         where a.singleton = true
+         where a.singleton = true and v.status = 'active'
     """
 
     def __init__(self, pool: Any):
