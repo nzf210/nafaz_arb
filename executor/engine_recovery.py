@@ -27,10 +27,19 @@ class EngineRecoveryMixin:
             try:
                 resolver = getattr(self._base_client, "for_venue", None)
                 venue_client = resolver(exchange) if callable(resolver) else None
-                lookup = getattr(venue_client, "fetch_local_order_by_client_id", None)
+                market_type = str(attempt.get("market_type") or "spot").lower()
+                if market_type in {"perpetual", "future", "futures", "swap"}:
+                    lookup_name = "fetch_global_order_by_client_id"
+                elif market_type in {"spot", "local"}:
+                    lookup_name = "fetch_local_order_by_client_id"
+                else:
+                    raise RuntimeError(
+                        f"unsupported market_type for submit reconciliation: {market_type}"
+                    )
+                lookup = getattr(venue_client, lookup_name, None)
                 if not callable(lookup):
                     raise RuntimeError(
-                        f"no client-order-id lookup client configured for venue {exchange}"
+                        f"no {market_type} client-order-id lookup configured for venue {exchange}"
                     )
                 order = await lookup(
                     client_order_id, symbol, attempt.get("amount_spec") or None
