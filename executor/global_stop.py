@@ -112,13 +112,23 @@ class GlobalStopService:
             )
             if row is None:
                 existing = await conn.fetchrow(
-                    "select client_order_id, status, created_at from public.executor_submit_attempts "
+                    "select client_order_id, status, created_at, exchange, market_type, symbol, "
+                    "side, order_type, quantity, price, pair_key from public.executor_submit_attempts "
                     "where client_order_id = $1",
                     client_order_id,
                 )
                 if existing is None or existing["status"] != "PREPARED":
                     raise GlobalStopError(
                         f"client order id already has a non-reusable submit attempt: {client_order_id}"
+                    )
+                expected = {
+                    "exchange": values[1], "market_type": values[2], "symbol": values[3],
+                    "side": values[4], "order_type": values[5], "quantity": values[6],
+                    "price": values[7], "pair_key": values[8],
+                }
+                if any(existing[key] != value for key, value in expected.items()):
+                    raise GlobalStopError(
+                        f"client order id collision with a different order intent: {client_order_id}"
                     )
                 row = existing
         return dict(row)
