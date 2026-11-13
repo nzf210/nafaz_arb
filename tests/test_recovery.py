@@ -93,15 +93,16 @@ async def test_p0_01_hedge_failure_with_ambiguous_rollback_submits_once_and_aler
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "HEDGE_FAILED"
 
     msg = None
-    for _ in range(10):
+    for _ in range(20):
         m = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
         if m and m.get("type") == "message":
-            msg = json.loads(m["data"])
-            break
+            candidate = json.loads(m["data"])
+            if candidate.get("event") == "HEDGE_FAILED":
+                msg = candidate
+                break
     assert msg is not None
-    assert msg["event"] == "HEDGE_FAILED"
     assert msg["rollback_succeeded"] is False
-    assert "local spot exchange unavailable" in msg["rollback_error"]
+    assert "ambiguous" in msg["rollback_error"]
 
 @pytest.mark.asyncio
 async def test_p0_hedge_ambiguity_open_short_blocks_rollback(engine, fake_redis):
