@@ -1424,3 +1424,15 @@ Implementasi lanjutan pada branch ini menambahkan:
 - Tidak ada automatic resubmit untuk \`SUBMITTING\`/\`UNKNOWN\`. Redis tidak digunakan sebagai sumber kebenaran ledger.
 
 **Batas penting:** Ini masih fondasi konservatif. Belum ada prosedur operator terotorisasi untuk menyelesaikan unresolved attempt setelah bukti venue independen, dan belum ada real PostgreSQL multi-process fault-injection test. Jalur spot-entry dan futures entry-hedge kini sama-sama menulis attempt durable dan menahan session fence saat request venue. Namun ini belum membuktikan seluruh jalur create-order lain (termasuk exit/close, rollback, dan adapter alternatif) telah memakai ledger yang sama. Jangan LIVE-cutover sebelum audit call-site menyeluruh, resolusi operator terotorisasi, dan real PostgreSQL multi-process fault-injection ditutup.
+
+## 16. Audit jalur order dan market-aware submit recovery (2026-11-13)
+
+Static call-site tracing mengidentifikasi dua jalur yang membuka/menambah eksposur: spot BUY (engine_entry_submission → place_local_limit_buy → CCXT/Indodax create_limit_buy_order) dan futures short SELL (entry_hedge → open_global_short_market → create_market_sell_order). Keduanya wajib menggunakan durable PREPARED/SUBMITTING ledger dan shared PostgreSQL session advisory fence. LIVE startup mensyaratkan GlobalStop/PostgreSQL; jalur tanpa service hanya merupakan compatibility/mock branch dan tidak boleh dianggap live-safe.
+
+Startup recovery sebelumnya menggunakan spot lookup untuk semua ledger rows. Futures hedge rows memiliki market_type=perpetual dan harus dicari melalui fetch_global_order_by_client_id. Perbaikan pada commit a8eaee3 merutekan exact client ID berdasarkan market type dan menolak tipe yang tidak dikenal. Found order menjadi ACKNOWLEDGED; not-found atau lookup error tetap unresolved dan tidak memicu retry.
+
+Commit 1183d4e memperketat idempotency PREPARED: selain exchange, market, symbol, side, order type, quantity, price, dan pair key, amount_spec juga harus identik. Spesifikasi ini menentukan konversi base amount ke unit kontrak/venue sehingga tidak boleh berubah saat client ID yang sama dipakai ulang.
+
+Risk-reducing paths tetap dipisahkan dari entry gate: spot limit SELL exit, spot market SELL rollback/force-close, dan futures market BUY reduceOnly=True close. Ketiganya memerlukan idempotency dan reconciliation tersendiri, tetapi tidak boleh diblokir secara generik oleh Global STOP karena dapat memperburuk eksposur terbuka. Cancel bukan create-order dan juga tidak otomatis tunduk pada entry gate.
+
+Status audit masih PARTIAL. Static inventory dan dua regression cases telah ditambahkan, tetapi full runtime adapter/call-graph audit, operator-authenticated manual resolution, serta real PostgreSQL multi-process disconnect/fault-injection belum selesai. Tidak ada klaim LIVE-ready, merge, deployment, atau cutover.
