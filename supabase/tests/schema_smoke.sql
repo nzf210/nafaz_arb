@@ -135,7 +135,7 @@ insert into public.market_pairs (
 )
 on conflict (pair_key) do update set metadata = excluded.metadata;
 
-do $
+do $registry$
 begin
     if (select count(*) from public.exchange_accounts where account_label = 'ci-smoke') <> 2 then
         raise exception 'exchange account upsert did not remain idempotent';
@@ -146,7 +146,7 @@ begin
     if (select count(*) from public.market_pairs where pair_key = 'tokocrypto:btc_idr->mexc:BTC/USDC:USDC') <> 1 then
         raise exception 'market pair upsert did not remain idempotent';
     end if;
-end $;
+end $registry$;
 
 delete from public.market_pairs where pair_key = 'tokocrypto:btc_idr->mexc:BTC/USDC:USDC';
 delete from public.risk_limits where name = 'ci-smoke-runtime';
