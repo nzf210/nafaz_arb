@@ -21,6 +21,7 @@ create index if not exists executor_submit_resolution_audit_attempt_idx
 alter table public.executor_submit_resolution_audit enable row level security;
 revoke all on table public.executor_submit_resolution_audit from anon, authenticated;
 grant select, insert on table public.executor_submit_resolution_audit to service_role;
+grant usage, select on sequence public.executor_submit_resolution_audit_event_id_seq to service_role;
 
 comment on table public.executor_submit_resolution_audit is
 'Append-only record of HMAC-authenticated operator decisions resolving ambiguous venue submits. Nonces are globally unique to prevent replay.';
