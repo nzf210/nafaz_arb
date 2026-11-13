@@ -379,6 +379,7 @@ class ForceCloseLegMixin:
                 max_retries=4,
                 base_delay=0.5,
                 label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
+                retry_if=helpers.is_explicit_rate_limit_rejection,
             )
             if isinstance(spot_order, dict):
                 await self._record_force_close_spot_order(
