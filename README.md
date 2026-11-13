@@ -39,13 +39,24 @@ go run ./cmd/nafaz-scanner -config config.json
 
 ### Live trading behavior and safeguards
 
-Live entry sizing uses the signal budget, exposure cap, and fee reserve; it does not
-poll private balance endpoints before submitting an order. The exchange validates
-available spot funds when the limit order is sent and validates futures margin when
-the hedge is submitted. Rejection alerts include the exchange error. A spot fill can
-still occur before a futures-margin rejection, so the executor attempts its guarded
-spot rollback and reports any unresolved exposure. Simulated entries continue to use
-the paper account's balance snapshot.
+Live entry sizing requires a fresh authenticated balance snapshot for both spot
+and futures accounts before either leg is submitted. The executor also verifies the
+futures position mode and configured short leverage (1x), restores durable risk/order
+state, and reconciles all account-wide futures positions before it consumes signals.
+Unknown balances, unsupported position modes, unsafe leverage, missing contract
+metadata, and mismatched account exposure fail closed and halt the affected venue.
+
+LIVE mode requires an explicit positive per-exchange exposure cap, daily loss limit,
+slippage limit, fee reserve, order-failure threshold, and a working Supabase durable
+risk/order journal. OKX is expected to use Hedge Mode (short orders carry
+`posSide=short`); MEXC is expected to use One-way Mode. The executor does not change
+account settings automatically.
+
+Emergency spot market sells are submitted once. If the acknowledgement is ambiguous,
+the executor searches order history by client order ID and never blindly resubmits:
+an unresolved result remains `RECONCILIATION_REQUIRED` for operator intervention.
+Paper mode continues to use simulated balances. These guards are not a substitute
+for authenticated exchange smoke tests, paper trading, and a controlled canary.
 
 INDODAX is the exception: its keys are issued on `indodax.com/trade_api` and are
 TAPIv2-only. The legacy `/tapi` endpoint that CCXT still signs rejects them with
