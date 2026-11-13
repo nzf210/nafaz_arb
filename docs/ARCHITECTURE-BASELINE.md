@@ -2,7 +2,7 @@
 
 # Baseline Arsitektur — Nafazbot
 
-- Repository: `nzf210/nafaz_arb`
+- Repositori: `nzf210/nafaz_arb`
 - Cabang acuan: `feat/unified-dynamic-fee-engine`
 - Komit acuan: `9cc3dcd11d0999e828309053ba4cffce98a28675`
 - Cabang audit: `audit/architecture-baseline-regression-contract`
@@ -34,7 +34,7 @@ Aturan yang tidak boleh dilanggar:
 
 Cabang diperiksa dari GitHub at the commit above. Recursive tree contained **213 tracked paths**, with no truncation. Ini adalah inventaris kode sumber, bukan pernyataan bahwa seluruh 213 berkas telah diaudit baris demi baris. Critical runtime paths are inspected; secondary files are classified by responsibility and marked for deeper verification in the implementation plan.
 
-The branch head commit message is:
+Pesan komit kepala cabang adalah:
 `fix(executor): support USDT spot quotes and resolve queue stall bottlenecks`.
 
 Fakta penting kode saat ini:
