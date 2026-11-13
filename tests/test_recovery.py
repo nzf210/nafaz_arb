@@ -31,6 +31,9 @@ class _ReadyJournalStub:
     async def fetch_active_risk_states(self, is_mock=False):
         return []
 
+    async def fetch_daily_realized_loss_usdt(self, loss_day, *, is_mock=True):
+        return 0.0
+
     def __getattr__(self, _name):
         return lambda *args, **kwargs: True
 
