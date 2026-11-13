@@ -5,7 +5,9 @@ behavior, not live exchange API guarantees; live contract probes remain a
 separate release gate.
 """
 import pytest
+from types import SimpleNamespace
 
+from executor.force_close_legs import ForceCloseLegMixin
 from executor.exchange_common import _find_order_by_client_id
 
 
@@ -64,3 +66,49 @@ async def test_pending_reduce_only_close_is_found_and_not_misclassified_as_absen
     assert found is not None
     assert found["status"] == "open"
     assert found["reduceOnly"] is True
+
+
+class ExistingIntentRegistry:
+    async def find_by_client_id(self, exchange, client_order_id):
+        return {"client_order_id": client_order_id, "status": "submitting"}
+
+
+class MissingLookupClient:
+    def __init__(self):
+        self.lookups = []
+        self.submits = 0
+
+    async def fetch_global_order_by_client_id(self, client_order_id, symbol, amount_spec):
+        self.lookups.append((client_order_id, symbol))
+        return None
+
+    async def close_global_short_market(self, *args, **kwargs):
+        self.submits += 1
+        raise AssertionError("ambiguous prior close must never be resubmitted")
+
+
+class ForceCloseHarness(ForceCloseLegMixin):
+    def __init__(self):
+        self.config = SimpleNamespace(mock_mode=False)
+        self.order_registry = ExistingIntentRegistry()
+        self.client = MissingLookupClient()
+
+    def _resolve_global_symbol(self, symbol):
+        return symbol
+
+
+@pytest.mark.asyncio
+async def test_force_close_prior_reduce_only_intent_not_found_never_resubmits():
+    engine = ForceCloseHarness()
+    position = SimpleNamespace(
+        symbol="BTC/USDT:USDT",
+        qty=0.01,
+        opened_at_ms=1730000000000,
+        global_exchange="okx",
+        global_amount_spec=None,
+    )
+    closed, fill_price = await engine._close_global_short_leg("okx:BTC_USDT", position)
+    assert closed is False
+    assert fill_price == 0.0
+    assert len(engine.client.lookups) == 1
+    assert engine.client.submits == 0
