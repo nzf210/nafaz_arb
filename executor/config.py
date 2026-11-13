@@ -18,6 +18,7 @@ class SupabaseConfig:
     enabled: bool = False
     url: str = ""
     key: str = ""
+    outbox_path: str = "/app/data/executor/supabase-outbox.sqlite3"
 
 @dataclass
 class ExecutorConfig:
@@ -133,6 +134,9 @@ class ExecutorConfig:
                 self.supabase.enabled = bool(sup_data.get("enabled", False))
                 self.supabase.url = str(sup_data.get("url", ""))
                 self.supabase.key = str(sup_data.get("key", ""))
+                self.supabase.outbox_path = str(
+                    sup_data.get("outbox_path", self.supabase.outbox_path)
+                )
         except Exception as e:
             print(f"warning: error loading config file: {e}")
 
@@ -267,6 +271,8 @@ class ExecutorConfig:
         if sup_key := os.getenv("SUPABASE_KEY"):
             self.supabase.key = sup_key
             self.supabase.enabled = True
+        if outbox_path := os.getenv("SUPABASE_OUTBOX_PATH"):
+            self.supabase.outbox_path = outbox_path
 
     # Bounds applied by sanitize(): (field, minimum, maximum, default when invalid).
     # A bad value is replaced by the default rather than aborting the boot, so a

@@ -289,21 +289,36 @@ operational tables for exchange accounts, strategy/risk configuration, market pa
 scanner opportunities, orders/fills, positions/legs, funding payments, closed trades,
 balances, risk events, and executor events/status snapshots.
 
-**Important:** the schema is created, and the executor now writes to it on a
-best-effort basis. Redis remains the live coordination layer and scanner
-opportunity history still uses the configured JSON file.
+**Runtime persistence:** the Go scanner writes evaluated snapshots to
+`scanner_opportunities`; the Python executor writes `positions`, `position_legs`,
+`orders`, `order_fills`, `closed_trades`, `funding_payments`, `balance_snapshots`,
+`executor_status_snapshots`, `executor_events`, and `risk_events`.
+Scanner opportunity snapshots are first committed to a persistent JSONL outbox
+and replayed by a background delivery reconciliation worker; executor events use
+a persistent SQLite outbox. Upserts and order/fill writes use deterministic
+idempotency keys. Redis remains authoritative for live coordination and active
+exposure recovery; the scanner's existing JSON history remains in place for its API.
 
-Set both `SUPABASE_URL` and `SUPABASE_KEY` (secret/service-role key — never the
-publishable key, whose `anon` role these tables deliberately deny) in the server
-environment to enable it. With either unset the writer is inert, and every write
-is queued and flushed by a background task, so an unreachable database can never
-delay a hedge, rollback, or force close.
+Set `SUPABASE_URL` and `SUPABASE_KEY` in the server environment to enable both
+writers. `SUPABASE_KEY` must be the server-only Supabase `service_role` secret,
+never the anon/publishable key. Do not commit it, put it in the image, or expose it
+to frontend/Telegram clients. If credentials are absent, persistence is disabled;
+a database outage does not block exchange risk management.
 
-Persisted by the executor: `positions`, `orders`, `order_fills`, `closed_trades`,
-`executor_events`. Writes are upserts on client-generated ids, so retries are
-idempotent, and fill rows derive from cumulative filled quantity so a replayed
-write cannot duplicate a fill. `scanner_opportunities`, `balance_snapshots`,
-`funding_payments`, and `executor_status_snapshots` are not yet written.
+Runtime registry snapshots additionally populate `exchange_accounts` (metadata
+only for configured Spot/Perpetual venues; no API credentials), `risk_limits`
+(sanitized active executor settings, audit-only and never read back), and
+`market_pairs` (exact pairs actually used when a position opens/restores).
+`strategy_configs` remains schema-only until a separate strategy configuration
+model is defined; Supabase is not a trading control plane. Confirmed funding
+settlements come only from exchange funding history, balance snapshots include only
+successful read-only venue reports, and status snapshots are emitted on state changes
+plus a 60-second heartbeat. The market-pair registry is not a full market-discovery
+catalog. The scanner delivery worker reconciles only durable opportunity delivery;
+it does not reconcile private exchange positions or balances. Supabase history is
+not a complete exchange ledger and must never replace authenticated exchange-side
+exposure verification.
+See [Supabase runtime and deployment notes](./supabase/README.md).
 
 
 For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.

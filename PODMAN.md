@@ -55,7 +55,9 @@ Pastikan VPS Anda telah terpasang:
 
 3. Buat folder penyimpanan data histori peluang:
    ```bash
-   mkdir -p data
+   mkdir -p data data/executor data/scanner
+   # Pastikan UID/GID ini sama dengan APP_UID/APP_GID saat build container.
+   chown -R ${APP_UID:-1000}:${APP_GID:-1000} data/executor data/scanner
    ```
 
 4. Edit file `config.json` sesuai kebutuhan:
@@ -260,4 +262,88 @@ podman run -d --name nafaz-scanner --restart always -p 8080:8080 -v $(pwd)/confi
 | **failed to connect to the docker API at unix:///run/user/1000/podman/podman.sock** | Provider docker-compose membutuhkan Podman API Socket yang belum aktif. | Jalankan `systemctl --user enable --now podman.socket` atau gunakan binary native `podman-compose up -d --build`. |
 | **error creating systemd unit `crun-buildah-....scope`: got `failed`** | Rootless Podman di VPS tidak memiliki delegasi cgroup systemd. | Atur cgroup manager ke `cgroupfs` dengan menjalankan perintah:<br>`mkdir -p ~/.config/containers && echo -e '[engine]\ncgroup_manager = "cgroupfs"\nevents_logger = "file"' > ~/.config/containers/containers.conf` |
 
+---
 
+## 9. Integrasi Supabase (opsional)
+
+Scanner dan executor dapat menulis histori operasional ke Supabase. Redis tetap
+dipakai untuk pub/sub, locks, harga live, saldo cache, dan pemulihan posisi aktif.
+Supabase bukan jalur kritis untuk hedge, rollback, atau force-close.
+
+Sediakan dua environment variable berikut pada host/container:
+
+- `SUPABASE_URL`: URL project Supabase HTTPS.
+- `SUPABASE_KEY`: secret `service_role` key (server-only), bukan anon/publishable key.
+- `SUPABASE_OUTBOX_PATH`: file SQLite outbox executor; default
+  `/app/data/executor/supabase-outbox.sqlite3`. Direktori ini dipetakan ke
+  `./data/executor` di host agar antrean tetap ada setelah container restart/recreate.
+- `SUPABASE_SCANNER_OUTBOX_PATH`: jurnal JSONL scanner; default
+  `/app/data/scanner/supabase-outbox.jsonl`. Path ini berada di volume
+  `./data` yang sama tetapi direktori scanner terpisah dari executor.
+
+Contoh memasukkan key tanpa menuliskannya sebagai literal ke command history:
+
+```bash
+export SUPABASE_URL="https://<project-ref>.supabase.co"
+read -rsp "Supabase service_role key: " SUPABASE_KEY
+export SUPABASE_KEY
+echo
+podman-compose up -d --build
+```
+
+Pastikan environment tersebut diteruskan ke kedua service `nafaz-scanner` dan
+`nafaz-executor`. Jangan commit key, jangan masukkan ke image, dan jangan expose
+ke Vue atau Telegram. File `.env` di repository di-ignore oleh Git, tetapi gunakan
+secret manager atau environment systemd yang terlindungi untuk deployment VPS.
+
+Untuk menerapkan migration, periksa project dan migration history terlebih dahulu:
+
+```bash
+supabase link --project-ref <project-ref>
+supabase migration list --remote
+supabase db push --remote
+```
+
+Jangan jalankan `db push` sebelum schema dan migration history remote ditinjau.
+Migration CI hanya membuktikan kompatibilitas pada PostgreSQL test, bukan bahwa
+project Supabase remote Anda sudah menerima migration.
+
+Cakupan runtime saat ini: scanner menulis `scanner_opportunities`; executor
+menulis `positions`, `position_legs`, `orders`, `order_fills`, `closed_trades`,
+`funding_payments` (hanya settlement aktual dari exchange), `balance_snapshots`
+(dari permintaan baca saldo yang berhasil), `executor_status_snapshots`,
+`executor_events`, dan `risk_events`. Runtime registry juga mengisi
+`exchange_accounts` (metadata akun tanpa API key/secret), `risk_limits`
+(snapshot konfigurasi risiko tervalidasi, audit-only), dan `market_pairs`
+(pair Spot/Perpetual yang benar-benar digunakan ketika posisi dibuka/dipulihkan).
+`strategy_configs` tetap schema-only karena belum ada model strategy control-plane;
+executor tidak membaca konfigurasi trading dari Supabase.
+`EXECUTOR_INSTANCE_ID` opsional memberi label stabil untuk status executor;
+Compose default ke `nafaz-executor`.
+
+Balance read yang gagal tidak disimpan sebagai saldo nol. Funding estimasi tidak
+pernah dicatat sebagai payment confirmed. Snapshot status dibuat saat ada perubahan
+status dan heartbeat maksimal satu kali per 60 detik ketika tidak berubah.
+
+Penulisan Supabase memakai durable local outbox:
+- Scanner: `data/scanner/supabase-outbox.jsonl` (default maksimum 128 MiB).
+- Executor: `data/executor/supabase-outbox.sqlite3` (default maksimum 50.000 row pending).
+
+Kedua direktori harus berada pada persistent host volume dan writable oleh UID/GID
+container. Outbox menyimpan data sebelum pengiriman HTTP; worker menghapus row hanya
+setelah upsert Supabase berhasil. Karena itu, restart container atau outage Supabase
+tidak langsung menghilangkan antrean yang sudah berhasil dijurnal. Jangan menghapus
+atau mengganti file outbox ketika masih ada backlog. Backup file beserta file SQLite
+WAL/SHM sebelum memindahkan host atau volume.
+
+Pantau ukuran journal dan error delivery:
+```bash
+ls -lh data/scanner/supabase-outbox.jsonl data/executor/supabase-outbox.sqlite3*
+podman compose logs --since 30m nafaz-scanner nafaz-executor | grep -Ei 'supabase|outbox|CRITICAL'
+```
+
+Jika ukuran terus bertambah, periksa credential, konektivitas, schema/migration,
+dan permission volume. Capacity/disk error dicatat sebagai CRITICAL; persistence
+tetap fail-open dan tidak boleh menjadi prasyarat hedge, rollback, force-close,
+atau risk decision. Outbox hanya untuk satu writer per file/host. Redis dan
+exchange API tetap menjadi sumber runtime untuk koordinasi dan exposure.

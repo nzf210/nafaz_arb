@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"context"
+	"log"
 	"errors"
 	"fmt"
 	"math"
@@ -36,11 +37,19 @@ type evalResult struct {
 	exchangeMetrics []domain.ExchangeScanMetrics
 }
 
+// OpportunityPersister is deliberately local-write-only in production: the
+// implementation journals a scan snapshot before returning and delivers it
+// asynchronously, so Supabase latency cannot delay Redis signal publication.
+type OpportunityPersister interface {
+	SaveOpportunities(context.Context, string, []domain.Opportunity) error
+}
+
 type Service struct {
 	cfg            config.Config
 	adapter        exchange.ReadOnlyAdapter
 	fundingWorker  *exchange.FundingWorker
 	redisClient    *redishandler.Client
+	supabaseClient OpportunityPersister
 	mu             sync.Mutex
 	emptyTrackers  map[string]emptyBookRecord
 	spikeTrackers  map[string]*spikeRecord
@@ -54,6 +63,14 @@ func New(cfg config.Config, adapter exchange.ReadOnlyAdapter) *Service {
 		emptyTrackers: make(map[string]emptyBookRecord),
 		spikeTrackers: make(map[string]*spikeRecord),
 	}
+}
+
+// SetSupabaseClient enables best-effort durable scanner opportunity history.
+// Redis remains authoritative for real-time signals and executor coordination.
+func (s *Service) SetSupabaseClient(client OpportunityPersister) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.supabaseClient = client
 }
 
 // SetFundingWorker sets the background funding rate worker.
@@ -79,6 +96,17 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 		result.Complete = complete && scanErr == nil
 		if scanErr != nil {
 			result.Errors = append(result.Errors, scanErr.Error())
+		}
+		s.mu.Lock()
+		persistor := s.supabaseClient
+		s.mu.Unlock()
+		if persistor != nil && len(result.Opportunities) > 0 {
+			persistCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			if err := persistor.SaveOpportunities(persistCtx, result.ScanID, result.Opportunities); err != nil {
+				// Persistence is fail-open: it must not suppress Redis signals or scan results.
+				log.Printf("CRITICAL: scanner durable outbox enqueue failed for scan %s; audit history may have a gap: %v", result.ScanID, err)
+			}
+			cancel()
 		}
 	}()
 
@@ -621,6 +649,8 @@ func (s *Service) calculate(sm, pm domain.Market, sb, pb domain.OrderBook, fr do
 
 	op := domain.Opportunity{
 		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
+		LocalExchange:          sm.Exchange,
+		GlobalExchange:         pm.Exchange,
 		BaseAsset:              sm.BaseAsset,
 		QuoteAsset:             targetQuote,
 		SpotSymbol:             sm.Symbol,

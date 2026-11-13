@@ -137,6 +137,7 @@ class ArbitrageEngine(
         # Start the writer before recovery so positions restored from Redis are
         # re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
+        self.supabase.runtime_configuration(self.config)
         await self._recover_active_positions()
         await self._recover_pending_entry_orders()
         if not getattr(self.config, "mock_mode", False):
@@ -598,7 +599,16 @@ class ArbitrageEngine(
                         if not request_id or len(request_id) > 64 or not request_id.isalnum():
                             continue
                         reports = await self.client.fetch_balance_report()
-                        payload = {"request_id": request_id, "timestamp_ms": int(time.time()*1000),
+                        timestamp_ms = int(time.time() * 1000)
+                        try:
+                            self.supabase.balance_snapshot(
+                                reports,
+                                is_mock=bool(getattr(self.config, "mock_mode", False)),
+                                observed_at_ms=timestamp_ms,
+                            )
+                        except Exception:
+                            logger.exception("failed to journal Supabase balance snapshot")
+                        payload = {"request_id": request_id, "timestamp_ms": timestamp_ms,
                                    "mock_mode": bool(getattr(self.config, "mock_mode", False)), "exchanges": reports}
                         await self.redis.set(f"arb:balance_reply:{request_id}", json.dumps(payload, allow_nan=False), ex=30)
                     except Exception:
@@ -1137,10 +1147,15 @@ class ArbitrageEngine(
         }
 
     async def publish_status(self) -> None:
-        """Makes the latest status readable by the Go API and operators."""
+        """Publishes live status to Redis and journals state changes to Supabase."""
+        snapshot = self.status_snapshot()
+        try:
+            self.supabase.executor_status(snapshot)
+        except Exception:
+            logger.exception("failed to journal Supabase executor status snapshot")
         if self.redis is None:
             return
-        payload = json.dumps(self.status_snapshot())
+        payload = json.dumps(snapshot)
         try:
             await self.redis.set("arb:executor:status", payload, ex=30)
         except Exception:

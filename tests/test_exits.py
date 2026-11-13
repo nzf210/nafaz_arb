@@ -385,6 +385,18 @@ async def test_funding_rollover_uses_actual_exchange_settlement(engine, fake_red
         "nextFundingTimestamp": now_ms + 8 * 60 * 60 * 1000,
     }
 
+    class FundingRecorder:
+        enabled = False
+
+        def __init__(self):
+            self.payments = []
+
+        def funding_payment(self, *args, **kwargs):
+            self.payments.append((args, kwargs))
+
+    funding_recorder = FundingRecorder()
+    engine.supabase = funding_recorder
+
     applied = await engine._handle_funding_rollover(
         pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms
     )
@@ -394,6 +406,10 @@ async def test_funding_rollover_uses_actual_exchange_settlement(engine, fake_red
     assert pos.last_funding_time_ms == now_ms - 500
     assert pos.current_funding_rate == pytest.approx(0.0002)
     assert pos.next_funding_time_ms == now_ms + 8 * 60 * 60 * 1000
+    assert len(funding_recorder.payments) == 1
+    assert funding_recorder.payments[0][0][0] == pair_tag
+    assert funding_recorder.payments[0][0][3]["id"] == "funding-001"
+    assert funding_recorder.payments[0][1]["is_mock"] is True
 
     # Replaying the same cycle cannot credit the same settlement twice.
     applied_again = await engine._handle_funding_rollover(
@@ -401,6 +417,7 @@ async def test_funding_rollover_uses_actual_exchange_settlement(engine, fake_red
     )
     assert applied_again is False
     assert pos.accumulated_funding_usdt == pytest.approx(0.975)
+    assert len(funding_recorder.payments) == 1
 
 
 @pytest.mark.asyncio

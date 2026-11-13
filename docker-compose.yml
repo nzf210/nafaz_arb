@@ -27,6 +27,10 @@ services:
       - REDIS_ENABLED=true
       - REDIS_ADDR=redis:6380
       - GLOBAL_FUTURES_EXCHANGE=okx
+      # Server-only service_role key; shared with the executor, never put in tracked files.
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_KEY=${SUPABASE_KEY:-}
+      - SUPABASE_SCANNER_OUTBOX_PATH=${SUPABASE_SCANNER_OUTBOX_PATH:-/app/data/scanner/supabase-outbox.jsonl}
       # Optional override for Telegram config:
       # - TELEGRAM_ENABLED=true
       # - TELEGRAM_BOT_TOKEN=your_bot_token
@@ -46,6 +50,7 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ./executor:/app/executor:ro
+      - ./data/executor:/app/data/executor:Z
     environment:
       - TZ=Asia/Jakarta
       - REDIS_URL=redis://redis:6380/0
@@ -57,6 +62,8 @@ services:
       # Best-effort audit persistence. Unset = disabled, trading unaffected.
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_KEY=${SUPABASE_KEY:-}
+      - SUPABASE_OUTBOX_PATH=${SUPABASE_OUTBOX_PATH:-/app/data/executor/supabase-outbox.sqlite3}
+      - EXECUTOR_INSTANCE_ID=${EXECUTOR_INSTANCE_ID:-nafaz-executor}
     depends_on:
       - redis
 
