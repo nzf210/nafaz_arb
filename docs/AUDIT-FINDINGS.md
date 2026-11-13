@@ -92,3 +92,19 @@ been executed in this environment; CI must pass before the branch is approved.
 
 
 | R-10 | Scanner HTTP API was unauthenticated | API | Go API now requires a Bearer token in LIVE mode; health remains public |
+
+## V2 order-path audit update — 2026-11-13
+
+| ID | Finding | Area | Remediation / current status |
+|---|---|---|---|
+| R-20 | Durable submit startup recovery used fetch_local_order_by_client_id for every attempt, including futures hedge rows marked market_type=perpetual. A real accepted futures order could remain unresolved because the wrong market adapter was queried. | Futures entry hedge / startup recovery | FIXED in commit a8eaee3: route perpetual/future/futures/swap to fetch_global_order_by_client_id; spot/local to local lookup; unknown market type fails closed. Regression test added. |
+| R-21 | PREPARED client-order-ID reuse compared core fields but omitted amount_spec, even though adapter conversion can change the actual contract/order amount. | GlobalStop durable ledger / idempotency | FIXED in commit 1183d4e: include JSONB amount_spec in the intent equality check. Regression test rejects a changed contract specification. |
+
+### Order-path inventory status
+
+- Exposure opening: spot limit BUY and futures market SELL hedge are wired through durable PREPARED/SUBMITTING and the shared PostgreSQL session advisory fence.
+- Risk reduction: spot limit SELL exit, spot market SELL rollback/force-close, and futures market BUY with reduceOnly=True remain outside the entry STOP fence by design. Their close/exit idempotency and reconciliation still need separate audit; they must not be blocked without explicit risk-reduction analysis.
+- Adapter surface: Indodax TAPIv2 order methods funnel through _create_order; current facade invokes them through the spot wrapper. Modular executor/venues/* files showed no direct create-order invocation in the inspected source, but runtime wiring and all optional venue configurations remain to be proven.
+- Reconciliation: exact client-ID not-found and lookup failures continue to block entry; they are not proof of rejection because venue history may be eventually consistent. No automatic resubmit is allowed.
+
+Remaining blockers: complete runtime call-site/call-graph audit across all venue configurations and retry/recovery paths; authenticated operator manual resolution; and real PostgreSQL multi-process fault injection proving that a connection loss releases the session lock while the durable SUBMITTING row blocks another process even if the fake venue later accepts the original request. CI status must be checked after the latest commits. The branch remains NOT READY FOR LIVE TRADING.
