@@ -43,7 +43,10 @@ class ForceCloseLegMixin:
             return None
         try:
             signed_size = float(raw_size)
-            contract_size = float(position.get("contractSize") or 1.0)
+            contract_size_raw = position.get("contractSize")
+            if contracts is not None and contract_size_raw is None:
+                return None
+            contract_size = float(contract_size_raw if contract_size_raw is not None else 1.0)
         except (TypeError, ValueError):
             return None
         if (
