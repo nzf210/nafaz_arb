@@ -54,8 +54,8 @@ async def test_p0_01_hedge_failure_rolls_back_spot_leg(fake_redis):
     assert msg["symbol"] == "btc_idr"
 
 @pytest.mark.asyncio
-async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_redis):
-    """Rollback retries 5 times and emits a manual-intervention alert when it cannot sell."""
+async def test_p0_01_hedge_failure_with_unavailable_rollback_fails_closed_and_alerts(fake_redis):
+    """A non-429 rollback error is not blindly retried after an ambiguous submit boundary."""
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
     client = BlockingSellClient()
@@ -85,7 +85,7 @@ async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_
 
     await engine._check_entry_orders()
 
-    assert attempts == 5
+    assert attempts == 1
     # A failed rollback leaves coins unhedged: the pair must surface as FAILED,
     # not as a clean CLOSED (P1-04).
     assert engine.states[pair_tag] == PositionState.FAILED
