@@ -259,3 +259,13 @@ Exit limit SELL is intentionally not subject to the entry Global STOP fence. How
 - [ ] Real per-venue sandbox/paper contract probes remain required; fake fixtures do not prove venue-side eventual consistency.
 - [ ] R-26 remains OPEN: force-close reduceOnly close can still be resubmitted under a new client ID after a stale position read. Keep LIVE gate closed until stable close intent and exact-ID recovery are implemented.
 - [ ] HMAC is a shared-secret operator authentication mechanism, not SSO/OIDC. Secret rotation/custody and operator provisioning must be completed by deployment owners.
+
+
+### R-26 closeout — futures reduceOnly force-close
+
+- [x] Stable force-close client ID derived from persisted position `opened_at_ms`.
+- [x] Require durable order registry in LIVE before futures force-close.
+- [x] Existing intent triggers exact client-ID lookup; missing/error/pending result never triggers a new client ID.
+- [x] Adopt only a terminal full-fill order and verify futures position flat before continuing.
+- [x] Regression test confirms delayed lookup cannot cause duplicate reduceOnly close.
+- [ ] Venue-specific pending-close timing/status probes remain part of the per-venue sandbox/paper release gate.
