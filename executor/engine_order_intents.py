@@ -1,5 +1,6 @@
 """engine order intent methods for arbitrage engine orchestration."""
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +25,10 @@ class OrderRegistrationMetadata:
     local_amount_spec: Any = None
     global_amount_spec: Any = None
     recovery_context: Any = None
+
+
+class SpotCapacityReservationError(RuntimeError):
+    """A Spot entry intent was durable but its atomic capacity reservation failed."""
 
 
 def _serialize_amount_spec(value: Any) -> Any:
@@ -134,6 +139,17 @@ class EngineOrderIntentMixin:
             )
         required = bool(metadata.pop("required", True))
         role = metadata.get("role", "unknown")
+        exchange = str(metadata.get("exchange") or "").lower()
+        market_type = str(metadata.get("market_type") or "").lower()
+        live_spot_entry = live_mode and market_type == "spot" and str(role).upper() == "ENTRY"
+        if live_spot_entry:
+            scope_resolver = getattr(self, "_account_scope_for_exchange", None)
+            if not callable(scope_resolver):
+                raise RuntimeError("refusing Spot entry: durable account-scope resolver is unavailable")
+            recovery_context = metadata.get("recovery_context")
+            recovery_context = dict(recovery_context) if isinstance(recovery_context, dict) else {}
+            recovery_context["capacity_account_scope"] = scope_resolver(exchange)
+            metadata["recovery_context"] = recovery_context
         record = await self._register_order(
             pair_tag,
             client_order_id,
@@ -152,6 +168,34 @@ class EngineOrderIntentMixin:
                     f"refusing to submit {role} order: Postgres order_registry "
                     "did not confirm the durable intent"
                 )
+        if live_spot_entry and record is not None:
+            recovery_context = (
+                record.recovery_context if isinstance(record.recovery_context, dict) else {}
+            )
+            try:
+                pair_capital_usdt = float(
+                    recovery_context.get("pair_capital_reservation_usdt")
+                    or (float(recovery_context.get("spot_cost_usdt") or 0.0) * 2.0)
+                )
+                if not math.isfinite(pair_capital_usdt) or pair_capital_usdt <= 0:
+                    raise ValueError("positive pair_capital_reservation_usdt is required")
+                reserver = getattr(self, "_reserve_spot_capacity", None)
+                if not callable(reserver):
+                    raise RuntimeError("atomic Spot capacity reservation is unavailable")
+                reservation_id = await reserver(
+                    record.pair_key or pair_tag, record.exchange or exchange,
+                    client_order_id, pair_capital_usdt,
+                )
+                if not reservation_id:
+                    raise RuntimeError("capacity reservation returned no reservation id")
+                record.capacity_reservation_id = str(reservation_id)
+                if isinstance(record.recovery_context, dict):
+                    record.recovery_context["capacity_reservation_id"] = str(reservation_id)
+            except Exception as exc:
+                await self._mark_order_submission_rejected(exchange, client_order_id)
+                raise SpotCapacityReservationError(
+                    f"atomic Spot capacity/capital reservation failed: {exc}"
+                ) from exc
         return record
 
     async def _mark_order_submission_rejected(
@@ -167,6 +211,21 @@ class EngineOrderIntentMixin:
                 return
             record.status = "rejected"
             await registry.register(record)
+            if (
+                not bool(getattr(self.config, "mock_mode", False))
+                and str(getattr(record, "market_type", "")).lower() == "spot"
+                and str(getattr(record, "order_role", "")).upper() == "ENTRY"
+                and float(getattr(record, "filled_quantity", 0.0) or 0.0) <= 1e-12
+            ):
+                releaser = getattr(self, "_release_spot_capacity_reservation_for_order", None)
+                if callable(releaser):
+                    try:
+                        await releaser(exchange, client_order_id)
+                    except Exception:
+                        logger.exception(
+                            "[Capacity] failed to release rejected Spot entry reservation %s",
+                            client_order_id,
+                        )
             await registry.retire(record)
         except Exception:
             logger.exception(

@@ -7,6 +7,7 @@ import time
 from executor.models import OrderRole, PositionState
 from executor.helpers import build_client_order_id
 from executor.engine_common import logger
+from executor.engine_order_intents import SpotCapacityReservationError
 
 
 class EngineEntrySubmissionMixin:
@@ -251,42 +252,12 @@ class EngineEntrySubmissionMixin:
                 pair_info.quote_asset or ""
             ).upper()
             if not bool(getattr(self.config, "mock_mode", False)):
-                try:
-                    capacity_account_scope = self._account_scope_for_exchange(
-                        pair_info.local_exchange
-                    )
-                    capacity_reservation_id = await self._reserve_spot_capacity(
-                        pair_tag, pair_info.local_exchange, entry_coid, actual_cost_usdt * 2.0
-                    )
-                except Exception as reserve_error:
-                    # The reservation RPC may commit before its response is lost.
-                    # No venue mutation has started, so release by logical order id.
-                    try:
-                        if capacity_account_scope and entry_coid:
-                            await self._release_spot_capacity_reservation_for_order(
-                                pair_info.local_exchange, entry_coid
-                            )
-                        else:
-                            await self._release_spot_capacity_reservation(
-                                pair_tag, pair_info.local_exchange
-                            )
-                    except Exception:
-                        logger.exception(
-                            "[State 1] failed to release uncertain pre-submit capacity reservation for %s",
-                            pair_tag,
-                        )
-                    self._mark_failed(
-                        pair_tag,
-                        "SPOT_CAPACITY_RESERVATION_FAILED",
-                        "Live entry blocked because atomic Postgres Spot slot/capital reservation failed.",
-                        detail={"exchange": pair_info.local_exchange, "error": str(reserve_error)},
-                    )
-                    await self.publish_status()
-                    return
-                recovery_context["capacity_reservation_id"] = capacity_reservation_id
+                capacity_account_scope = self._account_scope_for_exchange(
+                    pair_info.local_exchange
+                )
                 recovery_context["capacity_account_scope"] = capacity_account_scope
-                recovery_context["pair_capital_reservation_usdt"] = actual_cost_usdt * 2.0
-            await self._register_order_intent(
+            recovery_context["pair_capital_reservation_usdt"] = actual_cost_usdt * 2.0
+            intent_record = await self._register_order_intent(
                 pair_tag,
                 entry_coid,
                 exchange=pair_info.local_exchange,
@@ -301,6 +272,11 @@ class EngineEntrySubmissionMixin:
                 global_amount_spec=pair_info.global_amount_spec,
                 recovery_context=recovery_context,
             )
+            capacity_reservation_id = str(
+                getattr(intent_record, "capacity_reservation_id", "") or ""
+            )
+            if capacity_reservation_id:
+                recovery_context["capacity_reservation_id"] = capacity_reservation_id
             submission_started = True
             try:
                 order = await self.client.place_local_limit_buy(
@@ -397,15 +373,22 @@ class EngineEntrySubmissionMixin:
                     "be committed to the universal order registry",
                 )
         except Exception as exc:
+            if isinstance(exc, SpotCapacityReservationError):
+                self._mark_failed(
+                    pair_tag,
+                    "SPOT_CAPACITY_RESERVATION_FAILED",
+                    "Live entry blocked because atomic Postgres Spot slot/capital reservation failed.",
+                    detail={"exchange": pair_info.local_exchange, "error": str(exc)},
+                )
+                await self.publish_status()
+                return
             if not submission_started and capacity_reservation_id:
                 try:
-                    await self._release_spot_capacity_reservation(
-                        pair_tag, pair_info.local_exchange
-                    )
+                    await self.supabase.release_execution_capacity(capacity_reservation_id)
                 except Exception:
                     logger.exception(
-                        "[State 1] failed to release pre-submit Spot capacity reservation for %s",
-                        pair_tag,
+                        "[State 1] failed to release pre-submit Spot capacity reservation %s for %s",
+                        capacity_reservation_id, pair_tag,
                     )
             if submission_started:
                 await self._mark_order_submission_ambiguous(

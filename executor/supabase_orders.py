@@ -78,18 +78,15 @@ class SupabaseOrderMixin:
             "recovery_status": str(row.get("recovery_status") or "MANAGED"),
             "is_mock": bool(row.get("is_mock", True)),
             "last_reconciled_at": datetime.now(timezone.utc).isoformat(),
-            "raw_payload": json.dumps(
-                {
-                    key: row.get(key)
-                    for key in (
-                        "local_amount_spec", "global_amount_spec",
-                        "recovery_context", "hedged_quantity", "orphan_id",
-                        "scope", "reason", "detected_at",
-                    )
-                    if row.get(key) is not None
-                },
-                default=str,
-            ),
+            "raw_payload": {
+                key: row.get(key)
+                for key in (
+                    "local_amount_spec", "global_amount_spec",
+                    "recovery_context", "hedged_quantity", "orphan_id",
+                    "scope", "reason", "detected_at",
+                )
+                if row.get(key) is not None
+            },
         }
         exchange_order_id, client_order_id, pair_key = (
             self._attach_order_registry_identifiers(payload, row)

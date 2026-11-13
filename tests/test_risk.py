@@ -498,10 +498,11 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
         return await operation()
 
     async def find_test_intent(exchange, client_order_id):
-        return SimpleNamespace(
-            market_type="spot", side="buy", is_terminal=False,
-            recovery_status="SUBMITTING", local_order_id=client_order_id,
-            client_order_id=client_order_id, order_role="ENTRY",
+        return OrderRecord(
+            local_order_id=OrderRecord.local_id_for(exchange, client_order_id),
+            client_order_id=client_order_id, exchange=exchange,
+            market_type="spot", symbol="btc_idr", side="buy",
+            order_type="limit", order_role="ENTRY", status="submitting", is_mock=False,
         )
 
     engine.execution_coordinator.execute_mutation = execute_with_test_lease

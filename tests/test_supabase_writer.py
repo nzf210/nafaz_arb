@@ -655,6 +655,9 @@ class TestOrderRegistryWriter:
                 self.config = SimpleNamespace(mock_mode=False)
                 self.supabase = writer
 
+            def _account_scope_for_exchange(self, exchange):
+                return f"{exchange}:main"
+
             async def _register_order(self, pair_tag, client_order_id, order, **metadata):
                 assert writer.order_record({
                     "local_order_id": local_id,
@@ -905,3 +908,21 @@ class TestFillSyncWatermark:
         ) is True
         rows = _drain(writer)
         assert rows[0][2]["value"] == {}
+
+
+def test_order_registry_raw_payload_is_json_object():
+    writer = _writer()
+    payload, *_ = writer._build_order_registry_payload(
+        {
+            "local_order_id": "local-raw-payload", "exchange_name": "indodax",
+            "market_type": "spot", "order_role": "ENTRY", "symbol": "btc_idr",
+            "side": "buy", "order_type": "limit", "status": "submitting",
+            "original_quantity": 1.0, "filled_quantity": 0.0,
+            "recovery_context": {"capacity_account_scope": "indodax:main", "spot_cost_usdt": 100.0},
+        },
+        "ENTRY", None, "spot", None,
+    )
+    assert isinstance(payload["raw_payload"], dict)
+    assert payload["raw_payload"]["recovery_context"]["capacity_account_scope"] == "indodax:main"
+
+

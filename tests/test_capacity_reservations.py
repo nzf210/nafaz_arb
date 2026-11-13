@@ -24,7 +24,14 @@ class AtomicCapacityStore:
             key = (account_scope, exchange.lower(), pair_key)
             if key in self.active:
                 item = self.active[key]
-                return {"accepted": True, "reservation_id": item["id"], "reason": "already_reserved"}
+                if item["client_order_id"] == client_order_id and item["amount"] == amount_usdt:
+                    return {"accepted": True, "reservation_id": item["id"], "reason": "already_reserved"}
+                reason = (
+                    "reservation_amount_mismatch"
+                    if item["client_order_id"] == client_order_id
+                    else "pair_already_reserved"
+                )
+                return {"accepted": False, "reservation_id": None, "reason": reason}
             active_for_exchange = [
                 item for item in self.active.values()
                 if item["account_scope"] == account_scope and item["exchange"] == exchange.lower()
@@ -63,6 +70,71 @@ def make_engine(fake_redis, store):
     engine.supabase.reserve_execution_capacity = store.reserve_execution_capacity
     engine.supabase.release_execution_capacity_for_pair = store.release_execution_capacity_for_pair
     return engine
+
+
+@pytest.mark.asyncio
+async def test_spot_capacity_rejects_different_client_order_for_active_pair(fake_redis):
+    store = AtomicCapacityStore(max_orders=2, capital_limit=1000.0)
+    engine = make_engine(fake_redis, store)
+    await engine._reserve_spot_capacity(
+        "indodax:btc_idr", "indodax", "entry-1", 200.0
+    )
+    with pytest.raises(RuntimeError, match="pair_already_reserved"):
+        await engine._reserve_spot_capacity(
+            "indodax:btc_idr", "indodax", "entry-2", 200.0
+        )
+    with pytest.raises(RuntimeError, match="reservation_amount_mismatch"):
+        await engine._reserve_spot_capacity(
+            "indodax:btc_idr", "indodax", "entry-1", 250.0
+        )
+    assert len(store.active) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_spot_intent_is_postgres_acked_before_capacity_reservation():
+    from executor.engine_order_intents import EngineOrderIntentMixin
+
+    events = []
+
+    class IntentHarness(EngineOrderIntentMixin):
+        def __init__(self):
+            self.config = SimpleNamespace(mock_mode=False)
+            self.supabase = SimpleNamespace(enabled=True)
+            self.order_registry = object()
+
+        def _account_scope_for_exchange(self, exchange):
+            return f"{exchange}:main"
+
+        async def _register_order(self, pair_tag, client_order_id, order, **metadata):
+            events.append("intent")
+            return SimpleNamespace(
+                local_order_id="local-intent-1", pair_key=pair_tag,
+                exchange="indodax", client_order_id=client_order_id,
+                market_type="spot", order_role="ENTRY",
+                recovery_context=metadata["recovery_context"], filled_quantity=0.0,
+            )
+
+        async def _reserve_spot_capacity(self, pair_key, exchange, client_order_id, amount_usdt):
+            events.append(("reserve", amount_usdt))
+            return "capacity-1"
+
+    async def confirm(_local_order_id):
+        events.append("postgres_ack")
+        return True
+
+    harness = IntentHarness()
+    harness.supabase.confirm_order_registry = confirm
+    record = await harness._register_order_intent(
+        "indodax:btc_idr", "entry-client-1",
+        exchange="indodax", market_type="spot", symbol="btc_idr",
+        role="ENTRY", side="buy", order_type="limit", price=100.0,
+        quantity=2.0, recovery_context={
+            "spot_cost_usdt": 100.0, "pair_capital_reservation_usdt": 200.0,
+        },
+    )
+    assert events == ["intent", "postgres_ack", ("reserve", 200.0)]
+    assert record.capacity_reservation_id == "capacity-1"
+    assert record.recovery_context["capacity_account_scope"] == "indodax:main"
 
 
 @pytest.mark.asyncio

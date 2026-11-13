@@ -339,6 +339,7 @@ declare
     reason_value text;
     active_count integer;
     capital_value numeric;
+    trigger_id uuid;
 begin
     select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
       into accepted_value, returned_id, reason_value, active_count, capital_value
@@ -416,6 +417,30 @@ begin
         'schema-smoke-account', 'indodax', 'schema-smoke-pair-2'
     ) then raise exception 'capacity reservation release by pair failed'; end if;
     if not public.release_execution_capacity(first_id) then raise exception 'capacity reservation release failed'; end if;
+
+    select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
+      into accepted_value, trigger_id, reason_value, active_count, capital_value
+      from public.reserve_execution_capacity(
+        'schema-smoke-account', 'indodax', 'schema-smoke-trigger-pair',
+        'schema-smoke-trigger-order', 10, null
+      );
+    if not accepted_value then raise exception 'trigger test reservation failed'; end if;
+    insert into public.order_registry (
+        local_order_id, client_order_id, pair_key, exchange_name, market_type,
+        leg, order_role, symbol, side, order_type, status, requested_qty,
+        filled_qty, remaining_qty, is_mock, recovery_status, raw_payload
+    ) values (
+        '22222222-2222-2222-2222-222222222222'::uuid,
+        'schema-smoke-trigger-order', 'schema-smoke-trigger-pair', 'indodax',
+        'spot', 'spot_entry', 'ENTRY', 'BTC/IDR', 'buy', 'limit', 'rejected',
+        1, 0, 1, false, 'MANAGED',
+        '{"recovery_context":{"capacity_account_scope":"schema-smoke-account"}}'::jsonb
+    );
+    if not exists (
+        select 1 from public.execution_capacity_reservations
+        where reservation_id = trigger_id and status = 'RELEASED'
+    ) then raise exception 'terminal zero-fill order did not release its capacity reservation'; end if;
+    delete from public.order_registry where local_order_id = '22222222-2222-2222-2222-222222222222'::uuid;
     delete from public.execution_capacity_reservations where account_scope = 'schema-smoke-account';
     delete from public.execution_capacity_config where account_scope = 'schema-smoke-account';
 end
