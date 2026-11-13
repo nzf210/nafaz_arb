@@ -48,3 +48,5 @@ supabase/.temp/
 
 # Operating System files
 .DS_Store
+run.py
+apply_aggressive_patch.py
