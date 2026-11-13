@@ -165,17 +165,33 @@ Sebelum merge/cutover, reviewer wajib membuka dan mencocokkan:
 - [ ] Paper mode passes restart, recovery, throttling, confirmed IP-ban, STOP, and resume scenarios.
 - [ ] No production/live cutover until all above are checked and an operator explicitly approves it.
 
-**Safety note:** This document is a mixed implementation/review checklist. A partial PostgreSQL STOP/fencing implementation and unit-test files now exist on this branch. The migration idempotence/schema smoke job passed against CI's disposable PostgreSQL service, and the Python suite passed (485 tests) on commit `68e84729`; no staging/production database or real multi-instance race test has been exercised. All unchecked items remain OPEN; this branch is not LIVE-certified.
+**Safety note:** This document is a mixed implementation/review checklist. A partial PostgreSQL STOP/fencing implementation, durable in-flight submit ledger, startup exact-client-ID reconciliation, and unit-test files now exist on this branch. The Global STOP migration and earlier schema smoke job passed against CI's disposable PostgreSQL service; the durable-ledger migration and latest Python rerun are pending. No staging/production database or real multi-instance fault-injection test has been exercised. All unchecked items remain OPEN; this branch is not LIVE-certified.
 
 
 ## 9. Implementasi yang sudah ada di branch (2026-11-13)
 
 | Komponen | Implementasi saat ini | Batas yang masih OPEN |
 |---|---|---|
-| `executor/global_stop.py` | Pool `asyncpg`, read state, STOP epoch, advisory transaction lock, idempotent STOP, operator+epoch resume primitive, Redis notification best-effort | Audit journal, authenticated operator API, heartbeat/lease generation, retry/observability hardening |
+| `executor/global_stop.py` | Pool `asyncpg`, STOP epoch, session advisory lock, durable submit-attempt ledger (`PREPARED` → `SUBMITTING` → `ACKNOWLEDGED`/`REJECTED`/`UNKNOWN`), unresolved-attempt gate, exact-ID lookup resolution, Redis notification best-effort | Audit journal, authenticated operator API, heartbeat/lease generation, operator resolution workflow, retry/observability hardening |
 | `executor/engine.py` / `engine_runtime.py` | LIVE startup membutuhkan `POSTGRES_DSN`; global STOP dibaca sebelum recovery; pool ditutup saat shutdown | Full bootstrap snapshot/config migration belum ada |
-| `executor/engine_entry_submission.py` | Spot entry create-order berada di transaction fence; signature IP-ban eksplisit menulis STOP di transaksi yang sama; 429 tetap venue cooldown | Seluruh create-order path belum diaudit; classifier masih signature-based |
+| `executor/engine_entry_submission.py` | Spot entry menulis durable `PREPARED`, commit `SUBMITTING` sebelum HTTP di bawah session advisory lock, menyimpan ACK/rejection, dan mempertahankan unresolved state pada timeout/DB loss | Seluruh create-order path belum diaudit; classifier masih signature-based |
 | `supabase/migrations/20261113000100_add_global_stop_fencing.sql` | Singleton canonical control row + epoch | Deployment migration dan live DB integration test belum dijalankan |
-| `tests/test_global_stop_fencing.py` | Unit tests untuk advisory lock path, transaction STOP update, classifier separation 429 vs IP-ban; Python suite passed (485 tests) in CI on commit `68e84729` | No race test multi-process/PostgreSQL nyata |
+| `supabase/migrations/20261113000200_add_durable_submit_attempts.sql` | Durable submit attempt table, unresolved index, status constraints, RLS/grants | Deployment migration dan DB disconnect/fault-injection test belum dijalankan |
+| `tests/test_global_stop_fencing.py` | Unit tests untuk durable `SUBMITTING` survival setelah simulated connection loss, second-entry blocking, STOP update, dan classifier 429 vs IP-ban | Latest CI rerun pending; belum ada race test multi-process/PostgreSQL nyata |
 
 **Catatan operasi:** `POSTGRES_DSN` harus diberikan ke setiap instance LIVE melalui secret/environment manager dan migration harus diterapkan terlebih dahulu. Tanpa DSN, LIVE startup sengaja gagal; mode MOCK tetap dapat berjalan tanpa PostgreSQL. Jangan menganggap branch ini LIVE-certified sebelum checklist tersisa dan integration tests lulus.
+
+
+## 10. Durable in-flight submit acceptance gates
+
+- [x] Create-order intent is committed as \`PREPARED\` before the venue request.
+- [x] Under the shared session advisory lock, status changes to \`SUBMITTING\` and commits before the HTTP call.
+- [x] A disconnected session releases the PostgreSQL session lock but leaves \`SUBMITTING\` durable.
+- [x] A later entry checks for any other \`SUBMITTING\`/\`UNKNOWN\` row and fails closed.
+- [x] An acknowledged order is reconciled by exact client order ID at startup; found order becomes \`ACKNOWLEDGED\`.
+- [x] A negative/failed lookup remains unresolved; it is not treated as proof the venue rejected the request.
+- [ ] Add operator-authenticated/manual resolution requiring independent venue evidence and audit event.
+- [ ] Add disposable PostgreSQL multi-process test: disconnect connection while fake venue still accepts order; prove second instance cannot submit.
+- [ ] Add tests for crash before HTTP boundary (\`PREPARED\`), after request (\`SUBMITTING\`), after venue ack before ledger ack, and delayed exact-ID visibility.
+- [ ] Ensure every exposure-opening create-order path uses this ledger/fence; audit futures entry and any alternate spot entry adapter.
+- [ ] Define retention/archival policy for terminal attempt rows without deleting unresolved rows.
