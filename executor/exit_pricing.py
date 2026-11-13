@@ -86,12 +86,62 @@ class ExitPricingMixin:
                 )
                 if rate_data.get("fundingRate") is not None:
                     current_rate = float(rate_data["fundingRate"])
+
+                # CCXT's unified fundingRate is the best available estimate on
+                # many venues. Prefer an explicit nextFundingRate when exposed;
+                # some venue payloads expose the same estimate as
+                # info.lastFundingRate. Keep this separate from settled funding.
+                info = rate_data.get("info")
+                info = info if isinstance(info, dict) else {}
+                next_rate_raw = (
+                    rate_data.get("nextFundingRate")
+                    if rate_data.get("nextFundingRate") is not None
+                    else info.get("lastFundingRate")
+                )
+                if next_rate_raw is None:
+                    next_rate_raw = rate_data.get("fundingRate")
+                if next_rate_raw is not None:
+                    next_rate = float(next_rate_raw)
+                    if math.isfinite(next_rate):
+                        rates = getattr(self, "_next_funding_rate_by_pair", {})
+                        rates[pair_tag] = next_rate
+                        self._next_funding_rate_by_pair = rates
         except Exception:
             logger.exception(
                 f"[Funding Reconciliation] cannot refresh next settlement schedule "
                 f"for {pair_tag}; automatic funding rollover is paused"
             )
         return next_funding_ms, current_rate
+
+    def _funding_decay_pct(
+        self, pair_tag: str, pos: ActivePosition, position_value_usdt: float
+    ) -> float:
+        """Return only the permitted funding contribution to spread decay.
+
+        Actual accumulated funding remains untouched for the PnL/profit-floor
+        calculation. A predicted positive funding rate at or above +0.03%
+        disables spread decay for this quote.
+        """
+        if position_value_usdt <= 0 or not math.isfinite(position_value_usdt):
+            return 0.0
+        next_rates = getattr(self, "_next_funding_rate_by_pair", {})
+        next_rate = next_rates.get(pair_tag)
+        if next_rate is not None:
+            try:
+                next_rate = float(next_rate)
+            except (TypeError, ValueError):
+                next_rate = None
+        if next_rate is not None and math.isfinite(next_rate) and next_rate >= 0.0003:
+            return 0.0
+
+        retention = float(
+            getattr(self.config, "funding_decay_retention_ratio", 0.60)
+        )
+        if not math.isfinite(retention):
+            retention = 0.60
+        retention = min(1.0, max(0.0, retention))
+        decay_eligible_funding = pos.accumulated_funding_usdt * (1.0 - retention)
+        return (decay_eligible_funding / position_value_usdt) * 100.0
 
     async def _persist_next_funding_schedule(
         self, pair_tag: str, pos: ActivePosition, now_ms: int,
@@ -215,9 +265,9 @@ class ExitPricingMixin:
     ) -> tuple[float, float]:
         # 1. Base pegged exit price using spread & funding decay
         pos_value_usdt = pos.qty * global_ask_usdt
-        funding_decay_pct = 0.0
-        if pos_value_usdt > 0:
-            funding_decay_pct = (pos.accumulated_funding_usdt / pos_value_usdt) * 100.0
+        funding_decay_pct = self._funding_decay_pct(
+            pair_tag, pos, pos_value_usdt
+        )
 
         effective_exit_spread_pct = pos.base_target_exit_spread_pct - funding_decay_pct
         pegged_limit_sell_idr = (global_ask_usdt * usdt_idr_rate) * (
