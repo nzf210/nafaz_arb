@@ -7,10 +7,8 @@ authoritative for live state.
 import math
 import os
 import socket
-import uuid
 from typing import Any, Callable, Dict, Optional
 
-_NAMESPACE = uuid.UUID("8e5a1e7c-6e9d-4f31-9b9e-9f6f9b4f2a11")
 _Emit = Callable[[str, Dict[str, Any], Optional[str]], None]
 
 
@@ -54,7 +52,6 @@ class SupabaseRegistry:
 
     def __init__(self, emit: _Emit):
         self._emit = emit
-        self._account_ids: Dict[tuple[str, str], str] = {}
 
     def runtime_configuration(self, config: Any, instance_id: Optional[str] = None) -> None:
         """Journal active venue metadata and the sanitized risk policy.
@@ -62,7 +59,6 @@ class SupabaseRegistry:
         API keys, secrets, passphrases, and arbitrary config dictionaries are
         deliberately never serialized.
         """
-        self._account_ids.clear()
         self._account(
             _text(_get(config, "local_exchange_name")).lower(),
             "spot",
@@ -81,20 +77,13 @@ class SupabaseRegistry:
         api_key = _text(_get(credentials, "api_key"))
         api_secret = _text(_get(credentials, "api_secret"))
         configured = bool(api_key and api_secret)
-        testnet = bool(_get(credentials, "testnet", False))
-        account_label = "default"
-        account_id = str(
-            uuid.uuid5(_NAMESPACE, f"exchange-account:{exchange}:{market_type}:{account_label}")
-        )
-        self._account_ids[(exchange, market_type)] = account_id
         self._emit(
             "exchange_accounts",
             {
-                "id": account_id,
                 "exchange_name": exchange,
                 "market_type": market_type,
-                "account_label": account_label,
-                "is_testnet": testnet,
+                "account_label": "default",
+                "is_testnet": bool(_get(credentials, "testnet", False)),
                 "is_enabled": configured,
                 "permissions": {},
                 "metadata": {
@@ -130,10 +119,11 @@ class SupabaseRegistry:
             if isinstance(value, bool):
                 parameters[field] = value
             elif (number := _finite(value)) is not None:
-                parameters[field] = int(number) if field == "max_order_ttl_seconds" or field == "max_stale_latency_ms" else number
+                parameters[field] = int(number) if field in (
+                    "max_order_ttl_seconds", "max_stale_latency_ms"
+                ) else number
 
         row: Dict[str, Any] = {
-            "id": str(uuid.uuid5(_NAMESPACE, f"risk-limits:{name}")),
             "name": name,
             "is_enabled": True,
             "max_daily_loss_usdt": _finite(_get(config, "max_daily_loss_usdt")),
@@ -154,9 +144,7 @@ class SupabaseRegistry:
     @staticmethod
     def _integer(value: Any) -> Optional[int]:
         number = _finite(value)
-        if number is None:
-            return None
-        return int(number)
+        return int(number) if number is not None else None
 
     def market_pair(self, pair_key: str, pair_info: Any, *, is_mock: bool) -> bool:
         """Upsert only a pair that the executor actually receives for a position."""
@@ -175,7 +163,6 @@ class SupabaseRegistry:
             return False
 
         row: Dict[str, Any] = {
-            "id": str(uuid.uuid5(_NAMESPACE, f"market-pair:{resolved_key}")),
             "pair_key": resolved_key,
             "local_exchange": local_exchange,
             "global_exchange": global_exchange,
@@ -184,8 +171,6 @@ class SupabaseRegistry:
             "base_asset": base_asset,
             "local_quote_asset": local_quote,
             "global_quote_asset": global_quote,
-            "local_exchange_account_id": self._account_ids.get((local_exchange, "spot")),
-            "global_exchange_account_id": self._account_ids.get((global_exchange, "perpetual")),
             "is_enabled": True,
             "metadata": {
                 "source": "executor_position_opened",
