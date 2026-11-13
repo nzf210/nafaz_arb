@@ -376,6 +376,7 @@ async def test_live_sizing_probe_failure_halts_both_venues():
             self._balance_snapshots = {}
             self._last_balances = {}
             self._exchange_halted = {}
+            self.failures = []
 
         async def _get_balance_snapshot(self, **kwargs):
             raise RuntimeError("venue timeout")
@@ -392,7 +393,7 @@ async def test_live_sizing_probe_failure_halts_both_venues():
     engine = Engine()
     payload = SimpleNamespace(
         execution_directives=SimpleNamespace(max_position_usdt=50.0),
-        pair_info=SimpleNamespace(),
+        pair_info=SimpleNamespace(local_exchange="indodax", global_exchange="okx"),
         pricing_snapshot=SimpleNamespace(usdt_idr_rate=16000.0),
     )
     sized = await engine._compute_entry_sizing("pair", payload)
