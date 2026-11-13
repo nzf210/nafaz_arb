@@ -176,9 +176,14 @@ class _VenueLookup:
     def __init__(self, result):
         self.result = result
         self.calls = []
+        self.futures_calls = []
 
     async def fetch_local_order_by_client_id(self, client_order_id, symbol, amount_spec):
         self.calls.append((client_order_id, symbol, amount_spec))
+        return self.result
+
+    async def fetch_global_order_by_client_id(self, client_order_id, symbol, amount_spec):
+        self.futures_calls.append((client_order_id, symbol, amount_spec))
         return self.result
 
 
@@ -244,6 +249,28 @@ async def test_startup_reconciliation_adopts_order_found_by_exact_client_id():
     assert venue.calls == [("client-id-123", "BTC/USDT", {"unit": "BASE"})]
     assert engine._base_client.requested_exchange == "binance"
     assert service.found == [("client-id-123", order)]
+
+
+@pytest.mark.asyncio
+async def test_startup_reconciliation_routes_perpetual_attempt_to_futures_lookup():
+    attempt = {
+        "client_order_id": "futures-client-id-456",
+        "exchange": "okx",
+        "market_type": "perpetual",
+        "symbol": "BTC/USDT:USDT",
+        "amount_spec": {"unit": "CONTRACTS", "contract_size": 0.001},
+    }
+    order = {"id": "futures-order-77", "status": "closed"}
+    venue = _VenueLookup(order)
+    service = _SubmitLedger([attempt])
+    engine = _RecoveryHarness(service, _BaseClient(venue))
+
+    assert await engine._reconcile_durable_submit_attempts() is True
+    assert venue.calls == []
+    assert venue.futures_calls == [
+        ("futures-client-id-456", "BTC/USDT:USDT", attempt["amount_spec"])
+    ]
+    assert service.found == [("futures-client-id-456", order)]
 
 
 @pytest.mark.asyncio
