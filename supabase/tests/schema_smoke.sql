@@ -360,6 +360,24 @@ begin
     select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
       into accepted_value, returned_id, reason_value, active_count, capital_value
       from public.reserve_execution_capacity(
+        'schema-smoke-account', 'indodax', 'schema-smoke-pair-1', 'schema-smoke-order-1-retry', 40, null
+      );
+    if accepted_value or reason_value <> 'pair_already_reserved' or active_count <> 1 then
+        raise exception 'different client order inherited an active pair reservation';
+    end if;
+
+    select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
+      into accepted_value, returned_id, reason_value, active_count, capital_value
+      from public.reserve_execution_capacity(
+        'schema-smoke-account', 'indodax', 'schema-smoke-pair-1', 'schema-smoke-order-1', 35, null
+      );
+    if accepted_value or reason_value <> 'reservation_amount_mismatch' or active_count <> 1 then
+        raise exception 'same client order changed its committed reservation amount';
+    end if;
+
+    select accepted, reservation_id, reason, active_spot_orders, reserved_capital_usdt
+      into accepted_value, returned_id, reason_value, active_count, capital_value
+      from public.reserve_execution_capacity(
         'schema-smoke-account', 'indodax', 'schema-smoke-pair-2', 'schema-smoke-order-2', 70, null
       );
     if accepted_value or reason_value <> 'capital_limit_reached' then
