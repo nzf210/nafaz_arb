@@ -5,6 +5,8 @@ from executor.global_stop import FENCE_LOCK_KEY, GlobalStopError, GlobalStopServ
 from executor.config import ExecutorConfig
 from executor.engine import ArbitrageEngine
 from executor.engine_recovery import EngineRecoveryMixin
+from executor.entry_hedge import AmbiguousOrderSubmission, EntryHedgeMixin
+from executor.engine_entry_submission import EngineEntrySubmissionMixin
 
 
 class _AsyncContext:
@@ -202,6 +204,130 @@ async def test_live_executor_fails_closed_without_postgres_fencing_dsn():
 
     with pytest.raises(RuntimeError, match="requires POSTGRES_DSN"):
         await engine.initialize()
+
+
+class _FakeHedgeStop:
+    def __init__(self, fail_stop=False):
+        self.conn = object()
+        self.fail_stop = fail_stop
+        self.prepared = []
+        self.stop_requests = []
+        self.unknown = []
+        self.rejected = []
+        self.notifications = []
+
+    async def prepare_submit_attempt(self, **kwargs):
+        self.prepared.append(kwargs)
+
+    def order_submit_fence(self, *, client_order_id):
+        return _AsyncContext(self.conn)
+
+    async def request_stop_in_transaction(self, conn, reason, *, source, metadata):
+        self.stop_requests.append((conn, reason, source, metadata))
+        if self.fail_stop:
+            raise ConnectionError("postgres disconnected during STOP persistence")
+        return {"is_stopped": True, "epoch": 9, "reason": reason, "source": source}
+
+    async def mark_submit_unknown(self, client_order_id, error):
+        self.unknown.append((client_order_id, error))
+
+    async def mark_submit_rejected(self, client_order_id, error):
+        self.rejected.append((client_order_id, error))
+
+    async def mark_submit_acknowledged(self, client_order_id, order):
+        raise AssertionError("IP-ban fixture must not acknowledge an order")
+
+    async def notify_state(self, state):
+        self.notifications.append(state)
+
+
+class _IPBannedFuturesVenue:
+    async def open_global_short_market(self, *args, **kwargs):
+        raise RuntimeError("HTTP_418: IP address banned until reset")
+
+    async def fetch_global_order_by_client_id(self, *args, **kwargs):
+        return None
+
+
+class _HedgeHarness(EntryHedgeMixin):
+    def __init__(self, global_stop):
+        self.global_stop = global_stop
+        self.client = _IPBannedFuturesVenue()
+        self.halts = []
+        self.gate_refreshed = False
+        self.order_intents = []
+
+    async def _register_order_intent(self, *args, **kwargs):
+        self.order_intents.append((args, kwargs))
+
+    def _is_explicit_ip_ban(self, error_text):
+        return EngineEntrySubmissionMixin._is_explicit_ip_ban(error_text)
+
+    def _is_definitive_order_rejection(self, error):
+        return False
+
+    def _halt_exposure_scope(self, scope, reason):
+        self.halts.append((scope, reason))
+
+    def _refresh_entry_gate(self):
+        self.gate_refreshed = True
+
+
+@pytest.mark.asyncio
+async def test_futures_hedge_ip_ban_persists_global_stop_inside_submit_fence():
+    stop = _FakeHedgeStop()
+    engine = _HedgeHarness(stop)
+    order_info = {
+        "pending_hedge_client_order_id": "hedge-ip-ban-1",
+        "global_exchange": "okx",
+        "global_symbol": "BTC/USDT:USDT",
+        "global_amount_spec": {
+            "unit": "BASE", "step": 0.001, "min": 0.001, "base_per_unit": 1
+        },
+        "local_exchange": "tokocrypto",
+        "order_id": "spot-123",
+        "client_order_id": "spot-client-123",
+    }
+
+    with pytest.raises(AmbiguousOrderSubmission):
+        await engine._submit_entry_hedge_order(
+            "pair-1", order_info, "BTC/USDT:USDT", 0.01, 50000
+        )
+
+    assert stop.stop_requests
+    conn, reason, source, metadata = stop.stop_requests[0]
+    assert conn is stop.conn
+    assert (reason, source) == ("CEX_IP_BLOCK", "exchange:okx")
+    assert metadata["exchange"] == "okx"
+    assert stop.unknown and not stop.rejected
+    assert stop.notifications and stop.notifications[0]["is_stopped"] is True
+    assert engine.halts and engine.gate_refreshed
+
+
+@pytest.mark.asyncio
+async def test_futures_hedge_ip_ban_keeps_attempt_unresolved_if_stop_write_fails():
+    stop = _FakeHedgeStop(fail_stop=True)
+    engine = _HedgeHarness(stop)
+    order_info = {
+        "pending_hedge_client_order_id": "hedge-ip-ban-db-down",
+        "global_exchange": "okx",
+        "global_symbol": "BTC/USDT:USDT",
+        "global_amount_spec": {
+            "unit": "BASE", "step": 0.001, "min": 0.001, "base_per_unit": 1
+        },
+        "local_exchange": "tokocrypto",
+        "order_id": "spot-456",
+        "client_order_id": "spot-client-456",
+    }
+
+    with pytest.raises(AmbiguousOrderSubmission):
+        await engine._submit_entry_hedge_order(
+            "pair-2", order_info, "BTC/USDT:USDT", 0.01, 50000
+        )
+
+    assert stop.stop_requests
+    assert stop.unknown and not stop.rejected
+    assert not stop.notifications
 
 
 class _VenueLookup:
