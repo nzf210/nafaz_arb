@@ -312,8 +312,14 @@ Cakupan runtime saat ini: scanner menulis `scanner_opportunities`; executor
 menulis `positions`, `position_legs`, `orders`, `order_fills`, `closed_trades`,
 `funding_payments` (hanya settlement aktual dari exchange), `balance_snapshots`
 (dari permintaan baca saldo yang berhasil), `executor_status_snapshots`,
-`executor_events`, dan `risk_events`. `EXECUTOR_INSTANCE_ID` opsional memberi
-label stabil untuk status executor; Compose default ke `nafaz-executor`.
+`executor_events`, dan `risk_events`. Runtime registry juga mengisi
+`exchange_accounts` (metadata akun tanpa API key/secret), `risk_limits`
+(snapshot konfigurasi risiko tervalidasi, audit-only), dan `market_pairs`
+(pair Spot/Perpetual yang benar-benar digunakan ketika posisi dibuka/dipulihkan).
+`strategy_configs` tetap schema-only karena belum ada model strategy control-plane;
+executor tidak membaca konfigurasi trading dari Supabase.
+`EXECUTOR_INSTANCE_ID` opsional memberi label stabil untuk status executor;
+Compose default ke `nafaz-executor`.
 
 Balance read yang gagal tidak disimpan sebagai saldo nol. Funding estimasi tidak
 pernah dicatat sebagai payment confirmed. Snapshot status dibuat saat ada perubahan
