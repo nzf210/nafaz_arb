@@ -84,5 +84,6 @@ async def test_ip_ban_stop_can_be_written_inside_submit_transaction():
 def test_only_explicit_ip_ban_signatures_escalate_to_global_stop():
     assert EngineEntrySubmissionMixin._is_explicit_ip_ban("ccxt error http_418 banned until")
     assert EngineEntrySubmissionMixin._is_explicit_ip_ban("ip address banned by venue")
+    assert not EngineEntrySubmissionMixin._is_explicit_ip_ban("http_418 generic teapot response")
     assert not EngineEntrySubmissionMixin._is_explicit_ip_ban("http_429 too many requests")
     assert not EngineEntrySubmissionMixin._is_explicit_ip_ban("http_503 service unavailable")
