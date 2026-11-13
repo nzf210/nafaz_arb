@@ -222,42 +222,75 @@ class EntryHedgeMixin:
                     amount_spec=amount_spec,
                 )
             else:
-                async with global_stop.order_submit_fence(
-                    client_order_id=hedge_coid
-                ):
-                    try:
-                        short_order = await self.client.open_global_short_market(
-                            global_symbol,
-                            unhedged_delta,
-                            price=expected_short_price,
-                            client_order_id=hedge_coid,
-                            amount_spec=amount_spec,
-                        )
-                    except Exception as fenced_error:
-                        rejection_check = getattr(
-                            self, "_is_definitive_order_rejection", None
-                        )
-                        if callable(rejection_check) and rejection_check(fenced_error):
-                            await global_stop.mark_submit_rejected(
+                ip_ban_state = None
+                try:
+                    async with global_stop.order_submit_fence(
+                        client_order_id=hedge_coid
+                    ) as fence_conn:
+                        try:
+                            short_order = await self.client.open_global_short_market(
+                                global_symbol,
+                                unhedged_delta,
+                                price=expected_short_price,
+                                client_order_id=hedge_coid,
+                                amount_spec=amount_spec,
+                            )
+                        except Exception as fenced_error:
+                            error_text = (
+                                f"{type(fenced_error).__name__} {fenced_error}"
+                            ).lower()
+                            if self._is_explicit_ip_ban(error_text):
+                                self._halt_exposure_scope(
+                                    "*",
+                                    "CEX IP block: "
+                                    + str(order_info.get("global_exchange") or ""),
+                                )
+                                self._refresh_entry_gate()
+                                try:
+                                    ip_ban_state = await global_stop.request_stop_in_transaction(
+                                        fence_conn,
+                                        "CEX_IP_BLOCK",
+                                        source="exchange:"
+                                        + str(order_info.get("global_exchange") or ""),
+                                        metadata={
+                                            "exchange": order_info.get("global_exchange"),
+                                            "symbol": global_symbol,
+                                            "error_type": type(fenced_error).__name__,
+                                            "exchange_error": str(fenced_error)[:1000],
+                                        },
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "CRITICAL: failed to persist futures CEX IP-ban STOP "
+                                        "inside submit fence"
+                                    )
+                            rejection_check = getattr(
+                                self, "_is_definitive_order_rejection", None
+                            )
+                            if callable(rejection_check) and rejection_check(fenced_error):
+                                await global_stop.mark_submit_rejected(
+                                    hedge_coid, str(fenced_error)
+                                )
+                                raise
+                            await global_stop.mark_submit_unknown(
                                 hedge_coid, str(fenced_error)
                             )
                             raise
-                        await global_stop.mark_submit_unknown(
-                            hedge_coid, str(fenced_error)
+                        if not isinstance(short_order, dict) or not short_order.get("id"):
+                            await global_stop.mark_submit_unknown(
+                                hedge_coid,
+                                "futures hedge acknowledgement missing exchange order id",
+                            )
+                            raise AmbiguousOrderSubmission(
+                                "futures hedge acknowledgement has no exchange order id; "
+                                "reconciliation required"
+                            )
+                        await global_stop.mark_submit_acknowledged(
+                            hedge_coid, order=short_order,
                         )
-                        raise
-                    if not isinstance(short_order, dict) or not short_order.get("id"):
-                        await global_stop.mark_submit_unknown(
-                            hedge_coid,
-                            "futures hedge acknowledgement missing exchange order id",
-                        )
-                        raise AmbiguousOrderSubmission(
-                            "futures hedge acknowledgement has no exchange order id; "
-                            "reconciliation required"
-                        )
-                    await global_stop.mark_submit_acknowledged(
-                        hedge_coid, order=short_order,
-                    )
+                finally:
+                    if ip_ban_state is not None:
+                        await global_stop.notify_state(ip_ban_state)
         except Exception as submit_error:
             rejection_check = getattr(
                 self, "_is_definitive_order_rejection", None
