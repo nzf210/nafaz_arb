@@ -108,7 +108,7 @@ create index if not exists idx_outbox_pending
 
 -- Prevent accidental direct updates to immutable snapshots at the database level.
 create or replace function public.reject_config_version_mutation()
-returns trigger language plpgsql as $
+returns trigger language plpgsql as $fn$
 begin
     if tg_op = 'DELETE' then
         raise exception 'config snapshot is immutable; create a new version';
@@ -126,7 +126,7 @@ begin
     end if;
     return new;
 end;
-$;
+$fn$;
 drop trigger if exists trg_config_versions_immutable on public.config_versions;
 create trigger trg_config_versions_immutable
 before update or delete on public.config_versions
