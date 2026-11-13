@@ -50,6 +50,16 @@ class ExchangeFuturesMixin:
                 matched.append(position)
         return matched
 
+    async def fetch_position_mode(self) -> dict:
+        """Read the account's current futures position mode without changing it."""
+        fetcher = getattr(self.global_fut, "fetch_position_mode", None)
+        if not callable(fetcher):
+            raise RuntimeError("exchange does not expose a verifiable futures position-mode endpoint")
+        mode = await fetcher()
+        if not isinstance(mode, dict) or not isinstance(mode.get("hedged"), bool):
+            raise ValueError("exchange returned an unknown futures position mode")
+        return mode
+
     async def fetch_all_positions(self) -> list:
         """Fetch every open futures position on this authenticated venue.
 
