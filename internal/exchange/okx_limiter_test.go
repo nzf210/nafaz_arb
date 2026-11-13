@@ -18,6 +18,12 @@ import (
 func newLimiterTestAdapter(serverURL string, cfg OKXLimiterConfig) *LiveAdapter {
 	a := NewLiveAdapter()
 	a.SetBaseURLs("", serverURL, "", "", "")
+	// Tests serve synthetic order books; seed authoritative fixture metadata
+	// rather than relying on the removed production fallback contract size.
+	a.contractSizes["BTC-USDT-SWAP"] = 1
+	for i := 0; i < 100; i++ {
+		a.contractSizes[fmt.Sprintf("BTC%d-USDT-SWAP", i)] = 1
+	}
 	a.SetOKXLimiterConfig(cfg)
 	return a
 }
