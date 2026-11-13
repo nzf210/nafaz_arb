@@ -2,6 +2,8 @@ import pytest
 
 from executor.engine_entry_submission import EngineEntrySubmissionMixin
 from executor.global_stop import FENCE_LOCK_KEY, GlobalStopService
+from executor.config import ExecutorConfig
+from executor.engine import ArbitrageEngine
 
 
 class _AsyncContext:
@@ -87,3 +89,11 @@ def test_only_explicit_ip_ban_signatures_escalate_to_global_stop():
     assert not EngineEntrySubmissionMixin._is_explicit_ip_ban("http_418 generic teapot response")
     assert not EngineEntrySubmissionMixin._is_explicit_ip_ban("http_429 too many requests")
     assert not EngineEntrySubmissionMixin._is_explicit_ip_ban("http_503 service unavailable")
+
+
+@pytest.mark.asyncio
+async def test_live_executor_fails_closed_without_postgres_fencing_dsn():
+    engine = ArbitrageEngine(config=ExecutorConfig(mock_mode=False), client=object())
+
+    with pytest.raises(RuntimeError, match="requires POSTGRES_DSN"):
+        await engine.initialize()
