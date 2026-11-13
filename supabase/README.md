@@ -71,19 +71,32 @@ Prerequisites for local PostgreSQL:
 - `psql`, `pg_isready`, `pg_dump`, `pg_restore`, `sha256sum`, and
   `flock` are installed.
 
-Set the local connection through standard libpq environment variables. For
-example, use a protected `.pgpass` file or a secret manager rather than
-putting a password in shell history:
+The runner reads a simple repository-root `.env` file by default (or the
+path in `NAFAZ_ENV_FILE`). It reads only the supported migration connection
+variables and does **not** execute the file as shell code. Variables already
+present in the process environment take precedence. Example:
+
+```dotenv
+PGHOST=127.0.0.1
+PGPORT=5432
+PGDATABASE=nafaz
+PGUSER=postgres
+PGPASSWORD="replace-with-your-local-postgres-password"
+MIGRATION_BACKUP_DIR=/var/backups/nafaz-db-migrations
+```
+
+Create the file on the VPS, restrict its permissions, and keep it out of Git:
 
 ```sh
-export PGHOST=127.0.0.1
-export PGPORT=5432
-export PGDATABASE=nafaz
-export PGUSER=postgres
-# Configure password using ~/.pgpass (chmod 600) or protected secret injection.
-
+touch .env
+chmod 600 .env
+ 
 bash scripts/vps-migrate.sh --dry-run
 ```
+
+Alternatively, use a protected `.pgpass` file or a secret manager instead of
+storing the password in `.env`. Do not paste real credentials into chat or
+commit them. The runner does not print password values.
 
 Dry-run checks the local server identity, role prerequisites, existing
 migration ledger, and pending migration checksums. It makes no schema changes.
