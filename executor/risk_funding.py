@@ -251,7 +251,7 @@ class RiskFundingMixin:
                 self._exchange_halted[exchange] = reason
                 persist = getattr(self, "_persist_risk_state", None)
                 if callable(persist):
-                    await persist(
+                    persist(
                         "exchange_halt",
                         scope="exchange",
                         exchange=exchange,
