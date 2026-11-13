@@ -90,6 +90,8 @@ class EngineRuntimeMixin:
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+        if self.global_stop is not None:
+            await self.global_stop.close()
         if self.supabase.enabled:
             await self.supabase.close()
         if self.client:
