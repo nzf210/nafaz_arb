@@ -388,7 +388,7 @@ func TestTokocryptoSymbolTypeThreeUsesNextMeDepth(t *testing.T) {
 	adapter := NewLiveAdapter()
 	adapter.SetBaseURLs("", "", "", "", server.URL, server.URL, server.URL)
 	markets, err := adapter.fetchTokocryptoSpotMarkets(context.Background())
-	if err != nil { t.Fatalf("SpotMarkets: %v", err) }
+	if err != nil { t.Fatalf("Tokocrypto spot metadata: %v", err) }
 	if len(markets) != 1 || markets[0].SymbolType != 3 { t.Fatalf("expected symbol type 3 metadata, got %+v", markets) }
 	book, err := adapter.SpotOrderBook(context.Background(), "toko:SOL_IDR")
 	if err != nil { t.Fatalf("NextMe order book: %v", err) }
@@ -452,4 +452,78 @@ func TestMarketMetadataFallbackRejectsExpiredCache(t *testing.T) {
 	if _, err := adapter.getFallbackOKXPerp(context.Canceled); err == nil {
 		t.Fatal("expected expired OKX metadata cache to be rejected")
 	}
+}
+
+
+func TestMEXCPerpMarketRequiresAPIPermissionAndPerpetualType(t *testing.T) {
+    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        if r.URL.Path != "/api/v1/contract/detail/country" {
+            http.NotFound(w, r)
+            return
+        }
+        w.Write([]byte(`{
+            "success": true,
+            "code": 0,
+            "data": {
+                "symbol": "BTC_USDT",
+                "baseCoin": "BTC",
+                "quoteCoin": "USDT",
+                "contractSize": 0.0001,
+                "priceUnit": 0.1,
+                "volUnit": 1,
+                "minVol": 1,
+                "state": 0,
+                "futureType": 1,
+                "apiAllowed": true,
+                "type": 1
+            }
+        }`))
+    }))
+    defer server.Close()
+
+    adapter := NewLiveAdapter()
+    adapter.SetBaseURLs("", "", server.URL)
+    markets, err := adapter.fetchMEXCPerpetualMarkets(context.Background())
+    if err != nil {
+        t.Fatalf("fetchMEXCPerpetualMarkets: %v", err)
+    }
+    if len(markets) != 1 || markets[0].Symbol != "mexc:BTC_USDT" {
+        t.Fatalf("expected one API-enabled perpetual contract, got %+v", markets)
+    }
+    if markets[0].AmountSpec == nil || markets[0].AmountSpec.BasePerUnit != 0.0001 {
+        t.Fatalf("unexpected MEXC contract amount spec: %+v", markets[0].AmountSpec)
+    }
+}
+
+
+func TestMEXCPerpMarketSkipsNonAPIAndDeliveryContracts(t *testing.T) {
+    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        if r.URL.Path != "/api/v1/contract/detail/country" {
+            http.NotFound(w, r)
+            return
+        }
+        w.Write([]byte(`{
+            "success": true,
+            "code": 0,
+            "data": [
+                {"symbol":"BTC_USDT","baseCoin":"BTC","quoteCoin":"USDT","contractSize":0.0001,"priceUnit":0.1,"volUnit":1,"minVol":1,"state":0,"futureType":1,"apiAllowed":true,"type":1},
+                {"symbol":"ETH_USDT","baseCoin":"ETH","quoteCoin":"USDT","contractSize":0.001,"priceUnit":0.01,"volUnit":1,"minVol":1,"state":0,"futureType":1,"apiAllowed":false,"type":1},
+                {"symbol":"SOL_USDT","baseCoin":"SOL","quoteCoin":"USDT","contractSize":0.01,"priceUnit":0.01,"volUnit":1,"minVol":1,"state":0,"futureType":2,"apiAllowed":true,"type":1},
+                {"symbol":"XRP_USDT","baseCoin":"XRP","quoteCoin":"USDT","contractSize":1,"priceUnit":0.0001,"volUnit":1,"minVol":1,"state":0,"futureType":1,"apiAllowed":true,"type":2}
+            ]
+        }`))
+    }))
+    defer server.Close()
+
+    adapter := NewLiveAdapter()
+    adapter.SetBaseURLs("", "", server.URL)
+    markets, err := adapter.fetchMEXCPerpetualMarkets(context.Background())
+    if err != nil {
+        t.Fatalf("fetchMEXCPerpetualMarkets: %v", err)
+    }
+    if len(markets) != 1 || markets[0].Symbol != "mexc:BTC_USDT" {
+        t.Fatalf("expected only API-enabled perpetual contract, got %+v", markets)
+    }
 }
