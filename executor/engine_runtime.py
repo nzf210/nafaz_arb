@@ -5,6 +5,7 @@ import json
 import time
 
 from executor.engine_common import logger
+from executor.private_stream import PrivateOrderStreamWorker
 
 
 
@@ -88,6 +89,26 @@ class EngineRuntimeMixin:
         self._tasks.append(asyncio.create_task(self._listen_balance_requests()))
         self._tasks.append(asyncio.create_task(self._listen_recovery_requests()))
         self._tasks.append(asyncio.create_task(self._monitoring_loop()))
+
+        # Subscribe once per configured venue client. Only clients exposing
+        # CCXT Pro's watch_orders are eligible; ordinary ccxt.async_support
+        # clients keep using the REST fallback in fetch_order_preferring_stream.
+        self._private_stream_workers = []
+        if self.private_stream is not None:
+            registry = getattr(self._base_client, "balance_exchanges", {}) or {}
+            seen_clients = set()
+            for venue, entry in registry.items():
+                client = (entry or {}).get("client")
+                if client is None or id(client) in seen_clients:
+                    continue
+                seen_clients.add(id(client))
+                worker = PrivateOrderStreamWorker(
+                    venue, client, self.private_stream
+                )
+                self._private_stream_workers.append(worker)
+                self._tasks.append(
+                    asyncio.create_task(worker.run(), name=f"private-ws-{venue}")
+                )
         self._tasks.append(asyncio.create_task(self._exchange_reconciliation_loop()))
         self._tasks.append(asyncio.create_task(self.exposure_reconciliation.run()))
         self._tasks.append(asyncio.create_task(self.trade_fill_reconciliation.run()))
