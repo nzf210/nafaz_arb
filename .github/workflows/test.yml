@@ -94,7 +94,7 @@ jobs:
       - name: Install Python integration-test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio asyncpg
+          pip install -r requirements.txt
       - name: Exercise real PostgreSQL multi-process submit disconnect
         env:
           TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
