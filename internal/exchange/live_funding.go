@@ -148,9 +148,11 @@ func nextSettlementTime(t time.Time, intervalHours int) time.Time {
 	return time.Date(year, month, day, nextSlot, 0, 0, 0, time.UTC)
 }
 
-// OpenExposures returns public scanner open exposure state. Read-only by design.
+// OpenExposures cannot be answered from public market-data endpoints. Returning an
+// empty slice would falsely certify that the account has no positions or orders,
+// so require an authenticated account adapter and fail closed instead.
 func (l *LiveAdapter) OpenExposures(ctx context.Context) ([]domain.OpenExposure, error) {
-	return []domain.OpenExposure{}, nil
+	return nil, fmt.Errorf("live open-exposure discovery is unavailable: public market-data adapter has no authenticated account source")
 }
 
 // parseLevels decodes Indodax's depth payload. Levels arrive as
