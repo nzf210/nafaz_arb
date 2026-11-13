@@ -403,7 +403,7 @@ class OpenShortPositionClient(MockExchangeClient):
         raise RuntimeError("timeout after venue accepted the order")
 
     async def fetch_positions(self, symbol: str):
-        return [{"symbol": symbol, "contracts": amount_unused, "side": "short"}]
+        return [{"symbol": symbol, "contracts": amount_unused, "contractSize": 1.0, "side": "short"}]
 
     amount_unused = 0.0
 
