@@ -28,15 +28,15 @@
 - [x] RLS is enabled and client roles have no access to V2 control tables.
 - [ ] Provision a least-privilege server-side DB role; prove it has only required grants.
 - [ ] Verify DB TLS, connection limits, pool lifecycle, timeout and reconnect behavior.
-- [ ] Verify snapshot canonical JSON and SHA-256 against independent fixtures.
-- [ ] Verify unsupported schema, malformed JSON, non-finite numbers and hash mismatch fail closed.
-- [ ] Verify raw secret values are rejected; only secret references are stored.
-- [ ] Verify unknown keys, duplicate IDs and dangling venue/account/route/risk references fail closed.
-- [ ] Verify create-draft, validate, activate, and rollback are transactional.
-- [ ] Verify optimistic concurrency rejects stale expected-version writes.
+- [x] Implement canonical JSON and SHA-256 verification (independent runtime/DB fixture evidence still required).
+- [x] Implement fail-closed checks for unsupported schema, malformed JSON, non-finite numbers and hash mismatch (CI evidence pending).
+- [x] Implement rejection of raw secret fields; secret references remain allowed (secret-manager integration pending).
+- [x] Implement V2 root-key, duplicate-ID and dangling/mismatched venue/account/route/risk reference validation (full contract coverage pending).
+- [x] Implement transactional create-draft, validate, activate (CAS) and rollback-as-new-draft operations; integration/concurrency tests pending.
+- [x] Implement active-version compare-and-swap under a PostgreSQL advisory transaction lock; concurrent DB integration test pending.
 - [ ] Verify concurrent activations cannot create two active pointers or lose audit records.
 - [ ] Verify immutable snapshot fields cannot be updated or deleted by runtime role.
-- [ ] Verify every config mutation writes actor, timestamp, reason, diff, audit and outbox in one transaction.
+- [x] Implement config lifecycle audit and outbox writes in the same transaction as config mutations; DB integration/replay tests pending.
 - [ ] Verify restart loads the active PostgreSQL version, never a local stale file.
 - [ ] Verify DB outage prevents LIVE startup and new order admission.
 - [ ] Verify recovery after DB outage does not auto-start trading.
@@ -205,6 +205,6 @@
 
 | Date (UTC) | Candidate SHA | CI run | Checklist section | Evidence / artifact | Result | Reviewer |
 |---|---|---|---|---|---|---|
-| 2026-11-13 | `d6fbd474d15dc95db1ba04337053f178352740ef` | `43431989761` | Config snapshot reader | CI in progress at checklist update | Pending | Pending |
+| 2026-11-13 | `3a7d83eb9562480de7585fe24999ea9d65036098` | Pending for latest SHA | Config contract + lifecycle + checklist | Implementation and regression tests added; CI evidence not yet confirmed | Pending | Pending |
 
 **Current release decision:** NOT LIVE-READY. The V2 database schema and snapshot-reader foundation do not yet constitute a deployed, verified trading control plane.
