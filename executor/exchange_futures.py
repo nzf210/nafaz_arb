@@ -80,12 +80,50 @@ class ExchangeFuturesMixin:
             raise ValueError("exchange returned an unknown futures position mode")
         return mode
 
+    async def _resolve_futures_symbol(self, symbol: str) -> str:
+        raw = str(symbol or "").strip()
+        if not raw:
+            raise ValueError("futures symbol is required for leverage lookup")
+        raw = raw.removeprefix("okx:").removeprefix("mexc:")
+        if ":" in raw:
+            raw = raw.split(":", 1)[0]
+        markets = getattr(self.global_fut, "markets", None)
+        if not markets:
+            loader = getattr(self.global_fut, "load_markets", None)
+            if not callable(loader):
+                raise RuntimeError("futures markets are unavailable for leverage lookup")
+            markets = await loader()
+        if not isinstance(markets, dict):
+            raise ValueError("futures market catalogue is malformed")
+
+        def normalized(value: str) -> str:
+            return "".join(ch for ch in str(value).upper() if ch.isalnum())
+
+        target = normalized(raw)
+        for market in markets.values():
+            if not isinstance(market, dict):
+                continue
+            if not (market.get("swap") or market.get("future") or market.get("contract")):
+                continue
+            market_symbol = str(market.get("symbol") or "")
+            market_id = str(market.get("id") or "")
+            base = str(market.get("base") or "")
+            quote = str(market.get("quote") or "")
+            candidates = {
+                normalized(market_symbol),
+                normalized(market_id),
+                normalized(base + quote),
+            }
+            if target in candidates and market_symbol:
+                return market_symbol
+        raise ValueError(f"unable to resolve futures symbol {symbol!r} on {self.global_fut.id}")
+
     async def fetch_leverage(self, symbol: str) -> dict:
         """Read configured leverage for the requested futures market."""
         fetcher = getattr(self.global_fut, "fetch_leverage", None)
         if not callable(fetcher):
             raise RuntimeError("exchange does not expose a verifiable futures leverage endpoint")
-        resolved = await self._resolve_symbol(symbol)
+        resolved = await self._resolve_futures_symbol(symbol)
         leverage = await fetcher(resolved)
         if not isinstance(leverage, dict):
             raise ValueError("exchange returned a malformed futures leverage response")
