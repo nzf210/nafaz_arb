@@ -1,143 +1,120 @@
 {
-    "mode": "MOCK",
-    "execution_mode": "MAKER_TAKER",
-    "min_funding_rate": 0,
-    "excluded_symbols": [
-        "META"
-    ],
-    "funding_polling_interval_seconds": 30,
-    "base_target_exit_spread_pct": 0.3,
-    "sniping_window_minutes": 30,
-    "funding_subsidy_floor_pct": 0.08,
-    "local_price_tick": 1.0,
-    "global_futures_exchange": "okx",
-    "redis": {
-        "enabled": false,
-        "addr": "localhost:6380",
-        "password": "",
-        "db": 0
+  "mode": "MOCK",
+  "execution_mode": "MAKER_TAKER",
+  "min_funding_rate": 0.00005,
+  "funding_polling_interval_seconds": 30,
+  "base_target_exit_spread_pct": 0.3,
+  "sniping_window_minutes": 30,
+  "funding_subsidy_floor_pct": 0.08,
+  "local_price_tick": 1.0,
+  "global_futures_exchange": "okx",
+  "redis": {
+    "enabled": true,
+    "addr": "nafaz-redis:6380",
+    "password": "",
+    "db": 0
+  },
+  "listen_addr": ":8080",
+  "api_auth_token": "",
+  "scan_interval_seconds": 45,
+  "quote_assets": ["USDT"],
+  "enable_executor_signals": false,
+  "capital_total": 22.2,
+  "allocation_per_pair": 0.5,
+  "perp_leverage": 1,
+  "empty_book_freeze_minutes": 15,
+  "enable_adaptive_sizing": true,
+  "min_allocated_capital": 11.0,
+  "enable_synthetic_idr": true,
+  "synthetic_usdt_idr_rate": 18000.0,
+  "estimated_holding_hours": 8,
+  "min_net_roi_pct": 0.75,
+  "max_net_roi_pct": 12.0,
+  "min_net_profit_quote": 0,
+  "max_slippage_pct": 0.2,
+  "spot_taker_fee_pct": 0.33,
+  "spot_maker_fee_pct": 0.22,
+  "perp_taker_fee_pct": 0.05,
+  "fee_asset_surcharge_pct": 0.0,
+  "max_order_ttl_seconds": 30,
+  "max_order_book_age_seconds": 5,
+  "max_cross_exchange_skew_seconds": 3,
+  "websocket_book_max_age_seconds": 2,
+  "exchange_error_min_requests": 5,
+  "exchange_error_rate_threshold": 0.5,
+  "exchange_error_window_seconds": 300,
+  "history_path": "./data/opportunities.json",
+  "history_retention_days": 90,
+  "max_missed_successful_scans": 2,
+  "empty_book_freeze_hours": 6,
+  "indodax_ws_enabled": false,
+  "indodax_ws_url": "wss://ws3.indodax.com/ws/",
+  "indodax_ws_token": "",
+  "indodax_ws_stale_after": "65s",
+  "enable_websocket_feed": true,
+  "excluded_symbols": ["META", "BB"],
+  "min_spike_scans": 3,
+  "check_open_positions": false,
+  "exclude_open_orders": true,
+  "exchanges": {
+    "indodax": {
+      "api_key": "",
+      "api_secret": ""
     },
-    "listen_addr": ":8080",
-    "api_auth_token": "",
-    "scan_interval_seconds": 30,
-    "quote_assets": [
-        "USDT",
-        "USDC"
-    ],
-    "capital_total": 1000,
-    "allocation_per_pair": 0.5,
-    "perp_leverage": 1,
-    "empty_book_freeze_minutes": 15,
-    "enable_adaptive_sizing": true,
-    "min_allocated_capital": 10.0,
-    "enable_synthetic_idr": true,
-    "synthetic_usdt_idr_rate": 16000.0,
-    "estimated_holding_hours": 8,
-    "min_net_roi_pct": 0.1,
-    "max_net_roi_pct": 2.0,
-    "min_net_profit_quote": 0,
-    "max_slippage_pct": 0.2,
-    "spot_taker_fee_pct": 0.3,
-    "spot_maker_fee_pct": 0.0,
-    "perp_taker_fee_pct": 0.05,
-    "fee_asset_surcharge_pct": 0.0,
-    "fee_profiles": {},
-    "max_order_book_age_seconds": 5,
-    "max_cross_exchange_skew_seconds": 3,
-    "max_order_ttl_seconds": 30,
-    "min_top_of_book_quote_usdt": 0,
-    "max_order_book_imbalance": 0.0,
-    "spike_spread_pct": 0.0,
-    "min_spike_scans": 3,
-    "max_last_trade_age_seconds": 0,
-    "fx_rate_sanity_pct": 0,
-    "enable_websocket_feed": false,
-    "okx_ws_enabled": true,
-    "okx_ws_url": "wss://ws.okx.com/ws/v5/public",
-    "okx_ws_stale_after": "65s",
-    "okx_ws_reconnect_interval": "1s",
-    "okx_ws_max_reconnect_backoff": "30s",
-    "indodax_ws_enabled": false,
-    "indodax_ws_url": "wss://ws3.indodax.com/ws/",
-    "indodax_ws_token": "",
-    "indodax_ws_stale_after": "65s",
-    "websocket_book_max_age_seconds": 2,
-    "exchange_error_window_seconds": 300,
-    "exchange_error_rate_threshold": 0.5,
-    "exchange_error_min_requests": 5,
-    "history_path": "./data/opportunities.json",
-    "history_retention_days": 90,
-    "max_missed_successful_scans": 2,
-    "empty_book_freeze_hours": 6,
-    "telegram": {
-        "enabled": false,
-        "bot_token": "",
-        "chat_id": 0,
-        "allowed_chat_ids": [],
-        "alert_on_new": true,
-        "alert_cooldown_minutes": 15,
-        "alert_min_net_roi_pct": 0,
-        "alert_min_net_profit_quote": 0
+    "tokocrypto": {
+      "api_key": "",
+      "api_secret": "",
+      "options": {
+        "broker_id": ""
+      }
     },
-    "check_open_positions": false,
-    "exclude_open_orders": true,
-    "exchanges": {
-        "indodax": {
-            "api_key": "",
-            "api_secret": ""
-        },
-        "tokocrypto": {
-            "api_key": "",
-            "api_secret": "",
-            "options": {
-                "broker_id": ""
-            }
-        },
-        "okx": {
-            "api_key": "",
-            "api_secret": "",
-            "passphrase": "",
-            "testnet": false,
-            "options": {
-                "defaultType": "swap"
-            }
-        },
-        "mexc": {
-            "api_key": "",
-            "api_secret": "",
-            "testnet": false
-        },
-        "bybit": {
-            "api_key": "",
-            "api_secret": "",
-            "testnet": false
-        }
-    },
-    "supabase": {
-        "enabled": false,
-        "url": "",
-        "key": ""
-    },
-    "executor": {
-        "mock_mode": true,
-        "max_order_ttl_seconds": 120,
-        "maker_refresh_after_seconds": 45,
-        "maker_refresh_cooldown_seconds": 300,
-        "min_partial_fill_usd": 10,
-        "monitor_interval_seconds": 0.5,
-        "max_order_fetch_failures": 10,
-        "order_fetch_backoff_max_seconds": 60,
-        "venue_rate_limit_cooldown_seconds": 30,
-        "private_stream_enabled": false,
-        "private_stream_max_age_seconds": 5,
-        "max_daily_loss_usdt": 50,
-        "max_exposure_per_exchange_usdt": 0,
-        "max_open_spot_orders_per_exchange": {
-            "indodax": 2,
-            "tokocrypto": 2,
-            "okx": 2,
-            "bybit": 2,
-            "mexc": 2
-        }
+    "okx": {
+      "api_key": "",
+      "api_secret": "",
+      "passphrase": "",
+      "testnet": false,
+      "options": {
+        "defaultType": "swap"
+      }
     }
+  },
+  "supabase": {
+    "enabled": false,
+    "url": "",
+    "key": "",
+    "outbox_path": "/app/data/executor/supabase-outbox.sqlite3"
+  },
+  "telegram": {
+    "enabled": false,
+    "bot_token": "",
+    "chat_id": 0,
+    "allowed_chat_ids": [],
+    "alert_on_new": true,
+    "alert_cooldown_minutes": 15,
+    "alert_min_net_roi_pct": 0,
+    "alert_min_net_profit_quote": 0
+  },
+  "executor": {
+    "mock_mode": true,
+    "max_daily_loss_usdt": 1.0,
+    "max_exposure_per_exchange_usdt": 22.2,
+    "max_entry_slippage_pct": 0.002,
+    "estimated_round_trip_fee_pct": 0.001,
+    "max_order_ttl_seconds": 30,
+    "maker_refresh_after_seconds": 15,
+    "maker_refresh_cooldown_seconds": 30,
+    "min_partial_fill_usd": 5.0,
+    "monitor_interval_seconds": 0.5,
+    "max_order_fetch_failures": 10,
+    "order_fetch_backoff_max_seconds": 60,
+    "venue_rate_limit_cooldown_seconds": 30,
+    "private_stream_enabled": false,
+    "private_stream_max_age_seconds": 5,
+    "max_consecutive_order_failures": 5,
+    "max_open_spot_orders_per_exchange": {
+      "indodax": 1,
+      "tokocrypto": 1,
+      "okx": 1
+    }
+  }
 }
