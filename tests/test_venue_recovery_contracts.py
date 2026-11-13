@@ -11,6 +11,7 @@ from executor.force_close_legs import ForceCloseLegMixin
 from executor.order_registry_storage import OrderRegistryStorageMixin
 from executor.order_registry_recovery import OrderRegistryRecoveryMixin
 from executor.exchange_common import _find_order_by_client_id
+from executor.exchange_client import BALANCE_MARKETS, V2_ADAPTERS
 
 
 class DelayedVisibilityVenue:
@@ -57,7 +58,7 @@ async def test_delayed_client_id_visibility_stays_not_found_then_recovers(venue_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("venue_id", ["mexc", "okx"])
+@pytest.mark.parametrize("venue_id", ["mexc", "okx", "binance", "bybit"])
 async def test_pending_reduce_only_close_is_found_and_not_misclassified_as_absent(venue_id):
     client_id = "pending-reduce-only-001"
     venue = DelayedVisibilityVenue(venue_id, client_id)
@@ -138,3 +139,15 @@ async def test_order_registry_does_not_treat_redis_and_active_journal_gap_as_abs
     registry = RegistryLookupHarness()
     with pytest.raises(RuntimeError, match="lookup is inconclusive"):
         await registry.find_by_client_id("okx", "possibly-used-close-id")
+
+
+def test_runtime_venue_factory_matrix_is_explicit_and_documented():
+    assert BALANCE_MARKETS == {
+        "tokocrypto": "spot",
+        "indodax": "spot",
+        "okx": "futures",
+        "mexc": "futures",
+        "binance": "futures",
+        "bybit": "futures",
+    }
+    assert set(V2_ADAPTERS) == {"indodax"}
