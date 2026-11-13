@@ -80,6 +80,17 @@ class ExchangeFuturesMixin:
             raise ValueError("exchange returned an unknown futures position mode")
         return mode
 
+    async def fetch_leverage(self, symbol: str) -> dict:
+        """Read configured leverage for the requested futures market."""
+        fetcher = getattr(self.global_fut, "fetch_leverage", None)
+        if not callable(fetcher):
+            raise RuntimeError("exchange does not expose a verifiable futures leverage endpoint")
+        resolved = await self._resolve_symbol(symbol)
+        leverage = await fetcher(resolved)
+        if not isinstance(leverage, dict):
+            raise ValueError("exchange returned a malformed futures leverage response")
+        return leverage
+
     async def fetch_all_positions(self) -> list:
         """Fetch every open futures position on this authenticated venue.
 
