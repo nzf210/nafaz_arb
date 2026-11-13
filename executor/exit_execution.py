@@ -206,14 +206,32 @@ class ExitExecutionMixin:
                 side="buy", order_type="market", price=live_global_ask,
                 quantity=unclosed_delta, reduce_only=True,
                 global_amount_spec=pos.global_amount_spec,
-                required=False,
             )
-            close_order = await self.client.close_global_short_market(
-                global_sym,
-                unclosed_delta,
-                client_order_id=unwind_coid,
-                amount_spec=pos.global_amount_spec,
-            )
+            try:
+                close_order = await self.client.close_global_short_market(
+                    global_sym, unclosed_delta, client_order_id=unwind_coid,
+                    amount_spec=pos.global_amount_spec,
+                )
+            except Exception as submit_error:
+                rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+                if callable(rejection_check) and rejection_check(submit_error):
+                    await self._mark_order_submission_rejected(pos.global_exchange, unwind_coid)
+                    raise
+                lookup = getattr(self.client, "fetch_global_order_by_client_id", None)
+                close_order = None
+                if callable(lookup):
+                    try:
+                        close_order = await lookup(unwind_coid, global_sym, pos.global_amount_spec)
+                    except Exception:
+                        logger.exception("[State 4] futures close client-id lookup failed for %s", unwind_coid)
+                if not isinstance(close_order, dict) or not close_order.get("id"):
+                    await self._mark_order_submission_ambiguous(
+                        pair_tag, pos.global_exchange, unwind_coid,
+                        f"futures exit submit ambiguous: {type(submit_error).__name__}: {submit_error}; "
+                        "client-id lookup did not return a verifiable order",
+                    )
+                    raise RuntimeError("futures close submission ambiguous; reconciliation required") from submit_error
+                logger.warning("[State 4] recovered futures close %s by client id", unwind_coid)
             if not isinstance(close_order, dict):
                 raise ValueError(
                     "futures close returned no verifiable order payload after spot exit fill"
@@ -250,7 +268,7 @@ class ExitExecutionMixin:
                 reduce_only=True,
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
             )
-            await self._register_order(
+            registered = await self._register_order(
                 pair_tag,
                 unwind_coid,
                 close_order,
@@ -265,6 +283,12 @@ class ExitExecutionMixin:
                 reduce_only=True,
                 global_amount_spec=pos.global_amount_spec,
             )
+            if registered is None:
+                await self._mark_order_submission_ambiguous(
+                    pair_tag, pos.global_exchange, unwind_coid,
+                    "futures exit was accepted but could not be committed to the order registry",
+                )
+                raise RuntimeError("futures exit accepted but registry persistence failed")
 
             total_qty_before = pos.qty
             order_info["closed_short_qty"] += unclosed_delta

@@ -226,13 +226,32 @@ class ForceCloseLegMixin:
                 quantity=pos.qty, reduce_only=True,
                 global_amount_spec=pos.global_amount_spec,
             )
-            res = await self.client.close_global_short_market(
-                global_sym,
-                pos.qty,
-                client_order_id=force_coid,
-                amount_spec=pos.global_amount_spec,
-            )
-            if not isinstance(res, dict):
+            try:
+                res = await self.client.close_global_short_market(
+                    global_sym, pos.qty, client_order_id=force_coid,
+                    amount_spec=pos.global_amount_spec,
+                )
+            except Exception as submit_error:
+                rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+                if callable(rejection_check) and rejection_check(submit_error):
+                    await self._mark_order_submission_rejected(pos.global_exchange, force_coid)
+                    raise
+                lookup = getattr(self.client, "fetch_global_order_by_client_id", None)
+                res = None
+                if callable(lookup):
+                    try:
+                        res = await lookup(force_coid, global_sym, pos.global_amount_spec)
+                    except Exception:
+                        logger.exception("[Force Close] futures close client-id lookup failed for %s", force_coid)
+                if not isinstance(res, dict) or not res.get("id"):
+                    await self._mark_order_submission_ambiguous(
+                        pair_key, pos.global_exchange, force_coid,
+                        f"force-close futures submit ambiguous: {type(submit_error).__name__}: {submit_error}; "
+                        "client-id lookup did not return a verifiable order",
+                    )
+                    return False, 0.0
+                logger.warning("[Force Close] recovered futures close %s by client id", force_coid)
+            if not isinstance(res, dict) or not res.get("id"):
                 logger.critical(
                     f"[Force Close] futures close returned no verifiable order for {pair_key}"
                 )
@@ -266,7 +285,7 @@ class ForceCloseLegMixin:
                 reduce_only=True,
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
             )
-            await self._register_order(
+            registered = await self._register_order(
                 pair_key,
                 force_coid,
                 res,
@@ -280,6 +299,12 @@ class ForceCloseLegMixin:
                 quantity=pos.qty,
                 reduce_only=True,
             )
+            if registered is None:
+                await self._mark_order_submission_ambiguous(
+                    pair_key, pos.global_exchange, force_coid,
+                    "force-close futures order was accepted but registry persistence failed",
+                )
+                return False, 0.0
             if not await self._verify_force_close_futures_flat(pair_key, global_sym):
                 return False, 0.0
 
