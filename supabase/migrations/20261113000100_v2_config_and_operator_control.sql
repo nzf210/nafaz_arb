@@ -110,6 +110,9 @@ create index if not exists idx_outbox_pending
 create or replace function public.reject_config_version_mutation()
 returns trigger language plpgsql as $
 begin
+    if tg_op = 'DELETE' then
+        raise exception 'config snapshot is immutable; create a new version';
+    end if;
     if new.version is distinct from old.version
        or new.schema_version is distinct from old.schema_version
        or new.snapshot is distinct from old.snapshot
@@ -154,7 +157,7 @@ begin
     if exists (select 1 from pg_roles where rolname = 'service_role') then
         execute 'grant select, insert, update on public.config_versions, public.active_config_version, public.operator_control_state, public.operator_actions, public.outbox_events to service_role';
         execute 'grant select, insert on public.config_audit_log to service_role';
-        execute 'grant usage, select on all sequences in schema public to service_role';
+        execute 'grant usage, select on sequence public.config_audit_log_audit_id_seq, public.operator_actions_action_id_seq, public.outbox_events_event_id_seq to service_role';
     end if;
 end;
 $;
