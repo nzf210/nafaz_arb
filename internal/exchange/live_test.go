@@ -32,8 +32,8 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 				"code": 0,
 				"data": {
 					"list": [
-						{"symbol":"BTC_USDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.00001","minQty":"0.0001"}]},
-						{"symbol":"ETH_USDT","baseAsset":"ETH","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.01"}]}
+						{"type":1,"symbol":"BTC_USDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.00001","minQty":"0.0001"}]},
+						{"type":1,"symbol":"ETH_USDT","baseAsset":"ETH","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.01"}]}
 					]
 				}
 			}`))
@@ -57,7 +57,7 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	defer mexcSpotServer.Close()
 
 	adapter := NewLiveAdapter()
-	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL)
+	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL, tokoServer.URL, tokoServer.URL)
 
 	markets, err := adapter.SpotMarkets(context.Background())
 	if err != nil {
@@ -142,6 +142,7 @@ func newMockOKXPerpServer() *httptest.Server {
 					{
 						"fundingRate":"0.0001",
 						"fundingTime":"1690028800000",
+						"nextFundingTime":"1690028800000",
 						"prevFundingTime":"1690000000000",
 						"ts":"1690000000000"
 					}
@@ -192,6 +193,7 @@ func newMockMEXCPerpServer() *httptest.Server {
 					"symbol": "BTC_USDT",
 					"fundingRate": 0.00015,
 					"collectCycle": 8,
+					"nextSettleTime": 1690028800000,
 					"timestamp": 1690000000000
 				}
 			}`))
@@ -282,7 +284,12 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 	defer indodaxServer.Close()
 
 	tokoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/open/v1/market/depth" {
+		if r.URL.Path == "/open/v1/common/symbols" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"code":0,"data":{"list":[{"type":1,"symbol":"BTC_USDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.00001","minQty":"0.0001"}]}]}}`))
+			return
+		}
+		if r.URL.Path == "/api/v3/depth" && r.URL.Query().Get("symbol") == "BTCUSDT" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{
 				"code": 0,
