@@ -137,6 +137,9 @@ class ExitPricingMixin:
         # Missing/invalid forecasts fail closed: without a current rate
         # estimate, do not reduce the target exit spread.
         if next_rate is None or not math.isfinite(next_rate):
+            fallback_rate = float(getattr(pos, "current_funding_rate", 0.0) or 0.0)
+            next_rate = fallback_rate if math.isfinite(fallback_rate) else None
+        if next_rate is None:
             return 0.0
         if next_rate >= 0.0003:
             return 0.0

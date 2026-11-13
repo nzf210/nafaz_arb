@@ -439,7 +439,7 @@ async def test_p2_02_excessive_slippage_aborts_and_rolls_back(fake_redis):
     now_ms = int(time.time() * 1000)
     client = MockExchangeClient()
     # Expected 65_000, config allows 0.3% -> limit 65_195. Simulate a 2% gap.
-    client.update_market_price("btcusdt", best_bid=66_300.0, best_ask=66_300.0)
+    client.update_market_price("btcusdt", best_bid=63_700.0, best_ask=63_700.0)
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=True, max_entry_slippage_pct=0.003),
         client=client,

@@ -413,7 +413,7 @@ class EntryOrderManagementMixin:
                 self.config,
                 "indodax_maker_refresh_after_seconds"
                 if is_indodax_idr else "maker_refresh_after_seconds",
-                15 if is_indodax_idr else 45,
+                15 if is_indodax_idr else 8,
             ) or 0
         )
         if refresh_after <= 0 or str(order.get("status", "")).lower() != "open":
@@ -439,8 +439,8 @@ class EntryOrderManagementMixin:
                 self.config,
                 "indodax_maker_refresh_cooldown_seconds"
                 if is_indodax_idr else "maker_refresh_cooldown_seconds",
-                15 if is_indodax_idr else 300,
-            ) or (15 if is_indodax_idr else 300)
+                15 if is_indodax_idr else 12,
+            ) or (15 if is_indodax_idr else 12)
         )
         cooldown_key = f"arb:maker_refresh_cooldown:{pair_tag}"
         if await self.redis.exists(cooldown_key):

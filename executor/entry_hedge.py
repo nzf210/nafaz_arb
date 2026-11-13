@@ -627,21 +627,39 @@ class EntryHedgeMixin:
             return
 
         try:
-            live_ask = float((ticker or {}).get("ask") or 0.0)
+            raw_bid = (ticker or {}).get("bid")
+            raw_ask = (ticker or {}).get("ask")
+            live_bid = float(raw_bid if raw_bid is not None else (raw_ask or 0.0))
         except (TypeError, ValueError):
-            live_ask = 0.0
-        if live_ask <= 0:
+            live_bid = 0.0
+        if live_bid <= 0:
             logger.info(
-                f"[Slippage Guard] no live ask for {global_symbol}; skipping guard on {pair_tag}"
+                f"[Slippage Guard] no live bid/quote for {global_symbol}; skipping guard on {pair_tag}"
             )
             return
 
-        limit_price = expected_short_price * (1.0 + max_slippage)
-        if live_ask > limit_price:
-            deviation_pct = (live_ask / expected_short_price - 1.0) * 100.0
+        # Pilihan C (Asymmetric Guard):
+        # 1) Ketat di bawah: Short hedge menjual ke bid Futures, sehingga penurunan harga
+        #    melebihi max_slippage (mis. -0.3%) merusak spread dan harus diblokir.
+        # 2) Longgar di atas: Kenaikan harga Futures hingga +5% (atau 10x max_slippage)
+        #    adalah windfall profit untuk posisi Short dan tetap dieksekusi; di atas itu
+        #    diblokir sebagai proteksi anomali ticker/fat-finger.
+        floor_price = expected_short_price * (1.0 - max_slippage)
+        sanity_ceiling_pct = max(0.05, max_slippage * 10.0)
+        ceiling_price = expected_short_price * (1.0 + sanity_ceiling_pct)
+
+        if live_bid < floor_price:
+            deviation_pct = (1.0 - (live_bid / expected_short_price)) * 100.0
             raise HedgeSlippageExceeded(
-                f"futures ask {live_ask} deviates {deviation_pct:.3f}% from expected "
-                f"{expected_short_price} (limit {max_slippage * 100:.3f}%, "
+                f"futures bid {live_bid} dropped {deviation_pct:.3f}% below expected "
+                f"{expected_short_price} (limit -{max_slippage * 100:.3f}%, "
+                f"qty {unhedged_delta})"
+            )
+        if live_bid > ceiling_price:
+            deviation_pct = ((live_bid / expected_short_price) - 1.0) * 100.0
+            raise HedgeSlippageExceeded(
+                f"futures quote {live_bid} spiked {deviation_pct:.3f}% above expected "
+                f"{expected_short_price} (sanity ceiling +{sanity_ceiling_pct * 100:.3f}%, "
                 f"qty {unhedged_delta})"
             )
 
