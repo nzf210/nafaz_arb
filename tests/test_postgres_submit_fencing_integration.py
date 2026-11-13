@@ -1,7 +1,7 @@
 """Real PostgreSQL, multi-process crash test for the durable submit fence.
 
-The fake venue runs in a separate process. Killing the submitting executor drops
-its PostgreSQL session while the venue request remains in flight. A peer must
+The fake venue and executor run in separate processes. PostgreSQL terminates the
+executor's backend while its venue request remains in flight. A peer must
 still be blocked by the committed SUBMITTING ledger row.
 """
 from __future__ import annotations
@@ -30,24 +30,29 @@ def _fake_venue(request_received, active, release, accepted):
     accepted.set()
 
 
-def _submitter(dsn, client_id, venue_request, venue_active, venue_release):
+def _submitter(dsn, client_id, venue_request, venue_active, venue_release, backend_queue):
     async def run():
         service = GlobalStopService(dsn, min_size=1, max_size=1)
         await service.start()
-        await service.prepare_submit_attempt(
-            client_order_id=client_id, exchange="mexc", market_type="spot",
-            symbol="BTC/USDT", side="buy", order_type="limit",
-            quantity=0.001, price=60000, pair_key="mexc:BTC_USDT",
-        )
-        async with service.order_submit_fence(client_order_id=client_id):
-            venue_request.set()
-            if not venue_active.wait(10):
-                raise RuntimeError("fake venue did not receive request")
-            # Keep the session lock and HTTP call active until the parent kills us.
-            await asyncio.to_thread(venue_release.wait, 30)
-        await service.close()
+        try:
+            await service.prepare_submit_attempt(
+                client_order_id=client_id, exchange="mexc", market_type="spot",
+                symbol="BTC/USDT", side="buy", order_type="limit",
+                quantity=0.001, price=60000, pair_key="mexc:BTC_USDT",
+            )
+            async with service.order_submit_fence(client_order_id=client_id) as conn:
+                venue_request.set()
+                if not venue_active.wait(10):
+                    raise RuntimeError("fake venue did not receive request")
+                backend_queue.put(await conn.fetchval("select pg_backend_pid()"))
+                # Simulated HTTP call remains active after PostgreSQL terminates this session.
+                await asyncio.to_thread(venue_release.wait, 30)
+        except Exception:
+            # Connection termination during the active venue request is expected.
+            pass
+        finally:
+            await service.close()
     asyncio.run(run())
-
 
 def _peer_submitter(dsn, client_id, result_queue):
     async def run():
@@ -83,6 +88,7 @@ def test_process_death_during_live_venue_request_keeps_peer_fenced():
     venue_release = ctx.Event()
     venue_accepted = ctx.Event()
     result_queue = ctx.Queue()
+    backend_queue = ctx.Queue()
 
     # A separate venue process remains alive after the executor process dies.
     venue = ctx.Process(
@@ -90,7 +96,7 @@ def test_process_death_during_live_venue_request_keeps_peer_fenced():
     )
     venue.start()
     submitter = ctx.Process(
-        target=_submitter, args=(dsn, first_id, venue_request, venue_active, venue_release)
+        target=_submitter, args=(dsn, first_id, venue_request, venue_active, venue_release, backend_queue)
     )
     submitter.start()
     assert venue_active.wait(10), "fake venue did not receive the in-flight request"
@@ -115,10 +121,18 @@ def test_process_death_during_live_venue_request_keeps_peer_fenced():
     else:
         pytest.fail("submitter never committed SUBMITTING")
 
-    # Drop the executor process/connection while the independent venue remains active.
-    submitter.terminate()
-    submitter.join(10)
-    assert submitter.exitcode is not None
+    # Terminate only the PostgreSQL backend. The executor process and its
+    # simulated HTTP request remain alive while the venue side effect is pending.
+    backend_pid = backend_queue.get(timeout=5)
+    async def terminate_backend():
+        import asyncpg
+        conn = await asyncpg.connect(dsn)
+        try:
+            return await conn.fetchval("select pg_terminate_backend($1)", backend_pid)
+        finally:
+            await conn.close()
+    assert asyncio.run(terminate_backend()) is True
+    assert submitter.is_alive()
     assert venue.is_alive()
     assert not venue_accepted.is_set()
 
@@ -136,6 +150,8 @@ def test_process_death_during_live_venue_request_keeps_peer_fenced():
     # was admitted while that side effect was outstanding.
     venue_release.set()
     venue.join(10)
+    submitter.join(10)
+    assert not submitter.is_alive()
     assert venue_accepted.is_set()
 
     async def final_status():
