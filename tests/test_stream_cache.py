@@ -105,3 +105,61 @@ async def test_p3_05_enabled_engine_uses_stream_cache(fake_redis):
     await engine._process_pending_entry("indodax:btc_idr", info)
 
     assert calls == [], "fresh stream data must avoid a REST poll"
+
+
+
+@pytest.mark.asyncio
+async def test_p3_05_private_order_worker_normalizes_ccxt_order():
+    from executor.private_stream import PrivateStreamCache, PrivateOrderStreamWorker
+
+    cache = PrivateStreamCache(max_age_seconds=5.0)
+
+    class FakePrivateClient:
+        def __init__(self):
+            self.calls = 0
+            self.ready = asyncio.Event()
+
+        async def watch_orders(self):
+            self.calls += 1
+            self.ready.set()
+            if self.calls == 1:
+                return [{
+                    "id": "42",
+                    "status": "closed",
+                    "filled": 1.25,
+                    "info": {"orderId": "42"},
+                }]
+            await asyncio.Future()
+
+    client = FakePrivateClient()
+    worker = PrivateOrderStreamWorker("tokocrypto", client, cache)
+    task = asyncio.create_task(worker.run())
+    try:
+        await asyncio.wait_for(client.ready.wait(), timeout=1.0)
+        for _ in range(10):
+            if cache.get_order("42") is not None:
+                break
+            await asyncio.sleep(0.01)
+        cached = cache.get_order("42")
+        assert cached is not None
+        assert cached["status"] == "closed"
+        assert cached["filled"] == pytest.approx(1.25)
+        assert worker.connected is True
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_p3_05_private_order_worker_keeps_rest_fallback_without_watch_orders():
+    from executor.private_stream import PrivateStreamCache, PrivateOrderStreamWorker
+
+    class RestOnlyClient:
+        pass
+
+    worker = PrivateOrderStreamWorker(
+        "indodax", RestOnlyClient(), PrivateStreamCache()
+    )
+    await worker.run()
+    assert worker.connected is False
+    assert "CCXT Pro required" in worker.last_error
