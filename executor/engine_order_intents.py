@@ -137,6 +137,7 @@ class EngineOrderIntentMixin:
             raise RuntimeError(
                 "refusing LIVE order submission: Supabase durable order persistence is disabled"
             )
+        live_mode = not bool(getattr(self.config, "mock_mode", False))
         required = bool(metadata.pop("required", True))
         role = metadata.get("role", "unknown")
         exchange = str(metadata.get("exchange") or "").lower()
@@ -156,7 +157,6 @@ class EngineOrderIntentMixin:
             {"status": "submitting"},
             **metadata,
         )
-        live_mode = not bool(getattr(self.config, "mock_mode", False))
         if (required or live_mode) and record is None:
             raise RuntimeError(
                 f"refusing to submit {role} order: durable order intent could not be recorded"
@@ -210,7 +210,6 @@ class EngineOrderIntentMixin:
             if record is None:
                 return
             record.status = "rejected"
-            await registry.register(record)
             if (
                 not bool(getattr(self.config, "mock_mode", False))
                 and str(getattr(record, "market_type", "")).lower() == "spot"
@@ -226,6 +225,7 @@ class EngineOrderIntentMixin:
                             "[Capacity] failed to release rejected Spot entry reservation %s",
                             client_order_id,
                         )
+            await registry.register(record)
             await registry.retire(record)
         except Exception:
             logger.exception(
