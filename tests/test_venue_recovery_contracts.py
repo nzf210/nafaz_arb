@@ -38,7 +38,7 @@ class DelayedVisibilityVenue:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("venue_id", ["indodax", "tokocrypto", "mexc", "okx"])
+@pytest.mark.parametrize("venue_id", ["indodax", "tokocrypto", "mexc", "okx", "binance", "bybit"])
 async def test_delayed_client_id_visibility_stays_not_found_then_recovers(venue_id):
     client_id = "eventual-visibility-001"
     venue = DelayedVisibilityVenue(venue_id, client_id)
