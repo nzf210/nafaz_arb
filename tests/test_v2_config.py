@@ -147,7 +147,7 @@ async def test_redis_failure_fails_closed_after_database_read():
 
 def test_rejects_inline_secret_values_but_allows_secret_references():
     referenced = _valid_snapshot()
-    referenced["credentials"] = {"api_key_env": "OKX_API_KEY", "api_secret_env": "OKX_API_SECRET"}
+    referenced["telegram"] = {"bot_token_env": "NAFAZ_TELEGRAM_TOKEN"}
     assert validate_snapshot_row({
         "version": 8,
         "schema_version": 2,
@@ -156,7 +156,7 @@ def test_rejects_inline_secret_values_but_allows_secret_references():
     }).version == 8
 
     inline = _valid_snapshot()
-    inline["credentials"] = {"api_key": "must-not-be-stored"}
+    inline["telegram"] = {"bot_token": "must-not-be-stored"}
     with pytest.raises(ConfigSnapshotError, match="inline secret"):
         validate_snapshot_row({
             "version": 9,
@@ -215,7 +215,7 @@ def test_v2_contract_rejects_route_account_venue_mismatch():
     snapshot["accounts"] = [
         {"id": "account_a", "venue_id": "spot_a"},
         {"id": "account_b", "venue_id": "perp_b"},
-        {"id": "account_wrong", "venue_id": "spot_a"},
+        {"id": "account_wrong", "venue_id": "perp_b"},
     ]
     snapshot["risk_profiles"] = {"default": {}}
     snapshot["routes"] = [{
