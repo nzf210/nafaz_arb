@@ -49,10 +49,14 @@ func TestUSDTIDRRateSingleflightAndTokocryptoFallback(t *testing.T) {
 	defer indodaxServer.Close()
 
 	tokoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/open/v1/market/depth" && r.URL.Query().Get("symbol") == "USDT_IDR" {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/open/v1/common/symbols" {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"list":[{"type":1,"symbol":"USDT_IDR","baseAsset":"USDT","quoteAsset":"IDR","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.01","minQty":"0.01"}]}]}}`))
+			return
+		}
+		if r.URL.Path == "/api/v3/depth" && r.URL.Query().Get("symbol") == "USDTIDR" {
 			tokoHits.Add(1)
 			time.Sleep(30 * time.Millisecond)
-			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"code":0,"data":{"bids":[["18250","100"]],"asks":[["18260","100"]]}}`))
 			return
 		}
@@ -61,7 +65,7 @@ func TestUSDTIDRRateSingleflightAndTokocryptoFallback(t *testing.T) {
 	defer tokoServer.Close()
 
 	adapter := NewLiveAdapter()
-	adapter.SetBaseURLs(indodaxServer.URL, "", "", "", tokoServer.URL)
+	adapter.SetBaseURLs(indodaxServer.URL, "", "", "", tokoServer.URL, tokoServer.URL, tokoServer.URL)
 
 	var wg sync.WaitGroup
 	rates := make([]float64, 10)
