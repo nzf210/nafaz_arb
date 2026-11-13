@@ -435,3 +435,17 @@ func TestLiveOpenExposuresFailsClosedWithoutAccountSource(t *testing.T) {
 		t.Fatalf("expected unknown account exposure state, got exposures=%+v err=%v", exposures, err)
 	}
 }
+
+func TestMarketMetadataFallbackRejectsExpiredCache(t *testing.T) {
+	adapter := NewLiveAdapter()
+	adapter.cachedTokocryptoSpot = []domain.Market{{Exchange:"tokocrypto", Symbol:"toko:OLD_USDT", Active:true, SymbolType:1}}
+	adapter.lastTokocryptoFetch = time.Now().Add(-25 * time.Hour)
+	if _, err := adapter.getFallbackTokocryptoSpot(fmt.Errorf("offline")); err == nil {
+		t.Fatal("expected expired Tokocrypto metadata cache to be rejected")
+	}
+	adapter.cachedOKXPerp = []domain.Market{{Exchange:"okx", Symbol:"OLD-USDT-SWAP", Active:true}}
+	adapter.lastOKXPerpFetch = time.Now().Add(-25 * time.Hour)
+	if _, err := adapter.getFallbackOKXPerp(fmt.Errorf("offline")); err == nil {
+		t.Fatal("expected expired OKX metadata cache to be rejected")
+	}
+}
