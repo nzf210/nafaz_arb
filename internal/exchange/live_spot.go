@@ -297,9 +297,12 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 
 func (l *LiveAdapter) getFallbackTokocryptoSpot(err error) ([]domain.Market, error) {
 	l.mu.RLock()
-	defer l.mu.RUnlock()
-	if len(l.cachedTokocryptoSpot) > 0 {
-		return l.cachedTokocryptoSpot, nil
+	cached, fetchedAt := l.cachedTokocryptoSpot, l.lastTokocryptoFetch
+	l.mu.RUnlock()
+	age := time.Since(fetchedAt)
+	if len(cached) > 0 && !fetchedAt.IsZero() && age >= 0 && age <= marketCacheMaxStaleAge {
+		log.Printf("tokocrypto: using market metadata fallback age=%s", age.Round(time.Minute))
+		return cached, nil
 	}
 	return nil, err
 }
@@ -398,10 +401,12 @@ func (l *LiveAdapter) fetchIndodaxSpotMarketsWithStatus(ctx context.Context) ([]
 func (l *LiveAdapter) getFallbackIndodaxSpot(err error) ([]domain.Market, error) {
 	l.mu.RLock()
 	cached := l.cachedIndodaxSpot
+	fetchedAt := l.lastIndodaxSpotFetch
 	cacheDir := l.marketCacheDir
 	l.mu.RUnlock()
 
-	if len(cached) > 0 {
+	age := time.Since(fetchedAt)
+	if len(cached) > 0 && !fetchedAt.IsZero() && age >= 0 && age <= marketCacheMaxStaleAge {
 		return cached, nil
 	}
 
@@ -440,6 +445,10 @@ func (l *LiveAdapter) saveIndodaxSpotCache(dir string, markets []domain.Market) 
 
 func (l *LiveAdapter) loadIndodaxSpotCache(dir string) []domain.Market {
 	path := filepath.Join(dir, "indodax_spot_markets.json")
+	info, err := os.Stat(path)
+	if err != nil { return nil }
+	age := time.Since(info.ModTime())
+	if age < 0 || age > marketCacheMaxStaleAge { return nil }
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
