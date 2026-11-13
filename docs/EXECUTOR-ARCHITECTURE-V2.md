@@ -1323,3 +1323,76 @@ Tambahan pertanyaan untuk review sebelum implementation specification:
 6. Reporting currency dan cost basis tetap mengikuti pertanyaan pada bagian 19; jangan mengunci asumsi sebelum review.
 7. Replay data retention dan security audit retention perlu ditentukan sesuai kebutuhan operasional dan biaya.
 
+
+
+---
+
+# Addendum — Runtime Bootstrap, PostgreSQL Config Authority & CEX IP-Block STOP
+
+**Added:** 2026-11-13  
+**Status:** Design requirement; implementation and test evidence remain OPEN.
+
+Dokumen utama di atas sudah menetapkan satu logical Execution Coordinator, PostgreSQL sebagai canonical state, Mutation Gateway, dan fencing. Addendum ini memperjelas lifecycle deployment dan insiden rate-limit/IP ban. Jika ada perbedaan, invariant keselamatan pada addendum dan checklist V2 harus dipenuhi tanpa mengubah strategi/risk/venue configuration yang sudah disetujui.
+
+## A. Startup lifecycle dan admission
+
+`BOOTING -> CONFIG_LOADED -> INFRA_READY -> LEASED -> RECOVERING -> CONSUMERS_READY -> HEARTBEATING -> READY`
+
+1. Baca runtime config aktif dari PostgreSQL dan validasi schema version/checksum.
+2. Connect PostgreSQL transaction pool dan Redis.
+3. Acquire lease dengan fencing generation monotonik.
+4. Restore active STOP, positions, order registry/intents, pending commands, risk state, dan snapshot.
+5. Reconcile open orders serta actual venue exposure.
+6. Start Redis/durable consumers dan STOP listener.
+7. Start heartbeat dengan conditional lease renewal.
+8. Open admission hanya jika semua pemeriksaan lulus.
+
+Dependency/config/snapshot/lease/heartbeat failure harus membuat admission tertutup. Monitoring posisi aktif dan protective workflow tidak boleh dihapus hanya karena entry admission tertutup.
+
+## B. Runtime configuration cutover
+
+- Import semua legacy `config.json` dan environment keys ke PostgreSQL dengan provenance.
+- Shadow-read dan bandingkan effective config secara semantik.
+- Protected fields meliputi risk limits, sizing, exposure/order caps, execution mode, leverage/margin mode, venue/account binding, symbols, precision, dan venue order settings.
+- Setiap diff pada protected fields memblokir cutover; tidak ada silent normalization/default substitution.
+- Setelah cutover, PostgreSQL authoritative untuk trading runtime config. Environment hanya untuk infrastructure bootstrap dan secret references.
+- PostgreSQL unavailable atau config invalid berarti no new admission; jangan fallback diam-diam ke file lama.
+
+## C. STOP-submit serialization
+
+STOP mutation dan seluruh create-order path harus menggunakan satu PostgreSQL serialization primitive. Order intent/client order ID dibuat durable sebelum request venue. Jika submit memperoleh serialization boundary terlebih dahulu, STOP menunggu sampai request terjawab atau ditandai ambiguous. Jika STOP menang, semua submit setelah commit ditolak.
+
+Database tidak dapat membuat HTTP side effect exchange atomic. Timeout tetap dapat berarti order diterima oleh venue. Gunakan stable client order ID dan reconciliation; jangan blind retry. Redis hanya menyebarkan wake-up notification, bukan otoritas STOP.
+
+## D. CEX IP block karena rate limit
+
+Bedakan:
+- `RATE_LIMITED`: 429/throttle tanpa bukti IP ban -> venue cooldown, Retry-After, exponential backoff + jitter; bukan otomatis global STOP.
+- `IP_BANNED`: bukti eksplisit venue bahwa egress IP diblokir (misalnya Binance 418 ban response atau kode resmi setara) -> tulis durable global STOP `CEX_IP_BLOCK` di PostgreSQL dan naikkan STOP/fencing epoch.
+- `VENUE_ACCESS_BLOCKED_UNKNOWN`: 403/WAF yang tidak membuktikan IP ban -> tutup admission venue terkait dan minta review; jangan menyebutnya confirmed IP ban.
+
+Confirmed IP ban default-nya menghentikan seluruh new-entry admission pada semua instance yang berbagi egress IP. Instance harus membaca canonical STOP PostgreSQL; Redis event hanya mempercepat propagasi. Catat venue, detector instance, waktu, error code, ban-until/Retry-After jika ada, dan evidence yang sudah di-redact.
+
+Selama ban:
+- hindari retry storm, aggressive polling, dan cancel-all berulang;
+- jangan menyatakan order canceled atau posisi flat tanpa bukti venue;
+- state yang tidak dapat diverifikasi menjadi `RECONCILIATION_REQUIRED`;
+- reduce-only/emergency request hanya melalui jalur yang terbukti dapat diakses dan aman;
+- STOP tidak boleh otomatis hilang saat cooldown lokal habis.
+
+Resume memerlukan verified unblock/ban expiry, low-rate venue health probe, order/position reconciliation, operator acknowledgement, dan fencing epoch baru. Jika STOP tidak dapat dipersist ke PostgreSQL, tutup local admission segera dan laporkan CRITICAL; retry persistensi secara bounded.
+
+## E. Review evidence
+
+Wajib ada tests untuk:
+- 429 biasa tidak memicu false IP-ban STOP;
+- explicit IP-ban response memicu durable `CEX_IP_BLOCK` STOP;
+- beberapa instance dengan egress IP sama semuanya menutup admission;
+- 403/WAF ambiguous tidak diklaim confirmed IP ban;
+- timeout/5xx/invalid key/insufficient balance tidak salah diklasifikasikan;
+- ban-until/Retry-After tidak menghasilkan request storm;
+- active order/position selama ban tidak dianggap terminal/flat;
+- STOP-vs-submit concurrency, lost Redis event, DB disconnect, stale fencing token, restart recovery;
+- resume ditolak sebelum unblock verification + reconciliation + operator acknowledgement.
+
+Detail acceptance checklist ada di [V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md](./V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md).
