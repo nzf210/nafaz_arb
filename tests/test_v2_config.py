@@ -128,3 +128,25 @@ async def test_redis_failure_fails_closed_after_database_read():
             PostgresConfigRepository(_Pool(_row())),
             RedisSnapshotCache(redis),
         )
+
+
+def test_rejects_inline_secret_values_but_allows_secret_references():
+    referenced = {
+        "schema_version": 2,
+        "credentials": {"api_key_env": "OKX_API_KEY", "api_secret_env": "OKX_API_SECRET"},
+    }
+    assert validate_snapshot_row({
+        "version": 8,
+        "schema_version": 2,
+        "snapshot": referenced,
+        "content_sha256": calculate_snapshot_sha256(referenced),
+    }).version == 8
+
+    inline = {"schema_version": 2, "credentials": {"api_key": "must-not-be-stored"}}
+    with pytest.raises(ConfigSnapshotError, match="inline secret"):
+        validate_snapshot_row({
+            "version": 9,
+            "schema_version": 2,
+            "snapshot": inline,
+            "content_sha256": calculate_snapshot_sha256(inline),
+        })
