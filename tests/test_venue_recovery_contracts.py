@@ -11,7 +11,7 @@ from executor.force_close_legs import ForceCloseLegMixin
 from executor.order_registry_storage import OrderRegistryStorageMixin
 from executor.order_registry_recovery import OrderRegistryRecoveryMixin
 from executor.exchange_common import _find_order_by_client_id
-from executor.exchange_client import BALANCE_MARKETS, V2_ADAPTERS
+from executor.exchange_client import BALANCE_MARKETS, V2_ADAPTERS, validate_runtime_venue_pair
 
 
 class DelayedVisibilityVenue:
@@ -151,3 +151,20 @@ def test_runtime_venue_factory_matrix_is_explicit_and_documented():
         "bybit": "futures",
     }
     assert set(V2_ADAPTERS) == {"indodax"}
+
+
+@pytest.mark.parametrize(
+    "local_name,global_name",
+    [("indodax", "okx"), ("tokocrypto", "mexc"), ("tokocrypto", "binance"), ("indodax", "bybit")],
+)
+def test_supported_runtime_venue_pairs_validate(local_name, global_name):
+    validate_runtime_venue_pair(local_name, global_name)
+
+
+@pytest.mark.parametrize(
+    "local_name,global_name",
+    [("unknown", "okx"), ("okx", "mexc"), ("indodax", "tokocrypto"), ("binance", "bybit")],
+)
+def test_unsupported_or_wrong_market_venue_pairs_fail_closed(local_name, global_name):
+    with pytest.raises(ValueError):
+        validate_runtime_venue_pair(local_name, global_name)
