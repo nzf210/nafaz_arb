@@ -56,8 +56,6 @@ from (
         ('market_pairs', 'base_asset'),
         ('market_pairs', 'local_quote_asset'),
         ('market_pairs', 'global_quote_asset'),
-        ('market_pairs', 'local_exchange_account_id'),
-        ('market_pairs', 'global_exchange_account_id'),
         ('market_pairs', 'price_tick'),
         ('market_pairs', 'lot_size'),
         ('position_legs', 'position_id'),
