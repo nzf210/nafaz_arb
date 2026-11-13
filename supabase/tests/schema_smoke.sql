@@ -34,6 +34,32 @@ select 1 / case when count(*) = 0 then 1 else 0 end
 from (
     select required.table_name, required.column_name
     from (values
+        ('exchange_accounts', 'exchange_name'),
+        ('exchange_accounts', 'market_type'),
+        ('exchange_accounts', 'account_label'),
+        ('exchange_accounts', 'is_testnet'),
+        ('exchange_accounts', 'is_enabled'),
+        ('exchange_accounts', 'permissions'),
+        ('exchange_accounts', 'metadata'),
+        ('risk_limits', 'name'),
+        ('risk_limits', 'is_enabled'),
+        ('risk_limits', 'max_daily_loss_usdt'),
+        ('risk_limits', 'max_exposure_per_exchange_usdt'),
+        ('risk_limits', 'max_entry_slippage_pct'),
+        ('risk_limits', 'max_consecutive_order_failures'),
+        ('risk_limits', 'parameters'),
+        ('market_pairs', 'pair_key'),
+        ('market_pairs', 'local_exchange'),
+        ('market_pairs', 'global_exchange'),
+        ('market_pairs', 'local_symbol'),
+        ('market_pairs', 'global_symbol'),
+        ('market_pairs', 'base_asset'),
+        ('market_pairs', 'local_quote_asset'),
+        ('market_pairs', 'global_quote_asset'),
+        ('market_pairs', 'local_exchange_account_id'),
+        ('market_pairs', 'global_exchange_account_id'),
+        ('market_pairs', 'price_tick'),
+        ('market_pairs', 'lot_size'),
         ('position_legs', 'position_id'),
         ('position_legs', 'leg'),
         ('position_legs', 'exchange_name'),
@@ -73,6 +99,58 @@ from (
           and actual.column_name = required.column_name
     )
 ) missing_runtime_columns;
+
+-- Runtime registry writer contracts: conflict targets must remain unique and
+-- account foreign keys must accept metadata-only rows without credential material.
+insert into public.exchange_accounts (
+    id, exchange_name, market_type, account_label, is_testnet, is_enabled,
+    permissions, metadata
+) values
+    ('00000000-0000-4000-8000-000000000101', 'tokocrypto', 'spot', 'ci-smoke', false, true, '{}'::jsonb, '{"credential_configured":true}'::jsonb),
+    ('00000000-0000-4000-8000-000000000102', 'mexc', 'perpetual', 'ci-smoke', true, true, '{}'::jsonb, '{"credential_configured":true}'::jsonb)
+on conflict (exchange_name, market_type, account_label) do update
+set is_enabled = excluded.is_enabled, metadata = excluded.metadata;
+
+insert into public.risk_limits (
+    id, name, is_enabled, max_daily_loss_usdt, max_exposure_per_exchange_usdt,
+    max_entry_slippage_pct, max_consecutive_order_failures, parameters
+) values (
+    '00000000-0000-4000-8000-000000000103', 'ci-smoke-runtime', true,
+    50, 250, 0.003, 50, '{"control_plane":false}'::jsonb
+)
+on conflict (name) do update set parameters = excluded.parameters;
+
+insert into public.market_pairs (
+    id, pair_key, local_exchange, global_exchange, local_symbol, global_symbol,
+    base_asset, local_quote_asset, global_quote_asset,
+    local_exchange_account_id, global_exchange_account_id, price_tick, lot_size, metadata
+) values (
+    '00000000-0000-4000-8000-000000000104',
+    'tokocrypto:btc_idr->mexc:BTC/USDC:USDC',
+    'tokocrypto', 'mexc', 'btc_idr', 'BTC/USDC:USDC',
+    'BTC', 'IDR', 'USDC',
+    '00000000-0000-4000-8000-000000000101',
+    '00000000-0000-4000-8000-000000000102',
+    1000, 0.0001, '{"source":"executor_position_opened"}'::jsonb
+)
+on conflict (pair_key) do update set metadata = excluded.metadata;
+
+do $
+begin
+    if (select count(*) from public.exchange_accounts where account_label = 'ci-smoke') <> 2 then
+        raise exception 'exchange account upsert did not remain idempotent';
+    end if;
+    if (select count(*) from public.risk_limits where name = 'ci-smoke-runtime') <> 1 then
+        raise exception 'risk limit upsert did not remain idempotent';
+    end if;
+    if (select count(*) from public.market_pairs where pair_key = 'tokocrypto:btc_idr->mexc:BTC/USDC:USDC') <> 1 then
+        raise exception 'market pair upsert did not remain idempotent';
+    end if;
+end $;
+
+delete from public.market_pairs where pair_key = 'tokocrypto:btc_idr->mexc:BTC/USDC:USDC';
+delete from public.risk_limits where name = 'ci-smoke-runtime';
+delete from public.exchange_accounts where account_label = 'ci-smoke';
 
 insert into public.strategy_configs (name, config)
 values ('schema-smoke-test', '{"source":"ci"}'::jsonb);
