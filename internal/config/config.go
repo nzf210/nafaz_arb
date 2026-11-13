@@ -197,8 +197,16 @@ func (c *Config) AdaptiveSizingEnabled() bool {
 }
 
 func (c *Config) validate() error {
-	if strings.EqualFold(c.Mode, "LIVE") && len(strings.TrimSpace(c.APIAuthToken)) < 32 {
-		return fmt.Errorf("api_auth_token must contain at least 32 characters when mode=LIVE")
+	if strings.EqualFold(c.Mode, "LIVE") {
+		if len(strings.TrimSpace(c.APIAuthToken)) < 32 {
+			return fmt.Errorf("api_auth_token must contain at least 32 characters when mode=LIVE")
+		}
+		// The Go scanner has no authenticated account-state adapter. Python
+		// executor is the only account authority, so LIVE scanner config must
+		// never request private position checks.
+		if c.CheckOpenPositions {
+			return fmt.Errorf("check_open_positions must be false when mode=LIVE; account positions are owned by the Python executor")
+		}
 	}
 	if c.ExecutionMode != "" && c.ExecutionMode != "TAKER_TAKER" && c.ExecutionMode != "MAKER_TAKER" {
 		return fmt.Errorf("execution_mode must be TAKER_TAKER or MAKER_TAKER")
