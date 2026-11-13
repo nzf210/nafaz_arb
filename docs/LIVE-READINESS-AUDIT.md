@@ -54,6 +54,10 @@ These are preconditions, not automatic account mutations:
 4. Failure-injection/restart drills: spot fill + futures reject, partial fills, lost create-order acknowledgement, lost cancel acknowledgement, process restart with pending orders, Supabase outage, Redis outage, and stale market data.
 5. Controlled canary only after all prior gates pass, with a user-defined minimal notional and operator monitoring.
 
+## Remaining account-source gap: Go scanner
+
+The Python executor now performs authenticated account-wide position/mode/leverage checks, but the Go scanner's `LiveAdapter.OpenExposures()` still deliberately returns an error because the Go adapter has no authenticated account-data implementation. In `config.example.json`, `check_open_positions` defaults to true; with that setting, the scanner marks position state UNKNOWN and suppresses eligible opportunities. Turning that setting off would let the public-data scanner produce candidates, but is safe only if every candidate is consumed by this Python executor, which independently performs the account checks. It is not safe for any alternate execution consumer. Implementing private account APIs in Go is a separate scope requiring an explicit decision about credential ownership and which CEX accounts the scanner must inspect.
+
 ## Explicitly not done
 
 - No exchange API keys were requested or used.
