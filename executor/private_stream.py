@@ -109,3 +109,79 @@ async def fetch_order_preferring_stream(
     if cache is not None and isinstance(order, dict):
         cache.update_order(order)
     return order
+
+
+
+class PrivateOrderStreamWorker:
+    """Consume a CCXT Pro-compatible private order stream for one venue client.
+
+    Standard ccxt.async_support does not expose watch_orders. In that case the
+    worker reports the capability as unavailable and exits; callers must keep
+    the REST fallback enabled. When a Pro-compatible client is injected, each
+    normalized CCXT order is pushed into the shared freshness cache.
+    """
+
+    def __init__(self, venue: str, client: Any, cache: PrivateStreamCache):
+        self.venue = str(venue or "unknown").lower()
+        self.client = client
+        self.cache = cache
+        self.connected = False
+        self.last_event_at = 0.0
+        self.last_error = ""
+
+    async def run(self) -> None:
+        import asyncio
+
+        watch_orders = getattr(self.client, "watch_orders", None)
+        if not callable(watch_orders):
+            self.last_error = "watch_orders is not available (CCXT Pro required)"
+            logger.warning(
+                "[Private WS] %s: %s; REST polling remains enabled",
+                self.venue, self.last_error,
+            )
+            return
+
+        delay = 1.0
+        while True:
+            try:
+                updates = await watch_orders()
+                if isinstance(updates, dict):
+                    updates = [updates]
+                if not isinstance(updates, (list, tuple)):
+                    continue
+                self.connected = True
+                self.last_error = ""
+                self.last_event_at = time.time()
+                for order in updates:
+                    if not isinstance(order, dict):
+                        continue
+                    normalized = dict(order)
+                    info = normalized.get("info")
+                    info = info if isinstance(info, dict) else {}
+                    order_id = normalized.get("id") or info.get("orderId") or info.get("order_id")
+                    if order_id is None:
+                        continue
+                    normalized["id"] = str(order_id)
+                    # CCXT's unified filled field is cumulative. Preserve that
+                    # semantic when a venue adapter exposes only raw payloads.
+                    if normalized.get("filled") is None:
+                        raw_filled = info.get("executedQty", info.get("dealVol"))
+                        if raw_filled is not None:
+                            try:
+                                normalized["filled"] = float(raw_filled)
+                            except (TypeError, ValueError):
+                                continue
+                    self.cache.update_order(normalized)
+                delay = 1.0
+            except asyncio.CancelledError:
+                self.connected = False
+                raise
+            except Exception as exc:
+                self.connected = False
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                logger.warning(
+                    "[Private WS] %s disconnected; REST fallback active: %s",
+                    self.venue, self.last_error,
+                )
+                await asyncio.sleep(delay)
+                delay = min(30.0, delay * 2.0)
