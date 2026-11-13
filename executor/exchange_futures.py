@@ -50,6 +50,28 @@ class ExchangeFuturesMixin:
                 matched.append(position)
         return matched
 
+    async def fetch_all_positions(self) -> list:
+        """Fetch every open futures position on this authenticated venue.
+
+        Account-wide reconciliation must discover positions that are not present
+        in the bot's local state. An empty list is accepted only when the venue
+        returns a well-formed list; errors and malformed rows remain UNKNOWN.
+        """
+        positions = await self.global_fut.fetch_positions()
+        if positions is None or not isinstance(positions, (list, tuple)):
+            raise ValueError("exchange returned an invalid account-wide positions payload")
+        normalized = []
+        for position in positions:
+            if not isinstance(position, dict):
+                raise ValueError("exchange returned a malformed account-wide position")
+            symbol = position.get("symbol")
+            if not isinstance(symbol, str) or not symbol.strip():
+                raise ValueError(
+                    "account-wide futures position is missing its symbol; exposure cannot be classified"
+                )
+            normalized.append(position)
+        return normalized
+
     async def open_global_short_market(
         self, symbol: str, amount: float, client_order_id: Optional[str] = None,
         amount_spec: Any = None, price: float = 0.0,
