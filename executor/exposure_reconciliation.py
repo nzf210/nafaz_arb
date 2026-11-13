@@ -323,6 +323,8 @@ class ExposureReconciliationWorker:
                     candidate_name = str(getattr(candidate, "id", "") or "").lower()
                     if candidate is not None and (not candidate_name or candidate_name == exchange):
                         venue_client = client
+                    elif callable(getattr(client, "fetch_all_positions", None)):
+                        venue_client = client
                 if venue_client is None:
                     raise RuntimeError(f"authenticated futures client unavailable for {exchange}")
 
