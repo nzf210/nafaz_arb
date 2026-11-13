@@ -134,6 +134,13 @@ async def test_modular_exchanges_config_and_env(monkeypatch):
         if os.path.exists(f_path):
             os.remove(f_path)
 
+
+def test_postgres_dsn_is_loaded_from_environment(monkeypatch):
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql://executor:secret@db.example:5432/nafaz")
+    cfg = ExecutorConfig()
+    cfg._apply_env()
+    assert cfg.postgres_dsn == "postgresql://executor:secret@db.example:5432/nafaz"
+
 def test_execution_directives_scanner_validated_defaults_false():
     """Old payloads without scanner_validated must not be trusted as validated."""
     d = ExecutionDirectives.from_dict({"action": "PLACE_MAKER_BUY"})
