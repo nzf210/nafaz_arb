@@ -60,7 +60,7 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	adapter := NewLiveAdapter()
 	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL, tokoServer.URL, tokoServer.URL)
 
-	markets, err := adapter.fetchTokocryptoSpotMarkets(context.Background())
+	markets, err := adapter.SpotMarkets(context.Background())
 	if err != nil {
 		t.Fatalf("SpotMarkets: %v", err)
 	}
@@ -143,7 +143,7 @@ func newMockOKXPerpServer() *httptest.Server {
 					{
 						"fundingRate":"0.0001",
 						"fundingTime":"1690028800000",
-						"nextFundingTime":"1690028800000",
+						"nextFundingTime":"1690057600000",
 						"prevFundingTime":"1690000000000",
 						"ts":"1690000000000"
 					}
@@ -387,8 +387,8 @@ func TestTokocryptoSymbolTypeThreeUsesNextMeDepth(t *testing.T) {
 
 	adapter := NewLiveAdapter()
 	adapter.SetBaseURLs("", "", "", "", server.URL, server.URL, server.URL)
-	markets, err := adapter.SpotMarkets(context.Background())
-	if err != nil { t.Fatalf("SpotMarkets: %v", err) }
+	markets, err := adapter.fetchTokocryptoSpotMarkets(context.Background())
+	if err != nil { t.Fatalf("Tokocrypto spot metadata: %v", err) }
 	if len(markets) != 1 || markets[0].SymbolType != 3 { t.Fatalf("expected symbol type 3 metadata, got %+v", markets) }
 	book, err := adapter.SpotOrderBook(context.Background(), "toko:SOL_IDR")
 	if err != nil { t.Fatalf("NextMe order book: %v", err) }
