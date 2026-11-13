@@ -2,17 +2,17 @@
 
 # Peta Pemanggilan API Privat — Nafazbot
 
-Baseline: `9cc3dcd11d0999e828309053ba4cffce98a28675` on `feat/unified-dynamic-fee-engine`.
-Audit branch: `audit/architecture-baseline-regression-contract`.
+Acuan: `9cc3dcd11d0999e828309053ba4cffce98a28675` on `feat/unified-dynamic-fee-engine`.
+Cabang audit: `audit/architecture-baseline-regression-contract`.
 
 ## 1. Klasifikasi
 
-- **PRIVATE**: authenticated account/order/position/trade/fee operations.
+- **PRIVATE**: operasi akun/order/posisi/transaksi/biaya yang memerlukan autentikasi.
 - **PUBLIC**: unauthenticated data pasar, ticker, instruments, funding rate, public books.
 - **MIXED/VERIFIKASI**: CCXT method can be private or public depending on venue/version; verifikasi generated endpoint mapping.
-- **NOT A CEX CALL**: Redis, Supabase, Telegram, DNS.
+- **NOT A CEX CALL**: Redis, Supabase, Telegram, dan DNS.
 
-The Python ExchangeClient facade is the principal batas API privat bursa. It currently routes directly to CCXT instances or Indodax TAPIv2. The Go scanner exchange adapter inspected here makes public market-data requests; it is not the executor API privat gateway.
+The Python ExchangeClient facade is the principal batas API privat bursa. Saat ini fasad tersebut meneruskan permintaan langsung ke instans CCXT atau Indodax TAPIv2. The Go scanner exchange adapter inspected here makes public market-data requests; it is not the executor API privat gateway.
 
 ## 2. Inventaris operasi privat utama
 
