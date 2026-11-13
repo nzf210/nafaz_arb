@@ -339,6 +339,7 @@ class ExitOrderManagementMixin:
             await self._exit_live_snapshot(pair_tag, pos)
         )
         now_ms = int(time.time() * 1000)
+        await self._refresh_predicted_funding_rate(pair_tag, pos, now_ms)
         funding_passed = await self._handle_funding_rollover(
             pair_tag, pos, now_ms
         )
