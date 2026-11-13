@@ -1445,3 +1445,7 @@ Futures entry-hedge kini mengklasifikasikan signature IP-ban eksplisit dengan cl
 ### Spot IP-ban STOP persistence failure guard
 
 Spot entry now records whether canonical CEX_IP_BLOCK persistence failed inside the active submit fence. In that case, it must not run the post-submit exact-client-ID lookup (which could otherwise ACK an order while cross-instance STOP is absent). It best-effort marks the attempt UNKNOWN, records local ambiguity, and returns without retrying or acknowledging. If PostgreSQL is unavailable, the committed SUBMITTING row remains the durable peer guard. Regression test injects a venue lookup that would return an order and asserts it is never called after STOP persistence failure.
+
+### De-risking order retry policy
+
+Risk-reducing rollback and force-close spot market sells are not subject to the entry Global STOP fence. Their retry policy is nevertheless conservative: generic retry previously repeated any exception, including timeout/connection reset/HTTP 503 after a possible venue-side acceptance. Both call sites now pass an explicit retry predicate and retry only a confirmed HTTP 429 rejection. Ambiguous transport outcomes and HTTP 503 stop after the first attempt and remain for order-registry/manual reconciliation; they are not blindly resubmitted. This preserves the ability to reduce risk without risking duplicate market sells.
