@@ -593,7 +593,6 @@ func (s *Service) opportunityExecutableDepth(
 	depth := decimal.Zero
 	if makerTaker {
 		depth = availableBookDepth(perpBook.Bids)
-		depth = decimal.Min(depth, availableBookDepth(spotBook.Bids))
 		depth = decimal.Min(depth, availableBookDepth(perpBook.Asks))
 		return depth
 	}

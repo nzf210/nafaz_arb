@@ -248,10 +248,10 @@ func TestLapis2_MakerTakerEntrySpread_AndSnipingWindow(t *testing.T) {
 	if op.TargetLimitBuyIDR != 1000001000.0 {
 		t.Errorf("got TargetLimitBuyIDR=%f, want 1000001000.0", op.TargetLimitBuyIDR)
 	}
-	// In sniping window, FundingSubsidy = 0.05% * 1.0 = 0.05%, floor is 0.08%, so subsidy is 0.08%
-	// MinimumEntrySpreadPct = (0.0 + 0.05) - 0.08 = -0.03%
-	if op.MinEntrySpreadPct > 0 {
-		t.Errorf("got MinEntrySpreadPct=%f, expected <= 0", op.MinEntrySpreadPct)
+	// In sniping window, FundingSubsidy = 0.05% * 1.0 = 0.05%
+	// Raw MinimumEntrySpreadPct = (0.0 + 0.05) - 0.05 = 0.00%, clamped to floor 0.08%
+	if op.MinEntrySpreadPct < 0.079 || op.MinEntrySpreadPct > 0.081 {
+		t.Errorf("got MinEntrySpreadPct=%f, expected 0.08 floor", op.MinEntrySpreadPct)
 	}
 	if op.EntrySpreadPct < 3.8 || op.EntrySpreadPct > 3.9 {
 		t.Errorf("got EntrySpreadPct=%f, want ~3.846%%", op.EntrySpreadPct)
