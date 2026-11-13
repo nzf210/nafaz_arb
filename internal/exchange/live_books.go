@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"math"
 	"strings"
 	"time"
 
@@ -114,50 +115,49 @@ func (l *LiveAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.
 }
 
 func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	markets, err := l.fetchTokocryptoSpotMarkets(ctx)
+	if err != nil { return domain.OrderBook{}, fmt.Errorf("tokocrypto symbol metadata unavailable: %w", err) }
+	var symbolType int
+	for _, market := range markets { if market.Symbol == symbol { symbolType = market.SymbolType; break } }
+	if symbolType != 1 && symbolType != 3 { return domain.OrderBook{}, fmt.Errorf("tokocrypto symbol %q has unknown or unsupported symbol type %d", symbol, symbolType) }
+
 	rawSym := strings.TrimPrefix(symbol, "toko:")
-	endpoint := fmt.Sprintf("%s/open/v1/market/depth?symbol=%s&limit=20", l.tokocryptoBaseURL, url.QueryEscape(rawSym))
+	baseURL, path, apiSymbol := "", "", strings.ReplaceAll(rawSym, "_", "")
+	if symbolType == 1 { baseURL, path = l.tokocryptoMainMarketURL, "/api/v3/depth" } else { baseURL, path = l.tokocryptoNextMarketURL, "/api/v1/depth" }
+	if strings.TrimSpace(baseURL) == "" { return domain.OrderBook{}, fmt.Errorf("tokocrypto market-data base URL not configured for symbol type %d", symbolType) }
+	endpoint := fmt.Sprintf("%s%s?symbol=%s&limit=20", strings.TrimRight(baseURL, "/"), path, url.QueryEscape(apiSymbol))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth req: %w", err)
-	}
+	if err != nil { return domain.OrderBook{}, fmt.Errorf("tokocrypto depth req: %w", err) }
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
 	resp, err := l.tokocryptoDo(ctx, req)
-	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth request: %w", err)
-	}
+	if err != nil { return domain.OrderBook{}, fmt.Errorf("tokocrypto depth request: %w", err) }
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		if classifyHTTPError(resp.StatusCode) {
-			return domain.OrderBook{}, fmt.Errorf("%w: tokocrypto depth status %d", ErrExchangeUnavailable, resp.StatusCode)
-		}
+		if classifyHTTPError(resp.StatusCode) { return domain.OrderBook{}, fmt.Errorf("%w: tokocrypto depth status %d", ErrExchangeUnavailable, resp.StatusCode) }
 		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth status: %d", resp.StatusCode)
 	}
-
 	var raw struct {
 		Code int `json:"code"`
-		Data struct {
-			Bids [][]string `json:"bids"`
-			Asks [][]string `json:"asks"`
-		} `json:"data"`
+		Msg string `json:"msg"`
+		Timestamp int64 `json:"timestamp"`
+		EventTime int64 `json:"E"`
+		TradeTime int64 `json:"T"`
+		Data struct { Bids [][]string `json:"bids"`; Asks [][]string `json:"asks"` } `json:"data"`
+		Bids [][]string `json:"bids"`
+		Asks [][]string `json:"asks"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return domain.OrderBook{}, fmt.Errorf("decode tokocrypto depth: %w", err)
-	}
-
-	bids := parseStringLevels(raw.Data.Bids, 1.0)
-	asks := parseStringLevels(raw.Data.Asks, 1.0)
-
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil { return domain.OrderBook{}, fmt.Errorf("decode tokocrypto depth: %w", err) }
+	if raw.Code != 0 { return domain.OrderBook{}, fmt.Errorf("tokocrypto depth API error: code=%d msg=%s", raw.Code, raw.Msg) }
+	bidsRaw, asksRaw := raw.Data.Bids, raw.Data.Asks
+	if len(bidsRaw) == 0 && len(raw.Bids) > 0 { bidsRaw, asksRaw = raw.Bids, raw.Asks }
+	bids, asks := parseStringLevels(bidsRaw, 1), parseStringLevels(asksRaw, 1)
+	if len(bids) == 0 || len(asks) == 0 { return domain.OrderBook{}, fmt.Errorf("tokocrypto depth returned an empty or invalid side for %s", symbol) }
 	receivedAt := time.Now().UTC()
-	return domain.OrderBook{
-		Exchange:   "tokocrypto",
-		Symbol:     symbol,
-		Bids:       bids,
-		Asks:       asks,
-		Timestamp:  receivedAt,
-		ReceivedAt: receivedAt,
-		Source:     "receive_time",
-	}, nil
+	var exchangeMS int64
+	for _, candidate := range []int64{raw.Timestamp, raw.EventTime, raw.TradeTime} { if candidate > 0 { exchangeMS = candidate; break } }
+	ts, source := receivedAt, "receive_time"
+	if exchangeMS > 0 { ts, source = time.UnixMilli(exchangeMS).UTC(), "exchange_timestamp" }
+	return domain.OrderBook{Exchange:"tokocrypto", Symbol:symbol, Bids:bids, Asks:asks, Timestamp:ts, ReceivedAt:receivedAt, Source:source}, nil
 }
 
 func (l *LiveAdapter) fetchIndodaxSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
@@ -311,8 +311,8 @@ func (l *LiveAdapter) fetchOKXOrderBook(ctx context.Context, symbol string) (dom
 		ctVal, ok = l.contractSizes[rawSymbol]
 	}
 	l.mu.RUnlock()
-	if !ok || ctVal <= 0 {
-		ctVal = 1.0
+	if !ok || ctVal <= 0 || math.IsNaN(ctVal) || math.IsInf(ctVal, 0) {
+		return domain.OrderBook{}, fmt.Errorf("okx contract size metadata missing for %s; refusing guessed quantity normalization", symbol)
 	}
 
 	bookData := okxResp.Data[0]
@@ -380,8 +380,8 @@ func (l *LiveAdapter) fetchMEXCOrderBook(ctx context.Context, symbol string) (do
 		ctVal, ok = l.contractSizes[rawSymbol]
 	}
 	l.mu.RUnlock()
-	if !ok || ctVal <= 0 {
-		ctVal = 1.0
+	if !ok || ctVal <= 0 || math.IsNaN(ctVal) || math.IsInf(ctVal, 0) {
+		return domain.OrderBook{}, fmt.Errorf("mexc contract size metadata missing for %s; refusing guessed quantity normalization", symbol)
 	}
 
 	bids := parseLevels(mexcResp.Data.Bids, ctVal)

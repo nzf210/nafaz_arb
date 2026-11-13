@@ -134,41 +134,14 @@ func (l *LiveAdapter) fetchIndodaxUSDTIDRRate(ctx context.Context) (float64, err
 }
 
 func (l *LiveAdapter) fetchTokocryptoUSDTIDRRate(ctx context.Context) (float64, error) {
-	if strings.TrimSpace(l.tokocryptoBaseURL) == "" {
-		return 0, fmt.Errorf("tokocrypto base URL not configured")
-	}
-	endpoint := l.tokocryptoBaseURL + "/open/v1/market/depth?symbol=USDT_IDR&limit=5"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return 0, fmt.Errorf("tokocrypto usdtidr depth req: %w", err)
-	}
-	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
-	resp, err := l.tokocryptoDo(ctx, req)
-	if err != nil {
-		return 0, fmt.Errorf("tokocrypto usdtidr depth request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("tokocrypto usdtidr depth status: %d", resp.StatusCode)
-	}
-
-	var raw struct {
-		Code int `json:"code"`
-		Data struct {
-			Bids [][]string `json:"bids"`
-			Asks [][]string `json:"asks"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return 0, fmt.Errorf("decode tokocrypto usdtidr depth: %w", err)
-	}
-	bids := parseStringLevels(raw.Data.Bids, 1.0)
-	asks := parseStringLevels(raw.Data.Asks, 1.0)
-	if len(bids) == 0 || len(asks) == 0 || bids[0].Price <= 0 || asks[0].Price <= bids[0].Price {
+	book, err := l.fetchTokocryptoSpotOrderBook(ctx, "toko:USDT_IDR")
+	if err != nil { return 0, fmt.Errorf("tokocrypto usdtidr order book: %w", err) }
+	if len(book.Bids) == 0 || len(book.Asks) == 0 || book.Bids[0].Price <= 0 || book.Asks[0].Price <= book.Bids[0].Price {
 		return 0, fmt.Errorf("tokocrypto usdtidr book invalid or one-sided")
 	}
-	return (bids[0].Price + asks[0].Price) / 2, nil
+	rate := (book.Bids[0].Price + book.Asks[0].Price) / 2
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate <= 0 { return 0, fmt.Errorf("tokocrypto usdtidr midpoint is invalid") }
+	return rate, nil
 }
 
 // SpotMarkets discovers active spot pairs on Tokocrypto, Indodax, and MEXC Spot.
@@ -251,6 +224,7 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 		Code int `json:"code"`
 		Data struct {
 			List []struct {
+				Type              int    `json:"type"`
 				Symbol            string `json:"symbol"`
 				BaseAsset         string `json:"baseAsset"`
 				QuoteAsset        string `json:"quoteAsset"`
@@ -267,11 +241,11 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 		return l.getFallbackTokocryptoSpot(fmt.Errorf("decode tokocrypto symbols: %w", err))
 	}
 
+	if raw.Code != 0 { return l.getFallbackTokocryptoSpot(fmt.Errorf("tokocrypto symbols API error code: %d", raw.Code)) }
 	var markets []domain.Market
 	for _, s := range raw.Data.List {
-		if s.SpotTradingEnable != 1 || s.Symbol == "" || s.BaseAsset == "" || s.QuoteAsset == "" {
-			continue
-		}
+		if s.SpotTradingEnable != 1 || s.Symbol == "" || s.BaseAsset == "" || s.QuoteAsset == "" { continue }
+		if s.Type != 1 && s.Type != 3 { log.Printf("tokocrypto: skipping symbol %s with unsupported symbol type %d", s.Symbol, s.Type); continue }
 		var amountSpec *domain.AmountSpec
 		for _, filter := range s.Filters {
 			if strings.EqualFold(filter.FilterType, "LOT_SIZE") ||
@@ -297,6 +271,7 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 		market := domain.Market{
 			Exchange:   "tokocrypto",
 			Symbol:     "toko:" + s.Symbol,
+			SymbolType: s.Type,
 			BaseAsset:  strings.ToUpper(s.BaseAsset),
 			QuoteAsset: strings.ToUpper(s.QuoteAsset),
 			MarketType: "SPOT",
@@ -322,9 +297,12 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 
 func (l *LiveAdapter) getFallbackTokocryptoSpot(err error) ([]domain.Market, error) {
 	l.mu.RLock()
-	defer l.mu.RUnlock()
-	if len(l.cachedTokocryptoSpot) > 0 {
-		return l.cachedTokocryptoSpot, nil
+	cached, fetchedAt := l.cachedTokocryptoSpot, l.lastTokocryptoFetch
+	l.mu.RUnlock()
+	age := time.Since(fetchedAt)
+	if len(cached) > 0 && !fetchedAt.IsZero() && age >= 0 && age <= marketCacheMaxStaleAge {
+		log.Printf("tokocrypto: using market metadata fallback age=%s", age.Round(time.Minute))
+		return cached, nil
 	}
 	return nil, err
 }
@@ -423,10 +401,12 @@ func (l *LiveAdapter) fetchIndodaxSpotMarketsWithStatus(ctx context.Context) ([]
 func (l *LiveAdapter) getFallbackIndodaxSpot(err error) ([]domain.Market, error) {
 	l.mu.RLock()
 	cached := l.cachedIndodaxSpot
+	fetchedAt := l.lastIndodaxSpotFetch
 	cacheDir := l.marketCacheDir
 	l.mu.RUnlock()
 
-	if len(cached) > 0 {
+	age := time.Since(fetchedAt)
+	if len(cached) > 0 && !fetchedAt.IsZero() && age >= 0 && age <= marketCacheMaxStaleAge {
 		return cached, nil
 	}
 
@@ -465,6 +445,10 @@ func (l *LiveAdapter) saveIndodaxSpotCache(dir string, markets []domain.Market) 
 
 func (l *LiveAdapter) loadIndodaxSpotCache(dir string) []domain.Market {
 	path := filepath.Join(dir, "indodax_spot_markets.json")
+	info, err := os.Stat(path)
+	if err != nil { return nil }
+	age := time.Since(info.ModTime())
+	if age < 0 || age > marketCacheMaxStaleAge { return nil }
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil

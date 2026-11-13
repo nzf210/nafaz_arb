@@ -16,12 +16,15 @@ const (
 	MEXC_SPOT        = "mexc_spot:"
 	USER_AGENT       = "User-Agent"
 	USER_AGENT_VALUE = "Mozilla/5.0 (compatible; NafazScanner/1.0)"
+	marketCacheMaxStaleAge = 24 * time.Hour
 )
 
 type LiveAdapter struct {
 	client            *http.Client
 	indodaxBaseURL    string
 	tokocryptoBaseURL string
+	tokocryptoMainMarketURL string
+	tokocryptoNextMarketURL string
 	okxBaseURL        string
 	mexcBaseURL       string
 	mexcSpotBaseURL   string
@@ -125,6 +128,8 @@ func NewLiveAdapter() *LiveAdapter {
 		client:            &http.Client{Transport: tr, Timeout: 15 * time.Second},
 		indodaxBaseURL:    "https://indodax.com",
 		tokocryptoBaseURL: "https://www.tokocrypto.com",
+		tokocryptoMainMarketURL: "https://www.tokocrypto.site",
+		tokocryptoNextMarketURL: "https://cloudme-toko.2meta.app",
 		okxBaseURL:        "https://www.okx.com",
 		mexcBaseURL:       "https://contract.mexc.com",
 		mexcSpotBaseURL:   "https://api.mexc.com",
@@ -169,6 +174,8 @@ func (l *LiveAdapter) SetBaseURLs(urls ...string) {
 	if len(urls) > 4 && urls[4] != "" {
 		l.tokocryptoBaseURL = urls[4]
 	}
+	if len(urls) > 5 && urls[5] != "" { l.tokocryptoMainMarketURL = urls[5] }
+	if len(urls) > 6 && urls[6] != "" { l.tokocryptoNextMarketURL = urls[6] }
 }
 
 // SetHealthPolicy configures exchange maintenance detection. A zero window or

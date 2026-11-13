@@ -18,6 +18,8 @@ type Market struct {
 	QuoteAsset   string  `json:"quote_asset"`
 	MarketType   string  `json:"market_type"`
 	Active       bool    `json:"active"`
+	// SymbolType is Tokocrypto market family (1=MAIN, 3=NextMe); zero means unknown.
+	SymbolType   int     `json:"symbol_type,omitempty"`
 	ContractSize float64 `json:"contract_size,omitempty"`
 	TickSize     float64 `json:"tick_size,omitempty"`
 	LotSize      float64 `json:"lot_size,omitempty"` // Minimum valid quantity increment.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -47,6 +48,7 @@ func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (d
 			FundingTime     string `json:"fundingTime"`
 			PrevFundingTime string `json:"prevFundingTime"`
 			Ts              string `json:"ts"`
+			NextFundingTime string `json:"nextFundingTime"`
 		} `json:"data"`
 	}
 
@@ -58,27 +60,24 @@ func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (d
 	}
 
 	item := okxResp.Data[0]
-	rate, _ := strconv.ParseFloat(item.FundingRate, 64)
-
+	rate, err := strconv.ParseFloat(item.FundingRate, 64)
+	if err != nil || math.IsNaN(rate) || math.IsInf(rate, 0) { return domain.FundingRate{}, fmt.Errorf("invalid OKX funding rate %q", item.FundingRate) }
 	intervalHours := 8
-	ft, _ := strconv.ParseInt(item.FundingTime, 10, 64)
-	pft, _ := strconv.ParseInt(item.PrevFundingTime, 10, 64)
-	if ft > 0 && pft > 0 && ft > pft {
-		diffHours := int((ft - pft) / (1000 * 3600))
+	ft, ftErr := strconv.ParseInt(item.FundingTime, 10, 64)
+	if ftErr != nil || ft <= 0 { return domain.FundingRate{}, fmt.Errorf("invalid OKX fundingTime %q", item.FundingTime) }
+	nextMS, nextErr := strconv.ParseInt(item.NextFundingTime, 10, 64)
+	if nextErr != nil || nextMS <= ft { return domain.FundingRate{}, fmt.Errorf("invalid OKX nextFundingTime %q", item.NextFundingTime) }
+	if nextMS > ft {
+		diffHours := int((nextMS - ft) / (1000 * 3600))
 		if diffHours > 0 {
 			intervalHours = diffHours
 		}
 	}
 
-	ts := time.Now().UTC()
-	if ms, err := strconv.ParseInt(item.Ts, 10, 64); err == nil && ms > 0 {
-		ts = time.UnixMilli(ms).UTC()
-	}
-
-	var nextFunding time.Time
-	if ft > 0 {
-		nextFunding = time.UnixMilli(ft).UTC()
-	}
+	tsMS, tsErr := strconv.ParseInt(item.Ts, 10, 64)
+	if tsErr != nil || tsMS <= 0 { return domain.FundingRate{}, fmt.Errorf("invalid OKX funding response timestamp %q", item.Ts) }
+	ts := time.UnixMilli(tsMS).UTC()
+	nextFunding := time.UnixMilli(nextMS).UTC()
 
 	return domain.FundingRate{
 		Rate:            rate,
@@ -114,35 +113,25 @@ func (l *LiveAdapter) fetchMEXCFundingRate(ctx context.Context, symbol string) (
 		Success bool `json:"success"`
 		Code    int  `json:"code"`
 		Data    struct {
-			FundingRate  float64 `json:"fundingRate"`
-			CollectCycle int     `json:"collectCycle"`
-			Timestamp    int64   `json:"timestamp"`
+			FundingRate  *float64 `json:"fundingRate"`
+			CollectCycle int      `json:"collectCycle"`
+			NextSettleTime int64  `json:"nextSettleTime"`
+			Timestamp    int64    `json:"timestamp"`
 		} `json:"data"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&mexcResp); err != nil {
 		return domain.FundingRate{}, fmt.Errorf("decode mexc funding: %w", err)
 	}
-	if !mexcResp.Success {
-		return domain.FundingRate{}, fmt.Errorf("mexc funding error code: %d", mexcResp.Code)
-	}
-
+	if !mexcResp.Success { return domain.FundingRate{}, fmt.Errorf("mexc funding error code: %d", mexcResp.Code) }
+	if mexcResp.Data.FundingRate == nil || math.IsNaN(*mexcResp.Data.FundingRate) || math.IsInf(*mexcResp.Data.FundingRate, 0) { return domain.FundingRate{}, fmt.Errorf("mexc funding response has invalid or missing fundingRate") }
+	if mexcResp.Data.Timestamp <= 0 || mexcResp.Data.NextSettleTime <= 0 { return domain.FundingRate{}, fmt.Errorf("mexc funding response missing authoritative timestamp or nextSettleTime") }
 	interval := mexcResp.Data.CollectCycle
-	if interval <= 0 {
-		interval = 8
-	}
-
-	ts := time.Now().UTC()
-	if mexcResp.Data.Timestamp > 0 {
-		ts = time.UnixMilli(mexcResp.Data.Timestamp).UTC()
-	}
-
-	return domain.FundingRate{
-		Rate:            mexcResp.Data.FundingRate,
-		IntervalHours:   interval,
-		Timestamp:       ts,
-		NextFundingTime: nextSettlementTime(ts, interval),
-	}, nil
+	if interval <= 0 { return domain.FundingRate{}, fmt.Errorf("mexc funding response has invalid collectCycle %d", interval) }
+	ts := time.UnixMilli(mexcResp.Data.Timestamp).UTC()
+	next := time.UnixMilli(mexcResp.Data.NextSettleTime).UTC()
+	if !next.After(ts) { return domain.FundingRate{}, fmt.Errorf("mexc nextSettleTime is not after response timestamp") }
+	return domain.FundingRate{Rate:*mexcResp.Data.FundingRate, IntervalHours:interval, Timestamp:ts, NextFundingTime:next}, nil
 }
 
 func nextSettlementTime(t time.Time, intervalHours int) time.Time {
@@ -159,9 +148,11 @@ func nextSettlementTime(t time.Time, intervalHours int) time.Time {
 	return time.Date(year, month, day, nextSlot, 0, 0, 0, time.UTC)
 }
 
-// OpenExposures returns public scanner open exposure state. Read-only by design.
+// OpenExposures cannot be answered from public market-data endpoints. Returning an
+// empty slice would falsely certify that the account has no positions or orders,
+// so require an authenticated account adapter and fail closed instead.
 func (l *LiveAdapter) OpenExposures(ctx context.Context) ([]domain.OpenExposure, error) {
-	return []domain.OpenExposure{}, nil
+	return nil, fmt.Errorf("live open-exposure discovery is unavailable: public market-data adapter has no authenticated account source")
 }
 
 // parseLevels decodes Indodax's depth payload. Levels arrive as
@@ -174,7 +165,7 @@ func parseLevels(raw [][]any, multiplier float64) []domain.PriceLevel {
 		}
 		p := toFloat(item[0])
 		q := toFloat(item[1]) * multiplier
-		if p > 0 && q > 0 {
+		if p > 0 && q > 0 && !math.IsNaN(p) && !math.IsInf(p, 0) && !math.IsNaN(q) && !math.IsInf(q, 0) {
 			levels = append(levels, domain.PriceLevel{Price: p, Quantity: q})
 		}
 	}
@@ -190,7 +181,7 @@ func parseStringLevels(raw [][]string, multiplier float64) []domain.PriceLevel {
 		p, _ := strconv.ParseFloat(item[0], 64)
 		q, _ := strconv.ParseFloat(item[1], 64)
 		q = q * multiplier
-		if p > 0 && q > 0 {
+		if p > 0 && q > 0 && !math.IsNaN(p) && !math.IsInf(p, 0) && !math.IsNaN(q) && !math.IsInf(q, 0) {
 			levels = append(levels, domain.PriceLevel{Price: p, Quantity: q})
 		}
 	}

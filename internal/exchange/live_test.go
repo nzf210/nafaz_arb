@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
@@ -32,8 +33,8 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 				"code": 0,
 				"data": {
 					"list": [
-						{"symbol":"BTC_USDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.00001","minQty":"0.0001"}]},
-						{"symbol":"ETH_USDT","baseAsset":"ETH","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.01"}]}
+						{"type":1,"symbol":"BTC_USDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.00001","minQty":"0.0001"}]},
+						{"type":1,"symbol":"ETH_USDT","baseAsset":"ETH","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.01"}]}
 					]
 				}
 			}`))
@@ -57,7 +58,7 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	defer mexcSpotServer.Close()
 
 	adapter := NewLiveAdapter()
-	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL)
+	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL, tokoServer.URL, tokoServer.URL)
 
 	markets, err := adapter.SpotMarkets(context.Background())
 	if err != nil {
@@ -142,6 +143,7 @@ func newMockOKXPerpServer() *httptest.Server {
 					{
 						"fundingRate":"0.0001",
 						"fundingTime":"1690028800000",
+						"nextFundingTime":"1690057600000",
 						"prevFundingTime":"1690000000000",
 						"ts":"1690000000000"
 					}
@@ -192,6 +194,7 @@ func newMockMEXCPerpServer() *httptest.Server {
 					"symbol": "BTC_USDT",
 					"fundingRate": 0.00015,
 					"collectCycle": 8,
+					"nextSettleTime": 1690028800000,
 					"timestamp": 1690000000000
 				}
 			}`))
@@ -282,7 +285,12 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 	defer indodaxServer.Close()
 
 	tokoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/open/v1/market/depth" {
+		if r.URL.Path == "/open/v1/common/symbols" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"code":0,"data":{"list":[{"type":1,"symbol":"BTC_USDT","baseAsset":"BTC","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.00001","minQty":"0.0001"}]}]}}`))
+			return
+		}
+		if r.URL.Path == "/api/v3/depth" && r.URL.Query().Get("symbol") == "BTCUSDT" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{
 				"code": 0,
@@ -311,7 +319,7 @@ func TestLiveAdapterSpotDepth(t *testing.T) {
 	defer mexcSpotServer.Close()
 
 	adapter := NewLiveAdapter()
-	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL)
+	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, tokoServer.URL, tokoServer.URL, tokoServer.URL)
 
 	// Tokocrypto spot depth
 	tbook, err := adapter.SpotOrderBook(context.Background(), "toko:BTC_USDT")
@@ -354,5 +362,91 @@ func TestMatchMarketsMultiplePerpExchanges(t *testing.T) {
 	pairs := MatchMarkets(spot, perp, []string{"USDT"})
 	if len(pairs) != 4 {
 		t.Fatalf("expected 4 matched pairs (2 spot * 2 perp), got %d", len(pairs))
+	}
+}
+
+// Tokocrypto symbol type is authoritative: MAIN and NextMe use different
+// market-data hosts and paths. Unknown/legacy types fail closed.
+func TestTokocryptoSymbolTypeThreeUsesNextMeDepth(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/open/v1/common/symbols":
+			w.Write([]byte(`{"code":0,"data":{"list":[{"type":3,"symbol":"SOL_IDR","baseAsset":"SOL","quoteAsset":"IDR","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"0.001","minQty":"0.001"}]}]}}`))
+		case "/api/v1/depth":
+			if r.URL.Query().Get("symbol") != "SOLIDR" { t.Errorf("unexpected NextMe symbol: %s", r.URL.Query().Get("symbol")) }
+			w.Write([]byte(`{"lastUpdateId":12,"E":1762758825812,"T":1762758825807,"symbol":"SOLIDR","bids":[["100","2"]],"asks":[["101","3"]]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", "", "", "", server.URL, server.URL, server.URL)
+	markets, err := adapter.fetchTokocryptoSpotMarkets(context.Background())
+	if err != nil { t.Fatalf("Tokocrypto spot metadata: %v", err) }
+	if len(markets) != 1 || markets[0].SymbolType != 3 { t.Fatalf("expected symbol type 3 metadata, got %+v", markets) }
+	book, err := adapter.SpotOrderBook(context.Background(), "toko:SOL_IDR")
+	if err != nil { t.Fatalf("NextMe order book: %v", err) }
+	if book.Source != "exchange_timestamp" || book.Timestamp.UnixMilli() != 1762758825812 {
+		t.Fatalf("expected exchange event timestamp, got %+v", book)
+	}
+}
+
+func TestTokocryptoUnknownSymbolTypeFailsClosed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":0,"data":{"list":[{"type":2,"symbol":"ABC_USDT","baseAsset":"ABC","quoteAsset":"USDT","spotTradingEnable":1,"filters":[{"filterType":"LOT_SIZE","stepSize":"1","minQty":"1"}]}]}}`))
+	}))
+	defer server.Close()
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", "", "", "", server.URL, server.URL, server.URL)
+	if _, err := adapter.SpotOrderBook(context.Background(), "toko:ABC_USDT"); err == nil {
+		t.Fatal("expected unknown Tokocrypto symbol type to fail closed")
+	}
+}
+
+func TestPerpetualOrderBooksFailClosedWithoutContractMetadata(t *testing.T) {
+	okxServer := newMockOKXPerpServer()
+	defer okxServer.Close()
+	mexcServer := newMockMEXCPerpServer()
+	defer mexcServer.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", okxServer.URL, mexcServer.URL)
+	if _, err := adapter.PerpetualOrderBook(context.Background(), "BTC-USDT-SWAP"); err == nil {
+		t.Fatal("expected OKX depth to fail without authoritative contract size metadata")
+	}
+	if _, err := adapter.PerpetualOrderBook(context.Background(), "mexc:BTC_USDT"); err == nil {
+		t.Fatal("expected MEXC depth to fail without authoritative contract size metadata")
+	}
+}
+
+func TestParseStringLevelsRejectsNonFiniteValues(t *testing.T) {
+	levels := parseStringLevels([][]string{{"1", "2"}, {"Inf", "1"}, {"2", "NaN"}, {"3", "Inf"}}, 1)
+	if len(levels) != 1 || levels[0].Price != 1 || levels[0].Quantity != 2 {
+		t.Fatalf("expected only finite level to survive, got %+v", levels)
+	}
+}
+
+func TestLiveOpenExposuresFailsClosedWithoutAccountSource(t *testing.T) {
+	adapter := NewLiveAdapter()
+	if exposures, err := adapter.OpenExposures(context.Background()); err == nil || exposures != nil {
+		t.Fatalf("expected unknown account exposure state, got exposures=%+v err=%v", exposures, err)
+	}
+}
+
+func TestMarketMetadataFallbackRejectsExpiredCache(t *testing.T) {
+	adapter := NewLiveAdapter()
+	adapter.cachedTokocryptoSpot = []domain.Market{{Exchange:"tokocrypto", Symbol:"toko:OLD_USDT", Active:true, SymbolType:1}}
+	adapter.lastTokocryptoFetch = time.Now().Add(-25 * time.Hour)
+	if _, err := adapter.getFallbackTokocryptoSpot(context.Canceled); err == nil {
+		t.Fatal("expected expired Tokocrypto metadata cache to be rejected")
+	}
+	adapter.cachedOKXPerp = []domain.Market{{Exchange:"okx", Symbol:"OLD-USDT-SWAP", Active:true}}
+	adapter.lastOKXPerpFetch = time.Now().Add(-25 * time.Hour)
+	if _, err := adapter.getFallbackOKXPerp(context.Canceled); err == nil {
+		t.Fatal("expected expired OKX metadata cache to be rejected")
 	}
 }
