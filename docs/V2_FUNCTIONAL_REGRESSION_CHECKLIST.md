@@ -56,7 +56,10 @@
 - [x] Add PostgreSQL executor membership/lease table and per-instance version/hash acknowledgement API.
 - [x] Implement a lease-scoped convergence report and fail-closed `require_converged` API.
 - [ ] Run multi-process PostgreSQL integration tests for heartbeat, restart fencing, stale lease expiry and acknowledgement races.
-- [ ] Wire convergence gate into every LIVE entry admission and START readiness path; until then this is not an enforced runtime barrier.
+- [x] Implement PostgreSQL entry gate checking durable RUNNING state, trading_enabled, operator config version, active config version/hash and all live executor acknowledgements.
+- [x] Add fail-closed engine hook: LIVE entry candidates and final pre-submit path are denied when no V2 admission gate is injected; MOCK path remains unchanged.
+- [ ] Wire PostgreSQL pool, verified snapshot loader, consumer heartbeat/reconciliation and gate into executor startup after V2-to-runtime config mapping is approved.
+- [ ] Add a transactional cross-process STOP fencing barrier; current final pre-submit read is not an atomic STOP-vs-submit serialization primitive.
 - [ ] Verify old cache keys and snapshots expire only after all consumers have advanced.
 
 ## 4. Runtime configuration cutover
@@ -67,7 +70,7 @@
 - [ ] Compare legacy and V2 effective configuration without exposing secret values.
 - [ ] Prove risk limits and venue settings are unchanged by migration.
 - [ ] Prove missing V2 config never silently falls back to legacy config in LIVE.
-- [ ] Wire verified PostgreSQL load into startup only after migration/cutover tests pass.
+- [ ] Wire verified PostgreSQL load into startup only after migration/cutover tests pass; current engine explicitly denies LIVE entries without the injected V2 gate.
 - [ ] Verify graceful shutdown closes DB/Redis pools and releases leases.
 
 ## 5. Telegram operator control plane
@@ -175,7 +178,7 @@
 - [ ] Unauthorized Telegram user, authorized user in wrong chat, empty allowlist: all denied.
 - [ ] Duplicate Telegram update and duplicate command ID: exactly one side effect.
 - [ ] START without readiness or expired/wrong-version confirmation: denied.
-- [ ] STOP during entry preparation and immediately before submit: no new order admitted after barrier.
+- [ ] STOP during entry preparation and immediately before submit: no new order admitted after barrier; the final pre-submit DB check exists, but transactional STOP fencing is still pending.
 - [ ] STOP while position/open orders exist: policy honored; no force-close.
 - [ ] Venue API timeout/429/5xx/malformed response: no unsafe fallback.
 - [ ] Partial fill and ambiguous acknowledgement: reconcile, never blind resubmit.
@@ -211,4 +214,11 @@
 | 2026-11-13 | `850db4e92f57bb26cb78293f3ab7bbc8a423f0fd` | `43433436237` | Outbox publisher + regression tests | Python, Go, Docker images and PostgreSQL migration/idempotency/RLS jobs all succeeded | Pass | Pending |
 | 2026-11-13 | `81e9196b54838ab105ac1e7166bc042f9459659d` | `43434420893` (earlier head only) | Config invalidation + consumer leases + convergence API | Added PostgreSQL consumer registry, process restart resets to STARTING, DB refetch/Redis mirror/atomic swap/ack path, periodic reconciliation, lease-scoped convergence API and SQL smoke assertions. Run `43434420893` was triggered at earlier head `058ee031`; latest SHA has no confirmed CI run yet | Pending | Pending |
 
-**Current release decision:** NOT LIVE-READY. The invalidation consumer and convergence API are implemented as standalone components but are not wired into executor startup, START readiness or the final order-admission path. The V2 database schema and snapshot-reader foundation do not yet constitute a deployed, verified trading control plane.
+**Current release decision:** NOT LIVE-READY. The PostgreSQL admission gate and fail-closed engine hooks are implemented, including a final pre-submit recheck. The gate is not yet injected by executor startup because the V2-to-legacy runtime config mapping and cutover are not complete; therefore LIVE entry is intentionally denied. Transactional STOP fencing and deployed multi-process proof remain outstanding.
+
+
+## 14. Runtime entry admission implementation notes
+- The PostgreSQL admission gate requires operator state RUNNING/trading_enabled=true, the local snapshot to match the active DB version and hash, signals_enabled=true, and every live executor lease to acknowledge the same version/hash.
+- The engine checks the gate before entry preparation and again immediately before the spot order API call. Missing gate or any check error denies LIVE entry; MOCK behavior is unchanged.
+- The current V2 snapshot validator still requires signals_enabled=false pending sole-consumer proof, so the admission gate correctly remains closed under the present contract.
+- This is not yet a transactional fencing lock shared with STOP. Do not interpret the final DB read as proof that a concurrent STOP can never race an external submit.
