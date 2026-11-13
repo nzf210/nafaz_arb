@@ -24,18 +24,33 @@ class RiskFundingMixin:
                 pair_info, usdt_idr_rate, pair_tag
             )
         try:
-            return await self._get_balance_snapshot(
+            balances = await self._get_balance_snapshot(
                 pair_tag=pair_tag,
                 pair_info=pair_info,
                 usdt_idr_rate=usdt_idr_rate,
             )
+            if not isinstance(balances, dict):
+                raise ValueError("live balance snapshot is missing")
+            for field in ("spot_available", "futures_available"):
+                value = float(balances.get(field))
+                if not math.isfinite(value) or value < 0:
+                    raise ValueError(f"live balance snapshot has invalid {field}")
+            return balances
         except Exception as exc:
-            logger.warning(
+            logger.error(
                 "[State 1 Balance Check] balance probe failed for %s; "
-                "sizing uncapped and deferred to funding preflight: %s",
+                "blocking entry instead of sizing without account state: %s",
                 pair_tag, exc,
             )
-            return None
+            await self._halt_balance_feed_unavailable(
+                pair_tag,
+                str(getattr(pair_info, "local_exchange", "") or ""),
+                str(getattr(pair_info, "global_exchange", "") or ""),
+                exc,
+            )
+            # A zero snapshot makes the sizing path reject this entry even if
+            # a caller accidentally ignores the venue halt flag.
+            return {"spot_available": 0.0, "futures_available": 0.0}
 
     async def _reject_insufficient_entry_balance(
         self, pair_tag: str, spot_available: float,
@@ -168,33 +183,28 @@ class RiskFundingMixin:
                     pair_info=pair_info,
                     usdt_idr_rate=usdt_idr_rate,
                 )
-        except Exception:
-            # A balance probe failure must not silently pass the gate; surface it
-            # and let the caller decide, matching the pre-existing fail-open on
-            # unsupported clients while logging loudly.
-            logger.exception(
-                "[State 1 Funding Preflight] balance probe failed for %s",
+            if not isinstance(balances, dict):
+                raise ValueError("live balance snapshot is missing")
+            avail_spot = float(balances.get("spot_available"))
+            avail_fut = float(balances.get("futures_available"))
+            if not (
+                math.isfinite(avail_spot) and avail_spot >= 0
+                and math.isfinite(avail_fut) and avail_fut >= 0
+            ):
+                raise ValueError("live balance snapshot contains invalid available balances")
+        except Exception as exc:
+            logger.error(
+                "[State 1 Funding Preflight] balance state unknown for %s; rejecting entry",
                 pair_tag,
+                exc_info=True,
             )
-            return True
-
-        if not isinstance(balances, dict):
-            return True
-
-        try:
-            avail_spot = float(balances.get("spot_available", 0.0) or 0.0)
-            avail_fut = float(balances.get("futures_available", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            logger.error(
-                f"[State 1 Funding Preflight] unreadable balance payload for {pair_tag}"
+            await self._halt_balance_feed_unavailable(
+                pair_tag,
+                str(getattr(pair_info, "local_exchange", "") or ""),
+                str(getattr(pair_info, "global_exchange", "") or ""),
+                exc,
             )
-            return True
-
-        if not (math.isfinite(avail_spot) and math.isfinite(avail_fut)):
-            logger.error(
-                f"[State 1 Funding Preflight] non-finite balance for {pair_tag}"
-            )
-            return True
+            return False
 
         required = float(required_usdt)
         missing = []
