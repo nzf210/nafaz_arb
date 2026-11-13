@@ -1453,3 +1453,7 @@ Risk-reducing rollback and force-close spot market sells are not subject to the 
 ### Spot exit limit-sell ambiguity
 
 The dynamic spot exit SELL remains outside the entry STOP fence because it reduces spot exposure. Its submit failure path now performs exact-client-ID lookup. A match is adopted and registered; a not-found or failed lookup is treated as inconclusive (venue history may be eventually consistent), so the pair is moved to RECONCILIATION_REQUIRED and no new repricing order is sent. This avoids duplicate SELL orders while preserving the separate risk-reducing policy. Futures reduceOnly close already enters RECONCILIATION_REQUIRED after any unverified close result and does not automatically retry.
+
+### Remaining force-close reduceOnly caveat
+
+The force-close futures BUY is explicitly reduceOnly and checks authoritative futures position state before spot liquidation. A retry first checks whether the short is already flat. There is still a race if a previous close order was accepted but the venue position endpoint is stale/non-zero: a subsequent force-close attempt may submit another reduceOnly close with a new client ID without first resolving the prior close client ID. This is not treated as an entry STOP bypass because reduceOnly is risk-reducing, but remains OPEN for venue pending-order semantics and close-order idempotency testing. The regular exit lifecycle instead moves to RECONCILIATION_REQUIRED after an unverified futures close and does not automatically retry.
