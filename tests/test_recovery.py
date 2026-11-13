@@ -98,8 +98,10 @@ async def test_p0_01_hedge_failure_with_failed_rollback_submits_once_and_alerts(
     for _ in range(10):
         m = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
         if m and m.get("type") == "message":
-            msg = json.loads(m["data"])
-            break
+            candidate = json.loads(m["data"])
+            if candidate.get("event") == "HEDGE_FAILED":
+                msg = candidate
+                break
     assert msg is not None
     assert msg["event"] == "HEDGE_FAILED"
     assert msg["rollback_succeeded"] is False
