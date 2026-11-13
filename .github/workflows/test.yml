@@ -91,6 +91,9 @@ jobs:
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
             -f supabase/tests/schema_smoke.sql
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Install Python integration-test dependencies
         run: |
           python -m pip install --upgrade pip
