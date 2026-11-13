@@ -137,6 +137,7 @@ class ArbitrageEngine(
         # Start the writer before recovery so positions restored from Redis are
         # re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
+        self.supabase.runtime_configuration(self.config)
         await self._recover_active_positions()
         await self._recover_pending_entry_orders()
         if not getattr(self.config, "mock_mode", False):
