@@ -302,7 +302,7 @@ async def test_pending_partial_fill_progress_is_persisted_for_restart(engine, fa
 async def test_stale_unfilled_maker_quote_is_cancelled_for_fresh_scanner_reentry(
     engine, fake_redis, mock_client
 ):
-    """Refresh only cancels a stale quote; it never submits a replacement itself."""
+    """Refresh cancels safely and only requeues when a fresh scanner payload exists."""
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
     engine.config.maker_refresh_after_seconds = 45
@@ -860,3 +860,35 @@ async def test_prepare_entry_sizing_fetches_balance_once(engine, fake_redis, moc
     )
     assert sizing is not None
     assert balance_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_maker_refresh_requeues_only_fresh_scanner_signal(engine, fake_redis):
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}",
+        json.dumps(_fresh_signal_payload(now_ms)),
+    )
+
+    requeued = await engine._requeue_fresh_signal_after_maker_refresh(pair_tag)
+
+    assert requeued is True
+    assert await fake_redis.zscore("arb:signal_priority", pair_tag) == pytest.approx(0.0)
+    assert engine._signal_queue_event.is_set()
+
+
+@pytest.mark.asyncio
+async def test_maker_refresh_does_not_requeue_when_position_is_active(engine, fake_redis):
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}",
+        json.dumps(_fresh_signal_payload(now_ms)),
+    )
+    engine.active_positions[pair_tag] = object()
+
+    requeued = await engine._requeue_fresh_signal_after_maker_refresh(pair_tag)
+
+    assert requeued is False
+    assert await fake_redis.zscore("arb:signal_priority", pair_tag) is None
