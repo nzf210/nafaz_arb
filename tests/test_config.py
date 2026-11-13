@@ -176,7 +176,27 @@ def test_live_mode_accepts_complete_indodax_okx_credentials():
     cfg.global_credentials = ExchangeCredentials(
         api_key="global-key", api_secret="global-secret", passphrase="okx-passphrase"
     )
+    cfg.max_exposure_per_exchange_usdt = 500.0
+    cfg.supabase.enabled = True
+    cfg.supabase.url = "https://example.supabase.co"
+    cfg.supabase.key = "test-service-role-key"
     cfg.validate_live_credentials()
+
+
+def test_live_mode_rejects_disabled_exposure_cap_and_missing_durable_journal():
+    from executor.config import ExchangeCredentials
+
+    cfg = ExecutorConfig(mock_mode=False)
+    cfg.local_credentials = ExchangeCredentials(api_key="local", api_secret="secret")
+    cfg.global_credentials = ExchangeCredentials(
+        api_key="global", api_secret="secret", passphrase="pass"
+    )
+    with pytest.raises(ValueError, match="max_exposure_per_exchange_usdt"):
+        cfg.validate_live_credentials()
+
+    cfg.max_exposure_per_exchange_usdt = 250.0
+    with pytest.raises(ValueError, match="Supabase durable risk/order journal"):
+        cfg.validate_live_credentials()
 
 
 def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
