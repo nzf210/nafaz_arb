@@ -282,3 +282,33 @@ async def test_mutation_gateway_blocks_cancel_without_owned_order():
 
 async def _resolved(value):
     return value
+
+@pytest.mark.asyncio
+async def test_mutation_gateway_does_not_leak_balance_exchange_clients():
+    exchange = FakeExchange()
+    raw_venue = FakeVenue("indodax")
+    exchange.balance_exchanges = {
+        "indodax": {"market": "spot", "client": raw_venue},
+    }
+    gateway = MutationGatewayClient(
+        exchange, ExecutionCoordinator(FakeSupabase()), FakeRegistry(),
+        SimpleNamespace(mock_mode=False, local_exchange_name="indodax"),
+    )
+
+    with pytest.raises(RuntimeError, match="raw exchange mutation blocked"):
+        gateway.balance_exchanges["indodax"]["client"].create_order
+
+
+@pytest.mark.asyncio
+async def test_mutation_gateway_rewraps_venue_facades():
+    exchange = FakeExchange()
+    exchange.for_venue = lambda _venue: FakeExchange()
+    gateway = MutationGatewayClient(
+        exchange, ExecutionCoordinator(FakeSupabase()), FakeRegistry(),
+        SimpleNamespace(mock_mode=False, local_exchange_name="indodax"),
+    )
+
+    bound = gateway.for_venue("indodax")
+    with pytest.raises(RuntimeError, match="raw exchange mutation blocked"):
+        bound.local.create_order
+
