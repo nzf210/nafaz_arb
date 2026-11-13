@@ -251,6 +251,7 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 		Code int `json:"code"`
 		Data struct {
 			List []struct {
+				Type              int    `json:"type"`
 				Symbol            string `json:"symbol"`
 				BaseAsset         string `json:"baseAsset"`
 				QuoteAsset        string `json:"quoteAsset"`
@@ -267,11 +268,11 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 		return l.getFallbackTokocryptoSpot(fmt.Errorf("decode tokocrypto symbols: %w", err))
 	}
 
+	if raw.Code != 0 { return l.getFallbackTokocryptoSpot(fmt.Errorf("tokocrypto symbols API error code: %d", raw.Code)) }
 	var markets []domain.Market
 	for _, s := range raw.Data.List {
-		if s.SpotTradingEnable != 1 || s.Symbol == "" || s.BaseAsset == "" || s.QuoteAsset == "" {
-			continue
-		}
+		if s.SpotTradingEnable != 1 || s.Symbol == "" || s.BaseAsset == "" || s.QuoteAsset == "" { continue }
+		if s.Type != 1 && s.Type != 3 { log.Printf("tokocrypto: skipping symbol %s with unsupported symbol type %d", s.Symbol, s.Type); continue }
 		var amountSpec *domain.AmountSpec
 		for _, filter := range s.Filters {
 			if strings.EqualFold(filter.FilterType, "LOT_SIZE") ||
@@ -297,6 +298,7 @@ func (l *LiveAdapter) fetchTokocryptoSpotMarkets(ctx context.Context) ([]domain.
 		market := domain.Market{
 			Exchange:   "tokocrypto",
 			Symbol:     "toko:" + s.Symbol,
+			SymbolType: s.Type,
 			BaseAsset:  strings.ToUpper(s.BaseAsset),
 			QuoteAsset: strings.ToUpper(s.QuoteAsset),
 			MarketType: "SPOT",
