@@ -69,7 +69,7 @@ def test_postgres_disconnect_during_active_venue_request_keeps_peer_fenced():
     if not dsn:
         pytest.skip("TEST_POSTGRES_DSN is not configured")
 
-    ctx = mp.get_context("spawn")
+    ctx = mp.get_context("fork")
     suffix = uuid.uuid4().hex[:16]
     first_id = "pg-crash-" + suffix
     second_id = "pg-peer-" + suffix
