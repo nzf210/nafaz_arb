@@ -437,6 +437,22 @@ class EngineEntrySubmissionMixin:
                         "entry admission remains fenced",
                         entry_coid,
                     )
+                    self._halt_exposure_scope(
+                        "*", "durable submit acknowledgement persistence failed; unresolved ledger row blocks entries"
+                    )
+                    self._refresh_entry_gate()
+                    await self._publish_execution_failure(
+                        "global-submit-ledger",
+                        "DURABLE_SUBMIT_ACK_PERSISTENCE_FAILED",
+                        "CEX mengakui order, tetapi status acknowledgement tidak berhasil dipersist ke PostgreSQL. "
+                        "Entry baru ditutup sampai ledger direkonsiliasi.",
+                        detail={
+                            "exchange": pair_info.local_exchange,
+                            "symbol": pair_info.local_symbol,
+                            "client_order_id": entry_coid,
+                        },
+                        state=PositionState.RECONCILIATION_REQUIRED,
+                    )
 
             if not isinstance(order, dict) or not order.get("id"):
                 await self._mark_order_submission_ambiguous(
