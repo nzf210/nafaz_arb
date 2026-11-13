@@ -107,16 +107,21 @@ class SupabaseOrderMixin:
         order_row_id = self.order_id_for(
             pair_key, payload["exchange_name"], order_key
         )
-        submitted_at = (
-            _ms_to_iso(row.get("created_at"))
-            or datetime.now(timezone.utc).isoformat()
+        order_state_key = f"{payload['exchange_name']}:{pair_key}:{order_key}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        submitted_at = self._order_submitted_at.setdefault(
+            order_state_key,
+            _ms_to_iso(row.get("created_at")) or now_iso,
         )
         status = str(payload["status"]).lower()
-        completed_at = None
-        if status in (
+        terminal = status in (
             "closed", "filled", "canceled", "cancelled", "rejected", "expired"
-        ):
-            completed_at = datetime.now(timezone.utc).isoformat()
+        )
+        completed_at = (
+            self._order_completed_at.setdefault(order_state_key, now_iso)
+            if terminal
+            else self._order_completed_at.get(order_state_key)
+        )
         analytics_row = {
                 "id": order_row_id,
                 "position_id": self._position_ids.get(pair_key),
