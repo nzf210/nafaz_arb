@@ -1466,3 +1466,8 @@ The durable submit ledger now has a signed manual-resolution path. The operator 
 The integration suite now runs independent executor/venue processes against disposable PostgreSQL. It kills the executor after the durable SUBMITTING commit while the fake venue request remains active, then asserts a second process is blocked. Fake delayed-visibility and pending reduceOnly tests exist for the four configured venue modules. They are not substitutes for real venue sandbox/paper tests.
 
 See `docs/ORDER-RUNTIME-VENUE-RECOVERY-MATRIX.md` for the runtime adapter/call-site and retry matrix. R-26 remains open: force-close reduceOnly close can still be submitted again with a new client ID if a previous accepted close is followed by a stale non-zero position response. This branch remains NOT LIVE-CERTIFIED until that path and live venue contracts are closed.
+
+
+### Force-close futures reduceOnly retry fence
+
+LIVE force-close derives one deterministic client-order ID from the persisted position `opened_at_ms`, requires the durable order registry, and checks for an existing intent before any further close submit. Existing intent is reconciled by exact client ID. If not found, lookup errors, or non-terminal, the executor blocks rather than creating a new client ID. Only a terminal full-fill order is adopted, followed by an authoritative flat-position check. Partial fills and pending orders remain reconciliation-required; the executor does not auto-submit residual quantity.
