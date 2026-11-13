@@ -2,9 +2,9 @@
 
 # Kontrak Pengujian Regresi — Nafazbot
 
-Baseline: `9cc3dcd11d0999e828309053ba4cffce98a28675`.
-Audit branch: `audit/architecture-baseline-regression-contract`.
-This contract is mandatory for changes to ExchangeClient, venue adapters, private request scheduling, WS ingestion, queue delivery, pemulihan, or execution coordination.
+Acuan: `9cc3dcd11d0999e828309053ba4cffce98a28675`.
+Cabang audit: `audit/architecture-baseline-regression-contract`.
+Kontrak ini wajib dipenuhi untuk setiap perubahan pada ExchangeClient, venue adapters, private request scheduling, WS ingestion, queue delivery, pemulihan, or execution coordination.
 
 ## 1. Global invariants
 
