@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 import aiohttp
 
 from executor.supabase_outbox import DurableOutbox
+from executor.supabase_registry import SupabaseRegistry
 
 logger = logging.getLogger("executor.supabase")
 
@@ -114,6 +115,7 @@ class SupabaseWriter:
         self._order_ids: Dict[str, str] = {}
         self._last_status_signature: Optional[str] = None
         self._last_status_at = 0.0
+        self._registry = SupabaseRegistry(self._emit)
 
     # ---------------------------------------------------------------- lifecycle
 
@@ -166,6 +168,10 @@ class SupabaseWriter:
             return
         # The worker polls the durable journal. No in-memory queue is needed,
         # so process restarts and backpressure cannot discard accepted rows.
+
+    def runtime_configuration(self, config: Any, instance_id: Optional[str] = None) -> None:
+        """Journal sanitized active venue and risk metadata; never stores secrets."""
+        self._registry.runtime_configuration(config, instance_id)
 
     def event(
         self,
@@ -252,6 +258,7 @@ class SupabaseWriter:
         self._position_pair_infos[pair_key] = pair_info
         self._emit("positions", row, on_conflict="id")
         self._emit_position_legs(pair_key, position_id, pos, row["status"])
+        self._registry.market_pair(pair_key, pair_info, is_mock=is_mock)
 
     def position_status(self, pair_key: str, status: str, pos: Any = None) -> None:
         position_id = self._position_ids.get(pair_key)
