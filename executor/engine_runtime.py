@@ -35,9 +35,18 @@ class EngineRuntimeMixin:
                         # order polling, before it can become READY.
                         was_recovery_complete = self._recovery_complete
                         self._recovery_complete = await self._run_startup_recovery()
+                        if self._recovery_complete and self.global_stop is not None:
+                            global_state = await self.global_stop.read_state()
+                            if global_state["is_stopped"]:
+                                self._halt_exposure_scope(
+                                    "*", "global STOP active: " + str(global_state.get("reason") or "unspecified")
+                                )
+                                self._refresh_entry_gate()
+                            if not await self._reconcile_durable_submit_attempts():
+                                self._recovery_complete = False
                         if not self._recovery_complete:
                             self._halt_exposure_scope(
-                                "*", "startup recovery is waiting for distributed ownership"
+                                "*", "startup recovery is waiting for distributed ownership or submit reconciliation"
                             )
                             self._refresh_entry_gate()
                         elif not was_recovery_complete:
