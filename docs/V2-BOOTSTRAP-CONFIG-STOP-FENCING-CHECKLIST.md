@@ -228,3 +228,7 @@ Sisa OPEN: full runtime call-site/call-graph audit lintas seluruh adapter/konfig
 ### 11.1 Futures hedge IP-ban escalation
 
 Audit lanjutan menemukan bahwa futures entry-hedge sudah memakai durable fence, tetapi explicit IP-ban response dari venue futures belum menulis canonical CEX_IP_BLOCK STOP. Commit f6da668 menambahkan request_stop_in_transaction di dalam session fence yang sama, local global-admission halt, dan Redis notification best-effort setelah transaksi. Jika persistensi STOP gagal, attempt dipertahankan UNKNOWN (atau SUBMITTING bila koneksi DB sudah putus), bukan ditandai REJECTED, agar instance peer tetap terblokir. Generic 429 tetap tidak dianggap IP ban.
+
+### 11.2 Spot entry IP-ban persistence failure
+
+Audit lanjutan menemukan celah serupa di spot entry: saat venue mengembalikan signature IP restriction yang eksplisit tetapi penulisan canonical Global STOP gagal, jalur fallback exact-client-ID lookup masih dapat berjalan untuk signature yang tidak masuk classifier definitive-rejection. Jika lookup menemukan order, ACK dapat dipersist dan unresolved guard terangkat tanpa Global STOP. Commit 9a0a269 menambahkan guard eksplisit: attempt tetap UNKNOWN/SUBMITTING, lookup tidak dijalankan, dan order ditandai ambiguous secara lokal. Regression test menggunakan fake venue yang sengaja mengembalikan order dari lookup untuk membuktikan lookup tidak dipanggil setelah STOP write failure.
