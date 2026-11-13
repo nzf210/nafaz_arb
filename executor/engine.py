@@ -191,6 +191,7 @@ class ArbitrageEngine(
         self.trade_fill_reconciliation = TradeFillReconciliationWorker(self)
 
     async def _on_execution_coordinator_lost(self, reason: str) -> None:
+        self._recovery_complete = False
         self._halt_exposure_scope("*", f"execution coordinator lease lost: {reason}")
         self._refresh_entry_gate()
 

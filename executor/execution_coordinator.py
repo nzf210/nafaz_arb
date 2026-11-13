@@ -81,6 +81,9 @@ class ExecutionCoordinator:
                     return
         except asyncio.CancelledError:
             raise
+        finally:
+            if self._heartbeat_task is asyncio.current_task():
+                self._heartbeat_task = None
 
     async def assert_active(self) -> None:
         if not self.active or self.fencing_token is None:
