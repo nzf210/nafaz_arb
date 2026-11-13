@@ -5,7 +5,7 @@ import json
 import time
 from unittest.mock import AsyncMock
 
-from executor.models import ActivePosition, PositionState
+from executor.models import ActivePosition, ExecutorPayload, PositionState
 
 import fakeredis.aioredis as fake_aioredis
 import pytest
@@ -647,3 +647,26 @@ async def test_venue_cooldown_task_propagates_cancellation(engine):
 
     # Cancellation must not accidentally clear the active venue halt.
     assert "indodax" in engine._exchange_halted
+
+
+def test_live_exposure_cap_fails_closed_for_disabled_or_nonfinite_exposure(fake_redis):
+    engine, _ = _exposure_engine(fake_redis, cap=0.0)
+    engine.config.mock_mode = False
+    payload = ExecutorPayload.from_dict(_fresh_signal_payload(int(time.time() * 1000)))
+
+    assert not engine._exposure_allows("pair", payload.pair_info, 50.0)
+
+    engine.config.max_exposure_per_exchange_usdt = 100.0
+    assert not engine._exposure_allows("pair", payload.pair_info, float("nan"))
+
+    engine.active_positions["existing"] = ActivePosition(
+        local_exchange=payload.pair_info.local_exchange,
+        global_exchange=payload.pair_info.global_exchange,
+        symbol=payload.pair_info.local_symbol,
+        entry_price_idr=1.0,
+        short_entry_usdt=1.0,
+        qty=1.0,
+        spot_cost_usdt=float("nan"),
+        futures_margin_usdt=1.0,
+    )
+    assert not engine._exposure_allows("pair", payload.pair_info, 50.0)
