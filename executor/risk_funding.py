@@ -48,9 +48,7 @@ class RiskFundingMixin:
                 str(getattr(pair_info, "global_exchange", "") or ""),
                 exc,
             )
-            # A zero snapshot makes the sizing path reject this entry even if
-            # a caller accidentally ignores the venue halt flag.
-            return {"spot_available": 0.0, "futures_available": 0.0}
+            return None
 
     async def _reject_insufficient_entry_balance(
         self, pair_tag: str, spot_available: float,
@@ -132,6 +130,8 @@ class RiskFundingMixin:
             pair_tag, pair_info, payload.pricing_snapshot.usdt_idr_rate,
             mock_mode,
         )
+        if balances is None and not mock_mode:
+            return None
         if balances is not None:
             if isinstance(getattr(self, "_balance_snapshots", None), dict):
                 self._balance_snapshots[pair_tag] = dict(balances)
