@@ -111,3 +111,5 @@ Remaining blockers: complete runtime call-site/call-graph audit across all venue
 
 
 | R-22 | Futures entry-hedge previously persisted UNKNOWN/REJECTED on submit errors but did not escalate explicit venue IP-ban evidence into canonical Global STOP. | Futures entry hedge / CEX IP-block policy | FIXED in commit f6da668: write CEX_IP_BLOCK inside the active submit fence; local halt immediately; notify Redis after the fence; if durable STOP persistence fails, keep the attempt unresolved rather than marking it REJECTED. Generic 429 remains non-ban. |
+
+| R-23 | Spot entry could run exact-client-ID fallback after an explicit IP restriction when the in-transaction canonical STOP write failed; for some IP-restriction signatures the definitive-rejection classifier did not short-circuit lookup, so a lookup hit could ACK and retire the unresolved fence without canonical Global STOP. | Spot entry / CEX IP-block policy | FIXED in commit 9a0a269: explicit STOP-persistence-failed flag skips lookup, best-effort marks UNKNOWN, and preserves local ambiguity. Regression test supplies a positive fake lookup result and asserts lookup is not called. |
