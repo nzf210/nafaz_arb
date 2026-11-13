@@ -203,6 +203,64 @@ class ForceCloseLegMixin:
                 return False
         return True
 
+    async def _adopt_existing_force_close(
+        self, pair_key: str, pos, global_sym: str, client_order_id: str
+    ) -> Tuple[bool, float]:
+        """Adopt a prior reduceOnly close; never resubmit while its outcome is uncertain."""
+        try:
+            order = await self.client.fetch_global_order_by_client_id(
+                client_order_id, global_sym, pos.global_amount_spec
+            )
+        except Exception:
+            logger.exception(
+                "[Force Close] exact client-id lookup failed for prior futures close %s",
+                client_order_id,
+            )
+            return False, 0.0
+        if not isinstance(order, dict):
+            logger.critical(
+                "[Force Close] prior reduceOnly close %s is not yet visible; "
+                "refusing a new client ID while venue history may be eventually consistent",
+                client_order_id,
+            )
+            return False, 0.0
+        status = str(order.get("status", "")).lower()
+        if status not in ("closed", "filled"):
+            logger.critical(
+                "[Force Close] prior reduceOnly close %s remains non-terminal (%s); "
+                "refusing duplicate close",
+                client_order_id, status or "unknown",
+            )
+            return False, 0.0
+        try:
+            filled_qty = float(order.get("filled") or 0.0)
+        except (TypeError, ValueError):
+            return False, 0.0
+        if filled_qty + max(1e-12, pos.qty * 1e-8) < pos.qty:
+            logger.critical(
+                "[Force Close] prior reduceOnly close %s is terminal but partial "
+                "(requested=%s filled=%s); manual reconciliation required",
+                client_order_id, pos.qty, filled_qty,
+            )
+            return False, 0.0
+
+        self.supabase.order(
+            pair_key, "futures_exit", pos.global_exchange, "perpetual",
+            global_sym, order, client_order_id=client_order_id,
+            reduce_only=True, is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
+        await self._register_order(
+            pair_key, client_order_id, order,
+            exchange=pos.global_exchange, market_type="perpetual",
+            symbol=global_sym, role=OrderRole.FORCE_CLOSE.value,
+            side="buy", order_type="market",
+            price=helpers.extract_fill_price(order), quantity=pos.qty,
+            reduce_only=True,
+        )
+        if not await self._verify_force_close_futures_flat(pair_key, global_sym):
+            return False, 0.0
+        return True, helpers.extract_fill_price(order)
+
     async def _close_global_short_leg(
         self, pair_key: str, pos, allow_already_flat: bool = False
     ) -> Tuple[bool, float]:
@@ -213,11 +271,46 @@ class ForceCloseLegMixin:
             return (True, 0.0) if already_flat else (False, 0.0)
 
         logger.warning(f"[Force Close] Closing global short {pos.qty} on {global_sym}...")
+        is_mock = bool(getattr(self.config, "mock_mode", False))
+        opened_at_ms = int(getattr(pos, "opened_at_ms", 0) or 0)
+        if not is_mock and opened_at_ms <= 0:
+            logger.critical(
+                "[Force Close] refusing a LIVE futures close without a stable position opened_at_ms "
+                "for deterministic client-order-id recovery (%s)",
+                pair_key,
+            )
+            return False, 0.0
+        force_seq = (opened_at_ms % 1_000_000_000) or 1 if not is_mock else self._next_order_seq()
+        force_coid = build_client_order_id(pair_key, "force-close", force_seq)
+
+        # The order registry is the durable marker that this deterministic close
+        # id has crossed the submit boundary. If it exists, only exact-ID lookup
+        # may adopt it; a negative lookup is not permission to submit again.
+        if not is_mock:
+            registry = getattr(self, "order_registry", None)
+            if registry is None:
+                logger.critical(
+                    "[Force Close] LIVE reduceOnly retry protection requires the durable order registry (%s)",
+                    pair_key,
+                )
+                return False, 0.0
+            try:
+                prior_intent = await registry.find_by_client_id(
+                    pos.global_exchange, force_coid
+                )
+            except Exception:
+                logger.exception(
+                    "[Force Close] cannot inspect prior close intent %s; refusing resubmit",
+                    force_coid,
+                )
+                return False, 0.0
+            if prior_intent is not None:
+                return await self._adopt_existing_force_close(
+                    pair_key, pos, global_sym, force_coid
+                )
+
         await self._sync_force_close_market_price(pair_key, global_sym)
         try:
-            force_coid = build_client_order_id(
-                pair_key, "force-close", self._next_order_seq()
-            )
             await self._register_order_intent(
                 pair_key, force_coid,
                 exchange=pos.global_exchange, market_type="perpetual",
@@ -225,7 +318,7 @@ class ForceCloseLegMixin:
                 side="buy", order_type="market", price=0.0,
                 quantity=pos.qty, reduce_only=True,
                 global_amount_spec=pos.global_amount_spec,
-                required=False,
+                required=not is_mock,
             )
             res = await self.client.close_global_short_market(
                 global_sym,
