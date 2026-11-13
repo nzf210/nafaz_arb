@@ -180,9 +180,12 @@ func (l *LiveAdapter) fetchOKXPerpetualMarkets(ctx context.Context) ([]domain.Ma
 
 func (l *LiveAdapter) getFallbackOKXPerp(err error) ([]domain.Market, error) {
 	l.mu.RLock()
-	defer l.mu.RUnlock()
-	if len(l.cachedOKXPerp) > 0 {
-		return l.cachedOKXPerp, nil
+	cached, fetchedAt := l.cachedOKXPerp, l.lastOKXPerpFetch
+	l.mu.RUnlock()
+	age := time.Since(fetchedAt)
+	if len(cached) > 0 && !fetchedAt.IsZero() && age >= 0 && age <= marketCacheMaxStaleAge {
+		log.Printf("okx: using perpetual market metadata fallback age=%s", age.Round(time.Minute))
+		return cached, nil
 	}
 	return nil, err
 }
