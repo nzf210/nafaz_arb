@@ -56,6 +56,8 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@v4
+      - name: Check VPS migration runner shell syntax
+        run: bash -n scripts/vps-migrate.sh
       - name: Create Supabase roles
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
