@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 from executor.engine_entry_submission import EngineEntrySubmissionMixin
 from executor.global_stop import FENCE_LOCK_KEY, GlobalStopError, GlobalStopService
+from executor.helpers import RetryExhausted, is_explicit_rate_limit_rejection, retry_with_backoff
+from executor.indodax_v2 import IndodaxRateLimitError
 from executor.config import ExecutorConfig
 from executor.engine import ArbitrageEngine
 from executor.engine_recovery import EngineRecoveryMixin
@@ -197,6 +199,70 @@ def test_only_explicit_ip_ban_signatures_escalate_to_global_stop():
     assert not EngineEntrySubmissionMixin._is_explicit_ip_ban("http_418 generic teapot response")
     assert not EngineEntrySubmissionMixin._is_explicit_ip_ban("http_429 too many requests")
     assert not EngineEntrySubmissionMixin._is_explicit_ip_ban("http_503 service unavailable")
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_order_submit_failure_is_not_retried():
+    calls = 0
+
+    async def submit():
+        nonlocal calls
+        calls += 1
+        raise TimeoutError("connection reset after request write")
+
+    with pytest.raises(RetryExhausted) as raised:
+        await retry_with_backoff(
+            submit, max_retries=4, base_delay=0,
+            retry_if=is_explicit_rate_limit_rejection,
+        )
+
+    assert calls == 1
+    assert raised.value.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_indodax_503_is_not_retried_but_explicit_429_is():
+    assert not is_explicit_rate_limit_rejection(
+        IndodaxRateLimitError("http_503", "rate limited")
+    )
+    assert is_explicit_rate_limit_rejection(
+        IndodaxRateLimitError("http_429", "rate limited")
+    )
+
+    calls = 0
+
+    async def submit_429_once():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise IndodaxRateLimitError("http_429", "rate limited")
+        return {"id": "accepted-after-429"}
+
+    result = await retry_with_backoff(
+        submit_429_once, max_retries=2, base_delay=0,
+        retry_if=is_explicit_rate_limit_rejection,
+    )
+    assert result["id"] == "accepted-after-429"
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_503_order_submit_failure_is_not_retried():
+    calls = 0
+
+    async def submit():
+        nonlocal calls
+        calls += 1
+        raise IndodaxRateLimitError("http_503", "rate limited")
+
+    with pytest.raises(RetryExhausted) as raised:
+        await retry_with_backoff(
+            submit, max_retries=4, base_delay=0,
+            retry_if=is_explicit_rate_limit_rejection,
+        )
+
+    assert calls == 1
+    assert raised.value.attempts == 1
 
 
 @pytest.mark.asyncio
