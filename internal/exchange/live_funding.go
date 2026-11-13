@@ -163,7 +163,7 @@ func parseLevels(raw [][]any, multiplier float64) []domain.PriceLevel {
 		}
 		p := toFloat(item[0])
 		q := toFloat(item[1]) * multiplier
-		if p > 0 && q > 0 {
+		if p > 0 && q > 0 && !math.IsNaN(p) && !math.IsInf(p, 0) && !math.IsNaN(q) && !math.IsInf(q, 0) {
 			levels = append(levels, domain.PriceLevel{Price: p, Quantity: q})
 		}
 	}
@@ -179,7 +179,7 @@ func parseStringLevels(raw [][]string, multiplier float64) []domain.PriceLevel {
 		p, _ := strconv.ParseFloat(item[0], 64)
 		q, _ := strconv.ParseFloat(item[1], 64)
 		q = q * multiplier
-		if p > 0 && q > 0 {
+		if p > 0 && q > 0 && !math.IsNaN(p) && !math.IsInf(p, 0) && !math.IsNaN(q) && !math.IsInf(q, 0) {
 			levels = append(levels, domain.PriceLevel{Price: p, Quantity: q})
 		}
 	}
