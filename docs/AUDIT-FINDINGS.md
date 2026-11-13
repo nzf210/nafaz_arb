@@ -147,3 +147,14 @@ Remaining blockers: complete runtime call-site/call-graph audit across all venue
 - Added `docs/ORDER-RUNTIME-VENUE-RECOVERY-MATRIX.md` with active adapter/call-site and retry/recovery inventory.
 - Fake fixtures prove executor behavior under delayed visibility; they do not establish live venue eventual-consistency SLAs or each venue's pending-close semantics. Those still require controlled per-venue sandbox/paper probes.
 - R-26 remains OPEN: force-close futures may create a new client ID on a later invocation when a prior reduceOnly close was accepted but the position endpoint remains stale/non-zero. Do not claim all pending-close paths are safe until stable close-intent reuse and exact-ID recovery are implemented and tested.
+
+
+## R-26 update — Force-close reduceOnly duplicate submit blocked
+
+**Status: FIXED FAIL-CLOSED (2026-11-13).**
+
+- LIVE force-close now derives a deterministic close client ID from the persisted position `opened_at_ms` and requires the durable order registry.
+- If the intent already exists, the executor performs exact client-ID lookup. A lookup miss/error or non-terminal order blocks a new submit; it does not mint another client ID.
+- A previously found terminal full-fill order is adopted and futures position flatness is verified before continuing spot liquidation.
+- Partial terminal close, missing stable position timestamp, missing registry, or stale/non-flat position remains a reconciliation/manual-intervention condition. This is intentionally fail-closed; it does not auto-submit a residual close with a new ID.
+- Regression: `test_force_close_prior_reduce_only_intent_not_found_never_resubmits`.
