@@ -331,6 +331,7 @@ class EngineEntrySubmissionMixin:
                     recovery_context=recovery_context,
                     amount_spec=pair_info.local_amount_spec.to_dict(),
                 )
+            ip_ban_stop_persistence_failed = False
             try:
                 if self.global_stop is not None:
                     ip_ban_state = None
@@ -366,6 +367,7 @@ class EngineEntrySubmissionMixin:
                                             },
                                         )
                                     except Exception:
+                                        ip_ban_stop_persistence_failed = True
                                         logger.exception(
                                             "CRITICAL: failed to persist CEX IP-ban STOP inside submit fence"
                                         )
@@ -385,6 +387,26 @@ class EngineEntrySubmissionMixin:
                         amount_spec=pair_info.local_amount_spec,
                     )
             except Exception as submit_error:
+                if ip_ban_stop_persistence_failed:
+                    # Never let an eventually-consistent client-id lookup retire
+                    # the only durable guard when canonical Global STOP failed.
+                    try:
+                        await self.global_stop.mark_submit_unknown(
+                            entry_coid,
+                            "confirmed spot venue IP ban; Global STOP persistence failed: "
+                            + str(submit_error),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "CRITICAL: spot IP-ban attempt %s remains SUBMITTING/UNKNOWN",
+                            entry_coid,
+                        )
+                    await self._mark_order_submission_ambiguous(
+                        pair_tag, pair_info.local_exchange, entry_coid,
+                        "explicit venue IP ban detected but canonical Global STOP could not be persisted; "
+                        "exact-client-ID lookup is intentionally not used to release the submit fence",
+                    )
+                    return
                 if not submission_started or self._is_definitive_order_rejection(submit_error):
                     # A STOP/database failure before the create-order call is
                     # not an ambiguous venue submission and must not trigger a
