@@ -150,6 +150,18 @@ def test_postgres_disconnect_during_active_venue_request_keeps_peer_fenced():
             finally:
                 await conn.close()
         assert asyncio.run(final_status()) == "SUBMITTING"
+
+        async def cleanup_attempt():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                await conn.execute(
+                    "delete from public.executor_submit_attempts where client_order_id=$1",
+                    first_id,
+                )
+            finally:
+                await conn.close()
+        asyncio.run(cleanup_attempt())
     finally:
         venue_release.set()
         if peer is not None and peer.is_alive():
