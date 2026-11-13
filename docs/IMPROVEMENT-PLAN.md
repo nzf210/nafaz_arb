@@ -663,3 +663,39 @@ required hedge, rollback, or force close.
       partial futures hedge/close, funding settlement replay, and force close.
 - [ ] Live mode remains disabled until exchange-specific order/funding/position
       payloads are verified against the actual target venues.
+
+
+---
+
+## FASE V2 — Bootstrap, PostgreSQL Runtime Config, Distributed STOP
+
+**Status: OPEN — design/review contract added; implementation and CI verification pending.**
+
+Detail checklist: [V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md](./V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md).
+
+### V2-01 — Startup bootstrap and admission gate
+- [ ] PostgreSQL pool and authoritative runtime config load before executor READY.
+- [ ] Redis consumers, snapshot recovery, order registry, and venue reconciliation complete before admission.
+- [ ] Instance lease and heartbeat use monotonic fencing generation.
+- [ ] Any missing dependency, lease loss, or unclassified exposure keeps new-entry admission closed.
+
+### V2-02 — Legacy configuration migration
+- [ ] Inventory every config.json/environment key and map to PostgreSQL with provenance.
+- [ ] Shadow compare effective config and block cutover on any unexplained diff.
+- [ ] Preserve risk limits, sizing, leverage/margin settings, venue/account bindings, and symbol mappings exactly.
+- [ ] PostgreSQL becomes runtime authority; no silent config.json fallback after cutover.
+
+### V2-03 — STOP fencing and CEX IP-block trigger
+- [ ] Serialize STOP and every create-order path through the same PostgreSQL fencing protocol.
+- [ ] Treat ordinary 429 as throttling/cooldown unless venue-specific evidence confirms IP ban.
+- [ ] On confirmed CEX IP ban, persist global idempotent `CEX_IP_BLOCK` STOP, advance fencing epoch, and close admission across all instances sharing egress IP.
+- [ ] Avoid request/cancel retry storms while blocked; preserve active exposure as reconciliation-required if venue state cannot be queried.
+- [ ] Resume only after verified unblock, venue health probe, position/order reconciliation, and operator acknowledgement.
+
+### V2 release gate
+- [ ] PostgreSQL migration and transaction semantics reviewed in staging.
+- [ ] Python, Go, PostgreSQL integration, and multi-instance race tests pass.
+- [ ] 429/418/403 classification fixtures verified against each target CEX.
+- [ ] Config diff has zero unexplained changes to protected risk/venue fields.
+- [ ] Paper-mode restart, IP-ban STOP, fencing, and controlled resume scenarios pass.
+- [ ] No LIVE cutover until all checklist items are verified and approved.
