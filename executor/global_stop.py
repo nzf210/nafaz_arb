@@ -82,32 +82,201 @@ class GlobalStopService:
             raise GlobalStopError("global control row is missing")
         return dict(row)
 
+    async def prepare_submit_attempt(
+        self, *, client_order_id: str, exchange: str, market_type: str,
+        symbol: str, side: str, order_type: str, quantity: float,
+        price: float, pair_key: str, recovery_context: Optional[dict] = None,
+        amount_spec: Optional[dict] = None,
+    ) -> dict:
+        """Commit a durable PREPARED intent before any venue HTTP request."""
+        self._require_pool()
+        if not client_order_id or len(client_order_id) > 128:
+            raise GlobalStopError("valid stable client_order_id is required")
+        values = (
+            client_order_id, str(exchange or "").lower()[:100],
+            str(market_type or "").lower()[:30], str(symbol or "")[:160],
+            str(side or "").lower()[:16], str(order_type or "").lower()[:24],
+            float(quantity), float(price), str(pair_key or "")[:200],
+            json.dumps(recovery_context or {}, separators=(",", ":"), default=str),
+            json.dumps(amount_spec or {}, separators=(",", ":"), default=str),
+        )
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "insert into public.executor_submit_attempts "
+                "(client_order_id, exchange, market_type, symbol, side, order_type, "
+                "quantity, price, pair_key, recovery_context, amount_spec, status) "
+                "values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,'PREPARED') "
+                "on conflict (client_order_id) do nothing "
+                "returning client_order_id, status, created_at",
+                *values,
+            )
+            if row is None:
+                existing = await conn.fetchrow(
+                    "select client_order_id, status, created_at from public.executor_submit_attempts "
+                    "where client_order_id = $1",
+                    client_order_id,
+                )
+                if existing is None or existing["status"] != "PREPARED":
+                    raise GlobalStopError(
+                        f"client order id already has a non-reusable submit attempt: {client_order_id}"
+                    )
+                row = existing
+        return dict(row)
+
     @asynccontextmanager
     async def order_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
-        """Serialize one create-order HTTP request against every global STOP.
+        """Hold a session advisory lock while a committed SUBMITTING row protects the HTTP side effect.
 
-        Yields the locked connection so an explicit IP-ban response can persist
-        STOP in the same transaction before another instance can submit.
-        Keep the scope limited to a single venue submit; do not do recovery or
-        unrelated work while holding this transaction.
+        Session locks are released by PostgreSQL if the connection/process dies.
+        The separately committed SUBMITTING ledger row survives that disconnect
+        and blocks every later entry until venue reconciliation resolves it.
         """
         self._require_pool()
         if not client_order_id or len(client_order_id) > 128:
             raise GlobalStopError("valid stable client_order_id is required before submit")
         async with self.pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("select pg_advisory_xact_lock($1)", FENCE_LOCK_KEY)
-                row = await conn.fetchrow(
-                    "select is_stopped, epoch, reason from public.executor_global_control "
-                    "where singleton_id = 1 for update"
-                )
-                if row is None:
-                    raise GlobalStopError("global control row is missing")
-                if row["is_stopped"]:
-                    raise GlobalStopError(
-                        f"global STOP active (epoch={row['epoch']} reason={row['reason'] or 'unspecified'})"
+            locked = False
+            try:
+                await conn.execute("select pg_advisory_lock($1)", FENCE_LOCK_KEY)
+                locked = True
+                async with conn.transaction():
+                    control = await conn.fetchrow(
+                        "select is_stopped, epoch, reason from public.executor_global_control "
+                        "where singleton_id = 1 for update"
                     )
+                    if control is None:
+                        raise GlobalStopError("global control row is missing")
+                    if control["is_stopped"]:
+                        raise GlobalStopError(
+                            f"global STOP active (epoch={control['epoch']} reason={control['reason'] or 'unspecified'})"
+                        )
+                    unresolved = await conn.fetchrow(
+                        "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
+                        "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
+                        "order by created_at limit 1",
+                        client_order_id,
+                    )
+                    if unresolved is not None:
+                        raise GlobalStopError(
+                            "unresolved in-flight submit blocks new entries: "
+                            f"{unresolved['exchange']}:{unresolved['symbol']} "
+                            f"client_order_id={unresolved['client_order_id']} status={unresolved['status']}"
+                        )
+                    attempt = await conn.fetchrow(
+                        "update public.executor_submit_attempts "
+                        "set status='SUBMITTING', submit_started_at=now(), "
+                        "submit_count=submit_count+1, fence_epoch=$2, updated_at=now() "
+                        "where client_order_id=$1 and status='PREPARED' "
+                        "returning client_order_id",
+                        client_order_id, int(control["epoch"]),
+                    )
+                    if attempt is None:
+                        raise GlobalStopError(
+                            f"durable PREPARED submit attempt missing or already used: {client_order_id}"
+                        )
+                # The SUBMITTING state is committed while the session lock is
+                # still held. A connection loss now releases the lock but not
+                # this durable row.
                 yield conn
+            finally:
+                if locked:
+                    try:
+                        await conn.execute("select pg_advisory_unlock($1)", FENCE_LOCK_KEY)
+                    except Exception:
+                        # A broken connection has already caused PostgreSQL to
+                        # release its session-level lock; the ledger is the guard.
+                        logger.warning(
+                            "could not explicitly release PostgreSQL submit session lock; "
+                            "connection loss must be treated as ambiguous"
+                        )
+
+    async def mark_submit_acknowledged(
+        self, client_order_id: str, order: dict
+    ) -> None:
+        """Persist a positive venue acknowledgement; failure leaves SUBMITTING durable."""
+        self._require_pool()
+        order_id = str((order or {}).get("id") or "")
+        if not order_id:
+            raise GlobalStopError("cannot acknowledge submit without a venue order id")
+        await self._update_submit_attempt(
+            client_order_id, "ACKNOWLEDGED", exchange_order_id=order_id,
+            venue_response=order, error=None,
+        )
+
+    async def mark_submit_rejected(self, client_order_id: str, error: str) -> None:
+        """Resolve only a definitive venue rejection, never a transport timeout."""
+        await self._update_submit_attempt(
+            client_order_id, "REJECTED", exchange_order_id=None,
+            venue_response=None, error=str(error)[:2000],
+        )
+
+    async def mark_submit_unknown(self, client_order_id: str, error: str) -> None:
+        """Annotate an ambiguous attempt; if DB is down SUBMITTING remains blocking."""
+        await self._update_submit_attempt(
+            client_order_id, "UNKNOWN", exchange_order_id=None,
+            venue_response=None, error=str(error)[:2000],
+        )
+
+    async def _update_submit_attempt(
+        self, client_order_id: str, status: str, *, exchange_order_id: Optional[str],
+        venue_response: Optional[dict], error: Optional[str],
+    ) -> None:
+        self._require_pool()
+        if status not in {"ACKNOWLEDGED", "REJECTED", "UNKNOWN"}:
+            raise ValueError("invalid submit-attempt transition")
+        async with self.pool.acquire() as conn:
+            result = await conn.execute(
+                "update public.executor_submit_attempts set status=$2, "
+                "exchange_order_id=coalesce($3, exchange_order_id), "
+                "venue_response=case when $4::jsonb is null then venue_response else $4::jsonb end, "
+                "last_error=$5, resolved_at=case when $2 in ('ACKNOWLEDGED','REJECTED') then now() else null end, "
+                "updated_at=now() where client_order_id=$1 and status in ('SUBMITTING','UNKNOWN')",
+                client_order_id, status, exchange_order_id,
+                json.dumps(venue_response, separators=(",", ":"), default=str) if venue_response is not None else None,
+                error,
+            )
+            if result.endswith(" 0"):
+                raise GlobalStopError(
+                    f"submit attempt transition rejected for {client_order_id} (current state may have changed)"
+                )
+
+    async def list_unresolved_submit_attempts(self, *, limit: int = 100) -> list:
+        """Return attempts whose venue outcome is not yet proven."""
+        self._require_pool()
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "select client_order_id, exchange, market_type, symbol, side, order_type, "
+                "quantity, price, pair_key, amount_spec, recovery_context, status, "
+                "submit_started_at, last_error from public.executor_submit_attempts "
+                "where status in ('SUBMITTING','UNKNOWN') order by submit_started_at limit $1",
+                max(1, min(int(limit), 1000)),
+            )
+        return [dict(row) for row in rows]
+
+    async def reconcile_submit_attempt_found(
+        self, client_order_id: str, order: dict
+    ) -> None:
+        """Adopt an order found by exact venue client-order-id lookup."""
+        await self.mark_submit_acknowledged(client_order_id, order)
+
+    async def reconcile_submit_attempt_not_found(
+        self, client_order_id: str, *, evidence: str
+    ) -> None:
+        """Record a negative lookup but deliberately keep the attempt UNKNOWN.
+
+        Absence from an eventually consistent lookup endpoint is not proof that
+        a create-order request was rejected. Only an authoritative venue
+        rejection or an operator-approved resolution may release the global gate.
+        """
+        self._require_pool()
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "update public.executor_submit_attempts set last_lookup_at=now(), "
+                "last_lookup_result='NOT_FOUND', last_error=$2, updated_at=now() "
+                "where client_order_id=$1 and status in ('SUBMITTING','UNKNOWN')",
+                client_order_id, str(evidence)[:2000],
+            )
+
 
     async def request_stop(
         self, reason: str, *, source: str, metadata: Optional[dict] = None
