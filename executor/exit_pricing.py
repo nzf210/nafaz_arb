@@ -142,6 +142,20 @@ class ExitPricingMixin:
         decay_eligible_funding = pos.accumulated_funding_usdt * (1.0 - retention)
         return (decay_eligible_funding / position_value_usdt) * 100.0
 
+    async def _refresh_predicted_funding_rate(
+        self, pair_tag: str, pos: ActivePosition, now_ms: int
+    ) -> None:
+        """Refresh the upcoming rate periodically, before the funding boundary."""
+        retry_after = getattr(self, "_funding_rate_refresh_retry_after_ms", {})
+        if now_ms < retry_after.get(pair_tag, 0):
+            return
+        retry_after[pair_tag] = now_ms + 30_000
+        self._funding_rate_refresh_retry_after_ms = retry_after
+        symbol = self._resolve_global_symbol(pos.symbol)
+        await self._refresh_funding_schedule(
+            pair_tag, symbol, pos.current_funding_rate
+        )
+
     async def _persist_next_funding_schedule(
         self, pair_tag: str, pos: ActivePosition, now_ms: int,
         next_funding_ms: int, current_rate: float,
