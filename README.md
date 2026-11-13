@@ -305,14 +305,19 @@ never the anon/publishable key. Do not commit it, put it in the image, or expose
 to frontend/Telegram clients. If credentials are absent, persistence is disabled;
 a database outage does not block exchange risk management.
 
-Still schema-only: `exchange_accounts`, `strategy_configs`, `risk_limits`, and
-`market_pairs`; credentials are never written by this runtime. Confirmed funding
+Runtime registry snapshots additionally populate `exchange_accounts` (metadata
+only for configured Spot/Perpetual venues; no API credentials), `risk_limits`
+(sanitized active executor settings, audit-only and never read back), and
+`market_pairs` (exact pairs actually used when a position opens/restores).
+`strategy_configs` remains schema-only until a separate strategy configuration
+model is defined; Supabase is not a trading control plane. Confirmed funding
 settlements come only from exchange funding history, balance snapshots include only
 successful read-only venue reports, and status snapshots are emitted on state changes
-plus a 60-second heartbeat. The scanner delivery worker reconciles only
-durable opportunity delivery; it does not reconcile private exchange positions
-or balances. Supabase history is not a complete exchange ledger and must never
-replace authenticated exchange-side exposure verification.
+plus a 60-second heartbeat. The market-pair registry is not a full market-discovery
+catalog. The scanner delivery worker reconciles only durable opportunity delivery;
+it does not reconcile private exchange positions or balances. Supabase history is
+not a complete exchange ledger and must never replace authenticated exchange-side
+exposure verification.
 See [Supabase runtime and deployment notes](./supabase/README.md).
 
 
