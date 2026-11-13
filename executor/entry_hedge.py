@@ -61,6 +61,21 @@ class EntryHedgeMixin:
                 f"[State 2 Instant Short Hedge] Fill detected: delta_qty={unhedged_delta} "
                 f"(${delta_val_usd:.2f}) on {pair_tag}. Opening Market Short on Global Futures!"
             )
+            if getattr(self, "two_leg_coordinator", None) is not None:
+                coord = self.two_leg_coordinator
+                spot_leg = coord.spot_manager.legs.get(f"spot-{pair_tag}")
+                if spot_leg is None:
+                    spot_leg = coord.spot_manager.create_leg(
+                        pair_tag,
+                        venue=str(order_info.get("local_exchange") or ""),
+                        symbol=str(order_info.get("symbol") or ""),
+                        target_qty=float(order_info.get("qty", 0.0) or 0.0),
+                    )
+                coord.spot_manager.record_fill(
+                    spot_leg.leg_id,
+                    filled_qty=unhedged_delta,
+                    price=price_idr / usdt_rate if usdt_rate > 0 else price_idr,
+                )
             await self._execute_entry_hedge(
                 pair_tag, order_info, unhedged_delta, price_idr, usdt_rate
             )
@@ -476,6 +491,26 @@ class EntryHedgeMixin:
             getattr(self, "_pair_infos", {}).get(pair_tag),
             is_mock=bool(getattr(self.config, "mock_mode", False)),
         )
+        if getattr(self, "two_leg_coordinator", None) is not None:
+            coord = self.two_leg_coordinator
+            fut_leg = coord.futures_manager.legs.get(f"futures-{pair_tag}")
+            if fut_leg is None:
+                fut_leg = coord.futures_manager.create_leg(
+                    pair_tag,
+                    venue=str(order_info.get("global_exchange") or ""),
+                    symbol=global_symbol,
+                    contract_size=1.0,
+                )
+            fill_price = self._resolve_short_entry_usdt(short_order)
+            coord.futures_manager.record_fill(
+                fut_leg.leg_id, filled_contracts=actual_hedged_qty, price=fill_price
+            )
+            drift_report = coord.evaluate_hedge_drift(pair_tag)
+            if drift_report.status.value == "HARD_DRIFT_BREACH":
+                logger.critical(
+                    "[Hedge Drift] Hard breach on %s: unhedged=%.6f drift_ratio=%.2f%% age=%.1fs",
+                    pair_tag, drift_report.unhedged_qty, drift_report.drift_ratio * 100.0, drift_report.exposure_age_seconds
+                )
         await self.redis.set(
             f"arb:active_pos:{pair_tag}",
             json.dumps(self.active_positions[pair_tag].to_dict()),
