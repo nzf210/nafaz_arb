@@ -13,6 +13,7 @@ import (
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
+	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 )
 
 type availabilityReporter interface {
@@ -131,7 +132,27 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 	// Evaluate freshness against the time after both order books were received,
 	// not the beginning of the full scan (which can be seconds earlier).
 	evaluationTime := time.Now().UTC()
-	op, err := s.calculate(sm, pm, sb, pb, fr, evaluationTime, positionReason, isSynthetic, fxRate, requiredNotional)
+	var dynamicSpotFee, dynamicPerpFee *redishandler.DynamicFeeProfile
+	s.mu.Lock()
+	feeRedis := s.redisClient
+	s.mu.Unlock()
+	if feeRedis != nil {
+		dynamicSpotFee, _ = feeRedis.GetDynamicFeeProfile(ctx, sm.Exchange, "spot", sm.Symbol)
+		dynamicPerpFee, _ = feeRedis.GetDynamicFeeProfile(ctx, pm.Exchange, "perp", pm.Symbol)
+	}
+	op, err := s.calculate(opportunityCalculationInput{
+		spotMarket:       sm,
+		perpMarket:       pm,
+		spotBook:         sb,
+		perpBook:         pb,
+		funding:          fr,
+		now:              evaluationTime,
+		positionReason:   positionReason,
+		isSynthetic:      isSynthetic,
+		fxRate:           fxRate,
+		requiredNotional: requiredNotional,
+		dynamicProfiles:  []*redishandler.DynamicFeeProfile{dynamicSpotFee, dynamicPerpFee},
+	})
 	if err != nil {
 		if strings.Contains(err.Error(), "empty order book") {
 			s.recordEmptyBook(pairKey, started)
@@ -218,6 +239,15 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		tickIDR = localTick * fxRate
 	}
 
+	// Direct USDT/USDC pairs share a stable quote unit and must remain
+	// comparable even before this process has observed an IDR/USDT ticker.
+	// Keep fxRate itself untouched (zero still means no FX observation); use
+	// a unit conversion only for the spread comparison and cancellation math.
+	comparisonRate := fxRate
+	if !isIDRQuote && comparisonRate <= 0 {
+		comparisonRate = 1.0
+	}
+
 	var targetLimitBuyIDR float64
 	if isIDRQuote {
 		targetLimitBuyIDR = rawSB.Bids[0].Price + localTick
@@ -229,11 +259,11 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		if len(rawSB.Asks) > 0 && targetUSDT >= rawSB.Asks[0].Price && rawSB.Asks[0].Price > rawSB.Bids[0].Price {
 			targetUSDT = rawSB.Bids[0].Price
 		}
-		targetLimitBuyIDR = targetUSDT * fxRate
+		targetLimitBuyIDR = targetUSDT * comparisonRate
 	}
 
 	globalBestBidUSDT := pb.Bids[0].Price
-	globalBestBidIDR := globalBestBidUSDT * fxRate
+	globalBestBidIDR := globalBestBidUSDT * comparisonRate
 	var entrySpreadPct float64
 	if globalBestBidIDR > 0 {
 		entrySpreadPct = ((globalBestBidIDR - targetLimitBuyIDR) / globalBestBidIDR) * 100.0
@@ -259,10 +289,10 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	if fundingSubsidyPct < subsidyFloor {
 		fundingSubsidyPct = subsidyFloor
 	}
-	minimumEntrySpreadPct := (s.cfg.SpotMakerFeePct + s.cfg.PerpTakerFeePct) - fundingSubsidyPct
+	minimumEntrySpreadPct := (op.SpotEntryFeePct + op.PerpEntryFeePct) - fundingSubsidyPct
 
 	var cancelIfGlobalBidDropsBelowUSDT float64
-	denom := fxRate * (1.0 - (minimumEntrySpreadPct / 100.0))
+	denom := comparisonRate * (1.0 - (minimumEntrySpreadPct / 100.0))
 	if denom > 0 {
 		cancelIfGlobalBidDropsBelowUSDT = targetLimitBuyIDR / denom
 	} else {
@@ -406,6 +436,20 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					CancelIfGlobalBidDropsBelowUSDT: cancelIfGlobalBidDropsBelowUSDT,
 					ScannerValidated:                true,
 					EstimatedNetProfitUSDT:           netProfitUSDT,
+					SpotEntryFeePct:                  op.SpotEntryFeePct,
+					SpotExitFeePct:                   op.SpotExitFeePct,
+					PerpEntryFeePct:                  op.PerpEntryFeePct,
+					PerpExitFeePct:                   op.PerpExitFeePct,
+					FeeSource:                        op.FeeSource,
+					FeeVerified:                      op.FeeVerified,
+					FeeFetchedAtMS:                   op.FeeFetchedAtMS,
+					FeeAssetSurchargePct:             op.FeeAssetSurchargePct,
+					EstimatedFeesUSDT:                op.TradingFees,
+					Quantity:                         op.Quantity,
+					SpotEntryPriceUSDT:               op.SpotEntryPrice,
+					SpotExitPriceUSDT:                op.SpotExitPrice,
+					PerpEntryPriceUSDT:               op.PerpEntryPrice,
+					PerpExitPriceUSDT:                op.PerpExitPrice,
 				},
 			}
 

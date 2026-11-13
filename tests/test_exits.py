@@ -140,6 +140,13 @@ async def test_state4_records_negative_pnl_realistically(engine, fake_redis, moc
     records the trade as a loss in history, and does NOT falsely count it as a win.
     """
     pair_tag = "toko:ath_usdt"
+    engine.config.mock_mode = True
+    realized_balance_calls = []
+
+    def capture_realized_trade(**kwargs):
+        realized_balance_calls.append(kwargs)
+
+    mock_client.apply_realized_trade = capture_realized_trade
     pos = ActivePosition(
         local_exchange="tokocrypto",
         global_exchange="okx",
@@ -194,6 +201,18 @@ async def test_state4_records_negative_pnl_realistically(engine, fake_redis, moc
     assert len(history_raw) == 1
     trade = json.loads(history_raw[0])
     assert trade["net_profit_usdt"] < 0  # Verified negative PnL recorded honestly!
+    assert trade["fees_usdt"] > 0
+    assert trade["spot_fees_usdt"] > 0
+    assert trade["futures_fees_usdt"] > 0
+    assert trade["fees_usdt"] == pytest.approx(
+        trade["spot_fees_usdt"] + trade["futures_fees_usdt"]
+    )
+    assert trade["fee_source"] == "LEGACY_CONSERVATIVE_FALLBACK"
+    assert trade["fee_verified"] is False
+    assert len(realized_balance_calls) == 1
+    balance_fees = realized_balance_calls[0]
+    assert balance_fees["spot_fees_usdt"] == pytest.approx(trade["spot_fees_usdt"])
+    assert balance_fees["futures_fees_usdt"] == pytest.approx(trade["futures_fees_usdt"])
 
     # 4. Verify stats: total_closed incremented, but win_count is 0!
     stats = await fake_redis.hgetall("arb:stats")
@@ -386,7 +405,7 @@ async def test_funding_rollover_uses_actual_exchange_settlement(engine, fake_red
     }
 
     applied = await engine._handle_funding_rollover(
-        pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms
+        pair_tag, pos, now_ms=now_ms
     )
 
     assert applied is True
@@ -397,7 +416,7 @@ async def test_funding_rollover_uses_actual_exchange_settlement(engine, fake_red
 
     # Replaying the same cycle cannot credit the same settlement twice.
     applied_again = await engine._handle_funding_rollover(
-        pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms + 1
+        pair_tag, pos, now_ms=now_ms + 1
     )
     assert applied_again is False
     assert pos.accumulated_funding_usdt == pytest.approx(0.975)
@@ -426,7 +445,7 @@ async def test_funding_rollover_never_estimates_missing_settlement(engine, fake_
     }
 
     applied = await engine._handle_funding_rollover(
-        pair_tag, pos, global_ask_usdt=65_100.0, now_ms=now_ms
+        pair_tag, pos, now_ms=now_ms
     )
 
     assert applied is False
@@ -512,3 +531,172 @@ async def test_status_snapshot_exposes_managed_pending_orders(engine):
     assert order["global_exchange"] == "okx"
     assert order["quote_asset"] == "USDT"
     assert order["remaining"] == 2000.0
+
+
+@pytest.mark.asyncio
+async def test_cancel_replace_blocks_new_exit_when_old_order_is_still_open(
+    engine, fake_redis, mock_client
+):
+    """A cancel timeout plus a still-open venue order must never create a second sell."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        base_target_exit_spread_pct=0.30,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    snapshot = {
+        "global_best_ask_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+    await engine._check_dynamic_exits()
+
+    assert len(mock_client.placed_sells) == 1
+    old_order = mock_client.placed_sells[0]
+    old_order_id = old_order["id"]
+    original_cancel = mock_client.cancel_local_order
+
+    async def cancel_times_out(order_id, symbol):
+        raise TimeoutError("cancel acknowledgement timed out")
+
+    mock_client.cancel_local_order = cancel_times_out
+    mock_client.orders[old_order_id]["status"] = "open"
+    snapshot["global_best_ask_usdt"] = 65_200.0
+    snapshot["timestamp_ms"] = int(time.time() * 1000)
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+
+    await engine._check_dynamic_exits()
+
+    assert len(mock_client.placed_sells) == 1
+    assert engine.pending_exit_orders[pair_tag]["order_id"] == old_order_id
+    assert mock_client.orders[old_order_id]["status"] == "open"
+    mock_client.cancel_local_order = original_cancel
+
+
+@pytest.mark.asyncio
+async def test_cancel_replace_uses_exchange_status_when_cancel_acknowledgement_times_out(
+    engine, fake_redis, mock_client
+):
+    """A lost cancel acknowledgement is recoverable when REST confirms terminal status."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        base_target_exit_spread_pct=0.30,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    snapshot = {
+        "global_best_ask_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+    await engine._check_dynamic_exits()
+
+    old_order = mock_client.placed_sells[0]
+    old_order_id = old_order["id"]
+
+    async def cancel_times_out(order_id, symbol):
+        mock_client.orders[order_id]["status"] = "canceled"
+        raise TimeoutError("exchange canceled but acknowledgement was lost")
+
+    mock_client.cancel_local_order = cancel_times_out
+    snapshot["global_best_ask_usdt"] = 65_200.0
+    snapshot["timestamp_ms"] = int(time.time() * 1000)
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+
+    await engine._check_dynamic_exits()
+
+    assert mock_client.orders[old_order_id]["status"] == "canceled"
+    assert len(mock_client.placed_sells) == 2
+    assert engine.pending_exit_orders[pair_tag]["order_id"] == mock_client.placed_sells[1]["id"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_replace_reconciles_racing_partial_fill_before_resizing(
+    engine, fake_redis, mock_client
+):
+    """A partial fill racing cancel is hedged before the replacement quantity is chosen."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        base_target_exit_spread_pct=0.30,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    snapshot = {
+        "local_best_bid": 1_010_000_000.0,
+        "local_best_ask": 1_011_000_000.0,
+        "global_best_bid_usdt": 65_000.0,
+        "global_best_ask_usdt": 65_000.0,
+        "usdt_idr_rate": 16_000.0,
+        "timestamp_ms": now_ms,
+    }
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+    await engine._check_dynamic_exits()
+
+    old_order = mock_client.placed_sells[0]
+    old_order_id = old_order["id"]
+    mock_client.orders[old_order_id]["status"] = "canceled"
+    mock_client.orders[old_order_id]["filled"] = 0.004
+    snapshot["global_best_ask_usdt"] = 65_200.0
+    snapshot["timestamp_ms"] = int(time.time() * 1000)
+    await fake_redis.set(f"arb:live_price:{pair_tag}", json.dumps(snapshot))
+
+    await engine._check_dynamic_exits()
+
+    assert len(mock_client.global_close_buys) == 1
+    assert mock_client.global_close_buys[0]["amount"] == pytest.approx(0.004)
+    assert engine.active_positions[pair_tag].qty == pytest.approx(0.006)
+    assert len(mock_client.placed_sells) == 2
+    assert mock_client.placed_sells[1]["amount"] == pytest.approx(0.006)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_exit_ambiguous_submit_is_not_retried(engine, fake_redis, mock_client):
+    """A timed-out exit limit sell is reconciled by client id, never resubmitted."""
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax", global_exchange="okx", symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0, short_entry_usdt=65_000.0, qty=0.01,
+    )
+    calls = {"submit": 0, "lookup": 0}
+
+    async def fail_after_write(*args, **kwargs):
+        calls["submit"] += 1
+        raise TimeoutError("response lost after order request")
+
+    async def lookup_missing(*args, **kwargs):
+        calls["lookup"] += 1
+        return None
+
+    mock_client.place_local_limit_sell = fail_after_write
+    mock_client.fetch_local_order_by_client_id = lookup_missing
+
+    await engine._place_dynamic_limit_sell(
+        pair_tag, pos, 1_000_000_000.0, 1.0, 65_000.0, 16_000.0
+    )
+
+    assert calls == {"submit": 1, "lookup": 1}
+    assert pair_tag not in engine.pending_exit_orders
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED

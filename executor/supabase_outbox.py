@@ -12,6 +12,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
+_BEGIN_IMMEDIATE_SQL = "BEGIN IMMEDIATE"
+_PENDING_COUNT_SQL = "SELECT COUNT(*) FROM pending_outbox"
+_ENQUEUE_PENDING_SQL = """INSERT INTO pending_outbox
+   (table_name, conflict_target, row_json, created_at)
+   VALUES (?, ?, ?, ?)"""
+
+
 class OutboxFull(RuntimeError):
     """Raised when the configured durable outbox capacity is exhausted."""
 
@@ -57,21 +64,75 @@ class DurableOutbox:
     def enqueue(self, table: str, conflict_target: Optional[str], row: Dict[str, Any]) -> int:
         payload = json.dumps(row, separators=(",", ":"), ensure_ascii=False, default=str)
         with self._lock:
-            self._db.execute("BEGIN IMMEDIATE")
+            self._db.execute(_BEGIN_IMMEDIATE_SQL)
             try:
                 count = self._db.execute(
-                    "SELECT COUNT(*) FROM pending_outbox"
+                    _PENDING_COUNT_SQL
                 ).fetchone()[0]
                 if count >= self.max_pending:
                     raise OutboxFull(f"durable outbox capacity reached ({self.max_pending})")
                 cursor = self._db.execute(
-                    """INSERT INTO pending_outbox
-                       (table_name, conflict_target, row_json, created_at)
-                       VALUES (?, ?, ?, ?)""",
+                    _ENQUEUE_PENDING_SQL,
                     (table, conflict_target, payload, time.time()),
                 )
                 self._db.execute("COMMIT")
                 return int(cursor.lastrowid)
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+
+    def get_numeric_state(self, state_key: str) -> Optional[float]:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT numeric_value FROM writer_state WHERE state_key=?", (state_key,)
+            ).fetchone()
+        return float(row[0]) if row else None
+
+    def set_numeric_state(self, state_key: str, value: float) -> None:
+        number = float(value)
+        with self._lock:
+            self._db.execute(
+                """INSERT INTO writer_state(state_key, numeric_value, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(state_key) DO UPDATE SET
+                     numeric_value=excluded.numeric_value,
+                     updated_at=excluded.updated_at""",
+                (state_key, number, time.time()),
+            )
+
+    def enqueue_once(
+        self,
+        table: str,
+        conflict_target: Optional[str],
+        row: Dict[str, Any],
+        state_key: str,
+    ) -> bool:
+        """Atomically enqueue an immutable event once across retries/restarts."""
+        payload = json.dumps(row, separators=(",", ":"), ensure_ascii=False, default=str)
+        with self._lock:
+            self._db.execute(_BEGIN_IMMEDIATE_SQL)
+            try:
+                exists = self._db.execute(
+                    "SELECT 1 FROM writer_state WHERE state_key=?", (state_key,)
+                ).fetchone()
+                if exists:
+                    self._db.execute("COMMIT")
+                    return False
+                count = self._db.execute(_PENDING_COUNT_SQL).fetchone()[0]
+                if count >= self.max_pending:
+                    raise OutboxFull(f"durable outbox capacity reached ({self.max_pending})")
+                self._db.execute(
+                    _ENQUEUE_PENDING_SQL,
+                    (table, conflict_target, payload, time.time()),
+                )
+                self._db.execute(
+                    """INSERT INTO writer_state(state_key, numeric_value, updated_at)
+                       VALUES (?, 1, ?)
+                       ON CONFLICT(state_key) DO NOTHING""",
+                    (state_key, time.time()),
+                )
+                self._db.execute("COMMIT")
+                return True
             except Exception:
                 self._db.execute("ROLLBACK")
                 raise
@@ -87,7 +148,7 @@ class DurableOutbox:
         """Atomically journal a new fill delta and advance its cumulative watermark."""
         value = max(0.0, float(cumulative))
         with self._lock:
-            self._db.execute("BEGIN IMMEDIATE")
+            self._db.execute(_BEGIN_IMMEDIATE_SQL)
             try:
                 previous_row = self._db.execute(
                     "SELECT numeric_value FROM writer_state WHERE state_key=?",
@@ -98,7 +159,7 @@ class DurableOutbox:
                 if delta <= 1e-12:
                     self._db.execute("COMMIT")
                     return 0.0
-                count = self._db.execute("SELECT COUNT(*) FROM pending_outbox").fetchone()[0]
+                count = self._db.execute(_PENDING_COUNT_SQL).fetchone()[0]
                 if count >= self.max_pending:
                     raise OutboxFull(f"durable outbox capacity reached ({self.max_pending})")
                 fill_row = dict(row)
@@ -106,9 +167,7 @@ class DurableOutbox:
                 fill_row["quote_qty"] = delta * float(fill_row.get("price") or 0.0)
                 payload = json.dumps(fill_row, separators=(",", ":"), ensure_ascii=False, default=str)
                 self._db.execute(
-                    """INSERT INTO pending_outbox
-                       (table_name, conflict_target, row_json, created_at)
-                       VALUES (?, ?, ?, ?)""",
+                    _ENQUEUE_PENDING_SQL,
                     (table, conflict_target, payload, time.time()),
                 )
                 self._db.execute(
@@ -168,8 +227,55 @@ class DurableOutbox:
 
     def pending_count(self) -> int:
         with self._lock:
-            return int(self._db.execute("SELECT COUNT(*) FROM pending_outbox").fetchone()[0])
+            return int(self._db.execute(_PENDING_COUNT_SQL).fetchone()[0])
 
     def close(self) -> None:
         with self._lock:
             self._db.close()
+
+
+    def pending_table(self, table: str, limit: int = 50000) -> List[Tuple[int, str, Optional[str], Dict[str, Any]]]:
+        """Read pending rows for one table, including rows waiting for retry."""
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT id, table_name, conflict_target, row_json
+                   FROM pending_outbox WHERE table_name=?
+                   ORDER BY id LIMIT ?""",
+                (str(table), max(1, int(limit))),
+            ).fetchall()
+        return [(int(i), name, conflict, json.loads(payload))
+                for i, name, conflict, payload in rows]
+
+    def delete_matching(self, target_ids: set) -> int:
+        """Delete any pending outbox rows referencing one of target_ids."""
+        cleaned = {str(x).strip() for x in target_ids if str(x).strip()}
+        if not cleaned:
+            return 0
+        to_delete: List[int] = []
+        with self._lock:
+            rows = self._db.execute("SELECT id, row_json FROM pending_outbox").fetchall()
+            for row_id, raw_json in rows:
+                try:
+                    data = json.loads(raw_json)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                candidates = {
+                    str(data.get("id") or ""),
+                    str(data.get("local_order_id") or ""),
+                    str(data.get("client_order_id") or ""),
+                    str(data.get("exchange_order_id") or ""),
+                    str(data.get("venue_client_order_id") or ""),
+                    str(data.get("orphan_id") or ""),
+                }
+                raw_payload = data.get("raw_payload")
+                if isinstance(raw_payload, dict):
+                    candidates.add(str(raw_payload.get("local_order_id") or ""))
+                if candidates & cleaned:
+                    to_delete.append(int(row_id))
+            if to_delete:
+                self._db.executemany(
+                    "DELETE FROM pending_outbox WHERE id=?", [(i,) for i in to_delete]
+                )
+        return len(to_delete)

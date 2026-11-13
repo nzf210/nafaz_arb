@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 class ExchangeCredentials:
     api_key: str = ""
     api_secret: str = ""
+    account_scope: str = ""
     passphrase: Optional[str] = None
     testnet: bool = False
     options: Dict[str, Any] = field(default_factory=dict)
@@ -23,13 +24,17 @@ class SupabaseConfig:
 @dataclass
 class ExecutorConfig:
     redis_url: str = "redis://localhost:6380/0"
-    max_stale_latency_ms: int = 500
+    max_stale_latency_ms: int = 2500
     min_partial_fill_usd: float = 10.0
     exit_price_move_threshold: float = 0.0015  # 0.15%
     max_order_ttl_seconds: int = 120  # Max TTL for pending maker entry orders before cancel
     # Refresh stale, unfilled maker quotes by canceling them and waiting for a fresh scanner signal.
     maker_refresh_after_seconds: int = 45
     maker_refresh_cooldown_seconds: int = 300
+    # Minimum projected net return retained by Indodax IDR adaptive maker quotes.
+    adaptive_maker_min_net_profit_pct: float = 0.10
+    indodax_maker_refresh_after_seconds: int = 15
+    indodax_maker_refresh_cooldown_seconds: int = 15
     mock_mode: bool = True  # Paper trading / simulation by default
     initial_exchange_balance_usdt: float = 100.0  # $100 per exchange
     allocation_per_pair: float = 0.5  # Max 50% capital per pair
@@ -47,6 +52,9 @@ class ExecutorConfig:
     # Cap on total capital committed per exchange, across all active positions.
     # 0 disables the check.
     max_exposure_per_exchange_usdt: float = 0.0
+    # Maximum distinct open spot positions plus pending spot-entry orders per CEX.
+    # A missing venue override always falls back to the safe default of two.
+    max_open_spot_orders_per_exchange: Dict[str, int] = field(default_factory=dict)
     # Balance-mismatch guard for simulated entry snapshots. Live entries do not
     # poll balances before submission; the venue validates available funds.
     balance_mismatch_fraction: float = 0.20
@@ -61,8 +69,28 @@ class ExecutorConfig:
     # proven path. When on, stale or missing entries still fall back to REST.
     private_stream_enabled: bool = False
     private_stream_max_age_seconds: float = 5.0
+    # Monitoring loop cadence. The venue rate-limits per IP, so a sub-second tick
+    # with several pending orders drains the quota and the order-status poll
+    # starts answering HTTP 429 with an HTML body. 500ms stays responsive while
+    # leaving headroom for the pair fan-out.
+    monitor_interval_seconds: float = 0.5
+    # Consecutive order-status fetch failures tolerated for one pending entry
+    # before it is force-reconciled, so a venue outage cannot pin a pending order
+    # (and its reserved funds) open indefinitely.
+    max_order_fetch_failures: int = 10
+    # Exponential backoff ceiling for order-status polls that keep failing.
+    order_fetch_backoff_max_seconds: float = 60.0
+    # A pricing HTTP 429 on the local venue (rate limit / throttle) pauses new
+    # entry placement for this long instead of hammering the endpoint.
+    venue_rate_limit_cooldown_seconds: float = 30.0
+    # Consecutive execution failures on a pair before it is blacklisted
+    # for cooldown. 0 disables the auto-blacklist.
+    max_pair_failure_threshold: int = 2
+    # Duration to blacklist a pair once the failure threshold is reached (default 24h).
+    pair_blacklist_cooldown_seconds: float = 86400.0
     local_exchange_name: str = "indodax"
     global_exchange_name: str = "okx"
+    execution_mode: str = "TAKER_TAKER"
     exchanges: Dict[str, ExchangeCredentials] = field(default_factory=dict)
     local_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
     global_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
@@ -88,6 +116,8 @@ class ExecutorConfig:
                 db = redis_cfg.get("db", 0)
                 self.redis_url = f"redis://{auth_part}{addr}/{db}"
 
+            self.execution_mode = str(data.get("execution_mode", self.execution_mode)).strip().upper()
+
             # Check root-level config values as fallbacks
             if "allocation_per_pair" in data:
                 self.allocation_per_pair = float(data["allocation_per_pair"])
@@ -102,6 +132,9 @@ class ExecutorConfig:
                 ("max_order_ttl_seconds", int),
                 ("maker_refresh_after_seconds", int),
                 ("maker_refresh_cooldown_seconds", int),
+                ("adaptive_maker_min_net_profit_pct", float),
+                ("indodax_maker_refresh_after_seconds", int),
+                ("indodax_maker_refresh_cooldown_seconds", int),
                 ("initial_exchange_balance_usdt", float),
                 ("allocation_per_pair", float),
                 ("min_allocated_capital", float),
@@ -115,9 +148,21 @@ class ExecutorConfig:
                 ("mock_mode", bool),
                 ("private_stream_enabled", bool),
                 ("private_stream_max_age_seconds", float),
+                ("monitor_interval_seconds", float),
+                ("max_order_fetch_failures", int),
+                ("order_fetch_backoff_max_seconds", float),
+                ("venue_rate_limit_cooldown_seconds", float),
+                ("max_pair_failure_threshold", int),
+                ("pair_blacklist_cooldown_seconds", float),
             ):
                 if key in exec_cfg:
                     setattr(self, key, conv(exec_cfg[key]))
+            limits = exec_cfg.get("max_open_spot_orders_per_exchange", {})
+            if isinstance(limits, dict):
+                self.max_open_spot_orders_per_exchange = {
+                    str(name).strip().lower(): limit
+                    for name, limit in limits.items()
+                }
             # Load modular exchanges dictionary if provided in config
             if "exchanges" in data and isinstance(data["exchanges"], dict):
                 for ex_name, ex_data in data["exchanges"].items():
@@ -125,6 +170,7 @@ class ExecutorConfig:
                         self.exchanges[ex_name.lower()] = ExchangeCredentials(
                             api_key=str(ex_data.get("api_key", "")),
                             api_secret=str(ex_data.get("api_secret", "")),
+                            account_scope=str(ex_data.get("account_scope", "")),
                             passphrase=ex_data.get("passphrase"),
                             testnet=bool(ex_data.get("testnet", False)),
                             options=dict(ex_data.get("options", {})),
@@ -146,6 +192,9 @@ class ExecutorConfig:
         if redis_env := os.getenv("REDIS_URL"):
             self.redis_url = redis_env
 
+        if mode := os.getenv("EXECUTION_MODE"):
+            self.execution_mode = mode.strip().upper()
+
         if local_ex := os.getenv("LOCAL_EXCHANGE"):
             self.local_exchange_name = local_ex
 
@@ -164,6 +213,30 @@ class ExecutorConfig:
             except ValueError:
                 pass
 
+        if monitor_env := os.getenv("MONITOR_INTERVAL_SECONDS"):
+            try:
+                self.monitor_interval_seconds = float(monitor_env)
+            except ValueError:
+                pass
+
+        if fetch_fail_env := os.getenv("MAX_ORDER_FETCH_FAILURES"):
+            try:
+                self.max_order_fetch_failures = int(fetch_fail_env)
+            except ValueError:
+                pass
+
+        if fetch_backoff_env := os.getenv("ORDER_FETCH_BACKOFF_MAX_SECONDS"):
+            try:
+                self.order_fetch_backoff_max_seconds = float(fetch_backoff_env)
+            except ValueError:
+                pass
+
+        if rl_cooldown_env := os.getenv("VENUE_RATE_LIMIT_COOLDOWN_SECONDS"):
+            try:
+                self.venue_rate_limit_cooldown_seconds = float(rl_cooldown_env)
+            except ValueError:
+                pass
+
         if ttl_env := os.getenv("MAX_ORDER_TTL_SECONDS"):
             try:
                 self.max_order_ttl_seconds = int(ttl_env)
@@ -179,6 +252,24 @@ class ExecutorConfig:
         if refresh_cooldown_env := os.getenv("MAKER_REFRESH_COOLDOWN_SECONDS"):
             try:
                 self.maker_refresh_cooldown_seconds = int(refresh_cooldown_env)
+            except ValueError:
+                pass
+
+        if adaptive_profit_env := os.getenv("ADAPTIVE_MAKER_MIN_NET_PROFIT_PCT"):
+            try:
+                self.adaptive_maker_min_net_profit_pct = float(adaptive_profit_env)
+            except ValueError:
+                pass
+
+        if indodax_refresh_env := os.getenv("INDODAX_MAKER_REFRESH_AFTER_SECONDS"):
+            try:
+                self.indodax_maker_refresh_after_seconds = int(indodax_refresh_env)
+            except ValueError:
+                pass
+
+        if indodax_cooldown_env := os.getenv("INDODAX_MAKER_REFRESH_COOLDOWN_SECONDS"):
+            try:
+                self.indodax_maker_refresh_cooldown_seconds = int(indodax_cooldown_env)
             except ValueError:
                 pass
 
@@ -226,9 +317,11 @@ class ExecutorConfig:
 
         self.local_credentials.api_key = os.getenv("LOCAL_API_KEY", self.local_credentials.api_key)
         self.local_credentials.api_secret = os.getenv("LOCAL_API_SECRET", self.local_credentials.api_secret)
+        self.local_credentials.account_scope = os.getenv("LOCAL_ACCOUNT_SCOPE", self.local_credentials.account_scope)
 
         self.global_credentials.api_key = os.getenv("GLOBAL_API_KEY", self.global_credentials.api_key)
         self.global_credentials.api_secret = os.getenv("GLOBAL_API_SECRET", self.global_credentials.api_secret)
+        self.global_credentials.account_scope = os.getenv("GLOBAL_ACCOUNT_SCOPE", self.global_credentials.account_scope)
         self.global_credentials.passphrase = os.getenv("GLOBAL_PASSPHRASE", self.global_credentials.passphrase)
 
         if os.getenv("GLOBAL_TESTNET", "").lower() in ("true", "1"):
@@ -243,10 +336,16 @@ class ExecutorConfig:
                 cred.api_key = env_v
                 if secret := os.getenv(f"{env_k[:-8]}_API_SECRET"):
                     cred.api_secret = secret
+                if scope := os.getenv(f"{env_k[:-8]}_ACCOUNT_SCOPE"):
+                    cred.account_scope = scope
                 if passp := os.getenv(f"{env_k[:-8]}_PASSPHRASE"):
                     cred.passphrase = passp
                 if testnet_val := os.getenv(f"{env_k[:-8]}_TESTNET"):
                     cred.testnet = testnet_val.lower() in ("true", "1", "yes")
+                if broker_id := os.getenv(f"{env_k[:-8]}_BROKER_ID"):
+                    # Binance Cloud broker id (Tokocrypto); travels into the ccxt
+                    # client options so exchange_client can prefix client order ids.
+                    cred.options.setdefault("broker_id", broker_id)
 
         # Sync local and global credentials from modular exchanges if available
         if self.local_exchange_name.lower() in self.exchanges:
@@ -255,6 +354,8 @@ class ExecutorConfig:
                 self.local_credentials.api_key = src.api_key
             if src.api_secret:
                 self.local_credentials.api_secret = src.api_secret
+            if src.account_scope:
+                self.local_credentials.account_scope = src.account_scope
             if src.passphrase:
                 self.local_credentials.passphrase = src.passphrase
             if src.testnet:
@@ -270,6 +371,8 @@ class ExecutorConfig:
                 self.global_credentials.api_key = src.api_key
             if src.api_secret:
                 self.global_credentials.api_secret = src.api_secret
+            if src.account_scope:
+                self.global_credentials.account_scope = src.account_scope
             if src.passphrase:
                 self.global_credentials.passphrase = src.passphrase
             if src.testnet:
@@ -297,6 +400,9 @@ class ExecutorConfig:
         "max_order_ttl_seconds": (1, 86400, 120),
         "maker_refresh_after_seconds": (0, 86400, 45),
         "maker_refresh_cooldown_seconds": (1, 86400, 300),
+        "indodax_maker_refresh_after_seconds": (0, 86400, 15),
+        "indodax_maker_refresh_cooldown_seconds": (1, 86400, 15),
+        "adaptive_maker_min_net_profit_pct": (0.0, 10.0, 0.10),
         "min_partial_fill_usd": (0.0, None, 10.0),
         "exit_price_move_threshold": (0.0, 1.0, 0.0015),
         "initial_exchange_balance_usdt": (0.01, None, 100.0),
@@ -310,6 +416,10 @@ class ExecutorConfig:
         "max_consecutive_order_failures": (0, 100, 50),
         "estimated_round_trip_fee_pct": (0.0, 1.0, 0.001),
         "private_stream_max_age_seconds": (0.5, 60.0, 5.0),
+        "monitor_interval_seconds": (0.05, 60.0, 0.5),
+        "max_order_fetch_failures": (1, 1000, 10),
+        "order_fetch_backoff_max_seconds": (0.1, 600.0, 60.0),
+        "venue_rate_limit_cooldown_seconds": (1.0, 3600.0, 30.0),
     }
 
     def sanitize(self) -> list:
@@ -338,6 +448,19 @@ class ExecutorConfig:
             if value != raw:
                 warnings.append(f"{name}={raw!r} out of range, using {value!r}")
             setattr(self, name, value)
+
+        clean_limits = {}
+        for exchange, raw_limit in self.max_open_spot_orders_per_exchange.items():
+            name = str(exchange).strip().lower()
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                limit = 2
+            if not name or limit < 1 or limit > 100:
+                warnings.append(f"invalid spot order limit for {exchange!r}; using 2")
+                limit = 2
+            clean_limits[name] = limit
+        self.max_open_spot_orders_per_exchange = clean_limits
 
         if self.allocation_per_pair <= 0:
             warnings.append("allocation_per_pair must be > 0, using 0.5")

@@ -5,7 +5,6 @@ import sys
 from executor.config import ExecutorConfig
 from executor.exchange_client import create_exchange_client, create_ccxt_client
 from executor.engine import ArbitrageEngine
-from executor.exposure_reconciliation import ExposureReconciliationWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,21 +38,13 @@ async def main():
         except NotImplementedError:
             pass
 
+    # engine.start() performs the complete startup recovery before it
+    # starts signal consumers, then owns the single periodic reconciliation
+    # workers. Do not create a second independent exposure worker here.
     await engine.start()
-    reconciliation_task = None
-    if not config.mock_mode:
-        worker = ExposureReconciliationWorker(engine)
-        reconciliation_task = asyncio.create_task(worker.run())
-        logger.info(
-            "Read-only exposure reconciliation enabled (interval=%ss)",
-            worker.interval,
-        )
     try:
         await stop_event.wait()
     finally:
-        if reconciliation_task is not None:
-            reconciliation_task.cancel()
-            await asyncio.gather(reconciliation_task, return_exceptions=True)
         await engine.stop()
 
 

@@ -99,8 +99,9 @@ class ExposureReconciliationWorker:
         return max(self.absolute_tolerance, abs(expected) * self.relative_tolerance)
 
     async def run(self) -> None:
-        """Run immediately, then periodically until cancelled."""
+        """Run periodically after the synchronous startup reconciliation."""
         while True:
+            await asyncio.sleep(self.interval)
             try:
                 if not self.engine.config.mock_mode:
                     await self.reconcile_once()
@@ -108,7 +109,6 @@ class ExposureReconciliationWorker:
                 raise
             except Exception:
                 logger.exception("periodic exchange exposure reconciliation failed")
-            await asyncio.sleep(self.interval)
 
     async def reconcile_once(self) -> None:
         client = self.engine.client
@@ -362,19 +362,15 @@ class ExposureReconciliationWorker:
                 used = _finite(asset.get("used", 0))
                 if min(total, free, used) < 0:
                     raise ValueError("negative balance")
-                self.engine.supabase._emit(
-                    "balance_snapshots",
-                    {
-                        "exchange_name": str(report.get("name", "")),
-                        "market_type": "perpetual" if market == "futures" else "spot",
-                        "asset": str(asset.get("asset", "")),
-                        "total": total,
-                        "free": free,
-                        "used": used,
-                        "is_mock": False,
-                        "observed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "raw_payload": {"source": "periodic_exposure_reconciliation"},
-                    },
+                self.engine.supabase.balance_snapshot(
+                    exchange=str(report.get("name", "")),
+                    market_type="perpetual" if market == "futures" else "spot",
+                    asset=str(asset.get("asset", "")),
+                    total=total,
+                    free=free,
+                    used=used,
+                    is_mock=False,
+                    raw_payload={"source": "periodic_exposure_reconciliation"},
                 )
             except (TypeError, ValueError):
                 logger.exception("invalid balance snapshot from %s", report.get("name"))

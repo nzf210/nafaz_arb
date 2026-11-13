@@ -54,8 +54,8 @@ async def test_p0_01_hedge_failure_rolls_back_spot_leg(fake_redis):
     assert msg["symbol"] == "btc_idr"
 
 @pytest.mark.asyncio
-async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_redis):
-    """Rollback retries 5 times and emits a manual-intervention alert when it cannot sell."""
+async def test_p0_01_hedge_failure_with_ambiguous_rollback_submits_once_and_alerts(fake_redis):
+    """An ambiguous market submit is attempted once and emits a manual-intervention alert."""
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
     client = BlockingSellClient()
@@ -85,23 +85,24 @@ async def test_p0_01_hedge_failure_with_failed_rollback_retries_and_alerts(fake_
 
     await engine._check_entry_orders()
 
-    assert attempts == 5
-    # A failed rollback leaves coins unhedged: the pair must surface as FAILED,
+    assert attempts == 1
+    # A failed/ambiguous rollback leaves coins unhedged: the pair must surface as FAILED,
     # not as a clean CLOSED (P1-04).
     assert engine.states[pair_tag] == PositionState.FAILED
     assert pair_tag not in engine.active_positions
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "HEDGE_FAILED"
 
     msg = None
-    for _ in range(10):
+    for _ in range(20):
         m = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
         if m and m.get("type") == "message":
-            msg = json.loads(m["data"])
-            break
+            candidate = json.loads(m["data"])
+            if candidate.get("event") == "HEDGE_FAILED":
+                msg = candidate
+                break
     assert msg is not None
-    assert msg["event"] == "HEDGE_FAILED"
     assert msg["rollback_succeeded"] is False
-    assert "local spot exchange unavailable" in msg["rollback_error"]
+    assert "ambiguous" in msg["rollback_error"]
 
 @pytest.mark.asyncio
 async def test_p0_hedge_ambiguity_open_short_blocks_rollback(engine, fake_redis):
@@ -420,7 +421,7 @@ async def test_engine_lifecycle_start_stop(engine):
     """Test engine start and stop coroutine lifecycle to prevent TypeError."""
     await engine.start()
     assert engine._running is True
-    assert len(engine._tasks) == 7
+    assert len(engine._tasks) == 12
     await engine.stop()
     assert engine._running is False
 
@@ -524,7 +525,7 @@ async def test_p0_pending_entry_unknown_venue_state_is_retained_and_blocked(engi
 
 @pytest.mark.asyncio
 async def test_partial_futures_hedge_fill_is_not_recorded_as_fully_hedged(fake_redis):
-    """A partial futures fill blocks spot rollback and forces manual reconciliation."""
+    """A known partial futures fill blocks spot rollback and forces manual reconciliation."""
     client = OpenShortPositionClient()
     client.amount_unused = 0.002
 
@@ -559,8 +560,8 @@ async def test_partial_futures_hedge_fill_is_not_recorded_as_fully_hedged(fake_r
 
     assert pair_tag not in engine.active_positions
     assert client.placed_sells == []
-    assert engine.states[pair_tag] == PositionState.FAILED
-    assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "HEDGE_STATE_UNKNOWN"
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert pair_tag in engine._recovery_scope_halts
 
 
 @pytest.mark.asyncio

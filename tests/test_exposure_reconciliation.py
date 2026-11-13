@@ -63,6 +63,10 @@ class FakeSupabase:
     def _emit(self, table, row):
         self.rows.append((table, row))
 
+    def balance_snapshot(self, **row):
+        self.rows.append(("balance_snapshots", row))
+        return True
+
 
 @pytest.mark.asyncio
 async def test_reconciliation_halts_new_entries_on_confirmed_mismatch_without_orders(monkeypatch):

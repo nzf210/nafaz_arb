@@ -1,0 +1,694 @@
+"""recovery registry helpers for the universal order lifecycle."""
+
+import asyncio
+import logging
+import time
+import uuid
+from typing import Any, Dict, Optional
+
+from redis.exceptions import WatchError
+
+from executor.exchange_common import _accepted_client_order_ids
+from executor.models import OrderRecord, PositionState, RecoveryStatus
+
+logger = logging.getLogger("executor.order_recovery")
+
+
+
+def _record_accepted_client_ids(record: OrderRecord, owner: Any) -> set:
+    """Every client-id spelling that may legitimately answer for one record.
+
+    A lost acknowledgement means the only proof of acceptance is the id the
+    venue reports, which for a broker-prefixed venue is the spelling it minted
+    rather than the one submitted.
+    """
+    # A facade exposes the spot leg as ``local``; a bare venue is its own.
+    venue = getattr(owner, "local", None) or owner
+    prefix = ""
+    market = "futures" if getattr(record, "market_type", "") == "perpetual" else "spot"
+    if market == "spot":
+        prefix = str(getattr(owner, "_local_broker_prefix", "") or "")
+    accepted = _accepted_client_order_ids(
+        venue,
+        str(record.client_order_id or ""),
+        broker_prefix=prefix,
+        scope=str(getattr(record, "exchange", "") or ""),
+    )
+    # Survives a restart, unlike the in-process alias learnt at submit time.
+    accepted.add(str(getattr(record, "venue_client_order_id", "") or ""))
+    accepted.discard("")
+    return accepted
+
+class RecoveryRegistryMixin:
+    """Focused order-recovery responsibilities."""
+
+    async def _run_order_recovery(self) -> None:
+        """Run order reconciliation and safe incident cleanup under one lease."""
+        await self._with_order_recovery_lock(
+            self._run_order_recovery_lifecycle_with_lock
+        )
+
+    async def _run_order_recovery_lifecycle_with_lock(self) -> None:
+        await self._run_order_recovery_with_lock()
+        self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
+        # Do not immediately retry unresolved records in the same sweep: the
+        # single-order endpoint and open-order catalogue must agree. A later
+        # periodic pass or explicit operator retry may re-check the incident.
+        if self._recovery_pending_orders:
+            self._refresh_entry_gate()
+            return
+        if self._recovery_scope_halts or any(
+            state == PositionState.RECONCILIATION_REQUIRED
+            for state in self.states.values()
+        ):
+            verified_positions = set()
+            try:
+                verified_positions = await self._verify_recovered_active_positions()
+                if not getattr(self.config, "mock_mode", False):
+                    await self.trade_fill_reconciliation.reconcile_once()
+                    await self.exposure_reconciliation.reconcile_once()
+            except Exception as exc:
+                logger.exception("[Recovery] periodic incident verification failed")
+                self._halt_exposure_scope(
+                    "*", f"periodic incident verification failed: {type(exc).__name__}: {exc}"
+                )
+            for pair_tag in verified_positions:
+                await self._clear_resolved_pair_failure(pair_tag)
+            for pair_tag, state in list(self.states.items()):
+                if (
+                    state == PositionState.RECONCILIATION_REQUIRED
+                    and pair_tag not in self.active_positions
+                    and (self._failure_reasons.get(pair_tag) or {}).get("reason") == "ORDER_RECOVERY_UNVERIFIED"
+                ):
+                    await self._clear_resolved_pair_failure(pair_tag)
+        self._refresh_entry_gate()
+
+    async def _run_startup_recovery(self) -> bool:
+        """Restore all startup state while holding one cross-instance lease."""
+        return await self._with_order_recovery_lock(
+            self._run_startup_recovery_with_lock
+        )
+
+    async def _run_startup_recovery_with_lock(self) -> None:
+        """Restore positions, pending entries and orders as one exclusive pass."""
+        await self._restore_risk_state()
+        await self._recover_active_positions()
+        await self._recover_pending_entry_orders()
+        await self._run_order_recovery_with_lock()
+        verified_positions = set()
+        if not getattr(self.config, "mock_mode", False):
+            verified_positions = await self._verify_recovered_active_positions()
+            await self.trade_fill_reconciliation.reconcile_once()
+            await self.exposure_reconciliation.reconcile_once()
+        self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
+        for pair_tag in verified_positions:
+            await self._clear_resolved_pair_failure(pair_tag)
+        if not self._recovery_pending_orders:
+            for pair_tag, state in list(self.states.items()):
+                if (
+                    state == PositionState.RECONCILIATION_REQUIRED
+                    and pair_tag not in self.active_positions
+                    and (self._failure_reasons.get(pair_tag) or {}).get("reason") == "ORDER_RECOVERY_UNVERIFIED"
+                ):
+                    await self._clear_resolved_pair_failure(pair_tag)
+        self._refresh_entry_gate()
+
+    def _get_local_recovery_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_local_recovery_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._local_recovery_lock = lock
+        return lock
+
+    async def _with_order_recovery_lock(
+        self,
+        recovery_callback,
+        *,
+        wait_timeout: float = 0.0,
+        halt_on_busy: bool = True,
+    ) -> bool:
+        """Run a recovery callback under an owner-token Redis lease.
+
+        A process-local asyncio lock is insufficient: two replicas can otherwise
+        restore or reconcile the same venue orders concurrently. Redis' lock
+        uses an owner token and compare-and-update Redis transactions; the heartbeat keeps
+        the lease alive during slow venue/API reconciliation.
+        """
+        if self.redis is None or self.order_registry is None:
+            return False
+
+        local_lock = self._get_local_recovery_lock()
+        deadline = time.monotonic() + max(0.0, float(wait_timeout or 0.0))
+        local_acquired = False
+        if wait_timeout > 0:
+            try:
+                await asyncio.wait_for(
+                    local_lock.acquire(), timeout=max(0.05, float(wait_timeout))
+                )
+                local_acquired = True
+            except asyncio.TimeoutError:
+                if halt_on_busy:
+                    self._halt_exposure_scope(
+                        "*", "distributed recovery is owned by another executor"
+                    )
+                    self._refresh_entry_gate()
+                return False
+        else:
+            if local_lock.locked():
+                if halt_on_busy:
+                    self._halt_exposure_scope(
+                        "*", "distributed recovery is owned by another executor"
+                    )
+                    self._refresh_entry_gate()
+                return False
+            await local_lock.acquire()
+            local_acquired = True
+
+        lock_token = uuid.uuid4().hex
+        lock_key = "arb:executor:order-recovery:lock"
+        try:
+            acquired = False
+            while True:
+                try:
+                    acquired = bool(
+                        await self.redis.set(
+                            lock_key, lock_token, nx=True, px=300_000
+                        )
+                    )
+                except Exception as exc:
+                    logger.critical(
+                        "[Recovery] distributed lock unavailable; recovery skipped and "
+                        "entries halted: %s",
+                        exc,
+                    )
+                    self._halt_exposure_scope(
+                        "*", f"distributed recovery lock unavailable: {type(exc).__name__}"
+                    )
+                    self._refresh_entry_gate()
+                    return False
+                if acquired or time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(min(0.25, max(0.01, deadline - time.monotonic())))
+
+            if not acquired:
+                logger.warning(
+                    "[Recovery] another executor owns the distributed recovery lease; "
+                    "this instance remains entry-gated"
+                )
+                if halt_on_busy:
+                    self._halt_exposure_scope(
+                        "*", "distributed recovery is owned by another executor"
+                    )
+                    self._refresh_entry_gate()
+                return False
+
+            owner_task = asyncio.current_task()
+            heartbeat = asyncio.create_task(
+                self._renew_order_recovery_lock(lock_token, owner_task)
+            )
+            completed = False
+            try:
+                await recovery_callback()
+                completed = True
+            except Exception as exc:
+                self._halt_exposure_scope(
+                    "*", f"recovery callback failed: {type(exc).__name__}: {exc}"
+                )
+                self._refresh_entry_gate()
+                raise
+            finally:
+                heartbeat.cancel()
+                await asyncio.gather(heartbeat, return_exceptions=True)
+                try:
+                    released = await self._release_order_recovery_lock(lock_token)
+                    if not released:
+                        raise RuntimeError("recovery lease is no longer owned by this executor")
+                except Exception as exc:
+                    # A lost/expired lease must never be treated as a successful
+                    # release: retain the global entry gate until a later full pass.
+                    logger.critical(
+                        "[Recovery] distributed lock release failed; entries remain "
+                        "halted until recovery can reacquire the lease: %s",
+                        exc,
+                    )
+                    self._halt_exposure_scope(
+                        "*", "distributed recovery lock release could not be verified"
+                    )
+                    self._refresh_entry_gate()
+                    completed = False
+            return completed
+        finally:
+            if local_acquired and local_lock.locked():
+                local_lock.release()
+
+    async def _renew_order_recovery_lock(self, lock_token: str, owner_task) -> None:
+        """Renew the lease only while its unique owner token is still present."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                renewed = await self._update_order_recovery_lease(
+                    lock_token, extend=True
+                )
+                if not renewed:
+                    raise RuntimeError("Redis rejected recovery lease renewal")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.critical(
+                    "[Recovery] distributed recovery lease lost; aborting this "
+                    "recovery pass: %s",
+                    exc,
+                )
+                self._halt_exposure_scope(
+                    "*", "distributed recovery lease lost during reconciliation"
+                )
+                self._refresh_entry_gate()
+                if owner_task is not None and not owner_task.done():
+                    owner_task.cancel()
+                return
+
+    async def _update_order_recovery_lease(
+        self, lock_token: str, *, extend: bool
+    ) -> bool:
+        """Atomically renew or release the lease only for its current owner."""
+        lock_key = "arb:executor:order-recovery:lock"
+        for _ in range(3):
+            async with self.redis.pipeline(transaction=True) as pipe:
+                try:
+                    await pipe.watch(lock_key)
+                    current = await pipe.get(lock_key)
+                    if isinstance(current, bytes):
+                        current = current.decode("utf-8")
+                    if current != lock_token:
+                        await pipe.unwatch()
+                        return False
+                    pipe.multi()
+                    if extend:
+                        pipe.pexpire(lock_key, 300_000)
+                    else:
+                        pipe.delete(lock_key)
+                    await pipe.execute()
+                    return True
+                except WatchError:
+                    continue
+        return False
+
+    async def _release_order_recovery_lock(self, lock_token: str) -> bool:
+        """Compare-and-delete the lease; never delete another executor's lock."""
+        return await self._update_order_recovery_lease(
+            lock_token, extend=False
+        )
+
+    async def _run_order_recovery_with_lock(self) -> None:
+        """Reconciles durable registry + positions + venue open orders."""
+        registry_loaded = True
+        try:
+            records = await self.order_registry.active_records()
+        except Exception as exc:
+            logger.exception("[Recovery] failed to load the durable order registry")
+            records = {}
+            registry_loaded = False
+            # A partial cache plus an unavailable durable read is not a complete
+            # inventory. Gate every pair until a later recovery pass can merge
+            # both sources; venue open-order discovery alone cannot reveal
+            # already-filled market orders.
+            self._halt_exposure_scope(
+                "*", f"durable registry unavailable: {type(exc).__name__}: {exc}"
+            )
+        self._recovered_order_records = records
+        self._recovered_orphans = await self.order_registry.orphans()
+        for orphan in self._recovered_orphans.values():
+            scope = str(orphan.get("scope") or "")
+            if scope:
+                self._halt_exposure_scope(scope, "unresolved orphan order")
+
+        await self._reconcile_registered_orders(records)
+        await self._reconcile_venue_open_orders()
+        await self._finalize_recovery_state()
+        if registry_loaded:
+            self._recovery_scope_halts.pop("*", None)
+            self._refresh_entry_gate()
+
+    # ------------------------------------------- durable registry reconciliation
+
+    async def _reconcile_registered_group(
+        self, exchange: str, symbol: str, pair_tag: str, group: list
+    ) -> None:
+        token = None
+        try:
+            if not getattr(self.config, "mock_mode", False) and pair_tag:
+                try:
+                    token = self._bind_pair_client(
+                        self._pair_info_for_tag(pair_tag)
+                    )
+                except LookupError as exc:
+                    logger.warning(
+                        "[Recovery] no pair client for %s (%s); verifying with the default client",
+                        pair_tag, exc,
+                    )
+            for record in group:
+                await self._reconcile_registered_order(record, exchange, symbol)
+        except Exception as exc:
+            logger.critical(
+                "[Recovery] cannot verify registry records for %s/%s: %s",
+                exchange, symbol, exc,
+            )
+            for record in group:
+                record.recovery_status = RecoveryStatus.UNVERIFIED.value
+                await self.order_registry.register(record)
+                await self.order_registry.mark_pending_recovery(
+                    record.local_order_id, f"venue verification failed: {exc}"
+                )
+        finally:
+            if token is not None:
+                self._reset_pair_client(token)
+
+    async def _reconcile_registered_orders(
+        self, records: Dict[str, OrderRecord]
+    ) -> None:
+        """Verify non-terminal records in their venue/pair binding context."""
+        groups: Dict[tuple, list] = {}
+        for record in records.values():
+            exchange = (
+                record.exchange or self.config.local_exchange_name or ""
+            ).lower()
+            groups.setdefault(
+                (exchange, record.symbol, record.pair_key, record.market_type), []
+            ).append(record)
+        for (exchange, symbol, pair_tag, _market_type), group in groups.items():
+            await self._reconcile_registered_group(
+                exchange, symbol, pair_tag, group
+            )
+
+    async def _reconcile_registered_order(
+        self, record: OrderRecord, exchange: str, symbol: str
+    ) -> None:
+        """Verifies one durable record against the venue and re-adopts it.
+
+        Verification and adoption are one step on purpose: an order confirmed as
+        resting must also be re-bound to its lifecycle, otherwise the bot would
+        hold an exchange order that no monitoring loop knows about.
+        """
+        if record.is_terminal:
+            await self.order_registry.retire(record)
+            return
+        order_id = record.exchange_order_id
+        try:
+            if order_id:
+                order = await self._fetch_order_by_role(record, order_id, symbol)
+            elif record.client_order_id:
+                order = await self._fetch_order_by_client_id(record)
+                if order is None:
+                    await self.order_registry.mark_pending_recovery(
+                        record.local_order_id,
+                        "client order id not found in venue history; acceptance remains ambiguous",
+                    )
+                    self._halt_exposure_scope(
+                        record.pair_key or f"{exchange}:{symbol}",
+                        "order submission acknowledgement is unresolved",
+                    )
+                    return
+            else:
+                await self.order_registry.mark_pending_recovery(
+                    record.local_order_id,
+                    "order has neither exchange id nor client order id",
+                )
+                self._halt_exposure_scope(
+                    record.pair_key or f"{exchange}:{symbol}",
+                    "order submission identity is unavailable",
+                )
+                return
+        except Exception as exc:
+            record.recovery_status = RecoveryStatus.UNVERIFIED.value
+            await self.order_registry.register(record)
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id, f"fetch failed: {type(exc).__name__}: {exc}"
+            )
+            logger.warning("[Recovery] cannot fetch order %s (%s)", order_id, symbol)
+            return
+
+        if not isinstance(order, dict):
+            record.recovery_status = RecoveryStatus.UNVERIFIED.value
+            await self.order_registry.register(record)
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id, "venue returned a malformed order payload"
+            )
+            return
+        if order_id and order.get("id") and str(order.get("id")) != str(order_id):
+            record.recovery_status = RecoveryStatus.UNVERIFIED.value
+            await self.order_registry.register(record)
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id,
+                f"venue returned mismatched order id {order.get('id')} for {order_id}",
+            )
+            return
+        if not order.get("id") and (not order_id or order_id not in str(order)):
+            # Venue history retention or API lag: absence is not proof of cancellation.
+            record.recovery_status = RecoveryStatus.UNVERIFIED.value
+            await self.order_registry.register(record)
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id,
+                "order not found on the venue; absence is not proof of cancellation",
+            )
+            return
+
+        if not order_id:
+            observed_client_id = str(
+                order.get("clientOrderId") or order.get("client_order_id") or ""
+            )
+            # A venue may store a spelling it minted rather than the submitted
+            # id, so the alias learnt from that same acknowledgement counts as
+            # a match. Any other id still fails closed.
+            accepted_ids = _record_accepted_client_ids(
+                record, self._client_for_exchange(exchange) or self.client
+            )
+            if (
+                observed_client_id != record.client_order_id
+                and observed_client_id not in accepted_ids
+            ):
+                record.recovery_status = RecoveryStatus.UNVERIFIED.value
+                await self.order_registry.register(record)
+                await self.order_registry.mark_pending_recovery(
+                    record.local_order_id,
+                    "venue lookup did not confirm the exact client order id",
+                )
+                self._halt_exposure_scope(
+                    record.pair_key or f"{exchange}:{symbol}",
+                    "client order id acknowledgement could not be verified",
+                )
+                return
+
+        previous_status = record.status
+        market = "futures" if record.market_type == "perpetual" else "spot"
+        amount_spec = record.local_amount_spec if market == "spot" else record.global_amount_spec
+        adopted = await self._apply_adopted_order(
+            record, order, record.pair_key, amount_spec
+        )
+        if adopted:
+            await self.order_registry.clear_pending_recovery(record.local_order_id)
+        if previous_status != record.status:
+            logger.warning(
+                "[Recovery] order %s (%s) reconciled: %s -> %s filled=%s",
+                order_id, record.pair_key or "unlinked", previous_status,
+                record.status, record.filled_quantity,
+            )
+        if adopted:
+            logger.info("[Recovery] re-adopted order %s into %s", order_id, record.pair_key)
+
+    async def _fetch_order_by_client_id(
+        self, record: OrderRecord
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve an unacknowledged submit by exact venue client-order id."""
+        client_id = str(record.client_order_id or "")
+        if not client_id:
+            raise ValueError("unacknowledged order has no client order id")
+        # The record names the venue that owns the order. ``self.client`` is only
+        # the configured base pair (e.g. indodax/okx), so a record submitted on a
+        # different spot venue (tokocrypto) would otherwise be looked up on the
+        # wrong exchange and fail with that venue's "invalid symbol" error.
+        owner = self._client_for_exchange(getattr(record, "exchange", "") or "")
+        if owner is None:
+            owner = self.client
+        if record.market_type == "perpetual":
+            fetcher = getattr(owner, "fetch_global_order_by_client_id", None)
+            if fetcher is None:
+                raise NotImplementedError(
+                    "client cannot search futures order history by client order id"
+                )
+            return await fetcher(
+                client_id, record.symbol, record.global_amount_spec
+            )
+        fetcher = getattr(owner, "fetch_local_order_by_client_id", None)
+        if fetcher is None:
+            raise NotImplementedError(
+                "client cannot search spot order history by client order id"
+            )
+        return await fetcher(
+            client_id, record.symbol, record.local_amount_spec
+        )
+
+    async def _fetch_order_by_role(
+        self, record: OrderRecord, order_id: str, symbol: str
+    ) -> Dict[str, Any]:
+        """Reads an order from the venue leg that actually holds it.
+
+        Futures legs live on the perpetual venue: querying the spot venue for the
+        same id would either miss it or, worse, return an unrelated spot order.
+        """
+        spec = record.global_amount_spec if record.market_type == "perpetual" else record.local_amount_spec
+        owner = self._client_for_exchange(getattr(record, "exchange", "") or "")
+        if owner is None:
+            owner = self.client
+        if record.market_type == "perpetual":
+            fetcher = getattr(owner, "fetch_global_order", None)
+            if fetcher is None:
+                raise NotImplementedError(
+                    "client cannot fetch a futures order; perpetual record cannot be verified"
+                )
+            return await fetcher(order_id, symbol, spec)
+        return await owner.fetch_local_order(order_id, symbol)
+
+    @staticmethod
+    def _apply_venue_state(record: OrderRecord, order: Dict[str, Any]) -> None:
+        # Backfill the venue id: a crash between submit and acknowledgement, or a
+        # record matched only by client id, has no exchange order id yet.
+        venue_id = str(order.get("id") or "")
+        if venue_id and not record.exchange_order_id:
+            record.exchange_order_id = venue_id
+        client_id = str(order.get("clientOrderId") or order.get("client_order_id") or "")
+        if client_id and not record.client_order_id:
+            record.client_order_id = client_id
+        record.status = str(order.get("status") or "unknown").lower()
+        record.filled_quantity = float(order.get("filled", 0.0) or 0.0)
+        amount = float(
+            order.get("amount", 0.0) or record.original_quantity or 0.0
+        )
+        if amount > 0:
+            record.original_quantity = amount
+        record.remaining_quantity = max(0.0, record.original_quantity - record.filled_quantity)
+        record.average_fill_price = float(order.get("average", 0.0) or 0.0)
+        record.last_reconciled_at = int(time.time() * 1000)
+
+    async def _finalize_recovery_state(self) -> None:
+        """Blocks new entries when any mismatch could not be classified."""
+        pending = await self.order_registry.pending_recovery_ids()
+        self._recovery_pending_orders = pending
+        if not pending:
+            logger.info(
+                "[Recovery] order registry fully reconciled (%d managed, %d orphan)",
+                len(self._recovered_order_records), len(self._recovered_orphans),
+            )
+            return
+        for local_id, reason in pending.items():
+            record = self._recovered_order_records.get(local_id)
+            pair_tag = record.pair_key if record else ""
+            exchange = (record.exchange if record else "") or ""
+            if pair_tag:
+                # Gate the pair itself: the order may belong to a market whose
+                # venue is otherwise healthy.
+                self._halt_exposure_scope(pair_tag, "unverifiable order after restart")
+                self._mark_failed(
+                    pair_tag,
+                    "ORDER_RECOVERY_UNVERIFIED",
+                    f"Order {local_id} could not be verified against the venue after restart: {reason}",
+                    detail={"local_order_id": local_id, "reason": reason},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                continue
+            scope = exchange or "unknown"
+            self._halt_exposure_scope(scope, "unverifiable order after restart")
+            await self._publish_execution_failure(
+                f"recovery:{scope}",
+                "ORDER_RECOVERY_UNVERIFIED",
+                f"Order {local_id} on {scope} could not be verified: {reason}. "
+                "New entries on this venue are blocked until an operator reconciles it.",
+                detail={"local_order_id": local_id, "reason": reason, "exchange": exchange},
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+        self._refresh_entry_gate()
+        logger.critical(
+            "[Recovery] %d order(s) require manual reconciliation; new entries blocked "
+            "on the affected scope (monitoring and de-risking continue)",
+            len(pending),
+        )
+
+    # ------------------------------------------------- venue open-order sweep
+
+    async def _reconcile_venue_open_orders(self) -> None:
+        """Adopts orders that exist on an active venue but nowhere in bot state."""
+        targets = self._recovery_venue_targets()
+        if not targets:
+            return
+        for exchange, symbol, pair_tag, market, amount_spec in targets:
+            try:
+                open_orders = await self._fetch_recovery_orders(exchange, symbol, market, amount_spec)
+            except NotImplementedError as exc:
+                logger.info("[Recovery] %s cannot list open orders: %s", exchange, exc)
+                continue
+            except Exception as exc:
+                logger.critical(
+                    "[Recovery] cannot read %s open orders for %s: %s; entry halted on that venue",
+                    exchange, symbol or "account", exc,
+                )
+                scope = pair_tag or exchange
+                self._halt_exposure_scope(scope, "open-order sweep failed after restart")
+                await self._publish_execution_failure(
+                    f"recovery:{scope}",
+                    "RECOVERY_OPEN_ORDERS_UNAVAILABLE",
+                    f"Cannot verify resting orders on {exchange} after restart: {exc}. "
+                    "New entries are blocked until the venue is reachable again.",
+                    detail={"exchange": exchange, "symbol": symbol, "error": str(exc)},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                continue
+            for order in open_orders:
+                await self._adopt_venue_order(order, exchange, symbol, pair_tag, market, amount_spec)
+            await self._detect_phantom_orders(exchange, market, open_orders)
+            self._clear_sweep_halt(exchange)
+
+    @staticmethod
+    def _is_phantom_candidate(
+        record: OrderRecord, exchange: str, market_type: str, listed: set
+    ) -> bool:
+        if str(record.exchange or "").lower() != str(exchange or "").lower():
+            return False
+        if (record.market_type or "") != market_type:
+            return False
+        if record.is_terminal or record.recovery_status == RecoveryStatus.UNVERIFIED.value:
+            return False
+        return bool(
+            record.exchange_order_id
+            and record.exchange_order_id not in listed
+        )
+
+    async def _detect_phantom_orders(
+        self, exchange: str, market: str, open_orders: list
+    ) -> None:
+        """Flag locally resting records missing from the venue open-order list."""
+        listed = {
+            str(order.get("id") or "")
+            for order in open_orders if isinstance(order, dict)
+        }
+        market_type = "perpetual" if market == "futures" else "spot"
+        for record in (self._recovered_order_records or {}).values():
+            if not self._is_phantom_candidate(
+                record, exchange, market_type, listed
+            ):
+                continue
+            record.recovery_status = RecoveryStatus.PHANTOM.value
+            await self.order_registry.register(record)
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id,
+                "recorded locally but absent from the venue's open-order list",
+            )
+            logger.critical(
+                "[Recovery] PHANTOM order %s (%s) is tracked but not open on %s; "
+                "its final state must be reconciled before entries resume",
+                record.exchange_order_id, record.pair_key or "unlinked", exchange,
+            )
+
+    def _clear_sweep_halt(self, exchange: str) -> None:
+        """Lifts the gate a failed open-order sweep installed for this venue."""
+        halts = getattr(self, "_recovery_scope_halts", None) or {}
+        if exchange in halts and "open-order sweep" in halts[exchange]:
+            self._clear_exposure_halt(exchange, "open-order sweep succeeded")

@@ -1,0 +1,7202 @@
+[
+  {
+    "exchange": "indodax",
+    "symbol": "btcidr",
+    "base_asset": "BTC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "1inchidr",
+    "base_asset": "1INCH",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aaveidr",
+    "base_asset": "AAVE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aaplxidr",
+    "base_asset": "AAPLX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "abidr",
+    "base_asset": "AB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aceidr",
+    "base_asset": "ACE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "achidr",
+    "base_asset": "ACH",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "acnidr",
+    "base_asset": "ACN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "acsidr",
+    "base_asset": "ACS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "actsolidr",
+    "base_asset": "ACTSOL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "adaidr",
+    "base_asset": "ADA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aeroidr",
+    "base_asset": "AERO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aevoidr",
+    "base_asset": "AEVO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "agiidr",
+    "base_asset": "AGI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aiidr",
+    "base_asset": "AI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aihidr",
+    "base_asset": "AIH",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aiozidr",
+    "base_asset": "AIOZ",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aixbtidr",
+    "base_asset": "AIXBT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aleidr",
+    "base_asset": "ALE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aliceidr",
+    "base_asset": "ALICE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "algoidr",
+    "base_asset": "ALGO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "alloidr",
+    "base_asset": "ALLO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "altlayeridr",
+    "base_asset": "ALTLAYER",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "amznxidr",
+    "base_asset": "AMZNX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ampidr",
+    "base_asset": "AMP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "animeidr",
+    "base_asset": "ANIME",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ankridr",
+    "base_asset": "ANKR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "anoaidr",
+    "base_asset": "ANOA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "apeidr",
+    "base_asset": "APE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "apexidr",
+    "base_asset": "APEX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "api3idr",
+    "base_asset": "API3",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "apuidr",
+    "base_asset": "APU",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "arbidr",
+    "base_asset": "ARB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "arcidr",
+    "base_asset": "ARC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "arkmidr",
+    "base_asset": "ARKM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "asetquidr",
+    "base_asset": "ASETQU",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "asteridr",
+    "base_asset": "ASTER",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "athidr",
+    "base_asset": "ATH",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "atomidr",
+    "base_asset": "ATOM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "auctionidr",
+    "base_asset": "AUCTION",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "audioidr",
+    "base_asset": "AUDIO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ausdidr",
+    "base_asset": "AUSD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "avaidr",
+    "base_asset": "AVA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "avntidr",
+    "base_asset": "AVNT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "avaxidr",
+    "base_asset": "AVAX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "axlidr",
+    "base_asset": "AXL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "axsidr",
+    "base_asset": "AXS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "aztecidr",
+    "base_asset": "AZTEC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bananas31idr",
+    "base_asset": "BANANAS31",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "buildonidr",
+    "base_asset": "BUILDON",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "b2idr",
+    "base_asset": "B2",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "banidr",
+    "base_asset": "BAN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bananaidr",
+    "base_asset": "BANANA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bandidr",
+    "base_asset": "BAND",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bankidr",
+    "base_asset": "BANK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "batidr",
+    "base_asset": "BAT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bchidr",
+    "base_asset": "BCH",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "beamidr",
+    "base_asset": "BEAM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "beatidr",
+    "base_asset": "BEAT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bgbidr",
+    "base_asset": "BGB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bicoidr",
+    "base_asset": "BICO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bioidr",
+    "base_asset": "BIO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "birbidr",
+    "base_asset": "BIRB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bluridr",
+    "base_asset": "BLUR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bmtidr",
+    "base_asset": "BMT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bnbidr",
+    "base_asset": "BNB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bnkridr",
+    "base_asset": "BNKR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bnxnewidr",
+    "base_asset": "BNXNEW",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bomeidr",
+    "base_asset": "BOME",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bonkidr",
+    "base_asset": "BONK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bpidr",
+    "base_asset": "BP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bridr",
+    "base_asset": "BR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "brettidr",
+    "base_asset": "BRETT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bsvidr",
+    "base_asset": "BSV",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cakeidr",
+    "base_asset": "CAKE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "castidr",
+    "base_asset": "CAST",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "catidr",
+    "base_asset": "CAT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "catiidr",
+    "base_asset": "CATI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "celoidr",
+    "base_asset": "CELO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "celridr",
+    "base_asset": "CELR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cgptidr",
+    "base_asset": "CGPT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cheemsidr",
+    "base_asset": "CHEEMS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "chillguyidr",
+    "base_asset": "CHILLGUY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "chridr",
+    "base_asset": "CHR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "chzidr",
+    "base_asset": "CHZ",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cjlidr",
+    "base_asset": "CJL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ckbidr",
+    "base_asset": "CKB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cngidr",
+    "base_asset": "CNG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "coinxidr",
+    "base_asset": "COINX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "c98idr",
+    "base_asset": "C98",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "colidr",
+    "base_asset": "COL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "compidr",
+    "base_asset": "COMP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "conxidr",
+    "base_asset": "CONX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cowidr",
+    "base_asset": "COW",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "crclxidr",
+    "base_asset": "CRCLX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "creamidr",
+    "base_asset": "CREAM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "croidr",
+    "base_asset": "CRO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "croakidr",
+    "base_asset": "CROAK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "crvidr",
+    "base_asset": "CRV",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cstidr",
+    "base_asset": "CST",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ctcidr",
+    "base_asset": "CTC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ctkidr",
+    "base_asset": "CTK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ctsiidr",
+    "base_asset": "CTSI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cvcidr",
+    "base_asset": "CVC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cvxidr",
+    "base_asset": "CVX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "cyberidr",
+    "base_asset": "CYBER",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "degenidr",
+    "base_asset": "DEGEN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "depidr",
+    "base_asset": "DEP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "dexeidr",
+    "base_asset": "DEXE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "dfgidr",
+    "base_asset": "DFG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "dgbidr",
+    "base_asset": "DGB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "dodoidr",
+    "base_asset": "DODO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "dogeidr",
+    "base_asset": "DOGE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "dogsidr",
+    "base_asset": "DOGS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "dotidr",
+    "base_asset": "DOT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "drxidr",
+    "base_asset": "DRX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "duskidr",
+    "base_asset": "DUSK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "edenidr",
+    "base_asset": "EDEN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "edenaidr",
+    "base_asset": "EDENA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "egldidr",
+    "base_asset": "EGLD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "eigenidr",
+    "base_asset": "EIGEN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "enaidr",
+    "base_asset": "ENA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "enjidr",
+    "base_asset": "ENJ",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ensidr",
+    "base_asset": "ENS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ernidr",
+    "base_asset": "ERN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "etcidr",
+    "base_asset": "ETC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "espidr",
+    "base_asset": "ESP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ethidr",
+    "base_asset": "ETH",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ethfiidr",
+    "base_asset": "ETHFI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "fancidr",
+    "base_asset": "FANC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "fartcoinidr",
+    "base_asset": "FARTCOIN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "fetidr",
+    "base_asset": "FET",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ffidr",
+    "base_asset": "FF",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "filidr",
+    "base_asset": "FIL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "flokiidr",
+    "base_asset": "FLOKI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "flridr",
+    "base_asset": "FLR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "fluxidr",
+    "base_asset": "FLUX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "fuelidr",
+    "base_asset": "FUEL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "funidr",
+    "base_asset": "FUN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "galagamesidr",
+    "base_asset": "GALAGAMES",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "game2idr",
+    "base_asset": "GAME2",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "geniusidr",
+    "base_asset": "GENIUS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "glidridr",
+    "base_asset": "GLIDR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gididr",
+    "base_asset": "GID",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gigaidr",
+    "base_asset": "GIGA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "giggleidr",
+    "base_asset": "GIGGLE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "glmidr",
+    "base_asset": "GLM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gmtidr",
+    "base_asset": "GMT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gmxidr",
+    "base_asset": "GMX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gnoidr",
+    "base_asset": "GNO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "goatidr",
+    "base_asset": "GOAT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "googlxidr",
+    "base_asset": "GOOGLX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gpsidr",
+    "base_asset": "GPS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "grassidr",
+    "base_asset": "GRASS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gravityidr",
+    "base_asset": "GRAVITY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "griffainidr",
+    "base_asset": "GRIFFAIN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "grtidr",
+    "base_asset": "GRT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gtcidr",
+    "base_asset": "GTC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gweiidr",
+    "base_asset": "GWEI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "humanityidr",
+    "base_asset": "HUMANITY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "haedalidr",
+    "base_asset": "HAEDAL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "hartidr",
+    "base_asset": "HART",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "hbaridr",
+    "base_asset": "HBAR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "hftidr",
+    "base_asset": "HFT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "highidr",
+    "base_asset": "HIGH",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "hiveidr",
+    "base_asset": "HIVE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "hmstridr",
+    "base_asset": "HMSTR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "hntidr",
+    "base_asset": "HNT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "homeidr",
+    "base_asset": "HOME",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "hotidr",
+    "base_asset": "HOT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "humaidr",
+    "base_asset": "HUMA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "hypeidr",
+    "base_asset": "HYPE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "hyperidr",
+    "base_asset": "HYPER",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "myroidr",
+    "base_asset": "MYRO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "myxidr",
+    "base_asset": "MYX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "spaceididr",
+    "base_asset": "SPACEID",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "icntidr",
+    "base_asset": "ICNT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "icpidr",
+    "base_asset": "ICP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "idxidr",
+    "base_asset": "IDX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "idtidr",
+    "base_asset": "IDT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ilvidr",
+    "base_asset": "ILV",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "imxidr",
+    "base_asset": "IMX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "indridr",
+    "base_asset": "INDR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "injidr",
+    "base_asset": "INJ",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ioidr",
+    "base_asset": "IO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "iostidr",
+    "base_asset": "IOST",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "iotaidr",
+    "base_asset": "IOTA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "iotxidr",
+    "base_asset": "IOTX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "iqidr",
+    "base_asset": "IQ",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "islmidr",
+    "base_asset": "ISLM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "jasmyidr",
+    "base_asset": "JASMY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "jellyjellyidr",
+    "base_asset": "JELLYJELLY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "joeidr",
+    "base_asset": "JOE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "jupidr",
+    "base_asset": "JUP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "jstidr",
+    "base_asset": "JST",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "jtoidr",
+    "base_asset": "JTO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "kaiaidr",
+    "base_asset": "KAIA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "kaitoidr",
+    "base_asset": "KAITO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "kdagidr",
+    "base_asset": "KDAG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "kernelidr",
+    "base_asset": "KERNEL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "kmnoidr",
+    "base_asset": "KMNO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "kncidr",
+    "base_asset": "KNC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "komaidr",
+    "base_asset": "KOMA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ksmidr",
+    "base_asset": "KSM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ktaidr",
+    "base_asset": "KTA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ldoidr",
+    "base_asset": "LDO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "leoidr",
+    "base_asset": "LEO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "lighteridr",
+    "base_asset": "LIGHTER",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "lineaidr",
+    "base_asset": "LINEA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "linkidr",
+    "base_asset": "LINK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "listaidr",
+    "base_asset": "LISTA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "l3idr",
+    "base_asset": "L3",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "lskidr",
+    "base_asset": "LSK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "lptidr",
+    "base_asset": "LPT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "lqtyidr",
+    "base_asset": "LQTY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ltcidr",
+    "base_asset": "LTC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "lunaidr",
+    "base_asset": "LUNA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "luncidr",
+    "base_asset": "LUNC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "lyfelidr",
+    "base_asset": "LYFEL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "magicidr",
+    "base_asset": "MAGIC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "manaidr",
+    "base_asset": "MANA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mantaidr",
+    "base_asset": "MANTA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "marscoinidr",
+    "base_asset": "MARSCOIN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "maskidr",
+    "base_asset": "MASK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mavidr",
+    "base_asset": "MAV",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "maviaidr",
+    "base_asset": "MAVIA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mctidr",
+    "base_asset": "MCT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "meidr",
+    "base_asset": "ME",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "melaniaidr",
+    "base_asset": "MELANIA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "memeidr",
+    "base_asset": "MEME",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "metidr",
+    "base_asset": "MET",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "metaidr",
+    "base_asset": "META",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "metisidr",
+    "base_asset": "METIS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mewidr",
+    "base_asset": "MEW",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mitoidr",
+    "base_asset": "MITO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mntidr",
+    "base_asset": "MNT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mocaidr",
+    "base_asset": "MOCA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mogidr",
+    "base_asset": "MOG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "moltidr",
+    "base_asset": "MOLT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "monidr",
+    "base_asset": "MON",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "moodengidr",
+    "base_asset": "MOODENG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "morphoidr",
+    "base_asset": "MORPHO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "moveidr",
+    "base_asset": "MOVE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mproidr",
+    "base_asset": "MPRO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mrsidr",
+    "base_asset": "MRS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mtcidr",
+    "base_asset": "MTC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "mubarakidr",
+    "base_asset": "MUBARAK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nbtnewidr",
+    "base_asset": "NBTNEW",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nearidr",
+    "base_asset": "NEAR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "neiroctoidr",
+    "base_asset": "NEIROCTO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "neoidr",
+    "base_asset": "NEO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "neorpnewidr",
+    "base_asset": "NEORPNEW",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "neonidr",
+    "base_asset": "NEON",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "newtidr",
+    "base_asset": "NEWT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nexoidr",
+    "base_asset": "NEXO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nightidr",
+    "base_asset": "NIGHT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nmdidr",
+    "base_asset": "NMD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nmridr",
+    "base_asset": "NMR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nomidr",
+    "base_asset": "NOM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "novaidr",
+    "base_asset": "NOVA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "npcidr",
+    "base_asset": "NPC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nrgidr",
+    "base_asset": "NRG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nusaidr",
+    "base_asset": "NUSA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nvdaxidr",
+    "base_asset": "NVDAX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "nxaidr",
+    "base_asset": "NXA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ognidr",
+    "base_asset": "OGN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "okbidr",
+    "base_asset": "OKB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "okusdidr",
+    "base_asset": "OKUSD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ondoidr",
+    "base_asset": "ONDO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "onlidr",
+    "base_asset": "ONL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ontidr",
+    "base_asset": "ONT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "opidr",
+    "base_asset": "OP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "orbsidr",
+    "base_asset": "ORBS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "orcaidr",
+    "base_asset": "ORCA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "orderlyidr",
+    "base_asset": "ORDERLY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "paxgidr",
+    "base_asset": "PAXG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "payaiidr",
+    "base_asset": "PAYAI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pendleidr",
+    "base_asset": "PENDLE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "penguidr",
+    "base_asset": "PENGU",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "peopleidr",
+    "base_asset": "PEOPLE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pepeidr",
+    "base_asset": "PEPE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "plpaidr",
+    "base_asset": "PLPA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "plumeidr",
+    "base_asset": "PLUME",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "gnsidr",
+    "base_asset": "GNS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "phaidr",
+    "base_asset": "PHA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pieverseidr",
+    "base_asset": "PIEVERSE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pippinidr",
+    "base_asset": "PIPPIN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pixelidr",
+    "base_asset": "PIXEL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pmidr",
+    "base_asset": "PM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pnutidr",
+    "base_asset": "PNUT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "polsidr",
+    "base_asset": "POLS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "polidr",
+    "base_asset": "POL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pondidr",
+    "base_asset": "POND",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ponkeidr",
+    "base_asset": "PONKE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "portalidr",
+    "base_asset": "PORTAL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "popcatidr",
+    "base_asset": "POPCAT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "powridr",
+    "base_asset": "POWR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "primeidr",
+    "base_asset": "PRIME",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "promidr",
+    "base_asset": "PROM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "proveidr",
+    "base_asset": "PROVE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pufferidr",
+    "base_asset": "PUFFER",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pumpidr",
+    "base_asset": "PUMP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pythidr",
+    "base_asset": "PYTH",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "qntidr",
+    "base_asset": "QNT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "radidr",
+    "base_asset": "RAD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "rareidr",
+    "base_asset": "RARE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "rayidr",
+    "base_asset": "RAY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "redidr",
+    "base_asset": "RED",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "repidr",
+    "base_asset": "REP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "reqidr",
+    "base_asset": "REQ",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "rezidr",
+    "base_asset": "REZ",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "riveridr",
+    "base_asset": "RIVER",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "rlcidr",
+    "base_asset": "RLC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "renderidr",
+    "base_asset": "RENDER",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "rplidr",
+    "base_asset": "RPL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "rsridr",
+    "base_asset": "RSR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "rvnidr",
+    "base_asset": "RVN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sandidr",
+    "base_asset": "SAND",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "safeidr",
+    "base_asset": "SAFE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "saharaidr",
+    "base_asset": "SAHARA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sapienidr",
+    "base_asset": "SAPIEN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sentidr",
+    "base_asset": "SENT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sfiidr",
+    "base_asset": "SFI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sfpidr",
+    "base_asset": "SFP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "shibidr",
+    "base_asset": "SHIB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "shellidr",
+    "base_asset": "SHELL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "signidr",
+    "base_asset": "SIGN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "showidr",
+    "base_asset": "SHOW",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sklidr",
+    "base_asset": "SKL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "skridr",
+    "base_asset": "SKR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "skyidr",
+    "base_asset": "SKY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "skyaidr",
+    "base_asset": "SKYA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "skyaiidr",
+    "base_asset": "SKYAI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "snidr",
+    "base_asset": "SN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sntidr",
+    "base_asset": "SNT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "snxidr",
+    "base_asset": "SNX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "solidr",
+    "base_asset": "SOL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "solayeridr",
+    "base_asset": "SOLAYER",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "solvidr",
+    "base_asset": "SOLV",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "somiidr",
+    "base_asset": "SOMI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sonicidr",
+    "base_asset": "SONIC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "soonidr",
+    "base_asset": "SOON",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "spellidr",
+    "base_asset": "SPELL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "spkidr",
+    "base_asset": "SPK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "spxidr",
+    "base_asset": "SPX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sqdidr",
+    "base_asset": "SQD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ssvidr",
+    "base_asset": "SSV",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "stgidr",
+    "base_asset": "STG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "stikidr",
+    "base_asset": "STIK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "stoidr",
+    "base_asset": "STO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "strkidr",
+    "base_asset": "STRK",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "streamidr",
+    "base_asset": "STREAM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "suiidr",
+    "base_asset": "SUI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sunidr",
+    "base_asset": "SUN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sundogidr",
+    "base_asset": "SUNDOG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "superverseidr",
+    "base_asset": "SUPERVERSE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sushiidr",
+    "base_asset": "SUSHI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "sxtidr",
+    "base_asset": "SXT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "syrupidr",
+    "base_asset": "SYRUP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tagidr",
+    "base_asset": "TAG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "taikoidr",
+    "base_asset": "TAIKO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "telidr",
+    "base_asset": "TEL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tenidr",
+    "base_asset": "TEN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tfuelidr",
+    "base_asset": "TFUEL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "thetaidr",
+    "base_asset": "THETA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "thresholdidr",
+    "base_asset": "THRESHOLD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tiaidr",
+    "base_asset": "TIA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tlmidr",
+    "base_asset": "TLM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tmgidr",
+    "base_asset": "TMG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tnsridr",
+    "base_asset": "TNSR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tokenidr",
+    "base_asset": "TOKEN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tonidr",
+    "base_asset": "TON",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "toshiidr",
+    "base_asset": "TOSHI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tracidr",
+    "base_asset": "TRAC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "trbidr",
+    "base_asset": "TRB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "triaidr",
+    "base_asset": "TRIA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "trollsolidr",
+    "base_asset": "TROLLSOL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "trumpidr",
+    "base_asset": "TRUMP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "trxidr",
+    "base_asset": "TRX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tslaxidr",
+    "base_asset": "TSLAX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "turboidr",
+    "base_asset": "TURBO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "turtleidr",
+    "base_asset": "TURTLE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "tusdidr",
+    "base_asset": "TUSD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ubidr",
+    "base_asset": "UB",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "uaiidr",
+    "base_asset": "UAI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ucjlidr",
+    "base_asset": "UCJL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "umaidr",
+    "base_asset": "UMA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "uniidr",
+    "base_asset": "UNI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "unmdidr",
+    "base_asset": "UNMD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "usdcidr",
+    "base_asset": "USDC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "usatidr",
+    "base_asset": "USAT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "usdtidr",
+    "base_asset": "USDT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "usdxidr",
+    "base_asset": "USDX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "uselessidr",
+    "base_asset": "USELESS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "vanryidr",
+    "base_asset": "VANRY",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "vcgidr",
+    "base_asset": "VCG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "veloidr",
+    "base_asset": "VELO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "velodromeidr",
+    "base_asset": "VELODROME",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "velvetidr",
+    "base_asset": "VELVET",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "vetidr",
+    "base_asset": "VET",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "vexidr",
+    "base_asset": "VEX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "vineidr",
+    "base_asset": "VINE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "virtualsidr",
+    "base_asset": "VIRTUALS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "vvvidr",
+    "base_asset": "VVV",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "w3fidr",
+    "base_asset": "W3F",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "w3s2idr",
+    "base_asset": "W3S2",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wavesidr",
+    "base_asset": "WAVES",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wbtcidr",
+    "base_asset": "WBTC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wctidr",
+    "base_asset": "WCT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wealthidr",
+    "base_asset": "WEALTH",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wifidr",
+    "base_asset": "WIF",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wldidr",
+    "base_asset": "WLD",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wlfiidr",
+    "base_asset": "WLFI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wooidr",
+    "base_asset": "WOO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wormholeidr",
+    "base_asset": "WORMHOLE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xautidr",
+    "base_asset": "XAUT",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xcnidr",
+    "base_asset": "XCN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xdcidr",
+    "base_asset": "XDC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xplidr",
+    "base_asset": "XPL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xlmidr",
+    "base_asset": "XLM",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "wemixidr",
+    "base_asset": "WEMIX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xridr",
+    "base_asset": "XR",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xrpidr",
+    "base_asset": "XRP",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xtzidr",
+    "base_asset": "XTZ",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xvsidr",
+    "base_asset": "XVS",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "yfiidr",
+    "base_asset": "YFI",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "yggidr",
+    "base_asset": "YGG",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zamaidr",
+    "base_asset": "ZAMA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zbcnidr",
+    "base_asset": "ZBCN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zenidr",
+    "base_asset": "ZEN",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zerebroidr",
+    "base_asset": "ZEREBRO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zilidr",
+    "base_asset": "ZIL",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zkcidr",
+    "base_asset": "ZKC",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zkjidr",
+    "base_asset": "ZKJ",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zoraidr",
+    "base_asset": "ZORA",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zroidr",
+    "base_asset": "ZRO",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "zrxidr",
+    "base_asset": "ZRX",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "btcusdt",
+    "base_asset": "BTC",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-06,
+    "min_order": 1e-06,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-06,
+      "min": 1e-06,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bonkusdt",
+    "base_asset": "BONK",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "bttusdt",
+    "base_asset": "BTT",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "ethusdt",
+    "base_asset": "ETH",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-06,
+    "min_order": 1e-06,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-06,
+      "min": 1e-06,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "flokiusdt",
+    "base_asset": "FLOKI",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "idxusdt",
+    "base_asset": "IDX",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "kiteidr",
+    "base_asset": "KITE",
+    "quote_asset": "IDR",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "luncusdt",
+    "base_asset": "LUNC",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pepeusdt",
+    "base_asset": "PEPE",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-08,
+    "min_order": 1e-08,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-08,
+      "min": 1e-08,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "pundixusdt",
+    "base_asset": "PUNDIX",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-06,
+    "min_order": 1e-06,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-06,
+      "min": 1e-06,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "shibusdt",
+    "base_asset": "SHIB",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1.0,
+    "min_order": 1.0,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1.0,
+      "min": 1.0,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "xecusdt",
+    "base_asset": "XEC",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-06,
+    "min_order": 1e-06,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-06,
+      "min": 1e-06,
+      "base_per_unit": 1.0
+    }
+  },
+  {
+    "exchange": "indodax",
+    "symbol": "vcgusdt",
+    "base_asset": "VCG",
+    "quote_asset": "USDT",
+    "market_type": "SPOT",
+    "active": true,
+    "lot_size": 1e-06,
+    "min_order": 1e-06,
+    "amount_spec": {
+      "unit": "BASE",
+      "step": 1e-06,
+      "min": 1e-06,
+      "base_per_unit": 1.0
+    }
+  }
+]

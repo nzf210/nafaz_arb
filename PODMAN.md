@@ -309,7 +309,7 @@ Migration CI hanya membuktikan kompatibilitas pada PostgreSQL test, bukan bahwa
 project Supabase remote Anda sudah menerima migration.
 
 Cakupan runtime saat ini: scanner menulis `scanner_opportunities`; executor
-menulis `positions`, `orders`, `order_fills`, `closed_trades`,
+menulis `positions`, `orders`, `order_registry`, `order_fills`, `closed_trades`,
 `executor_events`, dan `risk_events`. Tabel `position_legs`,
 `funding_payments`, `balance_snapshots`, dan `executor_status_snapshots`
 belum dihubungkan ke runtime.
@@ -317,3 +317,67 @@ belum dihubungkan ke runtime.
 Penulisan Supabase bersifat best-effort. Belum ada durable outbox; outage panjang,
 queue penuh, atau proses mati dapat menyebabkan histori Supabase tidak lengkap.
 Redis dan exchange API tetap menjadi sumber runtime untuk koordinasi dan exposure.
+
+## 10. Universal order recovery setelah restart
+
+Order yang masih aktif di exchange harus tetap dikenal bot setelah restart,
+container restart, reboot VPS, atau crash executor. Alur startup-nya:
+
+1. Connect Redis.
+2. Connect Supabase dan start durable outbox writer.
+3. Exchange adapter sudah dibuat saat proses start.
+4. Muat durable order registry (`arb:order:*` di Redis, fallback ke tabel
+   `order_registry` Supabase bila cache Redis kosong).
+5. Muat posisi aktif dari Redis.
+6. Ambil open orders langsung dari setiap venue (`fetch_open_orders`; whole-account,
+   tanpa filter symbol, agar order yang belum pernah tercatat ikut terlihat).
+7. Reconcile order: cocokkan lewat `client_order_id`, lalu `exchange_order_id`,
+   lalu market (base+quote identik pada venue yang sama). Tidak ada tebakan.
+8. Verifikasi balance dan exposure tetap dijalankan oleh exposure worker.
+9. Restore risk state.
+10. Status `recovery.ready` hanya `true` bila seluruh mismatch sudah
+    terklasifikasi; kalau tidak, entry baru diblokir.
+
+Urutan order yang dijamin: recovery tidak pernah menaruh, mengganti, atau
+membatalkan order exchange. Satu-satunya order yang boleh dikirim adalah hedge
+untuk fill spot yang sudah terjadi tapi belum ter-hedge (kasus crash antara fill
+dan hedge), lewat lifecycle entry yang sama.
+
+Verifikasi di VPS:
+
+```bash
+# Status recovery (ready/pending/orphan) terlihat di snapshot status executor.
+podman exec nafaz-executor python -c "
+import asyncio, json, redis.asyncio as aioredis
+async def main():
+    r = aioredis.from_url('redis://localhost:6379/0', decode_responses=True)
+    raw = await r.get('arb:executor:status')
+    print(json.dumps(json.loads(raw)['recovery'], indent=2))
+    print('pending recovery keys:', await r.hgetall('arb:order_pending_recovery'))
+    print('orphans:', await r.hkeys('arb:orphan_idx'))
+asyncio.run(main())
+"
+```
+
+- `recovery.ready: true` — semua order terhubung; entry boleh jalan.
+- `recovery.pending_orders` — order yang status venue-nya belum bisa dipastikan;
+  entry diblokir pada pair/venue terkait sampai direkonsiliasi manual.
+- `recovery.orphan_orders` — order aktif di exchange tanpa posisi bot. Order ini
+  TIDAK diadopsi, TIDAK diganti, dan TIDAK dibatalkan otomatis. Alert Telegram
+  dikirim dengan alasan dan cakupan exposure-nya.
+
+Kalau venue sempat timeout lalu pulih, gate bisa dilepas tanpa restart proses:
+
+```python
+await engine.retry_pending_order_recovery()
+```
+
+Rekonsiliasi manual satu orphan (hanya operator):
+
+```python
+# Attach ke pair tertentu, atau tandai sebagai order eksternal dengan pair_tag="".
+await engine.resolve_orphan_order("<orphan_id>", pair_tag="indodax:btc_idr", reason="OPERATOR_REVIEW")
+```
+
+Selama gate masih aktif, monitoring, exit pegging, force-close, dan emergency
+de-risking tetap berjalan; hanya entry baru yang ditahan.

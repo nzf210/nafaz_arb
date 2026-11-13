@@ -300,8 +300,20 @@ Unfilled maker quotes can be refreshed after 45 seconds (`maker_refresh_after_se
 
 **Kill switch:** publish `{"action": "on"}` to the `arb:kill_switch` Redis channel (or use the Telegram `/killswitch on` / `/killswitch off` commands). ON halts *all* new entries globally until an explicit OFF — it never auto-resets on a UTC rollover. Open positions continue to be managed.
 | `estimated_round_trip_fee_pct` | `ESTIMATED_ROUND_TRIP_FEE_PCT` | `0.001` | Shrinks the position so both legs' fees are still covered by the exit. If that drops the size below `min_allocated_capital` the entry is **rejected** rather than silently undersized. |
-| `private_stream_enabled` | `PRIVATE_STREAM_ENABLED` | `false` | Reads order/balance updates from a private feed cache before polling REST. Stale entries fall back to REST. This is the cache and fallback path, not a venue auth client. |
+| `private_stream_enabled` | `PRIVATE_STREAM_ENABLED` | `false` | Reads order/balance updates from a private feed cache before polling REST. Stale entries fall back to REST. This is the cache and fallback path, not a venue auth client. **Status: the cache is not yet populated** — no websocket subscriber writes to it, so enabling this does not currently reduce REST polling. Leave it off until a feed publisher exists; the rate-limit resilience below does not depend on it. |
 | `private_stream_max_age_seconds` | `PRIVATE_STREAM_MAX_AGE_SECONDS` | `5.0` | How long a pushed order update is trusted before re-polling. |
+| `monitor_interval_seconds` | `MONITOR_INTERVAL_SECONDS` | `0.5` | Monitoring loop cadence. The venue rate-limits **per IP**, so a sub-second tick with several pending orders drains the quota and order-status reads start answering HTTP 429. |
+| `max_order_fetch_failures` | `MAX_ORDER_FETCH_FAILURES` | `10` | Consecutive order-status fetch failures tolerated for one pending entry before it is force-reconciled. Without this a venue outage pins the order and its reserved funds open indefinitely. |
+| `order_fetch_backoff_max_seconds` | `ORDER_FETCH_BACKOFF_MAX_SECONDS` | `60.0` | Ceiling for the per-order exponential backoff applied to failing status polls. |
+| `venue_rate_limit_cooldown_seconds` | `VENUE_RATE_LIMIT_COOLDOWN_SECONDS` | `30.0` | How long a venue answering HTTP 429/503 on order placement is paused for new entries. The cooldown clears itself; open positions stay managed throughout. |
+
+Order-status reads are resilient to venue throttling: a failed fetch counts
+toward `max_order_fetch_failures` and spaces the next attempt out with
+exponential backoff up to `order_fetch_backoff_max_seconds`, instead of retrying
+on every monitoring tick. The maker-order TTL is enforced from the local clock as
+well as from a fetched payload, so an order cannot be pinned open just because
+its status is unreadable. Reconciliation that cannot confirm a terminal state
+retains the pending order and its reserved funds rather than assuming the worst.
 
 Every numeric executor setting is range-checked at startup by
 `ExecutorConfig.sanitize()`. A value out of range is replaced by its default and a
@@ -311,11 +323,14 @@ buffer) is called out explicitly so it is a visible choice rather than an accide
 Order placement sends a deterministic `clientOrderId` (`{pair}-{leg}-{seq}`) on
 every leg so a retried submit is rejected by the venue instead of double-filling.
 The sequence is seeded from wall-clock time at startup, so ids never collide
-across process restarts. Binance Cloud venues such as Tokocrypto require the
-registered Binance broker prefix (`x-TKT5PX2F`) on every client order id —
-without it the venue rejects orders with error `3703 Invalid client ID` — so
-ids built for those venues reserve prefix room and the executor prepends the
-prefix at submission time.
+across process restarts. Binance Cloud venues such as Tokocrypto validate the id
+against the broker id registered to the account and reject anything else with
+error `3703 Invalid client ID`. That broker id is issued per account, so it is
+configuration, not code: set `exchanges.tokocrypto.options.broker_id` in
+`config.json` or `TOKOCRYPTO_BROKER_ID` in the environment. The executor then
+prepends it at submission time and trims the pair slug (never the
+`-{leg}-{seq}` tail) to stay within the venue's 36-character limit. When it is
+unset, no id is sent and ccxt mints a venue-native one, which the venue accepts.
 
 
 ## Supabase Database
@@ -341,11 +356,38 @@ never the anon/publishable key. Do not commit it, put it in the image, or expose
 to frontend/Telegram clients. If credentials are absent, persistence is disabled;
 a database outage does not block exchange risk management.
 
-Still schema-only: `position_legs`, `funding_payments`, `balance_snapshots`,
-and `executor_status_snapshots`. The scanner delivery worker reconciles only
-durable opportunity delivery; it does not reconcile private exchange positions
-or balances. Supabase history is not a complete exchange ledger and must never
-replace authenticated exchange-side exposure verification.
+Runtime exchange reconciliation: the executor periodically re-runs the
+universal order-registry reconciliation, matches venue order status and
+cumulative fills with the durable registry, checks that spot base-asset totals
+cover managed quantities, and compares futures short exposure with managed
+positions. Spot and perpetual wallet balances are captured as append-only
+`balance_snapshots` observations for audit. A failed balance/position read or
+confirmed mismatch for a venue with managed exposure blocks new entries there
+while existing position management remains active. Spot balances are checked as a minimum
+coverage threshold because wallets may contain unrelated manual inventory;
+the bot never attributes excess wallet assets to its own positions or
+automatically resizes/closes positions from a balance snapshot.
+
+Trade-fill reconciliation reads immutable execution records from authenticated
+exchange trade history, stores each unique exchange trade ID with its actual
+quantity, price, quote value, fee amount/asset, and execution timestamp, and
+compares the total fill quantity against the order's cumulative filled quantity.
+INDODAX uses TAPI v2 `/api/v2/myTrades` in seven-day windows; supported CCXT
+venues use `fetch_my_trades`. Missing/unsupported trade history or a quantity
+mismatch is not converted into a synthetic fill: the affected pair is marked
+`RECONCILIATION_REQUIRED` and new entries remain blocked until verified. The
+worker runs every 120 seconds by default; configure
+`TRADE_FILL_RECONCILIATION_INTERVAL_SECONDS` to change its interval. Apply
+`supabase/migrations/20261111000100_add_live_order_fill_reconciliation.sql`
+before deploying this change; it adds both the live-order discriminator and
+the fill-source classification and fee-verification flag needed to separate
+legacy snapshots from verified exchange executions.
+`position_legs` now receives independent spot/perpetual leg upserts as the parent
+position lifecycle changes. Confirmed funding settlements returned by the
+exchange funding ledger are journaled to `funding_payments` with deterministic
+payment IDs before the Redis funding aggregate is advanced. `executor_status_snapshots`
+remains schema-only. Supabase history must never replace authenticated
+exchange-side exposure verification.
 See [Supabase runtime and deployment notes](./supabase/README.md).
 
 

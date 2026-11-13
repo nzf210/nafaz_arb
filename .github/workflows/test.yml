@@ -91,6 +91,8 @@ jobs:
         run: |
           psql -h localhost -U postgres -d nafaz_test -v ON_ERROR_STOP=1 \
             -f supabase/tests/schema_smoke.sql
+      - name: Verify cross-connection capacity and coordinator concurrency
+        run: bash supabase/tests/concurrency_smoke.sh
 
   docker-images:
     runs-on: ubuntu-latest

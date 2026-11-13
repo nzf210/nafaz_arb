@@ -3,8 +3,11 @@ package telegram
 import (
 	"fmt"
 	"html"
+	"math"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
@@ -20,8 +23,17 @@ func (b *Bot) formatHelp() string {
 
 <b>Perintah Keyboard:</b>
 /menu - <i>Buka menu tombol interaktif</i>
-/positions - <i>Lihat posisi aktif Executor & opsi tutup paksa</i>
+/orders - <i>Lihat active bot orders</i>
+/recovery - <i>Status recovery setelah restart</i>
+/orphans - <i>Order exchange belum teridentifikasi</i>
+/cleanorphan [id] - <i>Force clean orphan/stuck order dari cache Redis &amp; DB</i>
+/reconcile - <i>Mismatch reconciliation terbaru</i>
+/risk - <i>Status risk halt</i>
+/order [internal_order_id] - <i>Detail order dan fills terkait</i>
+/position [position_id] - <i>Detail posisi</i>
+/positions - <i>Lihat posisi aktif Executor</i>
 /pending - <i>Lihat pending order Spot yang belum selesai</i>
+/spotmax [cex] [jumlah] - <i>Atur maksimum open order/posisi Spot per CEX (default 2)</i>
 /balance - <i>Cek saldo live seluruh aset Spot & Futures</i>
 /scan - <i>Jalankan scan pasar on-demand</i>
 /latest - <i>Lihat peluang dari 10 scan terakhir</i>
@@ -86,6 +98,7 @@ func (b *Bot) formatStatus() string {
 • <b>Error Terakhir:</b> %s
 • <b>Total Pasar:</b> %d
 • <b>Pasangan Cocok:</b> %d (Aktif: %d, Dibekukan: %d)
+• <b>Koin Orphan (Tanpa Future):</b> %d
 • <b>Pasangan Eligible:</b> %d
 • <b>Pasangan Excluded:</b> %d
 • <b>Target Net ROI:</b> %.2f%% - %.2f%%
@@ -106,6 +119,7 @@ func (b *Bot) formatStatus() string {
 		latest.MatchedPairs,
 		latest.ActivePairs,
 		latest.FrozenPairs,
+		latest.OrphanSpotMarkets,
 		latest.EligiblePairs,
 		latest.ExcludedPairs,
 		b.cfg.MinNetROIPct,
@@ -158,16 +172,60 @@ func (b *Bot) formatMetrics() string {
 	)
 }
 
+func formatPrice(p float64) string {
+	if p == 0 || math.IsNaN(p) || math.IsInf(p, 0) {
+		return "0"
+	}
+	abs := math.Abs(p)
+	var decimals int
+	switch {
+	case abs >= 1000:
+		return strconv.FormatFloat(p, 'f', 2, 64)
+	case abs >= 1:
+		return strconv.FormatFloat(p, 'f', 4, 64)
+	case abs >= 0.01:
+		decimals = 5
+	case abs >= 0.0001:
+		decimals = 6
+	case abs >= 0.000001:
+		decimals = 8
+	default:
+		decimals = 10
+	}
+	s := strconv.FormatFloat(p, 'f', decimals, 64)
+	dot := strings.IndexByte(s, '.')
+	if dot == -1 {
+		return s
+	}
+	intPart, frac := s[:dot], s[dot+1:]
+	for len(frac) > 4 && frac[len(frac)-1] == '0' {
+		frac = frac[:len(frac)-1]
+	}
+	return intPart + "." + frac
+}
+
+func formatCompactNumber(v float64) string {
+	abs := math.Abs(v)
+	switch {
+	case abs >= 1_000_000:
+		return fmt.Sprintf("%.2fM", v/1_000_000)
+	case abs >= 10_000:
+		return fmt.Sprintf("%.2fK", v/1_000)
+	case abs >= 100:
+		return fmt.Sprintf("%.0f", v)
+	default:
+		return fmt.Sprintf("%.2f", v)
+	}
+}
+
 func (b *Bot) formatScanResult(r domain.ScanResult, title string) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📋 <b>%s</b>\n", html.EscapeString(title)))
-	sb.WriteString(fmt.Sprintf("<i>Scan ID:</i> <code>%s</code>\n", html.EscapeString(r.ScanID)))
+	sb.WriteString(fmt.Sprintf("📡 <b>%s</b>\n", html.EscapeString(title)))
+	sb.WriteString(fmt.Sprintf("🆔 <code>%s</code> • 🔗 Cocok: <b>%d</b>", html.EscapeString(r.ScanID), r.MatchedPairs))
 	if r.FrozenPairs > 0 {
-		sb.WriteString(fmt.Sprintf("<i>Pasangan Cocok:</i> %d (Aktif: %d | Dibekukan: %d) | <i>Eligible:</i> %d\n\n",
-			r.MatchedPairs, r.ActivePairs, r.FrozenPairs, r.EligiblePairs))
-	} else {
-		sb.WriteString(fmt.Sprintf("<i>Pasangan Cocok:</i> %d | <i>Eligible:</i> %d\n\n", r.MatchedPairs, r.EligiblePairs))
+		sb.WriteString(fmt.Sprintf(" (⚡%d | ❄️%d)", r.ActivePairs, r.FrozenPairs))
 	}
+	sb.WriteString(fmt.Sprintf(" | ✅ Eligible: <b>%d</b>\n\n", r.EligiblePairs))
 
 	if len(r.Opportunities) == 0 {
 		sb.WriteString("<i>Tidak ada peluang yang dievaluasi pada scan ini.</i>\n")
@@ -180,64 +238,97 @@ func (b *Bot) formatScanResult(r domain.ScanResult, title string) string {
 		displayOps = displayOps[:maxDisplay]
 	}
 
+	const maxTelegramHTMLRunes = 3900
+	shown := 0
 	for i, op := range displayOps {
-		sb.WriteString(formatScanOpportunity(i, op))
+		item := formatScanOpportunity(i, op)
+		if i > 0 && utf8.RuneCountInString(sb.String())+utf8.RuneCountInString(item)+120 > maxTelegramHTMLRunes {
+			break
+		}
+		sb.WriteString(item)
+		shown++
 	}
-
-	if len(r.Opportunities) > maxDisplay {
-		sb.WriteString(fmt.Sprintf("<i>... menampilkan top %d dari %d total pasangan pasar (diurutkan berdasarkan Net ROI tertinggi)</i>\n",
-			maxDisplay, len(r.Opportunities)))
+	if len(r.Opportunities) > shown {
+		sb.WriteString(fmt.Sprintf("<i>📌 Menampilkan top %d dari %d pasangan (urut Net ROI tertinggi)</i>\n",
+			shown, len(r.Opportunities)))
 	}
-
 	return strings.TrimSpace(sb.String())
 }
 
 func formatScanOpportunity(i int, op domain.Opportunity) string {
 	var sb strings.Builder
 	statusEmoji := "🔴"
-	if op.TradingEligible {
+	switch {
+	case op.TradingEligible:
 		statusEmoji = "🟢"
-	} else if op.ProfitabilityStatus == "PROFITABLE_IN_RANGE" {
+	case op.ProfitabilityStatus == "PROFITABLE_IN_RANGE":
 		statusEmoji = "🟡"
+	case op.ProfitabilityStatus == "BELOW_MIN_TARGET":
+		statusEmoji = "🟠"
 	}
 
-	sb.WriteString(fmt.Sprintf("%d. %s <b>%s/%s</b> - <b>%s</b>\n",
+	sb.WriteString(fmt.Sprintf("%d. %s <b>%s/%s</b> · <b>%s</b>\n",
 		i+1, statusEmoji,
 		html.EscapeString(op.BaseAsset), html.EscapeString(op.QuoteAsset),
 		html.EscapeString(op.ProfitabilityStatus),
 	))
 
-	if op.LocalExchange != "" || op.GlobalExchange != "" {
-		sb.WriteString(fmt.Sprintf("   • CEX: <b>%s Spot</b> vs <b>%s Futures</b>\n", html.EscapeString(strings.ToUpper(op.LocalExchange)), html.EscapeString(strings.ToUpper(op.GlobalExchange))))
-	}
-	if op.ExecutionMode == "MAKER_TAKER" {
-		sb.WriteString(fmt.Sprintf("   • Spot Limit (Maker): <code>%.4f</code> (%s) [Antrean: %.2f]\n", op.SpotEntryPrice, html.EscapeString(op.SpotSymbol), op.SpotQueueDepth))
-		sb.WriteString(fmt.Sprintf("   • Perp Short: <code>%.4f</code> (%s)\n", op.PerpEntryPrice, html.EscapeString(op.PerpSymbol)))
-		if op.MinAcceptablePerpPrice > 0 {
-			sb.WriteString(fmt.Sprintf("   • Auto-Cancel Perp Floor: <code>%.4f</code> (TTL: %ds)\n", op.MinAcceptablePerpPrice, op.MaxOrderTTLSeconds))
+	if op.LocalExchange != "" || op.GlobalExchange != "" || op.IsSynthetic {
+		sb.WriteString("   🏦 ")
+		if op.LocalExchange != "" || op.GlobalExchange != "" {
+			sb.WriteString(fmt.Sprintf("<b>%s</b> ➔ <b>%s</b>",
+				html.EscapeString(strings.ToUpper(op.LocalExchange)),
+				html.EscapeString(strings.ToUpper(op.GlobalExchange))))
+			if op.ExecutionMode == "MAKER_TAKER" {
+				sb.WriteString(" (Maker)")
+			}
 		}
-	} else {
-		sb.WriteString(fmt.Sprintf("   • Spot Buy: <code>%.4f</code> (%s)\n", op.SpotEntryPrice, html.EscapeString(op.SpotSymbol)))
-		sb.WriteString(fmt.Sprintf("   • Perp Short: <code>%.4f</code> (%s)\n", op.PerpEntryPrice, html.EscapeString(op.PerpSymbol)))
-	}
-	if op.IsSynthetic {
-		sb.WriteString(fmt.Sprintf("   • 🔄 Sintetis IDR: Spot %s (Kurs: Rp %.0f/USDT)\n", html.EscapeString(op.OriginalSpotQuote), op.SyntheticFXRate))
-	}
-	if op.CapacityPct > 0 && op.CapacityPct < 99.9 {
-		sb.WriteString(fmt.Sprintf("   • 📊 Kapasitas Book (Adaptive): %.1f%% ($%.2f)\n", op.CapacityPct, op.AllocatedCapital))
-	}
-	sb.WriteString(fmt.Sprintf("   • Net Profit: <b>%+.4f %s</b> (<b>%+.2f%% ROI</b>)\n",
-		op.NetProfit, html.EscapeString(op.QuoteAsset), op.NetROIPct))
-	sb.WriteString(fmt.Sprintf("   • Spread: %+.4f | Funding PnL: %+.4f %s | Fees: %.4f\n",
-		op.SpreadPnL, op.FundingPnL, html.EscapeString(op.QuoteAsset), op.TradingFees))
-	if op.CurrentFundingRate != 0 {
-		sb.WriteString(fmt.Sprintf("   • Funding Rate: %+.4f%% (%+.6f)\n",
-			op.CurrentFundingRate*100, op.CurrentFundingRate))
+		if op.IsSynthetic {
+			if op.LocalExchange != "" || op.GlobalExchange != "" {
+				sb.WriteString(" • ")
+			}
+			sb.WriteString(fmt.Sprintf("🔄 %s Rp%.0f", html.EscapeString(op.OriginalSpotQuote), op.SyntheticFXRate))
+		}
+		sb.WriteString("\n")
 	}
 
-	if len(op.ExclusionReasons) > 0 {
-		sb.WriteString(fmt.Sprintf("   ⚠️ <i>Excluded: %s</i>\n",
-			html.EscapeString(strings.Join(op.ExclusionReasons, ", "))))
+	if op.ExecutionMode == "MAKER_TAKER" {
+		sb.WriteString(fmt.Sprintf("   📈 Spot: <code>%s</code> (%s · Q:%s)\n",
+			formatPrice(op.SpotEntryPrice), html.EscapeString(op.SpotSymbol), formatCompactNumber(op.SpotQueueDepth)))
+		sb.WriteString(fmt.Sprintf("   📉 Short: <code>%s</code> (%s)",
+			formatPrice(op.PerpEntryPrice), html.EscapeString(op.PerpSymbol)))
+		if op.MinAcceptablePerpPrice > 0 {
+			sb.WriteString(fmt.Sprintf(" • 🛡️ <code>%s</code> (%ds)",
+				formatPrice(op.MinAcceptablePerpPrice), op.MaxOrderTTLSeconds))
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString(fmt.Sprintf("   📈 Spot: <code>%s</code> (%s)\n",
+			formatPrice(op.SpotEntryPrice), html.EscapeString(op.SpotSymbol)))
+		sb.WriteString(fmt.Sprintf("   📉 Short: <code>%s</code> (%s)\n",
+			formatPrice(op.PerpEntryPrice), html.EscapeString(op.PerpSymbol)))
+	}
+
+	if op.CapacityPct > 0 && op.CapacityPct < 99.9 {
+		sb.WriteString(fmt.Sprintf("   📊 Book: %.1f%% ($%.2f)\n", op.CapacityPct, op.AllocatedCapital))
+	}
+
+	sb.WriteString(fmt.Sprintf("   💰 Net: <b>%+.4f %s</b> (<b>%+.2f%%</b>) | Spr: %+.4f | Fund: %+.4f",
+		op.NetProfit, html.EscapeString(op.QuoteAsset), op.NetROIPct, op.SpreadPnL, op.FundingPnL))
+	if op.CurrentFundingRate != 0 {
+		sb.WriteString(fmt.Sprintf(" (%+.4f%%)", op.CurrentFundingRate*100))
+	}
+	sb.WriteString(fmt.Sprintf(" | Fee: %.4f\n", op.TradingFees))
+
+	var extraReasons []string
+	for _, reason := range op.ExclusionReasons {
+		if reason != "" && reason != op.ProfitabilityStatus {
+			extraReasons = append(extraReasons, reason)
+		}
+	}
+	if len(extraReasons) > 0 {
+		sb.WriteString(fmt.Sprintf("   ⛔ <i>%s</i>\n",
+			html.EscapeString(strings.Join(extraReasons, ", "))))
 	}
 	sb.WriteString("\n")
 	return sb.String()
@@ -251,7 +342,7 @@ func (b *Bot) formatOpportunityAlert(op domain.Opportunity) string {
 		modeBadge = " [MAKER-TAKER]"
 		spotEntryLabel = "Limit Buy Spot (Maker)"
 		if op.MinAcceptablePerpPrice > 0 {
-			extraGuardrail = fmt.Sprintf("\n🛡️ <b>Auto-Cancel Perp Floor:</b> <code>%.4f</code> (TTL: %ds)", op.MinAcceptablePerpPrice, op.MaxOrderTTLSeconds)
+			extraGuardrail = fmt.Sprintf("\n🛡️ <b>Auto-Cancel Perp Floor:</b> <code>%s</code> (TTL: %ds)", formatPrice(op.MinAcceptablePerpPrice), op.MaxOrderTTLSeconds)
 		}
 	}
 	if op.IsSynthetic {
@@ -283,8 +374,8 @@ Pair: <b>%s/%s</b>
 🏦 <b>Futures CEX:</b> %s
 Net ROI: <b>%+.2f%%</b> | Net Profit: <b>%+.4f %s</b>
 
-📈 <b>%s:</b> <code>%.4f</code> (%s)
-📉 <b>Short Perp:</b> <code>%.4f</code> (%s)%s
+📈 <b>%s:</b> <code>%s</code> (%s)
+📉 <b>Short Perp:</b> <code>%s</code> (%s)%s
 📦 <b>Quantity:</b> %.4f %s
 💼 <b>Allocated Capital:</b> %.2f %s%s%s
 
@@ -300,8 +391,8 @@ Net ROI: <b>%+.2f%%</b> | Net Profit: <b>%+.4f %s</b>
 		html.EscapeString(op.BaseAsset), html.EscapeString(op.QuoteAsset),
 		html.EscapeString(strings.ToUpper(op.LocalExchange)), html.EscapeString(strings.ToUpper(op.GlobalExchange)),
 		op.NetROIPct, op.NetProfit, html.EscapeString(op.QuoteAsset),
-		spotEntryLabel, op.SpotEntryPrice, html.EscapeString(op.SpotSymbol),
-		op.PerpEntryPrice, html.EscapeString(op.PerpSymbol),
+		spotEntryLabel, formatPrice(op.SpotEntryPrice), html.EscapeString(op.SpotSymbol),
+		formatPrice(op.PerpEntryPrice), html.EscapeString(op.PerpSymbol),
 		extraGuardrail,
 		op.Quantity, html.EscapeString(op.BaseAsset),
 		op.AllocatedCapital, html.EscapeString(op.QuoteAsset), capacityInfo, executionInfo,

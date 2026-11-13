@@ -63,9 +63,10 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpotMarkets: %v", err)
 	}
-	if len(markets) != 4 {
-		t.Fatalf("expected 4 local spot markets (2 toko + 2 indodax), got %d", len(markets))
+	if len(markets) != 6 {
+		t.Fatalf("expected 6 spot markets (2 toko + 2 indodax + 2 mexc), got %d", len(markets))
 	}
+	foundMEXCSpot := 0
 	for _, market := range markets {
 		if market.Exchange == "indodax" {
 			want := 0.00000001
@@ -90,11 +91,12 @@ func TestLiveAdapterSpotMarkets(t *testing.T) {
 				t.Errorf("Tokocrypto %s amount spec = %+v, want step=%g min=%g", market.Symbol, market.AmountSpec, wantStep, wantMin)
 			}
 		}
-	}
-	for _, market := range markets {
-		if market.Exchange == "mexc" || strings.HasPrefix(market.Symbol, "mexc_spot:") {
-			t.Fatalf("MEXC Spot must not be included in the local spot candidate universe: %+v", market)
+		if market.Exchange == "mexc" && strings.HasPrefix(market.Symbol, MEXC_SPOT) {
+			foundMEXCSpot++
 		}
+	}
+	if foundMEXCSpot != 2 {
+		t.Fatalf("expected 2 MEXC spot markets, got %d", foundMEXCSpot)
 	}
 }
 

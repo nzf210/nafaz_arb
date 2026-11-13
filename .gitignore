@@ -35,6 +35,10 @@ logs/
 # Knowledge graph and AI tool outputs
 graphify-out/
 
+# Supabase CLI temp files
+supabase/temp/
+supabase/.temp/
+
 # IDE and editor files
 .vscode/
 .idea/

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"encoding/json"
 	"math"
+	"strconv"
 	"fmt"
 	"strings"
 	"time"
@@ -22,11 +23,14 @@ const (
 	// older than this is stale by definition: the executor pegs a maker order
 	// against a quote that no longer exists, so it must expire rather than be
 	// replayed on the next notify/pubsub restart.
-	SignalTTL              = 3 * time.Second
+	SignalTTL              = 10 * time.Second
 	ChannelSignalNotify    = "arb:signal_notify"
 	ChannelEmergencyCancel = "arb:emergency_cancel"
 	ChannelForceClose      = "arb:force_close"
 	ChannelKillSwitch      = "arb:kill_switch"
+	ChannelSpotOrderLimitUpdate = "arb:executor:spot_order_limit_update"
+	KeySpotOrderLimits = "arb:executor:spot_order_limits"
+	KeyPrefixSpotOrderLimitReply = "arb:executor:spot_order_limit_reply:"
 	ChannelTradeEvents     = "arb:trade_events"
 	KeyPrefixSignal        = "arb:signal:"
 	KeySignalPriority      = "arb:signal_priority"
@@ -38,6 +42,13 @@ const (
 	KeyExecutorStatus      = "arb:executor:status"
 	ChannelBalanceRequest  = "arb:balance_request"
 	KeyPrefixBalanceReply  = "arb:balance_reply:"
+	ChannelRecoveryRequest = "arb:recovery_request"
+	KeyPrefixRecoveryReply = "arb:recovery_reply:"
+	KeyOrderRecoveryIndex   = "arb:order_recovery_idx"
+	KeyOrphanOrderIndex     = "arb:orphan_idx"
+	KeyPendingOrderRecovery = "arb:order_pending_recovery"
+	KeyPrefixOrderRecord    = "arb:order:"
+	KeyPrefixOrphanOrder    = "arb:orphan_order:"
 )
 
 type TradeStats struct {
@@ -216,7 +227,7 @@ func (c *Client) PublishSignal(ctx context.Context, payload domain.ExecutorPaylo
 	profit := payload.ExecutionDirectives.EstimatedNetProfitUSDT
 	if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
 		pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
-		pipe.Expire(ctx, KeySignalPriority, SignalTTL+2*time.Second)
+		pipe.Expire(ctx, KeySignalPriority, SignalTTL+5*time.Second)
 	}
 	pipe.Set(ctx, signalKey, signalData, SignalTTL)
 	pipe.Publish(ctx, ChannelSignalNotify, tag)
@@ -276,7 +287,7 @@ func (c *Client) ExecuteBatchUpdates(ctx context.Context, updates []PairUpdate) 
 				profit := u.Payload.ExecutionDirectives.EstimatedNetProfitUSDT
 				if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
 					pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
-					pipe.Expire(ctx, KeySignalPriority, SignalTTL+2*time.Second)
+					pipe.Expire(ctx, KeySignalPriority, SignalTTL+5*time.Second)
 				}
 				pipe.Set(ctx, signalKey, signalData, SignalTTL)
 				pipe.Publish(ctx, ChannelSignalNotify, tag)
@@ -334,6 +345,69 @@ func (c *Client) ListActivePositions(ctx context.Context) ([]domain.ActivePositi
 	return out, nil
 }
 
+
+ 
+// ListActiveOrderRecords reads the executor's durable-in-Redis active order
+// registry. The index is maintained by UniversalOrderRegistry and excludes
+// terminal orders. An unavailable index is an error, never an empty registry.
+func (c *Client) ListActiveOrderRecords(ctx context.Context) ([]json.RawMessage, error) {
+	if c == nil || c.rdb == nil { return nil, errors.New("redis is not connected") }
+	ids, err := c.rdb.HKeys(ctx, KeyOrderRecoveryIndex).Result()
+	if err != nil { return nil, fmt.Errorf("read active order registry index: %w", err) }
+	out := make([]json.RawMessage, 0, len(ids))
+	for _, id := range ids {
+		raw, getErr := c.rdb.Get(ctx, KeyPrefixOrderRecord+id).Bytes()
+		if getErr != nil {
+			if getErr == redis.Nil { continue }
+			return nil, fmt.Errorf("read order record %s: %w", id, getErr)
+		}
+		if !json.Valid(raw) { return nil, fmt.Errorf("order record %s contains invalid JSON", id) }
+		out = append(out, json.RawMessage(raw))
+	}
+	return out, nil
+}
+
+// GetOrderRecord reads one canonical local order ID, including terminal
+// records retained outside the active-order index.
+func (c *Client) GetOrderRecord(ctx context.Context, localOrderID string) (json.RawMessage, bool, error) {
+	if c == nil || c.rdb == nil { return nil, false, errors.New("redis is not connected") }
+	localOrderID = strings.TrimSpace(localOrderID)
+	if localOrderID == "" { return nil, false, errors.New("local order ID is required") }
+	raw, err := c.rdb.Get(ctx, KeyPrefixOrderRecord+localOrderID).Bytes()
+	if err == redis.Nil { return nil, false, nil }
+	if err != nil { return nil, false, fmt.Errorf("read order record %s: %w", localOrderID, err) }
+	if !json.Valid(raw) { return nil, false, fmt.Errorf("order record %s contains invalid JSON", localOrderID) }
+	return json.RawMessage(raw), true, nil
+}
+
+// ListOrphanOrderRecords returns every indexed exchange order that recovery
+// could not safely identify. Redis errors are surfaced to avoid false-empty UI.
+func (c *Client) ListOrphanOrderRecords(ctx context.Context) ([]json.RawMessage, error) {
+	if c == nil || c.rdb == nil { return nil, errors.New("redis is not connected") }
+	ids, err := c.rdb.HKeys(ctx, KeyOrphanOrderIndex).Result()
+	if err != nil { return nil, fmt.Errorf("read orphan order index: %w", err) }
+	out := make([]json.RawMessage, 0, len(ids))
+	for _, id := range ids {
+		raw, getErr := c.rdb.Get(ctx, KeyPrefixOrphanOrder+id).Bytes()
+		if getErr != nil {
+			if getErr == redis.Nil { continue }
+			return nil, fmt.Errorf("read orphan order %s: %w", id, getErr)
+		}
+		if !json.Valid(raw) { return nil, fmt.Errorf("orphan order %s contains invalid JSON", id) }
+		out = append(out, json.RawMessage(raw))
+	}
+	return out, nil
+}
+
+// GetPendingOrderRecovery returns order IDs and reasons currently blocked by
+// recovery. It is read-only and does not change the recovery gate.
+func (c *Client) GetPendingOrderRecovery(ctx context.Context) (map[string]string, error) {
+	if c == nil || c.rdb == nil { return nil, errors.New("redis is not connected") }
+	values, err := c.rdb.HGetAll(ctx, KeyPendingOrderRecovery).Result()
+	if err != nil { return nil, fmt.Errorf("read pending order recovery: %w", err) }
+	return values, nil
+}
+
 // PublishForceClose broadcasts a force-close command to the Executor via Redis Pub/Sub.
 func (c *Client) PublishForceClose(ctx context.Context, localEx, symbol, pairKey, requestedBy string) error {
 	if c == nil || c.rdb == nil {
@@ -383,6 +457,66 @@ func (c *Client) PublishKillSwitch(ctx context.Context, action, reason string) e
 	return c.rdb.Publish(ctx, ChannelKillSwitch, string(data)).Err()
 }
 
+// SetSpotOrderLimit persists and broadcasts a per-spot-CEX open-order cap.
+// The executor applies the update immediately and restores it after restart.
+func (c *Client) SetSpotOrderLimit(ctx context.Context, exchange string, limit int) error {
+	if c == nil || c.rdb == nil { return errors.New("redis is not connected") }
+	exchange = strings.ToLower(strings.TrimSpace(exchange))
+	if exchange == "" || len(exchange) > 64 { return errors.New("exchange name is invalid") }
+	for _, r := range exchange { if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-') { return errors.New("exchange name may contain only letters, digits, '_' or '-'") } }
+	if limit < 1 || limit > 100 { return errors.New("max open spot orders must be between 1 and 100") }
+
+	var requestBytes [16]byte
+	if _, err := rand.Read(requestBytes[:]); err != nil {
+		return fmt.Errorf("create spot order limit request id: %w", err)
+	}
+	requestID := hex.EncodeToString(requestBytes[:])
+	replyKey := KeyPrefixSpotOrderLimitReply + requestID
+	payload, err := json.Marshal(map[string]interface{}{
+		"request_id": requestID,
+		"exchange": exchange,
+		"max_open_spot_orders": limit,
+		"updated_at_ms": time.Now().UnixMilli(),
+	})
+	if err != nil { return fmt.Errorf("marshal spot order limit: %w", err) }
+	if err := c.rdb.Publish(ctx, ChannelSpotOrderLimitUpdate, string(payload)).Err(); err != nil {
+		return fmt.Errorf("publish spot order limit: %w", err)
+	}
+	reply, err := c.rdb.BLPop(ctx, 20*time.Second, replyKey).Result()
+	if err != nil {
+		return fmt.Errorf("executor did not confirm durable Spot capacity update: %w", err)
+	}
+	if len(reply) < 2 {
+		return errors.New("executor returned an empty Spot capacity acknowledgement")
+	}
+	var acknowledgement struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(reply[1]), &acknowledgement); err != nil {
+		return fmt.Errorf("decode executor Spot capacity acknowledgement: %w", err)
+	}
+	if !acknowledgement.Success {
+		if acknowledgement.Error == "" { acknowledgement.Error = "Postgres persistence or coordinator validation failed" }
+		return fmt.Errorf("executor rejected Spot capacity update: %s", acknowledgement.Error)
+	}
+	return nil
+}
+
+// GetSpotOrderLimits returns operator overrides; venues without an override use default 2.
+func (c *Client) GetSpotOrderLimits(ctx context.Context) (map[string]int, error) {
+	if c == nil || c.rdb == nil { return nil, errors.New("redis is not connected") }
+	stored, err := c.rdb.HGetAll(ctx, KeySpotOrderLimits).Result()
+	if err != nil { return nil, fmt.Errorf("read spot order limits: %w", err) }
+	limits := make(map[string]int, len(stored))
+	for exchange, raw := range stored {
+		value, parseErr := strconv.Atoi(raw)
+		if parseErr != nil || value < 1 || value > 100 { return nil, fmt.Errorf("stored spot order limit for %s is invalid", exchange) }
+		limits[exchange] = value
+	}
+	return limits, nil
+}
+
 // GetLivePrice retrieves the latest PricingSnapshot for a pair.
 func (c *Client) GetLivePrice(ctx context.Context, localEx, symbol string, globalPair ...string) (*domain.PricingSnapshot, error) {
 	if c == nil || c.rdb == nil {
@@ -401,6 +535,49 @@ func (c *Client) GetLivePrice(ctx context.Context, localEx, symbol string, globa
 		return nil, err
 	}
 	return &snap, nil
+}
+
+// DynamicFeeProfile is an authenticated, short-lived account fee snapshot
+// published by the executor. Rates are percentages, not decimal fractions.
+type DynamicFeeProfile struct {
+	MakerFeePct  float64 `json:"maker_fee_pct"`
+	TakerFeePct  float64 `json:"taker_fee_pct"`
+	Source       string  `json:"source"`
+	Verified     bool    `json:"verified"`
+	FetchedAtMS  int64   `json:"fetched_at_ms"`
+}
+
+// GetDynamicFeeProfile returns only a fresh, verified executor fee snapshot.
+func (c *Client) GetDynamicFeeProfile(ctx context.Context, exchange, market, symbol string) (*DynamicFeeProfile, error) {
+	if c == nil || c.rdb == nil {
+		return nil, nil
+	}
+	normalize := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		value = strings.ReplaceAll(value, "/", "_")
+		value = strings.ReplaceAll(value, "-", "_")
+		return strings.ReplaceAll(value, ":", "_")
+	}
+	key := "arb:fee_profile:" + normalize(exchange) + ":" + normalize(market) + ":" + normalize(symbol)
+	raw, err := c.rdb.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("redis get fee profile %s: %w", key, err)
+	}
+	var profile DynamicFeeProfile
+	if err := json.Unmarshal(raw, &profile); err != nil {
+		return nil, fmt.Errorf("decode fee profile %s: %w", key, err)
+	}
+	age := time.Now().UnixMilli() - profile.FetchedAtMS
+	if !profile.Verified || profile.Source != "EXCHANGE_API" ||
+		profile.FetchedAtMS <= 0 || age < 0 || age > int64(5*time.Minute/time.Millisecond) ||
+		profile.MakerFeePct < 0 || profile.MakerFeePct > 100 ||
+		profile.TakerFeePct < 0 || profile.TakerFeePct > 100 {
+		return nil, nil
+	}
+	return &profile, nil
 }
 
 // GetTradeStats retrieves aggregate statistics of closed arbitrage trades.
@@ -484,7 +661,89 @@ func (c *Client) Close() error {
 	return nil
 }
 
- 
+
+type RecoveryRetryReply struct {
+	RequestID string `json:"request_id"`
+	Action string `json:"action"`
+	Resolved bool `json:"resolved"`
+	Error string `json:"error"`
+	DeletedRedis  int               `json:"deleted_redis,omitempty"`
+	DeletedDB     int               `json:"deleted_db,omitempty"`
+	ClearedPairs  []string          `json:"cleared_pairs,omitempty"`
+	Complete      bool              `json:"complete"`
+	PendingOrders map[string]string `json:"pending_orders"`
+	ScopeHalts    map[string]string `json:"scope_halts"`
+	TimestampMS   int64             `json:"timestamp_ms"`
+}
+
+// RequestRecoveryRetry asks the executor to re-run read-only reconciliation.
+func (c *Client) RequestRecoveryRetry(ctx context.Context) (RecoveryRetryReply, error) {
+	return c.requestRecoveryAction(ctx, "retry", "", "")
+}
+
+// RequestOrphanResolution asks the executor to verify and resolve one orphan.
+func (c *Client) RequestOrphanResolution(ctx context.Context, orphanID, pairTag string) (RecoveryRetryReply, error) {
+	orphanID = strings.TrimSpace(orphanID)
+	if orphanID == "" || len(orphanID) > 256 {
+		return RecoveryRetryReply{}, errors.New("orphan id tidak valid")
+	}
+	return c.requestRecoveryAction(ctx, "resolve_orphan", orphanID, strings.TrimSpace(pairTag))
+}
+
+// RequestForceCleanOrphan asks the executor to delete an orphan/stuck order across Redis cache and Supabase DB.
+func (c *Client) RequestForceCleanOrphan(ctx context.Context, orphanID string) (RecoveryRetryReply, error) {
+	orphanID = strings.TrimSpace(orphanID)
+	if orphanID == "" || len(orphanID) > 256 {
+		return RecoveryRetryReply{}, errors.New("orphan id tidak valid")
+	}
+	return c.requestRecoveryAction(ctx, "force_clean_orphan", orphanID, "")
+}
+
+func (c *Client) requestRecoveryAction(ctx context.Context, action, orphanID, pairTag string) (RecoveryRetryReply, error) {
+	if c == nil || c.rdb == nil {
+		return RecoveryRetryReply{}, errors.New("redis is not connected")
+	}
+	idBytes := make([]byte, 16)
+	if _, err := rand.Read(idBytes); err != nil {
+		return RecoveryRetryReply{}, fmt.Errorf("generate recovery request id: %w", err)
+	}
+	requestID := hex.EncodeToString(idBytes)
+	request := map[string]string{"request_id": requestID, "action": action}
+	if orphanID != "" { request["orphan_id"] = orphanID }
+	if pairTag != "" { request["pair_tag"] = pairTag }
+	payload, err := json.Marshal(request)
+	if err != nil {
+		return RecoveryRetryReply{}, fmt.Errorf("marshal recovery request: %w", err)
+	}
+	if err := c.rdb.Publish(ctx, ChannelRecoveryRequest, payload).Err(); err != nil {
+		return RecoveryRetryReply{}, fmt.Errorf("publish recovery request: %w", err)
+	}
+	key := KeyPrefixRecoveryReply + requestID
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(25 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return RecoveryRetryReply{}, ctx.Err()
+		case <-timeout.C:
+			return RecoveryRetryReply{}, errors.New("executor tidak merespons permintaan reconciliation dalam 25 detik")
+		case <-ticker.C:
+			raw, err := c.rdb.Get(ctx, key).Result()
+			if err == redis.Nil { continue }
+			if err != nil { return RecoveryRetryReply{}, fmt.Errorf("read recovery response: %w", err) }
+			var reply RecoveryRetryReply
+			if err := json.Unmarshal([]byte(raw), &reply); err != nil {
+				return RecoveryRetryReply{}, fmt.Errorf("decode recovery response: %w", err)
+			}
+			if reply.RequestID != requestID || reply.Action != action {
+				return RecoveryRetryReply{}, errors.New("recovery response request identity mismatch")
+			}
+			return reply, nil
+		}
+	}
+}
 // RequestLiveBalances asks the running Executor to fetch fresh balances from both exchanges.
 func (c *Client) RequestLiveBalances(ctx context.Context) (string, error) {
 	if c == nil || c.rdb == nil { return "", errors.New("redis is not connected") }

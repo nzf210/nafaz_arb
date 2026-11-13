@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,7 +54,387 @@ func (b *Bot) handleTextMessage(ctx context.Context, msg *Message) {
 	b.handleCommand(ctx, msg, cmd, parts)
 }
 
-func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts []string) {
+func (b *Bot) handleScanCommand(ctx context.Context, msg *Message) {
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		"🔍 <i>Sedang menjalankan pemindaian pasar...</i>", nil,
+	)
+	result, err := b.server.TriggerScan(ctx)
+	if err != nil {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			fmt.Sprintf("❌ <b>Scan gagal:</b> %s", html.EscapeString(err.Error())),
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, 0,
+		b.formatScanResult(result, "Hasil Pemindaian On-Demand"),
+		b.defaultKeyboard(),
+	)
+}
+
+func (b *Bot) handlePairCommand(
+	ctx context.Context, msg *Message, parts []string,
+) {
+	if len(parts) < 2 {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"ℹ️ <i>Gunakan:</i> <code>/pair &lt;simbol&gt;</code>\n<i>Contoh:</i> <code>/pair BTC</code> atau <code>/pair ETH</code>",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		b.formatPairDetail(parts[1]), b.defaultKeyboard(),
+	)
+}
+
+func (b *Bot) handleOrderDetailCommand(
+	ctx context.Context, msg *Message, parts []string,
+) {
+	if len(parts) < 2 {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"Gunakan: <code>/order &lt;internal_order_id&gt;</code>",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.handleOrderDetail(ctx, msg.Chat.ID, msg.MessageID, parts[1])
+}
+
+func (b *Bot) handlePositionDetailCommand(
+	ctx context.Context, msg *Message, parts []string,
+) {
+	if len(parts) < 2 {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"Gunakan: <code>/position &lt;position_id&gt;</code>",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.handlePositionDetail(ctx, msg.Chat.ID, msg.MessageID, parts[1])
+}
+
+func (b *Bot) handleMuteCommand(ctx context.Context, msg *Message, parts []string) {
+	duration := time.Hour
+	if len(parts) > 1 {
+		if parsed, err := time.ParseDuration(parts[1]); err == nil && parsed > 0 {
+			duration = parsed
+		}
+	}
+	b.mu.Lock()
+	b.mutedUntil = time.Now().UTC().Add(duration)
+	mutedUntil := b.mutedUntil
+	b.mu.Unlock()
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		fmt.Sprintf(
+			"🔕 <b>Alert Dibisukan</b>\n\nNotifikasi peluang tidak akan dikirim hingga <b>%s</b> (~%s ke depan).\nGunakan /unmute untuk mengaktifkan kembali.",
+			mutedUntil.Format(TIME_FORMAT), duration.String(),
+		),
+		b.defaultKeyboard(),
+	)
+}
+
+func (b *Bot) handleUnmuteCommand(ctx context.Context, msg *Message) {
+	b.mu.Lock()
+	b.mutedUntil = time.Time{}
+	b.mu.Unlock()
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		"🔔 <b>Alert Diaktifkan Kembali</b>\n\nNotifikasi peluang baru akan dikirimkan normal sesuai konfigurasi.",
+		b.defaultKeyboard(),
+	)
+}
+
+func (b *Bot) handleReconcileCommand(ctx context.Context, msg *Message, parts []string) {
+	if len(parts) > 1 && strings.EqualFold(parts[1], "retry") {
+		b.handleReconcileRetryCommand(ctx, msg)
+		return
+	}
+	if len(parts) > 1 && strings.EqualFold(parts[1], "resolve") {
+		b.handleOrphanResolveCommand(ctx, msg, parts)
+		return
+	}
+	if len(parts) > 1 && strings.EqualFold(parts[1], "clean") {
+		targetID := ""
+		if len(parts) > 2 {
+			targetID = parts[2]
+		}
+		b.handleForceCleanOrphanCommand(ctx, msg, targetID)
+		return
+	}
+	if len(parts) > 1 && !strings.EqualFold(parts[1], "status") {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"ℹ️ Gunakan <code>/reconcile</code>, <code>/reconcile retry</code>, <code>/reconcile resolve ORPHAN_ID [PAIR]</code>, atau <code>/cleanorphan ID</code>.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.sendMonitorSection(
+		ctx, msg.Chat.ID, msg.MessageID,
+		"RECONCILIATION INCIDENTS",
+		"reconciliation", "reconciliation_mismatches", "mismatches",
+	)
+}
+
+func (b *Bot) handleReconcileRetryCommand(ctx context.Context, msg *Message) {
+	userID := int64(0)
+	if msg.From != nil {
+		userID = msg.From.ID
+	}
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"⛔ <b>Akses ditolak:</b> User tidak diizinkan menjalankan recovery operator.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"❌ Redis tidak terhubung; permintaan reconciliation tidak dapat dikirim.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	b.sendReplyWithMarkup(
+		ctx, msg.Chat.ID, msg.MessageID,
+		"⏳ <b>Reconciliation retry dimulai.</b> Executor akan memeriksa ulang order, fill, posisi, dan exposure. Tidak ada order trading yang dikirim atau dibatalkan.",
+		nil,
+	)
+	reply, err := rc.RequestRecoveryRetry(ctx)
+	if err != nil {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, 0,
+			"⚠️ <b>Reconciliation belum terkonfirmasi:</b> "+html.EscapeString(err.Error())+
+				"\nPeriksa <code>/reconcile</code> dan <code>/recovery</code>; jangan menganggap insiden sudah selesai.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	status := "⚠️ <b>MASIH ADA INSIDEN</b>"
+	if reply.Complete {
+		status = "🟢 <b>SEMUA CHECK RECOVERY SELESAI</b>"
+	}
+	message := fmt.Sprintf(
+		"🧾 <b>HASIL RECONCILIATION RETRY</b>\n\n%s\n• Pending order: <code>%d</code>\n• Scope halt: <code>%d</code>\n• Waktu: <code>%s</code>\n\n<i>Read-only: tidak ada order yang dibuat, diubah, atau dibatalkan.</i>",
+		status, len(reply.PendingOrders), len(reply.ScopeHalts),
+		time.UnixMilli(reply.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC"),
+	)
+	if len(reply.PendingOrders) > 0 {
+		message += "\n\n<b>Pending:</b> <code>" + html.EscapeString(prettyJSON(mustJSONRaw(reply.PendingOrders))) + "</code>"
+	}
+	if len(reply.ScopeHalts) > 0 {
+		message += "\n\n<b>Halt:</b> <code>" + html.EscapeString(prettyJSON(mustJSONRaw(reply.ScopeHalts))) + "</code>"
+	}
+	if reply.Error != "" {
+		message += "\n\n<b>Catatan:</b> " + html.EscapeString(reply.Error)
+	}
+	b.sendReplyWithMarkup(ctx, msg.Chat.ID, 0, message, b.defaultKeyboard())
+}
+
+func (b *Bot) handleOrphanResolveCommand(ctx context.Context, msg *Message, parts []string) {
+	if len(parts) < 3 {
+		b.sendReplyWithMarkup(
+			ctx, msg.Chat.ID, msg.MessageID,
+			"ℹ️ Gunakan <code>/reconcile resolve ORPHAN_ID [PAIR_TAG]</code>. Resolusi hanya berhasil jika exchange membuktikan order terminal dengan fill nol.",
+			b.defaultKeyboard(),
+		)
+		return
+	}
+	userID := int64(0)
+	if msg.From != nil { userID = msg.From.ID }
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"⛔ <b>Akses ditolak:</b> User tidak diizinkan menyelesaikan orphan order.",
+			b.defaultKeyboard())
+		return
+	}
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"❌ Redis tidak terhubung; resolusi orphan tidak dapat dikirim.",
+			b.defaultKeyboard())
+		return
+	}
+	pairTag := ""
+	if len(parts) > 3 { pairTag = parts[3] }
+	reply, err := rc.RequestOrphanResolution(ctx, parts[2], pairTag)
+	if err != nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"⚠️ <b>Resolusi orphan tidak terkonfirmasi:</b> "+html.EscapeString(err.Error()),
+			b.defaultKeyboard())
+		return
+	}
+	if !reply.Resolved {
+		detail := "Exchange belum membuktikan order terminal dengan fill nol, atau masih ada insiden lain pada scope yang sama."
+		if reply.Error != "" { detail = reply.Error }
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+			"🛑 <b>ORPHAN TETAP DIBLOKIR</b>\n"+html.EscapeString(detail)+" Halt tetap dipertahankan. Periksa <code>/orphans</code> dan <code>/reconcile</code>.",
+			b.defaultKeyboard())
+		return
+	}
+	status := "⚠️ Scope masih memiliki halt lain."
+	if reply.Complete { status = "🟢 Tidak ada pending recovery atau scope halt tersisa." }
+	b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+		"✅ <b>ORPHAN TERVERIFIKASI DAN DICATAT SELESAI</b>\n• Orphan: <code>"+html.EscapeString(parts[2])+"</code>\n• Pair: <code>"+html.EscapeString(pairTag)+"</code>\n• "+status+"\n\n<i>Resolusi hanya dilakukan setelah exact venue lookup memastikan status terminal dan filled quantity nol. Tidak ada order yang dikirim atau dibatalkan.</i>",
+		b.defaultKeyboard())
+}
+
+func (b *Bot) handleForceCleanOrphanCommand(ctx context.Context, msg *Message, targetID string) {
+	userID := int64(0)
+	if msg.From != nil {
+		userID = msg.From.ID
+	}
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" {
+		b.sendForceCleanOrphanPicker(ctx, msg.Chat.ID, msg.MessageID)
+		return
+	}
+	b.executeForceCleanOrphan(ctx, msg.Chat.ID, msg.MessageID, userID, targetID)
+}
+
+func (b *Bot) sendForceCleanOrphanPicker(ctx context.Context, chatID, replyToID int64) {
+	usage := "ℹ️ Gunakan <code>/cleanorphan &lt;ID&gt;</code> atau <code>/hapusorphan &lt;ID&gt;</code> (local_order_id, order_id, client_order_id, atau orphan_id).\n<i>Contoh:</i> <code>/cleanorphan c7c9c437-00b6-5cf2-8a9a-ef6e6e2cf1c8</code>"
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, usage, b.defaultKeyboard())
+		return
+	}
+	var kbRows [][]InlineKeyboardButton
+	var listOut strings.Builder
+	seen := map[string]bool{}
+	if pending, err := rc.GetPendingOrderRecovery(ctx); err == nil {
+		for id, reason := range pending {
+			id = strings.TrimSpace(id)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			listOut.WriteString(fmt.Sprintf("• <code>%s</code> — %s\n", html.EscapeString(id), html.EscapeString(reason)))
+			if len("clean_orphan:"+id) <= 64 {
+				kbRows = append(kbRows, []InlineKeyboardButton{
+					{Text: "🧹 Clean " + shortOrderID(id), CallbackData: "clean_orphan:" + id},
+				})
+			}
+		}
+	}
+	if orphans, err := rc.ListOrphanOrderRecords(ctx); err == nil {
+		for _, raw := range orphans {
+			var m map[string]interface{}
+			if json.Unmarshal(raw, &m) != nil {
+				continue
+			}
+			id := firstMapValue(m, "orphan_id", "local_order_id", "exchange_order_id")
+			if id == "" || id == "n/a" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			sym := firstMapValue(m, "symbol", "scope")
+			listOut.WriteString(fmt.Sprintf("• <code>%s</code> (%s)\n", html.EscapeString(id), html.EscapeString(sym)))
+			if len("clean_orphan:"+id) <= 64 {
+				kbRows = append(kbRows, []InlineKeyboardButton{
+					{Text: "🧹 Clean " + sym + " (" + shortOrderID(id) + ")", CallbackData: "clean_orphan:" + id},
+				})
+			}
+		}
+	}
+	if len(kbRows) == 0 {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, usage, b.defaultKeyboard())
+		return
+	}
+	kbRows = append(kbRows, b.defaultKeyboard().InlineKeyboard...)
+	msg := "🧹 <b>PILIH ORPHAN / STUCK ORDER UNTUK FORCE CLEAN</b>\n\n" + listOut.String() + "\n" + usage
+	b.sendReplyWithMarkup(ctx, chatID, replyToID, msg, &InlineKeyboardMarkup{InlineKeyboard: kbRows})
+}
+
+func shortOrderID(id string) string {
+	if len(id) <= 12 {
+		return id
+	}
+	return id[:8] + ".."
+}
+
+func (b *Bot) executeForceCleanOrphan(ctx context.Context, chatID, replyToID, userID int64, targetID string) {
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID,
+			"⛔ <b>Akses ditolak:</b> User tidak diizinkan menghapus orphan/stuck order.",
+			b.defaultKeyboard())
+		return
+	}
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID,
+			"❌ Redis tidak terhubung; force clean orphan tidak dapat dikirim.",
+			b.defaultKeyboard())
+		return
+	}
+	reply, err := rc.RequestForceCleanOrphan(ctx, targetID)
+	if err != nil {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID,
+			"⚠️ <b>Force clean orphan gagal:</b> "+html.EscapeString(err.Error()),
+			b.defaultKeyboard())
+		return
+	}
+	if !reply.Resolved {
+		detail := "ID tidak ditemukan atau sedang terkunci replica lain."
+		if reply.Error != "" {
+			detail = reply.Error
+		}
+		b.sendReplyWithMarkup(ctx, chatID, replyToID,
+			"⚠️ <b>ORPHAN TIDAK TERHAPUS</b>\n• ID: <code>"+html.EscapeString(targetID)+"</code>\n• Detail: "+html.EscapeString(detail),
+			b.defaultKeyboard())
+		return
+	}
+	pairsStr := "-"
+	if len(reply.ClearedPairs) > 0 {
+		pairsStr = strings.Join(reply.ClearedPairs, ", ")
+	}
+	status := "⚠️ Scope lain masih memiliki halt."
+	if reply.Complete {
+		status = "🟢 Semua pending recovery dan scope halt bersih."
+	}
+	b.sendReplyWithMarkup(ctx, chatID, replyToID,
+		fmt.Sprintf(
+			"🧹 <b>ORPHAN FORCE CLEANED</b>\n• ID: <code>%s</code>\n• Cache Redis terhapus: <code>%d</code>\n• Database/Outbox terhapus: <code>%d</code>\n• Pair dibuka kembali: <code>%s</code>\n• %s",
+			html.EscapeString(targetID),
+			reply.DeletedRedis,
+			reply.DeletedDB,
+			html.EscapeString(pairsStr),
+			status,
+		),
+		b.defaultKeyboard(),
+	)
+}
+
+func mustJSONRaw(value interface{}) json.RawMessage {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return encoded
+}
+
+func (b *Bot) handleCommand(
+	ctx context.Context, msg *Message, cmd string, parts []string,
+) {
 	switch cmd {
 	case "/start", "/menu":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatMenu(), b.defaultKeyboard())
@@ -62,28 +443,43 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 	case "/status":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatStatus(), b.defaultKeyboard())
 	case "/scan":
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "🔍 <i>Sedang menjalankan pemindaian pasar...</i>", nil)
-		r, err := b.server.TriggerScan(ctx)
-		if err != nil {
-			b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, fmt.Sprintf("❌ <b>Scan gagal:</b> %s", html.EscapeString(err.Error())), b.defaultKeyboard())
-			return
-		}
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, 0, b.formatScanResult(r, "Hasil Pemindaian On-Demand"), b.defaultKeyboard())
+		b.handleScanCommand(ctx, msg)
 	case "/latest":
 		b.sendLatestOpportunityScans(ctx, msg.Chat.ID, msg.MessageID)
 	case "/pair":
-		if len(parts) < 2 {
-			b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-				"ℹ️ <i>Gunakan:</i> <code>/pair &lt;simbol&gt;</code>\n<i>Contoh:</i> <code>/pair BTC</code> atau <code>/pair ETH</code>", b.defaultKeyboard())
-			return
-		}
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatPairDetail(parts[1]), b.defaultKeyboard())
+		b.handlePairCommand(ctx, msg, parts)
 	case "/active":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatActiveOpportunities(), b.defaultKeyboard())
+	case "/orders":
+		b.handleOrdersCommand(ctx, msg.Chat.ID, msg.MessageID)
+	case "/recovery":
+		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "RECOVERY STATUS", "recovery", "recovery_status", "startup_recovery")
+	case "/orphans":
+		if len(parts) > 2 && strings.EqualFold(parts[1], "clean") {
+			b.handleForceCleanOrphanCommand(ctx, msg, parts[2])
+			return
+		}
+		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "ORPHAN ORDERS", "orphans", "orphan_orders", "orphan_order_details")
+	case "/cleanorphan", "/clean_orphan", "/hapusorphan":
+		targetID := ""
+		if len(parts) > 1 {
+			targetID = parts[1]
+		}
+		b.handleForceCleanOrphanCommand(ctx, msg, targetID)
+	case "/reconcile":
+		b.handleReconcileCommand(ctx, msg, parts)
+	case "/risk":
+		b.sendMonitorSection(ctx, msg.Chat.ID, msg.MessageID, "RISK HALT", "risk", "risk_status", "risk_halt")
+	case "/order":
+		b.handleOrderDetailCommand(ctx, msg, parts)
+	case "/position":
+		b.handlePositionDetailCommand(ctx, msg, parts)
 	case "/positions":
 		b.handlePositionsCommand(ctx, msg.Chat.ID, msg.MessageID)
 	case "/pending":
 		b.handlePendingOrdersCommand(ctx, msg.Chat.ID, msg.MessageID)
+	case "/spotmax":
+		b.handleSpotMaxCommand(ctx, msg, parts)
 	case "/balance":
 		userID := int64(0)
 		if msg.From != nil {
@@ -97,25 +493,9 @@ func (b *Bot) handleCommand(ctx context.Context, msg *Message, cmd string, parts
 	case "/metrics":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatMetrics(), b.defaultKeyboard())
 	case "/mute":
-		dur := 1 * time.Hour
-		if len(parts) > 1 {
-			if d, err := time.ParseDuration(parts[1]); err == nil && d > 0 {
-				dur = d
-			}
-		}
-		b.mu.Lock()
-		b.mutedUntil = time.Now().UTC().Add(dur)
-		mutedUntil := b.mutedUntil
-		b.mu.Unlock()
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-			fmt.Sprintf("🔕 <b>Alert Dibisukan</b>\n\nNotifikasi peluang tidak akan dikirim hingga <b>%s</b> (~%s ke depan).\nGunakan /unmute untuk mengaktifkan kembali.",
-				mutedUntil.Format(TIME_FORMAT), dur.String()), b.defaultKeyboard())
+		b.handleMuteCommand(ctx, msg, parts)
 	case "/unmute":
-		b.mu.Lock()
-		b.mutedUntil = time.Time{}
-		b.mu.Unlock()
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-			"🔔 <b>Alert Diaktifkan Kembali</b>\n\nNotifikasi peluang baru akan dikirimkan normal sesuai konfigurasi.", b.defaultKeyboard())
+		b.handleUnmuteCommand(ctx, msg)
 	case "/killswitch":
 		userID := int64(0)
 		if msg.From != nil {
@@ -236,6 +616,10 @@ func (b *Bot) handleExtendedCallback(ctx context.Context, chatID int64, cb *Call
 		b.sendReplyWithMarkup(ctx, chatID, 0, "❌ Tutup paksa dibatalkan.", b.defaultKeyboard())
 		return
 	}
+	if cleanID, ok := strings.CutPrefix(cb.Data, "clean_orphan:"); ok {
+		b.executeForceCleanOrphan(ctx, chatID, 0, cb.From.ID, strings.TrimSpace(cleanID))
+		return
+	}
 }
 
 
@@ -282,6 +666,51 @@ func (b *Bot) handleBalanceCommand(ctx context.Context, chatID, replyToID, userI
 		message = string(runes[:3700]) + "\n<i>Daftar dipotong karena batas panjang pesan Telegram.</i>"
 	}
 	b.sendReplyWithMarkup(ctx, chatID, 0, message, b.defaultKeyboard())
+}
+
+func (b *Bot) handleSpotMaxCommand(ctx context.Context, msg *Message, parts []string) {
+	b.mu.Lock()
+	rc := b.redisClient
+	b.mu.Unlock()
+	if rc == nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Redis tidak terhubung; pengaturan max spot order tidak tersedia.", b.defaultKeyboard())
+		return
+	}
+	if len(parts) == 1 {
+		limits, err := rc.GetSpotOrderLimits(ctx)
+		if err != nil {
+			b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Gagal membaca spot order limits: "+html.EscapeString(err.Error()), b.defaultKeyboard())
+			return
+		}
+		var out strings.Builder
+		out.WriteString("⚙️ <b>MAX OPEN SPOT ORDERS PER CEX</b>\n\nDefault untuk CEX tanpa override: <b>2</b>\n")
+		if len(limits) == 0 { out.WriteString("\nBelum ada override; semua CEX memakai default 2.\n") }
+		for exchange, limit := range limits { out.WriteString(fmt.Sprintf("\n• <b>%s</b>: <code>%d</code>", html.EscapeString(strings.ToUpper(exchange)), limit)) }
+		out.WriteString("\n\nAtur: <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>\nContoh: <code>/spotmax indodax 3</code>")
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, out.String(), b.defaultKeyboard())
+		return
+	}
+	userID := int64(0)
+	if msg.From != nil { userID = msg.From.ID }
+	if !b.isUserAllowedForSensitiveActions(userID) {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "⛔ <b>Akses ditolak:</b> hanya operator terotorisasi yang boleh mengubah batas order Spot.", b.defaultKeyboard())
+		return
+	}
+	if len(parts) != 3 {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "ℹ️ Gunakan <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>. Rentang jumlah 1–100; default 2.", b.defaultKeyboard())
+		return
+	}
+	limit, err := strconv.Atoi(parts[2])
+	if err != nil || limit < 1 || limit > 100 {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Jumlah harus berupa bilangan bulat 1–100.", b.defaultKeyboard())
+		return
+	}
+	if err := rc.SetSpotOrderLimit(ctx, parts[1], limit); err != nil {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Gagal mengubah batas: "+html.EscapeString(err.Error()), b.defaultKeyboard())
+		return
+	}
+	b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
+		fmt.Sprintf("✅ <b>BATAS OPEN SPOT ORDER DIPERBARUI</b>\n\n• CEX: <b>%s</b>\n• Maksimum: <b>%d</b> order/posisi Spot\n\nPerubahan dikonfirmasi Executor dan disimpan di Postgres sebelum diterapkan; tidak perlu restart. Order/posisi yang sudah terbuka tidak dibatalkan; batas baru hanya mencegah entry baru sampai jumlah turun di bawah batas.", html.EscapeString(strings.ToUpper(parts[1])), limit), b.defaultKeyboard())
 }
 
 func (b *Bot) handleKillSwitchCommand(ctx context.Context, chatID int64, userID int64, replyToID int64, parts []string) {
@@ -439,6 +868,7 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 	}
 
 	var text string
+	cleanTargetID := ""
 	switch ev.Event {
 	case "POSITION_OPENED":
 		text = fmt.Sprintf(
@@ -474,6 +904,17 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 		if message == "" {
 			message = "Proses entry atau hedge tidak berhasil."
 		}
+		orderID, positionID, requiredAction := "n/a", "n/a", message
+		if ev.Detail != nil {
+			if value, ok := ev.Detail["order_id"]; ok { orderID = fmt.Sprint(value) }
+			if value, ok := ev.Detail["internal_order_id"]; ok && orderID == "n/a" { orderID = fmt.Sprint(value) }
+			if value, ok := ev.Detail["local_order_id"]; ok && orderID == "n/a" { orderID = fmt.Sprint(value) }
+			if value, ok := ev.Detail["position_id"]; ok { positionID = fmt.Sprint(value) }
+			if value, ok := ev.Detail["required_action"]; ok { requiredAction = fmt.Sprint(value) }
+		}
+		if ev.State == "RECONCILIATION_REQUIRED" && orderID != "n/a" && orderID != "" {
+			cleanTargetID = orderID
+		}
 		// Avoid flooding Telegram when the same pair repeatedly rejects the
 		// same signal or balance snapshot.
 		alertKey := "failure:" + pairLabel + ":" + reason
@@ -492,7 +933,10 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 				"• Exchange: <code>%s</code> → <code>%s</code>\n"+
 				"• Alasan: <b>%s</b>\n"+
 				"• Detail: %s\n"+
-				"• State: <code>%s</code>\n\n"+
+				"• Order ID: <code>%s</code>\n"+
+				"• Position ID: <code>%s</code>\n"+
+				"• State: <code>%s</code>\n"+
+				"• Required action: %s\n\n"+
 				"<i>Entry baru untuk kondisi ini ditolak. Periksa saldo, order, dan posisi di kedua exchange sebelum mencoba lagi.</i>",
 			modeTag,
 			html.EscapeString(pairLabel),
@@ -500,7 +944,10 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			html.EscapeString(ev.GlobalExchange),
 			html.EscapeString(reason),
 			html.EscapeString(message),
+			html.EscapeString(orderID),
+			html.EscapeString(positionID),
 			html.EscapeString(ev.State),
+			html.EscapeString(requiredAction),
 		)
 	case "POSITION_CLOSED":
 		emoji := "🎉"
@@ -530,8 +977,37 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			ev.NetProfitIDR,
 			ev.NetROIPct,
 		)
+	case "ORDER_NOT_FOUND_AFTER_RESTART", "UNKNOWN_EXCHANGE_ORDER", "ORPHAN_ORDER", "CANCEL_FAILED", "REPLACEMENT_BLOCKED", "PARTIAL_FILL_IMBALANCE", "EXPOSURE_MISMATCH", "RECOVERY_EXCHANGE_API_FAILED", "DATABASE_PERSISTENCE_FAILED", "POSITION_RECOVERY_FAILED", "RECONCILIATION_MISMATCH", "RISK_HALT", "TRADE_FILL_RECONCILIATION_REQUIRED", "EXPOSURE_EXPECTED_QTY_INVALID", "EXPOSURE_MAPPING_UNAVAILABLE", "EXPOSURE_BALANCE_UNAVAILABLE", "EXPOSURE_BALANCE_INVALID", "EXPOSURE_POSITION_UNAVAILABLE":
+		pair := ev.PairTag
+		if pair == "" { pair = ev.PairKey }
+		if pair == "" { pair = ev.Symbol }
+		orderID, positionID, action := "n/a", "n/a", "Periksa exchange dan rekonsiliasi secara manual sebelum mengizinkan entry baru."
+		if ev.Detail != nil {
+			if v, ok := ev.Detail["order_id"]; ok { orderID = fmt.Sprint(v) }
+			if v, ok := ev.Detail["internal_order_id"]; ok && orderID == "n/a" { orderID = fmt.Sprint(v) }
+			if v, ok := ev.Detail["local_order_id"]; ok && orderID == "n/a" { orderID = fmt.Sprint(v) }
+			if v, ok := ev.Detail["orphan_id"]; ok && cleanTargetID == "" { cleanTargetID = fmt.Sprint(v) }
+			if v, ok := ev.Detail["position_id"]; ok { positionID = fmt.Sprint(v) }
+			if v, ok := ev.Detail["required_action"]; ok { action = fmt.Sprint(v) }
+		}
+		if cleanTargetID == "" && (ev.State == "RECONCILIATION_REQUIRED" || ev.Event == "ORPHAN_ORDER") && orderID != "n/a" && orderID != "" {
+			cleanTargetID = orderID
+		}
+		if ev.Message != "" { action = ev.Message }
+		text = fmt.Sprintf("🚨 <b>CRITICAL EXECUTION / RECOVERY ALERT</b>\n\n• Event: <code>%s</code>\n• Pair: <code>%s</code>\n• Exchange: <code>%s</code> / <code>%s</code>\n• Order ID: <code>%s</code>\n• Position ID: <code>%s</code>\n• Status: <code>%s</code>\n• Reason: <code>%s</code>\n\n<b>Required action:</b> %s\n\n<i>Jangan mengasumsikan order/posisi aman sampai diverifikasi pada exchange.</i>",
+			html.EscapeString(ev.Event), html.EscapeString(pair), html.EscapeString(ev.LocalExchange), html.EscapeString(ev.GlobalExchange),
+			html.EscapeString(orderID), html.EscapeString(positionID), html.EscapeString(ev.State), html.EscapeString(ev.Reason), html.EscapeString(action))
 	default:
 		return
+	}
+
+	markup := b.defaultKeyboard()
+	if cleanTargetID != "" && len("clean_orphan:"+cleanTargetID) <= 64 {
+		kbRows := [][]InlineKeyboardButton{
+			{{Text: "🧹 Clean Orphan (" + shortOrderID(cleanTargetID) + ")", CallbackData: "clean_orphan:" + cleanTargetID}},
+		}
+		kbRows = append(kbRows, markup.InlineKeyboard...)
+		markup = &InlineKeyboardMarkup{InlineKeyboard: kbRows}
 	}
 
 	chatIDs := make([]int64, 0, len(b.cfg.Telegram.AllowedChatIDs)+1)
@@ -541,6 +1017,6 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 		chatIDs = append(chatIDs, b.cfg.Telegram.AllowedChatIDs...)
 	}
 	for _, chatID := range chatIDs {
-		b.sendReplyWithMarkup(ctx, chatID, 0, text, b.defaultKeyboard())
+		b.sendReplyWithMarkup(ctx, chatID, 0, text, markup)
 	}
 }

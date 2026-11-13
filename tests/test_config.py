@@ -50,7 +50,7 @@ def test_p3_04_sanitize_announces_disabled_safety_nets():
     assert cfg.max_entry_slippage_pct == 0.0
 
 @pytest.mark.asyncio
-async def test_modular_exchanges_config_and_env():
+async def test_modular_exchanges_config_and_env(monkeypatch):
     """Verify modular exchanges loaded from file and dynamic env vars."""
     import os
     cfg = ExecutorConfig()
@@ -65,6 +65,7 @@ async def test_modular_exchanges_config_and_env():
                 "okx": {
                     "api_key": "okx_key_1",
                     "api_secret": "okx_secret_1",
+                    "account_scope": "main-okx-account",
                     "passphrase": "pass_1",
                     "testnet": True,
                     "options": {"defaultType": "swap"}
@@ -81,17 +82,26 @@ async def test_modular_exchanges_config_and_env():
         cfg._apply_file(f_path)
         assert "okx" in cfg.exchanges
         assert cfg.exchanges["okx"].api_key == "okx_key_1"
+        assert cfg.exchanges["okx"].account_scope == "main-okx-account"
         assert cfg.exchanges["okx"].options.get("defaultType") == "swap"
         assert "bybit" in cfg.exchanges
         assert cfg.exchanges["bybit"].api_key == "bybit_key_1"
 
         # Test dynamic env overrides: e.g. BINANCE_API_KEY
-        os.environ["BINANCE_API_KEY"] = "binance_key_env"
-        os.environ["BINANCE_API_SECRET"] = "binance_sec_env"
+        monkeypatch.setenv("BINANCE_API_KEY", "binance_key_env")
+        monkeypatch.setenv("BINANCE_API_SECRET", "binance_sec_env")
         cfg._apply_env()
         assert "binance" in cfg.exchanges
         assert cfg.exchanges["binance"].api_key == "binance_key_env"
         assert cfg.exchanges["binance"].api_secret == "binance_sec_env"
+
+        # Binance Cloud broker id (Tokocrypto) comes from the environment too and
+        # must reach the ccxt client options that prefix client order ids.
+        monkeypatch.setenv("TOKOCRYPTO_API_KEY", "toko_key_env")
+        monkeypatch.setenv("TOKOCRYPTO_API_SECRET", "toko_sec_env")
+        monkeypatch.setenv("TOKOCRYPTO_BROKER_ID", "x-TKT5PX2F")
+        cfg._apply_env()
+        assert cfg.exchanges["tokocrypto"].options["broker_id"] == "x-TKT5PX2F"
 
         # Verify global credentials synced from okx
         assert cfg.global_credentials.api_key == "okx_key_1"
@@ -120,6 +130,9 @@ async def test_modular_exchanges_config_and_env():
     finally:
         os.environ.pop("BINANCE_API_KEY", None)
         os.environ.pop("BINANCE_API_SECRET", None)
+        os.environ.pop("TOKOCRYPTO_BROKER_ID", None)
+        os.environ.pop("TOKOCRYPTO_API_KEY", None)
+        os.environ.pop("TOKOCRYPTO_API_SECRET", None)
         if os.path.exists(f_path):
             os.remove(f_path)
 
@@ -174,7 +187,14 @@ def test_executor_defaults_use_per_venue_failure_threshold_and_maker_ttl():
     assert cfg.max_order_ttl_seconds == 120
     assert cfg.maker_refresh_after_seconds == 45
     assert cfg.maker_refresh_cooldown_seconds == 300
+    assert cfg.indodax_maker_refresh_after_seconds == 15
+    assert cfg.indodax_maker_refresh_cooldown_seconds == 15
+    assert cfg.adaptive_maker_min_net_profit_pct == 0.10
 
     cfg.sanitize()
     assert cfg.max_consecutive_order_failures == 50
     assert cfg.max_order_ttl_seconds == 120
+    assert cfg.maker_refresh_after_seconds == 45
+    assert cfg.maker_refresh_cooldown_seconds == 300
+    assert cfg.indodax_maker_refresh_after_seconds == 15
+    assert cfg.indodax_maker_refresh_cooldown_seconds == 15

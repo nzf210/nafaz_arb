@@ -79,17 +79,70 @@ async def test_live_futures_order_converts_base_quantity_to_contracts_and_back()
     }
 
     opened = await client.open_global_short_market(
-        "BTC/USDT:USDT", 0.003, amount_spec=spec
+        "BTC/USDT:USDT", 0.003, client_order_id="hedge-123",
+        amount_spec=spec,
     )
     closed = await client.close_global_short_market(
         "BTC/USDT:USDT", 0.003, amount_spec=spec
     )
 
     assert futures.calls[0][1] == 3
+    assert futures.calls[0][2] == ({
+        "reduceOnly": False, "clientOrderId": "hedge-123"
+    },)
     assert opened["filled"] == pytest.approx(0.003)
     assert futures.calls[1][1] == 3
     assert futures.calls[1][2]["reduceOnly"] is True
     assert closed["filled"] == pytest.approx(0.003)
+
+@pytest.mark.asyncio
+async def test_okx_futures_legs_declare_the_short_position_side():
+    """OKX long/short accounts reject contract orders without an explicit posSide."""
+    from executor.exchange_client import ExchangeClient
+
+    class Futures:
+        def __init__(self):
+            self.id = "okx"
+            self.calls = []
+
+        async def create_market_sell_order(self, symbol, amount, *params):
+            self.calls.append(("sell", symbol, amount, params))
+            return {"symbol": symbol, "amount": amount, "filled": amount, "status": "closed"}
+
+        async def create_market_buy_order(self, symbol, amount, params):
+            self.calls.append(("buy", symbol, amount, params))
+            return {"symbol": symbol, "amount": amount, "filled": amount, "status": "closed"}
+
+    futures = Futures()
+    client = ExchangeClient(object(), futures)
+    spec = {"unit": "CONTRACT", "step": 1.0, "min": 1.0, "base_per_unit": 0.001}
+
+    await client.open_global_short_market(
+        "SOON/USDT:USDT", 0.003, client_order_id="hedge-123", amount_spec=spec,
+    )
+    await client.close_global_short_market("SOON/USDT:USDT", 0.003, amount_spec=spec)
+
+    open_params = futures.calls[0][3][0]
+    assert open_params["posSide"] == "short"
+    assert open_params["reduceOnly"] is False
+    close_params = futures.calls[1][3]
+    assert close_params["posSide"] == "short"
+    assert close_params["reduceOnly"] is True
+
+def test_futures_position_side_params_only_targets_okx():
+    from executor.exchange_common import futures_position_side_params
+
+    class Ex:
+        def __init__(self, name):
+            self.id = name
+
+    assert futures_position_side_params(Ex("okx"), "short") == {"posSide": "short"}
+    assert futures_position_side_params(Ex("okx"), "long") == {"posSide": "long"}
+    # Net-mode venues infer the position from the order side.
+    assert futures_position_side_params(Ex("bybit"), "short") == {}
+    assert futures_position_side_params(Ex("mexc"), "short") == {}
+    with pytest.raises(ValueError):
+        futures_position_side_params(Ex("okx"), "sideways")
 
 
 @pytest.mark.asyncio
@@ -148,14 +201,19 @@ async def test_live_client_resolves_scanner_market_ids_before_orders():
     assert futures.calls[0][0] == "BTC/USDT:USDT"
 
 @pytest.mark.asyncio
-async def test_tokocrypto_order_carries_binance_broker_prefix():
-    """Binance Cloud venues reject client ids without the broker prefix (error 3703)."""
+async def test_tokocrypto_order_carries_registered_broker_prefix():
+    """A configured broker id prefixes the client id; error 3703 otherwise."""
     from types import SimpleNamespace
 
     from executor.exchange_client import ExchangeClient, venue_client_order_id
 
+    BROKER_ID = "x-TKT5PX2F"
+
     class TokoSpot:
         id = "tokocrypto"
+        # The registered broker id travels with the account (ccxt options),
+        # populated from the exchange credentials by init_ccxt_exchange.
+        options = {"broker": {"marketType": BROKER_ID}}
         markets = {
             "FLOKI/IDR": {
                 "id": "FLOKIIDR", "symbol": "FLOKI/IDR", "base": "FLOKI",
@@ -188,15 +246,19 @@ async def test_tokocrypto_order_carries_binance_broker_prefix():
 
     params = spot.calls[0][1][0]
     sent_id = params["clientOrderId"]
-    assert sent_id.startswith("x-")
-    assert sent_id.endswith(raw_id)
-    # The final on-the-wire id must fit the venue's 36-character limit even
-    # with the broker prefix.
-    assert len(sent_id) <= 36
+    # Tokocrypto rejects any non-alphanumeric character with error 3703, so the
+    # broker id and the pair slug are stripped of punctuation on the wire.
+    assert sent_id.startswith("xTKT5PX2F")
+    # The deterministic "{leg}{seq}" tail survives, so a retried submit presents
+    # the same id and the venue drops the duplicate instead of double-filling.
+    assert sent_id.endswith("entry1")
+    # The venue rejects anything longer than 32 characters.
+    assert len(sent_id) <= 32
+    assert all(c.isalnum() for c in sent_id)
 
-    # Venues outside Binance Cloud keep the plain id; Tokocrypto ids that
-    # already carry the prefix are left untouched.
-    assert venue_client_order_id(spot, "x-TKT5PX2Fabc") == "x-TKT5PX2Fabc"
+    # Venues outside Binance Cloud keep the plain id; ids that are already
+    # within the Tokocrypto constraints are left untouched.
+    assert venue_client_order_id(spot, "xTKT5PX2Fabc") == "xTKT5PX2Fabc"
 
     class IndodaxSpot:
         id = "indodax"
@@ -204,6 +266,163 @@ async def test_tokocrypto_order_carries_binance_broker_prefix():
     assert venue_client_order_id(IndodaxSpot(), "indodax-btc-idr-entry-1") == (
         "indodax-btc-idr-entry-1"
     )
+
+    # With no registered broker id the id is still rewritten: sending the raw
+    # dashed id must never happen, because the venue rejects it with 3703.
+    class UnregisteredTokoSpot:
+        id = "tokocrypto"
+        options = {}
+
+    rewritten = venue_client_order_id(UnregisteredTokoSpot(), raw_id)
+    assert rewritten != raw_id
+    assert len(rewritten) <= 32
+    assert all(c.isalnum() for c in rewritten)
+    assert rewritten.endswith("entry1")
+
+@pytest.mark.asyncio
+async def test_tokocrypto_broker_prefix_travels_from_credentials_to_wire():
+    """The broker id set in exchange credentials must prefix the sent id."""
+    from executor.config import ExchangeCredentials
+    from executor.exchange_client import ExchangeClient, init_ccxt_exchange
+    from executor.helpers import build_client_order_id
+    from executor.quantity import AmountSpec
+
+    creds = ExchangeCredentials(
+        api_key="k", api_secret="s", options={"broker_id": "x-TKT5PX2F"}
+    )
+    local = init_ccxt_exchange("tokocrypto", creds, "spot")
+    sent = {}
+
+    async def create_limit_buy_order(symbol, amount, price, *params):
+        sent["params"] = params[0]
+        return {"symbol": symbol, "amount": amount, "filled": amount}
+
+    local.create_limit_buy_order = create_limit_buy_order
+    local.markets = {"FLOKI/IDR": {"id": "FLOKIIDR", "symbol": "FLOKI/IDR", "spot": True}}
+
+    client = ExchangeClient(local, object())
+    assert client._local_broker_prefix == "x-TKT5PX2F"
+
+    await client.place_local_limit_buy(
+        "FLOKI/IDR", 1.0, 1_000.0,
+        client_order_id=build_client_order_id(
+            "tokocrypto:toko:floki_idr__okx:floki_usdt_swap", "entry", 1
+        ),
+        amount_spec=AmountSpec(unit="BASE", step=0.001, minimum=0.0, base_per_unit=1.0),
+    )
+    sent_id = sent["params"]["clientOrderId"]
+    assert sent_id.startswith("xTKT5PX2F")
+    assert sent_id.endswith("entry1")
+    assert len(sent_id) <= 32
+    assert all(c.isalnum() for c in sent_id)
+
+
+@pytest.mark.asyncio
+async def test_dual_leg_sizing_caps_by_thinner_balance():
+    """Live sizing must cap to min(spot, futures) so both legs stay fundable."""
+    from types import SimpleNamespace
+
+    from executor.risk import RiskMixin
+
+    class Engine(RiskMixin):
+        def __init__(self):
+            self.config = SimpleNamespace(
+                mock_mode=False,
+                min_allocated_capital=10.0,
+                max_exposure_per_exchange_usdt=1000.0,
+                estimated_round_trip_fee_pct=0.0,
+            )
+            self._balance_snapshots = {}
+            self._last_balances = {}
+            self._exchange_halted = {}
+
+        async def _get_balance_snapshot(self, **kwargs):
+            return {"spot_available": 80.0, "futures_available": 30.0}
+
+        def _exposure_allows(self, pair_tag, pair_info, planned):
+            return True
+
+        async def _publish_execution_failure(self, *args, **kwargs):
+            raise AssertionError("a fundable size must not be rejected")
+
+    engine = Engine()
+    payload = SimpleNamespace(
+        execution_directives=SimpleNamespace(max_position_usdt=50.0),
+        pair_info=SimpleNamespace(),
+        pricing_snapshot=SimpleNamespace(usdt_idr_rate=16000.0),
+    )
+    sized = await engine._compute_entry_sizing("pair", payload)
+    assert sized is not None
+    # Directive asked for $50 but futures only has $30, so the entry is capped.
+    assert sized[0] == 30.0
+
+
+@pytest.mark.asyncio
+async def test_live_sizing_probe_failure_does_not_halt_venues():
+    """A transient live balance read must not halt venues; the preflight decides."""
+    from types import SimpleNamespace
+
+    from executor.risk import RiskMixin
+
+    class Engine(RiskMixin):
+        def __init__(self):
+            self.config = SimpleNamespace(
+                mock_mode=False,
+                min_allocated_capital=10.0,
+                max_exposure_per_exchange_usdt=1000.0,
+                estimated_round_trip_fee_pct=0.0,
+            )
+            self._balance_snapshots = {}
+            self._last_balances = {}
+            self._exchange_halted = {}
+
+        async def _get_balance_snapshot(self, **kwargs):
+            raise RuntimeError("venue timeout")
+
+        def _exposure_allows(self, pair_tag, pair_info, planned):
+            return True
+
+        async def _publish_execution_failure(self, *args, **kwargs):
+            raise AssertionError("an unreadable balance must not reject here")
+
+    engine = Engine()
+    payload = SimpleNamespace(
+        execution_directives=SimpleNamespace(max_position_usdt=50.0),
+        pair_info=SimpleNamespace(),
+        pricing_snapshot=SimpleNamespace(usdt_idr_rate=16000.0),
+    )
+    sized = await engine._compute_entry_sizing("pair", payload)
+    assert sized is not None
+    # Sizing is left uncapped and the funding preflight owns the decision.
+    assert sized[0] == 50.0
+    assert engine._exchange_halted == {}
+
+
+@pytest.mark.asyncio
+async def test_dual_leg_underfunded_reports_fundable_cap():
+    """A shortfall reports the per-leg cap the caller can actually use."""
+    from types import SimpleNamespace
+
+    from executor.risk import RiskMixin
+
+    published = []
+
+    class Engine(RiskMixin):
+        def __init__(self):
+            self.config = SimpleNamespace(mock_mode=False)
+
+        async def _get_balance_snapshot(self, **kwargs):
+            return {"spot_available": 40.0, "futures_available": 12.0}
+
+        async def _publish_execution_failure(self, *args, **kwargs):
+            published.append((args, kwargs))
+
+    engine = Engine()
+    ok = await engine._verify_dual_leg_funding("pair", SimpleNamespace(), 50.0, 16000.0)
+    assert ok is False
+    args, kwargs = published[-1]
+    assert args[1] == "DUAL_LEG_UNDERFUNDED"
+    assert kwargs["detail"]["fundable_usdt_per_leg"] == 12.0
 
 
 @pytest.mark.asyncio
@@ -471,10 +690,379 @@ def test_engine_pair_client_binding_is_task_local_and_restores_previous_binding(
     token_a = engine._bind_pair_client(toko_okx)
     toko_client = engine.client
     token_b = engine._bind_pair_client(indo_mexc)
-    assert engine.client.local is venues["indodax"]["client"]
-    assert engine.client.global_fut is venues["mexc"]["client"]
+    assert engine.client.local._venue is venues["indodax"]["client"]
+    assert engine.client.global_fut._venue is venues["mexc"]["client"]
 
     engine._reset_pair_client(token_b)
     assert engine.client is toko_client
     engine._reset_pair_client(token_a)
-    assert engine.client is base
+    assert engine.client._client is base
+
+@pytest.mark.asyncio
+async def test_spot_order_history_lookup_matches_exact_client_id():
+    """The adapter can recover a filled/closed order when its create ack was lost."""
+    from executor.exchange_client import ExchangeClient
+
+    class Spot:
+        id = "okx"
+
+        async def fetch_open_orders(self, symbol):
+            return []
+
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            return [{
+                "id": "ack-spot-1",
+                "clientOrderId": "pair-entry-77",
+                "symbol": symbol,
+                "side": "buy",
+                "type": "limit",
+                "amount": 0.01,
+                "filled": 0.01,
+                "remaining": 0.0,
+                "status": "closed",
+                "average": 100.0,
+            }]
+
+    client = ExchangeClient(Spot(), object())
+    order = await client.fetch_local_order_by_client_id(
+        "pair-entry-77", "BTC/USDT"
+    )
+
+    assert order["id"] == "ack-spot-1"
+    assert order["client_order_id"] == "pair-entry-77"
+    assert order["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_futures_order_history_lookup_resolves_client_id_through_private_trade():
+    """A filled market hedge can be found through the private trade's client id."""
+    from executor.exchange_client import ExchangeClient
+
+    class Futures:
+        id = "okx"
+
+        async def fetch_open_orders(self, symbol):
+            return []
+
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            raise NotSupported("closed order history unavailable")
+
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            raise NotSupported("canceled order history unavailable")
+
+        async def fetch_my_trades(self, symbol, since=None, limit=None):
+            return [{
+                "id": "trade-1",
+                "order": "ack-hedge-1",
+                "clientOrderId": "pair-hedge-78",
+                "symbol": symbol,
+            }]
+
+        async def fetch_order(self, order_id, symbol):
+            assert order_id == "ack-hedge-1"
+            return {
+                "id": order_id,
+                "symbol": symbol,
+                "side": "sell",
+                "type": "market",
+                "amount": 0.01,
+                "filled": 0.01,
+                "remaining": 0.0,
+                "status": "closed",
+                "average": 101.0,
+            }
+
+    class NotSupported(Exception):
+        pass
+
+    client = ExchangeClient(object(), Futures())
+    order = await client.fetch_global_order_by_client_id(
+        "pair-hedge-78", "BTC/USDT"
+    )
+
+    assert order["id"] == "ack-hedge-1"
+    assert order["client_order_id"] == "pair-hedge-78"
+    assert order["filled"] == pytest.approx(0.01)
+
+@pytest.mark.asyncio
+async def test_tokocrypto_broker_prefixed_client_id_is_normalized_for_recovery():
+    """The logical registry id must match the broker-prefixed id returned by venue APIs."""
+    from executor.exchange_client import ExchangeClient
+
+    broker_prefix = "x-TKT5PX2F"
+    logical_id = "pair-entry-91"
+    wire_id = broker_prefix + logical_id
+
+    class TokoSpot:
+        id = "tokocrypto"
+        options = {"broker": {"marketType": broker_prefix}}
+
+        def __init__(self):
+            self.open_rows = []
+
+        async def fetch_open_orders(self, symbol):
+            return list(self.open_rows)
+
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            return [{
+                "id": "toko-closed-1",
+                "clientOrderId": wire_id,
+                "symbol": symbol,
+                "side": "buy",
+                "type": "limit",
+                "amount": 0.01,
+                "filled": 0.01,
+                "remaining": 0.0,
+                "status": "closed",
+            }]
+
+    client = ExchangeClient(TokoSpot(), object())
+    recovered = await client.fetch_local_order_by_client_id(
+        logical_id, "FLOKI/IDR"
+    )
+    client.local.open_rows = [{
+        "id": "toko-open-1",
+        "clientOrderId": wire_id,
+        "symbol": "FLOKI/IDR",
+        "side": "buy",
+        "type": "limit",
+        "amount": 0.01,
+        "filled": 0.0,
+        "remaining": 0.01,
+        "status": "open",
+    }]
+    opened = await client.fetch_local_open_orders("FLOKI/IDR")
+
+    assert recovered["id"] == "toko-closed-1"
+    assert recovered["client_order_id"] == logical_id
+    assert opened[0]["client_order_id"] == logical_id
+
+
+@pytest.mark.asyncio
+async def test_tokocrypto_rejected_client_id_echo_is_learned_for_recovery():
+    """The id a venue echoes may differ from the one submitted and must be reused.
+
+    Binance Cloud rejects a 36-char dashed id and stores the hash it forwarded.
+    A recovery lookup derives the candidate ids from the logical one, so the
+    echoed form has to be learned from the acknowledgement or the order can
+    never be matched again.
+    """
+    from executor.exchange_client import ExchangeClient
+    from executor.quantity import AmountSpec
+
+    logical_id = "tokocrypto-toko-ath-usdt-okx-ath-usdt-swap-entry-7"
+    spec = AmountSpec(unit="BASE", step=0.0001, minimum=0.0, base_per_unit=1.0)
+    # Prefixed and hashed: neither the prefix nor the hash can be reversed.
+    wire_id = "xTKT5PX2Fdddc776f055963b51entry7"
+
+    class TokoSpot:
+        id = "tokocrypto"
+        options = {"broker": {"marketType": "x-TKT5PX2F"}}
+
+        def __init__(self):
+            self.created = []
+
+        async def create_limit_buy_order(self, symbol, amount, price, params=None):
+            self.created.append(dict(params or {}))
+            return {
+                "id": "9001",
+                "clientOrderId": logical_id,
+                "info": {"clientId": wire_id},
+                "symbol": symbol,
+                "side": "buy",
+                "type": "limit",
+                "amount": 1.0,
+                "filled": 0.0,
+                "remaining": 1.0,
+                "status": "open",
+                "average": 0.0,
+                "price": price,
+            }
+
+        def market(self, symbol):
+            return {"id": symbol.replace("/", "_")}
+
+        @staticmethod
+        def parse_order(row, market=None):
+            # Mirror the real venue parser: it lifts the Binance-shaped fields
+            # onto the canonical order shape the bot reads.
+            return {
+                "id": str(row.get("orderId") or ""),
+                "clientOrderId": str(row.get("clientId") or ""),
+                "symbol": market["id"] if market else "",
+                "side": "buy" if str(row.get("side")) == "0" else "sell",
+                "type": "limit",
+                "amount": float(row.get("origQty") or 0.0),
+                "filled": float(row.get("executedQty") or 0.0),
+                "status": "open" if str(row.get("status")) == "0" else "closed",
+            }
+
+        async def privateGetOpenV1Orders(self, request=None):
+            # Tokocrypto's single list endpoint: no client-id filter, so the
+            # reader has to walk it. Only this order exists in the archive.
+            return {"data": {"list": [{
+                "orderId": "9001",
+                "clientId": wire_id,
+                "symbol": "ATH_USDT",
+                "symbolType": 1,
+                "side": 0,
+                "type": 1,
+                "price": "2500",
+                "origQty": "1",
+                "executedQty": "0",
+                "status": 0,
+            }]}}
+
+    spot = TokoSpot()
+    client = ExchangeClient(spot, object())
+
+    placed = await client.place_local_limit_buy(
+        "ATH/USDT", 1.0, 2500.0,
+        client_order_id=logical_id, amount_spec=spec,
+    )
+
+    assert placed["client_order_id"] == wire_id
+    assert spot.created[0]["clientOrderId"] == wire_id
+
+    recovered = await client.fetch_local_order_by_client_id(
+        logical_id, "ATH/USDT", spec
+    )
+
+    assert recovered is not None
+    assert recovered["id"] == "9001"
+    assert recovered["client_order_id"] == logical_id
+
+@pytest.mark.asyncio
+async def test_tokocrypto_client_id_alias_is_matched_and_duplicate_ids_fail_closed():
+    from executor.exchange_client import ExchangeClient
+
+    logical_id = "pair-entry-duplicate"
+    class TokoSpot:
+        id = "tokocrypto"
+        async def fetch_open_orders(self, symbol):
+            return []
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            return [{
+                "id": "toko-1", "info": {"clientId": logical_id}, "symbol": symbol,
+                "side": "buy", "type": "limit", "amount": 1, "filled": 1,
+                "remaining": 0, "status": "closed",
+            }]
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            return []
+
+    client = ExchangeClient(TokoSpot(), object())
+    recovered = await client.fetch_local_order_by_client_id(logical_id, "BTC/IDR")
+    assert recovered["id"] == "toko-1"
+    assert recovered["client_order_id"] == logical_id
+
+    async def duplicate_closed(symbol, since=None, limit=None):
+        return [
+            {"id": "toko-1", "clientId": logical_id, "symbol": symbol, "status": "closed"},
+            {"id": "toko-2", "clientId": logical_id, "symbol": symbol, "status": "closed"},
+        ]
+    client.local.fetch_closed_orders = duplicate_closed
+    with pytest.raises(RuntimeError, match="multiple exchange orders share client order id"):
+        await client.fetch_local_order_by_client_id(logical_id, "BTC/IDR")
+
+
+@pytest.mark.asyncio
+async def test_client_id_lookup_falls_back_when_venue_rejects_page_limit():
+    """OKX answers 51000 "Parameter limit error" to limit=1000; lookup must retry."""
+    from executor.exchange_client import ExchangeClient
+
+    logical_id = "okx-limit-entry"
+
+    class OkxSpot:
+        id = "okx"
+        async def fetch_open_orders(self, symbol):
+            return []
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            if limit is not None:
+                raise RuntimeError("okx {\"code\":\"51000\",\"msg\":\"Parameter limit error\"}")
+            return [{
+                "id": "okx-1", "info": {"clOrdId": logical_id}, "symbol": symbol,
+                "side": "buy", "type": "limit", "amount": 1, "filled": 0,
+                "remaining": 1, "status": "open",
+            }]
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            if limit is not None:
+                raise RuntimeError("okx {\"code\":\"51000\",\"msg\":\"Parameter limit error\"}")
+            return []
+
+    client = ExchangeClient(OkxSpot(), object())
+    recovered = await client.fetch_local_order_by_client_id(logical_id, "BTC/USDT")
+    assert recovered is not None
+    assert recovered["id"] == "okx-1"
+    assert recovered["client_order_id"] == logical_id
+
+
+@pytest.mark.asyncio
+async def test_tokocrypto_archive_signs_the_venue_market_id_not_the_unified_symbol():
+    """A unified symbol puts a slash in the signed query; Tokocrypto answers 3702."""
+    from executor.exchange_client import ExchangeClient
+
+    logical_id = "toko-ath-entry-1"
+    seen_symbols = []
+
+    class TokoSpot:
+        id = "tokocrypto"
+
+        def market(self, symbol):
+            return {"id": "ATH_USDT", "base": "ATH", "quote": "USDT"}
+
+        async def fetch_open_orders(self, symbol):
+            return []
+
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            return []
+
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            return []
+
+        async def privateGetOpenV1Orders(self, params):
+            seen_symbols.append(params["symbol"])
+            if "/" in params["symbol"]:
+                raise RuntimeError(
+                    'tokocrypto {"code":3702,"msg":"Invalid signature."}'
+                )
+            # Already-parsed shape: the venue's own parse_order does the mapping.
+            return {"data": {"list": [{
+                "id": "toko-77", "clientOrderId": logical_id,
+                "symbol": "ATH_USDT", "side": "buy", "type": "limit",
+                "amount": 1.0, "filled": 0.0, "remaining": 1.0, "status": "open",
+            }]}}
+
+    client = ExchangeClient(TokoSpot(), object())
+    recovered = await client.fetch_local_order_by_client_id(logical_id, "ATH/USDT")
+
+    assert seen_symbols == ["ATH_USDT"]
+    assert recovered is not None
+    assert recovered["id"] == "toko-77"
+
+
+@pytest.mark.asyncio
+async def test_binance_usdm_recovery_uses_all_order_history_and_exact_client_id():
+    from executor.exchange_client import ExchangeClient
+
+    class BinanceUsdm:
+        id = "binanceusdm"
+        def __init__(self):
+            self.history_called = False
+        async def fetch_open_orders(self, symbol):
+            return []
+        async def fetch_closed_orders(self, symbol, since=None, limit=None):
+            self.history_called = True
+            return [{
+                "id": "binance-futures-order-1", "symbol": symbol, "side": "sell",
+                "type": "market", "amount": 0.02, "filled": 0.02, "remaining": 0,
+                "status": "closed", "info": {"clientOrderId": "hedge-binance-1"},
+            }]
+        async def fetch_canceled_orders(self, symbol, since=None, limit=None):
+            return []
+
+    venue = BinanceUsdm()
+    client = ExchangeClient(object(), venue)
+    order = await client.fetch_global_order_by_client_id("hedge-binance-1", "BTC/USDT")
+    assert venue.history_called is True
+    assert order["id"] == "binance-futures-order-1"
+    assert order["client_order_id"] == "hedge-binance-1"

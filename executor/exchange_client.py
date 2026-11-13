@@ -1,77 +1,30 @@
-import asyncio
-import math
-import time
+"""Unified exchange facade for spot and perpetual venue adapters."""
+
 from typing import Optional, Dict, Any
 import ccxt.async_support as ccxt
 
 from executor.indodax_v2 import IndodaxTAPIv2
-from executor.quantity import AmountSpec, base_to_order_amount, order_amount_to_base
-from executor.helpers import BINANCE_BROKER_PREFIX
+from executor.helpers import _broker_prefix_for
+from executor.exchange_common import (
+    VENUE_CLIENT_ORDER_ID_MAX_LEN, _base_order_result, _client_order_params,
+    _expose_client_order_id, _local_order_params, _normalize_open_order,
+    _require_amount_spec, venue_client_order_id,
+    _balance_fetch_params, _fetch_exchange_balance,
+)
+from executor.exchange_fee_balance import ExchangeFeeBalanceMixin
+from executor.exchange_futures import ExchangeFuturesMixin
+from executor.exchange_orders import ExchangeOrderMixin
+from executor.exchange_trades import ExchangeTradeMixin
+from executor.paper_exchange_client import PaperTradingExchangeClient
 
 
-def _client_order_params(client_order_id: Optional[str]) -> tuple:
-    """
-    Builds the positional params argument for a ccxt create_*_order call.
-
-    Passing a client order id makes retries idempotent at the venue: a duplicate
-    submit is rejected instead of double-filling. When no id is supplied the
-    argument is omitted entirely so ccxt does not see an empty params dict.
-    """
-    return ({"clientOrderId": client_order_id},) if client_order_id else ()
-
-def _local_order_params(
-    exchange: Any,
-    client_order_id: Optional[str],
-    amount_spec: AmountSpec,
-    require_amount_step: bool = False,
-) -> tuple:
-    venue_id = venue_client_order_id(exchange, client_order_id)
-    params = {"clientOrderId": venue_id} if venue_id else {}
-    if isinstance(exchange, IndodaxTAPIv2):
-        if amount_spec.unit != "BASE":
-            raise ValueError("Indodax spot amount rules must use BASE units")
-        if amount_spec.step <= 0 and require_amount_step:
-            raise ValueError("Indodax orders require the market quantity increment")
-        params["quantityIncrement"] = amount_spec.step
-    return (params,) if params else ()
-
-def venue_client_order_id(
-    exchange: Any, client_order_id: Optional[str]
-) -> Optional[str]:
-    """Prefixes a broker id for Binance Cloud venues when the id has none."""
-    if not client_order_id:
-        return client_order_id
-    exchange_id = str(getattr(exchange, "id", "") or "").lower()
-    if exchange_id == "tokocrypto" and not client_order_id.startswith("x-"):
-        return f"{BINANCE_BROKER_PREFIX}{client_order_id}"
-    return client_order_id
-
-
-def _require_amount_spec(value: Any) -> AmountSpec:
-    spec = value if isinstance(value, AmountSpec) else AmountSpec.from_dict(value)
-    if spec is None:
-        raise ValueError("market amount rules are required before submitting an order")
-    spec.validate()
-    return spec
-
-
-def _base_order_result(order: Dict[str, Any], spec: AmountSpec) -> Dict[str, Any]:
-    """Keep ExchangeClient responses in base-asset units, regardless of venue API units."""
-    normalized = dict(order)
-    for key in ("amount", "filled", "remaining"):
-        if normalized.get(key) is not None:
-            normalized[key] = order_amount_to_base(float(normalized[key]), spec)
-    return normalized
-
-
-class ExchangeClient:
-    """
-    Unified client enforcing Core Rules:
-    1. Local CEX: ONLY Spot one-way (Buy Spot to enter, Sell Spot to exit).
-    2. Global CEX Futures: ONLY Short 1x (Market Sell to Open Short, Market Buy reduceOnly to Close Short).
-       NEVER Open Long.
-    3. No transfer/deposit/withdraw features.
-    """
+class ExchangeClient(
+    ExchangeOrderMixin,
+    ExchangeFeeBalanceMixin,
+    ExchangeTradeMixin,
+    ExchangeFuturesMixin,
+):
+    """Unified client enforcing the spot/perpetual trading contract."""
 
     def __init__(
         self,
@@ -83,233 +36,50 @@ class ExchangeClient:
         self.local = local_exchange
         self.global_fut = global_exchange
         self._pair_info = pair_info
+        self._fee_cache: Dict[tuple, tuple] = {}
+        # Registered broker id for Binance Cloud venues (Tokocrypto). Read from
+        # the local client's own options, so it travels with the account;
+        # empty means "let the venue mint the client id".
+        self._local_broker_prefix = _broker_prefix_for(
+            getattr(local_exchange, "id", ""), local_exchange
+        )
+        self._global_broker_prefix = _broker_prefix_for(
+            getattr(global_exchange, "id", ""), global_exchange
+        )
         self.balance_exchanges = balance_exchanges or {
             getattr(local_exchange, "id", "local"): {"market": "spot", "client": local_exchange},
             getattr(global_exchange, "id", "global"): {"market": "futures", "client": global_exchange},
         }
 
-    async def _resolve_symbol(self, exchange: Any, symbol: str, market_kind: str) -> str:
-        """Resolve scanner market IDs to the venue's CCXT unified symbol."""
-        if isinstance(exchange, IndodaxTAPIv2):
-            return symbol
-        markets = getattr(exchange, "markets", None)
-        if not markets:
-            loader = getattr(exchange, "load_markets", None)
-            if callable(loader):
-                markets = await loader()
-        if not isinstance(markets, dict) or not markets:
-            return symbol
+    @property
+    def _global_scope(self) -> str:
+        """Venue leg name for global (perpetual) client-order-id aliases."""
+        venue = getattr(self, "global_fut", None)
+        return str(getattr(venue, "id", "") or "") if venue is not None else ""
 
-        exchange_id = str(getattr(exchange, "id", "") or "").lower()
-        raw_id = str(symbol or "").strip()
-        if ":" in raw_id and raw_id.split(":", 1)[0].lower() in {
-            exchange_id, "toko", "okx", "mexc",
-        }:
-            raw_id = raw_id.split(":", 1)[1]
-        normalized_id = "".join(char for char in raw_id.upper() if char.isalnum())
-        pair_base = str(getattr(self._pair_info, "base_asset", "") or "").upper()
-        pair_quote = str(
-            getattr(self._pair_info, "global_quote_asset", "")
-            if market_kind == "futures"
-            else getattr(self._pair_info, "quote_asset", "")
-        ).upper()
-        candidates = []
-        for market in markets.values():
-            if not isinstance(market, dict):
-                continue
-            market_id = "".join(
-                char for char in str(market.get("id", "")).upper() if char.isalnum()
-            )
-            if market_id != normalized_id:
-                continue
-            if pair_base and str(market.get("base", "")).upper() != pair_base:
-                continue
-            if pair_quote and str(market.get("quote", "")).upper() != pair_quote:
-                # Synthetic IDR pairs may map BIDR scanner markets to an IDR
-                # CCXT alias; exact venue market ID remains authoritative.
-                quote_alias = {pair_quote, "BIDR" if pair_quote == "IDR" else pair_quote}
-                if str(market.get("quote", "")).upper() not in quote_alias:
-                    continue
-            if market_kind == "spot":
-                if market.get("swap") or market.get("future") or market.get("contract"):
-                    continue
-            elif not (market.get("swap") or market.get("future") or market.get("contract")):
-                continue
-            candidates.append(market)
+    def for_venue(self, exchange: str) -> Optional["ExchangeClient"]:
+        """Return a facade bound to one venue, independent of a registered pair.
 
-        if len(candidates) == 1 and candidates[0].get("symbol"):
-            return str(candidates[0]["symbol"])
-        if len(candidates) > 1:
-            raise ValueError(f"ambiguous {market_kind} market symbol {symbol}")
-        raise ValueError(
-            f"scanner symbol {symbol} did not match a {market_kind} market "
-            f"on {exchange_id or 'exchange'}"
-        )
-
-    async def place_local_limit_buy(
-        self, symbol: str, amount: float, price: float,
-        client_order_id: Optional[str] = None, amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        """Places a Maker Limit Buy on local spot exchange."""
-        if amount <= 0 or price <= 0:
-            raise ValueError(f"invalid buy params: amount={amount}, price={price}")
-        spec = _require_amount_spec(amount_spec)
-        if spec.unit != "BASE":
-            raise ValueError("spot order amount rules must use BASE units")
-        order_amount = base_to_order_amount(amount, spec)
-        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
-        order = await self.local.create_limit_buy_order(
-            order_symbol,
-            order_amount,
-            price,
-            *_local_order_params(
-                self.local, client_order_id, spec, require_amount_step=True
-            ),
-        )
-        return _base_order_result(order, spec)
-
-    async def place_local_limit_sell(
-        self, symbol: str, amount: float, price: float,
-        client_order_id: Optional[str] = None, amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        """Places a Maker Limit Sell on local spot exchange."""
-        if amount <= 0 or price <= 0:
-            raise ValueError(f"invalid sell params: amount={amount}, price={price}")
-        spec = _require_amount_spec(amount_spec)
-        if spec.unit != "BASE":
-            raise ValueError("spot order amount rules must use BASE units")
-        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
-        order = await self.local.create_limit_sell_order(
-            order_symbol,
-            base_to_order_amount(amount, spec),
-            price,
-            *_local_order_params(self.local, client_order_id, spec),
-        )
-        return _base_order_result(order, spec)
-
-    async def cancel_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
-        """Cancels an existing order on local spot exchange."""
-        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
-        return await self.local.cancel_order(order_id, order_symbol)
-
-    async def place_local_market_sell(
-        self, symbol: str, amount: float,
-        client_order_id: Optional[str] = None, amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        """Taker market sell on local spot. Used only for emergency de-risking."""
-        if amount <= 0:
-            raise ValueError(f"invalid market sell amount: {amount}")
-        spec = _require_amount_spec(amount_spec)
-        if spec.unit != "BASE":
-            raise ValueError("spot order amount rules must use BASE units")
-        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
-        order = await self.local.create_market_sell_order(
-            order_symbol, base_to_order_amount(amount, spec),
-            *_local_order_params(self.local, client_order_id, spec),
-        )
-        return _base_order_result(order, spec)
-
-    async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
-        """Fetches status of an order on local spot exchange."""
-        order_symbol = await self._resolve_symbol(self.local, symbol, "spot")
-        return await self.local.fetch_order(order_id, order_symbol)
-
-
-    async def fetch_balance_report(self) -> list:
-        """Fetch read-only balances for every configured venue independently."""
-        reports = []
-        for name, entry in sorted(self.balance_exchanges.items()):
-            market = str(entry.get("market") or "unknown")
-            exchange = entry.get("client")
-            init_error = str(entry.get("error") or "")
-            if exchange is None:
-                reports.append({
-                    "name": name, "market": market,
-                    "status": "not_configured" if "not configured" in init_error.lower() else "error",
-                    "error": init_error or "exchange client is unavailable", "assets": [],
-                })
-                continue
-            try:
-                raw = await _fetch_exchange_balance(exchange, market)
-                free_map, used_map, total_map = raw.get("free") or {}, raw.get("used") or {}, raw.get("total") or {}
-                assets = []
-                for asset in sorted(set(free_map) | set(used_map) | set(total_map)):
-                    free_raw, used_raw, total_raw = free_map.get(asset), used_map.get(asset), total_map.get(asset)
-                    free = float(free_raw or 0.0)
-                    total = float(total_raw) if total_raw is not None else 0.0
-                    used = float(used_raw) if used_raw is not None else max(0.0, total - free)
-                    if total_raw is None: total = free + used
-                    if not all(math.isfinite(v) and v >= 0 for v in (free, used, total)):
-                        raise ValueError(f"invalid balance value for {asset}")
-                    if free or used or total:
-                        assets.append({"asset": str(asset), "free": free, "used": used, "total": total})
-                reports.append({"name": name, "market": market, "status": "ok", "assets": assets})
-            except Exception as exc:
-                reports.append({"name": name, "market": market, "status": "error", "error": str(exc), "assets": []})
-        return reports
-
-    async def get_balances(
-        self,
-        local_quote_asset: str = "IDR",
-        global_quote_asset: str = "USDT",
-        usdt_idr_rate: float = 0.0,
-    ) -> Dict[str, Any]:
+        Recovery reads an order back from the venue that owns it, and that venue
+        need not be the configured base pair or a pair bound earlier in this
+        process (``for_pair`` only covers pairs already seen). The balance
+        registry is built at startup from the configured credentials, so it can
+        always answer "who owns venue X" -- or say None when X is not configured,
+        which keeps a wrong-venue lookup from silently falling through.
         """
-        Fetches normalized available balances for entry sizing and risk checks.
-
-        Local IDR is converted using the live USDT/IDR rate supplied by the
-        scanner snapshot. USDT and USDC are treated as stable quote units for
-        sizing; unsupported quote assets fail closed rather than guessing.
-        """
-        local_quote = str(local_quote_asset or "").upper()
-        global_quote = str(global_quote_asset or "").upper()
-        supported = ("IDR", "USDT", "USDC")
-        if local_quote not in supported or global_quote not in ("USDT", "USDC"):
-            raise ValueError(
-                f"unsupported balance quote conversion: local={local_quote}, global={global_quote}"
+        name = str(exchange or "").strip().lower()
+        if not name:
+            return None
+        entry = self.balance_exchanges.get(name)
+        if not entry or entry.get("client") is None:
+            return None
+        if entry.get("market") == "futures":
+            return ExchangeClient(
+                self.local, entry["client"], self.balance_exchanges
             )
-
-        spot_raw = await self.local.fetch_balance()
-        futures_raw = await _fetch_exchange_balance(self.global_fut, "futures")
-
-        def amount(balance: Dict[str, Any], asset: str, bucket: str) -> float:
-            section = balance.get(bucket)
-            if isinstance(section, dict) and asset in section:
-                value = float(section.get(asset) or 0.0)
-                if not math.isfinite(value) or value < 0:
-                    raise ValueError(f"exchange returned invalid {asset} {bucket} balance")
-                return value
-            per_asset = balance.get(asset)
-            if isinstance(per_asset, dict):
-                value = float(per_asset.get(bucket) or 0.0)
-                if not math.isfinite(value) or value < 0:
-                    raise ValueError(f"exchange returned invalid {asset} {bucket} balance")
-                return value
-            value = float(section.get(asset) or 0.0) if isinstance(section, dict) else 0.0
-            if not math.isfinite(value) or value < 0:
-                raise ValueError(f"exchange returned invalid {asset} {bucket} balance")
-            return value
-
-        spot_free = amount(spot_raw, local_quote, "free")
-        spot_total = amount(spot_raw, local_quote, "total")
-        if local_quote == "IDR":
-            if not math.isfinite(float(usdt_idr_rate)) or usdt_idr_rate <= 0:
-                raise ValueError("live USDT/IDR rate is required to normalize IDR spot balance")
-            spot_free /= usdt_idr_rate
-            spot_total /= usdt_idr_rate
-
-        futures_free = amount(futures_raw, global_quote, "free")
-        futures_total = amount(futures_raw, global_quote, "total")
-
-        return {
-            "spot_available": spot_free,
-            "futures_available": futures_free,
-            "spot_total": spot_total,
-            "futures_total": futures_total,
-            "spot_quote_asset": local_quote,
-            "futures_quote_asset": global_quote,
-            "stablecoin_peg_assumed": local_quote == "USDC" or global_quote == "USDC",
-        }
+        return ExchangeClient(
+            entry["client"], self.global_fut, self.balance_exchanges
+        )
 
     def for_pair(self, pair_info: Any) -> "ExchangeClient":
         """Return an immutable facade bound to the exact spot/futures venue pair."""
@@ -328,467 +98,10 @@ class ExchangeClient:
             pair_info=pair_info,
         )
 
-    async def fetch_positions(self, symbol: str) -> list:
-        """Fetches open futures positions for a symbol (global exchange).
-
-        A malformed position response must never be converted into an empty list:
-        callers use an empty list as proof that the futures leg is flat.
-        """
-        if not isinstance(symbol, str) or not symbol.strip():
-            raise ValueError("requested futures symbol is missing; flat state cannot be verified")
-        symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
-        try:
-            positions = await self.global_fut.fetch_positions([symbol])
-        except (TypeError, AttributeError):
-            positions = await self.global_fut.fetch_positions()
-
-        if positions is None or not isinstance(positions, (list, tuple)):
-            raise ValueError("exchange returned an invalid futures positions payload")
-
-        def normalize_symbol(value: str) -> str:
-            # CCXT may represent the same linear contract as BTCUSDT or
-            # BTC/USDT:USDT depending on venue/version.
-            return value.split(":")[0].replace("/", "").replace("-", "").replace("_", "").upper()
-
-        target_symbol = normalize_symbol(symbol)
-        matched = []
-        for position in positions:
-            if not isinstance(position, dict):
-                raise ValueError("exchange returned a malformed futures position")
-            position_symbol = position.get("symbol")
-            if not isinstance(position_symbol, str) or not position_symbol:
-                raise ValueError(
-                    "exchange futures position is missing its symbol; flat state cannot be verified"
-                )
-            if normalize_symbol(position_symbol) == target_symbol:
-                matched.append(position)
-        return matched
-
-    async def open_global_short_market(
-        self, symbol: str, amount: float, client_order_id: Optional[str] = None,
-        amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        """
-        Executes an instant Short 1x Market Hedge on Global Futures.
-        STRICT: Only executes Market SELL. Never buy/long to open.
-        """
-        if amount <= 0:
-            raise ValueError(f"invalid short amount: {amount}")
-        spec = _require_amount_spec(amount_spec)
-        order_amount = base_to_order_amount(amount, spec)
-        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
-        # Market Sell on Futures opens a Short position
-        order = await self.global_fut.create_market_sell_order(
-            order_symbol, order_amount, *_client_order_params(client_order_id)
-        )
-        return _base_order_result(order, spec)
-
-    async def close_global_short_market(
-        self, symbol: str, amount: float, client_order_id: Optional[str] = None,
-        amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        """
-        Closes Global Short position by buying back sold coins with reduceOnly=True.
-        STRICT: Must have reduceOnly=True so it can never inadvertently open a Long.
-        """
-        if amount <= 0:
-            raise ValueError(f"invalid close amount: {amount}")
-        spec = _require_amount_spec(amount_spec)
-        order_amount = base_to_order_amount(amount, spec)
-        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
-        params = {"reduceOnly": True}
-        if client_order_id:
-            params["clientOrderId"] = client_order_id
-        order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)
-        return _base_order_result(order, spec)
-
-    async def fetch_funding_history(
-        self, symbol: str, since: Optional[int] = None, limit: int = 100
-    ) -> list:
-        """Fetches actual settled funding payments for a perpetual contract."""
-        fetcher = getattr(self.global_fut, "fetch_funding_history", None)
-        if fetcher is None:
-            raise NotImplementedError(
-                f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_history"
-            )
-        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
-        return await fetcher(order_symbol, since, limit)
-
-    async def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
-        """Fetches current funding rate and the venue's next settlement timestamp."""
-        fetcher = getattr(self.global_fut, "fetch_funding_rate", None)
-        if fetcher is None:
-            raise NotImplementedError(
-                f"{getattr(self.global_fut, 'id', 'global futures')} adapter does not support fetch_funding_rate"
-            )
-        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
-        return await fetcher(order_symbol)
-
-    async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
-        """Fetches ticker from global futures exchange."""
-        order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
-        return await self.global_fut.fetch_ticker(order_symbol)
-
-    async def close(self):
-        """Closes each unique exchange connection exactly once."""
-        clients = [self.local, self.global_fut]
-        clients.extend(entry.get("client") for entry in self.balance_exchanges.values() if entry.get("client") is not None)
-        closed = set()
-        for exchange in clients:
-            if exchange is None or id(exchange) in closed:
-                continue
-            closed.add(id(exchange))
-            closer = getattr(exchange, "close", None)
-            if callable(closer):
-                await closer()
-
-
-class PaperTradingExchangeClient:
-    """
-    Simulated Paper Trading Client for local and global exchanges.
-    Executes mock orders against real market data without spending real funds.
-    Strictly follows:
-    1. Local Spot: Maker Buy for entry, Maker Sell for exit.
-    2. Global Futures: Market Sell to Open Short 1x, Market Buy reduceOnly=True to Close Short.
-    """
-
-    def __init__(
-        self,
-        local_name: str = "indodax",
-        global_name: str = "okx",
-        initial_balance_usdt: float = 100.0,
-    ):
-        self.local_name = local_name
-        self.global_name = global_name
-        self.initial_balance = float(initial_balance_usdt)
-        self.balance_spot = float(initial_balance_usdt)
-        self.balance_futures = float(initial_balance_usdt)
-        self.locked_spot = 0.0
-        self.locked_futures = 0.0
-        self.orders: Dict[str, Dict[str, Any]] = {}
-        self.order_counter = 1000
-        self.trades = []
-        self.market_prices: Dict[str, Dict[str, float]] = {}
-
-
-    async def fetch_balance_report(self) -> list:
-        """Returns simulated balances with an explicit simulation label."""
-        return [
-            {"name": self.local_name, "market": "spot", "status": "ok", "assets": [
-                {"asset": "USDT", "free": max(0.0, self.balance_spot-self.locked_spot), "used": self.locked_spot, "total": self.balance_spot}]},
-            {"name": self.global_name, "market": "futures", "status": "ok", "assets": [
-                {"asset": "USDT", "free": max(0.0, self.balance_futures-self.locked_futures), "used": self.locked_futures, "total": self.balance_futures}]},
-        ]
-
-    def get_balances(
-        self,
-        local_quote_asset: str = "IDR",
-        global_quote_asset: str = "USDT",
-        usdt_idr_rate: float = 0.0,
-    ) -> Dict[str, float]:
-        """Returns simulated balance breakdown; quote arguments mirror the live client."""
-        return {
-            "spot_total": round(self.balance_spot, 4),
-            "spot_available": round(max(0.0, self.balance_spot - self.locked_spot), 4),
-            "spot_locked": round(self.locked_spot, 4),
-            "futures_total": round(self.balance_futures, 4),
-            "futures_available": round(max(0.0, self.balance_futures - self.locked_futures), 4),
-            "futures_locked": round(self.locked_futures, 4),
-            "total_equity": round(self.balance_spot + self.balance_futures, 4),
-        }
-
-    def lock_funds(self, spot_usdt: float, futures_usdt: float) -> bool:
-        """Locks funds for pending/active position if available balance permits."""
-        avail_spot = self.balance_spot - self.locked_spot
-        avail_futures = self.balance_futures - self.locked_futures
-        if avail_spot < spot_usdt or avail_futures < futures_usdt:
-            return False
-        self.locked_spot += spot_usdt
-        self.locked_futures += futures_usdt
-        return True
-
-    @staticmethod
-    def _validate_base_amount(amount: float, amount_spec: Any) -> None:
-        spec = _require_amount_spec(amount_spec)
-        base_to_order_amount(amount, spec)
-
-    def unlock_funds(self, spot_usdt: float, futures_usdt: float) -> None:
-        """Unlocks reserved funds when order is cancelled or position exited."""
-        self.locked_spot = max(0.0, self.locked_spot - spot_usdt)
-        self.locked_futures = max(0.0, self.locked_futures - futures_usdt)
-
-    def apply_realized_trade(
-        self,
-        spot_cost_usdt: float,
-        spot_pnl_usdt: float,
-        spot_fees_usdt: float,
-        futures_margin_usdt: float,
-        futures_pnl_usdt: float,
-        funding_usdt: float,
-        futures_fees_usdt: float,
-    ) -> None:
-        """
-        Updates actual balances when a position is closed:
-        - Releases locked capital for both legs
-        - Spot balance credited with net spot PnL
-        - Futures balance credited with net futures PnL + funding
-        """
-        self.unlock_funds(spot_cost_usdt, futures_margin_usdt)
-        self.balance_spot += (spot_pnl_usdt - spot_fees_usdt)
-        self.balance_futures += (futures_pnl_usdt + funding_usdt - futures_fees_usdt)
-
-    def update_market_price(
-        self, symbol: str, best_bid: float, best_ask: float, last_price: float = 0.0
-    ) -> None:
-        """Updates live market price for a symbol to evaluate realistic limit order fills."""
-        clean_sym = symbol.lower().strip().replace("/", "_").replace("-", "_")
-        self.market_prices[clean_sym] = {
-            "bid": float(best_bid),
-            "ask": float(best_ask),
-            "last": float(last_price),
-            "updated_at": time.time(),
-        }
-
-    async def place_local_limit_buy(
-        self, symbol: str, amount: float, price: float,
-        client_order_id: Optional[str] = None, amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        self._validate_base_amount(amount, amount_spec)
-        if client_order_id:
-            existing = self._find_by_client_id(client_order_id)
-            if existing is not None:
-                # Idempotent replay: return the original order instead of opening
-                # a second one, exactly like a venue rejecting a duplicate id.
-                return existing
-        self.order_counter += 1
-        oid = f"mock-buy-{self.order_counter}"
-        order = {
-            "id": oid,
-            "client_order_id": client_order_id,
-            "symbol": symbol,
-            "side": "buy",
-            "type": "limit",
-            "amount": amount,
-            "price": price,
-            "filled": 0.0,
-            "status": "open",
-            "_created_time": time.time(),
-            "timestamp": int(time.time() * 1000),
-        }
-        self.orders[oid] = order
-        return order
-
-    async def place_local_limit_sell(
-        self, symbol: str, amount: float, price: float,
-        client_order_id: Optional[str] = None, amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        self._validate_base_amount(amount, amount_spec)
-        if client_order_id:
-            existing = self._find_by_client_id(client_order_id)
-            if existing is not None:
-                return existing
-        self.order_counter += 1
-        oid = f"mock-sell-{self.order_counter}"
-        order = {
-            "id": oid,
-            "client_order_id": client_order_id,
-            "symbol": symbol,
-            "side": "sell",
-            "type": "limit",
-            "amount": amount,
-            "price": price,
-            "filled": 0.0,
-            "status": "open",
-            "_created_time": time.time(),
-            "timestamp": int(time.time() * 1000),
-        }
-        self.orders[oid] = order
-        return order
-
-    async def place_local_market_sell(
-        self, symbol: str, amount: float,
-        client_order_id: Optional[str] = None, amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        """Taker market sell at the live best bid. Used for emergency hedge rollback."""
-        self._validate_base_amount(amount, amount_spec)
-        if amount <= 0:
-            raise ValueError(f"invalid market sell amount: {amount}")
-        self.order_counter += 1
-        oid = f"mock-market-sell-{self.order_counter}"
-        clean_sym = symbol.lower().strip().replace("/", "_").replace("-", "_")
-        mkt = self.market_prices.get(clean_sym) or {}
-        fill_price = float(mkt.get("bid", 0.0))
-        order = {
-            "id": oid,
-            "symbol": symbol,
-            "side": "sell",
-            "type": "market",
-            "amount": amount,
-            "price": fill_price,
-            "client_order_id": client_order_id,
-            "average": fill_price,
-            "filled": amount,
-            "status": "closed",
-            "_filled_time": time.time(),
-            "timestamp": int(time.time() * 1000),
-        }
-        self.orders[oid] = order
-        return order
-
-    async def cancel_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
-        if order_id in self.orders:
-            self.orders[order_id]["status"] = "canceled"
-        return {"id": order_id, "status": "canceled"}
-
-    async def fetch_local_order(self, order_id: str, symbol: str) -> Dict[str, Any]:
-        order = self.orders.get(order_id)
-        if not order:
-            return {"id": order_id, "status": "closed", "filled": 0.0}
-
-        if order.get("status") != "open":
-            return order
-
-        clean_sym = symbol.lower().strip().replace("/", "_").replace("-", "_")
-        mkt = self.market_prices.get(clean_sym)
-        order_price = float(order.get("price", 0.0))
-        side = order.get("side")
-
-        # REALISTIC MARKET FILL EVALUATION:
-        # Limit orders do NOT auto-fill on timer. They only fill if real market touches/crosses the price level.
-        if mkt:
-            mkt_bid = mkt.get("bid", 0.0)
-            mkt_ask = mkt.get("ask", 0.0)
-
-            # Limit Buy (Maker): Fills if sellers hit or drop to our bid (market ask <= our limit buy price)
-            if side == "buy":
-                if mkt_ask > 0 and mkt_ask <= order_price:
-                    order["filled"] = order["amount"]
-                    order["status"] = "closed"
-                    order["_filled_time"] = time.time()
-
-            # Limit Sell (Maker): Fills if buyers bid up to or cross our ask (market bid >= our limit sell price)
-            elif side == "sell":
-                if mkt_bid > 0 and mkt_bid >= order_price:
-                    order["filled"] = order["amount"]
-                    order["status"] = "closed"
-                    order["_filled_time"] = time.time()
-
-        return order
-
-    def _find_by_client_id(self, client_order_id: str) -> Optional[Dict[str, Any]]:
-        for order in self.orders.values():
-            if order.get("client_order_id") == client_order_id:
-                return order
-        return None
-
-    def _global_fill_price(self, symbol: str, price: float = 0.0) -> float:
-        """Best available futures price for a market fill in paper mode."""
-        if price and price > 0:
-            return float(price)
-        for key in (symbol, symbol.lower().replace("/", "_").replace("-", "_")):
-            mkt = self.market_prices.get(key)
-            if mkt:
-                mid = float(mkt.get("ask") or mkt.get("bid") or 0.0)
-                if mid > 0:
-                    return mid
-        return 0.0
-
-    async def open_global_short_market(
-        self, symbol: str, amount: float, price: float = 0.0,
-        client_order_id: Optional[str] = None, amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        self._validate_base_amount(amount, amount_spec)
-        if amount <= 0:
-            raise ValueError(f"invalid short amount: {amount}")
-        self.order_counter += 1
-        oid = f"mock-short-{self.order_counter}"
-        fill_price = self._global_fill_price(symbol, price)
-        trade = {
-            "id": oid,
-            "symbol": symbol,
-            "side": "sell",
-            "type": "market",
-            "amount": amount,
-            "filled": amount,
-            "status": "closed",
-            "price": fill_price,
-            "average": fill_price,
-            "expected_price": fill_price,
-            "client_order_id": client_order_id,
-        }
-        self.trades.append(trade)
-        return trade
-
-    async def close_global_short_market(
-        self, symbol: str, amount: float, client_order_id: Optional[str] = None,
-        amount_spec: Any = None,
-    ) -> Dict[str, Any]:
-        self._validate_base_amount(amount, amount_spec)
-        self.order_counter += 1
-        oid = f"mock-close-{self.order_counter}"
-        # A buy-to-close pays the ask; reporting a fill price keeps paper-mode PnL
-        # accounting honest instead of silently falling back to the live quote.
-        fill_price = self._global_fill_price(symbol)
-        trade = {
-            "id": oid,
-            "symbol": symbol,
-            "side": "buy",
-            "type": "market",
-            "amount": amount,
-            "filled": amount,
-            "status": "closed",
-            "price": fill_price,
-            "average": fill_price,
-            "cost": fill_price * amount,
-            "params": {"reduceOnly": True},
-            "client_order_id": client_order_id,
-        }
-        self.trades.append(trade)
-        return trade
-
-    async def fetch_positions(self, symbol: str) -> list:
-        """Paper-mode position: net of tracked open-short and close trades."""
-        shorts = sum(
-            float(t["amount"])
-            for t in self.trades
-            if t.get("symbol") == symbol and t.get("side") == "sell"
-        )
-        closes = sum(
-            float(t["amount"])
-            for t in self.trades
-            if t.get("symbol") == symbol and t.get("side") == "buy"
-        )
-        qty = shorts - closes
-        if qty <= 0:
-            return []
-        return [{"symbol": symbol, "contracts": qty, "side": "short"}]
-
-    async def fetch_funding_history(
-        self, symbol: str, since: Optional[int] = None, limit: int = 100
-    ) -> list:
-        """Paper mode has no exchange settlement ledger; never invent funding credits."""
-        return []
-
-    async def fetch_funding_rate(self, symbol: str) -> Dict[str, Any]:
-        """Paper mode does not fabricate a future settlement schedule."""
-        return {}
-
-    async def fetch_global_ticker(self, symbol: str) -> Dict[str, Any]:
-        """Mirrors the live client: returns the last known ask for this symbol."""
-        clean_sym = symbol.lower().strip().replace("/", "_").replace("-", "_")
-        price = self.market_prices.get(clean_sym) or {}
-        return {
-            "symbol": symbol,
-            "bid": float(price.get("bid", 0.0)),
-            "ask": float(price.get("ask", 0.0)),
-        }
-
-    async def close(self):
-        pass
 
 
 def create_exchange_client(config: Any) -> Any:
-    """Factory creating appropriate client (CCXT live or Paper Trading mock)."""
+    """Factory creating the active live or paper-trading client."""
     if getattr(config, "mock_mode", False):
         return PaperTradingExchangeClient(
             local_name=config.local_exchange_name,

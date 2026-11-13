@@ -788,3 +788,106 @@ func TestPendingOrdersCommandShowsExecutorSnapshot(t *testing.T) {
 		t.Fatalf("pending order details missing: %s", sent.Text)
 	}
 }
+
+func TestSendReplyWithMarkupTruncatesOversizedMessages(t *testing.T) {
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	oversized := "<b>Error:</b> " + strings.Repeat("x", 5000)
+	bot.sendReplyWithMarkup(context.Background(), -100123456789, 0, oversized, nil)
+	if len([]rune(sent.Text)) > 4096 {
+		t.Fatalf("expected truncated message <= 4096 runes, got %d", len([]rune(sent.Text)))
+	}
+	if sent.ParseMode != "" {
+		t.Fatalf("expected ParseMode cleared after HTML truncation, got %q", sent.ParseMode)
+	}
+}
+
+func TestFormatScanResultTenItemsFitsTelegramAndFormatsMicroPrices(t *testing.T) {
+	bot := New(config.Config{}, nil)
+	ops := make([]domain.Opportunity, 0, 12)
+	samples := []struct {
+		base   string
+		spot   float64
+		perp   float64
+		floor  float64
+		queue  float64
+		status string
+		elig   bool
+		excl   []string
+	}{
+		{"SOON", 0.2298, 0.2403, 0.2312, 258, "PROFITABLE_IN_RANGE", true, nil},
+		{"FLOKI", 0.00002815, 0.00002850, 0.00002820, 42655279, "PROFITABLE_IN_RANGE", true, nil},
+		{"ATH", 0.004312, 0.004405, 0.004310, 13577.56, "BELOW_MIN_TARGET", false, []string{"BELOW_MIN_TARGET"}},
+		{"MOODENG", 0.0300, 0.0303, 0.0302, 2512.24, "BELOW_MIN_TARGET", false, []string{"BELOW_MIN_TARGET"}},
+		{"JELLYJELLY", 0.0403, 0.0407, 0.0405, 7925, "BELOW_MIN_TARGET", false, []string{"BELOW_MIN_TARGET"}},
+		{"FARTCOIN", 0.1090, 0.1098, 0.1097, 1496.40, "BELOW_MIN_TARGET", false, []string{"BELOW_MIN_TARGET", "ENTRY_SPREAD_BELOW_MINIMUM"}},
+		{"SPX", 0.3419, 0.3438, 0.3441, 376.48, "NOT_PROFITABLE", false, []string{"NOT_PROFITABLE", "MIN_NET_PROFIT_NOT_MET"}},
+		{"LUNA", 0.0950, 0.0955, 0.0951, 800, "NOT_PROFITABLE", false, []string{"NOT_PROFITABLE"}},
+		{"PEPE", 0.00000842, 0.00000851, 0.00000843, 9100000, "NOT_PROFITABLE", false, []string{"NOT_PROFITABLE"}},
+		{"BONK", 0.00001420, 0.00001435, 0.00001422, 5200000, "NOT_PROFITABLE", false, []string{"NOT_PROFITABLE"}},
+		{"DOGE", 0.1500, 0.1501, 0.1500, 1000, "NOT_PROFITABLE", false, []string{"NOT_PROFITABLE"}},
+	}
+	for _, s := range samples {
+		ops = append(ops, domain.Opportunity{
+			BaseAsset:              s.base,
+			QuoteAsset:             "USDT",
+			LocalExchange:          "tokocrypto",
+			GlobalExchange:         "okx",
+			ExecutionMode:          "MAKER_TAKER",
+			SpotSymbol:             "toko:" + s.base + "_IDR",
+			PerpSymbol:             s.base + "-USDT-SWAP",
+			SpotEntryPrice:         s.spot,
+			PerpEntryPrice:         s.perp,
+			MinAcceptablePerpPrice: s.floor,
+			SpotQueueDepth:         s.queue,
+			MaxOrderTTLSeconds:     30,
+			IsSynthetic:            true,
+			OriginalSpotQuote:      "IDR",
+			SyntheticFXRate:        18282,
+			ProfitabilityStatus:    s.status,
+			TradingEligible:        s.elig,
+			ExclusionReasons:       s.excl,
+			NetProfit:              0.2148,
+			NetROIPct:              1.94,
+			SpreadPnL:              0.2483,
+			FundingPnL:             0.0020,
+			TradingFees:            0.0355,
+			CurrentFundingRate:     0.000348,
+		})
+	}
+
+	formatted := bot.formatScanResult(domain.ScanResult{
+		ScanID:        "706a0d21b1ee722f",
+		MatchedPairs:  216,
+		EligiblePairs: 2,
+		Opportunities: ops,
+	}, "Scan Peluang Terbaru 10/10 • 16:22:59 UTC")
+
+	if runes := len([]rune(formatted)); runes > 4000 {
+		t.Fatalf("expected formatted output <= 4000 runes to preserve HTML mode, got %d:\n%s", runes, formatted)
+	}
+	for _, want := range []string{
+		"10. 🔴 <b>BONK/USDT</b>",
+		"0.00002815",
+		"0.004312",
+		"42.66M",
+		"ENTRY_SPREAD_BELOW_MINIMUM",
+		"Menampilkan top 10 dari 11",
+	} {
+		if !strings.Contains(formatted, want) {
+			t.Fatalf("missing %q in formatted output:\n%s", want, formatted)
+		}
+	}
+	if strings.Contains(formatted, "<code>0.0000</code>") {
+		t.Fatalf("unexpected 0.0000 micro-price truncation:\n%s", formatted)
+	}
+}
+

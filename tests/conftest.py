@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis.aioredis as fake_aioredis
 import pytest
+from ccxt.base.errors import InsufficientFunds
 
 from executor.config import ExecutorConfig
 from executor.engine import ArbitrageEngine, build_client_order_id, clean_pair_key, round_to_tick
@@ -27,6 +28,10 @@ from executor.models import (
 
 class MockExchangeClient:
     """Mock Exchange Client implementing required methods."""
+
+    # Recovery keys learned client-order-id aliases on the venue name, so the
+    # stub needs one; without it every alias lookup is keyed on an empty venue.
+    id = "mock"
 
     def __init__(self):
         self.orders = {}
@@ -121,8 +126,29 @@ class MockExchangeClient:
         # Default mock: no futures positions open anywhere.
         return []
 
+    async def fetch_global_order(self, order_id: str, symbol: str, amount_spec=None):
+        if order_id in self.orders:
+            return self.orders[order_id]
+        return {"id": order_id, "symbol": symbol, "status": "open", "filled": 0.0}
+
+    async def fetch_local_open_orders(self, symbol=None, amount_spec=None):
+        return [
+            dict(order) for order in self.orders.values()
+            if str(order.get("status", "")).lower() == "open"
+            and (not symbol or order.get("symbol") == symbol)
+        ]
+
+    async def fetch_global_open_orders(self, symbol=None, amount_spec=None):
+        return [
+            dict(order) for order in self.orders.values()
+            if str(order.get("status", "")).lower() == "open"
+            and order.get("market") == "futures"
+            and (not symbol or order.get("symbol") == symbol)
+        ]
+
     async def open_global_short_market(self, symbol: str, amount: float, price: float = 0.0, client_order_id=None, amount_spec=None):
         record = {
+            "id": f"mock-global-{len(self.global_short_sells) + 1}",
             "symbol": symbol,
             "side": "sell",
             "amount": amount,
@@ -137,6 +163,7 @@ class MockExchangeClient:
 
     async def close_global_short_market(self, symbol: str, amount: float, client_order_id=None, amount_spec=None):
         record = {
+            "id": f"mock-global-close-{len(self.global_close_buys) + 1}",
             "symbol": symbol,
             "side": "buy",
             "amount": amount,
@@ -350,16 +377,16 @@ class SlowLimitBuyClient(MockExchangeClient):
         return await super().place_local_limit_buy(symbol, amount, price, amount_spec=amount_spec)
 
 class FailingHedgeClient(MockExchangeClient):
-    """Client whose futures short always fails, to exercise the hedge rollback path."""
+    """Client whose futures venue explicitly rejects a short order."""
 
     async def open_global_short_market(self, symbol: str, amount: float, price: float = 0.0, client_order_id=None, amount_spec=None):
-        raise RuntimeError("global futures unavailable")
+        raise InsufficientFunds("global futures unavailable")
 
 class BlockingSellClient(MockExchangeClient):
-    """Client whose hedge AND emergency spot sell always fail, simulating total liquidity loss."""
+    """Client whose hedge is explicitly rejected and emergency spot sell fails."""
 
     async def open_global_short_market(self, symbol: str, amount: float, price: float = 0.0, client_order_id=None, amount_spec=None):
-        raise RuntimeError("global futures unavailable")
+        raise InsufficientFunds("global futures unavailable")
 
     async def place_local_market_sell(self, symbol: str, amount: float, client_order_id=None, amount_spec=None):
         raise RuntimeError("local spot exchange unavailable")

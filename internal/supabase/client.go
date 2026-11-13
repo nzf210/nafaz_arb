@@ -19,6 +19,8 @@ import (
 
 // Client writes durable scanner history through the Supabase PostgREST API.
 // Redis remains the low-latency signal, cache and coordination layer.
+const authorizationBearerPrefix = "Bearer "
+
 type Client struct {
 	baseURL        string
 	serviceRoleKey string
@@ -70,9 +72,9 @@ type opportunityRow struct {
 	LocalSymbol        string              `json:"local_symbol"`
 	GlobalSymbol       string              `json:"global_symbol"`
 	QuoteAsset         string              `json:"quote_asset"`
-	ExecutionMode      string              `json:"execution_mode,omitempty"`
+	ExecutionMode      string              `json:"execution_mode"`
 	EligibilityStatus  string              `json:"eligibility_status"`
-	Reason             string              `json:"reason,omitempty"`
+	Reason             string              `json:"reason"`
 	SpotPrice          float64             `json:"spot_price"`
 	PerpPrice          float64             `json:"perp_price"`
 	SpreadPct          float64             `json:"spread_pct"`
@@ -196,7 +198,7 @@ func (c *Client) saveBatch(ctx context.Context, rows []opportunityRow) error {
 			return reqErr
 		}
 		req.Header.Set("apikey", c.serviceRoleKey)
-		req.Header.Set("Authorization", "Bearer "+c.serviceRoleKey)
+		req.Header.Set("Authorization", authorizationBearerPrefix+c.serviceRoleKey)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Prefer", "resolution=merge-duplicates,return=minimal")
 
@@ -250,7 +252,7 @@ func (c *Client) readScannerHistory(ctx context.Context, endpoint string) ([]byt
 			return nil, fmt.Errorf("create scanner history request: %w", err)
 		}
 		req.Header.Set("apikey", c.serviceRoleKey)
-		req.Header.Set("Authorization", "Bearer "+c.serviceRoleKey)
+		req.Header.Set("Authorization", authorizationBearerPrefix+c.serviceRoleKey)
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("read scanner opportunity history: %w", err)
@@ -373,6 +375,114 @@ func (c *Client) LatestOpportunityScans(ctx context.Context, scanLimit int) ([]d
 		out = append(out, result)
 	}
 	return out, nil
+}
+
+
+ 
+// PositionOrderFills reads the order and immutable fill ledger associated with
+// one position. It is intentionally read-only and returns raw JSON rows so the
+// Telegram layer can display schema fields without inventing financial values.
+func (c *Client) readTableRows(
+	ctx context.Context, table string, query url.Values,
+) ([]json.RawMessage, error) {
+	endpoint := c.baseURL + "/rest/v1/" + table + "?" + query.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("apikey", c.serviceRoleKey)
+	req.Header.Set("Authorization", authorizationBearerPrefix+c.serviceRoleKey)
+	req.Header.Set("Accept", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", table, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read %s response: %w", table, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf(
+			"read %s returned HTTP %d: %s",
+			table, resp.StatusCode, strings.TrimSpace(string(body)),
+		)
+	}
+	var rows []json.RawMessage
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return nil, fmt.Errorf("decode %s rows: %w", table, err)
+	}
+	return rows, nil
+}
+
+func safeOrderRowID(row json.RawMessage) string {
+	var order struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(row, &order) != nil || order.ID == "" {
+		return ""
+	}
+	for _, ch := range order.ID {
+		if !(ch >= '0' && ch <= '9' ||
+			ch >= 'a' && ch <= 'f' ||
+			ch >= 'A' && ch <= 'F' ||
+			ch == '-') {
+			return ""
+		}
+	}
+	return order.ID
+}
+
+func (c *Client) PositionOrderFills(
+	ctx context.Context, positionID string,
+) (map[string][]json.RawMessage, error) {
+	if c == nil || c.httpClient == nil || c.baseURL == "" ||
+		c.serviceRoleKey == "" {
+		return nil, fmt.Errorf("Supabase order/fill ledger is not configured")
+	}
+	positionID = strings.TrimSpace(positionID)
+	if positionID == "" {
+		return nil, fmt.Errorf("position_id is required")
+	}
+	orderQuery := url.Values{}
+	orderQuery.Set(
+		"select",
+		"id,position_id,pair_key,exchange_name,market_type,leg,exchange_order_id,client_order_id,symbol,side,status,requested_qty,filled_qty,remaining_qty,limit_price,average_fill_price,reduce_only,submitted_at,completed_at",
+	)
+	orderQuery.Set("position_id", "eq."+positionID)
+	orderQuery.Set("order", "submitted_at.asc")
+	orderQuery.Set("limit", "500")
+	orders, err := c.readTableRows(ctx, "orders", orderQuery)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string][]json.RawMessage{
+		"orders": orders,
+		"fills":  []json.RawMessage{},
+	}
+	ids := make([]string, 0, len(orders))
+	for _, row := range orders {
+		if id := safeOrderRowID(row); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return result, nil
+	}
+	fillQuery := url.Values{}
+	fillQuery.Set(
+		"select",
+		"id,order_id,exchange_name,exchange_fill_id,qty,price,quote_qty,fee_amount,fee_asset,fee_verified,filled_at",
+	)
+	fillQuery.Set("order_id", "in.("+strings.Join(ids, ",")+")")
+	fillQuery.Set("order", "filled_at.asc")
+	fillQuery.Set("limit", "2000")
+	fills, err := c.readTableRows(ctx, "order_fills", fillQuery)
+	if err != nil {
+		return nil, err
+	}
+	result["fills"] = fills
+	return result, nil
 }
 
 // Close releases idle connections when the scanner shuts down.

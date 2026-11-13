@@ -100,6 +100,7 @@ type Bot struct {
 	lastOffset  int64
 	redisClient *redishandler.Client
 	opportunityReader interface { LatestOpportunityScans(context.Context, int) ([]domain.ScanResult, error) }
+	positionLedgerReader interface { PositionOrderFills(context.Context, string) (map[string][]json.RawMessage, error) }
 
 	mu          sync.Mutex
 	alertedKeys map[string]time.Time
@@ -147,6 +148,15 @@ func (b *Bot) SetOpportunityHistoryReader(reader interface {
 	b.opportunityReader = reader
 }
 
+// SetPositionLedgerReader wires the read-only durable order/fill ledger.
+func (b *Bot) SetPositionLedgerReader(reader interface {
+	PositionOrderFills(context.Context, string) (map[string][]json.RawMessage, error)
+}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.positionLedgerReader = reader
+}
+
 // SetBaseURL allows overriding Telegram API URL (useful for testing with mock server).
 func (b *Bot) SetBaseURL(url string) {
 	b.mu.Lock()
@@ -179,8 +189,18 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Register bot commands with Telegram so typing "/" pops up all commands
 	commands := []BotCommand{
 		{Command: "menu", Description: "📱 Buka menu tombol interaktif"},
-		{Command: "positions", Description: "💼 Status posisi terbuka & opsi tutup paksa"},
+		{Command: "orders", Description: "📋 Semua active bot orders"},
+		{Command: "positions", Description: "💼 Status posisi terbuka"},
+		{Command: "recovery", Description: "🔄 Status recovery setelah restart"},
+		{Command: "orphans", Description: "👻 Order exchange yang belum teridentifikasi"},
+		{Command: "cleanorphan", Description: "🧹 Force clean orphan/stuck order dari cache & DB"},
+		{Command: "hapusorphan", Description: "🧹 Alias /cleanorphan — hapus orphan dari cache & DB"},
+		{Command: "reconcile", Description: "🧾 Insiden, retry, dan resolve orphan terverifikasi"},
+		{Command: "risk", Description: "🛡️ Status risk halt"},
+		{Command: "order", Description: "🔎 Detail order berdasarkan internal ID"},
+		{Command: "position", Description: "🔎 Detail posisi berdasarkan ID"},
 		{Command: "pending", Description: "🕒 Lihat pending order Spot yang belum selesai"},
+        {Command: "spotmax", Description: "⚙️ Atur batas open order Spot per CEX"},
 		{Command: "balance", Description: "💰 Cek saldo live Spot & Futures semua aset"},
 		{Command: "history", Description: "📜 Riwayat transaksi yang berhasil ditutup"},
 		{Command: "scan", Description: "🔍 Jalankan scan pasar & cari peluang baru"},
@@ -208,6 +228,7 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	go b.pollLoop(ctx)
 	go b.listenTradeEvents(ctx)
+	go b.sendStartupSummary(ctx)
 	return nil
 }
 
@@ -333,8 +354,9 @@ func (b *Bot) isUserAllowedForSensitiveActions(userID int64) bool {
 		}
 		return false
 	}
-	// Fallback to chat authorization if user list is empty
-	return b.isChatAllowed(userID)
+	// The caller has already verified the chat. When no user allow-list is
+	// configured, that authorized chat is the operator trust boundary.
+	return true
 }
 
 func (b *Bot) defaultKeyboard() *InlineKeyboardMarkup {
@@ -402,11 +424,30 @@ func (b *Bot) answerCallbackQuery(ctx context.Context, callbackID string, toastT
 	defer resp.Body.Close()
 }
 
+func truncateTelegramRunes(text string, maxRunes int) (string, bool) {
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text, false
+	}
+	const suffix = "\n... (pesan dipotong karena melebihi batas Telegram)"
+	cut := maxRunes - len([]rune(suffix))
+	if cut < 0 {
+		cut = 0
+	}
+	return string(runes[:cut]) + suffix, true
+}
+
 func (b *Bot) sendReplyWithMarkup(ctx context.Context, chatID int64, replyToID int64, text string, markup *InlineKeyboardMarkup) {
+	capped, truncated := truncateTelegramRunes(text, 4000)
+	parseMode := "HTML"
+	if truncated {
+		// Truncating mid-HTML risks unclosed tags that Telegram rejects with 400.
+		parseMode = ""
+	}
 	reqBody := SendMessageReq{
 		ChatID:           chatID,
-		Text:             text,
-		ParseMode:        "HTML",
+		Text:             capped,
+		ParseMode:        parseMode,
 		ReplyToMessageID: replyToID,
 		ReplyMarkup:      markup,
 	}
@@ -486,7 +527,11 @@ func (b *Bot) formatScanRejectionSummary(r domain.ScanResult) string {
 		message.WriteString("\n<b>Kesalahan evaluasi terbaru:</b>\n")
 		limit := len(r.Errors); if limit > 3 { limit = 3 }
 		for _, scanErr := range r.Errors[:limit] {
-			message.WriteString("• " + html.EscapeString(scanErr) + "\n")
+			line := scanErr
+			if runes := []rune(line); len(runes) > 200 {
+				line = string(runes[:200]) + "..."
+			}
+			message.WriteString("• " + html.EscapeString(line) + "\n")
 		}
 	}
 	message.WriteString("\n<i>Entry tidak dipaksakan. Periksa alasan di atas; filter profit dan proteksi risiko tetap aktif.</i>")

@@ -544,10 +544,10 @@ async def test_p0_04_short_entry_uses_futures_ask_not_spot_price(engine, fake_re
     assert mock_client.global_short_sells[0]["price"] == 65_000.0
 
 @pytest.mark.asyncio
-async def test_p0_04_missing_futures_price_aborts_and_rolls_back(fake_redis):
+async def test_p0_04_missing_futures_price_requires_manual_reconciliation(fake_redis):
     """
-    If the futures short returns no usable price, the engine must not fall back to
-    the spot price. The hedge is aborted and the spot leg rolled back instead.
+    A futures order is known to have been accepted; missing fill price must not
+    trigger a second risk-changing order against an unresolved hedge.
     """
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
@@ -575,8 +575,9 @@ async def test_p0_04_missing_futures_price_aborts_and_rolls_back(fake_redis):
     await engine._check_entry_orders()
 
     assert pair_tag not in engine.active_positions
-    assert len(client.placed_sells) == 1
-    assert engine.states[pair_tag] == PositionState.CLOSED
+    assert client.placed_sells == []
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert pair_tag in engine._recovery_scope_halts
 
 @pytest.mark.asyncio
 async def test_entry_revalidation_rejects_collapsed_spread(engine, fake_redis, mock_client):
@@ -722,3 +723,140 @@ async def test_signal_for_unconfigured_venue_is_rejected(engine, fake_redis, moc
     assert mock_client.placed_buys == []
     assert engine.states[pair_tag] == PositionState.FAILED
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "EXECUTOR_VENUE_MISMATCH"
+
+@pytest.mark.asyncio
+async def test_spot_submit_timeout_recovers_existing_order_by_client_id(
+    engine, fake_redis, mock_client
+):
+    """A spot order accepted before a lost response is adopted, never resubmitted."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    payload = _revalidation_payload(now_ms)
+    mock_client.update_market_price("BTC/USDT", 65000.0, 65010.0)
+    engine.client = mock_client
+    original_submit = mock_client.place_local_limit_buy
+    submit_calls = []
+    lookup_calls = []
+
+    async def submit_then_lose_response(symbol, amount, price, client_order_id=None, amount_spec=None):
+        submit_calls.append(client_order_id)
+        await original_submit(
+            symbol, amount, price,
+            client_order_id=client_order_id, amount_spec=amount_spec,
+        )
+        raise TimeoutError("exchange accepted order but response was lost")
+
+    async def lookup_by_client_id(client_order_id, symbol, amount_spec=None):
+        lookup_calls.append(client_order_id)
+        for order in mock_client.orders.values():
+            if order.get("client_order_id") == client_order_id:
+                recovered = dict(order)
+                recovered["clientOrderId"] = client_order_id
+                return recovered
+        return None
+
+    mock_client.place_local_limit_buy = submit_then_lose_response
+    mock_client.fetch_local_order_by_client_id = lookup_by_client_id
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}", json.dumps(payload)
+    )
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert len(submit_calls) == 1
+    assert lookup_calls == submit_calls
+    assert len(mock_client.placed_buys) == 1
+    assert engine.pending_entry_orders[pair_tag]["client_order_id"] == submit_calls[0]
+    assert engine.pending_entry_orders[pair_tag]["order_id"] == mock_client.placed_buys[0]["id"]
+    assert engine.states[pair_tag] == PositionState.ENTRY_PENDING
+
+
+@pytest.mark.asyncio
+async def test_fresh_maker_quote_scales_usdt_local_book_to_idr(engine, fake_redis):
+    """USDT spot live snapshots must be converted to IDR before comparing against IDR-normalized tick/price."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    now_ms = int(time.time() * 1000)
+    await fake_redis.set(
+        f"arb:live_price:{pair_tag}",
+        json.dumps({
+            "local_best_bid": 0.0043,
+            "local_best_ask": 0.0044,
+            "global_best_bid_usdt": 0.0045,
+            "global_best_ask_usdt": 0.0046,
+            "usdt_idr_rate": 18000.0,
+            "timestamp_ms": now_ms,
+        }),
+    )
+    order_info = {
+        "symbol": "toko:ATH_USDT",
+        "quote_asset": "USDT",
+        "price": 75.6,  # 0.0042 * 18000
+        "tick_size": 1.8,  # 0.0001 * 18000
+        "usdt_idr_rate": 18000.0,
+        "min_entry_spread_pct": 0.2,
+    }
+    quote = await engine._fresh_maker_quote(pair_tag, order_info)
+    assert quote is not None
+    assert quote["candidate_price"] > 70.0
+    assert quote["local_bid"] == pytest.approx(0.0043 * 18000.0)
+
+
+@pytest.mark.asyncio
+async def test_early_spot_slot_limit_skips_rest_calls(engine, fake_redis, mock_client):
+    """When venue spot slots are full, reject immediately without burning exchange REST calls."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.max_open_spot_orders_per_exchange = {"tokocrypto": 1}
+    engine.pending_entry_orders["tokocrypto:toko:soon_idr__okx:soon_usdt_swap"] = {
+        "local_exchange": "tokocrypto"
+    }
+    calls = []
+
+    async def fail_if_called(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("REST probe must not run when venue slot limit is already reached")
+
+    mock_client.fetch_global_ticker = fail_if_called
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    payload["pair_info"]["local_exchange"] = "tokocrypto"
+    payload["pair_info"]["global_exchange"] = "okx"
+    payload["pair_info"]["local_symbol"] = "toko:ATH_USDT"
+    payload["pair_info"]["global_symbol"] = "ATH-USDT-SWAP"
+    payload["pair_info"]["quote_asset"] = "USDT"
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+
+    await engine.handle_signal_notification(pair_tag)
+
+    assert calls == []
+    assert mock_client.placed_buys == []
+    assert pair_tag not in engine._pair_halted
+
+
+@pytest.mark.asyncio
+async def test_prepare_entry_sizing_fetches_balance_once(engine, fake_redis, mock_client):
+    """_prepare_entry_sizing must reuse balance snapshot for dual-leg funding preflight."""
+    pair_tag = "tokocrypto:toko:ath_usdt__okx:ath_usdt_swap"
+    engine.config.mock_mode = False
+    balance_calls = 0
+
+    async def counted_get_balances(**kwargs):
+        nonlocal balance_calls
+        balance_calls += 1
+        return {
+            "spot_available": 50.0,
+            "futures_available": 100.0,
+            "spot_total": 50.0,
+            "futures_total": 100.0,
+        }
+
+    mock_client.get_balances = counted_get_balances
+    payload_dict = _fresh_signal_payload(int(time.time() * 1000))
+    payload_dict["pair_info"]["local_exchange"] = "tokocrypto"
+    payload_dict["pair_info"]["global_exchange"] = "okx"
+    from executor.models import ExecutorPayload
+    payload = ExecutorPayload.from_dict(payload_dict)
+
+    sizing = await engine._prepare_entry_sizing(
+        pair_tag, payload, payload.pair_info, payload.execution_directives
+    )
+    assert sizing is not None
+    assert balance_calls == 1

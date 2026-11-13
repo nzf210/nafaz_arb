@@ -14,6 +14,42 @@ from executor.engine import ArbitrageEngine, retry_with_backoff
 
 from tests.conftest import MockExchangeClient, SpotSellFailureClient, engine, fake_redis, mock_client
 
+def test_force_close_pnl_uses_position_fee_snapshot_and_splits_costs():
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        spot_entry_fee_pct=0.1,
+        spot_exit_fee_pct=0.2,
+        perp_entry_fee_pct=0.03,
+        perp_exit_fee_pct=0.04,
+        fee_source="EXCHANGE_API",
+        fee_verified=True,
+        fee_fetched_at_ms=123,
+        fee_asset_surcharge_pct=0.01,
+    )
+    pnl = ArbitrageEngine._compute_force_close_pnl(
+        pos,
+        current_ask=64_900.0,
+        usdt_rate=16_000.0,
+        current_spot_bid=1_010_000_000.0,
+    )
+    expected_spot = 0.01 * (
+        62_500.0 * 0.11 + 63_125.0 * 0.21
+    ) / 100.0
+    expected_futures = 0.01 * (
+        65_000.0 * 0.04 + 64_900.0 * 0.05
+    ) / 100.0
+    assert pnl["spot_fees_usdt"] == pytest.approx(expected_spot)
+    assert pnl["futures_fees_usdt"] == pytest.approx(expected_futures)
+    assert pnl["fees_usdt"] == pytest.approx(expected_spot + expected_futures)
+    assert pnl["fee_source"] == "EXCHANGE_API"
+    assert pnl["fee_verified"] is True
+
+
 @pytest.mark.asyncio
 async def test_force_close_directive(engine, fake_redis, mock_client):
     """Test Force Close: Cancels exit orders, closes short on futures, and clears Redis."""
@@ -186,44 +222,38 @@ async def test_p0_05_force_close_retains_position_on_futures_close_failure(fake_
     assert engine.status_snapshot()["failures"][pair_tag]["reason"] == "FORCE_CLOSE_PARTIAL_OR_FAILED"
 
 @pytest.mark.asyncio
-async def test_p2_03_force_close_uses_backoff_helper(fake_redis, monkeypatch):
-    """Force close must go through the shared retry helper, not an inline loop."""
-    import executor.helpers as helpers_module
-
-    seen = {"n": 0}
-    real_helper = helpers_module.retry_with_backoff
-
-    async def spy(fn, **kwargs):
-        seen["n"] += 1
-        return await real_helper(fn, **kwargs)
-
-    # Patch the module the force-close path resolves the helper through.
-    monkeypatch.setattr(helpers_module, "retry_with_backoff", spy)
-
+async def test_force_close_never_retries_ambiguous_spot_market_submit(fake_redis):
+    """A lost market-order acknowledgement must not trigger a second sell."""
     pair_tag = "indodax:btc_idr"
     client = SpotSellFailureClient()
+    calls = {"submit": 0, "lookup": 0}
+
+    async def counted_submit(*args, **kwargs):
+        calls["submit"] += 1
+        raise RuntimeError("connection reset after request write")
+
+    async def no_order_by_client_id(*args, **kwargs):
+        calls["lookup"] += 1
+        return None
+
+    client.place_local_market_sell = counted_submit
+    client.fetch_local_order_by_client_id = no_order_by_client_id
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=True), client=client, redis_client=fake_redis
     )
     engine.active_positions[pair_tag] = ActivePosition(
-        local_exchange="indodax",
-        global_exchange="okx",
-        symbol="btc_idr",
-        entry_price_idr=1_000_000_000.0,
-        short_entry_usdt=65_000.0,
-        qty=0.005,
+        local_exchange="indodax", global_exchange="okx", symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0, short_entry_usdt=65_000.0, qty=0.005,
         accumulated_funding_usdt=0.0,
         next_funding_time_ms=int(time.time() * 1000) + 3_600_000,
-        base_target_exit_spread_pct=0.001,
-        current_funding_rate=0.0001,
-        spot_cost_usdt=312.5,
-        futures_margin_usdt=312.5,
+        base_target_exit_spread_pct=0.001, current_funding_rate=0.0001,
+        spot_cost_usdt=312.5, futures_margin_usdt=312.5,
     )
 
     await engine.handle_force_close(pair_tag)
 
-    assert seen["n"] == 1
-
+    assert calls == {"submit": 1, "lookup": 1}
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
 
 @pytest.mark.asyncio
 async def test_force_close_requires_verified_flat_futures_position(fake_redis):

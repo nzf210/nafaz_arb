@@ -3,8 +3,10 @@
 import asyncio
 import json
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-from executor.models import ActivePosition, PositionState
+from executor.models import ActivePosition, OrderRecord, PositionState
 
 import fakeredis.aioredis as fake_aioredis
 import pytest
@@ -303,9 +305,8 @@ async def test_balance_mismatch_halts_venue(engine):
     assert engine._exchange_halted == {}
 
 @pytest.mark.asyncio
-async def test_consecutive_order_failures_halt_exchange(engine):
-    """N consecutive entry placement failures halt that exchange only."""
-    engine.config.max_consecutive_order_failures = 2
+async def test_ambiguous_order_submit_halts_pair_without_retry(engine):
+    """An exchange transport failure is ambiguous and must halt before a retry."""
     client = BalancesMockClient(spot_available=1000.0, futures_available=1000.0)
     engine.client = client
 
@@ -315,13 +316,12 @@ async def test_consecutive_order_failures_halt_exchange(engine):
 
     client.fail_next_buy = True
     await engine.handle_signal_notification(pair_tag)
-    assert "indodax" not in engine._exchange_halted
-    client.fail_next_buy = True
-    await engine.handle_signal_notification(pair_tag)
-    assert "indodax" in engine._exchange_halted
-    assert "2 consecutive order failures" in engine._exchange_halted["indodax"]
 
-    # Halted venue rejects further entries before even reaching placement.
+    assert pair_tag in engine._recovery_scope_halts
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert "indodax" not in engine._exchange_halted
+
+    # The same signal cannot trigger another submit while acknowledgement is unresolved.
     client.fail_next_buy = False
     orders_before = len(client.placed_buys)
     await engine.handle_signal_notification(pair_tag)
@@ -385,6 +385,39 @@ async def test_balance_feed_failure_halts_new_entries(engine, fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_pair_auto_blacklist_after_two_consecutive_failures(engine, fake_redis):
+    """A pair that fails 2x consecutively is blacklisted and rejects subsequent signals."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    await fake_redis.set(
+        f"arb:signal:{pair_tag}", json.dumps(_fresh_signal_payload(now_ms))
+    )
+
+    # 1st failure
+    engine._mark_failed(pair_tag, "EXECUTOR_VENUE_MISMATCH", "first failure")
+    assert pair_tag not in getattr(engine, "_pair_halted", {})
+    assert engine._consecutive_pair_failures[pair_tag] == 1
+
+    # 2nd failure triggers blacklist
+    engine._mark_failed(pair_tag, "EXECUTOR_VENUE_MISMATCH", "second failure")
+    assert pair_tag in engine._pair_halted
+    assert "blacklisted" in engine._pair_halted[pair_tag]
+
+    # Signal for blacklisted pair rejected
+    client = BalancesMockClient(spot_available=1000.0, futures_available=1000.0)
+    engine.client = client
+    orders_before = len(client.placed_buys)
+    await engine.handle_signal_notification(pair_tag)
+    assert len(client.placed_buys) == orders_before
+    assert pair_tag not in engine.pending_entry_orders
+
+    # resume_pair clears blacklist and allows entries again
+    assert engine.resume_pair(pair_tag) is True
+    assert pair_tag not in engine._pair_halted
+    assert pair_tag not in engine._consecutive_pair_failures
+
+
+@pytest.mark.asyncio
 async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis):
     """Live order submission, not a balance endpoint, decides whether funds suffice."""
     client = BalancesMockClient()
@@ -395,7 +428,38 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
     client.get_balances = fail_balances
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
+    engine.config.local_credentials.account_scope = "test-indodax-account"
     engine.client = client
+    engine.execution_coordinator.active = True
+    engine.execution_coordinator.fencing_token = 1
+
+    async def execute_with_test_lease(operation):
+        return await operation()
+
+    async def find_test_intent(exchange, client_order_id):
+        return OrderRecord(
+            local_order_id=OrderRecord.local_id_for(exchange, client_order_id),
+            client_order_id=client_order_id,
+            exchange=exchange,
+            market_type="spot",
+            symbol="btc_idr",
+            side="buy",
+            order_type="limit",
+            order_role="ENTRY",
+            status="submitting",
+            is_mock=False,
+        )
+
+    engine.execution_coordinator.execute_mutation = execute_with_test_lease
+    engine.order_registry.find_by_client_id = find_test_intent
+    engine._reserve_spot_capacity = AsyncMock(return_value="test-reservation")
+
+    # This test isolates balance-probe behavior; the separate adaptive-maker
+    # tests cover the fresh Indodax book preflight.
+    engine._apply_indodax_adaptive_maker_quote = AsyncMock(return_value=True)
+    # This test isolates balance-probe behavior; order-journal durability is
+    # covered by the dedicated order-recovery tests.
+    engine._register_order_intent = AsyncMock(return_value=object())
     pair_tag = "indodax:btc_idr"
     await fake_redis.set(
         f"arb:signal:{pair_tag}",
@@ -425,7 +489,31 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     client.place_local_limit_buy = reject_order
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
+    engine.config.local_credentials.account_scope = "test-indodax-account"
     engine.client = client
+    engine.execution_coordinator.active = True
+    engine.execution_coordinator.fencing_token = 1
+
+    async def execute_with_test_lease(operation):
+        return await operation()
+
+    async def find_test_intent(exchange, client_order_id):
+        return OrderRecord(
+            local_order_id=OrderRecord.local_id_for(exchange, client_order_id),
+            client_order_id=client_order_id, exchange=exchange,
+            market_type="spot", symbol="btc_idr", side="buy",
+            order_type="limit", order_role="ENTRY", status="submitting", is_mock=False,
+        )
+
+    engine.execution_coordinator.execute_mutation = execute_with_test_lease
+    engine.order_registry.find_by_client_id = find_test_intent
+    engine._reserve_spot_capacity = AsyncMock(return_value="test-reservation")
+    engine._persist_risk_state = lambda *args, **kwargs: True
+    # Keep this test focused on mapping the venue rejection to its public
+    # failure reason; adaptive-maker book validation is covered separately.
+    engine._apply_indodax_adaptive_maker_quote = AsyncMock(return_value=True)
+    # failure reason; durable intent enforcement has dedicated coverage.
+    engine._register_order_intent = AsyncMock(return_value=object())
     failures = []
 
     async def capture_failure(pair_tag, reason, message, **kwargs):
@@ -474,3 +562,133 @@ def test_failure_breaker_isolated_per_exchange_and_trips_at_50(engine):
     assert engine._consecutive_order_failures["indodax"] == 50
     assert "indodax" in engine._exchange_halted
     assert "okx" not in engine._exchange_halted
+
+
+class _RiskStateMemoryWriter:
+    enabled = True
+
+    def __init__(self, rows=None, pnl_results=None, state_ok=True):
+        self.rows = list(rows or [])
+        self.pnl_results = list(pnl_results or [])
+        self.state_ok = state_ok
+        self.writes = []
+
+    async def fetch_active_risk_states(self, *, is_mock=True):
+        return list(self.rows)
+
+    async def fetch_daily_realized_loss_usdt(self, loss_day, *, is_mock=True):
+        for row in self.rows:
+            value = row.get("value") or {}
+            if row.get("state_type") == "daily_loss" and value.get("loss_day") == loss_day:
+                return float(value.get("loss_usdt", 0.0))
+        return 0.0
+
+    def risk_state(self, **kwargs):
+        self.writes.append(kwargs)
+        return self.state_ok
+
+    def clear_risk_persistence_failure(self):
+        return None
+
+    def risk_persistence_failed(self):
+        return False
+
+    def mark_risk_persistence_failure(self):
+        return None
+
+    def risk_pnl_event(self, event_id, **kwargs):
+        if self.pnl_results:
+            return self.pnl_results.pop(0)
+        return "inserted"
+
+
+@pytest.mark.asyncio
+async def test_durable_risk_state_restores_global_exchange_daily_and_position_halts(engine):
+    engine.supabase = _RiskStateMemoryWriter([
+        {"state_type": "trading_halt", "scope": "global", "reason": "KILL_SWITCH", "value": {"halt_reason": "KILL_SWITCH"}},
+        {"state_type": "daily_loss", "scope": "global", "reason": "", "value": {"loss_usdt": 12.5, "loss_day": engine._utc_day()}},
+        {"state_type": "exchange_halt", "scope": "exchange", "exchange": "okx", "reason": "venue breaker", "value": {}},
+        {"state_type": "consecutive_order_failures", "scope": "exchange", "exchange": "okx", "reason": "", "value": {"count": 7}},
+        {"state_type": "reconciliation_halt", "scope": "pair", "pair_key": "indodax:btc_idr", "reason": "unresolved order", "value": {}},
+        {"state_type": "position_failure", "scope": "position", "pair_key": "indodax:eth_idr", "reason": "leg mismatch", "value": {"reason": "leg mismatch", "state": "RECONCILIATION_REQUIRED"}},
+    ])
+    await engine._restore_risk_state()
+
+    assert engine._trading_halted is True
+    assert engine._halt_reason == "KILL_SWITCH"
+    assert engine._daily_realized_loss_usdt == pytest.approx(12.5)
+    assert engine._exchange_halted["okx"] == "venue breaker"
+    assert engine._consecutive_order_failures["okx"] == 7
+    assert engine._recovery_scope_halts["indodax:btc_idr"] == "unresolved order"
+    assert engine.states["indodax:eth_idr"] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_manual_resume_survives_restart_without_daily_halt_reappearing(engine):
+    engine.supabase = _RiskStateMemoryWriter()
+    engine._daily_realized_loss_usdt = 15.0
+    engine._trading_halted = True
+    engine._halt_reason = "DAILY_LOSS_LIMIT"
+
+    await engine.resume_trading("operator reviewed")
+    assert engine._trading_halted is False
+    assert any(w["state_type"] == "trading_resume" for w in engine.supabase.writes)
+
+    restored = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True, max_daily_loss_usdt=10.0),
+        client=MockExchangeClient(),
+        redis_client=fake_redis,
+    )
+    restored.supabase = _RiskStateMemoryWriter([
+        {"state_type": "daily_loss", "scope": "global", "value": {"loss_usdt": 15.0, "loss_day": restored._utc_day()}},
+        {"state_type": "trading_resume", "scope": "global", "value": {"loss_day": restored._utc_day()}},
+    ])
+    await restored._restore_risk_state()
+    assert restored._trading_halted is False
+
+
+def test_duplicate_realized_pnl_event_is_not_counted_twice(engine):
+    engine.supabase = _RiskStateMemoryWriter(pnl_results=["inserted", "duplicate"])
+    engine.record_realized_pnl(-4.0, event_id="position-close:btc:1", pair_key="btc")
+    engine.record_realized_pnl(-4.0, event_id="position-close:btc:1", pair_key="btc")
+    assert engine._daily_realized_loss_usdt == pytest.approx(4.0)
+
+
+def test_risk_persistence_failure_blocks_live_entries(engine):
+    engine.config.mock_mode = False
+    engine.supabase = _RiskStateMemoryWriter(state_ok=False)
+    assert engine._persist_risk_state("trading_halt", reason="test") is False
+    assert engine._risk_persistence_failed is True
+    assert engine._entry_blocked is True
+
+
+def test_position_reconciliation_halt_is_pair_scoped(engine):
+    engine._mark_failed(
+        "indodax:btc_idr", "LEG_MISMATCH", "spot/futures exposure mismatch",
+        state=PositionState.RECONCILIATION_REQUIRED,
+    )
+    assert engine._venue_halted_reason("indodax:btc_idr")
+    assert engine._venue_halted_reason("indodax:eth_idr") == ""
+
+
+@pytest.mark.asyncio
+async def test_operator_kill_switch_overrides_daily_loss_halt(engine):
+    engine._trading_halted = True
+    engine._halt_reason = "DAILY_LOSS_LIMIT"
+    await engine.handle_kill_switch(json.dumps({"action": "on"}))
+    assert engine._trading_halted is True
+    assert engine._halt_reason == "KILL_SWITCH"
+
+
+@pytest.mark.asyncio
+async def test_venue_cooldown_task_propagates_cancellation(engine):
+    """Cancelling a cooldown task must remain observable by its task owner."""
+    engine._pause_venue_for_cooldown("indodax", 60.0)
+    task = engine._venue_cooldown_tasks["indodax"]
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # Cancellation must not accidentally clear the active venue halt.
+    assert "indodax" in engine._exchange_halted

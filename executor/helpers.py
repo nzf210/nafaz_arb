@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import logging
 import math
-from typing import Awaitable, Callable, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 logger = logging.getLogger("executor.engine")
 
@@ -14,14 +14,37 @@ T = TypeVar("T")
 ARB_TRADE_HISTORY_KEY = "arb:trade_history"
 ARB_TRADE_HISTORY_MAX_LEN = 49  # ltrim keeps indices 0..49 → 50 entries
 
-# Binance Cloud venues (e.g. Tokocrypto) require client order ids to carry a
-# registered broker prefix ("x-XXXXXXXX"); anything else is rejected with
-# error 3703 "Invalid client ID". This is the broker id ccxt itself assigns
-# for Binance spot through its own generate_client_order_id(). The prefix
-# consumes 9 of the 36-char venue budget, so ids built for these venues must
-# reserve room for it here; executor.exchange_client prepends it on the wire.
-BINANCE_BROKER_PREFIX = "x-TKT5PX2F"
-BINANCE_BROKER_PREFIX_LENGTH = len(BINANCE_BROKER_PREFIX)
+# Binance Cloud venues (e.g. Tokocrypto) validate client order ids against the
+# broker id registered to the account: anything else is rejected with error
+# 3703 "Invalid client ID". The value is issued per-account by the venue, so it
+# cannot be hardcoded -- it must come from the exchange credentials
+# (``options["broker_id"]`` in config.json or ``<EXCHANGE>_BROKER_ID`` in the
+# environment). When it is unset the executor sends no client order id at all
+# and lets ccxt mint a venue-native one from ``options["broker"]``, which the
+# venue already trusts; a wrong guess is worse than no id, because a made-up
+# prefix rejects every order.
+DEFAULT_BINANCE_BROKER_PREFIX = ""
+
+def _broker_prefix_for(exchange_id: str, exchange: Any = None) -> str:
+    """Returns the registered broker prefix for a Binance Cloud venue, if any.
+
+    Read from the exchange client's own ``options`` (populated from the
+    exchange credentials by ``init_ccxt_exchange``), so the value travels with
+    the account instead of being guessed in code.
+    """
+    if str(exchange_id or "").lower() != "tokocrypto":
+        return ""
+    options = getattr(exchange, "options", None)
+    if isinstance(options, dict):
+        configured = options.get("broker_id") or options.get("brokerId")
+        if configured:
+            return str(configured)
+        broker = options.get("broker")
+        if isinstance(broker, dict):
+            market_type = broker.get("marketType") or broker.get("market_type")
+            if market_type:
+                return str(market_type)
+    return DEFAULT_BINANCE_BROKER_PREFIX
 
 def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     """
@@ -31,6 +54,10 @@ def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     same logical order is recognised as a duplicate by the venue instead of
     double-filling. Kept to lowercase alphanumerics and dashes because Binance,
     OKX and Indodax each accept a different, partly overlapping character set.
+
+    Binance Cloud broker prefixes are applied on the wire by
+    ``executor.exchange_client.venue_client_order_id``, which also enforces the
+    36-character budget, so no prefix room is reserved here.
     """
     clean_pair = "".join(c if c.isalnum() else "-" for c in pair_tag.lower()).strip("-")
     clean_leg = "".join(c if c.isalnum() else "-" for c in leg.lower()).strip("-")
@@ -38,14 +65,6 @@ def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     max_pair_length = 36 - len(suffix)
     if max_pair_length < 1:
         raise ValueError("client order ID leg and sequence exceed the 36-character limit")
-
-    # Binance Cloud venues prepend their broker id to the client order id on
-    # the wire, so ids built for those venues must reserve prefix space here
-    # to keep the final id within the venue's 36-character limit.
-    if pair_tag.lower().startswith("tokocrypto"):
-        max_pair_length -= BINANCE_BROKER_PREFIX_LENGTH
-        if max_pair_length < 1:
-            raise ValueError("client order ID exceeds the 36-character limit with broker prefix")
 
     if len(clean_pair) > max_pair_length:
         pair_hash = hashlib.sha256(pair_tag.lower().encode("utf-8")).hexdigest()[:8]
@@ -124,6 +143,35 @@ def floor_to_tick(price: float, tick_size: float) -> float:
 
 BALANCES_KEY = "arb:balances"
 PENDING_ENTRY_KEY_PREFIX = "arb:pending_entry:"
+
+# --- Universal order registry keys -------------------------------------------
+# Redis is the fast, restart-surviving cache; Supabase is the durable record.
+# Every key here must be reconstructible after a Redis flush by rebuilding from
+# the exchange (see UniversalOrderRegistry.startup_recovery).
+ORDER_RECORD_KEY_PREFIX = "arb:order:"            # -> order registry JSON by local id
+ORDER_RECOVERY_INDEX_KEY = "arb:order_recovery_idx"  # hash: local_id -> "1"
+ORDER_BY_EXCHANGE_ID_KEY = "arb:order_xid"        # hash: "{exchange}:{exchange_order_id}" -> local_id
+ORDER_BY_CLIENT_ID_KEY = "arb:order_cid"          # hash: "{exchange}:{client_order_id}" -> local_id
+ORDER_PENDING_RECOVERY_KEY = "arb:order_pending_recovery"  # hash: local_id -> reason
+ORPHAN_ORDER_KEY_PREFIX = "arb:orphan_order:"     # -> orphan registry JSON
+ORPHAN_INDEX_KEY = "arb:orphan_idx"               # hash: orphan_id -> "1"
+
+def order_record_key(local_order_id: str) -> str:
+    return ORDER_RECORD_KEY_PREFIX + local_order_id
+
+def orphan_order_key(orphan_id: str) -> str:
+    return ORPHAN_ORDER_KEY_PREFIX + orphan_id
+
+def order_xid_field(exchange: str, exchange_order_id: str) -> str:
+    """Idempotency key for an exchange order id, scoped per venue.
+
+    The same numeric id is reused across venues (indodax 301 and okx 301 are
+    different orders), so the venue must be part of the field name.
+    """
+    return f"{str(exchange or '').lower()}:{exchange_order_id}"
+
+def order_cid_field(exchange: str, client_order_id: str) -> str:
+    return f"{str(exchange or '').lower()}:{client_order_id}"
 
 
 # Last-resort IDR<->USDT rate for bookkeeping when no live rate is available.

@@ -1,13 +1,16 @@
 """Tests for the best-effort Supabase writer.
 
 The writer must never raise into the trading path, must be idempotent on retry,
-and must derive fills from cumulative quantities exactly once.
+and must persist immutable exchange fills exactly once.
 """
 
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
 
+from executor.engine_order_intents import EngineOrderIntentMixin
 from executor.models import ActivePosition
 from executor.supabase import SupabaseWriter, _ms_to_iso
 from executor.supabase_outbox import DurableOutbox, OutboxFull
@@ -105,6 +108,56 @@ class TestEventQueue:
         assert risk["is_mock"] is False
         assert risk["details"]["reason"] == "HEDGE_STATE_UNKNOWN"
 
+    def test_reconciliation_event_is_journaled_once_with_transition_context(self):
+        writer = _writer()
+        payload = {
+            "local_order_id": "local-order-1",
+            "exchange": "indodax",
+            "market_type": "spot",
+            "previous_state": "OPEN",
+            "state": "RECONCILIATION_REQUIRED",
+            "reason": "exchange acknowledgement is ambiguous",
+            "actor": "recovery-worker",
+        }
+        writer.event(
+            "ORDER_RECONCILIATION_REQUIRED",
+            pair_key="indodax:btc_idr",
+            payload=payload,
+            is_mock=False,
+            occurred_at_ms=1234,
+            event_id="reconcile-event-1",
+        )
+        writer.event(
+            "ORDER_RECONCILIATION_REQUIRED",
+            pair_key="indodax:btc_idr",
+            payload=payload,
+            is_mock=False,
+            occurred_at_ms=1234,
+            event_id="reconcile-event-1",
+        )
+
+        rows = _drain(writer)
+        audit_rows = [row for table, _, row in rows if table == "reconciliation_audit"]
+        assert len(audit_rows) == 1
+        audit = audit_rows[0]
+        assert audit["event_id"] == "reconcile-event-1"
+        assert audit["pair_key"] == "indodax:btc_idr"
+        assert audit["exchange_name"] == "indodax"
+        assert audit["market_type"] == "spot"
+        assert audit["entity_id"] == "local-order-1"
+        assert audit["from_state"] == "OPEN"
+        assert audit["to_state"] == "RECONCILIATION_REQUIRED"
+        assert audit["reason"] == "exchange acknowledgement is ambiguous"
+        assert audit["actor"] == "recovery-worker"
+        assert audit["is_mock"] is False
+        assert audit["payload"] == payload
+
+    def test_non_reconciliation_event_does_not_pollute_reconciliation_audit(self):
+        writer = _writer()
+        writer.event("SCANNER_HEARTBEAT", event_id="heartbeat-1")
+        rows = _drain(writer)
+        assert not [row for table, _, row in rows if table == "reconciliation_audit"]
+
     def test_multiple_events_are_durably_journaled(self):
         writer = _writer()
         writer.event("A", occurred_at_ms=1)
@@ -126,8 +179,10 @@ class TestPositions:
         writer.position_opened("indodax:usdt_idr", pos, None)
         writer.position_opened("indodax:usdt_idr", pos, None)
         rows = _drain(writer)
-        assert rows[0][2]["id"] == rows[1][2]["id"]
-        assert rows[0][1] == "id"
+        positions = [row for table, _, row in rows if table == "positions"]
+        assert len(positions) == 2
+        assert positions[0]["id"] == positions[1]["id"]
+        assert next(conflict for table, conflict, _ in rows if table == "positions") == "id"
 
     def test_status_update_requires_known_position(self):
         writer = _writer()
@@ -138,15 +193,68 @@ class TestPositions:
         writer = _writer()
         writer.position_opened("p", _pos(), None)
         writer.position_status("p", "CLOSED", _pos(qty=0.0))
-        row = _drain(writer)[1][2]
+        rows = _drain(writer)
+        position_rows = [row for table, _, row in rows if table == "positions"]
+        row = position_rows[-1]
+        legs = [row for table, _, row in rows if table == "position_legs"]
         assert row["status"] == "CLOSED"
         assert row["closed_at"]
+        assert len(legs) == 4
+        assert {row["leg"] for row in legs} == {"spot", "perpetual"}
+        # The outbox records both lifecycle snapshots. The latest upsert for
+        # each (position_id, leg) must be CLOSED; earlier OPEN rows are valid
+        # history and must not be mistaken for the final database state.
+        latest_by_leg = {row["leg"]: row for row in legs}
+        assert {leg: row["status"] for leg, row in latest_by_leg.items()} == {
+            "spot": "CLOSED",
+            "perpetual": "CLOSED",
+        }
 
     def test_is_mock_follows_config_not_position(self):
         writer = _writer()
         writer.position_opened("p", _pos(), None, is_mock=False)
-        assert _drain(writer)[0][2]["is_mock"] is False
+        rows = _drain(writer)
+        parent = next(row for table, _, row in rows if table == "positions")
+        assert parent["is_mock"] is False
 
+    def test_position_opened_persists_independent_spot_and_perpetual_legs(self):
+        writer = _writer()
+        pair = SimpleNamespace(local_symbol="BTC/IDR", global_symbol="BTC/USDT")
+        writer.position_opened("indodax:btc_idr", _pos(), pair, is_mock=False)
+        rows = _drain(writer)
+        legs = [row for table, _, row in rows if table == "position_legs"]
+        assert len(legs) == 2
+        by_leg = {row["leg"]: row for row in legs}
+        assert by_leg["spot"]["symbol"] == "BTC/IDR"
+        assert by_leg["spot"]["side"] == "long"
+        assert by_leg["perpetual"]["symbol"] == "BTC/USDT"
+        assert by_leg["perpetual"]["side"] == "short"
+        assert by_leg["spot"]["qty"] == 10.0
+        assert by_leg["spot"]["position_id"] == by_leg["perpetual"]["position_id"]
+
+    def test_confirmed_funding_payment_is_deduplicated(self):
+        writer = _writer()
+        pos = _pos()
+        writer.position_opened("p", pos, None, is_mock=False)
+        _drain(writer)
+        payment = {
+            "id": "funding-123",
+            "timestamp": 1_700_000_000_000,
+            "amount": 0.025,
+            "code": "USDT",
+            "symbol": "BTC/USDT:USDT",
+            "rate": 0.0001,
+        }
+        assert writer.funding_payment("p", pos, payment, is_mock=False) is True
+        assert writer.funding_payment("p", pos, payment, is_mock=False) is False
+        rows = _drain(writer)
+        funding = [row for table, _, row in rows if table == "funding_payments"]
+        assert len(funding) == 1
+        assert funding[0]["exchange_payment_id"] == "funding-123"
+        assert funding[0]["amount"] == pytest.approx(0.025)
+        assert funding[0]["asset"] == "USDT"
+        assert funding[0]["payment_status"] == "confirmed"
+        assert funding[0]["position_id"] == writer._position_ids["p"]
 
 class TestOrdersAndFills:
     def test_order_id_is_stable_across_writer_restarts(self):
@@ -186,16 +294,7 @@ class TestOrdersAndFills:
         assert row["leg"] == "spot_entry"
         assert row["remaining_qty"] == 10.0
 
-    def test_fill_emitted_once_per_cumulative_quantity(self):
-        writer = _writer()
-        order = {"id": "1", "amount": 10.0, "filled": 4.0, "status": "open"}
-        writer.order("p", "spot_entry", "indodax", "spot", "usdt_idr", order)
-        writer.order("p", "spot_entry", "indodax", "spot", "usdt_idr", order)
-        fills = [r for t, _, r in _drain(writer) if t == "order_fills"]
-        assert len(fills) == 1
-        assert fills[0]["qty"] == 4.0
-
-    def test_second_partial_fill_has_new_id_and_delta(self):
+    def test_order_updates_do_not_invent_exchange_fills_from_cumulative_quantity(self):
         writer = _writer()
         writer.order(
             "p", "spot_entry", "indodax", "spot", "usdt_idr",
@@ -205,9 +304,45 @@ class TestOrdersAndFills:
             "p", "spot_entry", "indodax", "spot", "usdt_idr",
             {"id": "1", "amount": 10.0, "filled": 7.0, "status": "open"},
         )
-        fills = [r for t, _, r in _drain(writer) if t == "order_fills"]
-        assert [f["qty"] for f in fills] == [4.0, 3.0]
-        assert fills[0]["exchange_fill_id"] != fills[1]["exchange_fill_id"]
+        rows = _drain(writer)
+        assert len([row for row in rows if row[0] == "orders"]) == 2
+        assert not [row for row in rows if row[0] == "order_fills"]
+
+    def test_exchange_fill_persists_actual_trade_id_fee_and_quantity(self):
+        writer = _writer()
+        writer.order(
+            "p", "spot_entry", "indodax", "spot", "btc_idr",
+            {"id": "venue-order-1", "amount": 1.0, "filled": 0.25, "status": "closed"},
+            client_order_id="client-order-1",
+            is_mock=False,
+        )
+        order_id = writer.order_id_for("p", "indodax", "client-order-1")
+        fill = {
+            "id": "venue-trade-99",
+            "amount": 0.25,
+            "price": 100.0,
+            "cost": 25.0,
+            "timestamp": 1_700_000_000_000,
+            "fee": {"cost": 0.01, "currency": "BTC"},
+            "info": {"tradeId": "venue-trade-99"},
+        }
+        assert writer.order_fill(
+            order_id=order_id, exchange="indodax", fill=fill
+        ) is True
+        assert writer.order_fill(
+            order_id=order_id, exchange="indodax", fill=fill
+        ) is True
+        rows = _drain(writer)
+        fills = [row for table, _, row in rows if table == "order_fills"]
+        assert len(fills) == 1
+        assert fills[0]["exchange_fill_id"] == "venue-trade-99"
+        assert fills[0]["fill_source"] == "exchange_trade"
+        assert fills[0]["qty"] == 0.25
+        assert fills[0]["quote_qty"] == 25.0
+        assert fills[0]["fee_amount"] == 0.01
+        assert fills[0]["fee_asset"] == "BTC"
+        assert fills[0]["fee_verified"] is True
+        assert fills[0]["order_id"] == order_id
 
     def test_side_mapping_per_leg(self):
         writer = _writer()
@@ -302,8 +437,34 @@ class TestClosedTrades:
         writer.trade_closed("p", self.TRADE, _pos(qty=0.0))
         rows = _drain(writer)
         tables = [t for t, _, _ in rows]
-        assert tables == ["closed_trades", "positions", "executor_events"]
+        assert tables == [
+            "closed_trades", "positions", "position_legs",
+            "position_legs", "executor_events",
+        ]
         assert rows[0][1] == "trade_key"
+
+    def test_trade_fee_breakdown_is_saved_in_metadata(self):
+        writer = _writer()
+        trade = {
+            **self.TRADE,
+            "fees_usdt": 0.25,
+            "spot_fees_usdt": 0.15,
+            "futures_fees_usdt": 0.10,
+            "fee_source": "EXCHANGE_API",
+            "fee_verified": True,
+        }
+        writer.trade_closed("p", trade, _pos())
+        row = _drain(writer)[0][2]
+        assert row["fees"] == pytest.approx(0.25)
+        assert row["metadata"] == {
+            "pnl_complete": None,
+            "spot_liquidation_failed": None,
+            "spot_fees_usdt": pytest.approx(0.15),
+            "futures_fees_usdt": pytest.approx(0.10),
+            "fee_source": "EXCHANGE_API",
+            "fee_verified": True,
+            "fee_estimation": "four_fill_round_trip",
+        }
 
     def test_trade_without_id_ignored(self):
         writer = _writer()
@@ -417,3 +578,394 @@ class TestOutboxDelivery:
         assert writer._outbox.pending() == []
         writer._outbox.close()
 
+
+
+class TestOrderRegistryWriter:
+    """The registry row must describe the real order, not just its role."""
+
+    def test_mock_order_intent_does_not_allocate_live_confirmation_tracking(self):
+        writer = _writer()
+        local_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        assert writer.order_record({
+            "local_order_id": local_id,
+            "exchange_name": "indodax",
+            "market_type": "spot",
+            "order_role": "ENTRY",
+            "symbol": "btc_idr",
+            "side": "buy",
+            "status": "submitting",
+            "is_mock": True,
+        }) is True
+        assert local_id not in writer._order_registry_outbox_ids
+        writer._outbox.close()
+
+    @pytest.mark.asyncio
+    async def test_order_registry_confirmation_flushes_exact_row(self):
+        writer = _writer()
+        local_id = "88888888-8888-8888-8888-888888888888"
+        assert writer.order_record({
+            "local_order_id": local_id,
+            "exchange_name": "indodax",
+            "market_type": "spot",
+            "order_role": "ENTRY",
+            "symbol": "btc_idr",
+            "side": "buy",
+            "status": "submitting",
+            "is_mock": False,
+        }) is True
+        writer._session = _FakeSession(204)
+        assert await writer.confirm_order_registry(local_id) is True
+        assert writer._outbox.pending_table("order_registry") == []
+        writer._outbox.close()
+
+    @pytest.mark.asyncio
+    async def test_order_registry_confirmation_retains_row_when_postgrest_fails(self, monkeypatch):
+        async def no_wait(_seconds):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+        writer = _writer()
+        local_id = "99999999-9999-9999-9999-999999999999"
+        assert writer.order_record({
+            "local_order_id": local_id,
+            "exchange_name": "indodax",
+            "market_type": "spot",
+            "order_role": "ENTRY",
+            "symbol": "btc_idr",
+            "side": "buy",
+            "status": "submitting",
+            "is_mock": False,
+        }) is True
+        writer._session = _FakeSession(503)
+        assert await writer.confirm_order_registry(local_id) is False
+        assert len(writer._outbox.pending_table("order_registry")) == 1
+        writer._outbox.close()
+
+    @pytest.mark.asyncio
+    async def test_live_intent_is_blocked_when_postgres_does_not_ack(self, monkeypatch):
+        async def no_wait(_seconds):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+        writer = _writer()
+        local_id = "77777777-7777-7777-7777-777777777777"
+
+        class IntentHarness(EngineOrderIntentMixin):
+            def __init__(self):
+                self.config = SimpleNamespace(mock_mode=False)
+                self.supabase = writer
+
+            def _account_scope_for_exchange(self, exchange):
+                return f"{exchange}:main"
+
+            async def _register_order(self, pair_tag, client_order_id, order, **metadata):
+                assert writer.order_record({
+                    "local_order_id": local_id,
+                    "exchange_name": "indodax",
+                    "market_type": "spot",
+                    "order_role": "ENTRY",
+                    "symbol": "btc_idr",
+                    "side": "buy",
+                    "status": "submitting",
+                    "is_mock": False,
+                }) is True
+                return SimpleNamespace(local_order_id=local_id)
+
+        writer._session = _FakeSession(503)
+        harness = IntentHarness()
+        with pytest.raises(RuntimeError, match="Postgres order_registry"):
+            await harness._register_order_intent(
+                "indodax:btc_idr", "client-order-7",
+                exchange="indodax", market_type="spot", symbol="btc_idr",
+                role="ENTRY", side="buy", order_type="limit",
+                price=100.0, quantity=1.0,
+            )
+        writer._outbox.close()
+
+    def test_force_close_futures_buy_keeps_its_side(self):
+        writer = _writer()
+        writer.order_record(
+            {
+                "local_order_id": "11111111-1111-1111-1111-111111111111",
+                "exchange_name": "binance",
+                "market_type": "perpetual",
+                "order_role": "FORCE_CLOSE",
+                "exchange_order_id": "venue-force-close-1",
+                "symbol": "BTCUSDT",
+                "side": "buy",
+                "order_type": "market",
+                "status": "closed",
+                "original_quantity": 1.0,
+                "filled_quantity": 1.0,
+                "pair_key": "indodax:btc_idr__binance:btc_usdt",
+                "position_key": "position:indodax:btc_idr__binance:btc_usdt",
+                "recovery_context": {"usdt_idr_rate": 16000.0},
+            }
+        )
+        queued = _drain(writer)
+        row = [r for table, _, r in queued if table == "order_registry"][0]
+        analytics = [r for table, _, r in queued if table == "orders"][0]
+        assert analytics["id"] == writer.order_id_for(
+            "indodax:btc_idr__binance:btc_usdt", "binance", "venue-force-close-1"
+        )
+        assert analytics["leg"] == "futures_exit"
+        assert analytics["market_type"] == "perpetual"
+        assert analytics["is_mock"] is True
+        assert row["side"] == "buy"
+        assert row["market_type"] == "perpetual"
+        assert row["leg"] == "futures_exit"
+        assert row["pair_key"].startswith("indodax:btc_idr")
+        assert row["position_key"] == "position:indodax:btc_idr__binance:btc_usdt"
+        assert row["raw_payload"]["recovery_context"]["usdt_idr_rate"] == 16000.0
+
+    def test_entry_order_is_linked_to_position_uuid_after_position_is_created(self):
+        writer = _writer()
+        pair_key = "tokocrypto:ath_usdt__binance:ath_usdt"
+        writer.order(
+            pair_key, "spot_entry", "tokocrypto", "spot", "ATH/USDT",
+            {
+                "id": "toko-77", "amount": 12.0, "filled": 12.0,
+                "remaining": 0.0, "price": 1.0, "average": 1.0,
+                "status": "closed", "type": "limit",
+            },
+            client_order_id="logical-ath-entry-7",
+            is_mock=False,
+        )
+        writer.position_opened(
+            pair_key,
+            _pos(
+                local_exchange="tokocrypto",
+                global_exchange="binance",
+                symbol="ATH/USDT",
+                qty=12.0,
+                initial_qty=12.0,
+                opened_at_ms=1_700_000_000_000,
+            ),
+            SimpleNamespace(
+                local_symbol="ATH/USDT",
+                global_symbol="ATHUSDT",
+                base_asset="ATH",
+                quote_asset="USDT",
+            ),
+            is_mock=False,
+        )
+
+        rows = _drain(writer)
+        position_id = [
+            row["id"] for table, _, row in rows if table == "positions"
+        ][0]
+        order_rows = [
+            row for table, _, row in rows if table == "orders"
+        ]
+        assert len(order_rows) == 2
+        assert order_rows[0]["position_id"] is None
+        assert order_rows[-1]["position_id"] == position_id
+
+    def test_unlinked_orphan_row_omits_pair_and_position(self):
+        writer = _writer()
+        writer.order_record(
+            {
+                "local_order_id": "22222222-2222-2222-2222-222222222222",
+                "exchange_name": "indodax",
+                "order_role": "ENTRY",
+                "symbol": "eth_idr",
+                "side": "buy",
+                "status": "open",
+                "recovery_status": "ORPHAN_ORDER",
+            }
+        )
+        row = [r for t, _, r in _drain(writer) if t == "order_registry"][0]
+        assert "pair_key" not in row
+        assert "position_key" not in row
+        assert row["recovery_status"] == "ORPHAN_ORDER"
+
+
+    def test_order_registry_persists_tokocrypto_venue_client_id_and_amount_specs(self):
+        writer = _writer()
+        writer.order_record(
+            {
+                "local_order_id": "44444444-4444-4444-4444-444444444444",
+                "exchange_name": "tokocrypto",
+                "market_type": "spot",
+                "order_role": "ENTRY",
+                "client_order_id": "logical-ath-entry-7",
+                "venue_client_order_id": "a1b2c3d4entry7",
+                "exchange_order_id": "toko-77",
+                "symbol": "ATH/USDT",
+                "side": "buy",
+                "order_type": "limit",
+                "status": "open",
+                "original_quantity": 12.0,
+                "filled_quantity": 0.0,
+                "remaining_quantity": 12.0,
+                "pair_key": "tokocrypto:ath_usdt__binance:ath_usdt",
+                "position_key": "position:tokocrypto:ath_usdt__binance:ath_usdt",
+                "local_amount_spec": {"unit": "BASE", "step": 1.0},
+                "global_amount_spec": {"unit": "CONTRACTS", "step": 1.0},
+                "recovery_context": {"usdt_idr_rate": 16000.0},
+            }
+        )
+        rows = _drain(writer)
+        row = [r for table, _, r in rows if table == "order_registry"][0]
+        payload = row["raw_payload"]
+
+        assert row["client_order_id"] == "logical-ath-entry-7"
+        assert row["venue_client_order_id"] == "a1b2c3d4entry7"
+        assert payload["local_amount_spec"] == {"unit": "BASE", "step": 1.0}
+        assert payload["global_amount_spec"] == {"unit": "CONTRACTS", "step": 1.0}
+
+    def test_order_registry_persists_hedge_watermark_in_raw_payload(self):
+        writer = _writer()
+        writer.order_record(
+            {
+                "local_order_id": "33333333-3333-3333-3333-333333333333",
+                "exchange_name": "indodax",
+                "market_type": "spot",
+                "order_role": "ENTRY",
+                "symbol": "btc_idr",
+                "side": "buy",
+                "status": "open",
+                "original_quantity": 0.01,
+                "filled_quantity": 0.01,
+                "hedged_quantity": 0.006,
+                "pair_key": "indodax:btc_idr",
+                "recovery_context": {"usdt_idr_rate": 16000.0},
+            }
+        )
+        row = [r for t, _, r in _drain(writer) if t == "order_registry"][0]
+        payload = row["raw_payload"]
+        assert payload["hedged_quantity"] == pytest.approx(0.006)
+
+
+class TestBalanceSnapshots:
+    def test_balance_snapshot_appends_valid_spot_and_perpetual_rows(self):
+        writer = _writer()
+        assert writer.balance_snapshot(
+            exchange="Indodax",
+            market_type="spot",
+            asset="idr",
+            total=1000,
+            free=700,
+            used=300,
+            is_mock=False,
+        ) is True
+        assert writer.balance_snapshot(
+            exchange="binance",
+            market_type="perpetual",
+            asset="usdt",
+            total=10,
+            free=8,
+            used=2,
+            is_mock=False,
+        ) is True
+        rows = _drain(writer)
+        assert [row[0] for row in rows] == ["balance_snapshots", "balance_snapshots"]
+        assert rows[0][2]["exchange_name"] == "indodax"
+        assert rows[0][2]["market_type"] == "spot"
+        assert rows[0][2]["asset"] == "IDR"
+        assert rows[1][2]["market_type"] == "perpetual"
+        assert rows[1][2]["total"] == 10
+        assert "observed_at" in rows[0][2]
+
+    def test_balance_snapshot_rejects_invalid_values_and_market(self):
+        writer = _writer()
+        assert writer.balance_snapshot(
+            exchange="indodax", market_type="spot", asset="idr",
+            total=-1, free=0, used=0,
+        ) is False
+        assert writer.balance_snapshot(
+            exchange="indodax", market_type="margin", asset="idr",
+            total=1, free=1, used=0,
+        ) is False
+        assert _drain(writer) == []
+
+    def test_balance_snapshot_is_noop_when_disabled(self):
+        writer = _writer(enabled=False)
+        assert writer.balance_snapshot(
+            exchange="indodax", market_type="spot", asset="idr",
+            total=1, free=1, used=0,
+        ) is False
+
+
+class TestFillSyncWatermark:
+    def test_fill_sync_watermark_survives_outbox_restart(self, tmp_path):
+        path = str(tmp_path / "fill-sync.sqlite3")
+        first = DurableOutbox(path)
+        first.set_numeric_state("fill-sync:exchange:spot:order-1", 2.5)
+        first.close()
+
+        reopened = DurableOutbox(path)
+        assert reopened.get_numeric_state("fill-sync:exchange:spot:order-1") == pytest.approx(2.5)
+        reopened.close()
+
+    def test_risk_state_defaults_null_value_to_empty_dict(self):
+        writer = _writer()
+        assert writer.risk_state(
+            state_type="trading_resume",
+            scope="global",
+            value=None,
+            reason="operator resume",
+        ) is True
+        rows = _drain(writer)
+        assert rows[0][2]["value"] == {}
+
+
+def test_order_registry_raw_payload_is_json_object():
+    writer = _writer()
+    payload, *_ = writer._build_order_registry_payload(
+        {
+            "local_order_id": "local-raw-payload", "exchange_name": "indodax",
+            "market_type": "spot", "order_role": "ENTRY", "symbol": "btc_idr",
+            "side": "buy", "order_type": "limit", "status": "submitting",
+            "original_quantity": 1.0, "filled_quantity": 0.0,
+            "recovery_context": {"capacity_account_scope": "indodax:main", "spot_cost_usdt": 100.0},
+        },
+        "ENTRY", None, "spot", None,
+    )
+    assert isinstance(payload["raw_payload"], dict)
+    assert payload["raw_payload"]["recovery_context"]["capacity_account_scope"] == "indodax:main"
+
+
+
+
+def test_order_registry_parent_preserves_first_terminal_timestamp():
+    writer = _writer()
+    base = {
+        "exchange_name": "indodax",
+        "market_type": "spot",
+        "order_role": "ENTRY",
+        "symbol": "btc_idr",
+        "side": "buy",
+        "pair_key": "indodax:btc_idr",
+        "client_order_id": "client-registry-1",
+        "is_mock": False,
+        "original_quantity": 1.0,
+        "filled_quantity": 0.0,
+    }
+    assert writer.order_record({
+        **base,
+        "local_order_id": "local-registry-1",
+        "status": "open",
+        "created_at": 1_700_000_000_000,
+    }) is True
+    first = [row for table, _, row in _drain(writer) if table == "orders"][0]
+
+    assert writer.order_record({
+        **base,
+        "local_order_id": "local-registry-1",
+        "status": "canceled",
+        "created_at": 1_700_000_000_000,
+    }) is True
+    terminal = [row for table, _, row in _drain(writer) if table == "orders"][0]
+    assert terminal["submitted_at"] == first["submitted_at"]
+    assert terminal["completed_at"] is not None
+
+    assert writer.order_record({
+        **base,
+        "local_order_id": "local-registry-1",
+        "status": "open",
+        "created_at": 1_700_000_000_000,
+    }) is True
+    reopened = [row for table, _, row in _drain(writer) if table == "orders"][0]
+    assert reopened["submitted_at"] == first["submitted_at"]
+    assert reopened["completed_at"] == terminal["completed_at"]

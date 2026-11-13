@@ -16,6 +16,12 @@ The initial migration creates:
 - `scanner_opportunities`: time-series snapshots of evaluated opportunities.
 - `positions` and `position_legs`: lifecycle and each exchange leg.
 - `orders` and `order_fills`: order lifecycle and immutable fill records.
+- `order_registry`: durable universal order registry (one row per submitted order,
+  keyed by a deterministic local id derived from the client order id). It is the
+  recovery authority after a restart and carries `order_role` (ENTRY / HEDGE /
+  EXIT_SPOT / EXIT_FUTURES / EMERGENCY / FORCE_CLOSE / ROLLBACK) and
+  `recovery_status` (MANAGED / ADOPTED / UNVERIFIED / ORPHAN_ORDER / PHANTOM).
+  `orders` stays the per-leg analytics view.
 - `funding_payments`: exchange funding settlements, with estimated and confirmed
   records explicitly distinguished and exchange payment IDs deduplicated.
 - `closed_trades`: realized PnL snapshots.
@@ -40,6 +46,13 @@ Do not run the migration against a production project until its existing schema 
 migration history have been checked. Do not make ad-hoc remote schema changes in
 Studio after adopting versioned migrations.
 
+Before deploying trade-fill reconciliation, ensure
+`20261111000100_add_live_order_fill_reconciliation.sql` has been applied. It adds the `orders.is_mock` discriminator used to prevent paper-trading rows
+from being replayed as live exchange fills, and `order_fills.fill_source` to
+distinguish retained legacy cumulative snapshots from verified exchange trades,
+and `order_fills.fee_verified` to record whether each fill has complete fee
+amount/currency details. Apply it with the same reviewed `supabase db push --remote` workflow above.
+
 ## Runtime persistence status
 
 The runtime uses Supabase as a best-effort audit/history sink. It is not the
@@ -52,15 +65,35 @@ Implemented writes:
   Transient PostgREST/network errors are retried; permanent schema/auth errors
   are logged and do not suppress Redis signal delivery.
 - Python executor: `positions`, `orders`, `order_fills`, `closed_trades`,
-  `executor_events`, and `risk_events`. Client-generated/deterministic keys
-  make retries idempotent; order-fill rows are derived from cumulative filled
-  quantity and only new deltas are emitted.
+  `executor_events`, and `risk_events`. Every universal order-registry write
+  also ensures its per-leg `orders` parent row exists. Individual fills are
+  replayed from authenticated exchange trade history and keyed by immutable
+  exchange trade IDs; quantity, price, quote value, fee amount, fee asset, and
+  venue timestamp are persisted with `fill_source=exchange_trade`. The
+  `fee_verified` flag distinguishes complete fee amount/currency details from
+  incomplete venue payloads; incomplete or multi-asset fee breakdowns keep the
+  affected pair gated until reconciled. Historical cumulative-snapshot rows
+  are retained as `legacy_cumulative`, not deleted or silently mixed into
+  verified execution totals. Durable SQLite idempotency keys prevent the
+  same exchange fill from being enqueued twice across restarts, and a per-order
+  verified cumulative watermark avoids repeated private-history API calls when
+  the order's filled quantity has not changed.
 - Redis remains authoritative for active-position recovery, locks, live prices,
   balances, pub/sub, and fast coordination. Exchange APIs remain authoritative
   for actual balances, order state, and position exposure.
 
-Still schema-only / not yet connected to runtime writes: `position_legs`,
-`funding_payments`, `balance_snapshots`, and `executor_status_snapshots`.
+`position_legs` receives independent spot/perpetual upserts keyed by the parent
+position and leg. Confirmed exchange funding settlements are written to
+`funding_payments` through the durable SQLite outbox, with deterministic IDs so
+replayed ledger rows are idempotent. `executor_status_snapshots` remains
+schema-only. The executor also writes append-only `balance_snapshots` from
+authenticated spot/perpetual balance
+reports. Its live exposure worker checks that spot base-asset totals cover the
+aggregate managed quantity and compares each managed futures short with the
+exchange position. A confirmed mismatch or unavailable read halts new entries
+on the affected venue while leaving existing position management available.
+Spot balances are a minimum-coverage check only; excess wallet inventory is not
+assumed to belong to the bot.
 Strategy/risk configuration tables are also not read dynamically by this runtime.
 
 Delivery guarantees and remaining limitations:
@@ -72,9 +105,11 @@ Delivery guarantees and remaining limitations:
 - The async worker retries failed PostgREST delivery with bounded exponential
   backoff. Rows are deleted only after a successful idempotent upsert; permanent
   schema/permission failures remain queued for replay after repair.
-- Order-fill cumulative watermarks and their corresponding fill rows are
-  committed in one SQLite transaction. This prevents a restart between those
-  operations from silently advancing the watermark without journaling the fill.
+- Individual exchange fills and their idempotency markers are committed in one
+  SQLite transaction. The worker compares the sum of unique venue trade fills
+  with each order's cumulative filled quantity; missing history, unsupported
+  private trade endpoints, or quantity mismatches mark the affected pair for
+  reconciliation instead of inventing synthetic fills from average order price.
 - The in-memory queue is only a wakeup hint. A full wakeup queue does not discard
   the already committed outbox row. The local outbox has a 50,000-row hard cap;
   capacity or disk errors are logged as critical and must be monitored.
@@ -97,12 +132,21 @@ Delivery guarantees and remaining limitations:
 - Both journals are local to one process/host and must not be shared by multiple
   replicas. Use persistent local volumes and back up journals before replacing
   hosts or volumes.
+- The executor trade-fill reconciliation worker reads authenticated spot and
+  perpetual trade history at startup and every 120 seconds by default
+  (`TRADE_FILL_RECONCILIATION_INTERVAL_SECONDS`). INDODAX uses
+  the TAPI v2 `/api/v2/myTrades` endpoint with bounded seven-day windows;
+  supported CCXT venues use `fetch_my_trades`. Unsupported or incomplete
+  history is not treated as zero fills and blocks new entries for the affected
+  pair until verified.
 - The scanner reconciliation worker is a delivery reconciler only: it replays
-  scanner opportunity snapshots and confirms durable delivery. It does not
-  inspect private exchange balances/positions, change Redis exposure state, or
-  place/cancel orders. Executor restart verification separately checks restored
-  futures exposure against exchange positions and marks mismatches
-  `RECONCILIATION_REQUIRED`.
+  scanner opportunity snapshots and confirms durable delivery. Live exchange
+  exposure reconciliation is performed separately by the Python executor; it
+  is read-only and never places/cancels orders. The executor's universal order
+  recovery reconciles order status and cumulative fills, while the exposure
+  worker checks spot base-asset coverage and futures short quantities. A
+  confirmed mismatch or unavailable read halts new entries on the affected
+  venue and publishes an operational event.
 - Supabase remains an audit/history sink, never authority for live exposure.
   Scanner opportunities and executor history are not a complete exchange ledger
   unless fills, fees, funding settlements, balances, and position legs are also

@@ -53,9 +53,13 @@ def _normalize_symbol(value: str, field: str, venue: str) -> str:
 
     normalized = normalized.replace("-", "/").replace("_", "/")
     if "/" not in normalized:
-        # Binance/Bybit may expose compact symbols (BTCUSDT); split only
-        # on a known quote suffix, longest first to avoid partial matches.
-        for quote in _SUPPORTED_QUOTES:
+        # Indodax native spot markets only trade against IDR or USDT.
+        # Prefer IDR over BIDR to prevent symbols ending in IDR (e.g. OKBIDR)
+        # from being erroneously parsed as OK/BIDR instead of OKB/IDR.
+        quote_candidates = (
+            ("USDT", "IDR") if venue == "indodax" else _SUPPORTED_QUOTES
+        )
+        for quote in quote_candidates:
             if normalized.endswith(quote) and len(normalized) > len(quote):
                 normalized = f"{normalized[:-len(quote)]}/{quote}"
                 break

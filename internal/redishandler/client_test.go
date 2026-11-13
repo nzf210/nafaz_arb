@@ -211,3 +211,196 @@ func TestPublishSignalRanksByEstimatedNetProfitUSDT(t *testing.T) {
 		t.Fatalf("highest priority = %+v, want ETH at 3.75 USDT", items[0])
 	}
 }
+
+func TestGetDynamicFeeProfileRequiresFreshVerifiedExchangeSnapshot(t *testing.T) {
+	mr, rc := setupTestRedis(t)
+	defer mr.Close()
+	defer rc.Close()
+	ctx := context.Background()
+	profile := DynamicFeeProfile{
+		MakerFeePct: 0.02,
+		TakerFeePct: 0.05,
+		Source:      "EXCHANGE_API",
+		Verified:    true,
+		FetchedAtMS: time.Now().UnixMilli(),
+	}
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "arb:fee_profile:okx:perp:btc_usdt_usdt"
+	if err := rc.rdb.Set(ctx, key, raw, 5*time.Minute).Err(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := rc.GetDynamicFeeProfile(ctx, "OKX", "PERP", "BTC/USDT:USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.TakerFeePct != 0.05 || !got.Verified {
+		t.Fatalf("unexpected fee profile: %+v", got)
+	}
+
+	profile.Verified = false
+	raw, _ = json.Marshal(profile)
+	_ = rc.rdb.Set(ctx, key, raw, 5*time.Minute).Err()
+	got, err = rc.GetDynamicFeeProfile(ctx, "okx", "perp", "BTC/USDT:USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("unverified profile must be ignored: %+v", got)
+	}
+
+	profile.Verified = true
+	profile.FetchedAtMS = time.Now().Add(-6 * time.Minute).UnixMilli()
+	raw, _ = json.Marshal(profile)
+	_ = rc.rdb.Set(ctx, key, raw, 5*time.Minute).Err()
+	got, err = rc.GetDynamicFeeProfile(ctx, "okx", "perp", "BTC/USDT:USDT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != nil {
+		t.Fatalf("stale profile must be ignored: %+v", got)
+	}
+}
+
+
+func TestRequestRecoveryRetryWaitsForExecutorResult(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	sub := client.rdb.Subscribe(ctx, ChannelRecoveryRequest)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil {
+		t.Fatalf("subscribe recovery requests: %v", err)
+	}
+	go func() {
+		message := <-sub.Channel()
+		if message == nil {
+			return
+		}
+		var request map[string]string
+		if json.Unmarshal([]byte(message.Payload), &request) != nil {
+			return
+		}
+		reply, _ := json.Marshal(RecoveryRetryReply{
+			RequestID: request["request_id"],
+			Action: request["action"],
+			Complete: true,
+			PendingOrders: map[string]string{},
+			ScopeHalts: map[string]string{},
+			TimestampMS: time.Now().UnixMilli(),
+		})
+		_ = client.rdb.Set(ctx, KeyPrefixRecoveryReply+request["request_id"], reply, 30*time.Second).Err()
+	}()
+
+	result, err := client.RequestRecoveryRetry(ctx)
+	if err != nil {
+		t.Fatalf("RequestRecoveryRetry: %v", err)
+	}
+	if !result.Complete || result.RequestID == "" {
+		t.Fatalf("unexpected recovery result: %+v", result)
+	}
+}
+
+
+func TestRequestOrphanResolutionCarriesExactOperatorTarget(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	sub := client.rdb.Subscribe(ctx, ChannelRecoveryRequest)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil {
+		t.Fatalf("subscribe recovery requests: %v", err)
+	}
+	go func() {
+		message := <-sub.Channel()
+		if message == nil { return }
+		var request map[string]string
+		if json.Unmarshal([]byte(message.Payload), &request) != nil { return }
+		if request["action"] != "resolve_orphan" || request["orphan_id"] != "orphan-123" || request["pair_tag"] != "indodax:btc_idr" {
+			return
+		}
+		reply, _ := json.Marshal(RecoveryRetryReply{
+			RequestID: request["request_id"], Action: request["action"], Resolved: true,
+			Complete: true, PendingOrders: map[string]string{}, ScopeHalts: map[string]string{},
+			TimestampMS: time.Now().UnixMilli(),
+		})
+		_ = client.rdb.Set(ctx, KeyPrefixRecoveryReply+request["request_id"], reply, 30*time.Second).Err()
+	}()
+	reply, err := client.RequestOrphanResolution(ctx, "orphan-123", "indodax:btc_idr")
+	if err != nil { t.Fatalf("RequestOrphanResolution: %v", err) }
+	if !reply.Resolved || reply.Action != "resolve_orphan" {
+		t.Fatalf("unexpected orphan resolution result: %+v", reply)
+	}
+}
+
+
+func TestSpotOrderLimitPersistsAndBroadcasts(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub := client.rdb.Subscribe(ctx, ChannelSpotOrderLimitUpdate)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil { t.Fatalf("subscribe spot order limit: %v", err) }
+
+	updates := make(chan map[string]interface{}, 1)
+	go func() {
+		message := <-sub.Channel()
+		var update map[string]interface{}
+		if err := json.Unmarshal([]byte(message.Payload), &update); err != nil { return }
+		updates <- update
+		requestID, _ := update["request_id"].(string)
+		if requestID == "" { return }
+		ack, _ := json.Marshal(map[string]interface{}{"success": true})
+		_ = client.rdb.HSet(ctx, KeySpotOrderLimits, "tokocrypto", 4).Err()
+		_ = client.rdb.LPush(ctx, KeyPrefixSpotOrderLimitReply+requestID, string(ack)).Err()
+	}()
+	if err := client.SetSpotOrderLimit(ctx, "TOKOCRYPTO", 4); err != nil { t.Fatalf("SetSpotOrderLimit: %v", err) }
+	update := <-updates
+	if update["exchange"] != "tokocrypto" || update["max_open_spot_orders"] != float64(4) {
+		t.Fatalf("unexpected spot order limit event: %#v", update)
+	}
+	if update["request_id"] == "" { t.Fatalf("request_id missing from durable update: %#v", update) }
+	limits, err := client.GetSpotOrderLimits(ctx)
+	if err != nil { t.Fatalf("GetSpotOrderLimits: %v", err) }
+	if limits["tokocrypto"] != 4 { t.Fatalf("cached limits = %#v, want tokocrypto=4", limits) }
+	if err := client.SetSpotOrderLimit(ctx, "indodax", 0); err == nil { t.Fatal("expected invalid limit to be rejected") }
+}
+
+func TestSpotOrderLimitReturnsExecutorPersistenceFailure(t *testing.T) {
+	mr, client := setupTestRedis(t)
+	defer mr.Close()
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub := client.rdb.Subscribe(ctx, ChannelSpotOrderLimitUpdate)
+	defer sub.Close()
+	if _, err := sub.Receive(ctx); err != nil { t.Fatalf("subscribe spot order limit: %v", err) }
+	go func() {
+		message := <-sub.Channel()
+		var update map[string]interface{}
+		if json.Unmarshal([]byte(message.Payload), &update) != nil { return }
+		requestID, _ := update["request_id"].(string)
+		ack, _ := json.Marshal(map[string]interface{}{
+			"success": false, "error": "Postgres coordinator lease unavailable",
+		})
+		_ = client.rdb.LPush(ctx, KeyPrefixSpotOrderLimitReply+requestID, string(ack)).Err()
+	}()
+	if err := client.SetSpotOrderLimit(ctx, "indodax", 3); err == nil {
+		t.Fatal("expected executor persistence failure to be returned to Telegram")
+	}
+	limits, err := client.GetSpotOrderLimits(ctx)
+	if err != nil { t.Fatalf("GetSpotOrderLimits: %v", err) }
+	if _, exists := limits["indodax"]; exists {
+		t.Fatalf("failed durable update must not populate Redis cache: %#v", limits)
+	}
+}

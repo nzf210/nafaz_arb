@@ -36,8 +36,11 @@ type LiveAdapter struct {
 	lastIndodaxSpotFetch time.Time
 	cachedTokocryptoSpot []domain.Market
 	lastTokocryptoFetch  time.Time
+	cachedMEXCSpot       []domain.Market
+	lastMEXCSpotFetch    time.Time
 	cachedOKXPerp        []domain.Market
 	lastOKXPerpFetch     time.Time
+	marketCacheDir       string
 
 	health *availability
 	// walletStatuses caches per-venue deposit/withdrawal state (P2-05).
@@ -57,6 +60,31 @@ type LiveAdapter struct {
 	okxBooks       *OKXBookManager
 	okxWSMaxAge    time.Duration
 	okxBookCalls   map[string]*okxBookCall
+
+	indodaxLimiter         *venueLimiter
+	indodaxLimiterOnce     sync.Once
+	mexcSpotLimiter        *venueLimiter
+	mexcSpotLimiterOnce    sync.Once
+	tokocryptoLimiter      *venueLimiter
+	tokocryptoLimiterOnce  sync.Once
+	indodaxBooks           *IndodaxBookManager
+	indodaxWSMaxAge        time.Duration
+
+	usdtIDRMu     sync.Mutex
+	usdtIDRFlight *usdtIDRCall
+
+	scanTelemetryMu      sync.Mutex
+	scanTelemetryMetrics map[string]domain.ExchangeScanMetrics
+	scanTelemetryErrors  []string
+
+	venuesOnce    sync.Once
+	venueRegistry *VenueRegistry
+}
+
+type usdtIDRCall struct {
+	done chan struct{}
+	rate float64
+	err  error
 }
 
 func NewLiveAdapter() *LiveAdapter {
@@ -327,11 +355,147 @@ func (l *LiveAdapter) LastBookUpdate(exchange, symbol string) time.Time {
 	return cache.LastBookUpdate(exchange, symbol)
 }
 
+// SetMarketCacheDir configures a directory where discovered spot markets are
+// persisted on disk so temporary venue errors across restarts retain markets.
+func (l *LiveAdapter) SetMarketCacheDir(dir string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.marketCacheDir = strings.TrimSpace(dir)
+}
+
+// EnableIndodaxBookWebSocket starts the wss://ws3.indodax.com/ws/ manager.
+// If token is empty, it stays dormant and REST fallback remains active.
+func (l *LiveAdapter) EnableIndodaxBookWebSocket(ctx context.Context, wsURL, token string, staleAfter, reconnect, maxBackoff time.Duration) {
+	if strings.TrimSpace(token) == "" {
+		return
+	}
+	l.mu.Lock()
+	if l.indodaxBooks != nil {
+		l.mu.Unlock()
+		return
+	}
+	l.indodaxWSMaxAge = staleAfter
+	manager := NewIndodaxBookManager(wsURL, token, nil, reconnect, maxBackoff)
+	l.indodaxBooks = manager
+	l.mu.Unlock()
+	manager.Start(ctx)
+}
+
+// SubscribeIndodaxBooks updates the active matched Indodax pairs subscribed on WS.
+func (l *LiveAdapter) SubscribeIndodaxBooks(pairs [][2]domain.Market) {
+	l.mu.RLock()
+	manager := l.indodaxBooks
+	l.mu.RUnlock()
+	if manager == nil {
+		return
+	}
+	symbols := make([]string, 0, len(pairs))
+	seen := make(map[string]struct{}, len(pairs))
+	for _, pair := range pairs {
+		if strings.EqualFold(pair[0].Exchange, "indodax") && pair[0].Active {
+			sym := strings.ToLower(strings.TrimSpace(pair[0].Symbol))
+			if sym != "" {
+				if _, ok := seen[sym]; !ok {
+					seen[sym] = struct{}{}
+					symbols = append(symbols, sym)
+				}
+			}
+		}
+	}
+	manager.SetPairs(symbols)
+}
+
+func (l *LiveAdapter) IndodaxWebSocketConnected() bool {
+	l.mu.RLock()
+	manager := l.indodaxBooks
+	l.mu.RUnlock()
+	return manager != nil && manager.IsConnected()
+}
+
+func (l *LiveAdapter) ResetScanTelemetry() {
+	l.scanTelemetryMu.Lock()
+	l.scanTelemetryMetrics = make(map[string]domain.ExchangeScanMetrics)
+	l.scanTelemetryErrors = nil
+	l.scanTelemetryMu.Unlock()
+}
+
+func (l *LiveAdapter) recordScanMetric(exchange string, started time.Time, err error) {
+	if exchange == "" {
+		return
+	}
+	l.scanTelemetryMu.Lock()
+	if l.scanTelemetryMetrics == nil {
+		l.scanTelemetryMetrics = make(map[string]domain.ExchangeScanMetrics)
+	}
+	m := l.scanTelemetryMetrics[exchange]
+	m.Exchange = exchange
+	m.Requests++
+	if err != nil {
+		m.Errors++
+	}
+	m.DurationMicros += time.Since(started).Microseconds()
+	l.scanTelemetryMetrics[exchange] = m
+	l.scanTelemetryMu.Unlock()
+}
+
+func (l *LiveAdapter) recordScanError(msg string) {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return
+	}
+	l.scanTelemetryMu.Lock()
+	l.scanTelemetryErrors = append(l.scanTelemetryErrors, msg)
+	l.scanTelemetryMu.Unlock()
+}
+
+func (l *LiveAdapter) ConsumeScanTelemetry() ([]domain.ExchangeScanMetrics, []string) {
+	l.scanTelemetryMu.Lock()
+	defer l.scanTelemetryMu.Unlock()
+	metrics := make([]domain.ExchangeScanMetrics, 0, len(l.scanTelemetryMetrics))
+	for _, m := range l.scanTelemetryMetrics {
+		metrics = append(metrics, m)
+	}
+	errs := append([]string(nil), l.scanTelemetryErrors...)
+	l.scanTelemetryMetrics = make(map[string]domain.ExchangeScanMetrics)
+	l.scanTelemetryErrors = nil
+	return metrics, errs
+}
+
 // SetTargetPerpExchange filters which perpetual exchange(s) to scan (e.g. "okx", "mexc", or "" for all).
 func (l *LiveAdapter) SetTargetPerpExchange(ex string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.targetPerpExchange = strings.ToLower(strings.TrimSpace(ex))
+}
+
+// venues returns the lazily initialized modular VenueRegistry.
+func (l *LiveAdapter) venues() *VenueRegistry {
+	l.venuesOnce.Do(func() {
+		l.venueRegistry = NewVenueRegistry()
+		l.venueRegistry.RegisterSpot(NewIndodaxVenue(l))
+		l.venueRegistry.RegisterSpot(NewTokocryptoVenue(l))
+		l.venueRegistry.RegisterSpot(NewMEXCVenue(l))
+
+		l.venueRegistry.RegisterPerp(NewOKXVenue(l))
+		l.venueRegistry.RegisterPerp(NewMEXCVenue(l))
+	})
+	return l.venueRegistry
+}
+
+func (l *LiveAdapter) indodaxVenue() *IndodaxVenue {
+	return NewIndodaxVenue(l)
+}
+
+func (l *LiveAdapter) tokocryptoVenue() *TokocryptoVenue {
+	return NewTokocryptoVenue(l)
+}
+
+func (l *LiveAdapter) okxVenue() *OKXVenue {
+	return NewOKXVenue(l)
+}
+
+func (l *LiveAdapter) mexcVenue() *MEXCVenue {
+	return NewMEXCVenue(l)
 }
 
 // Close stops the websocket feed and associated cleanup goroutines. This should
@@ -348,5 +512,9 @@ func (l *LiveAdapter) Close() {
 	if l.okxBooks != nil {
 		l.okxBooks.Stop()
 		l.okxBooks = nil
+	}
+	if l.indodaxBooks != nil {
+		l.indodaxBooks.Stop()
+		l.indodaxBooks = nil
 	}
 }
