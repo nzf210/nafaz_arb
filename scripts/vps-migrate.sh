@@ -3,7 +3,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 MODE=dry-run
-BACKUP_DIR="${MIGRATION_BACKUP_DIR:-$ROOT_DIR/backups/db-migrations}"
+BACKUP_DIR="${MIGRATION_BACKUP_DIR:-/var/backups/nafaz-db-migrations}"
 EXPECTED_REF="${EXPECTED_SUPABASE_PROJECT_REF:-}"
 usage(){ echo "Usage: bash scripts/vps-migrate.sh [--dry-run|--apply]"; }
 while (($#)); do
@@ -45,6 +45,7 @@ if [[ "$MODE" == dry-run ]]; then
 fi
 DB_URL="${DATABASE_URL:-${POSTGRES_DSN:-}}"
 [[ -n "$DB_URL" ]] || die "--apply requires DATABASE_URL or POSTGRES_DSN for full backup."
+[[ "${BACKUP_DATABASE_PROJECT_REF:-}" == "$PROJECT_REF" ]] || die "Set BACKUP_DATABASE_PROJECT_REF to the linked project ref after verifying that the backup DSN targets that exact project."
 command -v pg_dump >/dev/null || die "pg_dump missing."
 command -v pg_restore >/dev/null || die "pg_restore missing."
 umask 077
