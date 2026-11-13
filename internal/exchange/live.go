@@ -16,6 +16,7 @@ const (
 	MEXC_SPOT        = "mexc_spot:"
 	USER_AGENT       = "User-Agent"
 	USER_AGENT_VALUE = "Mozilla/5.0 (compatible; NafazScanner/1.0)"
+	marketCacheMaxStaleAge = 24 * time.Hour
 )
 
 type LiveAdapter struct {
