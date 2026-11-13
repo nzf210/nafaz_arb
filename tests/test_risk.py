@@ -428,6 +428,9 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
     engine.client = client
+    # Explicitly inject an allow gate: this test exercises the downstream
+    # balance/order behavior, not the V2 control-plane denial path.
+    engine.v2_admission_gate = AsyncMock()
     # This test isolates balance-probe behavior; the separate adaptive-maker
     # tests cover the fresh Indodax book preflight.
     engine._apply_indodax_adaptive_maker_quote = AsyncMock(return_value=True)
@@ -464,6 +467,9 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     engine.config.mock_mode = False
     engine.config.global_exchange_name = "binance"
     engine.client = client
+    # Explicitly inject an allow gate: this test exercises venue rejection
+    # mapping after control-plane admission has succeeded.
+    engine.v2_admission_gate = AsyncMock()
     # Keep this test focused on mapping the venue rejection to its public
     # failure reason; adaptive-maker book validation is covered separately.
     engine._apply_indodax_adaptive_maker_quote = AsyncMock(return_value=True)
