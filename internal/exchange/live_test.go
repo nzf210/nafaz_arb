@@ -495,3 +495,35 @@ func TestMEXCPerpMarketRequiresAPIPermissionAndPerpetualType(t *testing.T) {
         t.Fatalf("unexpected MEXC contract amount spec: %+v", markets[0].AmountSpec)
     }
 }
+
+
+func TestMEXCPerpMarketSkipsNonAPIAndDeliveryContracts(t *testing.T) {
+    server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        w.Header().Set("Content-Type", "application/json")
+        if r.URL.Path != "/api/v1/contract/detail/country" {
+            http.NotFound(w, r)
+            return
+        }
+        w.Write([]byte(`{
+            "success": true,
+            "code": 0,
+            "data": [
+                {"symbol":"BTC_USDT","baseCoin":"BTC","quoteCoin":"USDT","contractSize":0.0001,"priceUnit":0.1,"volUnit":1,"minVol":1,"state":0,"futureType":1,"apiAllowed":true,"type":1},
+                {"symbol":"ETH_USDT","baseCoin":"ETH","quoteCoin":"USDT","contractSize":0.001,"priceUnit":0.01,"volUnit":1,"minVol":1,"state":0,"futureType":1,"apiAllowed":false,"type":1},
+                {"symbol":"SOL_USDT","baseCoin":"SOL","quoteCoin":"USDT","contractSize":0.01,"priceUnit":0.01,"volUnit":1,"minVol":1,"state":0,"futureType":2,"apiAllowed":true,"type":1},
+                {"symbol":"XRP_USDT","baseCoin":"XRP","quoteCoin":"USDT","contractSize":1,"priceUnit":0.0001,"volUnit":1,"minVol":1,"state":0,"futureType":1,"apiAllowed":true,"type":2}
+            ]
+        }`))
+    }))
+    defer server.Close()
+
+    adapter := NewLiveAdapter()
+    adapter.SetBaseURLs("", "", server.URL)
+    markets, err := adapter.fetchMEXCPerpetualMarkets(context.Background())
+    if err != nil {
+        t.Fatalf("fetchMEXCPerpetualMarkets: %v", err)
+    }
+    if len(markets) != 1 || markets[0].Symbol != "mexc:BTC_USDT" {
+        t.Fatalf("expected only API-enabled perpetual contract, got %+v", markets)
+    }
+}
