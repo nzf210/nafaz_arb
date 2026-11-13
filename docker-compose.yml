@@ -69,7 +69,8 @@ services:
       # Executor mode follows config.json mode (MOCK/LIVE).
       # Set EXECUTOR_MOCK_MODE=true only as an explicit emergency override.
       - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-}
-      # Best-effort audit persistence. Unset = disabled, trading unaffected.
+      # Required for LIVE mode: durable risk-state and order-intent journal.
+      # The application rejects LIVE startup when Supabase is disabled/unconfigured.
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_KEY=${SUPABASE_KEY:-}
       - SUPABASE_OUTBOX_PATH=${SUPABASE_OUTBOX_PATH:-/app/data/executor/supabase-outbox.sqlite3}
