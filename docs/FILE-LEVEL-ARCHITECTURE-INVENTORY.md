@@ -2,10 +2,10 @@
 
 # File-Level Architecture Inventory
 
-- Repository: `nzf210/nafaz_arb`
+- Repositori: `nzf210/nafaz_arb`
 - Base: `feat/unified-dynamic-fee-engine` @ `9cc3dcd11d0999e828309053ba4cffce98a28675`
 - Cabang audit: `audit/architecture-baseline-regression-contract`
-- Recursive tree: 213 tracked files, not truncated.
+- Pohon repositori rekursif: 213 berkas terlacak, not truncated.
 - Purpose: file-by-file change boundary for the architecture work.
 
 ## How to read this inventory
@@ -22,24 +22,24 @@
 |---|---|---|---|
 | `.dockerignore` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Deployment/feature flags/CI wajib support staged rollout |
 | `.github/workflows/test.yml` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Deployment/feature flags/CI wajib support staged rollout |
-| `.gitignore` | PERTAHANKAN | Inventaris / cakupan saja | Documentation/tooling baseline |
+| `.gitignore` | PERTAHANKAN | Inventaris / cakupan saja | Baseline dokumentasi/perkakas |
 | `Dockerfile` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Deployment/feature flags/CI wajib support staged rollout |
 | `Dockerfile.executor` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Deployment/feature flags/CI wajib support staged rollout |
-| `LICENSE` | PERTAHANKAN | Inventaris / cakupan saja | Documentation/tooling baseline |
-| `PODMAN.md` | PERTAHANKAN | Inventaris / cakupan saja | Documentation/tooling baseline |
-| `README.md` | PERTAHANKAN | Inventaris / cakupan saja | Documentation/tooling baseline |
-| `cache/indodax_spot_markets.json` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Inspect before changing |
+| `LICENSE` | PERTAHANKAN | Inventaris / cakupan saja | Baseline dokumentasi/perkakas |
+| `PODMAN.md` | PERTAHANKAN | Inventaris / cakupan saja | Baseline dokumentasi/perkakas |
+| `README.md` | PERTAHANKAN | Inventaris / cakupan saja | Baseline dokumentasi/perkakas |
+| `cache/indodax_spot_markets.json` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Periksa sebelum mengubah |
 | `cmd/nafaz-scanner-outbox/main.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan opportunity contract; improve WS coverage/telemetry |
 | `cmd/nafaz-scanner/main.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan opportunity contract; improve WS coverage/telemetry |
 | `config.example.json` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Deployment/feature flags/CI wajib support staged rollout |
-| `data/.gitkeep` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Inspect before changing |
+| `data/.gitkeep` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Periksa sebelum mengubah |
 | `docker-compose.yml` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Deployment/feature flags/CI wajib support staged rollout |
-| `docs/AUDIT-FINDINGS.md` | REFERENSI | Inventaris / cakupan saja | Update if architecture contract changes |
-| `docs/EXPOSURE-RECONCILIATION.md` | REFERENSI | Inventaris / cakupan saja | Update if architecture contract changes |
-| `docs/GAP-01-03-IMPLEMENTATION.md` | REFERENSI | Inventaris / cakupan saja | Update if architecture contract changes |
-| `docs/IMPROVEMENT-PLAN.md` | REFERENSI | Inventaris / cakupan saja | Update if architecture contract changes |
-| `docs/RISK-STATE-PERSISTENCE.md` | REFERENSI | Inventaris / cakupan saja | Update if architecture contract changes |
-| `docs/UNIFIED-FEE-ENGINE.md` | REFERENSI | Inventaris / cakupan saja | Update if architecture contract changes |
+| `docs/AUDIT-FINDINGS.md` | REFERENSI | Inventaris / cakupan saja | Perbarui jika kontrak arsitektur berubah |
+| `docs/EXPOSURE-RECONCILIATION.md` | REFERENSI | Inventaris / cakupan saja | Perbarui jika kontrak arsitektur berubah |
+| `docs/GAP-01-03-IMPLEMENTATION.md` | REFERENSI | Inventaris / cakupan saja | Perbarui jika kontrak arsitektur berubah |
+| `docs/IMPROVEMENT-PLAN.md` | REFERENSI | Inventaris / cakupan saja | Perbarui jika kontrak arsitektur berubah |
+| `docs/RISK-STATE-PERSISTENCE.md` | REFERENSI | Inventaris / cakupan saja | Perbarui jika kontrak arsitektur berubah |
+| `docs/UNIFIED-FEE-ENGINE.md` | REFERENSI | Inventaris / cakupan saja | Perbarui jika kontrak arsitektur berubah |
 | `executor/__init__.py` | PERTAHANKAN | Inventaris / cakupan saja | Trading/pemulihan feature; regression protected, no rewrite |
 | `executor/adaptive_maker.py` | PERTAHANKAN | Inventaris / cakupan saja | Trading/pemulihan feature; regression protected, no rewrite |
 | `executor/cancel.py` | PERTAHANKAN | Kode sumber telah diperiksa | Trading/pemulihan feature; regression protected, no rewrite |
@@ -123,18 +123,18 @@
 | `go.mod` | PERTAHANKAN + VERIFIKASI | Inventaris / cakupan saja | Dependency pinning and CCXT API surface wajib be verified |
 | `go.sum` | PERTAHANKAN + VERIFIKASI | Inventaris / cakupan saja | Dependency pinning and CCXT API surface wajib be verified |
 | `internal/api/server.go` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan API/ledger contracts; additive changes only |
-| `internal/api/server_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `internal/config/config.go` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Inspect before changing |
-| `internal/config/config_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `internal/domain/domain.go` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Inspect before changing |
+| `internal/api/server_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `internal/config/config.go` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Periksa sebelum mengubah |
+| `internal/config/config_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `internal/domain/domain.go` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Periksa sebelum mengubah |
 | `internal/exchange/adapter.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
-| `internal/exchange/adapter_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/exchange/adapter_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/exchange/funding_pekerja.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
-| `internal/exchange/funding_pekerja_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/exchange/funding_pekerja_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/exchange/health.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
-| `internal/exchange/health_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/exchange/health_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/exchange/indodax_limiter.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
-| `internal/exchange/indodax_resilience_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/exchange/indodax_resilience_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/exchange/indodax_ws.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/live.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/live_books.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
@@ -142,101 +142,101 @@
 | `internal/exchange/live_funding.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/live_perp.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/live_spot.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
-| `internal/exchange/live_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/exchange/live_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/exchange/mock.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/okx_books_ws.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
-| `internal/exchange/okx_books_ws_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/exchange/okx_books_ws_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/exchange/okx_limiter.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
-| `internal/exchange/okx_limiter_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/exchange/okx_limiter_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/exchange/venue_indodax.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/venue_mexc.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/venue_okx.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/venue_tokocrypto.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/venues.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
-| `internal/exchange/venues_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/exchange/venues_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/exchange/ws_book.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
-| `internal/exchange/ws_book_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/exchange/ws_book_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/exchange/ws_client.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/ws_decode.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/exchange/ws_streams.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan venue adapter; unify market-data lifecycle and public request policy |
 | `internal/history/store.go` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan API/ledger contracts; additive changes only |
-| `internal/history/store_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/history/store_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/redishandler/client.go` | UBAH | Kode sumber telah diperiksa | Pertahankan signal semantics; add durable command path separately |
-| `internal/redishandler/client_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/redishandler/client_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/scanner/evaluate.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan opportunity contract; improve WS coverage/telemetry |
-| `internal/scanner/exchange_health_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `internal/scanner/hybrid_filter_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/scanner/exchange_health_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `internal/scanner/hybrid_filter_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/scanner/liquidity.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan opportunity contract; improve WS coverage/telemetry |
-| `internal/scanner/liquidity_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/scanner/liquidity_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/scanner/service.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan opportunity contract; improve WS coverage/telemetry |
-| `internal/scanner/service_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/scanner/service_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/scanner/validation.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan opportunity contract; improve WS coverage/telemetry |
-| `internal/scanner/validation_freshness_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/scanner/validation_freshness_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/supabase/client.go` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan API/ledger contracts; additive changes only |
-| `internal/supabase/client_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/supabase/client_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/supabase/outbox.go` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan API/ledger contracts; additive changes only |
-| `internal/supabase/outbox_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `internal/telegram/balances_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/supabase/outbox_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `internal/telegram/balances_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/telegram/bot.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan pengalaman operator; emergency commands become durable |
-| `internal/telegram/bot_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `internal/telegram/clean_orphan_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/telegram/bot_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `internal/telegram/clean_orphan_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/telegram/formatters.go` | PERTAHANKAN + UBAH | Inventaris / cakupan saja | Pertahankan pengalaman operator; emergency commands become durable |
 | `internal/telegram/handlers.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan pengalaman operator; emergency commands become durable |
 | `internal/telegram/monitor.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan pengalaman operator; emergency commands become durable |
-| `internal/telegram/monitor_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `internal/telegram/monitor_test.go` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 | `internal/telegram/positions.go` | PERTAHANKAN + UBAH | Kode sumber telah diperiksa | Pertahankan pengalaman operator; emergency commands become durable |
-| `pytest.ini` | PERTAHANKAN | Inventaris / cakupan saja | Documentation/tooling baseline |
+| `pytest.ini` | PERTAHANKAN | Inventaris / cakupan saja | Baseline dokumentasi/perkakas |
 | `requirements.txt` | PERTAHANKAN + VERIFIKASI | Inventaris / cakupan saja | Dependency pinning and CCXT API surface wajib be verified |
-| `session-files/20261108-okx-ratelimit-note.md` | REFERENSI | Inventaris / cakupan saja | Update if architecture contract changes |
-| `session.db` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Inspect before changing |
-| `supabase/README.md` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/config.toml` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/migrations/20261107000100_create_nafaz_core_schema.sql` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/migrations/20261109000100_add_scanner_opportunity_idempotency.sql` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/migrations/20261111000100_add_live_order_fill_rekonsiliasi.sql` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/migrations/20261111000200_add_durable_risk_state.sql` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/migrations/20261111000300_add_idempotent_risk_pnl_events.sql` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/migrations/20261111000400_add_rekonsiliasi_audit_trail.sql` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/migrations/20261111000500_add_universal_order_registry.sql` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/migrations/20261112000100_add_venue_client_order_id.sql` | PERTAHANKAN | Inventaris / cakupan saja | Durable schema/migration contract; additive migrations only |
-| `supabase/tests/schema_smoke.sql` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/conftest.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_adaptive_maker.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_adaptive_maker_paper_validation.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_clients.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_config.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_distributed_pemulihan_lock.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_entry.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_exchange_fee_provider.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_exchange_market_resolution_pemulihan.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_exchange_order_id_normalization.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_exits.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_exposure_rekonsiliasi.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_fee_engine.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_force_clean_orphan.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_force_close.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_indodax_v2.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_mexc_futures_balance.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_order_persistence_guarantees.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_order_pemulihan.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_pair_registry.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_pnl.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_probe9.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_production_failure_injection.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_quantity.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_rate_limit_resilience.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_pemulihan.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_risk.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_signal_priority.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_stream_cache.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_supabase_writer.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_trade_fill_rekonsiliasi.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_two_leg_execution_pemulihan.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
-| `tests/test_venues_modular.py` | PERTAHANKAN | Inventaris / cakupan saja | Existing regression evidence; extend, never replace |
+| `session-files/20261108-okx-ratelimit-note.md` | REFERENSI | Inventaris / cakupan saja | Perbarui jika kontrak arsitektur berubah |
+| `session.db` | PERTAHANKAN / VERIFIKASI | Inventaris / cakupan saja | Periksa sebelum mengubah |
+| `supabase/README.md` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/config.toml` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/migrations/20261107000100_create_nafaz_core_schema.sql` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/migrations/20261109000100_add_scanner_opportunity_idempotency.sql` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/migrations/20261111000100_add_live_order_fill_rekonsiliasi.sql` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/migrations/20261111000200_add_durable_risk_state.sql` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/migrations/20261111000300_add_idempotent_risk_pnl_events.sql` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/migrations/20261111000400_add_rekonsiliasi_audit_trail.sql` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/migrations/20261111000500_add_universal_order_registry.sql` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/migrations/20261112000100_add_venue_client_order_id.sql` | PERTAHANKAN | Inventaris / cakupan saja | Pertahankan kontrak skema/migrasi tahan lama; hanya migrasi tambahan |
+| `supabase/tests/schema_smoke.sql` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/conftest.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_adaptive_maker.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_adaptive_maker_paper_validation.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_clients.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_config.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_distributed_pemulihan_lock.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_entry.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_exchange_fee_provider.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_exchange_market_resolution_pemulihan.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_exchange_order_id_normalization.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_exits.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_exposure_rekonsiliasi.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_fee_engine.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_force_clean_orphan.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_force_close.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_indodax_v2.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_mexc_futures_balance.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_order_persistence_guarantees.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_order_pemulihan.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_pair_registry.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_pnl.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_probe9.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_production_failure_injection.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_quantity.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_rate_limit_resilience.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_pemulihan.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_risk.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_signal_priority.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_stream_cache.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_supabase_writer.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_trade_fill_rekonsiliasi.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_two_leg_execution_pemulihan.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
+| `tests/test_venues_modular.py` | PERTAHANKAN | Inventaris / cakupan saja | Bukti pengujian regresi yang sudah ada; perluas, jangan mengganti |
 
 ## Aturan peninjauan wajib
 
-Sebelum mengubah baris mana pun yang ditandai **Inventaris / cakupan saja**, periksa seluruh isi berkas serta pemanggil dan pengujian langsungnya pada komit target yang tepat. Update this inventory with the reviewed status and any refined decision in the same PR. Untuk setiap berkas kode sumber baru, tambahkan satu baris. For every deleted or renamed file, retain the old-to-new mapping in the PR description.
+Sebelum mengubah baris mana pun yang ditandai **Inventaris / cakupan saja**, periksa seluruh isi berkas serta pemanggil dan pengujian langsungnya pada komit target yang tepat. Update this inventory with the reviewed status and any refined decision in the same PR. Untuk setiap berkas kode sumber baru, tambahkan satu baris. Untuk setiap berkas yang dihapus atau diganti nama, cantumkan pemetaan nama lama ke nama baru dalam deskripsi PR.
 
 ## Urutan ketergantungan kritis
 
