@@ -15,6 +15,28 @@ from executor.engine import ArbitrageEngine, RetryExhausted, retry_with_backoff
 
 from tests.conftest import BlockingSellClient, FailingHedgeClient, MockExchangeClient, OpenShortPositionClient, _entry_order_info, _fresh_signal_payload, engine, fake_redis, mock_client
 
+
+class _ReadyJournalStub:
+    """No-op durable journal stand-in for tests that exercise live recovery logic."""
+
+    enabled = True
+    durable_ready = True
+
+    async def start(self):
+        return None
+
+    async def close(self):
+        return None
+
+    def __getattr__(self, _name):
+        return lambda *args, **kwargs: True
+
+
+def _use_ready_test_journal(engine):
+    engine.supabase = _ReadyJournalStub()
+    engine.order_registry.supabase = engine.supabase
+    return engine
+
 @pytest.mark.asyncio
 async def test_p0_01_hedge_failure_rolls_back_spot_leg(fake_redis):
     """BUG-02/P0-01: a failed hedge must market-sell the unhedged spot leg back."""
@@ -587,6 +609,7 @@ async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis)
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
     )
+    _use_ready_test_journal(engine)
     await engine.initialize()
 
     assert engine.states["indodax:btc_idr"] == PositionState.HEDGED_ACTIVE
@@ -789,3 +812,16 @@ async def test_paper_balance_report_is_explicitly_simulated():
     assert len(reports) == 2
     assert all(report["status"] == "ok" for report in reports)
     assert all(report["assets"][0]["asset"] == "USDT" for report in reports)
+
+
+@pytest.mark.asyncio
+async def test_live_startup_fails_closed_when_durable_journal_is_unavailable(fake_redis):
+    client = MockExchangeClient()
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=False), client=client, redis_client=fake_redis
+    )
+
+    with pytest.raises(RuntimeError, match="durable Supabase journal/outbox is not ready"):
+        await engine.initialize()
+
+    assert engine._recovery_complete is False
