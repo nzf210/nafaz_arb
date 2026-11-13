@@ -127,6 +127,8 @@ class ExitOrderManagementMixin:
         global_ask_usdt: float,
         usdt_idr_rate: float,
     ) -> None:
+        exit_coid = ""
+        submission_started = False
         try:
             pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
             if pair_info is None:
@@ -141,18 +143,14 @@ class ExitOrderManagementMixin:
                     )
                 pair_info = SimpleNamespace(quote_asset=quote_asset)
             exchange_limit_sell_price = self._local_order_limit_price(
-                pair_info,
-                SimpleNamespace(usdt_idr_rate=usdt_idr_rate),
-                limit_sell_idr,
+                pair_info, SimpleNamespace(usdt_idr_rate=usdt_idr_rate), limit_sell_idr
             )
             recovery_context = {
                 "strategy_price_idr": limit_sell_idr,
                 "exchange_order_price": exchange_limit_sell_price,
                 "exchange_quote_asset": str(pair_info.quote_asset or "").upper(),
             }
-            exit_coid = build_client_order_id(
-                pair_tag, "exit", self._next_order_seq()
-            )
+            exit_coid = build_client_order_id(pair_tag, "exit", self._next_order_seq())
             await self._register_order_intent(
                 pair_tag, exit_coid,
                 exchange=pos.local_exchange, market_type="spot",
@@ -160,62 +158,78 @@ class ExitOrderManagementMixin:
                 side="sell", order_type="limit", price=limit_sell_idr,
                 quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
                 recovery_context=recovery_context,
-                required=False,
             )
+            submission_started = True
             try:
                 order = await self.client.place_local_limit_sell(
-                    pos.symbol,
-                    pos.qty,
-                    exchange_limit_sell_price,
-                    client_order_id=exit_coid,
-                    amount_spec=pos.local_amount_spec,
+                    pos.symbol, pos.qty, exchange_limit_sell_price,
+                    client_order_id=exit_coid, amount_spec=pos.local_amount_spec,
                 )
             except Exception as submit_err:
                 rejection_check = getattr(self, "_is_definitive_order_rejection", None)
                 if callable(rejection_check) and rejection_check(submit_err):
                     await self._mark_order_submission_rejected(pos.local_exchange, exit_coid)
-                raise
-            order_id = str(order.get("id", ""))
+                    raise
+                lookup = getattr(self.client, "fetch_local_order_by_client_id", None)
+                order = None
+                if callable(lookup):
+                    try:
+                        order = await lookup(exit_coid, pos.symbol, pos.local_amount_spec)
+                    except Exception:
+                        logger.exception("[State 3] client-id lookup failed after ambiguous exit submit %s", exit_coid)
+                if not isinstance(order, dict) or not order.get("id"):
+                    await self._mark_order_submission_ambiguous(
+                        pair_tag, pos.local_exchange, exit_coid,
+                        f"spot exit submit ambiguous: {type(submit_err).__name__}: {submit_err}; "
+                        "client-id lookup did not return a verifiable order",
+                    )
+                    return
+                logger.warning("[State 3] recovered spot exit %s by client id", exit_coid)
+            if not isinstance(order, dict) or not order.get("id"):
+                await self._mark_order_submission_ambiguous(
+                    pair_tag, pos.local_exchange, exit_coid,
+                    "spot exit acknowledgement did not include an exchange order id",
+                )
+                return
+            order_id = str(order["id"])
             self.supabase.order(
-                pair_tag,
-                "spot_exit",
-                pos.local_exchange,
-                "spot",
-                pos.symbol,
-                order,
+                pair_tag, "spot_exit", pos.local_exchange, "spot", pos.symbol, order,
                 client_order_id=exit_coid,
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
             )
-            await self._register_order(
-                pair_tag,
-                exit_coid,
-                order,
-                exchange=pos.local_exchange,
-                market_type="spot",
-                symbol=pos.symbol,
-                role=OrderRole.EXIT_SPOT.value,
-                side="sell",
-                order_type="limit",
-                price=limit_sell_idr,
-                quantity=pos.qty,
+            registered = await self._register_order(
+                pair_tag, exit_coid, order,
+                exchange=pos.local_exchange, market_type="spot", symbol=pos.symbol,
+                role=OrderRole.EXIT_SPOT.value, side="sell", order_type="limit",
+                price=limit_sell_idr, quantity=pos.qty,
                 local_amount_spec=pos.local_amount_spec,
                 recovery_context=recovery_context,
             )
+            if registered is None:
+                await self._mark_order_submission_ambiguous(
+                    pair_tag, pos.local_exchange, exit_coid,
+                    "spot exit was accepted but could not be committed to the order registry",
+                )
+                return
             self.pending_exit_orders[pair_tag] = {
-                "order_id": order_id,
-                "client_order_id": exit_coid,
-                "symbol": pos.symbol,
-                "price": limit_sell_idr,
-                "qty": pos.qty,
-                "filled": 0.0,
-                "closed_short_qty": 0.0,
-                "tick_size": tick_size,
+                "order_id": order_id, "client_order_id": exit_coid,
+                "symbol": pos.symbol, "price": limit_sell_idr, "qty": pos.qty,
+                "filled": 0.0, "closed_short_qty": 0.0, "tick_size": tick_size,
             }
             self.last_pegged_global_ask[pair_tag] = global_ask_usdt
             self.states[pair_tag] = PositionState.EXIT_PENDING
             self.supabase.position_status(pair_tag, "EXIT_PENDING", pos)
-        except Exception:
-            logger.exception(f"[State 3] failed to place dynamic limit sell for {pair_tag}")
+        except Exception as exc:
+            if submission_started:
+                rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+                if callable(rejection_check) and rejection_check(exc):
+                    await self._mark_order_submission_rejected(pos.local_exchange, exit_coid)
+                else:
+                    await self._mark_order_submission_ambiguous(
+                        pair_tag, pos.local_exchange, exit_coid,
+                        f"spot exit processing failed after submit began: {type(exc).__name__}: {exc}",
+                    )
+            logger.exception("[State 3] failed to place dynamic limit sell for %s", pair_tag)
 
     async def _check_dynamic_exit_pair(self, pair_tag: str) -> None:
         """Run exit evaluation against this position's exact exchange pair."""

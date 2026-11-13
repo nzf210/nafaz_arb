@@ -670,3 +670,33 @@ async def test_cancel_replace_reconciles_racing_partial_fill_before_resizing(
     assert engine.active_positions[pair_tag].qty == pytest.approx(0.006)
     assert len(mock_client.placed_sells) == 2
     assert mock_client.placed_sells[1]["amount"] == pytest.approx(0.006)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_exit_ambiguous_submit_is_not_retried(engine, fake_redis, mock_client):
+    """A timed-out exit limit sell is reconciled by client id, never resubmitted."""
+    pair_tag = "indodax:btc_idr"
+    pos = ActivePosition(
+        local_exchange="indodax", global_exchange="okx", symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0, short_entry_usdt=65_000.0, qty=0.01,
+    )
+    calls = {"submit": 0, "lookup": 0}
+
+    async def fail_after_write(*args, **kwargs):
+        calls["submit"] += 1
+        raise TimeoutError("response lost after order request")
+
+    async def lookup_missing(*args, **kwargs):
+        calls["lookup"] += 1
+        return None
+
+    mock_client.place_local_limit_sell = fail_after_write
+    mock_client.fetch_local_order_by_client_id = lookup_missing
+
+    await engine._place_dynamic_limit_sell(
+        pair_tag, pos, 1_000_000_000.0, 1.0, 65_000.0, 16_000.0
+    )
+
+    assert calls == {"submit": 1, "lookup": 1}
+    assert pair_tag not in engine.pending_exit_orders
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
