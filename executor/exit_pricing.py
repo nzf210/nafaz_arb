@@ -106,6 +106,10 @@ class ExitPricingMixin:
                         rates[pair_tag] = next_rate
                         self._next_funding_rate_by_pair = rates
         except Exception:
+            # Do not keep applying a stale forecast after a failed refresh.
+            rates = getattr(self, "_next_funding_rate_by_pair", {})
+            rates.pop(pair_tag, None)
+            self._next_funding_rate_by_pair = rates
             logger.exception(
                 f"[Funding Reconciliation] cannot refresh next settlement schedule "
                 f"for {pair_tag}; automatic funding rollover is paused"
@@ -130,7 +134,11 @@ class ExitPricingMixin:
                 next_rate = float(next_rate)
             except (TypeError, ValueError):
                 next_rate = None
-        if next_rate is not None and math.isfinite(next_rate) and next_rate >= 0.0003:
+        # Missing/invalid forecasts fail closed: without a current rate
+        # estimate, do not reduce the target exit spread.
+        if next_rate is None or not math.isfinite(next_rate):
+            return 0.0
+        if next_rate >= 0.0003:
             return 0.0
 
         retention = float(
