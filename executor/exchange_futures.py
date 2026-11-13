@@ -50,12 +50,32 @@ class ExchangeFuturesMixin:
                 matched.append(position)
         return matched
 
-    async def fetch_position_mode(self) -> dict:
+    async def fetch_position_mode(self, symbol: Optional[str] = None) -> dict:
         """Read the account's current futures position mode without changing it."""
         fetcher = getattr(self.global_fut, "fetch_position_mode", None)
         if not callable(fetcher):
             raise RuntimeError("exchange does not expose a verifiable futures position-mode endpoint")
-        mode = await fetcher()
+        if symbol is None:
+            markets = getattr(self.global_fut, "markets", None)
+            if not markets:
+                loader = getattr(self.global_fut, "load_markets", None)
+                if not callable(loader):
+                    raise RuntimeError("futures markets are unavailable for position-mode lookup")
+                markets = await loader()
+            if isinstance(markets, dict):
+                symbol = next(
+                    (
+                        str(market.get("symbol"))
+                        for market in markets.values()
+                        if isinstance(market, dict)
+                        and market.get("symbol")
+                        and (market.get("swap") or market.get("future") or market.get("contract"))
+                    ),
+                    None,
+                )
+        if not symbol:
+            raise RuntimeError("no futures symbol is available for position-mode lookup")
+        mode = await fetcher(symbol)
         if not isinstance(mode, dict) or not isinstance(mode.get("hedged"), bool):
             raise ValueError("exchange returned an unknown futures position mode")
         return mode
