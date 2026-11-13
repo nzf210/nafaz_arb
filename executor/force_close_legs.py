@@ -8,7 +8,7 @@ from typing import Optional, Tuple
 from executor.models import OrderRole
 from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt
 from executor import helpers
-from executor.helpers import RetryExhausted, build_client_order_id
+from executor.helpers import build_client_order_id
 
 logger = logging.getLogger("executor.engine")
 
@@ -369,16 +369,13 @@ class ForceCloseLegMixin:
                 quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
                 required=False,
             )
-            spot_order = await helpers.retry_with_backoff(
-                lambda: self.client.place_local_market_sell(
-                    pos.symbol,
-                    pos.qty,
-                    client_order_id=client_order_id,
-                    amount_spec=pos.local_amount_spec,
-                ),
-                max_retries=4,
-                base_delay=0.5,
-                label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
+            spot_order = await self._place_local_market_sell_once_or_recover(
+                pair_key,
+                pos.local_exchange,
+                pos.symbol,
+                pos.qty,
+                client_order_id,
+                pos.local_amount_spec,
             )
             if isinstance(spot_order, dict):
                 await self._record_force_close_spot_order(
@@ -405,12 +402,11 @@ class ForceCloseLegMixin:
                 f"[Force Close] FAILED to liquidate spot leg for {pair_key}. "
                 f"MANUAL INTERVENTION REQUIRED: {pos.qty} {pos.symbol} is UNHEDGED. Response: {spot_order}"
             )
-        except RetryExhausted as exhausted:
-            rejection_check = getattr(self, "_is_definitive_order_rejection", None)
-            if callable(rejection_check) and rejection_check(exhausted.last_error):
-                await self._mark_order_submission_rejected(pos.local_exchange, client_order_id)
-            logger.exception(
-                f"[Force Close] spot liquidation exhausted retries for {pair_key}"
+        except Exception as submit_error:
+            logger.critical(
+                "[Force Close] spot market sell was not verifiably acknowledged for %s: %s. "
+                "No blind retry was attempted; manual reconciliation is required.",
+                pair_key, submit_error,
             )
         return 0.0
 
