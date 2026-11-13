@@ -212,6 +212,7 @@ class EntryHedgeMixin:
                 recovery_context=recovery_context,
                 amount_spec=order_info.get("global_amount_spec"),
             )
+        ip_ban_stop_persistence_failed = False
         try:
             if global_stop is None:
                 short_order = await self.client.open_global_short_market(
@@ -263,6 +264,7 @@ class EntryHedgeMixin:
                                     )
                                     ip_ban_persisted = True
                                 except Exception:
+                                    ip_ban_stop_persistence_failed = True
                                     logger.exception(
                                         "CRITICAL: failed to persist futures CEX IP-ban STOP "
                                         "inside submit fence"
@@ -304,6 +306,13 @@ class EntryHedgeMixin:
                     if ip_ban_state is not None:
                         await global_stop.notify_state(ip_ban_state)
         except Exception as submit_error:
+            if ip_ban_stop_persistence_failed:
+                # Do not let an eventually-consistent lookup retire the only
+                # durable cross-instance guard after canonical STOP failed.
+                raise AmbiguousOrderSubmission(
+                    "confirmed futures venue IP ban could not be persisted as Global STOP; "
+                    "submit attempt remains unresolved"
+                ) from submit_error
             rejection_check = getattr(
                 self, "_is_definitive_order_rejection", None
             )
