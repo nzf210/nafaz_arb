@@ -62,6 +62,7 @@ class SupabaseWriter(
         self._position_ids: Dict[str, str] = {}
         self._position_rows: Dict[str, Dict[str, Any]] = {}
         self._order_ids: Dict[str, str] = {}
+        self._order_registry_outbox_ids: Dict[str, int] = {}
         self._order_rows: Dict[str, Dict[str, Any]] = {}
         self._order_submitted_at: Dict[str, str] = {}
         self._order_completed_at: Dict[str, str] = {}

@@ -4,11 +4,13 @@ The writer must never raise into the trading path, must be idempotent on retry,
 and must persist immutable exchange fills exactly once.
 """
 
-from types import SimpleNamespace
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from executor.engine_order_intents import EngineOrderIntentMixin
 from executor.models import ActivePosition
 from executor.supabase import SupabaseWriter, _ms_to_iso
 from executor.supabase_outbox import DurableOutbox, OutboxFull
@@ -580,6 +582,86 @@ class TestOutboxDelivery:
 
 class TestOrderRegistryWriter:
     """The registry row must describe the real order, not just its role."""
+
+    @pytest.mark.asyncio
+    async def test_order_registry_confirmation_flushes_exact_row(self):
+        writer = _writer()
+        local_id = "88888888-8888-8888-8888-888888888888"
+        assert writer.order_record({
+            "local_order_id": local_id,
+            "exchange_name": "indodax",
+            "market_type": "spot",
+            "order_role": "ENTRY",
+            "symbol": "btc_idr",
+            "side": "buy",
+            "status": "submitting",
+            "is_mock": False,
+        }) is True
+        writer._session = _FakeSession(204)
+        assert await writer.confirm_order_registry(local_id) is True
+        assert writer._outbox.pending_table("order_registry") == []
+        writer._outbox.close()
+
+    @pytest.mark.asyncio
+    async def test_order_registry_confirmation_retains_row_when_postgrest_fails(self, monkeypatch):
+        async def no_wait(_seconds):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+        writer = _writer()
+        local_id = "99999999-9999-9999-9999-999999999999"
+        assert writer.order_record({
+            "local_order_id": local_id,
+            "exchange_name": "indodax",
+            "market_type": "spot",
+            "order_role": "ENTRY",
+            "symbol": "btc_idr",
+            "side": "buy",
+            "status": "submitting",
+            "is_mock": False,
+        }) is True
+        writer._session = _FakeSession(503)
+        assert await writer.confirm_order_registry(local_id) is False
+        assert len(writer._outbox.pending_table("order_registry")) == 1
+        writer._outbox.close()
+
+    @pytest.mark.asyncio
+    async def test_live_intent_is_blocked_when_postgres_does_not_ack(self, monkeypatch):
+        async def no_wait(_seconds):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", no_wait)
+        writer = _writer()
+        local_id = "77777777-7777-7777-7777-777777777777"
+
+        class IntentHarness(EngineOrderIntentMixin):
+            def __init__(self):
+                self.config = SimpleNamespace(mock_mode=False)
+                self.supabase = writer
+
+            async def _register_order(self, pair_tag, client_order_id, order, **metadata):
+                assert writer.order_record({
+                    "local_order_id": local_id,
+                    "exchange_name": "indodax",
+                    "market_type": "spot",
+                    "order_role": "ENTRY",
+                    "symbol": "btc_idr",
+                    "side": "buy",
+                    "status": "submitting",
+                    "is_mock": False,
+                }) is True
+                return SimpleNamespace(local_order_id=local_id)
+
+        writer._session = _FakeSession(503)
+        harness = IntentHarness()
+        with pytest.raises(RuntimeError, match="Postgres order_registry"):
+            await harness._register_order_intent(
+                "indodax:btc_idr", "client-order-7",
+                exchange="indodax", market_type="spot", symbol="btc_idr",
+                role="ENTRY", side="buy", order_type="limit",
+                price=100.0, quantity=1.0,
+            )
+        writer._outbox.close()
 
     def test_force_close_futures_buy_keeps_its_side(self):
         writer = _writer()

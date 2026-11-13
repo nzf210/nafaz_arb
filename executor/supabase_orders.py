@@ -1,5 +1,6 @@
 """supabase order operations for the durable Supabase writer."""
 
+import asyncio
 import json
 import uuid
 import math
@@ -171,14 +172,57 @@ class SupabaseOrderMixin:
         ) = self._build_order_registry_payload(
             row, role, leg, market_type, limit_price
         )
-        registry_ok = self._emit(
-            "order_registry", payload, on_conflict="local_order_id"
-        )
+        registry_outbox_id = None
+        if self.enabled and self._outbox is not None:
+            try:
+                registry_outbox_id = self._outbox.enqueue(
+                    "order_registry", "local_order_id", payload
+                )
+                if str(payload.get("status") or "").lower() == "submitting":
+                    self._order_registry_outbox_ids[local_order_id] = registry_outbox_id
+            except Exception:
+                self._dropped += 1
+                logger.exception(
+                    "CRITICAL: durable order registry enqueue failed for %s",
+                    local_order_id,
+                )
+        registry_ok = registry_outbox_id is not None
         analytics_ok = self._emit_order_analytics_parent(
             row, payload, exchange_order_id, client_order_id, pair_key,
             resolved_leg, resolved_market,
         )
         return bool(registry_ok and analytics_ok)
+
+    async def confirm_order_registry(self, local_order_id: str) -> bool:
+        """Confirm the canonical Postgres registry row before a LIVE submit.
+
+        The SQLite outbox remains the crash-safe retry journal, but a queued
+        row is not proof that Postgres accepted it. Flush this exact registry
+        row and return True only after its outbox id has been acknowledged.
+        """
+        local_id = str(local_order_id or "").strip()
+        if not local_id or not self.enabled or self._outbox is None:
+            return False
+        row_id = self._order_registry_outbox_ids.pop(local_id, None)
+        if row_id is None:
+            return False
+        try:
+            pending = await asyncio.to_thread(
+                self._outbox.pending_table, "order_registry"
+            )
+            target = [item for item in pending if item[0] == row_id]
+            if target:
+                await self._flush(target)
+            remaining = await asyncio.to_thread(
+                self._outbox.pending_table, "order_registry"
+            )
+            return not any(item[0] == row_id for item in remaining)
+        except Exception:
+            logger.exception(
+                "CRITICAL: Postgres order registry confirmation failed for %s",
+                local_id,
+            )
+            return False
 
     def order(
         self,

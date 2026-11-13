@@ -140,10 +140,18 @@ class EngineOrderIntentMixin:
             {"status": "submitting"},
             **metadata,
         )
-        if required and record is None:
+        live_mode = not bool(getattr(self.config, "mock_mode", False))
+        if (required or live_mode) and record is None:
             raise RuntimeError(
                 f"refusing to submit {role} order: durable order intent could not be recorded"
             )
+        if live_mode and record is not None:
+            confirmer = getattr(self.supabase, "confirm_order_registry", None)
+            if not callable(confirmer) or not await confirmer(record.local_order_id):
+                raise RuntimeError(
+                    f"refusing to submit {role} order: Postgres order_registry "
+                    "did not confirm the durable intent"
+                )
         return record
 
     async def _mark_order_submission_rejected(
