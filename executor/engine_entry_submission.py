@@ -129,8 +129,16 @@ class EngineEntrySubmissionMixin:
 
     @staticmethod
     def _is_explicit_ip_ban(normalized_error: str) -> bool:
-        markers = ("http_418", "status code 418", "ip banned", "ip address banned", "banned until")
-        return any(marker in normalized_error for marker in markers)
+        explicit_ip_markers = (
+            "ip banned", "ip address banned", "ip is banned",
+            "ip restricted", "ip address restricted", "ip access blocked",
+        )
+        if any(marker in normalized_error for marker in explicit_ip_markers):
+            return True
+        # HTTP 418 is a ban signal on some venues (notably Binance), but
+        # require ban/IP context so a generic 418 response is not escalated.
+        has_418 = "http_418" in normalized_error or "status code 418" in normalized_error
+        return has_418 and ("ban" in normalized_error or "ip" in normalized_error)
 
     @staticmethod
     def _entry_failure_reason(normalized_error: str) -> str:
