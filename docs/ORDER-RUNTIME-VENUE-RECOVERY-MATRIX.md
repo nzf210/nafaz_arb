@@ -13,6 +13,8 @@ This matrix describes the Python executor's active facade and configured venue m
 | Tokocrypto | Spot | CCXT-compatible local client | Logical client ID is rewritten to venue-safe alphanumeric <=32-char wire ID; acknowledged wire alias is persisted in the order registry; lookup includes direct/open/closed/canceled history and paged private order archive | Unit tests for formatting and generic delayed visibility. No live archive lag, duplicate-ID, or partial-fill contract probe in this CI run. |
 | MEXC | Futures/swap (and may be configured in another leg if the CCXT client supports it) | Bound CCXT futures client | Futures market type uses `type=swap`; open-short is SELL with reduceOnly=false; close-short is BUY with reduceOnly=true; exact client-ID recovery uses direct/history/trades where exposed by CCXT | Unit-level generic lookup/pending-close contract. No live MEXC eventual-consistency or pending-close probe in this CI run. |
 | OKX | Futures/perpetual (and may be configured in another leg if supported) | Bound CCXT futures client | Short/close params include `posSide=short`; close is BUY reduceOnly=true; generic exact client-ID recovery; CCXT history limit fallback exists for venues that reject large page limits | Unit-level position-side and generic lookup contracts. No live OKX delayed visibility or pending-close probe in this CI run. |
+| Binance | Futures in `BALANCE_MARKETS`; can be selected as the configured global futures client | Bound CCXT futures client | Generic CCXT client ID and direct/history/trade lookup; Tokocrypto's Binance Cloud wrapper is separate and must not be conflated with Binance exchange | Added fake delayed-visibility fixture. No live Binance futures or order-history lag probe in this CI run. |
+| Bybit | Futures in `BALANCE_MARKETS`; can be selected as the configured global futures client | Bound CCXT futures client | Generic CCXT client ID and direct/history/trade lookup; venue-specific category/position-mode settings still need validation | Added fake delayed-visibility fixture. No live Bybit futures or pending-close probe in this CI run. |
 
 Unknown venue names resolve to the generic venue metadata object, but this is not evidence that the venue is safe for LIVE order execution. A configured exchange must have a supported CCXT adapter, amount specification, client-ID semantics and recovery endpoints verified before LIVE use.
 
@@ -43,7 +45,7 @@ Cancel/replace paths are not create-order retries: the existing exit flow waits 
 - `ExecutorConfig` loads local/global venue names, per-venue credentials, testnet/options, exposure caps, per-venue open-order limits, order-failure breaker and venue rate-limit cooldown.
 - `create_exchange_client` binds the configured local spot and global futures clients; `for_venue`/ `for_pair` select the correct client for recovery.
 - Indodax uses its custom TAPI v2 client for spot; other configured venues use CCXT clients.
-- The modular registry currently names Indodax, Tokocrypto, MEXC and OKX. Registry presence alone does not make every market type supported.
+- The modular registry names Indodax, Tokocrypto, MEXC and OKX. The active `BALANCE_MARKETS` configuration additionally supports Binance and Bybit futures clients. The six-name matrix is the repository's explicit runtime set; registry presence alone does not make every market type supported. Indodax's custom TAPI v2 adapter is used on the local spot path only; selecting it as a generic global futures client is not supported.
 - No credential values, API keys, signed payloads or full authorization headers belong in logs or audit evidence.
 - Go scanner/exchange source has no order-create callsites in the scanned paths; it is not the Python executor's order submission adapter.
 
@@ -51,7 +53,7 @@ Cancel/replace paths are not create-order retries: the existing exit flow waits 
 
 - Added PostgreSQL integration test launches independent executor and fake-venue processes, kills the executor after SUBMITTING is committed while the venue remains active, and asserts a peer cannot enter its submit fence.
 - Added PostgreSQL test for HMAC-authenticated manual resolution, invalid signature rejection, and append-only evidence audit.
-- Added delayed visibility fixtures for Indodax, Tokocrypto, MEXC and OKX, plus pending reduce-only close visibility fixtures. These are deterministic fake endpoint tests, not live venue contract evidence.
+- Added delayed visibility fixtures for Indodax, Tokocrypto, MEXC, OKX, Binance and Bybit, plus pending reduce-only close visibility fixtures. These are deterministic fake endpoint tests, not live venue contract evidence.
 - Still required before claiming venue contract completion: controlled sandbox/live-paper probes per configured venue for (a) delayed client-ID visibility after ACK loss, (b) open/pending reduce-only close, (c) partial fill followed by cancel/close, (d) duplicate client ID behavior, (e) order-history pagination/retention, and (f) status endpoint staleness.
 - Force-close futures now uses deterministic client-ID reuse and exact-ID recovery; its regression test blocks a duplicate when visibility is delayed. Partial/pending outcomes still require reconciliation.
 
