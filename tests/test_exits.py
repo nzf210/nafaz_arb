@@ -732,6 +732,7 @@ def test_funding_spread_decay_retains_sixty_percent_by_default(engine):
         accumulated_funding_usdt=10.0,
     )
     assert engine.config.funding_decay_retention_ratio == pytest.approx(0.60)
+    engine._next_funding_rate_by_pair = {"indodax:btc_idr": 0.00029}
     # Position value $1,000; only $4 of $10 may decay the target spread.
     assert engine._funding_decay_pct("indodax:btc_idr", pos, 1_000.0) == pytest.approx(0.4)
 
