@@ -324,3 +324,148 @@ async def test_outbox_publisher_retries_and_does_not_persist_exception_details()
     assert len(connection.retried) == 1
     assert connection.retried[0][2] == 4
     assert connection.retried[0][3] == "OSError"
+
+
+class _RuntimeRepository:
+    def __init__(self, config):
+        self.config = config
+        self.reads = 0
+
+    async def fetch_active(self):
+        self.reads += 1
+        return self.config
+
+
+class _RuntimeCache:
+    def __init__(self):
+        self.published = []
+
+    async def publish_and_verify(self, config):
+        self.published.append(config)
+
+
+class _RuntimeRegistry:
+    def __init__(self):
+        self.acks = []
+        self.degraded = []
+
+    async def acknowledge(self, config):
+        self.acks.append(config)
+
+    async def mark_degraded(self, error):
+        self.degraded.append(type(error).__name__)
+
+
+@pytest.mark.asyncio
+async def test_config_invalidation_refetches_postgres_then_swaps_and_acknowledges():
+    from executor.v2_config import ConfigSnapshot
+    from executor.v2_config_runtime import (
+        AtomicConfigSnapshot,
+        ConfigInvalidationConsumer,
+    )
+
+    config = ConfigSnapshot(
+        version=12,
+        schema_version=2,
+        content_sha256="b" * 64,
+        snapshot=_valid_snapshot(),
+    )
+    repository = _RuntimeRepository(config)
+    cache = _RuntimeCache()
+    registry = _RuntimeRegistry()
+    store = AtomicConfigSnapshot()
+    consumer = ConfigInvalidationConsumer(repository, cache, registry, store)
+
+    result = await consumer.handle_event({
+        "event_key": "config:12:activated",
+        "aggregate_type": "config",
+        "payload": {"version": 999, "content_sha256": "untrusted"},
+    })
+
+    assert result == config
+    assert repository.reads == 1
+    assert cache.published == [config]
+    assert store.current == config
+    assert registry.acks == [config]
+
+
+@pytest.mark.asyncio
+async def test_config_invalidation_rejects_non_config_event():
+    from executor.v2_config_runtime import (
+        AtomicConfigSnapshot,
+        ConfigInvalidationConsumer,
+    )
+
+    registry = _RuntimeRegistry()
+    consumer = ConfigInvalidationConsumer(
+        _RuntimeRepository(None), _RuntimeCache(), registry, AtomicConfigSnapshot()
+    )
+    with pytest.raises(ConfigSnapshotError, match="not a config"):
+        await consumer.handle_event({
+            "event_key": "operator:4:stop",
+            "aggregate_type": "operator_control",
+        })
+    assert registry.acks == []
+
+
+class _ConvergenceConnection:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def fetch(self, _query, _lease_seconds):
+        return self.rows
+
+
+class _ConvergencePool:
+    def __init__(self, rows):
+        self.connection = _ConvergenceConnection(rows)
+
+    def acquire(self):
+        return _Acquire(self.connection)
+
+
+@pytest.mark.asyncio
+async def test_config_convergence_requires_every_live_instance_to_ack_exact_version_hash():
+    from executor.v2_config import ConfigSnapshot
+    from executor.v2_config_runtime import ConfigConsumerRegistry
+
+    target = ConfigSnapshot(
+        version=13,
+        schema_version=2,
+        content_sha256="c" * 64,
+        snapshot=_valid_snapshot(),
+    )
+    rows = [
+        {"instance_id": "executor-a", "status": "ACTIVE",
+         "acknowledged_version": 13, "acknowledged_sha256": "c" * 64},
+        {"instance_id": "executor-b", "status": "ACTIVE",
+         "acknowledged_version": 12, "acknowledged_sha256": "d" * 64},
+    ]
+    registry = ConfigConsumerRegistry(
+        _ConvergencePool(rows), instance_id="executor-a", process_id="pid-a"
+    )
+    report = await registry.convergence(target)
+    assert report.converged is False
+    assert report.active_instances == 2
+    assert report.missing_or_stale == ("executor-b",)
+    with pytest.raises(ConfigSnapshotError, match="convergence gate closed"):
+        await registry.require_converged(target)
+
+
+@pytest.mark.asyncio
+async def test_config_convergence_fails_closed_when_no_executor_has_live_lease():
+    from executor.v2_config import ConfigSnapshot
+    from executor.v2_config_runtime import ConfigConsumerRegistry
+
+    target = ConfigSnapshot(
+        version=14,
+        schema_version=2,
+        content_sha256="e" * 64,
+        snapshot=_valid_snapshot(),
+    )
+    registry = ConfigConsumerRegistry(
+        _ConvergencePool([]), instance_id="executor-a", process_id="pid-a"
+    )
+    report = await registry.convergence(target)
+    assert report.converged is False
+    assert report.missing_or_stale == ("no_live_executor_instances",)
