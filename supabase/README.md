@@ -66,9 +66,23 @@ Implemented writes:
   balances, pub/sub, and fast coordination. Exchange APIs remain authoritative
   for actual balances, order state, and position exposure.
 
-Still schema-only / not yet connected to runtime writes: `exchange_accounts`,
-`strategy_configs`, `risk_limits`, and `market_pairs`. Strategy/risk configuration
-is not read dynamically and credentials are never written by this runtime.
+Runtime registry writes are also enabled:
+
+- `exchange_accounts`: metadata-only rows for the executor's configured local
+  Spot and global Perpetual venues. The writer records only whether credentials
+  are configured and the testnet flag. API keys, secrets, passphrases, and
+  ciphertext columns are never populated.
+- `risk_limits`: a sanitized snapshot of the executor's active, already-validated
+  risk settings, keyed by `executor-runtime:<EXECUTOR_INSTANCE_ID>`. This is
+  audit metadata only; the executor does not read limits back from Supabase.
+- `market_pairs`: upserted when the executor opens/restores a position with a
+  complete `PairInfo`. It records the exact local Spot and global Perpetual
+  symbols/quotes and optional account references. This is an actually-used pair
+  registry, not a complete exchange market-discovery catalog.
+- `strategy_configs` remains schema-only. There is no separate strategy
+  configuration/control-plane model in the executor, so runtime configuration
+  is not written there or dynamically controlled from the database.
+
 
 Delivery guarantees and remaining limitations:
 
