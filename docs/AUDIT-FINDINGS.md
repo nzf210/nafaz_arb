@@ -49,6 +49,17 @@ yang sedang dikerjakan:
 
 ---
 
+## V2 review additions — 2026-11-13
+
+V2 bootstrap/configuration/STOP work is tracked separately. The detailed review
+contract, including CEX rate-limit versus confirmed IP-block behavior, is in
+[ V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md ](./V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md).
+These are open requirements, not completed remediations.
+
+| ID | Current finding | Area | Required remediation / verification | Status |
+|---|---|---|---|---|
+| R-19 | A CEX may block the executor's shared egress IP after rate-limit abuse; current per-venue cooldown alone does not establish a durable cross-instance stop. A generic HTTP 429 is not proof of an IP ban. | Exchange adapter / global STOP / distributed admission | Classify venue-specific explicit IP-ban evidence (e.g. Binance 418), persist idempotent `CEX_IP_BLOCK` STOP in PostgreSQL, advance fencing epoch for all instances sharing egress, close new-entry admission, back off requests, preserve unresolved exposure for reconciliation, and require verified unblock + operator acknowledgement before resume. Add 429/418/403 and multi-instance regression tests. | OPEN — design checklist added; implementation and tests pending |
+
 ## Post-refactor review — 2026-11-07
 
 The previous "all findings closed" status is historical and does not mean the current
