@@ -201,6 +201,11 @@ class EngineOrderIntentMixin:
         self._halt_exposure_scope(
             pair_tag, "exchange order submission acknowledgement is ambiguous"
         )
+        if getattr(self, "global_stop", None) is not None:
+            self._halt_exposure_scope(
+                "*", "durable in-flight submit outcome unresolved; global entry admission fenced"
+            )
+            self._refresh_entry_gate()
         self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
         await self._publish_execution_failure(
             pair_tag,
