@@ -240,6 +240,14 @@ class ArbitrageEngine(
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()
+        if (
+            not getattr(self.config, "mock_mode", False)
+            and not bool(getattr(self.supabase, "durable_ready", False))
+        ):
+            raise RuntimeError(
+                "LIVE startup blocked: durable Supabase journal/outbox is not ready; "
+                "check Supabase configuration and writable outbox storage"
+            )
         # _run_startup_recovery() restores durable risk state and runs the
         # account-wide exposure reconciliation under the recovery lease before
         # this process is allowed to consume the signal queue.
