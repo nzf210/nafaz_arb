@@ -77,8 +77,9 @@ Runtime registry writes are also enabled:
   audit metadata only; the executor does not read limits back from Supabase.
 - `market_pairs`: upserted when the executor opens/restores a position with a
   complete `PairInfo`. It records the exact local Spot and global Perpetual
-  symbols/quotes and optional account references. This is an actually-used pair
-  registry, not a complete exchange market-discovery catalog.
+  symbols/quotes and available local precision. Account foreign keys are left
+  unset so an existing manually-created account row cannot cause an ID mismatch.
+  This is an actually-used pair registry, not a complete exchange market catalog.
 - `strategy_configs` remains schema-only. There is no separate strategy
   configuration/control-plane model in the executor, so runtime configuration
   is not written there or dynamically controlled from the database.
