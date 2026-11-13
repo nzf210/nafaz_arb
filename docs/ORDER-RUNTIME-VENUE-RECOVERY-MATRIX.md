@@ -51,7 +51,7 @@ Cancel/replace paths are not create-order retries: the existing exit flow waits 
 
 ## Test coverage added/required
 
-- Added PostgreSQL integration test launches independent executor and fake-venue processes, kills the executor after SUBMITTING is committed while the venue remains active, and asserts a peer cannot enter its submit fence.
+- Added PostgreSQL integration test launches independent executor processes and a parent-controlled fake venue request, kills the executor after SUBMITTING is committed while the venue remains active, and asserts a peer cannot enter its submit fence.
 - Added PostgreSQL test for HMAC-authenticated manual resolution, invalid signature rejection, and append-only evidence audit.
 - Added delayed visibility fixtures for Indodax, Tokocrypto, MEXC, OKX, Binance and Bybit, plus pending reduce-only close visibility fixtures. These are deterministic fake endpoint tests, not live venue contract evidence.
 - Still required before claiming venue contract completion: controlled sandbox/live-paper probes per configured venue for (a) delayed client-ID visibility after ACK loss, (b) open/pending reduce-only close, (c) partial fill followed by cancel/close, (d) duplicate client ID behavior, (e) order-history pagination/retention, and (f) status endpoint staleness.
