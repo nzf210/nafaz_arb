@@ -4,6 +4,7 @@ from executor.engine_entry_submission import EngineEntrySubmissionMixin
 from executor.global_stop import FENCE_LOCK_KEY, GlobalStopError, GlobalStopService
 from executor.config import ExecutorConfig
 from executor.engine import ArbitrageEngine
+from executor.engine_recovery import EngineRecoveryMixin
 
 
 class _AsyncContext:
@@ -169,3 +170,96 @@ async def test_live_executor_fails_closed_without_postgres_fencing_dsn():
 
     with pytest.raises(RuntimeError, match="requires POSTGRES_DSN"):
         await engine.initialize()
+
+
+class _VenueLookup:
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    async def fetch_local_order_by_client_id(self, client_order_id, symbol, amount_spec):
+        self.calls.append((client_order_id, symbol, amount_spec))
+        return self.result
+
+
+class _BaseClient:
+    def __init__(self, venue):
+        self.venue = venue
+        self.requested_exchange = None
+
+    def for_venue(self, exchange):
+        self.requested_exchange = exchange
+        return self.venue
+
+
+class _SubmitLedger:
+    def __init__(self, attempts):
+        self.attempts = list(attempts)
+        self.found = []
+        self.not_found = []
+
+    async def list_unresolved_submit_attempts(self, *, limit=100):
+        return list(self.attempts)
+
+    async def reconcile_submit_attempt_found(self, client_order_id, order):
+        self.found.append((client_order_id, order))
+        self.attempts = [row for row in self.attempts if row["client_order_id"] != client_order_id]
+
+    async def reconcile_submit_attempt_not_found(self, client_order_id, *, evidence):
+        self.not_found.append((client_order_id, evidence))
+
+
+class _RecoveryHarness(EngineRecoveryMixin):
+    def __init__(self, service, base_client):
+        self.global_stop = service
+        self._base_client = base_client
+        self.halts = []
+        self.gate_refreshed = False
+        self.failures = []
+
+    def _halt_exposure_scope(self, scope, reason):
+        self.halts.append((scope, reason))
+
+    def _refresh_entry_gate(self):
+        self.gate_refreshed = True
+
+    async def _publish_execution_failure(self, *args, **kwargs):
+        self.failures.append((args, kwargs))
+
+
+@pytest.mark.asyncio
+async def test_startup_reconciliation_adopts_order_found_by_exact_client_id():
+    attempt = {
+        "client_order_id": "client-id-123",
+        "exchange": "binance",
+        "symbol": "BTC/USDT",
+        "amount_spec": {"unit": "BASE"},
+    }
+    order = {"id": "venue-order-99", "status": "open"}
+    venue = _VenueLookup(order)
+    service = _SubmitLedger([attempt])
+    engine = _RecoveryHarness(service, _BaseClient(venue))
+
+    assert await engine._reconcile_durable_submit_attempts() is True
+    assert venue.calls == [("client-id-123", "BTC/USDT", {"unit": "BASE"})]
+    assert engine._base_client.requested_exchange == "binance"
+    assert service.found == [("client-id-123", order)]
+
+
+@pytest.mark.asyncio
+async def test_startup_reconciliation_keeps_not_found_attempt_globally_blocking():
+    attempt = {
+        "client_order_id": "client-id-unknown",
+        "exchange": "binance",
+        "symbol": "BTC/USDT",
+        "amount_spec": {"unit": "BASE"},
+    }
+    venue = _VenueLookup(None)
+    service = _SubmitLedger([attempt])
+    engine = _RecoveryHarness(service, _BaseClient(venue))
+
+    assert await engine._reconcile_durable_submit_attempts() is False
+    assert service.not_found and service.not_found[0][0] == "client-id-unknown"
+    assert engine.halts and engine.halts[0][0] == "*"
+    assert engine.gate_refreshed is True
+    assert engine.failures
