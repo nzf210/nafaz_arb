@@ -139,7 +139,7 @@ def test_market_pair_is_persisted_with_exact_spot_and_perpetual_quotes():
     assert market["global_quote_asset"] == "USDC"
     assert market["price_tick"] == 1000.0
     assert market["lot_size"] == 0.0001
-    assert market["is_mock"] if False else market["metadata"]["is_mock"] is False
+    assert market["metadata"]["is_mock"] is False
     assert market["local_exchange_account_id"]
     assert market["global_exchange_account_id"]
 
