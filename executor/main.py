@@ -5,7 +5,7 @@ import signal
 import sys
 
 from executor.config import ExecutorConfig
-from executor.exchange_client import create_exchange_client, create_ccxt_client
+from executor.exchange_client import create_exchange_client
 from executor.engine import ArbitrageEngine
 from executor.v2_control_runtime import V2ControlPlaneRuntime
 
