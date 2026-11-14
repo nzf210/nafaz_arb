@@ -296,8 +296,10 @@ class _FakeSpotStop:
 class _SpotIPRestrictedVenue:
     def __init__(self):
         self.lookup_calls = 0
+        self.submit_calls = 0
 
     async def place_local_limit_buy(self, *args, **kwargs):
+        self.submit_calls += 1
         raise RuntimeError("IP restricted by venue")
 
     async def fetch_local_order_by_client_id(self, *args, **kwargs):
@@ -342,6 +344,21 @@ class _SpotSubmissionHarness(EngineEntrySubmissionMixin):
 class _FakeAmountSpec:
     def to_dict(self):
         return {"unit": "BASE", "step": 0.001}
+
+
+@pytest.mark.asyncio
+async def test_live_spot_entry_refuses_missing_global_stop_before_venue_call():
+    venue = _SpotIPRestrictedVenue()
+    engine = _SpotSubmissionHarness(None, venue)
+    engine.config = SimpleNamespace(mock_mode=False)
+
+    with pytest.raises(GlobalStopError, match="LIVE spot entry requires"):
+        await engine._submit_entry_order(
+            "pair-spot-no-stop", {}, None, None, None, 0.01, 500.0, 50000.0
+        )
+
+    assert venue.submit_calls == 0
+    assert venue.lookup_calls == 0
 
 
 @pytest.mark.asyncio
@@ -406,8 +423,10 @@ class _FakeHedgeStop:
 class _IPBannedFuturesVenue:
     def __init__(self):
         self.lookup_calls = 0
+        self.submit_calls = 0
 
     async def open_global_short_market(self, *args, **kwargs):
+        self.submit_calls += 1
         raise RuntimeError("HTTP_418: IP address banned until reset")
 
     async def fetch_global_order_by_client_id(self, *args, **kwargs):
@@ -437,6 +456,20 @@ class _HedgeHarness(EntryHedgeMixin):
 
     def _refresh_entry_gate(self):
         self.gate_refreshed = True
+
+
+@pytest.mark.asyncio
+async def test_live_futures_hedge_refuses_missing_global_stop_before_venue_call():
+    engine = _HedgeHarness(None)
+    engine.config = SimpleNamespace(mock_mode=False)
+
+    with pytest.raises(GlobalStopError, match="LIVE futures hedge requires"):
+        await engine._submit_entry_hedge_order(
+            "pair-futures-no-stop", {}, "BTC/USDT:USDT", 0.01, 50000.0
+        )
+
+    assert engine.client.submit_calls == 0
+    assert engine.order_intents == []
 
 
 @pytest.mark.asyncio

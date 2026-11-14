@@ -6,6 +6,7 @@ import time
 from typing import Any, Dict
 
 from executor.models import ActivePosition, OrderRole, PositionState
+from executor.global_stop import GlobalStopError
 from executor import helpers
 from executor.quantity import AmountSpec
 from executor.helpers import (
@@ -181,6 +182,12 @@ class EntryHedgeMixin:
         self, pair_tag: str, order_info: dict, global_symbol: str,
         unhedged_delta: float, expected_short_price: float,
     ):
+        if getattr(self, "global_stop", None) is None and not getattr(
+            getattr(self, "config", None), "mock_mode", False
+        ):
+            raise GlobalStopError(
+                "LIVE futures hedge requires initialized PostgreSQL PREPARED/SUBMITTING fencing"
+            )
         hedge_coid = str(
             order_info.get("pending_hedge_client_order_id") or ""
         ) or build_client_order_id(

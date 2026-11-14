@@ -158,3 +158,46 @@ Remaining blockers: complete runtime call-site/call-graph audit across all venue
 - A previously found terminal full-fill order is adopted and futures position flatness is verified before continuing spot liquidation.
 - Partial terminal close, missing stable position timestamp, missing registry, or stale/non-flat position remains a reconciliation/manual-intervention condition. This is intentionally fail-closed; it does not auto-submit a residual close with a new ID.
 - Regression: `test_force_close_prior_reduce_only_intent_not_found_never_resubmits`.
+
+
+## V2 full create-order call-site audit — 2026-11-14
+
+Audit scope: branch \`feat/v2-bootstrap-config-stop-fencing\`, head
+\`97819da0d068ca67f8c51f74cb2f9129f150a270\` before this audit patch.
+
+### Proven create-order inventory and classification
+
+| Path | Call chain / adapter endpoint | Exposure effect | STOP ledger + shared session fence |
+|---|---|---|---|
+| Spot entry | \`EngineEntrySubmissionMixin._submit_entry_order\` → \`client.place_local_limit_buy\` → \`ExchangeOrdersMixin.place_local_limit_buy\` → CCXT \`create_limit_buy_order\`; Indodax TAPIv2 adapter funnels through \`IndodaxTAPIv2._create_order\` | Opens spot exposure | REQUIRED; implemented on the active LIVE path |
+| Futures hedge entry | \`EntryHedgeMixin._submit_entry_hedge_order\` → \`client.open_global_short_market\` → \`ExchangeFuturesMixin.open_global_short_market\` → CCXT \`create_market_sell_order\` with \`reduceOnly=False\` and short position-side params | Opens/extends short exposure | REQUIRED; implemented on the active LIVE path |
+| Generic gateway create | \`MutationGateway.execute_create_order\` → \`create_order_direct\` or CCXT \`create_order\` | Potentially opens/extends exposure depending on arguments | REQUIRED. This method had an unfenced \`global_stop=None/disabled\` branch, did not persist ACK, and treated all non-timeout exceptions as rejection. It had no production create caller in the inspected branch; the Telegram command processor calls only \`execute_cancel_order\`. This latent bypass is now fail-closed and ledger transitions are explicit. |
+
+No direct create-order calls were found in \`executor/venues/{indodax,mexc,okx,tokocrypto}.py\`; those modules provide venue formatting/read fallbacks. The Indodax adapter's public create methods funnel through its single \`_create_order\` implementation. Runtime alternative-venue certification is still open.
+
+### Risk-reducing paths deliberately excluded from entry STOP fence
+
+- Spot limit SELL: \`exit_orders\` → \`place_local_limit_sell\` → \`create_limit_sell_order\`; exit only.
+- Spot market SELL: \`rollback\` and \`force_close_legs\` → \`place_local_market_sell\` → \`create_market_sell_order\`; rollback/force-close only.
+- Futures market BUY: \`exit_execution\` and \`force_close_legs\` → \`close_global_short_market\` → \`create_market_buy_order\` with \`reduceOnly=True\`; closes short exposure.
+- Cancel: \`CommandProcessor\` → \`MutationGateway.execute_cancel_order\`; cancellation is not a create and is not routed through entry admission.
+
+These actions remain outside the entry STOP fence intentionally. Their own stable-ID, cancel/replace, retry, reduceOnly and reconciliation controls remain separately audited; a global STOP must not suppress a verified risk-reducing action.
+
+### R-30 / R-31 — latent unfenced entry paths
+
+| ID | Finding | Status after this patch |
+|---|---|---|
+| R-30 | Generic \`MutationGateway.execute_create_order\` could call a venue without an initialized GlobalStop; ACK was not durably written and generic transport errors were mislabeled REJECTED. | FIXED FAIL-CLOSED: requires initialized service, writes PREPARED, enters shared fence, persists ACK, classifies only explicit rejections as REJECTED, and retains UNKNOWN/SUBMITTING on ambiguity or persistence failure. |
+| R-31 | Spot and futures entry mixins retained \`global_stop is None\` compatibility branches. LIVE startup already rejects missing \`POSTGRES_DSN\`, but direct invocation could bypass the startup gate. | FIXED DEFENSE-IN-DEPTH: both submit boundaries reject missing GlobalStop in LIVE mode; mock compatibility remains available. |
+
+Regression coverage added for missing service, connection reset, explicit rejection, missing venue order ID, ACK persistence failure, and direct LIVE spot/futures invocation without GlobalStop.
+
+### Remaining blockers — NOT LIVE-CERTIFIED
+
+1. Operator-authenticated resolution is implemented as HMAC-signed envelope + nonce/evidence audit, but operator identity provisioning, secret custody/rotation, approval workflow and operational runbook have not been independently closed.
+2. The real PostgreSQL multi-process disconnect/fault-injection test must pass on the latest CI revision and its failure boundary must be reviewed; fake venue behavior is not a real CEX contract probe.
+3. Real per-venue sandbox/paper probes remain open for exact client-ID visibility, pending/partial market hedge semantics, cancel/fill races and reduceOnly close behavior.
+4. Runtime adapter configuration coverage, all account/position modes, and deployment-wide shared PostgreSQL DSN consistency still require verification.
+
+No merge, deployment, production migration, or cutover was performed.

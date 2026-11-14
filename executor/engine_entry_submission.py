@@ -6,6 +6,7 @@ import re
 import time
 
 from executor.models import OrderRole, PositionState
+from executor.global_stop import GlobalStopError
 from executor.helpers import build_client_order_id, is_explicit_rate_limit_rejection
 from executor.order_slots import SlotExhaustedError
 from executor.engine_common import logger
@@ -289,6 +290,12 @@ class EngineEntrySubmissionMixin:
         self, pair_tag, payload, pair_info, snapshot, directives,
         buy_qty, actual_cost_usdt, buy_price_idr,
     ) -> None:
+        if getattr(self, "global_stop", None) is None and not getattr(
+            getattr(self, "config", None), "mock_mode", False
+        ):
+            raise GlobalStopError(
+                "LIVE spot entry requires initialized PostgreSQL PREPARED/SUBMITTING fencing"
+            )
         submission_started = False
         submit_attempt_acknowledged = False
         entry_coid = ""

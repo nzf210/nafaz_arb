@@ -3,10 +3,9 @@
 # Desain Teknis Executor V2 — Nafazbot
 
 - Repositori: nzf210/nafaz_arb
-- Cabang implementasi acuan: feat/unified-dynamic-fee-engine
-- Cabang dokumentasi: audit/architecture-baseline-regression-contract
-- Baseline kode: 9cc3dcd11d0999e828309053ba4cffce98a28675
-- Status: RANCANGAN UNTUK REVIEW — BELUM DIIMPLEMENTASIKAN
+- Cabang implementasi yang diaudit: feat/v2-bootstrap-config-stop-fencing
+- Baseline source audit: 97819da0d068ca67f8c51f74cb2f9129f150a270
+- Status: DESAIN ACUAN; implementasi V2 parsial pada branch tersebut — NOT LIVE-CERTIFIED
 - Ruang lingkup: desain ulang internal executor, lifecycle order, pengelolaan dua kaki, PnL, exit, dan pemulihan.
 - Batas tegas: tidak ada perubahan kode trading, migrasi database, konfigurasi live, atau sumber daya produksi melalui dokumen ini.
 
@@ -1471,3 +1470,29 @@ See `docs/ORDER-RUNTIME-VENUE-RECOVERY-MATRIX.md` for the runtime adapter/call-s
 ### Force-close futures reduceOnly retry fence
 
 LIVE force-close derives one deterministic client-order ID from the persisted position `opened_at_ms`, requires the durable order registry, and checks for an existing intent before any further close submit. Existing intent is reconciled by exact client ID. If not found, lookup errors, or non-terminal, the executor blocks rather than creating a new client ID. Only a terminal full-fill order is adopted, followed by an authoritative flat-position check. Partial fills and pending orders remain reconciliation-required; the executor does not auto-submit residual quantity.
+
+
+## 30. Source audit: create-order lifecycle — 2026-11-14
+
+Static call-graph review on \`feat/v2-bootstrap-config-stop-fencing\` identified two active exposure-increasing paths:
+
+1. Spot BUY entry: \`_submit_entry_order\` → \`place_local_limit_buy\` → \`create_limit_buy_order\`.
+2. Futures SELL hedge: \`_submit_entry_hedge_order\` → \`open_global_short_market\` → \`create_market_sell_order\` (\`reduceOnly=False\`).
+
+Both active LIVE paths persist PREPARED before the request and hold the shared PostgreSQL session advisory fence through the venue HTTP call. Startup recovery selects the exact lookup method by \`market_type\`; a negative or failed exact-ID lookup remains unresolved and cannot authorize a retry. Positive venue acknowledgement is persisted before the entry fence is released. If ACK persistence fails, SUBMITTING/UNKNOWN remains the cross-instance admission guard.
+
+A third, generic API surface exists at \`MutationGateway.execute_create_order\`. The branch had no active production caller for this create method (the command processor invokes only its cancel method), but the generic method itself previously allowed an absent/disabled GlobalStop and did not durably persist ACK. It is now fail-closed and records the durable attempt lifecycle. Direct LIVE calls to the spot/futures entry mixins also reject a missing GlobalStop; mock-only compatibility remains.
+
+### De-risking boundaries
+
+The following calls intentionally do not use the entry STOP fence:
+- \`place_local_limit_sell\` for spot exit;
+- \`place_local_market_sell\` for rollback/force-close;
+- \`close_global_short_market\` for futures BUY with \`reduceOnly=True\`;
+- cancel operations.
+
+These are exposure-reducing or order-cancel operations. They retain their own idempotency, retry and reconciliation rules. A generic STOP must not block a safe reduce-only close or liquidation request without a separate risk analysis.
+
+### Release limitations
+
+This source audit and its regression tests do not certify live venue semantics. Operator-authenticated manual resolution still needs end-to-end operational review (identity, key custody, rotation, approval and runbook). The real PostgreSQL multi-process disconnect/fault-injection test must be verified on the final CI revision, and per-venue sandbox/paper probes remain open. The branch is NOT LIVE-CERTIFIED; do not merge, deploy, migrate production, or cut over based on CI alone.

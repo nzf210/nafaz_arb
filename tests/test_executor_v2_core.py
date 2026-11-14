@@ -81,58 +81,175 @@ async def test_order_slot_custom_cap():
 # 2. MutationGateway Tests
 # =====================================================================
 
+class _GatewayFence:
+    def __init__(self, stop, client_order_id):
+        self.stop = stop
+        self.client_order_id = client_order_id
+
+    async def __aenter__(self):
+        self.stop.statuses[self.client_order_id] = "SUBMITTING"
+        return object()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeGatewayStop:
+    enabled = True
+
+    def __init__(self, fail_ack=False):
+        self.fail_ack = fail_ack
+        self.prepared = []
+        self.statuses = {}
+        self.acknowledged = []
+        self.unknown = []
+        self.rejected = []
+
+    async def prepare_submit_attempt(self, **kwargs):
+        self.prepared.append(kwargs)
+        self.statuses[kwargs["client_order_id"]] = "PREPARED"
+
+    def order_submit_fence(self, *, client_order_id):
+        return _GatewayFence(self, client_order_id)
+
+    async def mark_submit_acknowledged(self, client_order_id, order):
+        if self.fail_ack:
+            raise ConnectionError("postgres ACK write disconnected")
+        self.statuses[client_order_id] = "ACKNOWLEDGED"
+        self.acknowledged.append((client_order_id, order))
+
+    async def mark_submit_unknown(self, client_order_id, error):
+        self.statuses[client_order_id] = "UNKNOWN"
+        self.unknown.append((client_order_id, error))
+
+    async def mark_submit_rejected(self, client_order_id, error):
+        self.statuses[client_order_id] = "REJECTED"
+        self.rejected.append((client_order_id, error))
+
+    async def request_stop_in_transaction(self, conn, reason, *, source, metadata):
+        return {"is_stopped": True, "epoch": 2, "reason": reason, "source": source}
+
+    async def notify_state(self, state):
+        pass
+
+
 @pytest.mark.asyncio
 async def test_mutation_gateway_create_and_timeout():
     slot_mgr = OrderSlotManager()
-    gateway = MutationGateway(global_stop=None, slot_manager=slot_mgr)
-
-    # 1. Normal confirmed placement
+    stop = _FakeGatewayStop()
+    gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
     client_mock = AsyncMock()
     client_mock.create_order_direct.return_value = {
-        "id": "ex-101",
-        "filled": 1.5,
-        "price": 100.0,
+        "id": "ex-101", "filled": 1.5, "price": 100.0,
     }
 
     res = await gateway.execute_create_order(
-        client_mock,
-        exchange="tokocrypto",
-        market_type="spot",
-        symbol="BTC/BIDR",
-        side="buy",
-        order_type="limit",
-        quantity=1.5,
-        price=100.0,
-        pair_key="tokocrypto:BTC_BIDR",
+        client_mock, exchange="tokocrypto", market_type="spot",
+        symbol="BTC/BIDR", side="buy", order_type="limit",
+        quantity=1.5, price=100.0, pair_key="tokocrypto:BTC_BIDR",
     )
     assert res.status == MutationResultType.CONFIRMED
     assert res.exchange_order_id == "ex-101"
     assert res.filled_qty == 1.5
     assert len(res.client_order_id) <= 32
-
-    # Slot is active
+    assert stop.statuses[res.client_order_id] == "ACKNOWLEDGED"
+    assert stop.acknowledged
     assert await slot_mgr.get_active_slots_count("tokocrypto") == 1
 
-    # 2. Timed out create -> SUBMISSION_UNKNOWN (zero blind retries!)
     slow_client = AsyncMock()
     slow_client.create_order_direct.side_effect = asyncio.TimeoutError("gateway timeout")
-
     res_timeout = await gateway.execute_create_order(
-        slow_client,
-        exchange="tokocrypto",
-        market_type="spot",
-        symbol="ETH/BIDR",
-        side="buy",
-        order_type="limit",
-        quantity=0.5,
-        price=2000.0,
-        pair_key="tokocrypto:ETH_BIDR",
+        slow_client, exchange="tokocrypto", market_type="spot",
+        symbol="ETH/BIDR", side="buy", order_type="limit",
+        quantity=0.5, price=2000.0, pair_key="tokocrypto:ETH_BIDR",
     )
     assert res_timeout.status == MutationResultType.SUBMISSION_UNKNOWN
-    # Slot is still held for discovery!
+    assert stop.statuses[res_timeout.client_order_id] == "UNKNOWN"
     assert await slot_mgr.get_active_slots_count("tokocrypto") == 2
 
 
+@pytest.mark.asyncio
+async def test_mutation_gateway_create_fails_closed_without_initialized_global_stop():
+    gateway = MutationGateway(global_stop=None, slot_manager=OrderSlotManager())
+    client_mock = AsyncMock()
+    result = await gateway.execute_create_order(
+        client_mock, exchange="tokocrypto", market_type="spot",
+        symbol="BTC/BIDR", side="buy", order_type="limit",
+        quantity=1.0, price=100.0, pair_key="tokocrypto:BTC_BIDR",
+    )
+    assert result.status == MutationResultType.REJECTED
+    assert "fencing is not initialized" in result.error_message
+    client_mock.create_order_direct.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mutation_gateway_connection_reset_is_unknown_and_keeps_slot():
+    slot_mgr = OrderSlotManager()
+    stop = _FakeGatewayStop()
+    gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
+    client_mock = AsyncMock()
+    client_mock.create_order_direct.side_effect = ConnectionResetError("socket reset")
+    result = await gateway.execute_create_order(
+        client_mock, exchange="okx", market_type="perpetual",
+        symbol="BTC/USDT:USDT", side="sell", order_type="market",
+        quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
+    )
+    assert result.status == MutationResultType.SUBMISSION_UNKNOWN
+    assert stop.statuses[result.client_order_id] == "UNKNOWN"
+    assert len(stop.unknown) == 1
+
+
+@pytest.mark.asyncio
+async def test_mutation_gateway_definitive_rejection_releases_slot_after_ledger_update():
+    class InvalidOrder(Exception):
+        pass
+
+    slot_mgr = OrderSlotManager()
+    stop = _FakeGatewayStop()
+    gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
+    client_mock = AsyncMock()
+    client_mock.create_order_direct.side_effect = InvalidOrder("invalid order")
+    result = await gateway.execute_create_order(
+        client_mock, exchange="tokocrypto", market_type="spot",
+        symbol="BTC/BIDR", side="buy", order_type="limit",
+        quantity=1.0, price=100.0, pair_key="tokocrypto:BTC_BIDR",
+    )
+    assert result.status == MutationResultType.REJECTED
+    assert stop.statuses[result.client_order_id] == "REJECTED"
+    assert await slot_mgr.get_active_slots_count("tokocrypto") == 0
+
+
+@pytest.mark.asyncio
+async def test_mutation_gateway_missing_order_id_remains_unknown():
+    stop = _FakeGatewayStop()
+    gateway = MutationGateway(global_stop=stop, slot_manager=OrderSlotManager())
+    client_mock = AsyncMock()
+    client_mock.create_order_direct.return_value = {"status": "open"}
+    result = await gateway.execute_create_order(
+        client_mock, exchange="mexc", market_type="perpetual",
+        symbol="BTC/USDT:USDT", side="sell", order_type="market",
+        quantity=0.01, price=50000.0, pair_key="tokocrypto__mexc__btc",
+    )
+    assert result.status == MutationResultType.SUBMISSION_UNKNOWN
+    assert stop.statuses[result.client_order_id] == "UNKNOWN"
+
+
+@pytest.mark.asyncio
+async def test_mutation_gateway_ack_persistence_failure_keeps_unresolved_slot():
+    stop = _FakeGatewayStop(fail_ack=True)
+    slot_mgr = OrderSlotManager()
+    gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
+    client_mock = AsyncMock()
+    client_mock.create_order_direct.return_value = {"id": "accepted-but-unpersisted"}
+    result = await gateway.execute_create_order(
+        client_mock, exchange="okx", market_type="perpetual",
+        symbol="BTC/USDT:USDT", side="sell", order_type="market",
+        quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
+    )
+    assert result.status == MutationResultType.SUBMISSION_UNKNOWN
+    assert result.exchange_order_id == "accepted-but-unpersisted"
+    assert stop.statuses[result.client_order_id] == "UNKNOWN"
+    assert stop.unknown
 @pytest.mark.asyncio
 async def test_mutation_gateway_cancel():
     slot_mgr = OrderSlotManager()

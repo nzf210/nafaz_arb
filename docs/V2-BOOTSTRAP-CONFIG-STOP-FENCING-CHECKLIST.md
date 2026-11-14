@@ -269,3 +269,31 @@ Exit limit SELL is intentionally not subject to the entry Global STOP fence. How
 - [x] Adopt only a terminal full-fill order and verify futures position flat before continuing.
 - [x] Regression test confirms delayed lookup cannot cause duplicate reduceOnly close.
 - [ ] Venue-specific pending-close timing/status probes remain part of the per-venue sandbox/paper release gate.
+
+
+## 30. Full create-order call-site audit — 2026-11-14
+
+Audited branch head before this patch: \`97819da0d068ca67f8c51f74cb2f9129f150a270\`.
+
+### Exposure-increasing mutations
+
+- [x] Spot entry chain identified: \`_submit_entry_order\` → \`place_local_limit_buy\` → CCXT \`create_limit_buy_order\` (Indodax routes through \`IndodaxTAPIv2._create_order\`). LIVE path prepares the durable intent and holds the PostgreSQL session advisory fence across the venue request.
+- [x] Futures hedge chain identified: \`_submit_entry_hedge_order\` → \`open_global_short_market\` → CCXT \`create_market_sell_order\`, with \`reduceOnly=False\`. LIVE path prepares the durable intent and holds the same fence across the venue request.
+- [x] Generic \`MutationGateway.execute_create_order\` inspected. It had an unfenced optional-service branch, no ACK persistence, and unsafe generic-error rejection. There was no active runtime create caller in this branch; \`CommandProcessor\` uses only the cancel method. The create method now fails closed without initialized PostgreSQL fencing and persists PREPARED/SUBMITTING/ACKNOWLEDGED/REJECTED/UNKNOWN outcomes.
+- [x] LIVE spot/futures mixin boundaries now independently reject missing GlobalStop; the unfenced compatibility path remains mock-only.
+- [x] Venue-specific modules inspected: no direct create calls in modular \`executor/venues/*\`; Indodax TAPIv2 funnels create methods through \`_create_order\`.
+
+### Risk reduction — intentionally not fenced as entry
+
+- Spot limit SELL exit, spot market SELL rollback/force-close, futures market BUY \`reduceOnly=True\` close, and cancel remain outside the entry STOP fence.
+- These actions are not changed by this audit. A global STOP must not disable them generically; their separate retry, stable client-ID, terminal-state and reconciliation guards remain mandatory.
+
+### Verification contract
+
+- [x] Regression tests added for unfenced gateway denial, direct LIVE spot/futures missing-GlobalStop denial, connection-reset ambiguity, explicit rejection, missing order ID and ACK-persistence failure.
+- [ ] Run focused Python tests and full relevant CI after this patch; record actual result below.
+- [ ] Review operator-authenticated resolution end-to-end (HMAC key custody/rotation, operator identity, dual evidence, approval, audit retrieval and runbook).
+- [ ] Close real PostgreSQL multi-process disconnect/fault-injection review on the latest CI revision.
+- [ ] Run real per-venue sandbox/paper probes for client-ID exact lookup, delayed visibility, pending/partial hedge market orders, and reduceOnly close semantics.
+
+**Status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
