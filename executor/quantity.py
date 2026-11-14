@@ -2,7 +2,7 @@
 
 import math
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_CEILING
 from math import gcd
 from typing import Any, Iterable
 
@@ -94,7 +94,7 @@ def quantize_base_quantity(quantity: float, *specs: AmountSpec) -> float:
     return float(amount)
 
 
-def base_to_order_amount(quantity: float, spec: AmountSpec) -> float:
+def base_to_order_amount(quantity: float, spec: AmountSpec, scale_to_min: bool = False) -> float:
     """Convert base quantity to an exact venue amount (base units or contracts)."""
     spec.validate()
     base_qty = _decimal(quantity)
@@ -105,9 +105,12 @@ def base_to_order_amount(quantity: float, spec: AmountSpec) -> float:
     units = base_qty / per_unit
     rounded_units = (units / step).to_integral_value(rounding=ROUND_DOWN) * step
     if rounded_units < _decimal(spec.minimum):
-        raise ValueError(
-            f"order amount {rounded_units} is below {spec.unit} minimum {spec.minimum}"
-        )
+        if scale_to_min:
+            rounded_units = _decimal(spec.minimum)
+        else:
+            raise ValueError(
+                f"order amount {rounded_units} is below {spec.unit} minimum {spec.minimum}"
+            )
     return float(rounded_units)
 
 
@@ -118,3 +121,72 @@ def order_amount_to_base(amount: float, spec: AmountSpec) -> float:
     if value < 0:
         raise ValueError(f"invalid order amount: {amount}")
     return float(value * _decimal(spec.base_per_unit))
+
+
+def calculate_order_size(
+    filled_spot_amount: float,
+    expected_price_usdt: float,
+    futures_amount_spec: AmountSpec | None = None,
+    futures_min_notional: float = 0.0,
+    safety_policy: str = "scale_to_min",
+) -> tuple[float, float, float]:
+    """
+    Calculates the dynamic futures short order size given actual filled spot quantity
+    and futures exchange constraints (minimum notional & amount rules).
+
+    Returns:
+        (target_futures_size, target_futures_notional, delta_imbalance)
+        - target_futures_size: base quantity for futures order
+        - target_futures_notional: notional value in USDT
+        - delta_imbalance: target_futures_size - filled_spot_amount
+    """
+    filled_spot_amount = max(0.0, float(filled_spot_amount or 0.0))
+    expected_price_usdt = max(0.0, float(expected_price_usdt or 0.0))
+    futures_min_notional = max(0.0, float(futures_min_notional or 0.0))
+    filled_spot_notional = filled_spot_amount * expected_price_usdt
+
+    spec_min_base = 0.0
+    if futures_amount_spec is not None:
+        futures_amount_spec.validate()
+        spec_min_base = float(
+            _decimal(futures_amount_spec.minimum) * _decimal(futures_amount_spec.base_per_unit)
+        )
+
+    meets_notional = futures_min_notional <= 0 or filled_spot_notional >= futures_min_notional
+    meets_amount = spec_min_base <= 0 or filled_spot_amount >= spec_min_base
+
+    if meets_notional and meets_amount:
+        target_futures_size = filled_spot_amount
+        if futures_amount_spec is not None:
+            order_amt = base_to_order_amount(target_futures_size, futures_amount_spec)
+            target_futures_size = order_amount_to_base(order_amt, futures_amount_spec)
+        target_futures_notional = target_futures_size * expected_price_usdt
+        delta_imbalance = target_futures_size - filled_spot_amount
+        return target_futures_size, target_futures_notional, delta_imbalance
+
+    if safety_policy in ("offset_spot", "cancel", "reject"):
+        return 0.0, 0.0, -filled_spot_amount
+
+    # Safety policy: scale_to_min
+    target_futures_size = filled_spot_amount
+    if futures_min_notional > 0 and expected_price_usdt > 0:
+        min_base_by_notional = futures_min_notional / expected_price_usdt
+        target_futures_size = max(target_futures_size, min_base_by_notional)
+    if spec_min_base > 0:
+        target_futures_size = max(target_futures_size, spec_min_base)
+
+    if futures_amount_spec is not None:
+        per_unit = _decimal(futures_amount_spec.base_per_unit)
+        step = _decimal(futures_amount_spec.step)
+        units = _decimal(target_futures_size) / per_unit
+        rounded_units = (units / step).to_integral_value(rounding=ROUND_CEILING) * step
+        if rounded_units < _decimal(futures_amount_spec.minimum):
+            rounded_units = _decimal(futures_amount_spec.minimum)
+        target_futures_size = float(rounded_units * per_unit)
+
+    target_futures_notional = target_futures_size * expected_price_usdt
+    delta_imbalance = target_futures_size - filled_spot_amount
+    return target_futures_size, target_futures_notional, delta_imbalance
+
+
+calculate_futures_hedge_size = calculate_order_size

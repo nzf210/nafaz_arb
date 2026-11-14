@@ -485,6 +485,87 @@ func (c *Client) PositionOrderFills(
 	return result, nil
 }
 
+// StrategyConfigRow models rows in public.strategy_configs
+type StrategyConfigRow struct {
+	Name          string                 `json:"name"`
+	IsEnabled     bool                   `json:"is_enabled"`
+	ExecutionMode string                 `json:"execution_mode"`
+	Config        map[string]interface{} `json:"config"`
+	UpdatedAt     time.Time              `json:"updated_at"`
+}
+
+// SaveStrategyConfig upserts strategy configuration into public.strategy_configs
+func (c *Client) SaveStrategyConfig(ctx context.Context, name string, configData map[string]interface{}, executionMode string) error {
+	if c == nil || c.httpClient == nil || c.baseURL == "" || c.serviceRoleKey == "" {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "default"
+	}
+	if executionMode == "" {
+		executionMode = "TAKER_TAKER"
+	}
+	row := StrategyConfigRow{
+		Name:          name,
+		IsEnabled:     true,
+		ExecutionMode: executionMode,
+		Config:        configData,
+		UpdatedAt:     time.Now().UTC(),
+	}
+	body, err := json.Marshal([]StrategyConfigRow{row})
+	if err != nil {
+		return fmt.Errorf("marshal strategy config: %w", err)
+	}
+	endpoint := c.baseURL + "/rest/v1/strategy_configs?on_conflict=name"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("apikey", c.serviceRoleKey)
+	req.Header.Set("Authorization", authorizationBearerPrefix+c.serviceRoleKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Prefer", "resolution=merge-duplicates,return=minimal")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("SaveStrategyConfig: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return fmt.Errorf("SaveStrategyConfig HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+// LoadStrategyConfig loads strategy configuration from public.strategy_configs by name
+func (c *Client) LoadStrategyConfig(ctx context.Context, name string) (map[string]interface{}, error) {
+	if c == nil || c.httpClient == nil || c.baseURL == "" || c.serviceRoleKey == "" {
+		return nil, nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "default"
+	}
+	query := url.Values{}
+	query.Set("name", "eq."+name)
+	query.Set("select", "name,is_enabled,execution_mode,config,updated_at")
+	query.Set("limit", "1")
+	rows, err := c.readTableRows(ctx, "strategy_configs", query)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	var row StrategyConfigRow
+	if err := json.Unmarshal(rows[0], &row); err != nil {
+		return nil, fmt.Errorf("unmarshal strategy_configs row: %w", err)
+	}
+	return row.Config, nil
+}
+
 // Close releases idle connections when the scanner shuts down.
 func (c *Client) Close() {
 	if c != nil && c.httpClient != nil {

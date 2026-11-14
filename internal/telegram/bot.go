@@ -102,8 +102,11 @@ type Bot struct {
 	configPath           string
 	opportunityReader    interface { LatestOpportunityScans(context.Context, int) ([]domain.ScanResult, error) }
 	positionLedgerReader interface { PositionOrderFills(context.Context, string) (map[string][]json.RawMessage, error) }
-
-	mu          sync.Mutex
+	strategyStore        interface {
+		SaveStrategyConfig(context.Context, string, map[string]interface{}, string) error
+		LoadStrategyConfig(context.Context, string) (map[string]interface{}, error)
+	}
+	mu                   sync.Mutex
 	alertedKeys map[string]time.Time
 	mutedUntil  time.Time
 }
@@ -164,6 +167,16 @@ func (b *Bot) SetPositionLedgerReader(reader interface {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.positionLedgerReader = reader
+}
+
+// SetStrategyConfigStore wires durable strategy config storage (e.g. Supabase).
+func (b *Bot) SetStrategyConfigStore(store interface {
+	SaveStrategyConfig(context.Context, string, map[string]interface{}, string) error
+	LoadStrategyConfig(context.Context, string) (map[string]interface{}, error)
+}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.strategyStore = store
 }
 
 // SetBaseURL allows overriding Telegram API URL (useful for testing with mock server).

@@ -461,3 +461,123 @@ func setEnvSlice(target *[]string, key string) {
 		}
 	}
 }
+
+// ApplyDynamicConfig overlays dynamic configuration parameters from a raw map
+// (e.g. loaded from Supabase strategy_configs or Redis cache) onto Config.
+func ApplyDynamicConfig(cfg *Config, data map[string]interface{}) {
+	if cfg == nil || len(data) == 0 {
+		return
+	}
+	asFloat := func(v interface{}) (float64, bool) {
+		switch n := v.(type) {
+		case float64:
+			return n, true
+		case int:
+			return float64(n), true
+		case int64:
+			return float64(n), true
+		case string:
+			if f, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(n), "%"), 64); err == nil {
+				return f, true
+			}
+		}
+		return 0, false
+	}
+	asInt := func(v interface{}) (int, bool) {
+		switch n := v.(type) {
+		case float64:
+			return int(n), true
+		case int:
+			return n, true
+		case int64:
+			return int(n), true
+		case string:
+			if i, err := strconv.Atoi(strings.TrimSpace(n)); err == nil {
+				return i, true
+			}
+		}
+		return 0, false
+	}
+	asBool := func(v interface{}) (bool, bool) {
+		switch b := v.(type) {
+		case bool:
+			return b, true
+		case string:
+			if val, err := strconv.ParseBool(strings.TrimSpace(b)); err == nil {
+				return val, true
+			}
+		}
+		return false, false
+	}
+
+	for k, v := range data {
+		switch strings.ToLower(strings.TrimSpace(k)) {
+		case "capital_total", "capital":
+			if f, ok := asFloat(v); ok && f > 0 {
+				cfg.CapitalTotal = f
+			}
+		case "allocation_per_pair", "allocation":
+			if f, ok := asFloat(v); ok && f > 0 {
+				if f > 1.0 {
+					f /= 100.0
+				}
+				if f <= 1.0 {
+					cfg.AllocationPerPair = f
+				}
+			}
+		case "min_net_roi_pct", "minroi":
+			if f, ok := asFloat(v); ok && f >= 0 {
+				cfg.MinNetROIPct = f
+			}
+		case "max_net_roi_pct", "maxroi":
+			if f, ok := asFloat(v); ok && f > 0 {
+				cfg.MaxNetROIPct = f
+			}
+		case "perp_leverage", "leverage":
+			if f, ok := asFloat(v); ok && f >= 1 && f <= 20 {
+				cfg.PerpLeverage = f
+			}
+		case "min_allocated_capital", "mincap":
+			if f, ok := asFloat(v); ok && f > 0 {
+				cfg.MinAllocatedCapital = f
+			}
+		case "scan_interval_seconds", "scan":
+			if i, ok := asInt(v); ok && i >= 5 {
+				cfg.ScanIntervalSeconds = i
+			}
+		case "mode":
+			if s, ok := v.(string); ok {
+				s = strings.ToUpper(strings.TrimSpace(s))
+				if s == "MOCK" || s == "LIVE" {
+					cfg.Mode = s
+				}
+			}
+		case "enable_adaptive_sizing", "adaptive":
+			if b, ok := asBool(v); ok {
+				cfg.EnableAdaptiveSizing = &b
+			}
+		case "enable_synthetic_idr", "synthetic_idr":
+			if b, ok := asBool(v); ok {
+				cfg.EnableSyntheticIDR = b
+			}
+		case "telegram":
+			if tgMap, ok := v.(map[string]interface{}); ok {
+				if val, ok := asBool(tgMap["notify_opportunities"]); ok {
+					cfg.Telegram.NotifyOpportunities = &val
+				}
+				if val, ok := asBool(tgMap["notify_rejections"]); ok {
+					cfg.Telegram.NotifyRejections = &val
+				}
+				if val, ok := asBool(tgMap["notify_fills"]); ok {
+					cfg.Telegram.NotifyFills = &val
+				}
+				if val, ok := asBool(tgMap["notify_closes"]); ok {
+					cfg.Telegram.NotifyCloses = &val
+				}
+				if val, ok := asBool(tgMap["notify_errors"]); ok {
+					cfg.Telegram.NotifyErrors = &val
+				}
+			}
+		}
+	}
+}

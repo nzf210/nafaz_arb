@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -171,6 +172,13 @@ func (b *Bot) setNotifMode(ctx context.Context, chatID int64, mode string) {
 	if b.server != nil {
 		b.server.UpdateConfig(b.cfg)
 	}
+	if b.strategyStore != nil {
+		_ = b.strategyStore.SaveStrategyConfig(ctx, "default", b.exportDynamicConfigMap(), b.cfg.ExecutionMode)
+	}
+	if b.redisClient != nil {
+		_ = b.redisClient.SaveConfig(ctx, b.exportDynamicConfigMap())
+		_ = b.redisClient.PublishConfigUpdate(ctx, "telegram_notifications", b.cfg.Telegram)
+	}
 	b.mu.Unlock()
 
 	b.sendReplyWithMarkup(ctx, chatID, 0, b.formatNotificationSettings(), b.notifKeyboard())
@@ -220,6 +228,13 @@ func (b *Bot) toggleNotifKey(ctx context.Context, chatID int64, key string) {
 	})
 	if b.server != nil {
 		b.server.UpdateConfig(b.cfg)
+	}
+	if b.strategyStore != nil {
+		_ = b.strategyStore.SaveStrategyConfig(ctx, "default", b.exportDynamicConfigMap(), b.cfg.ExecutionMode)
+	}
+	if b.redisClient != nil {
+		_ = b.redisClient.SaveConfig(ctx, b.exportDynamicConfigMap())
+		_ = b.redisClient.PublishConfigUpdate(ctx, "telegram_notifications", b.cfg.Telegram)
 	}
 	b.mu.Unlock()
 
@@ -472,34 +487,133 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		return
 	}
 
-	cfgTarget := b.configPath
-	if cfgTarget == "" {
-		cfgTarget = "config.json"
-	}
-
-	if fileUpdater != nil {
-		if saveErr := b.saveConfigFileUpdate(fileUpdater); saveErr != nil {
-			if b.server != nil {
-				b.server.UpdateConfig(b.cfg)
-			}
-			b.sendReplyWithMarkup(
-				ctx, msg.Chat.ID, msg.MessageID,
-				fmt.Sprintf("⚠️ <b>Perhatian:</b> RAM scanner telah diperbarui, tetapi gagal simpan ke disk (%s):\n<code>%s</code>",
-					html.EscapeString(cfgTarget), html.EscapeString(saveErr.Error())),
-				b.defaultKeyboard(),
-			)
-			return
-		}
-	}
-
 	if b.server != nil {
 		b.server.UpdateConfig(b.cfg)
 	}
 
+	// Persist to Supabase strategy_configs (System of Record)
+	dbPersisted := false
+	if b.strategyStore != nil {
+		cfgMap := b.exportDynamicConfigMap()
+		if saveErr := b.strategyStore.SaveStrategyConfig(ctx, "default", cfgMap, b.cfg.ExecutionMode); saveErr == nil {
+			dbPersisted = true
+		} else {
+			log.Printf("warning: Supabase strategy config save failed: %v", saveErr)
+		}
+	}
+
+	// Persist and publish to Redis cache / pub-sub
+	redisPersisted := false
+	if b.redisClient != nil {
+		cfgMap := b.exportDynamicConfigMap()
+		if saveErr := b.redisClient.SaveConfig(ctx, cfgMap); saveErr == nil {
+			redisPersisted = true
+		}
+		_ = b.redisClient.PublishConfigUpdate(ctx, param, b.getParamValue(param))
+	}
+
+	cfgTarget := b.configPath
+	if cfgTarget == "" {
+		cfgTarget = "config.json"
+	}
+	isReadOnlyDisk := false
+	if fileUpdater != nil {
+		if saveErr := b.saveConfigFileUpdate(fileUpdater); saveErr != nil {
+			errStr := strings.ToLower(saveErr.Error())
+			if strings.Contains(errStr, "read-only") || strings.Contains(errStr, "permission denied") {
+				isReadOnlyDisk = true
+				log.Printf("info: config file %s is read-only; skipped disk write, persisted in Database/Redis", cfgTarget)
+			} else if !dbPersisted && !redisPersisted {
+				b.sendReplyWithMarkup(
+					ctx, msg.Chat.ID, msg.MessageID,
+					fmt.Sprintf("⚠️ <b>Perhatian:</b> RAM scanner telah diperbarui, tetapi gagal simpan ke disk (%s):\n<code>%s</code>",
+						html.EscapeString(cfgTarget), html.EscapeString(saveErr.Error())),
+					b.defaultKeyboard(),
+				)
+				return
+			}
+		}
+	}
+
+	syncInfo := fmt.Sprintf("File config (%s) dan memori scanner telah disinkronkan.", html.EscapeString(cfgTarget))
+	if isReadOnlyDisk {
+		syncInfo = fmt.Sprintf("Tersimpan di Database &amp; Redis (RAM diperbarui). File disk (%s) read-only, penulisan disk dilewati.", html.EscapeString(cfgTarget))
+	} else if dbPersisted || redisPersisted {
+		syncInfo = fmt.Sprintf("Tersimpan di Database, Redis, dan File config (%s).", html.EscapeString(cfgTarget))
+	}
+
 	b.sendReplyWithMarkup(
 		ctx, msg.Chat.ID, msg.MessageID,
-		fmt.Sprintf("✅ <b>Konfigurasi Berhasil Diperbarui:</b>\n\n• %s\n\n<i>File config (%s) dan memori scanner telah disinkronkan.</i>",
-			desc, html.EscapeString(cfgTarget)),
+		fmt.Sprintf("✅ <b>Konfigurasi Berhasil Diperbarui:</b>\n\n• %s\n\n<i>%s</i>",
+			desc, syncInfo),
 		b.settingsKeyboard(),
 	)
+}
+
+func (b *Bot) exportDynamicConfigMap() map[string]interface{} {
+	m := map[string]interface{}{
+		"capital_total":         b.cfg.CapitalTotal,
+		"allocation_per_pair":   b.cfg.AllocationPerPair,
+		"min_net_roi_pct":       b.cfg.MinNetROIPct,
+		"max_net_roi_pct":       b.cfg.MaxNetROIPct,
+		"perp_leverage":         b.cfg.PerpLeverage,
+		"min_allocated_capital": b.cfg.MinAllocatedCapital,
+		"scan_interval_seconds": b.cfg.ScanIntervalSeconds,
+		"mode":                  b.cfg.Mode,
+		"execution_mode":        b.cfg.ExecutionMode,
+		"enable_synthetic_idr":  b.cfg.EnableSyntheticIDR,
+	}
+	if b.cfg.EnableAdaptiveSizing != nil {
+		m["enable_adaptive_sizing"] = *b.cfg.EnableAdaptiveSizing
+	}
+	tg := map[string]interface{}{}
+	if b.cfg.Telegram.NotifyOpportunities != nil {
+		tg["notify_opportunities"] = *b.cfg.Telegram.NotifyOpportunities
+	}
+	if b.cfg.Telegram.NotifyRejections != nil {
+		tg["notify_rejections"] = *b.cfg.Telegram.NotifyRejections
+	}
+	if b.cfg.Telegram.NotifyFills != nil {
+		tg["notify_fills"] = *b.cfg.Telegram.NotifyFills
+	}
+	if b.cfg.Telegram.NotifyCloses != nil {
+		tg["notify_closes"] = *b.cfg.Telegram.NotifyCloses
+	}
+	if b.cfg.Telegram.NotifyErrors != nil {
+		tg["notify_errors"] = *b.cfg.Telegram.NotifyErrors
+	}
+	if len(tg) > 0 {
+		m["telegram"] = tg
+	}
+	return m
+}
+
+func (b *Bot) getParamValue(param string) interface{} {
+	switch param {
+	case "capital", "capital_total":
+		return b.cfg.CapitalTotal
+	case "allocation", "allocation_per_pair":
+		return b.cfg.AllocationPerPair
+	case "minroi", "min_net_roi_pct":
+		return b.cfg.MinNetROIPct
+	case "maxroi", "max_net_roi_pct":
+		return b.cfg.MaxNetROIPct
+	case "leverage", "perp_leverage":
+		return b.cfg.PerpLeverage
+	case "mincap", "min_allocated_capital":
+		return b.cfg.MinAllocatedCapital
+	case "scan", "scan_interval", "scan_interval_seconds":
+		return b.cfg.ScanIntervalSeconds
+	case "mode":
+		return b.cfg.Mode
+	case "adaptive", "enable_adaptive_sizing":
+		if b.cfg.EnableAdaptiveSizing != nil {
+			return *b.cfg.EnableAdaptiveSizing
+		}
+		return true
+	case "synthetic_idr", "enable_synthetic_idr":
+		return b.cfg.EnableSyntheticIDR
+	default:
+		return ""
+	}
 }

@@ -13,6 +13,11 @@ class BaseExchangeVenue:
     def default_market_type(self) -> str:
         return "spot"
 
+    @property
+    def min_notional_usdt(self) -> float:
+        """Minimum order notional in USDT for venue."""
+        return 0.0
+
     def format_client_order_id(self, client_order_id: str, broker_prefix: str = "") -> str:
         """Format a client order id according to venue rules."""
         return client_order_id

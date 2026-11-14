@@ -1022,3 +1022,78 @@ func TestNotificationSwitchFiltersAlerts(t *testing.T) {
 	}
 }
 
+type testStrategyStore struct {
+	saved map[string]interface{}
+}
+
+func (m *testStrategyStore) SaveStrategyConfig(ctx context.Context, name string, configData map[string]interface{}, executionMode string) error {
+	m.saved = configData
+	return nil
+}
+
+func (m *testStrategyStore) LoadStrategyConfig(ctx context.Context, name string) (map[string]interface{}, error) {
+	return m.saved, nil
+}
+
+func TestSetConfigCommandReadOnlyDiskPersistsToDBAndRedis(t *testing.T) {
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	// Setup MiniRedis
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+
+	// Setup Mock Strategy Store (Supabase)
+	store := &testStrategyStore{}
+	bot.SetStrategyConfigStore(store)
+
+	// Simulate read-only config path (e.g. /app/config.json with 0444 permission)
+	tmpCfg := t.TempDir() + "/readonly_config.json"
+	_ = os.WriteFile(tmpCfg, []byte(`{"capital_total": 100}`), 0444)
+	bot.SetConfigPath(tmpCfg)
+
+	msg := &Message{
+		Chat: Chat{ID: -100123456789},
+		From: &User{ID: 1001},
+	}
+
+	bot.handleSetConfigCommand(context.Background(), msg, []string{"minroi", "0.45"})
+
+	// Verify RAM updated
+	if bot.cfg.MinNetROIPct != 0.45 {
+		t.Fatalf("expected MinNetROIPct 0.45 in RAM, got %f", bot.cfg.MinNetROIPct)
+	}
+
+	// Verify DB (Supabase) persisted
+	if store.saved == nil || store.saved["min_net_roi_pct"] != 0.45 {
+		t.Fatalf("expected MinNetROIPct 0.45 saved to DB, got %+v", store.saved)
+	}
+
+	// Verify Redis persisted
+	cachedCfg, err := bot.redisClient.LoadConfig(context.Background())
+	if err != nil || cachedCfg["min_net_roi_pct"] != 0.45 {
+		t.Fatalf("expected MinNetROIPct 0.45 in Redis, got %+v (err: %v)", cachedCfg, err)
+	}
+
+	// Verify Telegram response is success and graceful about read-only disk
+	if !strings.Contains(sent.Text, "Konfigurasi Berhasil Diperbarui") {
+		t.Fatalf("expected success message, got: %s", sent.Text)
+	}
+	if !strings.Contains(sent.Text, "read-only") {
+		t.Fatalf("expected read-only acknowledgment, got: %s", sent.Text)
+	}
+}
+
+

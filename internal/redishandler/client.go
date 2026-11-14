@@ -38,7 +38,9 @@ const (
 	KeyTradeHistory        = "arb:trade_history"
 	KeyTradeStats          = "arb:stats"
 	KeyBalances            = "arb:balances"
-	KeyExecutorStatus      = "arb:executor:status"
+	KeyConfig                   = "arb:config"
+	ChannelConfigUpdate         = "arb:config_update"
+	KeyExecutorStatus           = "arb:executor:status"
 	ChannelBalanceRequest  = "arb:balance_request"
 	KeyPrefixBalanceReply  = "arb:balance_reply:"
 	ChannelRecoveryRequest = "arb:recovery_request"
@@ -612,6 +614,55 @@ func (c *Client) GetBalances(ctx context.Context) (*domain.BalancesRecord, error
 		return nil, err
 	}
 	return &b, nil
+}
+
+// SaveConfig caches serialized configuration in Redis.
+func (c *Client) SaveConfig(ctx context.Context, cfg map[string]interface{}) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return c.rdb.Set(ctx, KeyConfig, data, 0).Err()
+}
+
+// LoadConfig loads cached configuration from Redis.
+func (c *Client) LoadConfig(ctx context.Context) (map[string]interface{}, error) {
+	if c == nil || c.rdb == nil {
+		return nil, nil
+	}
+	val, err := c.rdb.Get(ctx, KeyConfig).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal([]byte(val), &cfg); err != nil {
+		return nil, fmt.Errorf("unmarshal cached config: %w", err)
+	}
+	return cfg, nil
+}
+
+// PublishConfigUpdate notifies components over Redis pub/sub when a config parameter changes.
+func (c *Client) PublishConfigUpdate(ctx context.Context, param string, value interface{}) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	msg := map[string]interface{}{
+		"event":        "CONFIG_UPDATE",
+		"param":        param,
+		"value":        value,
+		"timestamp_ms": time.Now().UnixMilli(),
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	return c.rdb.Publish(ctx, ChannelConfigUpdate, data).Err()
 }
 
 // SubscribeTradeEvents subscribes to the arb:trade_events channel.

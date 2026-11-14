@@ -149,6 +149,30 @@ func main(){
 	svc.SetFundingWorker(fw)
 	defer fw.Stop()
 
+	// Synchronize configuration from Database (Supabase) / Redis if available (SSOT)
+	if remoteStore != nil {
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if dbCfg, err := remoteStore.LoadStrategyConfig(dbCtx, "default"); err == nil && len(dbCfg) > 0 {
+			config.ApplyDynamicConfig(&cfg, dbCfg)
+			svc.UpdateConfig(cfg)
+			log.Printf("applied dynamic strategy config from Supabase database")
+			if redisClient != nil {
+				_ = redisClient.SaveConfig(dbCtx, dbCfg)
+			}
+		} else if err != nil {
+			log.Printf("info: could not load strategy config from Supabase: %v", err)
+		}
+		dbCancel()
+	} else if redisClient != nil {
+		rCtx, rCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if rCfg, err := redisClient.LoadConfig(rCtx); err == nil && len(rCfg) > 0 {
+			config.ApplyDynamicConfig(&cfg, rCfg)
+			svc.UpdateConfig(cfg)
+			log.Printf("applied dynamic strategy config from Redis")
+		}
+		rCancel()
+	}
+
 	store,err:=history.New(cfg.HistoryPath);if err!=nil{log.Fatal(err)}
 	server:=api.New(svc,store,cfg)
 	if redisClient != nil {
@@ -161,6 +185,7 @@ func main(){
 	if remoteStore != nil {
 		tgBot.SetOpportunityHistoryReader(remoteStore)
 		tgBot.SetPositionLedgerReader(remoteStore)
+		tgBot.SetStrategyConfigStore(remoteStore)
 	}
 	if redisClient != nil {
 		tgBot.SetRedisClient(redisClient)

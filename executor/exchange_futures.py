@@ -8,7 +8,7 @@ from executor.helpers import is_trading_permission_denied
 from executor.exchange_common import (
     _base_order_result, _expose_client_order_id, acknowledged_order_result,
     _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
-    futures_position_side_params,
+    futures_position_side_params, logger,
 )
 
 
@@ -53,7 +53,7 @@ class ExchangeFuturesMixin:
 
     async def open_global_short_market(
         self, symbol: str, amount: float, client_order_id: Optional[str] = None,
-        amount_spec: Any = None, price: float = 0.0,
+        amount_spec: Any = None, price: float = 0.0, min_notional_usdt: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Executes an instant Short 1x Market Hedge on Global Futures.
@@ -61,8 +61,20 @@ class ExchangeFuturesMixin:
         """
         if amount <= 0:
             raise ValueError(f"invalid short amount: {amount}")
+
+        # Check futures min notional constraint dynamically
+        filled_spot_notional = amount * price if price > 0 else 0.0
+        if min_notional_usdt > 0 and price > 0 and filled_spot_notional < min_notional_usdt:
+            target_futures_size = max(amount, min_notional_usdt / price)
+            delta_imbalance = target_futures_size - amount
+            logger.warning(
+                f"[Delta Imbalance Logger] Filled spot notional (${filled_spot_notional:.2f}) < futures min notional (${min_notional_usdt:.2f}). "
+                f"Scaled futures short from {amount} to {target_futures_size} (delta imbalance: +{delta_imbalance:.8f})."
+            )
+            amount = target_futures_size
+
         spec = _require_amount_spec(amount_spec)
-        order_amount = base_to_order_amount(amount, spec)
+        order_amount = base_to_order_amount(amount, spec, scale_to_min=True)
         order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
         # Market Sell on Futures opens a Short position. CCXT accepts one
         # params mapping; merge the id and reduceOnly flag rather than passing

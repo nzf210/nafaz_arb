@@ -8,7 +8,7 @@ from typing import Any, Dict
 from executor.models import ActivePosition, OrderRole, PositionState
 from executor.global_stop import GlobalStopError
 from executor import helpers
-from executor.quantity import AmountSpec
+from executor.quantity import AmountSpec, calculate_order_size
 from executor.helpers import (
     HedgeSlippageExceeded,
     build_client_order_id,
@@ -34,6 +34,7 @@ class EntryHedgeMixin:
         order_info["filled"] = max(
             float(order_info.get("filled", 0.0) or 0.0), current_filled
         )
+        order_info["filled_spot_amount"] = order_info["filled"]
         hedged_qty = float(order_info.get("hedged_short_qty", 0.0))
         unhedged_delta = current_filled - hedged_qty
 
@@ -204,6 +205,59 @@ class EntryHedgeMixin:
             ),
             "hedge_requested_for_spot_fill": float(unhedged_delta),
         }
+
+        # Calculate futures hedge size and minimum notional constraints dynamically
+        cfg = getattr(self, "config", None)
+        futures_min_notional = float(
+            order_info.get("futures_min_notional", 0.0)
+            or getattr(cfg, "futures_min_notional", 0.0)
+            or 0.0
+        )
+        if futures_min_notional <= 0:
+            capabilities = getattr(self, "capabilities", None)
+            if capabilities is not None and hasattr(capabilities, "get_profile"):
+                prof = capabilities.get_profile(
+                    str(order_info.get("global_exchange") or ""), "futures"
+                )
+                if prof and getattr(prof, "min_notional_usdt", 0) > 0:
+                    futures_min_notional = float(prof.min_notional_usdt)
+
+        amount_spec = AmountSpec.from_dict(
+            order_info.get("global_amount_spec")
+        )
+        safety_policy = str(
+            order_info.get("partial_fill_safety_policy")
+            or getattr(cfg, "partial_fill_safety_policy", "scale_to_min")
+        )
+
+        futures_hedge_qty, target_notional, delta_imbalance = calculate_order_size(
+            filled_spot_amount=unhedged_delta,
+            expected_price_usdt=expected_short_price,
+            futures_amount_spec=amount_spec,
+            futures_min_notional=futures_min_notional,
+            safety_policy=safety_policy,
+        )
+
+        if futures_hedge_qty <= 0:
+            logger.warning(
+                f"[Delta Imbalance Logger] Spot fill {unhedged_delta:.8f} (${unhedged_delta * expected_short_price:.2f}) "
+                f"below futures minimum (${futures_min_notional:.2f}) and safety policy is '{safety_policy}'; "
+                "aborting hedge to trigger spot offset/unwind."
+            )
+            raise ValueError(
+                f"filled spot notional below futures minimum requirement ({futures_min_notional} USDT); "
+                f"safety policy '{safety_policy}' triggered spot offset"
+            )
+
+        if abs(delta_imbalance) > 1e-12:
+            logger.warning(
+                f"[Delta Imbalance Logger] Imbalance detected on {pair_tag}: spot filled={unhedged_delta:.8f} "
+                f"(${unhedged_delta * expected_short_price:.2f}) vs futures min notional (${futures_min_notional:.2f}). "
+                f"Scaled futures short to {futures_hedge_qty:.8f} (${target_notional:.2f}). "
+                f"Delta imbalance: {delta_imbalance:+.8f}"
+            )
+            order_info["delta_imbalance"] = delta_imbalance
+
         await self._register_order_intent(
             pair_tag,
             hedge_coid,
@@ -214,15 +268,12 @@ class EntryHedgeMixin:
             side="sell",
             order_type="market",
             price=expected_short_price,
-            quantity=unhedged_delta,
+            quantity=futures_hedge_qty,
             global_amount_spec=order_info.get("global_amount_spec"),
             recovery_context=recovery_context,
             required=True,
         )
         order_info["hedge_submit_started"] = True
-        amount_spec = AmountSpec.from_dict(
-            order_info.get("global_amount_spec")
-        )
         global_stop = getattr(self, "global_stop", None)
         if global_stop is not None:
             await global_stop.prepare_submit_attempt(
@@ -232,7 +283,7 @@ class EntryHedgeMixin:
                 symbol=global_symbol,
                 side="sell",
                 order_type="market",
-                quantity=unhedged_delta,
+                quantity=futures_hedge_qty,
                 price=expected_short_price,
                 pair_key=pair_tag,
                 recovery_context=recovery_context,
@@ -243,7 +294,7 @@ class EntryHedgeMixin:
             if global_stop is None:
                 short_order = await self.client.open_global_short_market(
                     global_symbol,
-                    unhedged_delta,
+                    futures_hedge_qty,
                     price=expected_short_price,
                     client_order_id=hedge_coid,
                     amount_spec=amount_spec,
@@ -257,7 +308,7 @@ class EntryHedgeMixin:
                         try:
                             short_order = await self.client.open_global_short_market(
                                 global_symbol,
-                                unhedged_delta,
+                                futures_hedge_qty,
                                 price=expected_short_price,
                                 client_order_id=hedge_coid,
                                 amount_spec=amount_spec,
@@ -393,16 +444,16 @@ class EntryHedgeMixin:
             actual_hedged_qty = float(short_order.get("filled") or 0.0)
         except (TypeError, ValueError):
             actual_hedged_qty = 0.0
-        qty_tolerance = max(1e-12, unhedged_delta * 1e-8)
-        if actual_hedged_qty + qty_tolerance < unhedged_delta:
+        qty_tolerance = max(1e-12, futures_hedge_qty * 1e-8)
+        if actual_hedged_qty + qty_tolerance < futures_hedge_qty:
             raise ValueError(
-                f"futures hedge fill incomplete: requested={unhedged_delta}, "
+                f"futures hedge fill incomplete: requested={futures_hedge_qty}, "
                 f"filled={actual_hedged_qty}; spot rollback will be guarded by "
                 "an authoritative futures-position check"
             )
-        if actual_hedged_qty > unhedged_delta + qty_tolerance:
+        if actual_hedged_qty > futures_hedge_qty + qty_tolerance:
             raise ValueError(
-                f"futures hedge overfilled: requested={unhedged_delta}, "
+                f"futures hedge overfilled: requested={futures_hedge_qty}, "
                 f"filled={actual_hedged_qty}; manual reconciliation required"
             )
 
@@ -419,7 +470,7 @@ class EntryHedgeMixin:
             side="sell",
             order_type="market",
             price=expected_short_price,
-            quantity=unhedged_delta,
+            quantity=futures_hedge_qty,
             global_amount_spec=order_info.get("global_amount_spec"),
             recovery_context=recovery_context,
         )

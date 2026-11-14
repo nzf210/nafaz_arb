@@ -17,6 +17,10 @@ class OKXVenue(BaseExchangeVenue):
     def default_market_type(self) -> str:
         return "futures"
 
+    @property
+    def min_notional_usdt(self) -> float:
+        return 10.0
+
     def format_client_order_id(self, client_order_id: str, broker_prefix: str = "") -> str:
         """Format client order id for OKX (capped at 32 chars)."""
         if not client_order_id:

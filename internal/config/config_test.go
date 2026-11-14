@@ -227,6 +227,71 @@ func TestMinFundingRateAndExcludedSymbols(t *testing.T) {
 	}
 }
 
+func TestApplyDynamicConfig(t *testing.T) {
+	cfg := Config{
+		CapitalTotal:        100.0,
+		AllocationPerPair:   0.5,
+		MinNetROIPct:        0.2,
+		MaxNetROIPct:        10.0,
+		PerpLeverage:        1.0,
+		MinAllocatedCapital: 10.0,
+		ScanIntervalSeconds: 30,
+		Mode:                "MOCK",
+	}
+
+	data := map[string]interface{}{
+		"capital_total":          250.0,
+		"allocation_per_pair":    0.4,
+		"min_net_roi_pct":        0.35,
+		"max_net_roi_pct":        15.0,
+		"perp_leverage":          2.0,
+		"min_allocated_capital":  20.0,
+		"scan_interval_seconds":  15,
+		"mode":                   "LIVE",
+		"enable_adaptive_sizing": false,
+		"telegram": map[string]interface{}{
+			"notify_opportunities": false,
+			"notify_fills":         true,
+		},
+	}
+
+	ApplyDynamicConfig(&cfg, data)
+
+	if cfg.CapitalTotal != 250.0 {
+		t.Errorf("CapitalTotal = %f, want 250.0", cfg.CapitalTotal)
+	}
+	if cfg.AllocationPerPair != 0.4 {
+		t.Errorf("AllocationPerPair = %f, want 0.4", cfg.AllocationPerPair)
+	}
+	if cfg.MinNetROIPct != 0.35 {
+		t.Errorf("MinNetROIPct = %f, want 0.35", cfg.MinNetROIPct)
+	}
+	if cfg.MaxNetROIPct != 15.0 {
+		t.Errorf("MaxNetROIPct = %f, want 15.0", cfg.MaxNetROIPct)
+	}
+	if cfg.PerpLeverage != 2.0 {
+		t.Errorf("PerpLeverage = %f, want 2.0", cfg.PerpLeverage)
+	}
+	if cfg.MinAllocatedCapital != 20.0 {
+		t.Errorf("MinAllocatedCapital = %f, want 20.0", cfg.MinAllocatedCapital)
+	}
+	if cfg.ScanIntervalSeconds != 15 {
+		t.Errorf("ScanIntervalSeconds = %d, want 15", cfg.ScanIntervalSeconds)
+	}
+	if cfg.Mode != "LIVE" {
+		t.Errorf("Mode = %s, want LIVE", cfg.Mode)
+	}
+	if cfg.AdaptiveSizingEnabled() {
+		t.Errorf("AdaptiveSizingEnabled = true, want false")
+	}
+	if cfg.Telegram.NotifyOpportunitiesEnabled() {
+		t.Errorf("NotifyOpportunitiesEnabled = true, want false")
+	}
+	if !cfg.Telegram.NotifyFillsEnabled() {
+		t.Errorf("NotifyFillsEnabled = false, want true")
+	}
+}
+
 func TestExchangeHealthDefaultsAndValidation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(`{"capital_total":100,"allocation_per_pair":0.5}`), 0600); err != nil {
