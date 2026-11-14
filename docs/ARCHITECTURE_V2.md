@@ -140,3 +140,11 @@ Python now has a typed V2 domain model and strict validator. It rejects unknown 
 - No live order is submitted, canceled, amended, or force-closed.
 
 Remaining work includes the verified production adapter capability matrix, explicit v1-to-v2 candidate mapping for each account/route, secret-reference resolver, runtime injection and PostgreSQL startup integration, fill/order lifecycle migration, a transactional STOP-vs-submit fence, and deployed multi-process/restart/outbox-consumer tests. Until those are complete, V2 configuration is a validated foundation only and LIVE admission remains closed.
+
+### V2 persistence invariants
+
+- Perpetual market metadata must include a positive contract size; spot market rows must not carry a futures contract size.
+- Before accepting a durable execution intent, PostgreSQL verifies that the venue/account is a route leg, the canonical symbol matches the venue-bound market and route allowlist, the spot quote or futures settle asset is allowed by that route, and both route legs still have verified capability evidence.
+- Capability evidence revocation therefore blocks subsequent intent creation even if an earlier route row remains enabled.
+- Position snapshots are append-only observations. An exchange position ID is indexed for lookup but is not unique across time, so successive reconciliation runs can retain history.
+- CI exercises the repository against a real PostgreSQL instance inside a rollback-only transaction, in addition to migration replay and SQL schema smoke tests.
