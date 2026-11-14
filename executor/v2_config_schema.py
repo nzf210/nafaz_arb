@@ -548,6 +548,9 @@ def parse_v2_config(
             raise V2ConfigValidationError(f"account {account_id} references unknown venue {venue_id}")
         if venue_index[venue_id].get("account_id") != account_id:
             raise V2ConfigValidationError(f"account {account_id} does not match venue {venue_id}.account_id")
+        label = account["label"]
+        if not isinstance(label, str) or not label.strip():
+            raise V2ConfigValidationError(f"account {account_id}.label must be non-empty")
         accounts.append(V2AccountModel(
             account_id=account_id,
             venue_id=venue_id,
@@ -606,6 +609,11 @@ def parse_v2_config(
                 if venue.get("enabled") is not True or account.get("enabled") is not True:
                     raise V2ConfigValidationError(
                         f"route {route_id} {leg_name} references a disabled venue/account"
+                    )
+                market_data = venue.get("market_data")
+                if not isinstance(market_data, Mapping) or market_data.get("enabled") is not True:
+                    raise V2ConfigValidationError(
+                        f"route {route_id} {leg_name} market-data adapter is disabled"
                     )
                 venue_execution = venue.get("execution")
                 if not isinstance(venue_execution, Mapping) or venue_execution.get("enabled") is not True:
