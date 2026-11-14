@@ -138,6 +138,7 @@ The sample represents two spot venues and one currently active futures venue. Mo
       "enabled": true,
       "source": "configured_live_fx_market",
       "max_age_seconds": 5,
+      "max_spread_pct": 0.25,
       "static_fallback_allowed_in_live": false
     }
   },
