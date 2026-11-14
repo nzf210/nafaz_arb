@@ -1496,3 +1496,37 @@ These are exposure-reducing or order-cancel operations. They retain their own id
 ### Release limitations
 
 This source audit and its regression tests do not certify live venue semantics. Operator-authenticated manual resolution still needs end-to-end operational review (identity, key custody, rotation, approval and runbook). The real PostgreSQL multi-process disconnect/fault-injection test must be verified on the final CI revision, and per-venue sandbox/paper probes remain open. The branch is NOT LIVE-CERTIFIED; do not merge, deploy, migrate production, or cut over based on CI alone.
+
+
+## 31. Order mutation audit continuation — 2026-11-14
+
+The current source review traces the two LIVE exposure-increasing order paths end to end:
+
+- Spot BUY: `_submit_entry_order` → `place_local_limit_buy` → CCXT `create_limit_buy_order`; Indodax routes through the TAPIv2 `_create_order` method and signed `POST /api/v2/order`.
+- Futures hedge SELL: `_submit_entry_hedge_order` → `open_global_short_market` → CCXT `create_market_sell_order` with `reduceOnly=False` and venue short-side parameters.
+
+Both prepare a durable attempt before the request and execute the venue call inside `GlobalStopService.order_submit_fence`. The actual service signatures were checked against all reviewed call sites: `order_submit_fence(client_order_id=...)`, `request_stop(reason, source=..., metadata=...)`, and `request_stop_in_transaction(conn, reason, source=..., metadata=...)`. The session advisory lock conflicts with STOP's transaction advisory lock. The separately committed SUBMITTING row remains the cross-instance guard if the PostgreSQL session is disconnected during the HTTP request.
+
+The generic `MutationGateway.execute_create_order` API remains a potentially exposure-increasing surface and is fail-closed: it requires an initialized GlobalStop service, writes PREPARED, enters the shared fence, and persists ACK/rejection/unknown outcomes. No production caller of its create method was found in the reviewed branch; `CommandProcessor` uses only its cancel method. The custom Indodax TAPIv2 create methods funnel through one raw POST boundary and do not implement a generic POST retry. The modular `executor/venues/*` files do not call create-order methods directly.
+
+Risk-reducing operations remain intentionally outside the entry STOP fence:
+- Spot limit SELL exit.
+- Spot market SELL rollback and force-close.
+- Futures market BUY close with `reduceOnly=True`.
+- Cancel operations.
+
+They retain their own stable client IDs, retry restrictions and reconciliation. In particular, ambiguous market-sell transport outcomes are not retried, spot exit repricing is blocked on inconclusive exact-ID lookup, and force-close futures does not mint a new close ID when a prior reduceOnly intent cannot be resolved.
+
+### Intent idempotency continuation
+
+The durable PREPARED reuse check compared the core order fields and `amount_spec`, but omitted `recovery_context`. That context binds a futures hedge to its originating spot order. The audit patch now compares the stored JSONB recovery context as part of the same client-ID intent equality check. Regression coverage proves an identical PREPARED intent can be reused, while a changed parent spot client ID is rejected. The new test is awaiting CI on the post-patch head.
+
+### Current evidence and remaining boundaries
+
+The immediately preceding head `5956c230` passed workflow [43570939910](https://github.com/nzf210/nafaz_arb/actions/runs/43570939910): Go, PostgreSQL schema/integration, Docker builds and Python jobs all succeeded; the full Python suite reported 558 passed and 2 skipped. The PostgreSQL integration job separately reported 2 passed, including the multi-process DB-backend disconnect while the fake venue request remained active and the HMAC signed-resolution/audit test. This run predates the recovery-context patch and must not be represented as verification of that new test.
+
+The HMAC operator-resolution code is tested, but deployment-side operator identity, secret custody/rotation, approval workflow, audit retrieval and runbook remain open. The PostgreSQL fault-injection test is verified against disposable CI PostgreSQL, not the production VPS topology or a real exchange. Per-venue sandbox/paper probes for exact-ID visibility, eventual consistency, partial/pending market hedge behavior, cancel/fill races and reduceOnly close semantics remain open.
+
+The latest partial-fill sizing path can intentionally scale the futures short above the filled spot quantity to meet a futures minimum notional/contract minimum. It records/logs the delta imbalance; the current hard-drift branch logs but does not itself unwind the excess. This is an explicit strategy/risk-policy review gate, not an unfenced create-order path, and was not changed here.
+
+**Branch status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration or cutover was performed.
