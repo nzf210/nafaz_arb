@@ -87,6 +87,17 @@ class _Pool:
         return _Acquire(self.connection)
 
 
+class _Cache:
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = 0
+
+    async def verify(self, config):
+        self.calls += 1
+        if self.error:
+            raise self.error
+
+
 class _Registry:
     def __init__(self, report=None, error=None):
         self.report = report or SimpleNamespace(converged=True)
@@ -126,7 +137,7 @@ async def test_postgres_admission_gate_requires_running_matching_active_config_a
     config = _config()
     registry = _Registry()
     gate = PostgresEntryAdmissionGate(
-        _Pool(_operator_row()), AtomicConfigSnapshot(config), registry
+        _Pool(_operator_row()), AtomicConfigSnapshot(config), registry, cache=_Cache()
     )
 
     report = await gate.require_entry_allowed()
@@ -141,6 +152,7 @@ async def test_postgres_admission_gate_rejects_stopped_operator():
         _Pool(_operator_row(state="STOPPED", trading_enabled=False)),
         AtomicConfigSnapshot(_config()),
         _Registry(),
+        cache=_Cache(),
     )
     with pytest.raises(ConfigSnapshotError, match="not RUNNING"):
         await gate.require_entry_allowed()
@@ -152,6 +164,7 @@ async def test_postgres_admission_gate_rejects_stale_snapshot_and_hash():
         _Pool(_operator_row(active_version=20)),
         AtomicConfigSnapshot(_config()),
         _Registry(),
+        cache=_Cache(),
     )
     with pytest.raises(ConfigSnapshotError, match="active operator config"):
         await gate.require_entry_allowed()
@@ -160,6 +173,7 @@ async def test_postgres_admission_gate_rejects_stale_snapshot_and_hash():
         _Pool(_operator_row(active_sha256="0" * 64)),
         AtomicConfigSnapshot(_config()),
         _Registry(),
+        cache=_Cache(),
     )
     with pytest.raises(ConfigSnapshotError, match="hash differs"):
         await gate.require_entry_allowed()
@@ -171,6 +185,7 @@ async def test_postgres_admission_gate_rejects_disabled_signals_or_divergent_con
         _Pool(_operator_row()),
         AtomicConfigSnapshot(_config(signals_enabled=False)),
         _Registry(),
+        cache=_Cache(),
     )
     with pytest.raises(ConfigSnapshotError, match="signals are disabled"):
         await disabled.require_entry_allowed()
@@ -179,6 +194,23 @@ async def test_postgres_admission_gate_rejects_disabled_signals_or_divergent_con
         _Pool(_operator_row()),
         AtomicConfigSnapshot(_config()),
         _Registry(error=ConfigSnapshotError("consumer divergence")),
+        cache=_Cache(),
     )
     with pytest.raises(ConfigSnapshotError, match="consumer divergence"):
         await divergent.require_entry_allowed()
+
+
+
+@pytest.mark.asyncio
+async def test_postgres_admission_gate_fails_closed_when_redis_snapshot_is_unavailable():
+    cache = _Cache(ConfigSnapshotError("Redis unavailable"))
+    gate = PostgresEntryAdmissionGate(
+        _Pool(_operator_row()),
+        AtomicConfigSnapshot(_config()),
+        _Registry(),
+        cache=cache,
+    )
+
+    with pytest.raises(ConfigSnapshotError, match="Redis unavailable"):
+        await gate.require_entry_allowed()
+    assert cache.calls == 1
