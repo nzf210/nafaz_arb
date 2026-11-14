@@ -26,7 +26,7 @@ def _intent(**overrides):
         "client_order_id": "nafaz-entry-123",
         "requested_qty": Decimal("0.001"),
         "limit_price": Decimal("500000000"),
-        "is_mock": True,
+        "is_mock": False,
     }
     values.update(overrides)
     return ExecutionIntent(**values)
@@ -108,6 +108,10 @@ class _Pool:
         return _Acquire(self.connection)
 
 
+def test_execution_intent_defaults_to_live_admission_gate():
+    assert _intent().is_mock is False
+
+
 def test_intent_validation_requires_decimal_precision_and_limit_price():
     with pytest.raises(ValueError, match="not float"):
         _validate_intent(_intent(requested_qty=0.001))
@@ -160,7 +164,7 @@ async def test_create_intent_replay_returns_existing_intent_without_duplicate_ev
         "client_order_id": "nafaz-entry-123",
         "requested_qty": Decimal("0.001"),
         "limit_price": Decimal("500000000"),
-        "is_mock": True,
+        "is_mock": False,
         "state_version": 0,
     }
     connection = _Connection(existing_intent=existing)
@@ -190,7 +194,7 @@ async def test_idempotency_key_reuse_with_different_data_is_rejected():
         "client_order_id": "nafaz-entry-123",
         "requested_qty": Decimal("0.001"),
         "limit_price": Decimal("500000000"),
-        "is_mock": True,
+        "is_mock": False,
         "state_version": 0,
     }
     connection = _Connection(existing_intent=existing)
