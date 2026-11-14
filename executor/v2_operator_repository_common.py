@@ -6,10 +6,10 @@ from datetime import datetime
 from typing import Any, Mapping, Optional
 
 from executor.v2_operator_models import (
-    DuplicateCommandConflict,
     ENTRY_FENCE_LOCK_NAME,
-    OperatorControlError,
     SUPPORTED_COMMANDS,
+    DuplicateCommandConflict,
+    OperatorControlError,
     TelegramIdentity,
 )
 
