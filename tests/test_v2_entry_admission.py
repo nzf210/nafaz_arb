@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -214,3 +215,50 @@ async def test_postgres_admission_gate_fails_closed_when_redis_snapshot_is_unava
     with pytest.raises(ConfigSnapshotError, match="Redis unavailable"):
         await gate.require_entry_allowed()
     assert cache.calls == 1
+
+
+
+class _DenyFence:
+    async def __aenter__(self):
+        raise ConfigSnapshotError("operator state is not RUNNING")
+
+    async def __aexit__(self, *_):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_fence_denial_retires_intent_without_calling_exchange():
+    engine = object.__new__(ArbitrageEngine)
+    engine.config = SimpleNamespace(mock_mode=False)
+    engine.client = SimpleNamespace(place_local_limit_buy=AsyncMock())
+    engine._v2_entry_admission_allowed = AsyncMock(side_effect=[True, True])
+    engine._next_order_seq = lambda: 1
+    engine._entry_recovery_context = lambda *args: {}
+    engine._register_order_intent = AsyncMock()
+    engine._mark_order_submission_rejected = AsyncMock()
+    engine._handle_entry_submission_failure = AsyncMock()
+    engine._v2_entry_submission_fence = lambda: _DenyFence()
+
+    pair_info = SimpleNamespace(
+        local_exchange="indodax",
+        local_symbol="btc_idr",
+        quote_asset="IDR",
+        local_amount_spec=None,
+        global_amount_spec=None,
+    )
+    await engine._submit_entry_order(
+        "indodax:btc_idr__okx:btc_usdt",
+        object(),
+        pair_info,
+        object(),
+        object(),
+        0.001,
+        10.0,
+        1_000_000_000.0,
+    )
+
+    engine._mark_order_submission_rejected.assert_awaited_once_with(
+        "indodax", engine._mark_order_submission_rejected.await_args.args[1]
+    )
+    engine.client.place_local_limit_buy.assert_not_awaited()
+    engine._handle_entry_submission_failure.assert_not_awaited()
