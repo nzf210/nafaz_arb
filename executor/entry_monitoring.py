@@ -1,6 +1,7 @@
 """entry monitoring methods for entry execution."""
 
 import asyncio
+import re
 import time
 from executor.models import PositionState
 from executor.private_stream import fetch_order_preferring_stream
@@ -44,7 +45,15 @@ class EntryMonitoringMixin:
             order_info = self.pending_entry_orders.get(pair_tag)
             if not order_info:
                 continue
-            await self._process_pending_entry(pair_tag, order_info)
+            # One corrupt record must not abort the sweep: an exception here
+            # skips every remaining pair, so a single bad row silently stops
+            # all monitoring and exit management.
+            try:
+                await self._process_pending_entry(pair_tag, order_info)
+            except Exception:
+                logger.exception(
+                    "[State 1] pending-entry monitor failed for %s", pair_tag
+                )
 
     async def _process_pending_entry(self, pair_tag: str, order_info: dict) -> None:
         """Route pending entry lifecycle calls through the pair-bound clients."""
@@ -66,10 +75,13 @@ class EntryMonitoringMixin:
             getattr(self.config, "order_fetch_backoff_max_seconds", 60.0)
         )
         delay = min(ceiling, base * (2 ** min(failures, 10)))
+        match = re.search(r"try again in (\d+)", str(exc))
+        if match:
+            delay = max(delay, float(match.group(1)) + 1.0)
         order_info["fetch_retry_after"] = now + delay
         logger.error(
             f"failed to fetch local order {order_id} "
-            f"(attempt {failures}, retry in {delay:.1f}s): {type(exc).__name__}"
+            f"(attempt {failures}, retry in {delay:.1f}s): {type(exc).__name__}: {exc}"
         )
         await self._expire_unfetchable_entry_order(pair_tag, order_info)
 

@@ -417,6 +417,22 @@ class RiskStateMixin:
         """Counts failures per pair and blacklists pair for 24h when threshold reached."""
         if not pair_tag or reason == "SPOT_OPEN_ORDER_LIMIT_REACHED":
             return
+        # Venue-wide faults say nothing about this pair. Counting them blacklists
+        # every pair on a temporarily throttled/unauthorised venue for 24h, which
+        # silently stops trading long after the venue recovers.
+        venue_wide = (
+            "ORDER_RECOVERY_UNVERIFIED", "RECOVERY_OPEN_ORDERS_UNAVAILABLE",
+            "HEDGE_VENUE_PERMISSION_DENIED", "VENUE_RATE_LIMITED",
+            "BALANCE_FEED_UNAVAILABLE", "DUAL_LEG_UNDERFUNDED",
+            "INSUFFICIENT_OR_UNBALANCED_BALANCE",
+        )
+        if str(reason or "") in venue_wide:
+            logger.info(
+                "[Risk Control] %s on %s is venue-wide, not pair-specific; "
+                "pair failure counter unchanged",
+                reason, pair_tag,
+            )
+            return
         threshold = int(getattr(self.config, "max_pair_failure_threshold", 2) or 0)
         if threshold <= 0:
             return

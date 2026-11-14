@@ -13,7 +13,7 @@ from executor.models import (
     ExecutorPayload,
     ActivePosition,
 )
-from executor.exchange_client import ExchangeClient
+from executor.exchange_client import ExchangeClient, sync_exchange_times
 from executor.fee_engine import FeeRates, round_trip_fees_usdt
 from executor.pair_registry import ExchangePairKey, PairClientRegistry
 from executor.config import ExecutorConfig
@@ -294,6 +294,17 @@ class ArbitrageEngine(
                 self.slot_manager.pool = self.global_stop.pool
             if self.command_processor is not None:
                 self.command_processor.pool = self.global_stop.pool
+        # Align venue clocks before any signed request. A drifted local clock is
+        # rejected as an invalid signature, which is easily mistaken for a
+        # permission problem and cannot be retried into success.
+        try:
+            await sync_exchange_times({
+                venue: entry.get("client")
+                for venue, entry
+                in (getattr(self._base_client, "balance_exchanges", {}) or {}).items()
+            })
+        except Exception:
+            logger.exception("[TimeSync] could not align venue clocks; continuing")
         # Start the writer before recovery so positions and orders restored from
         # Redis are re-registered in Supabase instead of only existing in Redis.
         await self.supabase.start()

@@ -258,3 +258,18 @@ class ExchangeFeeBalanceMixin:
                 local_quote == "USDC" or global_quote == "USDC"
             ),
         }
+
+    async def fetch_spot_free_balance(self, asset: str) -> float:
+        """Free balance of one spot asset, in base units.
+
+        Used by the hedge rollback: the venue only lets us sell what is free
+        right now, so the emergency unwind must size to this rather than to the
+        theoretically unhedged delta.
+        """
+        symbol = str(asset or "").strip().upper()
+        if not symbol:
+            raise ValueError("asset is required to read a spot free balance")
+        raw = await self.local.fetch_balance()
+        if not isinstance(raw, dict):
+            raise ValueError("exchange returned an invalid balance payload")
+        return self._balance_amount(raw, symbol, "free")

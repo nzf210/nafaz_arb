@@ -34,6 +34,7 @@ func (b *Bot) formatHelp() string {
 /positions - <i>Lihat posisi aktif Executor</i>
 /pending - <i>Lihat pending order Spot yang belum selesai</i>
 /spotmax [cex] [jumlah] - <i>Atur maksimum open order/posisi Spot per CEX (default 2)</i>
+/settings - <i>Lihat konfigurasi modal, sizing, dan parameter aktif</i>
 /balance - <i>Cek saldo live seluruh aset Spot & Futures</i>
 /scan - <i>Jalankan scan pasar on-demand</i>
 /latest - <i>Lihat peluang dari 10 scan terakhir</i>
@@ -149,6 +150,37 @@ func formatExchangeMetrics(metrics []domain.ExchangeScanMetrics) string {
 		res = res[:300] + "..."
 	}
 	return res
+}
+
+func (b *Bot) formatSettings() string {
+	legSizing := b.cfg.CapitalTotal * b.cfg.AllocationPerPair / 2.0
+	return fmt.Sprintf(`⚙️ <b>Pengaturan &amp; Parameter Trading NAFAZ</b>
+
+• <b>Mode:</b> <code>%s</code>
+• <b>Total Capital Budget:</b> $%.2f
+• <b>Alokasi Per Pair:</b> %.1f%% ($%.2f)
+• <b>Sizing Per Kaki (Spot &amp; Futures):</b> ~$%.2f per kaki
+• <b>Min Allocated Capital:</b> $%.2f
+• <b>Adaptive Sizing:</b> %t
+• <b>Synthetic IDR:</b> %t
+• <b>Target Net ROI:</b> %.2f%% – %.2f%%
+• <b>Perp Leverage:</b> %.0fx
+• <b>Scan Interval:</b> %ds
+• <b>Batas Order Spot Per CEX:</b> Atur lewat <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>
+• <b>Kill Switch Entry:</b> Aktifkan/matikan via <code>/killswitch [on|off]</code>`,
+		html.EscapeString(b.cfg.Mode),
+		b.cfg.CapitalTotal,
+		b.cfg.AllocationPerPair*100,
+		b.cfg.CapitalTotal*b.cfg.AllocationPerPair,
+		legSizing,
+		b.cfg.MinAllocatedCapital,
+		b.cfg.AdaptiveSizingEnabled(),
+		b.cfg.EnableSyntheticIDR,
+		b.cfg.MinNetROIPct,
+		b.cfg.MaxNetROIPct,
+		b.cfg.PerpLeverage,
+		b.cfg.ScanIntervalSeconds,
+	)
 }
 
 func (b *Bot) formatMetrics() string {

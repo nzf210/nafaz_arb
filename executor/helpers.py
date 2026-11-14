@@ -106,6 +106,55 @@ def is_explicit_rate_limit_rejection(exc: Exception) -> bool:
         "http_429" in error_text
         or "status code 429" in error_text
         or "429 too many requests" in error_text
+        or "too many requests" in error_text
+        or "code\":1008" in error_text
+        or "code: 1008" in error_text
+    )
+
+
+def is_trading_permission_denied(exc: Exception) -> bool:
+    """True when the venue rejects the *key*, not the order.
+
+    OKX 50123 ("This API Key does not have trading permission for the Crypto")
+    and 50101 are account/key-level refusals: every future order on that venue
+    fails identically, so the venue must stop receiving new entries instead of
+    being retried. Retrying cannot succeed and each attempt risks leaving a
+    spot leg unhedged.
+    """
+    error_text = str(exc).lower()
+    return any(
+        marker in error_text
+        for marker in (
+            '"code":"50123"', "code: 50123", "does not have trading permission",
+            '"code":"50101"', "code: 50101",
+            "api key does not have trading permission",
+            "apikey does not match current environment",
+            "invalid api key", "api key is invalid",
+            "insufficient permission", "no permission to trade",
+        )
+    )
+
+
+def is_transient_settlement_error(exc: Exception) -> bool:
+    """True for a venue balance/engine race that a short retry can clear.
+
+    Tokocrypto answers 2206 / 989012 ("Balance is sufficient in the database
+    but still insufficient in the matching engine") when the spot asset was
+    just credited: the ledger and the matching engine momentarily disagree.
+    Treating it as permanent strands the position, so rollback retries it.
+    """
+    error_text = str(exc).lower()
+    return any(
+        marker in error_text
+        for marker in (
+            "insufficient available balance",
+            '"code":2206', "code: 2206",
+            '"code":"989012"', "code: 989012",
+            "insufficient in the matching engine",
+            "balance is insufficient or potential overflow",
+            "internal error", "system busy", "please try again later",
+            "service unavailable", "timeout",
+        )
     )
 
 

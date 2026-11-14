@@ -264,59 +264,35 @@ podman run -d --name nafaz-scanner --restart always -p 8080:8080 -v $(pwd)/confi
 
 ---
 
-## 9. Integrasi Supabase (opsional)
+## 9. Integrasi Database PostgreSQL VPS (Durable Persistence)
 
-Scanner dan executor dapat menulis histori operasional ke Supabase. Redis tetap
-dipakai untuk pub/sub, locks, harga live, saldo cache, dan pemulihan posisi aktif.
-Supabase bukan jalur kritis untuk hedge, rollback, atau force-close.
+Scanner dan executor menggunakan **PostgreSQL native di VPS** via `POSTGRES_DSN` sebagai sumber durable persistence tunggal (menggantikan Supabase REST dan SQLite outbox). Redis tetap dipakai untuk pub/sub, locks, harga live, saldo cache, dan pemulihan posisi aktif real-time.
 
-Sediakan dua environment variable berikut pada host/container:
+**Arsitektur Database:**
+- **PostgreSQL VPS:** Berjalan langsung di host VPS (atau via container PostgreSQL Podman/Docker). Menyimpan `risk_state`, `risk_pnl_events`, `order_registry`, `executor_v2_order_slots`, `executor_v2_mutation_journal`, dan audit logs.
+- **SQLite Outbox Ditiadakan:** Tidak lagi memerlukan file SQLite `supabase-outbox.sqlite3`. Komunikasi ke database menggunakan koneksi pooling native `asyncpg` dengan latensi sub-milidetik, tanpa overhead HTTP REST atau antrean perantara.
+- **Supabase Cloud Deprecated:** Dependensi ke `SUPABASE_URL` dan `SUPABASE_KEY` telah dilepas sepenuhnya.
 
-- `SUPABASE_URL`: URL project Supabase HTTPS.
-- `SUPABASE_KEY`: secret `service_role` key (server-only), bukan anon/publishable key.
-- `SUPABASE_OUTBOX_PATH`: file SQLite outbox executor; default
-  `/app/data/executor/supabase-outbox.sqlite3`. Direktori ini dipetakan ke
-  `./data/executor` di host agar antrean tetap ada setelah container restart/recreate.
-- `SUPABASE_SCANNER_OUTBOX_PATH`: jurnal JSONL scanner; default
-  `/app/data/scanner/supabase-outbox.jsonl`. Path ini berada di volume
-  `./data` yang sama tetapi direktori scanner terpisah dari executor.
+Sediakan environment variable berikut pada host/container (`.env`):
 
-Contoh memasukkan key tanpa menuliskannya sebagai literal ke command history:
+- `POSTGRES_DSN`: URL koneksi PostgreSQL native VPS, contoh: `postgresql://wch_admin:password@172.18.0.2:5432/nafaz` (atau `postgresql://postgres:password@127.0.0.1:5432/nafaz`).
+- `REDIS_URL`: URL koneksi Redis, contoh: `redis://nafaz-redis:6380/0`.
+
+Contoh konfigurasi di file `.env` VPS:
 
 ```bash
-export SUPABASE_URL="https://<project-ref>.supabase.co"
-read -rsp "Supabase service_role key: " SUPABASE_KEY
-export SUPABASE_KEY
-echo
-podman-compose up -d --build
+POSTGRES_DSN="postgresql://wch_admin:YOUR_PASSWORD@172.18.0.2:5432/nafaz"
+REDIS_URL="redis://nafaz-redis:6380/0"
 ```
 
-Pastikan environment tersebut diteruskan ke kedua service `nafaz-scanner` dan
-`nafaz-executor`. Jangan commit key, jangan masukkan ke image, dan jangan expose
-ke Vue atau Telegram. File `.env` di repository di-ignore oleh Git, tetapi gunakan
-secret manager atau environment systemd yang terlindungi untuk deployment VPS.
-
-Untuk menerapkan migration, periksa project dan migration history terlebih dahulu:
+Untuk menerapkan migration schema ke database PostgreSQL VPS:
 
 ```bash
-supabase link --project-ref <project-ref>
-supabase migration list --remote
-supabase db push --remote
+# Menggunakan migration runner script atau psql langsung:
+psql -h 172.18.0.2 -U wch_admin -d nafaz -f supabase/migrations/20261114000100_add_executor_v2_core.sql
+# Atau lewat container PostgreSQL:
+podman exec -i wch-stg-postgres psql -U wch_admin -d nafaz < supabase/migrations/20261114000100_add_executor_v2_core.sql
 ```
-
-Jangan jalankan `db push` sebelum schema dan migration history remote ditinjau.
-Migration CI hanya membuktikan kompatibilitas pada PostgreSQL test, bukan bahwa
-project Supabase remote Anda sudah menerima migration.
-
-Cakupan runtime saat ini: scanner menulis `scanner_opportunities`; executor
-menulis `positions`, `orders`, `order_registry`, `order_fills`, `closed_trades`,
-`executor_events`, dan `risk_events`. Tabel `position_legs`,
-`funding_payments`, `balance_snapshots`, dan `executor_status_snapshots`
-belum dihubungkan ke runtime.
-
-Penulisan Supabase bersifat best-effort. Belum ada durable outbox; outage panjang,
-queue penuh, atau proses mati dapat menyebabkan histori Supabase tidak lengkap.
-Redis dan exchange API tetap menjadi sumber runtime untuk koordinasi dan exposure.
 
 ## 10. Universal order recovery setelah restart
 
@@ -324,10 +300,9 @@ Order yang masih aktif di exchange harus tetap dikenal bot setelah restart,
 container restart, reboot VPS, atau crash executor. Alur startup-nya:
 
 1. Connect Redis.
-2. Connect Supabase dan start durable outbox writer.
+2. Connect PostgreSQL VPS via `POSTGRES_DSN` (`asyncpg` pool).
 3. Exchange adapter sudah dibuat saat proses start.
-4. Muat durable order registry (`arb:order:*` di Redis, fallback ke tabel
-   `order_registry` Supabase bila cache Redis kosong).
+4. Muat durable order registry (`arb:order:*` di Redis, fallback ke PostgreSQL bila cache Redis kosong).
 5. Muat posisi aktif dari Redis.
 6. Ambil open orders langsung dari setiap venue (`fetch_open_orders`; whole-account,
    tanpa filter symbol, agar order yang belum pernah tercatat ikut terlihat).

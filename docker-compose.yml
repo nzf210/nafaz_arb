@@ -40,6 +40,7 @@ services:
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_KEY=${SUPABASE_KEY:-}
       - SUPABASE_SCANNER_OUTBOX_PATH=${SUPABASE_SCANNER_OUTBOX_PATH:-/app/data/scanner/supabase-outbox.jsonl}
+      - ENABLE_EXECUTOR_SIGNALS=${ENABLE_EXECUTOR_SIGNALS:-true}
       # Optional override for Telegram config:
       # - TELEGRAM_ENABLED=true
       # - TELEGRAM_BOT_TOKEN=your_bot_token
@@ -63,7 +64,7 @@ services:
     environment:
       - TZ=Asia/Jakarta
       - REDIS_URL=redis://nafaz-redis:6380/0
-      # Required for LIVE mode: direct PostgreSQL connection for global STOP fencing.
+      # PostgreSQL VPS durable persistence (replaces Supabase & SQLite outbox)
       - POSTGRES_DSN=${POSTGRES_DSN:-}
       - LOCAL_EXCHANGE=indodax
       # "all" is a scanner discovery setting, not a valid CCXT exchange id.
@@ -71,10 +72,9 @@ services:
       # Executor mode follows config.json mode (MOCK/LIVE).
       # Set EXECUTOR_MOCK_MODE=true only as an explicit emergency override.
       - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-}
-      # Best-effort audit persistence. Unset = disabled, trading unaffected.
+      # Legacy Supabase persistence (optional / deprecated in favor of POSTGRES_DSN)
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_KEY=${SUPABASE_KEY:-}
-      - SUPABASE_OUTBOX_PATH=${SUPABASE_OUTBOX_PATH:-/app/data/executor/supabase-outbox.sqlite3}
       # Private order/balance feed. NOTE: the private-stream cache is currently
       # read-only -- nothing populates it yet (no websocket subscriber is wired),
       # so enabling it does NOT reduce REST polling. Leave off until a feed

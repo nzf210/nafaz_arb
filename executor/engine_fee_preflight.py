@@ -200,3 +200,107 @@ class EngineFeePreflightMixin:
             await self.publish_status()
             return False
         return True
+
+    def _hedge_key_denied(self, venue: str) -> str:
+        """Cached proof that this venue's API key cannot place orders."""
+        denials = getattr(self, "_hedge_permission_denied", None)
+        if not isinstance(denials, dict):
+            self._hedge_permission_denied = denials = {}
+        return str(denials.get(str(venue or "").lower()) or "")
+
+    def _record_hedge_key_denied(self, venue: str, reason: str) -> None:
+        name = str(venue or "").lower()
+        if not name:
+            return
+        denials = getattr(self, "_hedge_permission_denied", None)
+        if not isinstance(denials, dict):
+            self._hedge_permission_denied = denials = {}
+        denials[name] = str(reason)[:400]
+
+    async def _validate_hedge_leg_tradable(self, pair_tag, pair_info) -> bool:
+        """Refuse to buy spot when the futures key cannot open the hedge.
+
+        An entry is two legs. If the global venue rejects the *key* (OKX 50123
+        "API Key does not have trading permission"), the spot buy succeeds and
+        the short cannot, leaving unhedged directional exposure. A denied key
+        never heals inside a process, so the venue is halted for new entries
+        instead of being retried on every signal.
+        """
+        venue = str(getattr(pair_info, "global_exchange", "") or "").strip().lower()
+        if not venue:
+            return True
+        denial = self._hedge_key_denied(venue)
+        if denial:
+            logger.warning(
+                "[Risk Control] rejecting entry for %s: %s trading permission denied (%s)",
+                pair_tag, venue, denial,
+            )
+            await self._publish_execution_failure(
+                pair_tag,
+                "HEDGE_VENUE_PERMISSION_DENIED",
+                f"API key {venue} tidak memiliki izin trading; entry Spot diblokir "
+                "agar tidak meninggalkan posisi tanpa hedge.",
+                detail={"hedge_exchange": venue, "venue_error": denial},
+            )
+            return False
+        # A passing probe is cached: the check costs one order-endpoint call,
+        # and a key that works keeps working until it is rotated.
+        verified = getattr(self, "_hedge_key_verified", None)
+        if not isinstance(verified, dict):
+            self._hedge_key_verified = verified = {}
+        if verified.get(venue):
+            return True
+        # Probe the client bound to THIS pair's hedge venue. Using the base
+        # client would interrogate the configured default venue and wrongly
+        # gate pairs hedged somewhere else.
+        token = None
+        probe_client = self.client
+        try:
+            token = self._bind_pair_client(pair_info)
+            probe_client = self.client
+        except Exception:
+            token = None
+        probe = getattr(probe_client, "probe_short_tradability", None)
+        if not callable(probe):
+            if token is not None:
+                self._reset_pair_client(token)
+            return True
+        try:
+            allowed, reason = await probe(
+                str(getattr(pair_info, "global_symbol", "") or "")
+            )
+        except Exception as exc:
+            # A failed probe must not block trading: the hedge attempt itself is
+            # still guarded by the ambiguity and rollback paths.
+            logger.warning(
+                "[State 1 Hedge Preflight] permission probe failed for %s: %s",
+                pair_tag, exc,
+            )
+            if token is not None:
+                self._reset_pair_client(token)
+            return True
+        if allowed:
+            verified[venue] = True
+            return True
+        self._record_hedge_key_denied(venue, reason)
+        self._exchange_halted[venue] = f"hedge key trading permission denied ({reason[:120]})"
+        self._persist_risk_state(
+            "exchange_halt", scope="exchange", exchange=venue,
+            reason=self._exchange_halted[venue],
+            value={"source": "hedge_permission_denied", "venue_error": reason[:400]},
+        )
+        self._refresh_entry_gate()
+        logger.critical(
+            "[Risk Control] Exchange %s HALTED: %s",
+            venue, self._exchange_halted[venue],
+        )
+        await self._publish_execution_failure(
+            pair_tag,
+            "HEDGE_VENUE_PERMISSION_DENIED",
+            f"API key {venue} tidak memiliki izin trading. Entry Spot diblokir agar "
+            "tidak meninggalkan posisi tanpa hedge. Perbaiki izin API key lalu "
+            "resume exchange.",
+            detail={"hedge_exchange": venue, "venue_error": reason[:400]},
+        )
+        await self.publish_status()
+        return False

@@ -8,7 +8,11 @@ from typing import Any, Dict
 from executor.models import ActivePosition, OrderRole, PositionState
 from executor import helpers
 from executor.quantity import AmountSpec
-from executor.helpers import HedgeSlippageExceeded, build_client_order_id
+from executor.helpers import (
+    HedgeSlippageExceeded,
+    build_client_order_id,
+    is_trading_permission_denied,
+)
 from executor.entry_common import logger
 
 
@@ -419,6 +423,30 @@ class EntryHedgeMixin:
             )
         return hedge_coid, recovery_context, short_order, actual_hedged_qty
 
+    def _halt_hedge_venue_permission(self, venue: str, error: Exception) -> None:
+        """Stop new entries on a venue whose API key cannot open the hedge leg."""
+        name = str(venue or "").strip().lower()
+        if not name:
+            return
+        reason = str(error)[:400]
+        denials = getattr(self, "_hedge_permission_denied", None)
+        if not isinstance(denials, dict):
+            self._hedge_permission_denied = denials = {}
+        denials[name] = reason
+        self._exchange_halted[name] = (
+            f"hedge key trading permission denied ({reason[:120]})"
+        )
+        self._persist_risk_state(
+            "exchange_halt", scope="exchange", exchange=name,
+            reason=self._exchange_halted[name],
+            value={"source": "hedge_permission_denied", "venue_error": reason},
+        )
+        self._refresh_entry_gate()
+        logger.critical(
+            "[Risk Control] Exchange %s HALTED: %s",
+            name, self._exchange_halted[name],
+        )
+
     async def _publish_entry_position_opened(self, pair_tag: str) -> None:
         pos = self.active_positions[pair_tag]
         open_msg = {
@@ -569,6 +597,28 @@ class EntryHedgeMixin:
                 self._record_order_failure(
                     global_exchange, "hedge order placement failed"
                 )
+            # A key-permission refusal is a definitive venue response: the short
+            # was never created, so the spot leg must be unwound immediately and
+            # the venue stopped rather than retried on the next signal.
+            if is_trading_permission_denied(he):
+                self._halt_hedge_venue_permission(global_exchange, he)
+                if order_info.get("hedge_submit_started"):
+                    try:
+                        await self._mark_order_submission_rejected(
+                            global_exchange,
+                            str(order_info.get("pending_hedge_client_order_id") or ""),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[Hedge Rollback] could not retire rejected hedge intent for %s",
+                            pair_tag,
+                        )
+                    order_info["hedge_submit_started"] = False
+                await self._rollback_hedge_failure(
+                    pair_tag, order_info, unhedged_delta,
+                    price_idr, usdt_rate, he,
+                )
+                return
             if order_info.get("hedge_submit_started"):
                 hedge_client_id = str(
                     order_info.get("pending_hedge_client_order_id") or ""

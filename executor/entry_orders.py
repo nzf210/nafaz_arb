@@ -1,11 +1,14 @@
 """entry order management methods for entry execution."""
 
+import asyncio
 import json
 import math
+import re
 import time
 from typing import Any
 
 from executor.models import PositionState
+from executor.helpers import is_explicit_rate_limit_rejection
 from executor.entry_common import logger
 
 
@@ -36,27 +39,41 @@ class EntryOrderManagementMixin:
     ):
         order_id = str(order_info["order_id"])
         local_symbol = str(order_info["symbol"])
-        try:
-            order = await self.client.fetch_local_order(order_id, local_symbol)
-        except Exception as exc:
-            self.supabase.event(
-                "ENTRY_ORDER_CANCEL_RECONCILIATION_FAILED",
-                pair_key=pair_tag,
-                is_mock=bool(getattr(self.config, "mock_mode", False)),
-                payload={
-                    "order_id": order_id,
-                    "client_order_id": order_info.get("client_order_id", ""),
-                    "symbol": local_symbol,
-                    "reason": reason,
-                    "cancel_error": cancel_error,
-                    "fetch_error": f"{type(exc).__name__}: {exc}",
-                },
-            )
-            logger.exception(
-                f"[{reason}] cannot verify order {order_id}; pending state and "
-                "reserved funds are retained"
-            )
-            return None
+        order = None
+        for attempt in range(1, 4):
+            try:
+                order = await self.client.fetch_local_order(order_id, local_symbol)
+                break
+            except Exception as exc:
+                if is_explicit_rate_limit_rejection(exc) and attempt < 3:
+                    delay = 5.0
+                    match = re.search(r"try again in (\d+)", str(exc))
+                    if match:
+                        delay = max(delay, float(match.group(1)) + 1.0)
+                    logger.warning(
+                        "[%s] rate limited verifying cancel for order %s (attempt %d/3); retrying in %.1fs",
+                        reason, order_id, attempt, delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    self.supabase.event(
+                        "ENTRY_ORDER_CANCEL_RECONCILIATION_FAILED",
+                        pair_key=pair_tag,
+                        is_mock=bool(getattr(self.config, "mock_mode", False)),
+                        payload={
+                            "order_id": order_id,
+                            "client_order_id": order_info.get("client_order_id", ""),
+                            "symbol": local_symbol,
+                            "reason": reason,
+                            "cancel_error": cancel_error,
+                            "fetch_error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+                    logger.exception(
+                        f"[{reason}] cannot verify order {order_id}; pending state and "
+                        "reserved funds are retained"
+                    )
+                    return None
         if isinstance(order, dict):
             return order
         self.supabase.event(
@@ -111,15 +128,29 @@ class EntryOrderManagementMixin:
             },
         )
         cancel_error = None
-        try:
-            await self.client.cancel_local_order(order_id, local_symbol)
-        except Exception as exc:
-            # A timeout is ambiguous: the venue may have accepted the cancel.
-            cancel_error = f"{type(exc).__name__}: {exc}"
-            logger.exception(
-                f"[{reason}] cancel request failed for {order_id}; "
-                "reconciling the order directly with the exchange"
-            )
+        for attempt in range(1, 4):
+            try:
+                await self.client.cancel_local_order(order_id, local_symbol)
+                cancel_error = None
+                break
+            except Exception as exc:
+                if is_explicit_rate_limit_rejection(exc) and attempt < 3:
+                    delay = 5.0
+                    match = re.search(r"try again in (\d+)", str(exc))
+                    if match:
+                        delay = max(delay, float(match.group(1)) + 1.0)
+                    logger.warning(
+                        "[%s] rate limited cancelling order %s (attempt %d/3); retrying in %.1fs",
+                        reason, order_id, attempt, delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    cancel_error = f"{type(exc).__name__}: {exc}"
+                    logger.exception(
+                        f"[{reason}] cancel request failed for {order_id}; "
+                        "reconciling the order directly with the exchange"
+                    )
+                    break
 
         order = await self._fetch_entry_order_for_cancel_reconciliation(
             pair_tag, order_info, reason, cancel_error

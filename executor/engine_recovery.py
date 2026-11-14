@@ -1,12 +1,14 @@
 """engine recovery methods for arbitrage engine orchestration."""
 
+import asyncio
 import json
+import re
 import time
 from typing import Optional, Any
 
 from executor.models import PositionState, ActivePosition
 from executor.pair_registry import ExchangePairKey
-from executor.helpers import PENDING_ENTRY_KEY_PREFIX
+from executor.helpers import PENDING_ENTRY_KEY_PREFIX, is_explicit_rate_limit_rejection
 from executor.engine_common import logger
 
 
@@ -422,6 +424,39 @@ class EngineRecoveryMixin:
             self._retain_invalid_pending_entry(pair_tag, order_info, order_id, symbol)
             return
 
+        # A record whose hedge venue and hedge symbol disagree cannot be bound
+        # to any client, so every later monitor tick would raise. Treat it as a
+        # corrupt record (quarantine + halt the scope) instead of adopting it.
+        global_exchange = str(order_info.get("global_exchange") or "").strip().lower()
+        global_symbol = str(order_info.get("global_symbol") or "").strip()
+        local_exchange = str(order_info.get("local_exchange") or "").strip().lower()
+        local_symbol = str(symbol or "")
+        try:
+            ExchangePairKey.create(
+                local_exchange, local_symbol, global_exchange, global_symbol
+            )
+        except ValueError as key_error:
+            logger.critical(
+                "[Recovery] quarantining pending entry %s: unroutable pair identity (%s)",
+                pair_tag, key_error,
+            )
+            self.pending_entry_orders.pop(pair_tag, None)
+            await self.redis.delete(PENDING_ENTRY_KEY_PREFIX + pair_tag)
+            self._mark_failed(
+                pair_tag,
+                "PENDING_ENTRY_IDENTITY_INVALID",
+                f"Persisted pending entry cannot be routed to a venue: {key_error}",
+                detail={
+                    "order_id": order_id,
+                    "local_exchange": local_exchange,
+                    "local_symbol": local_symbol,
+                    "global_exchange": global_exchange,
+                    "global_symbol": global_symbol,
+                },
+                state=PositionState.FAILED,
+            )
+            return
+
         status, filled = await self._resolve_venue_order_state(
             order_id, symbol, pair_tag
         )
@@ -485,10 +520,26 @@ class EngineRecoveryMixin:
     ) -> tuple:
         """Returns (status, filled) using the exact local venue when known."""
         token = None
+        order = None
         try:
             if pair_tag and not getattr(self.config, "mock_mode", False):
                 token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
-            order = await self.client.fetch_local_order(order_id, symbol)
+            for attempt in range(1, 4):
+                try:
+                    order = await self.client.fetch_local_order(order_id, symbol)
+                    break
+                except Exception as exc:
+                    if is_explicit_rate_limit_rejection(exc) and attempt < 3:
+                        delay = 5.0
+                        match = re.search(r"try again in (\d+)", str(exc))
+                        if match:
+                            delay = max(delay, float(match.group(1)) + 1.0)
+                        logger.warning(
+                            f"[Recovery] rate limited fetching order {order_id} ({symbol}) attempt {attempt}/3; waiting {delay:.1f}s"
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        raise
         except Exception as exc:
             logger.warning(f"[Recovery] fetch order {order_id} failed: {exc}")
             return "unknown", None

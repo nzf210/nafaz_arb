@@ -1,5 +1,9 @@
 # Supabase database
 
+> **PENTING / V2 ARCHITECTURE UPDATE:**
+> Sejak **Executor Architecture V2**, seluruh persistensi runtime executor telah dimigrasikan ke **PostgreSQL native di VPS** (`POSTGRES_DSN`) menggunakan driver `asyncpg`.
+> **Local SQLite Outbox (`supabase-outbox.sqlite3`) sudah ditiadakan** karena komunikasi ke PostgreSQL VPS berjalan di jaringan lokal berkecepatan tinggi dengan garansi transaksi ACID langsung. Dokumentasi Supabase REST & SQLite outbox di bawah ini dipertahankan hanya sebagai referensi historis / legacy.
+
 Supabase stores durable operational history for NAFAZ. Redis remains the
 low-latency coordination layer between the Go scanner and Python executor. Local
 persistent outboxes protect scanner and executor audit writes from process restarts

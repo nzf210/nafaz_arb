@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 
+from executor.models import PositionState
 from executor.engine_common import logger
 from executor.private_stream import PrivateOrderStreamWorker
 
@@ -606,7 +607,23 @@ class EngineRuntimeMixin:
         if getattr(self.config, "mock_mode", False):
             return await operation(*args, **kwargs)
         pair_info = self._pair_info_for_tag(pair_tag)
-        token = self._bind_pair_client(pair_info)
+        try:
+            token = self._bind_pair_client(pair_info)
+        except ValueError as bind_error:
+            # A persisted record can carry a pair identity that no client can
+            # route (e.g. a hedge venue/symbol disagreement written by an older
+            # build). Fail the pair instead of raising on every monitor tick.
+            logger.critical(
+                "[State 1] dropping unroutable pair %s: %s", pair_tag, bind_error
+            )
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            self._mark_failed(
+                pair_tag,
+                "PAIR_IDENTITY_UNROUTABLE",
+                f"Pair cannot be bound to any venue client: {bind_error}",
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+            return None
         try:
             return await operation(*args, **kwargs)
         finally:

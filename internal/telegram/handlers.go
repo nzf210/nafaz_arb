@@ -492,6 +492,8 @@ func (b *Bot) handleCommand(
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatFrozenPairs(), b.defaultKeyboard())
 	case "/metrics":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatMetrics(), b.defaultKeyboard())
+	case "/settings", "/setting", "/config":
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatSettings(), b.defaultKeyboard())
 	case "/mute":
 		b.handleMuteCommand(ctx, msg, parts)
 	case "/unmute":
@@ -544,6 +546,10 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 		b.handleHistoryCommand(ctx, chatID, 0)
 	case "frozen":
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatFrozenPairs(), b.defaultKeyboard())
+	case "settings":
+		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatSettings(), b.defaultKeyboard())
+	case "risk":
+		b.sendMonitorSection(ctx, chatID, 0, "RISK HALT", "risk", "risk_status", "risk_halt")
 	case "menu":
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatMenu(), b.defaultKeyboard())
 	case "help":

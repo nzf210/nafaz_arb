@@ -212,6 +212,7 @@ func (b *Bot) Start(ctx context.Context) error {
 		{Command: "metrics", Description: "📊 Statistik durasi & histori arbitrase"},
 		{Command: "mute", Description: "🔕 Bisukan alert sementara (misal: /mute 1h)"},
 		{Command: "unmute", Description: "🔔 Aktifkan kembali notifikasi alert"},
+		{Command: "settings", Description: "⚙️ Pengaturan & parameter trading aktif"},
 		{Command: "killswitch", Description: "🛑 Hentikan/lanjutkan semua entry baru (on/off)"},
 		{Command: "help", Description: "ℹ️ Petunjuk lengkap & bantuan"},
 	}
@@ -375,6 +376,10 @@ func (b *Bot) defaultKeyboard() *InlineKeyboardMarkup {
 			{
 				{Text: "⚡ Status", CallbackData: "status"},
 				{Text: "📊 Statistik Metrik", CallbackData: "metrics"},
+			},
+			{
+				{Text: "⚙️ Pengaturan / Setup", CallbackData: "settings"},
+				{Text: "🛡️ Risk Status", CallbackData: "risk"},
 			},
 			{
 				{Text: "🔥 Peluang Aktif", CallbackData: "active"},

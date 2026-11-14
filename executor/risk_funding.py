@@ -111,6 +111,9 @@ class RiskFundingMixin:
         max_pos_usdt = directives.max_position_usdt
         if max_pos_usdt <= 0:
             max_pos_usdt = 100.0
+        max_pos_limit = float(getattr(self.config, "max_position_usdt", 0.0) or 0.0)
+        if max_pos_limit > 0:
+            max_pos_usdt = min(max_pos_usdt, max_pos_limit)
         min_cap = getattr(self.config, "min_allocated_capital", 10.0)
         mock_mode = bool(getattr(self.config, "mock_mode", False))
         balances = await self._entry_sizing_balance_snapshot(

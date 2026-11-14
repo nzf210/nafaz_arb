@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -9,6 +10,7 @@ from typing import Any, Dict, Optional
 from redis.exceptions import WatchError
 
 from executor.exchange_common import _accepted_client_order_ids
+from executor.helpers import is_explicit_rate_limit_rejection
 from executor.models import OrderRecord, PositionState, RecoveryStatus
 
 logger = logging.getLogger("executor.order_recovery")
@@ -394,30 +396,46 @@ class RecoveryRegistryMixin:
             return
         order_id = record.exchange_order_id
         try:
-            if order_id:
-                order = await self._fetch_order_by_role(record, order_id, symbol)
-            elif record.client_order_id:
-                order = await self._fetch_order_by_client_id(record)
-                if order is None:
-                    await self.order_registry.mark_pending_recovery(
-                        record.local_order_id,
-                        "client order id not found in venue history; acceptance remains ambiguous",
-                    )
-                    self._halt_exposure_scope(
-                        record.pair_key or f"{exchange}:{symbol}",
-                        "order submission acknowledgement is unresolved",
-                    )
-                    return
-            else:
-                await self.order_registry.mark_pending_recovery(
-                    record.local_order_id,
-                    "order has neither exchange id nor client order id",
-                )
-                self._halt_exposure_scope(
-                    record.pair_key or f"{exchange}:{symbol}",
-                    "order submission identity is unavailable",
-                )
-                return
+            for attempt in range(1, 4):
+                try:
+                    if order_id:
+                        order = await self._fetch_order_by_role(record, order_id, symbol)
+                    elif record.client_order_id:
+                        order = await self._fetch_order_by_client_id(record)
+                        if order is None:
+                            await self.order_registry.mark_pending_recovery(
+                                record.local_order_id,
+                                "client order id not found in venue history; acceptance remains ambiguous",
+                            )
+                            self._halt_exposure_scope(
+                                record.pair_key or f"{exchange}:{symbol}",
+                                "order submission acknowledgement is unresolved",
+                            )
+                            return
+                    else:
+                        await self.order_registry.mark_pending_recovery(
+                            record.local_order_id,
+                            "order has neither exchange id nor client order id",
+                        )
+                        self._halt_exposure_scope(
+                            record.pair_key or f"{exchange}:{symbol}",
+                            "order submission identity is unavailable",
+                        )
+                        return
+                    break
+                except Exception as fetch_exc:
+                    if is_explicit_rate_limit_rejection(fetch_exc) and attempt < 3:
+                        delay = 5.0
+                        match = re.search(r"try again in (\d+)", str(fetch_exc))
+                        if match:
+                            delay = max(delay, float(match.group(1)) + 1.0)
+                        logger.warning(
+                            "[Recovery] rate limited fetching order %s on %s (attempt %d/3); retrying in %.1fs",
+                            order_id, exchange, attempt, delay,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        raise
         except Exception as exc:
             record.recovery_status = RecoveryStatus.UNVERIFIED.value
             await self.order_registry.register(record)
@@ -620,26 +638,43 @@ class RecoveryRegistryMixin:
         if not targets:
             return
         for exchange, symbol, pair_tag, market, amount_spec in targets:
-            try:
-                open_orders = await self._fetch_recovery_orders(exchange, symbol, market, amount_spec)
-            except NotImplementedError as exc:
-                logger.info("[Recovery] %s cannot list open orders: %s", exchange, exc)
-                continue
-            except Exception as exc:
-                logger.critical(
-                    "[Recovery] cannot read %s open orders for %s: %s; entry halted on that venue",
-                    exchange, symbol or "account", exc,
-                )
-                scope = pair_tag or exchange
-                self._halt_exposure_scope(scope, "open-order sweep failed after restart")
-                await self._publish_execution_failure(
-                    f"recovery:{scope}",
-                    "RECOVERY_OPEN_ORDERS_UNAVAILABLE",
-                    f"Cannot verify resting orders on {exchange} after restart: {exc}. "
-                    "New entries are blocked until the venue is reachable again.",
-                    detail={"exchange": exchange, "symbol": symbol, "error": str(exc)},
-                    state=PositionState.RECONCILIATION_REQUIRED,
-                )
+            open_orders = None
+            for attempt in range(3):
+                try:
+                    open_orders = await self._fetch_recovery_orders(exchange, symbol, market, amount_spec)
+                    break
+                except NotImplementedError as exc:
+                    logger.info("[Recovery] %s cannot list open orders: %s", exchange, exc)
+                    break
+                except Exception as exc:
+                    err_str = str(exc).lower()
+                    is_rl = "code\":1008" in err_str or "code: 1008" in err_str or "too many requests" in err_str or "429" in err_str
+                    if is_rl and attempt < 2:
+                        match = re.search(r"try again in (\d+)", str(exc))
+                        venue_wait = float(match.group(1)) if match else 0.0
+                        wait_s = max(venue_wait + 1.0, 2.0 * (attempt + 1))
+                        logger.warning(
+                            "[Recovery] %s rate limited listing open orders (attempt %d/3); retrying in %.1fs: %s",
+                            exchange, attempt + 1, wait_s, exc,
+                        )
+                        await asyncio.sleep(wait_s)
+                        continue
+                    logger.critical(
+                        "[Recovery] cannot read %s open orders for %s: %s; entry halted on that venue",
+                        exchange, symbol or "account", exc,
+                    )
+                    scope = pair_tag or exchange
+                    self._halt_exposure_scope(scope, "open-order sweep failed after restart")
+                    await self._publish_execution_failure(
+                        f"recovery:{scope}",
+                        "RECOVERY_OPEN_ORDERS_UNAVAILABLE",
+                        f"Cannot verify resting orders on {exchange} after restart: {exc}. "
+                        "New entries are blocked until the venue is reachable again.",
+                        detail={"exchange": exchange, "symbol": symbol, "error": str(exc)},
+                        state=PositionState.RECONCILIATION_REQUIRED,
+                    )
+                    break
+            if open_orders is None:
                 continue
             for order in open_orders:
                 await self._adopt_venue_order(order, exchange, symbol, pair_tag, market, amount_spec)

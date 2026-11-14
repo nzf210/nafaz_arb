@@ -343,18 +343,16 @@ balances, risk events, and executor events/status snapshots.
 
 **Runtime persistence:** the Go scanner writes evaluated snapshots to
 `scanner_opportunities`; the Python executor writes `positions`, `orders`,
-`order_fills`, `closed_trades`, `executor_events`, and `risk_events`.
-Scanner opportunity snapshots are first committed to a persistent JSONL outbox
-and replayed by a background delivery reconciliation worker; executor events use
-a persistent SQLite outbox. Upserts and order/fill writes use deterministic
-idempotency keys. Redis remains authoritative for live coordination and active
-exposure recovery; the scanner's existing JSON history remains in place for its API.
+`order_fills`, `closed_trades`, `executor_events`, `risk_events`, and V2 core journals.
+Executor persistence uses native PostgreSQL on VPS via `POSTGRES_DSN` (`asyncpg`),
+eliminating the legacy SQLite outbox queue and Supabase REST latency. Upserts and order/fill
+writes use deterministic idempotency keys and direct ACID transactions. Redis remains authoritative
+for live coordination and active exposure recovery; the scanner's existing JSON history remains in
+place for its API.
 
-Set `SUPABASE_URL` and `SUPABASE_KEY` in the server environment to enable both
-writers. `SUPABASE_KEY` must be the server-only Supabase `service_role` secret,
-never the anon/publishable key. Do not commit it, put it in the image, or expose it
-to frontend/Telegram clients. If credentials are absent, persistence is disabled;
-a database outage does not block exchange risk management.
+Set `POSTGRES_DSN` in the server environment (e.g. in `.env`) to enable direct
+database persistence. If credentials are absent, persistence is disabled; a
+database outage does not block exchange risk management.
 
 Runtime exchange reconciliation: the executor periodically re-runs the
 universal order-registry reconciliation, matches venue order status and

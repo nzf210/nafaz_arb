@@ -1,5 +1,6 @@
 """Unified exchange facade for spot and perpetual venue adapters."""
 
+import logging
 from typing import Optional, Dict, Any
 import ccxt.async_support as ccxt
 
@@ -16,6 +17,8 @@ from executor.exchange_futures import ExchangeFuturesMixin
 from executor.exchange_orders import ExchangeOrderMixin
 from executor.exchange_trades import ExchangeTradeMixin
 from executor.paper_exchange_client import PaperTradingExchangeClient
+
+logger = logging.getLogger("executor.exchange_client")
 
 
 class ExchangeClient(
@@ -164,6 +167,10 @@ def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot
         "apiKey": getattr(creds, "api_key", ""),
         "secret": getattr(creds, "api_secret", ""),
         "enableRateLimit": True,
+        # Signed requests carry a timestamp; a local clock that drifts past the
+        # venue window is rejected as an invalid signature before the order is
+        # even parsed. Sync once after construction (see sync_exchange_times).
+        "adjustForTimeDifference": True,
         "options": {"defaultType": resolved_default_type},
     }
     if hasattr(creds, "options") and isinstance(creds.options, dict):
@@ -180,6 +187,31 @@ def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot
     if getattr(creds, "testnet", False) and hasattr(instance, "set_sandbox_mode"):
         instance.set_sandbox_mode(True)
     return instance
+
+async def sync_exchange_times(clients: Dict[str, Any]) -> Dict[str, float]:
+    """Align each venue's signed-request clock before the first order.
+
+    ``adjustForTimeDifference`` only takes effect once ``load_time_difference``
+    has measured the offset, and a stale offset is what makes a signed order
+    fail with an authentication/signature error that looks like a permission
+    problem. Venues that expose no time endpoint are skipped, and a failed sync
+    never blocks startup: the venue simply keeps its current offset.
+    """
+    offsets: Dict[str, float] = {}
+    for venue, client in (clients or {}).items():
+        if client is None:
+            continue
+        loader = getattr(client, "load_time_difference", None)
+        if not callable(loader):
+            continue
+        try:
+            await loader()
+            offset = getattr(client, "options", {}).get("timeDifference")
+            offsets[str(venue).lower()] = float(offset or 0.0)
+        except Exception as exc:
+            logger.warning("[TimeSync] %s time sync failed: %s", venue, exc)
+    return offsets
+
 
 BALANCE_MARKETS = {
     "tokocrypto": "spot",

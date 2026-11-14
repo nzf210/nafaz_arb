@@ -237,6 +237,9 @@ class EngineEntryFlowMixin:
         if not await self._validate_entry_market_rules(pair_tag, pair_info):
             return
 
+        if not await self._validate_hedge_leg_tradable(pair_tag, pair_info):
+            return
+
         if not await self._apply_indodax_adaptive_maker_quote(
             pair_tag, payload, directives
         ):

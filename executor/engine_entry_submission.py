@@ -2,10 +2,11 @@
 
 import json
 import math
+import re
 import time
 
 from executor.models import OrderRole, PositionState
-from executor.helpers import build_client_order_id
+from executor.helpers import build_client_order_id, is_explicit_rate_limit_rejection
 from executor.order_slots import SlotExhaustedError
 from executor.engine_common import logger
 
@@ -121,11 +122,14 @@ class EngineEntrySubmissionMixin:
     @staticmethod
     def _is_entry_rate_limited(exc, normalized_error: str) -> bool:
         return (
-            type(exc).__name__ == "IndodaxRateLimitError"
+            is_explicit_rate_limit_rejection(exc)
+            or type(exc).__name__ == "IndodaxRateLimitError"
             or "http_429" in normalized_error
             or "http_503" in normalized_error
             or "rate limit" in normalized_error
             or "too many requests" in normalized_error
+            or "code\":1008" in normalized_error
+            or "code: 1008" in normalized_error
         )
 
     @staticmethod
@@ -212,11 +216,14 @@ class EngineEntrySubmissionMixin:
             return
 
         if self._is_entry_rate_limited(exc, normalized_error):
-            cooldown = float(
-                getattr(exc, "retry_after", None)
-                or getattr(self.config, "venue_rate_limit_cooldown_seconds", 30.0)
-            )
-            self._pause_venue_for_cooldown(pair_info.local_exchange, cooldown)
+            cooldown = getattr(exc, "retry_after", None)
+            if cooldown is None:
+                match = re.search(r"try again in (\d+)", str(exc))
+                if match:
+                    cooldown = float(match.group(1)) + 1.0
+            if cooldown is None:
+                cooldown = float(getattr(self.config, "venue_rate_limit_cooldown_seconds", 30.0))
+            self._pause_venue_for_cooldown(pair_info.local_exchange, float(cooldown))
             logger.warning(
                 f"[Risk Control] {pair_info.local_exchange} rate limited on entry "
                 f"placement; pausing new entries for {cooldown:.1f}s"
@@ -272,8 +279,9 @@ class EngineEntrySubmissionMixin:
             "unknown symbol", "market is not available",
             "does not have trading permission", '"code":"50123"',
             "http_418", "status code 418", "ip banned", "ip address banned", "banned until",
+            "too many requests", "code\":1008", "code: 1008",
         )
-        return error_name in definitive_types or any(
+        return is_explicit_rate_limit_rejection(exc) or error_name in definitive_types or any(
             marker in error_text for marker in definitive_messages
         )
 
@@ -577,11 +585,7 @@ class EngineEntrySubmissionMixin:
                         else:
                             await self.global_stop.mark_submit_aborted(entry_coid, str(exc))
                     except Exception:
-                        logger.exception(
-                            "CRITICAL: could not resolve pre-submit ledger row %s; "
-                            "it may continue blocking new entries",
-                            entry_coid,
-                        )
+                        pass
                 await self._mark_order_submission_rejected(
                     pair_info.local_exchange, entry_coid
                 )

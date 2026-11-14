@@ -17,13 +17,13 @@
 
 - `risk_state` stores the required `state_id`, `state_type`, `scope`, `exchange`, `pair_key`, `reason`, `value`, `created_at`, `updated_at`, and `resolved_at` fields.
 - `risk_pnl_events` is an append-only, unique-event ledger. Only verified realized trade PnL is admitted by the close paths.
-- The SQLite durable outbox is the synchronous local journal. Startup overlays pending local `risk_state` and PnL rows over Supabase reads so a crash before asynchronous delivery does not erase a newly recorded halt.
-- If durable risk storage cannot be restored or journaled in LIVE mode, new entries are blocked. Position monitoring and de-risking remain available.
+- PostgreSQL (via `POSTGRES_DSN` and `executor/postgres_risk.py`) is the primary, direct ACID persistence layer. Local SQLite outbox has been deprecated and eliminated; synchronous transactions commit directly to PostgreSQL on the VPS with zero external network hops.
+- If durable risk storage cannot be restored or journaled in LIVE mode, new entries are blocked (`RISK_STATE_PERSISTENCE_UNAVAILABLE`). Position monitoring and de-risking remain available.
 - Redis is not used as the sole source of truth for any risk halt.
 
 ## UTC loss accounting and duplicate protection
 
-Daily loss is the sum of negative `pnl_usdt` values in `risk_pnl_events` where `loss_day_utc` equals the current UTC date. The immutable event ID is inserted once through the durable outbox; duplicate event IDs do not increment the accumulator. Profits do not offset the gross realized-loss accumulator, preserving existing strategy behavior.
+Daily loss is the sum of negative `pnl_usdt` values in `risk_pnl_events` where `loss_day_utc` equals the current UTC date. The immutable event ID is inserted directly to PostgreSQL with unique constraint conflict handling (`ON CONFLICT (event_id) DO NOTHING`); duplicate event IDs do not increment the accumulator. Profits do not offset the gross realized-loss accumulator, preserving existing strategy behavior.
 
 At UTC rollover only the daily-loss halt is eligible to clear. An operator kill switch remains active. A manual resume is durably recorded for the current UTC day; the next new realized PnL event re-arms normal daily-limit evaluation.
 

@@ -38,6 +38,7 @@ class ExecutorConfig:
     initial_exchange_balance_usdt: float = 100.0  # $100 per exchange
     allocation_per_pair: float = 0.5  # Max 50% capital per pair
     min_allocated_capital: float = 10.0  # Minimum capital to enter position
+    max_position_usdt: float = 0.0  # Cap on position size per leg in USDT (0 = use signal directive)
     # Hard stop: halt all new entries once the day's realized loss crosses this.
     # 0 disables the breaker.
     max_daily_loss_usdt: float = 50.0
@@ -144,6 +145,7 @@ class ExecutorConfig:
                 ("initial_exchange_balance_usdt", float),
                 ("allocation_per_pair", float),
                 ("min_allocated_capital", float),
+                ("max_position_usdt", float),
                 ("max_daily_loss_usdt", float),
                 ("max_entry_slippage_pct", float),
                 ("entry_revalidation_min_spread_pct", float),
@@ -213,6 +215,12 @@ class ExecutorConfig:
 
         if mock_env := os.getenv("EXECUTOR_MOCK_MODE"):
             self.mock_mode = mock_env.lower() in ("true", "1", "yes")
+
+        if max_pos_env := os.getenv("MAX_POSITION_USDT"):
+            try:
+                self.max_position_usdt = float(max_pos_env)
+            except ValueError:
+                pass
 
         if ws_env := os.getenv("PRIVATE_STREAM_ENABLED"):
             self.private_stream_enabled = ws_env.lower() in ("true", "1", "yes")

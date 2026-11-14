@@ -16,6 +16,7 @@ from executor.helpers import (
     build_client_order_id,
     retry_with_backoff,
     is_explicit_rate_limit_rejection,
+    is_transient_settlement_error,
 )
 from executor.models import OrderRole, PositionState
 from executor.quantity import AmountSpec
@@ -57,11 +58,36 @@ class RollbackMixin:
             local_amount_spec=amount_spec,
             required=False,
         )
+
+        # Shrink the requested sell to the balance the venue actually lets us
+        # move. The hedge failure above is often caused by a venue-side ledger
+        # lag, so the requested delta can exceed the free base asset; asking for
+        # it verbatim fails with a permanent-looking "insufficient balance" and
+        # strands the exposure. Only skip the sale when nothing is transferable.
+        sell_qty = await self._sellable_spot_quantity(
+            symbol, unhedged_delta, amount_spec, legacy_amount_step
+        )
+        if sell_qty <= 0:
+            logger.critical(
+                "[Hedge Rollback] %s: no sellable %s balance on %s (requested %s); "
+                "MANUAL INTERVENTION REQUIRED",
+                pair_tag, symbol, venue_exchange, unhedged_delta,
+            )
+            return None, RuntimeError(
+                f"no sellable {symbol} balance on {venue_exchange}; "
+                f"requested {unhedged_delta}"
+            )
+        if sell_qty < unhedged_delta:
+            logger.critical(
+                "[Hedge Rollback] %s: clamping rollback %s -> %s %s to the "
+                "sellable venue balance",
+                pair_tag, unhedged_delta, sell_qty, symbol,
+            )
         try:
             emergency_order = await retry_with_backoff(
                 lambda: self.client.place_local_market_sell(
                     symbol,
-                    unhedged_delta,
+                    sell_qty,
                     client_order_id=rollback_coid,
                     amount_spec=amount_spec
                     or (
@@ -78,7 +104,10 @@ class RollbackMixin:
                 max_retries=max_retries,
                 base_delay=0.5,
                 label=f"hedge rollback sell {symbol} for {pair_tag}",
-                retry_if=is_explicit_rate_limit_rejection,
+                retry_if=lambda exc: (
+                    is_explicit_rate_limit_rejection(exc)
+                    or is_transient_settlement_error(exc)
+                ),
             )
         except RetryExhausted as exhausted:
             rejection_check = getattr(self, "_is_definitive_order_rejection", None)
@@ -133,12 +162,79 @@ class RollbackMixin:
             filled = float(emergency_order.get("filled") or 0.0)
         except (TypeError, ValueError):
             filled = 0.0
-        tolerance = max(1e-12, unhedged_delta * 1e-8)
-        if filled + tolerance < unhedged_delta:
+        tolerance = max(1e-12, sell_qty * 1e-8)
+        if filled + tolerance < sell_qty:
             return None, RuntimeError(
-                f"spot rollback fill incomplete: requested={unhedged_delta}, filled={filled}"
+                f"spot rollback fill incomplete: requested={sell_qty}, filled={filled}"
+            )
+        if filled + tolerance < unhedged_delta:
+            # The sellable balance was smaller than the unhedged exposure: the
+            # remainder is still unhedged and must reach the operator, but the
+            # order we could place did fill, so it is not an ambiguous failure.
+            remaining = unhedged_delta - filled
+            logger.critical(
+                "[Hedge Rollback] %s: partially unwound; %.8f %s of %.8f remains "
+                "UNHEDGED - MANUAL INTERVENTION REQUIRED",
+                pair_tag, remaining, symbol, unhedged_delta,
+            )
+            return emergency_order, RuntimeError(
+                f"spot rollback covered {filled} of {unhedged_delta} {symbol}; "
+                f"{remaining} remains unhedged"
             )
         return emergency_order, None
+
+    async def _sellable_spot_quantity(
+        self,
+        symbol: str,
+        requested_qty: float,
+        amount_spec: Any = None,
+        legacy_amount_step: float = 0.0,
+    ) -> float:
+        """Largest amount the venue will let us sell right now.
+
+        Returns 0.0 when the probe fails or the free balance is below the
+        venue's step/minimum, so the caller can report an honest manual-action
+        state instead of retrying an impossible order.
+        """
+        base_asset = str(symbol or "").upper()
+        for separator in ("/", "_", "-"):
+            if separator in base_asset:
+                base_asset = base_asset.split(separator, 1)[0]
+                break
+        fetch = getattr(self.client, "fetch_spot_free_balance", None)
+        if not callable(fetch):
+            return float(requested_qty)
+        try:
+            free = float(await fetch(base_asset) or 0.0)
+        except Exception as exc:
+            logger.warning(
+                "[Hedge Rollback] free %s balance probe failed (%s); "
+                "falling back to the requested quantity",
+                base_asset, exc,
+            )
+            return float(requested_qty)
+        if not math.isfinite(free) or free <= 0:
+            return 0.0
+        spec = amount_spec
+        if spec is None and legacy_amount_step > 0:
+            spec = AmountSpec(
+                unit="BASE", step=legacy_amount_step,
+                minimum=legacy_amount_step, base_per_unit=1.0,
+            )
+        step = 0.0
+        minimum = 0.0
+        if spec is not None:
+            try:
+                step = float(getattr(spec, "step", 0.0) or 0.0)
+                minimum = float(getattr(spec, "minimum", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                step = minimum = 0.0
+        qty = min(float(requested_qty), free)
+        if step > 0:
+            qty = math.floor(round(qty / step, 9)) * step
+        if qty <= 0 or (minimum > 0 and qty + 1e-12 < minimum):
+            return 0.0
+        return qty
 
     async def _hedge_may_be_open(
         self, pair_tag: str, global_symbol: str, error: Exception
