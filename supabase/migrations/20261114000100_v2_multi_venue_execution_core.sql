@@ -416,13 +416,37 @@ begin
     end loop;
 
     if exists (select 1 from pg_roles where rolname = 'service_role') then
-        grant usage, select on sequence public.v2_execution_journal_journal_id_seq,
-            public.v2_venue_halts_halt_id_seq to service_role;
-        grant select, insert, update on public.outbox_events to service_role;
-        grant select, insert, update on public.order_registry to service_role;
+        execute 'grant usage, select on sequence public.v2_execution_journal_journal_id_seq, public.v2_venue_halts_halt_id_seq to service_role';
+        execute 'grant select, insert, update on public.outbox_events to service_role';
+        execute 'grant select, insert, update on public.order_registry to service_role';
     end if;
 end;
 $security$;
+
+do $v2_order_registry_fks$
+begin
+    if not exists (
+        select 1 from pg_constraint
+         where conname = 'fk_order_registry_v2_account_venue'
+           and conrelid = 'public.order_registry'::regclass
+    ) then
+        alter table public.order_registry
+            add constraint fk_order_registry_v2_account_venue
+            foreign key (v2_venue_id, v2_account_id)
+            references public.v2_accounts(venue_id, account_id) on delete restrict;
+    end if;
+    if not exists (
+        select 1 from pg_constraint
+         where conname = 'fk_order_registry_v2_market_venue'
+           and conrelid = 'public.order_registry'::regclass
+    ) then
+        alter table public.order_registry
+            add constraint fk_order_registry_v2_market_venue
+            foreign key (v2_venue_id, v2_market_id)
+            references public.v2_markets(venue_id, market_id) on delete restrict;
+    end if;
+end;
+$v2_order_registry_fks$;
 
 comment on table public.v2_venues is
     'V2 venue identity is separate from exchange brand and account; all flags default disabled.';
