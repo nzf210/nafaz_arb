@@ -11,9 +11,10 @@ from executor.v2_operator_models import (
     TelegramIdentity,
     confirmation_digest,
 )
+from executor.v2_operator_repository_common import OperatorRepositoryBase
 
 
-class OperatorRepositoryStartMixin:
+class OperatorRepositoryStartMixin(OperatorRepositoryBase):
     """Two-step START transition guarded by readiness and config convergence."""
 
     async def request_start(

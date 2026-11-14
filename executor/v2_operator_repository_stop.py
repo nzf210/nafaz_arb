@@ -5,9 +5,10 @@ import json
 from typing import Any
 
 from executor.v2_operator_models import OperatorControlError, TelegramIdentity
+from executor.v2_operator_repository_common import OperatorRepositoryBase
 
 
-class OperatorRepositoryStopMixin:
+class OperatorRepositoryStopMixin(OperatorRepositoryBase):
     """STOP transition serialized against in-flight entry submissions."""
 
     async def stop(

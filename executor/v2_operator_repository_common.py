@@ -14,7 +14,30 @@ from executor.v2_operator_models import (
 )
 
 
-class OperatorRepositoryCommonMixin:
+class OperatorRepositoryBase:
+    """Typed dependency contract shared by the PostgreSQL repository mixins."""
+
+    _pool: Any
+    _consumer_lease_seconds: int
+
+    @staticmethod
+    async def _lock_exclusive(connection: Any) -> None:
+        raise NotImplementedError
+
+    @staticmethod
+    async def _insert_action(
+        connection: Any, *args: Any, **kwargs: Any
+    ) -> tuple[Any, bool]:
+        raise NotImplementedError
+
+    @staticmethod
+    async def _emit_control_event(
+        connection: Any, *args: Any, **kwargs: Any
+    ) -> None:
+        raise NotImplementedError
+
+
+class OperatorRepositoryCommonMixin(OperatorRepositoryBase):
     """Common persistence methods used by START, STOP and status commands."""
 
     @staticmethod
