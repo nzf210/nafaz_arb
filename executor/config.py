@@ -408,6 +408,9 @@ class ExecutorConfig:
             self.supabase.key = sup_key.strip()
         if sup_enabled := os.getenv("SUPABASE_ENABLED"):
             self.supabase.enabled = sup_enabled.lower() in ("true", "1", "yes")
+        elif not self.supabase.enabled:
+            # Explicitly keep disabled if config.json set enabled: false
+            self.supabase.enabled = False
         else:
             self.supabase.enabled = bool(self.supabase.url and self.supabase.key)
         if outbox_path := os.getenv("SUPABASE_OUTBOX_PATH"):
