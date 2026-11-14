@@ -517,7 +517,9 @@ create table if not exists public.v2_position_snapshots (
         references public.v2_markets(venue_id, market_id) on delete restrict
 );
 -- Position snapshots are time-series rows; the same venue position ID must
--- be observable repeatedly. Keep a non-unique lookup index, not a uniqueness gate.
+-- be observable repeatedly. Drop the draft unique index if this migration was
+-- already exercised locally before the snapshot semantics were corrected.
+drop index if exists public.uq_v2_position_exchange_identity;
 create index if not exists idx_v2_position_exchange_identity_time
     on public.v2_position_snapshots(venue_id, account_id, exchange_position_id, observed_at desc)
     where exchange_position_id is not null;
