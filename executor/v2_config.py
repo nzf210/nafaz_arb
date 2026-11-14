@@ -466,6 +466,7 @@ class PostgresOutboxPublisher:
         *,
         worker_id: str,
         channel: str = "nafaz:v2:events",
+        execution_channel: str = "nafaz:v2:execution:events",
         batch_size: int = 50,
         lease_seconds: int = 60,
         max_backoff_seconds: int = 300,
@@ -478,6 +479,7 @@ class PostgresOutboxPublisher:
         self._redis = redis
         self._worker_id = worker_id
         self._channel = channel
+        self._execution_channel = execution_channel
         self._batch_size = batch_size
         self._lease_seconds = lease_seconds
         self._max_backoff_seconds = max_backoff_seconds
@@ -541,8 +543,13 @@ class PostgresOutboxPublisher:
                 "payload": event["payload"],
             }
             try:
+                channel = (
+                    self._execution_channel
+                    if envelope["aggregate_type"] == "execution"
+                    else self._channel
+                )
                 await self._redis.publish(
-                    self._channel,
+                    channel,
                     json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
                 )
             except Exception as exc:
