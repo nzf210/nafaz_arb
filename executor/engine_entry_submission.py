@@ -1,13 +1,12 @@
 """Spot entry submission, durable intent registration, and failure handling."""
 
-from contextlib import asynccontextmanager
-import json
 import math
 import time
+from contextlib import asynccontextmanager
 
-from executor.models import OrderRole, PositionState
-from executor.helpers import build_client_order_id
 from executor.engine_common import logger
+from executor.helpers import build_client_order_id
+from executor.models import OrderRole, PositionState
 
 
 class EngineEntrySubmissionMixin:
