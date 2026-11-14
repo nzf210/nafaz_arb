@@ -3,6 +3,7 @@
 import json
 import math
 import time
+from contextlib import asynccontextmanager
 
 from executor.models import OrderRole, PositionState
 from executor.helpers import build_client_order_id
@@ -299,6 +300,18 @@ class EngineEntrySubmissionMixin:
                         amount_spec=pair_info.local_amount_spec,
                     )
             except Exception as submit_error:
+                if not submission_started:
+                    # The PostgreSQL fence rejected admission before the exchange
+                    # API was invoked. Retire the already-persisted intent instead
+                    # of leaving a false SUBMITTING order for startup recovery.
+                    await self._mark_order_submission_rejected(
+                        pair_info.local_exchange, entry_coid
+                    )
+                    logger.warning(
+                        "[V2 Admission] submission fence denied %s before exchange API call",
+                        pair_tag,
+                    )
+                    return
                 if self._is_definitive_order_rejection(submit_error):
                     submission_started = False
                     raise
