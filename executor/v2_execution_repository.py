@@ -35,7 +35,7 @@ class ExecutionIntent:
     client_order_id: str
     requested_qty: Decimal
     limit_price: Optional[Decimal] = None
-    is_mock: bool = True
+    is_mock: bool = False
 
 
 _ALLOWED_ROLES = {
