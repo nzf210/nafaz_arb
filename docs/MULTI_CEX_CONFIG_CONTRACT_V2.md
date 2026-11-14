@@ -138,6 +138,7 @@ The sample represents two spot venues and one currently active futures venue. Mo
       "enabled": true,
       "source": "configured_live_fx_market",
       "max_age_seconds": 5,
+      "max_spread_pct": 0.25,
       "static_fallback_allowed_in_live": false
     }
   },
@@ -287,3 +288,24 @@ The SQL migration is additive and does not activate a venue, account, route, ris
 ### Database-level execution admission checks
 
 The V2 migration enforces the market/route relationship when an intent is inserted: canonical base asset must match the venue-bound market and route symbol allowlist; spot quote and perpetual settle assets must be allowed by the route; perpetual market contract size must be present; and both route legs must still have verified capabilities. Revoking a capability after route activation blocks new intents until the route is reviewed and revalidated. Position snapshots retain repeated observations for the same exchange position ID; the identifier is a lookup index, not a uniqueness constraint.
+
+## 14. Runtime bootstrap and START/STOP enforcement
+
+Set `NAFAZ_V2_CONTROL_ENABLED=true` only after the V2 migrations and active snapshot are installed. The executor bootstrap DSN environment name is `NAFAZ_V2_DATABASE_DSN_ENV` (default `NAFAZ_DATABASE_URL`) and must match `storage.dsn_env` in the active snapshot. The Redis URL is resolved through `redis.url_env` and must match the endpoint configured for the legacy executor. Bootstrap fetches PostgreSQL first, validates the snapshot/hash, publishes and verifies the Redis mirror, then registers the executor consumer.
+
+On every process start, the executor takes the exclusive operator-entry fence and persists `STOPPED / trading_enabled=false`; pending START confirmations are rejected. This applies even if the previous process ended unexpectedly while RUNNING. The process can remain live for monitoring and recovery, but only a fresh, confirmed Telegram START can change the durable trading state.
+
+The Python Telegram service starts only when `telegram.enabled=true` and the configured token reference resolves. `bot_token_env` reads the named environment variable. The only currently supported `bot_token_ref` is `secret://nafaz/telegram/bot-token`, resolved from `NAFAZ_TELEGRAM_BOT_TOKEN`; other secret-manager paths fail closed until an adapter is installed. Every supported command re-fetches the active PostgreSQL snapshot and re-evaluates both allowlists, so a removed user/chat cannot keep authority through a stale process snapshot. If the resolved token value changes, command execution is denied until the executor restarts and reinitializes Telegram polling. Both `allowed_user_ids` and `allowed_chat_ids` are mandatory. Unauthorized and duplicate update IDs are audited/idempotent.
+
+The final LIVE admission path verifies the PostgreSQL active version/hash, durable RUNNING state, live executor convergence and the current Redis snapshot. It holds a shared transaction-scoped PostgreSQL advisory lock through the spot order API call. STOP and config activation use the matching exclusive lock. STOP waits for any in-flight shared submission, commits STOPPED under the exclusive lock and only then acknowledges success; new entry attempts are denied after the lock is released. Graceful shutdown also attempts a durable STOP before releasing the consumer lease. Redis/DB failure, stale cache, version mismatch, non-converged consumers or STOP closes new-entry admission. Existing orders and positions remain under monitoring; STOP uses `keep_and_manage` and never force-closes a position.
+
+### Deliberate non-readiness
+
+The current validator still rejects `execution.signals_enabled=true`. The production adapter capability registry is empty, the V2 snapshot is not yet mapped into the legacy exchange-client factory, and no production readiness provider currently proves venue credentials, market metadata, live FX freshness/spread/fees, account reconciliation, risk/kill-switch state and Python-only order authority. Therefore Telegram START is implemented as a fail-closed request/confirmation flow but cannot transition to RUNNING in this stage. Do not enable signals, place live orders or claim LIVE readiness until those integrations and multi-instance/restart smoke tests are complete.
+
+The runtime bootstrap does not rewrite `config.json`, change the user's LIVE/MOCK setting, copy credentials, or alter risk limits. When V2 control bootstrap is disabled or fails, process liveness may continue but LIVE entry admission remains closed because the gate is absent.
+
+
+### LIVE FX acceptance
+
+For LIVE, `scanner.synthetic_fx.max_age_seconds` and `max_spread_pct` are mandatory, `enabled` must be true, and static/synthetic/fixed sources or static fallback are rejected. The numeric values are operator-supplied policy, not defaults. Runtime readiness must additionally prove the observed rate timestamp, bid/ask spread and fee-inclusive conversion edge against those limits; schema validation alone is not proof of a live feed.

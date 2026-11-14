@@ -175,17 +175,31 @@ def _validate_optional_sections(root: Mapping[str, Any], live: bool) -> None:
         if enabled and not ({"bot_token_env", "bot_token_ref"} & set(telegram)):
             raise V2ConfigValidationError("enabled Telegram control requires a bot-token reference")
         if enabled:
-            for key in ("allowed_user_ids", "allowed_chat_ids"):
-                values = telegram.get(key)
-                if not isinstance(values, list) or not values or any(
-                    isinstance(item, bool) or not isinstance(item, int) or item <= 0
-                    for item in values
-                ):
-                    raise V2ConfigValidationError(
-                        f"enabled Telegram control requires non-empty positive {key}"
-                    )
+            users = telegram.get("allowed_user_ids")
+            if not isinstance(users, list) or not users or any(
+                isinstance(item, bool) or not isinstance(item, int) or item <= 0
+                for item in users
+            ) or len(set(users)) != len(users):
+                raise V2ConfigValidationError(
+                    "enabled Telegram control requires unique positive allowed_user_ids"
+                )
+            chats = telegram.get("allowed_chat_ids")
+            if not isinstance(chats, list) or not chats or any(
+                isinstance(item, bool) or not isinstance(item, int) or item == 0
+                for item in chats
+            ) or len(set(chats)) != len(chats):
+                raise V2ConfigValidationError(
+                    "enabled Telegram control requires unique non-zero allowed_chat_ids"
+                )
         if "start_confirmation_ttl_seconds" in telegram:
-            _integer(telegram["start_confirmation_ttl_seconds"], "telegram.start_confirmation_ttl_seconds")
+            ttl = _integer(
+                telegram["start_confirmation_ttl_seconds"],
+                "telegram.start_confirmation_ttl_seconds",
+            )
+            if ttl < 30 or ttl > 900:
+                raise V2ConfigValidationError(
+                    "telegram.start_confirmation_ttl_seconds must be between 30 and 900"
+                )
 
 
 def parse_runtime_settings(root: Mapping[str, Any], live: bool) -> V2RuntimeSettingsModel:

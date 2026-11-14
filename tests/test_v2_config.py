@@ -46,6 +46,7 @@ def _valid_snapshot():
                 "enabled": True,
                 "source": "configured_live_fx_market",
                 "max_age_seconds": 5,
+                "max_spread_pct": 0.25,
                 "static_fallback_allowed_in_live": False,
             },
         },
@@ -275,6 +276,20 @@ def test_v2_contract_rejects_signals_and_non_public_scanner():
         validate_v2_snapshot(snapshot)
 
 
+def test_v2_live_fx_requires_spread_guard_and_non_synthetic_source():
+    from executor.v2_config import validate_v2_snapshot
+
+    snapshot = _valid_snapshot()
+    del snapshot["scanner"]["synthetic_fx"]["max_spread_pct"]
+    with pytest.raises(ConfigSnapshotError, match="max_spread_pct is required"):
+        validate_v2_snapshot(snapshot)
+
+    snapshot = _valid_snapshot()
+    snapshot["scanner"]["synthetic_fx"]["source"] = "static_rate"
+    with pytest.raises(ConfigSnapshotError, match="live FX feed"):
+        validate_v2_snapshot(snapshot)
+
+
 def test_v2_contract_rejects_duplicate_and_dangling_references():
     from executor.v2_config import validate_v2_snapshot
     snapshot = _valid_snapshot()
@@ -465,6 +480,35 @@ class _RuntimeRegistry:
 
     async def mark_degraded(self, error):
         self.degraded.append(type(error).__name__)
+
+
+@pytest.mark.asyncio
+async def test_atomic_config_snapshot_defensively_copies_nested_json():
+    from executor.v2_config import ConfigSnapshot
+    from executor.v2_config_runtime import AtomicConfigSnapshot
+
+    initial = ConfigSnapshot(
+        version=10,
+        schema_version=2,
+        content_sha256="a" * 64,
+        snapshot=_valid_snapshot(),
+    )
+    store = AtomicConfigSnapshot(initial)
+
+    exposed = store.current
+    exposed.snapshot["execution"]["signals_enabled"] = True
+    assert store.current.snapshot["execution"]["signals_enabled"] is False
+
+    replacement = ConfigSnapshot(
+        version=11,
+        schema_version=2,
+        content_sha256="b" * 64,
+        snapshot=_valid_snapshot(),
+    )
+    await store.swap(replacement)
+    replacement.snapshot["execution"]["signals_enabled"] = True
+    assert store.current.version == 11
+    assert store.current.snapshot["execution"]["signals_enabled"] is False
 
 
 @pytest.mark.asyncio

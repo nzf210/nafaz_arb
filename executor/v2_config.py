@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from executor.v2_config_schema import (
-    V2ConfigValidationError,
     V2ConfigModel,
+    V2ConfigValidationError,
     parse_v2_config,
 )
 
@@ -194,9 +194,20 @@ class RedisSnapshotCache:
         )
         try:
             await self._redis.set(self._key, payload)
+        except Exception as exc:
+            raise ConfigSnapshotError(
+                f"cannot publish Redis config snapshot: {type(exc).__name__}"
+            ) from exc
+        await self.verify(config)
+
+    async def verify(self, config: ConfigSnapshot) -> None:
+        """Read and verify the current Redis mirror without mutating it."""
+        try:
             stored = await self._redis.get(self._key)
         except Exception as exc:
-            raise ConfigSnapshotError(f"cannot publish/verify Redis config snapshot: {exc}") from exc
+            raise ConfigSnapshotError(
+                f"cannot read Redis config snapshot: {type(exc).__name__}"
+            ) from exc
         if stored is None:
             raise ConfigSnapshotError("Redis config snapshot read-back returned empty")
         if isinstance(stored, bytes):
@@ -205,11 +216,17 @@ class RedisSnapshotCache:
             cached = json.loads(stored)
         except (TypeError, json.JSONDecodeError) as exc:
             raise ConfigSnapshotError("Redis config snapshot read-back is invalid JSON") from exc
+        if not isinstance(cached, dict) or not isinstance(cached.get("snapshot"), dict):
+            raise ConfigSnapshotError("Redis config snapshot payload is not an object")
+        try:
+            cached_hash = calculate_snapshot_sha256(cached["snapshot"])
+        except (TypeError, ValueError) as exc:
+            raise ConfigSnapshotError("Redis config snapshot payload is not canonical JSON") from exc
         if (
             cached.get("version") != config.version
             or cached.get("schema_version") != config.schema_version
             or cached.get("content_sha256") != config.content_sha256
-            or calculate_snapshot_sha256(cached.get("snapshot", {})) != config.content_sha256
+            or cached_hash != config.content_sha256
         ):
             raise ConfigSnapshotError("Redis config snapshot read-back does not match PostgreSQL")
 
@@ -359,9 +376,19 @@ class PostgresConfigWriter:
         self._require_actor_reason(actor, reason)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                # Config activation shares the entry fence with Telegram STOP.
+                # A validated snapshot may become active only while trading is STOPPED.
+                await connection.execute(
+                    "select pg_advisory_xact_lock(hashtextextended('nafaz:v2:operator_entry_fence', 0))"
+                )
                 await connection.execute(
                     "select pg_advisory_xact_lock(hashtextextended('nafaz:v2:active_config', 0))"
                 )
+                control = await connection.fetchrow(
+                    "select state, trading_enabled from public.operator_control_state where singleton = true for update"
+                )
+                if control is None or control["state"] != "STOPPED" or control["trading_enabled"] is True:
+                    raise ConfigSnapshotError("config activation requires durable operator state STOPPED")
                 current = await connection.fetchval(
                     "select version from public.active_config_version where singleton = true for update"
                 )
