@@ -348,3 +348,22 @@ async def test_executor_restart_durably_resets_trading_to_stopped():
         "operator_control.startup_stopped" in query
         for query, _ in connection.executed
     )
+
+
+
+@pytest.mark.asyncio
+async def test_entry_submission_fence_rejects_redis_outage_before_exchange_call():
+    connection = _FenceConnection()
+    cache = _Cache(RuntimeError("redis unavailable"))
+    gate = PostgresEntryAdmissionGate(
+        _FencePool(connection),
+        AtomicConfigSnapshot(_config(signals_enabled=True)),
+        SimpleNamespace(),
+        cache=cache,
+    )
+
+    with pytest.raises(Exception, match="redis unavailable"):
+        async with gate.entry_submission_fence():
+            pytest.fail("Redis outage must deny entry before the exchange API call")
+    assert connection.lock_acquired
+    assert cache.calls == 1
