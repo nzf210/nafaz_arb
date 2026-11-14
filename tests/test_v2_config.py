@@ -258,7 +258,7 @@ def test_v2_contract_rejects_unknown_root_keys():
     snapshot = _valid_snapshot()
     snapshot["mystery_setting"] = True
     from executor.v2_config import validate_v2_snapshot
-    with pytest.raises(ConfigSnapshotError, match="unsupported root keys"):
+    with pytest.raises(ConfigSnapshotError, match="unsupported keys"):
         validate_v2_snapshot(snapshot)
 
 
