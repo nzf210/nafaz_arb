@@ -378,7 +378,7 @@ class PostgresConfigWriter:
                 )
                 if row is None or row["status"] != "validated":
                     raise ConfigSnapshotError("only an existing validated config version can be activated")
-                config = validate_snapshot_row(row)
+                config = validate_snapshot_row(row, capability_registry=self._capability_registry)
                 if current is not None:
                     await connection.execute(
                         "update public.config_versions set status = 'superseded' where version = $1",
@@ -443,7 +443,7 @@ class PostgresConfigWriter:
             )
         if row is None:
             raise ConfigSnapshotError(f"rollback source version {source_version} does not exist")
-        source = validate_snapshot_row(row)
+        source = validate_snapshot_row(row, capability_registry=self._capability_registry)
         return await self.create_draft(
             source.snapshot,
             actor=actor,
