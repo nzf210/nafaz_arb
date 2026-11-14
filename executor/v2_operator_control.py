@@ -290,14 +290,15 @@ class PostgresOperatorControlRepository:
                 action, created = await self._insert_action(
                     connection, identity, "trade_status", "", "COMPLETED"
                 )
-                if created:
-                    result = await self.get_status()
-                    await connection.execute(
-                        "update public.operator_actions set result = $2::jsonb, completed_at = now() where action_id = $1",
-                        action["action_id"],
-                        json.dumps(result, sort_keys=True),
-                    )
-        return await self.get_status()
+        status = await self.get_status()
+        if created:
+            async with self._pool.acquire() as connection:
+                await connection.execute(
+                    "update public.operator_actions set result = $2::jsonb, completed_at = now() where action_id = $1",
+                    action["action_id"],
+                    json.dumps(status, sort_keys=True),
+                )
+        return status
 
     async def record_rejected(
         self,
@@ -360,7 +361,7 @@ class PostgresOperatorControlRepository:
                         """,
                         action["action_id"],
                     )
-                    raise OperatorControlError("active config changed before START request was recorded")
+                    return {"duplicate": False, "status": "REJECTED", "error": "ACTIVE_CONFIG_VERSION_CHANGED"}
                 state = await connection.fetchrow(
                     "select state, state_version from public.operator_control_state where singleton = true for update"
                 )
@@ -486,17 +487,21 @@ class PostgresOperatorControlRepository:
                             """,
                             pending["action_id"], json.dumps({"error": error, "readiness": readiness.as_dict()}),
                         )
-                    await connection.execute(
-                        """
-                        update public.operator_control_state
-                           set state = 'STOPPED', trading_enabled = false,
-                               state_version = state_version + 1,
-                               last_actor_user_id = $1, last_actor_chat_id = $2,
-                               last_reason = $3, updated_at = now()
-                         where singleton = true
-                        """,
-                        identity.user_id, identity.chat_id, error,
+                    current_state = await connection.fetchval(
+                        "select state from public.operator_control_state where singleton = true for update"
                     )
+                    if pending is not None and current_state == "START_PENDING":
+                        await connection.execute(
+                            """
+                            update public.operator_control_state
+                               set state = 'STOPPED', trading_enabled = false,
+                                   state_version = state_version + 1,
+                                   last_actor_user_id = $1, last_actor_chat_id = $2,
+                                   last_reason = $3, updated_at = now()
+                             where singleton = true
+                            """,
+                            identity.user_id, identity.chat_id, error,
+                        )
                     await connection.execute(
                         """
                         update public.operator_actions
