@@ -36,13 +36,33 @@ func (b *Bot) handleTextMessage(ctx context.Context, msg *Message) {
 	}
 
 	text := strings.TrimSpace(msg.Text)
-	if !strings.HasPrefix(text, "/") {
+	if text == "" {
 		return
+	}
+	if !strings.HasPrefix(text, "/") {
+		firstWord := strings.ToLower(strings.Fields(text)[0])
+		if eqIdx := strings.Index(firstWord, "="); eqIdx != -1 {
+			firstWord = firstWord[:eqIdx]
+		}
+		switch firstWord {
+		case "set", "config", "settings", "setting", "notif", "minroi", "maxroi", "capital", "allocation",
+			"leverage", "mincap", "scan", "status", "menu", "help", "pending", "balance", "orders", "positions",
+			"risk", "recovery", "orphans", "latest", "active", "frozen", "metrics", "killswitch":
+			text = "/" + text
+		default:
+			return
+		}
 	}
 
 	parts := strings.Fields(text)
 	cmd := strings.ToLower(parts[0])
-
+	if eqIdx := strings.Index(cmd, "="); eqIdx != -1 {
+		val := cmd[eqIdx+1:]
+		cmd = cmd[:eqIdx]
+		if len(parts) == 1 {
+			parts = []string{cmd, val}
+		}
+	}
 	if atIdx := strings.Index(cmd, "@"); atIdx != -1 {
 		username := cmd[atIdx+1:]
 		if b.botUsername != "" && !strings.EqualFold(username, b.botUsername) {

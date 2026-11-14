@@ -106,9 +106,12 @@ func (b *Bot) saveConfigFileUpdate(updater func(map[string]interface{}) error) e
 		path = "config.json"
 	}
 	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("baca file %s gagal: %w", path, err)
+	}
 	var raw map[string]interface{}
-	if err == nil {
-		_ = json.Unmarshal(data, &raw)
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parse JSON %s gagal: %w", path, err)
 	}
 	if raw == nil {
 		raw = make(map[string]interface{})
@@ -118,9 +121,12 @@ func (b *Bot) saveConfigFileUpdate(updater func(map[string]interface{}) error) e
 	}
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("encode JSON gagal: %w", err)
 	}
-	return os.WriteFile(path, out, 0644)
+	if err := os.WriteFile(path, out, 0644); err != nil {
+		return fmt.Errorf("tulis file %s gagal: %w", path, err)
+	}
+	return nil
 }
 
 func (b *Bot) setNotifMode(ctx context.Context, chatID int64, mode string) {
@@ -305,6 +311,7 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 
 	var desc string
 	var err error
+	var fileUpdater func(map[string]interface{}) error
 
 	switch param {
 	case "capital", "capital_total":
@@ -315,10 +322,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		}
 		old := b.cfg.CapitalTotal
 		b.cfg.CapitalTotal = v
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["capital_total"] = v
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Total Capital Budget: $%.2f → <b>$%.2f</b>", old, v)
 
 	case "allocation", "allocation_per_pair":
@@ -336,10 +343,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		}
 		old := b.cfg.AllocationPerPair
 		b.cfg.AllocationPerPair = v
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["allocation_per_pair"] = v
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Alokasi Per Pair: %.1f%% → <b>%.1f%% ($%.2f)</b>", old*100, v*100, b.cfg.CapitalTotal*v)
 
 	case "minroi", "min_net_roi_pct":
@@ -350,10 +357,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		}
 		old := b.cfg.MinNetROIPct
 		b.cfg.MinNetROIPct = v
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["min_net_roi_pct"] = v
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Min Net ROI: %.2f%% → <b>%.2f%%</b>", old, v)
 
 	case "maxroi", "max_net_roi_pct":
@@ -364,10 +371,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		}
 		old := b.cfg.MaxNetROIPct
 		b.cfg.MaxNetROIPct = v
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["max_net_roi_pct"] = v
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Max Net ROI: %.2f%% → <b>%.2f%%</b>", old, v)
 
 	case "leverage", "perp_leverage":
@@ -378,10 +385,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		}
 		old := b.cfg.PerpLeverage
 		b.cfg.PerpLeverage = v
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["perp_leverage"] = v
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Perp Leverage: %.0fx → <b>%.0fx</b>", old, v)
 
 	case "mincap", "min_allocated_capital":
@@ -392,10 +399,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		}
 		old := b.cfg.MinAllocatedCapital
 		b.cfg.MinAllocatedCapital = v
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["min_allocated_capital"] = v
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Min Allocated Capital: $%.2f → <b>$%.2f</b>", old, v)
 
 	case "scan", "scan_interval", "scan_interval_seconds":
@@ -406,10 +413,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		}
 		old := b.cfg.ScanIntervalSeconds
 		b.cfg.ScanIntervalSeconds = v
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["scan_interval_seconds"] = v
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Scan Interval: %ds → <b>%ds</b>", old, v)
 
 	case "mode":
@@ -420,10 +427,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		}
 		old := b.cfg.Mode
 		b.cfg.Mode = m
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["mode"] = m
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Trading Mode: <code>%s</code> → <b>%s</b>", old, m)
 
 	case "adaptive", "enable_adaptive_sizing":
@@ -433,10 +440,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 			break
 		}
 		b.cfg.EnableAdaptiveSizing = &v
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["enable_adaptive_sizing"] = v
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Adaptive Sizing: <b>%t</b>", v)
 
 	case "synthetic_idr", "enable_synthetic_idr":
@@ -446,10 +453,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 			break
 		}
 		b.cfg.EnableSyntheticIDR = v
-		_ = b.saveConfigFileUpdate(func(raw map[string]interface{}) error {
+		fileUpdater = func(raw map[string]interface{}) error {
 			raw["enable_synthetic_idr"] = v
 			return nil
-		})
+		}
 		desc = fmt.Sprintf("Synthetic IDR: <b>%t</b>", v)
 
 	default:
@@ -465,14 +472,34 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		return
 	}
 
+	cfgTarget := b.configPath
+	if cfgTarget == "" {
+		cfgTarget = "config.json"
+	}
+
+	if fileUpdater != nil {
+		if saveErr := b.saveConfigFileUpdate(fileUpdater); saveErr != nil {
+			if b.server != nil {
+				b.server.UpdateConfig(b.cfg)
+			}
+			b.sendReplyWithMarkup(
+				ctx, msg.Chat.ID, msg.MessageID,
+				fmt.Sprintf("⚠️ <b>Perhatian:</b> RAM scanner telah diperbarui, tetapi gagal simpan ke disk (%s):\n<code>%s</code>",
+					html.EscapeString(cfgTarget), html.EscapeString(saveErr.Error())),
+				b.defaultKeyboard(),
+			)
+			return
+		}
+	}
+
 	if b.server != nil {
 		b.server.UpdateConfig(b.cfg)
 	}
 
 	b.sendReplyWithMarkup(
 		ctx, msg.Chat.ID, msg.MessageID,
-		fmt.Sprintf("✅ <b>Konfigurasi Berhasil Diperbarui</b>\n\n• %s\n• Tersimpan ke: <code>%s</code>\n\n<i>Ketik /settings untuk melihat konfigurasi aktif.</i>",
-			desc, b.configPath),
-		b.defaultKeyboard(),
+		fmt.Sprintf("✅ <b>Konfigurasi Berhasil Diperbarui:</b>\n\n• %s\n\n<i>File config (%s) dan memori scanner telah disinkronkan.</i>",
+			desc, html.EscapeString(cfgTarget)),
+		b.settingsKeyboard(),
 	)
 }

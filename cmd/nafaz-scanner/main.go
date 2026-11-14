@@ -23,6 +23,9 @@ import (
 )
 func main(){
 	path:=flag.String("config","config.json","path to JSON config");flag.Parse()
+	if abs, err := filepath.Abs(*path); err == nil {
+		*path = abs
+	}
 	cfg,err:=config.Load(*path);if err!=nil{log.Fatal(err)}
 	var adapter exchange.ReadOnlyAdapter
 	switch cfg.Mode {
