@@ -138,7 +138,7 @@ class V2ControlPlaneRuntime:
             await registry.heartbeat()
             await registry.acknowledge(config)
 
-            admission_gate = PostgresEntryAdmissionGate(pool, store, registry)
+            admission_gate = PostgresEntryAdmissionGate(pool, store, registry, cache=cache)
             invalidation_consumer = ConfigInvalidationConsumer(
                 repository, cache, registry, store
             )
