@@ -205,7 +205,7 @@ No merge, deployment, production migration, or cutover was performed.
 
 ## R-32 — PREPARED intent reuse omitted recovery context
 
-**Status: FIXED IN SOURCE; new regression awaits CI.**
+**Status: FIXED; regression and full CI verified on 2026-11-14 (workflows 43571991627 and 43572108728).**
 
 - `GlobalStopService.prepare_submit_attempt` already compared exchange, market type, symbol, side, order type, quantity, price, pair key and `amount_spec` when the same client order ID was presented again while PREPARED.
 - It did not compare JSONB `recovery_context`. For a futures hedge, this context binds the submit to its parent spot exchange/order/client ID. A stale PREPARED ID could therefore be accepted with a different parent identity even though the actual venue parameters were unchanged.
@@ -226,9 +226,10 @@ The checked GlobalStop signatures match the actual spot, futures and generic-gat
 
 ### CI evidence and remaining risk
 
-- Pre-patch head `5956c230`: workflow [43570939910](https://github.com/nzf210/nafaz_arb/actions/runs/43570939910) passed all four jobs. The PostgreSQL integration file reported 2 passed; full Python suite reported 558 passed, 2 skipped. The recovery-context regression was added after this run and still needs CI verification.
+- Source patch commit `d8eb70d`: workflow [43571991627](https://github.com/nzf210/nafaz_arb/actions/runs/43571991627) passed all four jobs. The PostgreSQL integration file reported 2 passed; full Python suite reported 559 passed, 2 skipped. The new recovery-context regression is included.
+- Final documentation head `d8c1f207`: workflow [43572108728](https://github.com/nzf210/nafaz_arb/actions/runs/43572108728) also passed all four jobs, with the same Python and PostgreSQL integration counts. The two Python skips are in the general job; the dedicated PostgreSQL integration job ran both tests. Two non-failing pytest unknown-marker warnings remain.
 - Operator resolution has a passing HMAC + PostgreSQL audit integration test. Deployment identity provisioning, secret custody/rotation, approval controls, audit retrieval and runbook remain OPEN; this is shared-secret HMAC, not SSO/OIDC.
-- The multi-process PostgreSQL backend-disconnect test passed on disposable CI PostgreSQL, but final-patch verification, repeated fault-boundary review and production topology validation remain OPEN.
+- The multi-process PostgreSQL backend-disconnect test passed on disposable CI PostgreSQL on the source patch and final documentation head. Repeated stress/fault-boundary review and production topology validation remain OPEN.
 - Real per-venue sandbox/paper probes remain OPEN for exact client-ID visibility, eventual consistency, pending/partial hedge market orders, cancel/fill races and reduceOnly close semantics.
 - Latest partial-fill sizing may intentionally enlarge the futures short beyond actual spot fill to meet venue minimum notional/contract rules. Delta imbalance is logged; the hard-drift path currently logs rather than automatically unwinding. This is a strategy/risk-policy review gate, not a STOP-fence bypass; it was not changed in this audit.
 
