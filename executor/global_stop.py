@@ -18,6 +18,16 @@ from typing import Any, AsyncIterator, Optional
 
 logger = logging.getLogger("executor.global_stop")
 
+
+def _json_mapping(value: Any) -> Optional[dict]:
+    """Decode JSONB values consistently across asyncpg codecs and test doubles."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    return value if isinstance(value, dict) else None
+
 # Stable, application-wide PostgreSQL advisory-lock key. Do not change without
 # coordinating every executor instance using this schema.
 FENCE_LOCK_KEY = 731_904_221
@@ -129,16 +139,16 @@ class GlobalStopService:
                     "side": values[4], "order_type": values[5], "quantity": values[6],
                     "price": values[7], "pair_key": values[8],
                 }
-                stored_amount_spec = existing.get("amount_spec")
-                if isinstance(stored_amount_spec, str):
-                    try:
-                        stored_amount_spec = json.loads(stored_amount_spec)
-                    except (TypeError, ValueError):
-                        stored_amount_spec = None
+                stored_amount_spec = _json_mapping(existing.get("amount_spec"))
+                stored_recovery_context = _json_mapping(
+                    existing.get("recovery_context")
+                )
                 expected_amount_spec = json.loads(values[10])
+                expected_recovery_context = json.loads(values[9])
                 if (
                     any(existing[key] != value for key, value in expected.items())
                     or stored_amount_spec != expected_amount_spec
+                    or stored_recovery_context != expected_recovery_context
                 ):
                     raise GlobalStopError(
                         f"client order id collision with a different order intent: {client_order_id}"
