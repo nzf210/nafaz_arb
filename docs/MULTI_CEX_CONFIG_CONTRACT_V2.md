@@ -283,3 +283,7 @@ Migration `20261114000100_v2_multi_venue_execution_core.sql` creates `v2_exchang
 `executor/v2_execution_repository.py` writes a durable intent before any external submission and commits each intent transition, append-only journal event and outbox event atomically. It uses Decimal-only financial inputs, unique idempotency keys, compare-and-swap state transitions and rejects secret-like payload fields. The publisher routes execution events to `nafaz:v2:execution:events`, separate from config invalidation events. The repository is not connected to `ArbitrageEngine` yet, so current LIVE order lifecycle still uses the legacy registry/Supabase writer path.
 
 The SQL migration is additive and does not activate a venue, account, route, risk profile, intent or trading state. All V2 venue/account/route rows are disabled by default. No data backfill or credential migration is performed.
+
+### Database-level execution admission checks
+
+The V2 migration enforces the market/route relationship when an intent is inserted: canonical base asset must match the venue-bound market and route symbol allowlist; spot quote and perpetual settle assets must be allowed by the route; perpetual market contract size must be present; and both route legs must still have verified capabilities. Revoking a capability after route activation blocks new intents until the route is reviewed and revalidated. Position snapshots retain repeated observations for the same exchange position ID; the identifier is a lookup index, not a uniqueness constraint.
