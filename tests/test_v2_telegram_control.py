@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -52,7 +51,7 @@ def test_telegram_policy_requires_both_allowlists_and_accepts_group_chat_ids():
     assert not policy.authorize(TelegramIdentity(101, 55, 1))
     assert not policy.authorize(TelegramIdentity(102, -10012345, 1))
 
-    with pytest.raises(OperatorControlError, match="allowlists"):
+    with pytest.raises(OperatorControlError, match="allowed_chat_ids"):
         TelegramPolicy.from_snapshot({
             "telegram": {
                 "enabled": True,
