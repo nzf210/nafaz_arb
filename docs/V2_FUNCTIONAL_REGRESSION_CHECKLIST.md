@@ -178,7 +178,7 @@
 - [ ] Unauthorized Telegram user, authorized user in wrong chat, empty allowlist: all denied.
 - [ ] Duplicate Telegram update and duplicate command ID: exactly one side effect.
 - [ ] START without readiness or expired/wrong-version confirmation: denied.
-- [ ] STOP during entry preparation and immediately before submit: no new order admitted after barrier; the final pre-submit DB check exists, but transactional STOP fencing is still pending.
+- [ ] STOP during entry preparation and immediately before submit: the exclusive PostgreSQL STOP fence waits for any in-flight shared submit fence, then prevents subsequent entries; verify with multi-process integration.
 - [ ] STOP while position/open orders exist: policy honored; no force-close.
 - [ ] Venue API timeout/429/5xx/malformed response: no unsafe fallback.
 - [ ] Partial fill and ambiguous acknowledgement: reconcile, never blind resubmit.
@@ -214,14 +214,14 @@
 | 2026-11-13 | `850db4e92f57bb26cb78293f3ab7bbc8a423f0fd` | `43433436237` | Outbox publisher + regression tests | Python, Go, Docker images and PostgreSQL migration/idempotency/RLS jobs all succeeded | Pass | Pending |
 | 2026-11-13 | `81e9196b54838ab105ac1e7166bc042f9459659d` | `43434420893` (earlier head only) | Config invalidation + consumer leases + convergence API | Added PostgreSQL consumer registry, process restart resets to STARTING, DB refetch/Redis mirror/atomic swap/ack path, periodic reconciliation, lease-scoped convergence API and SQL smoke assertions. Run `43434420893` was triggered at earlier head `058ee031`; latest SHA has no confirmed CI run yet | Pending | Pending |
 
-**Current release decision:** NOT LIVE-READY. The PostgreSQL admission gate and fail-closed engine hooks are implemented, including a final pre-submit recheck. The gate is not yet injected by executor startup because the V2-to-legacy runtime config mapping and cutover are not complete; therefore LIVE entry is intentionally denied. Transactional STOP fencing and deployed multi-process proof remain outstanding.
+**Current release decision:** NOT LIVE-READY. The opt-in runtime now injects the PostgreSQL admission gate, verifies the Redis snapshot on every admission, and shares a transaction-scoped advisory fence with STOP and config activation. Every successful executor bootstrap durably resets trading to STOPPED. The V2 snapshot is still not mapped into the legacy exchange-client/strategy config, signals remain disabled, production adapter capability evidence is absent, and no readiness provider can prove all START checks. Telegram START therefore remains fail-closed. Deployed multi-process and restart/outage integration evidence remains outstanding.
 
 
 ## 14. Runtime entry admission implementation notes
-- The PostgreSQL admission gate requires operator state RUNNING/trading_enabled=true, the local snapshot to match the active DB version and hash, signals_enabled=true, and every live executor lease to acknowledge the same version/hash.
-- The engine checks the gate before entry preparation and again immediately before the spot order API call. Missing gate or any check error denies LIVE entry; MOCK behavior is unchanged.
-- The current V2 snapshot validator still requires signals_enabled=false pending sole-consumer proof, so the admission gate correctly remains closed under the present contract.
-- This is not yet a transactional fencing lock shared with STOP. Do not interpret the final DB read as proof that a concurrent STOP can never race an external submit.
+- The PostgreSQL admission gate requires durable RUNNING/trading_enabled=true, matching active DB version/hash, a readable Redis snapshot with the same version/hash, signals_enabled=true, and every live executor lease to acknowledge the same version/hash.
+- The engine checks admission before entry preparation and again immediately before the spot order API call. The final call is wrapped in a shared transaction-scoped PostgreSQL advisory lock; STOP and config activation take the matching exclusive lock.
+- If the fence rejects before the exchange API call, the already-persisted entry intent is retired as rejected rather than left as a false SUBMITTING order. If the exchange call has started, ambiguous acknowledgements still follow the existing client-ID reconciliation path.
+- The current V2 snapshot validator still requires signals_enabled=false pending sole-consumer proof, so the gate correctly remains closed under the present contract. MOCK behavior is unchanged.
 
 
 ### CI correction record
@@ -243,4 +243,15 @@
 - SQL smoke test covers NUMERIC column types, route constraints, journal append-only behavior and execution outbox support.
 - V2 repository is not wired to `ArbitrageEngine`; `executor/main.py` continues to load V1 `config.json`. No data backfill, secret migration, config activation, exchange account change or order request is performed.
 
-**Release gate:** keep V2 routes disabled, `signals_enabled=false`, and operator state STOPPED until production adapter capability evidence, v1 mapping, secret resolution, startup integration, fill/order lifecycle integration, transactional STOP fencing and deployed multi-process tests are complete.
+**Release gate:** keep V2 routes disabled, `signals_enabled=false`, and operator state STOPPED until production adapter capability evidence, V1-to-V2 runtime mapping, complete secret resolution, fill/order lifecycle integration, real readiness checks, and deployed multi-process/restart/outage tests are complete.
+
+
+## 16. Telegram control runtime and restart safety
+
+- `executor/main.py` starts the V2 control plane only when `NAFAZ_V2_CONTROL_ENABLED=true`; bootstrap failure leaves the process alive for monitoring/recovery but with no LIVE admission gate.
+- Bootstrap reads the active PostgreSQL snapshot, validates the canonical hash, verifies the Redis mirror, registers the executor lease, and durably resets operator state to STOPPED before starting the consumer/outbox/Telegram tasks.
+- Telegram uses both user and chat allowlists, secret/env token resolution, update-ID idempotency, actor/reason/timestamp audit, START confirmation TTL, and immediate STOP without confirmation.
+- STOP supports only `keep_and_manage`; it does not cancel open orders or close positions. The exclusive STOP fence serializes against every shared spot-entry submit fence.
+- START readiness includes database, config version, Redis snapshot, credentials, market metadata, live FX, reconciliation, risk, kill switch, Python sole-consumer proof and signals-enabled. No production readiness provider is wired yet; START must remain denied.
+- Unit tests cover allowlist denial, duplicate commands, START confirmation/readiness denial, STOP policy, entry-fence lock behavior, stale consumers, startup STOP reset and Redis admission failure.
+- Manual actions still required: apply migrations to the intended PostgreSQL instance; populate a validated active V2 snapshot and Telegram allowlists/token reference; inject DB/Redis/Telegram secrets; run restart, multi-instance STOP-vs-submit, Redis/DB outage and read-only account/market/FX smoke tests. Do not enable signals or send live orders.
