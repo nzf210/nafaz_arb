@@ -322,10 +322,10 @@ begin
         if control_state is distinct from 'RUNNING' or trading_enabled is distinct from true then
             raise exception 'LIVE V2 execution intent denied by durable operator control state';
         end if;
-        select (version.snapshot->'execution'->>'signals_enabled')::boolean
+        select (config_version.snapshot->'execution'->>'signals_enabled')::boolean
           into config_signals_enabled
           from public.active_config_version active
-          join public.config_versions version on version.version = active.version
+          join public.config_versions config_version on config_version.version = active.version
          where active.singleton = true;
         if config_signals_enabled is distinct from true then
             raise exception 'LIVE V2 execution intent denied while config signals_enabled is false or missing';
