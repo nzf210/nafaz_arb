@@ -148,3 +148,21 @@ Remaining work includes the verified production adapter capability matrix, expli
 - Capability evidence revocation therefore blocks subsequent intent creation even if an earlier route row remains enabled.
 - Position snapshots are append-only observations. An exchange position ID is indexed for lookup but is not unique across time, so successive reconciliation runs can retain history.
 - CI exercises the repository against a real PostgreSQL instance inside a rollback-only transaction, in addition to migration replay and SQL schema smoke tests.
+
+## 14. V2 control-plane runtime and restart semantics
+
+The Python executor has an opt-in bootstrap (`NAFAZ_V2_CONTROL_ENABLED=true`). It reads the bootstrap PostgreSQL DSN from the environment name in `NAFAZ_V2_DATABASE_DSN_ENV` (default `NAFAZ_DATABASE_URL`), fetches and validates the active immutable V2 snapshot, resolves the Redis URL through the snapshot's `redis.url_env`, and verifies the Redis mirror by read-back. The Redis endpoint must match the legacy executor's configured Redis endpoint; a mismatch aborts V2 bootstrap. Secrets are never logged.
+
+Every successful executor bootstrap takes the exclusive operator-entry advisory lock and writes durable `STOPPED / trading_enabled=false` before registering the new process lease. It also rejects pending START confirmations from the previous process. Process liveness is then reported separately through `config_consumers`; a live process does not imply trading is enabled. An operator must issue a fresh Telegram START after restart.
+
+The runtime starts the PostgreSQL-authoritative config invalidation consumer, transactional outbox publisher and (when enabled and its token resolves) the Python Telegram long-polling service. The Telegram bot uses both user-ID and chat-ID allowlists. A `bot_token_env` reference is resolved directly from that environment variable; a `bot_token_ref` is currently injected through `NAFAZ_TELEGRAM_BOT_TOKEN` until a dedicated external secret-manager adapter is installed. The token is never logged.
+
+The entry gate verifies the current Redis snapshot on each admission and again while holding the shared PostgreSQL submission fence. STOP and config activation take the matching exclusive fence. Thus Redis outage, stale cache, PostgreSQL outage, config-version mismatch, consumer divergence or STOP prevents a new spot entry. The exchange call is made while the shared fence is held; existing position management and exits do not take this entry fence. STOP currently supports only `keep_and_manage`: it neither cancels open orders nor closes positions.
+
+### Current runtime boundary
+
+This is a control-plane integration, not the complete V1-to-V2 config cutover. `executor/main.py` still loads the existing `config.json` for exchange adapters and legacy strategy/execution parameters. The V2 PostgreSQL snapshot is authoritative for V2 validation, operator policy, cache convergence and entry admission, but its venue/account/route/strategy/risk fields are not yet mapped into the live adapter factory. No automatic V1 config migration or credential copy occurs.
+
+START remains intentionally unavailable in the current binary: the V2 validator continues to require `execution.signals_enabled=false`, the production adapter capability registry is empty, and no runtime readiness provider currently proves credentials, multi-venue market metadata, live FX freshness/spread/fee bounds, complete account reconciliation, risk and kill-switch checks, or Python-only order authority. The Telegram confirmation path reports these failed gates and leaves the durable state STOPPED. Do not set LIVE signals true or treat the process as LIVE-ready until those proofs and smoke tests are implemented and reviewed.
+
+If V2 bootstrap is disabled or fails, the executor process may remain alive for monitoring/recovery, but the LIVE admission gate is absent and new LIVE entries fail closed. MOCK behavior remains unchanged. No user configuration is rewritten by bootstrap.
