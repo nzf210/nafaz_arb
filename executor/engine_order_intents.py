@@ -126,11 +126,12 @@ class EngineOrderIntentMixin:
         # LIVE trading must never proceed with Redis-only order tracking. The
         # pre-submit intent is the last safe point to reject a configuration
         # that cannot durably journal every exchange order for restart recovery.
-        if not bool(getattr(self.config, "mock_mode", False)) and not bool(
-            getattr(self.supabase, "enabled", False)
-        ):
+        has_durable = bool(getattr(self.supabase, "enabled", False)) or bool(
+            getattr(self.config, "postgres_dsn", "")
+        )
+        if not bool(getattr(self.config, "mock_mode", False)) and not has_durable:
             raise RuntimeError(
-                "refusing LIVE order submission: Supabase durable order persistence is disabled"
+                "refusing LIVE order submission: durable order persistence is disabled"
             )
         required = bool(metadata.pop("required", True))
         role = metadata.get("role", "unknown")
