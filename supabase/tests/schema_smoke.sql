@@ -621,4 +621,28 @@ begin
 end;
 $v2_core$;
 
+
+
+do $v2_live_gate$
+begin
+    begin
+        insert into public.v2_execution_intents(
+            intent_id, idempotency_key, route_id, venue_id, account_id, market_id,
+            canonical_symbol, order_role, side, order_type, client_order_id,
+            requested_qty, limit_price, is_mock
+        ) values (
+            '44444444-4444-4444-4444-444444444444',
+            'schema-smoke-live-intent-1','smoke_route','smoke_spot',
+            'smoke_spot_account','smoke_btc_idr','BTC','ENTRY','buy','limit',
+            'schema-smoke-live-client-1',0.001,500000000,false
+        );
+        raise exception 'LIVE V2 intent unexpectedly passed STOP gate';
+    exception when others then
+        if sqlerrm = 'LIVE V2 intent unexpectedly passed STOP gate' then
+            raise;
+        end if;
+    end;
+end;
+$v2_live_gate$;
+
 rollback;
