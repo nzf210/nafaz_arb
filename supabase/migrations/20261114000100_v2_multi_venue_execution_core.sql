@@ -149,16 +149,18 @@ declare
     futures_type text;
     spot_venue_enabled boolean;
     futures_venue_enabled boolean;
+    spot_market_data_enabled boolean;
+    futures_market_data_enabled boolean;
     spot_execution_enabled boolean;
     futures_execution_enabled boolean;
     spot_account_enabled boolean;
     futures_account_enabled boolean;
 begin
-    select market_type, enabled, execution_enabled
-      into spot_type, spot_venue_enabled, spot_execution_enabled
+    select market_type, enabled, market_data_enabled, execution_enabled
+      into spot_type, spot_venue_enabled, spot_market_data_enabled, spot_execution_enabled
       from public.v2_venues where venue_id = new.spot_venue_id;
-    select market_type, enabled, execution_enabled
-      into futures_type, futures_venue_enabled, futures_execution_enabled
+    select market_type, enabled, market_data_enabled, execution_enabled
+      into futures_type, futures_venue_enabled, futures_market_data_enabled, futures_execution_enabled
       from public.v2_venues where venue_id = new.futures_venue_id;
     select enabled into spot_account_enabled
       from public.v2_accounts
@@ -176,16 +178,48 @@ begin
     if new.enabled and (
         spot_venue_enabled is distinct from true
         or futures_venue_enabled is distinct from true
+        or spot_market_data_enabled is distinct from true
+        or futures_market_data_enabled is distinct from true
         or spot_execution_enabled is distinct from true
         or futures_execution_enabled is distinct from true
         or spot_account_enabled is distinct from true
         or futures_account_enabled is distinct from true
     ) then
-        raise exception 'enabled V2 route requires enabled execution venues and accounts';
+        raise exception 'enabled V2 route requires enabled market-data/execution venues and accounts';
+    end if;
+    if new.enabled and exists (
+        select 1
+          from unnest(array[
+              'balance_read','open_orders_read','limit_order_create',
+              'order_cancel','order_lookup_by_client_id','multi_venue','multi_account'
+          ]::text[]) as required(capability)
+         where not exists (
+             select 1 from public.v2_venue_capabilities capability
+              where capability.venue_id = new.spot_venue_id
+                and capability.capability = required.capability
+                and capability.status = 'verified'
+         )
+    ) then
+        raise exception 'enabled V2 spot route requires verified adapter capabilities';
+    end if;
+    if new.enabled and exists (
+        select 1
+          from unnest(array[
+              'balance_read','positions_read','market_order_create','reduce_only_order',
+              'order_cancel','order_lookup_by_client_id','multi_venue','multi_account'
+          ]::text[]) as required(capability)
+         where not exists (
+             select 1 from public.v2_venue_capabilities capability
+              where capability.venue_id = new.futures_venue_id
+                and capability.capability = required.capability
+                and capability.status = 'verified'
+         )
+    ) then
+        raise exception 'enabled V2 futures route requires verified adapter capabilities';
     end if;
     return new;
 end;
-$route$;
+$route$;;
 
 drop trigger if exists trg_validate_v2_trading_route on public.v2_trading_routes;
 create trigger trg_validate_v2_trading_route
@@ -238,6 +272,74 @@ create index if not exists idx_v2_intents_route_state
     on public.v2_execution_intents(route_id, state, updated_at desc);
 create index if not exists idx_v2_intents_venue_state
     on public.v2_execution_intents(venue_id, state, updated_at desc);
+
+
+create or replace function public.validate_v2_execution_intent()
+returns trigger language plpgsql as $intent$
+declare
+    route_enabled boolean;
+    route_spot_venue text;
+    route_spot_account text;
+    route_futures_venue text;
+    route_futures_account text;
+    venue_enabled boolean;
+    venue_execution_enabled boolean;
+    account_enabled boolean;
+    control_state text;
+    trading_enabled boolean;
+    config_signals_enabled boolean;
+begin
+    select enabled, spot_venue_id, spot_account_id, futures_venue_id, futures_account_id
+      into route_enabled, route_spot_venue, route_spot_account,
+           route_futures_venue, route_futures_account
+      from public.v2_trading_routes where route_id = new.route_id;
+    if route_enabled is distinct from true then
+        raise exception 'V2 execution intent requires an enabled route';
+    end if;
+    if not (
+        (new.venue_id = route_spot_venue and new.account_id = route_spot_account)
+        or (new.venue_id = route_futures_venue and new.account_id = route_futures_account)
+    ) then
+        raise exception 'V2 execution intent venue/account is not a leg of its route';
+    end if;
+
+    select enabled, execution_enabled
+      into venue_enabled, venue_execution_enabled
+      from public.v2_venues where venue_id = new.venue_id;
+    select enabled into account_enabled
+      from public.v2_accounts
+     where venue_id = new.venue_id and account_id = new.account_id;
+    if venue_enabled is distinct from true
+       or venue_execution_enabled is distinct from true
+       or account_enabled is distinct from true then
+        raise exception 'V2 execution intent venue/account execution is disabled';
+    end if;
+
+    if not new.is_mock then
+        select state, trading_enabled
+          into control_state, trading_enabled
+          from public.operator_control_state where singleton = true;
+        if control_state is distinct from 'RUNNING' or trading_enabled is distinct from true then
+            raise exception 'LIVE V2 execution intent denied by durable operator control state';
+        end if;
+        select (version.snapshot->'execution'->>'signals_enabled')::boolean
+          into config_signals_enabled
+          from public.active_config_version active
+          join public.config_versions version on version.version = active.version
+         where active.singleton = true;
+        if config_signals_enabled is distinct from true then
+            raise exception 'LIVE V2 execution intent denied while config signals_enabled is false or missing';
+        end if;
+    end if;
+    return new;
+end;
+$intent$;
+
+drop trigger if exists trg_validate_v2_execution_intent on public.v2_execution_intents;
+create trigger trg_validate_v2_execution_intent
+before insert or update of route_id, venue_id, account_id, is_mock
+on public.v2_execution_intents
+for each row execute function public.validate_v2_execution_intent();
 
 create table if not exists public.v2_execution_journal (
     journal_id bigserial primary key,
