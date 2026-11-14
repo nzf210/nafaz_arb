@@ -386,6 +386,32 @@ async def test_outbox_publisher_delivers_and_acknowledges_event():
 
 
 @pytest.mark.asyncio
+async def test_outbox_publisher_routes_execution_events_to_separate_channel():
+    from executor.v2_config import PostgresOutboxPublisher
+
+    event = {
+        "event_id": 43,
+        "event_key": "execution:intent:1:ack",
+        "aggregate_type": "execution",
+        "aggregate_version": 2,
+        "event_type": "execution.order.acknowledged",
+        "payload": {"intent_id": "intent-1", "journal_id": 99},
+        "attempts": 1,
+    }
+    connection = _OutboxConnection([event])
+    redis = _PublishRedis()
+    publisher = PostgresOutboxPublisher(
+        _OutboxPool(connection), redis, worker_id="execution-outbox-worker"
+    )
+
+    result = await publisher.publish_pending()
+
+    assert result["published"] == 1
+    assert redis.messages[0][0] == "nafaz:v2:execution:events"
+    assert redis.messages[0][1]["aggregate_type"] == "execution"
+
+
+@pytest.mark.asyncio
 async def test_outbox_publisher_retries_and_does_not_persist_exception_details():
     from executor.v2_config import PostgresOutboxPublisher
 
