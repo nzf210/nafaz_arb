@@ -82,10 +82,8 @@ class _Connection:
             return {"intent_id": "11111111-1111-1111-1111-111111111111", "state_version": 0}
         if "select intent_id::text, route_id" in query:
             return self.existing_intent
-        if "select journal_id, intent_id::text, to_state" in query:
+        if "select journal_id, intent_id::text, event_type, from_state, to_state" in query:
             return self.duplicate_event
-        if "select journal_id, intent_id::text, event_type, to_state" in query:
-            return None
         if "insert into public.v2_execution_journal" in query:
             self.journal_inserts.append(args)
             return {"journal_id": 77}
@@ -233,7 +231,17 @@ async def test_transition_replay_is_idempotent_and_invalid_transition_is_rejecte
     duplicate = {
         "journal_id": 88,
         "intent_id": "11111111-1111-1111-1111-111111111111",
+        "event_type": "order.acknowledged",
+        "from_state": "SUBMITTING",
         "to_state": "ACKNOWLEDGED",
+        "quantity": None,
+        "price": None,
+        "quote_amount": None,
+        "fee_amount": None,
+        "realized_pnl": None,
+        "asset": None,
+        "exchange_event_at": None,
+        "payload": "{}",
     }
     connection = _Connection(duplicate_event=duplicate)
     result = await PostgresExecutionRepository(_Pool(connection)).transition_intent(
@@ -247,6 +255,25 @@ async def test_transition_replay_is_idempotent_and_invalid_transition_is_rejecte
     assert result["journal_id"] == 88
     assert connection.current_state is None
     assert connection.outbox_inserts == []
+
+    with pytest.raises(ExecutionIdempotencyConflict, match="different event data"):
+        await PostgresExecutionRepository(_Pool(connection)).transition_intent(
+            "11111111-1111-1111-1111-111111111111",
+            expected_state="SUBMITTING",
+            next_state="ACKNOWLEDGED",
+            event_key="intent:123:ack",
+            event_type="order.rejected",
+        )
+
+    with pytest.raises(ExecutionIdempotencyConflict, match="different event data"):
+        await PostgresExecutionRepository(_Pool(connection)).transition_intent(
+            "11111111-1111-1111-1111-111111111111",
+            expected_state="SUBMITTING",
+            next_state="ACKNOWLEDGED",
+            event_key="intent:123:ack",
+            event_type="order.acknowledged",
+            payload={"different": "payload"},
+        )
 
     with pytest.raises(ValueError, match="invalid execution state transition"):
         await PostgresExecutionRepository(_Pool(_Connection())).transition_intent(
