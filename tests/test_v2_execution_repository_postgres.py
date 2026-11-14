@@ -13,6 +13,7 @@ import pytest
 
 from executor.v2_execution_repository import (
     ExecutionIntent,
+    ExecutionRepositoryError,
     PostgresExecutionRepository,
 )
 
@@ -260,6 +261,36 @@ async def test_postgres_repository_commits_intent_journal_and_outbox_atomically(
         assert state["state_version"] == 1
         assert journal_count == 2
         assert outbox_count == 2
+
+        # Omitting is_mock means LIVE admission, never an implicit MOCK bypass.
+        live_intent = ExecutionIntent(
+            idempotency_key=f"it:{suffix}:live-entry",
+            route_id=route_id,
+            venue_id=spot_venue,
+            account_id=spot_account,
+            market_id=spot_market,
+            canonical_symbol="BTC",
+            order_role="ENTRY",
+            side="buy",
+            order_type="limit",
+            client_order_id=f"it-live-entry-{suffix}",
+            requested_qty=Decimal("0.001"),
+            limit_price=Decimal("500000000"),
+        )
+        assert live_intent.is_mock is False
+        with pytest.raises(ExecutionRepositoryError):
+            await repository.create_intent(
+                live_intent,
+                payload={"source": "postgres-live-gate-test"},
+            )
+        denied_count = await connection.fetchval(
+            """
+            select count(*) from public.v2_execution_intents
+             where idempotency_key = $1
+            """,
+            live_intent.idempotency_key,
+        )
+        assert denied_count == 0
     finally:
         await transaction.rollback()
         await connection.close()
