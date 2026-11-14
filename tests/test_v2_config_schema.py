@@ -244,3 +244,21 @@ def test_live_snapshot_cannot_enable_scanner_private_data_or_disable_reconciliat
     snapshot["execution"]["startup_reconciliation_required"] = False
     with pytest.raises(ConfigSnapshotError, match="startup_reconciliation_required"):
         validate_v2_snapshot(snapshot)
+
+
+def test_active_snapshot_validation_uses_injected_production_capability_registry():
+    from executor.v2_config import calculate_snapshot_sha256, validate_snapshot_row
+
+    snapshot = _enabled_route_snapshot()
+    row = {
+        "version": 2,
+        "schema_version": 2,
+        "snapshot": snapshot,
+        "content_sha256": calculate_snapshot_sha256(snapshot),
+    }
+
+    with pytest.raises(ConfigSnapshotError, match="no verified capability registration"):
+        validate_snapshot_row(row)
+
+    parsed = validate_snapshot_row(row, capability_registry=_CAPABILITIES)
+    assert parsed.version == 2
