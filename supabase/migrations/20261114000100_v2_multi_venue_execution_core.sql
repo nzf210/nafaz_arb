@@ -282,7 +282,8 @@ create table if not exists public.v2_execution_intents (
     limit_price numeric(38,18) check (limit_price is null or limit_price > 0),
     quote_amount numeric(38,18) check (quote_amount is null or quote_amount >= 0),
     state_version bigint not null default 0 check (state_version >= 0),
-    is_mock boolean not null default true,
+    -- Omitted mode is LIVE admission, never an implicit MOCK bypass.
+    is_mock boolean not null default false,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
     foreign key (venue_id, account_id)
