@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
 
 from executor.models import ActivePosition, PositionState
@@ -14,6 +15,16 @@ from executor.config import ExecutorConfig
 from executor.engine import ArbitrageEngine
 
 from tests.conftest import BalancesMockClient, MockExchangeClient, SlowLimitBuyClient, _exposure_engine, _fee_buffer_engine, _fresh_signal_payload, _half_budget_signal, engine, fake_redis, fake_redis_set
+
+
+class _AllowV2AdmissionGate:
+    async def require_entry_allowed(self):
+        return None
+
+    @asynccontextmanager
+    async def entry_submission_fence(self):
+        yield None
+
 
 @pytest.mark.asyncio
 async def test_p2_06_fee_buffer_shrinks_locked_capital(fake_redis):
@@ -430,7 +441,7 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
     engine.client = client
     # Explicitly inject an allow gate: this test exercises the downstream
     # balance/order behavior, not the V2 control-plane denial path.
-    engine.v2_admission_gate = AsyncMock()
+    engine.v2_admission_gate = _AllowV2AdmissionGate()
     # This test isolates balance-probe behavior; the separate adaptive-maker
     # tests cover the fresh Indodax book preflight.
     engine._apply_indodax_adaptive_maker_quote = AsyncMock(return_value=True)
