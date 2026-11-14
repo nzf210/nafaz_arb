@@ -700,8 +700,6 @@ begin
 end;
 $v2_live_gate$;
 
-rollback;
-
 do $v2_capability_recheck$
 begin
     delete from public.v2_venue_capabilities
@@ -724,4 +722,6 @@ begin
     end;
 end;
 $v2_capability_recheck$;
+
+rollback;
 
