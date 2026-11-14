@@ -483,6 +483,35 @@ class _RuntimeRegistry:
 
 
 @pytest.mark.asyncio
+async def test_atomic_config_snapshot_defensively_copies_nested_json():
+    from executor.v2_config import ConfigSnapshot
+    from executor.v2_config_runtime import AtomicConfigSnapshot
+
+    initial = ConfigSnapshot(
+        version=10,
+        schema_version=2,
+        content_sha256="a" * 64,
+        snapshot=_valid_snapshot(),
+    )
+    store = AtomicConfigSnapshot(initial)
+
+    exposed = store.current
+    exposed.snapshot["execution"]["signals_enabled"] = True
+    assert store.current.snapshot["execution"]["signals_enabled"] is False
+
+    replacement = ConfigSnapshot(
+        version=11,
+        schema_version=2,
+        content_sha256="b" * 64,
+        snapshot=_valid_snapshot(),
+    )
+    await store.swap(replacement)
+    replacement.snapshot["execution"]["signals_enabled"] = True
+    assert store.current.version == 11
+    assert store.current.snapshot["execution"]["signals_enabled"] is False
+
+
+@pytest.mark.asyncio
 async def test_config_invalidation_refetches_postgres_then_swaps_and_acknowledges():
     from executor.v2_config import ConfigSnapshot
     from executor.v2_config_runtime import (

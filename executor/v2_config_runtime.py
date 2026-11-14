@@ -7,6 +7,7 @@ then an atomic in-process snapshot replacement and durable DB acknowledgement.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -177,16 +178,20 @@ class AtomicConfigSnapshot:
     """Single-reference snapshot store; readers never see a partially applied dict."""
 
     def __init__(self, initial: Optional[ConfigSnapshot] = None):
-        self._current = initial
+        self._current = copy.deepcopy(initial)
         self._lock = asyncio.Lock()
 
     @property
     def current(self) -> Optional[ConfigSnapshot]:
-        return self._current
+        # ConfigSnapshot is a frozen dataclass, but its nested JSON dict is
+        # mutable. Return a defensive copy so one consumer cannot mutate the
+        # process-wide version seen by other admission checks.
+        return copy.deepcopy(self._current)
 
     async def swap(self, config: ConfigSnapshot) -> None:
+        snapshot = copy.deepcopy(config)
         async with self._lock:
-            self._current = config
+            self._current = snapshot
 
 
 class ConfigInvalidationConsumer:
