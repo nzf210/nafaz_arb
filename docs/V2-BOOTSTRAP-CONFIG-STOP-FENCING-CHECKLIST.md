@@ -331,19 +331,19 @@ Additional findings:
 - Non-definitive transport failures, timeouts, connection resets, malformed ACKs and ACK-persistence failures remain UNKNOWN/SUBMITTING; they are not blind-retried. Explicit venue rejection may be marked REJECTED. IP-ban STOP persistence failure retains the unresolved attempt.
 - Startup uses exact client-order-ID lookup routed by market type (spot/local vs perpetual/futures). Found orders become ACKNOWLEDGED. Not-found or lookup failure is recorded as evidence only and remains globally unresolved; eventual consistency is not treated as rejection.
 
-### 31.3 Verified test evidence on the pre-patch head
+### 31.3 Verified test evidence after the source patch
 
-Workflow [43570939910](https://github.com/nzf210/nafaz_arb/actions/runs/43570939910) for pre-patch head `5956c230` completed successfully:
-- All four CI jobs passed: Go, PostgreSQL schema/integration, Docker image builds, Python.
-- PostgreSQL integration file: **2 passed**, including the real multi-process backend-disconnect/fake-venue boundary and signed operator-resolution/audit test.
-- Full Python suite: **558 passed, 2 skipped**.
-- The new recovery-context idempotency test was added after that run and is **not yet CI-verified**.
+- Workflow [43571991627](https://github.com/nzf210/nafaz_arb/actions/runs/43571991627), on source patch commit `d8eb70d`, completed successfully: all four jobs (Go, PostgreSQL schema/integration, Docker image builds, Python) passed.
+- The focused PostgreSQL integration file reported **2 passed**, including the multi-process backend-disconnect/fake-venue boundary and signed operator-resolution/audit test.
+- The full Python suite reported **559 passed, 2 skipped**. The new recovery-context idempotency regression is included in this run.
+- The final documentation head `d8c1f207` also passed workflow [43572108728](https://github.com/nzf210/nafaz_arb/actions/runs/43572108728): all four jobs passed. Python again reported 559 passed, 2 skipped; the PostgreSQL integration file reported 2 passed.
+- The two skips are in the general Python job; the separate PostgreSQL integration job explicitly ran both integration tests against disposable PostgreSQL. Pytest reports two unknown `integration` marker warnings; these are non-failing configuration warnings.
 
 ### 31.4 Remaining release gates
 
-- [ ] Verify the new recovery-context intent test and full CI on the post-patch branch head.
-- [ ] Operator HMAC flow has an integration test, but identity provisioning, secret custody/rotation, dual-control approval, audit retrieval and runbook remain operationally OPEN. It is shared-secret HMAC, not SSO/OIDC.
-- [ ] Review/repeat the PostgreSQL multi-process fault boundary on the final patch revision. The disposable PostgreSQL CI test passed on the pre-patch head; that does not validate production topology or CEX behavior.
+- [x] Recovery-context intent equality regression and full CI passed on the source patch and final documentation head.
+- [x] HMAC operator-resolution signature, nonce/evidence checks and audit persistence passed the disposable PostgreSQL integration test. Identity provisioning, secret custody/rotation, dual-control approval, audit retrieval and runbook remain operationally OPEN; this is shared-secret HMAC, not SSO/OIDC.
+- [x] PostgreSQL multi-process backend-disconnect/fake-venue boundary passed on the source patch and final documentation head. Repeated stress/fault-boundary review and production topology validation remain OPEN; CI does not validate a real CEX.
 - [ ] Run per-venue sandbox/paper probes for exact client-ID lookup visibility, delayed history consistency, pending/partial market hedge behavior, cancel/fill races and reduceOnly close semantics.
 - [ ] Review the latest `scale_to_min` partial-fill policy: it can deliberately open a futures short larger than the filled spot quantity to satisfy minimum notional/contract rules. Current code logs delta imbalance; the hard-drift branch logs but does not itself close the excess. This is a strategy/risk-policy approval gate, not a STOP-fence bypass, and was not changed in this audit.
 - [ ] Verify every LIVE executor instance shares the same PostgreSQL authority/DSN and the required migrations before any deployment.
