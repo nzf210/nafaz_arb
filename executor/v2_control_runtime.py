@@ -22,6 +22,7 @@ from executor.v2_config import (
     RedisSnapshotCache,
     create_postgres_pool,
     load_verified_active_snapshot,
+    PostgresOutboxPublisher,
 )
 from executor.v2_config_runtime import (
     AtomicConfigSnapshot,
@@ -35,7 +36,6 @@ from executor.v2_operator_control import (
     TelegramPolicy,
 )
 from executor.v2_telegram_bot import TelegramControlBot, TelegramControlService
-from executor.v2_config import PostgresOutboxPublisher
 
 logger = logging.getLogger("executor.v2_control_runtime")
 
