@@ -92,6 +92,11 @@ def validate_v2_snapshot(
         return parse_v2_config(snapshot, capability_registry=capability_registry)
     except V2ConfigValidationError as exc:
         raise ConfigSnapshotError(str(exc)) from exc
+    except (TypeError, KeyError, AttributeError) as exc:
+        raise ConfigSnapshotError(
+            f"V2 config contains an invalid field type ({type(exc).__name__})"
+        ) from exc
+
 
 def validate_snapshot_row(row: Mapping[str, Any]) -> ConfigSnapshot:
     try:
