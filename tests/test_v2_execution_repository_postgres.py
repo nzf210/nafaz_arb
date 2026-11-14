@@ -225,6 +225,10 @@ async def test_postgres_repository_commits_intent_journal_and_outbox_atomically(
             event_key=f"it:{suffix}:validating",
             event_type="intent.validating",
             payload={"validation": "passed"},
+            quantity=Decimal("0.001"),
+            price=Decimal("500000000"),
+            quote_amount=Decimal("500000"),
+            asset="IDR",
         )
 
         assert transition["duplicate"] is False
