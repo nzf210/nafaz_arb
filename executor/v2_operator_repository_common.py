@@ -128,13 +128,28 @@ class OperatorRepositoryCommonMixin:
 
     async def enforce_stopped_on_startup(self, instance_id: str) -> dict[str, Any]:
         """Persist STOPPED on every process start; liveness never implies trading."""
+        return await self._enforce_stopped_for_process_boundary(instance_id, "startup")
+
+    async def enforce_stopped_on_shutdown(self, instance_id: str) -> dict[str, Any]:
+        """Persist STOPPED before graceful shutdown and stop new entry submissions."""
+        return await self._enforce_stopped_for_process_boundary(instance_id, "shutdown")
+
+    async def _enforce_stopped_for_process_boundary(
+        self, instance_id: str, phase: str
+    ) -> dict[str, Any]:
         instance = str(instance_id or "").strip()
-        if not instance or len(instance) > 128:
-            raise OperatorControlError("executor instance ID is invalid")
+        if not instance or len(instance) > 128 or phase not in {"startup", "shutdown"}:
+            raise OperatorControlError("executor process boundary identity is invalid")
         reason = (
-            "system startup safety reset; explicit Telegram START is required; "
+            f"system {phase} safety reset; explicit Telegram START is required; "
             f"instance={instance}"
         )
+        error_code = (
+            "EXECUTOR_RESTART_REQUIRES_OPERATOR_START"
+            if phase == "startup"
+            else "EXECUTOR_SHUTDOWN_REQUIRES_OPERATOR_START"
+        )
+        event_type = f"operator_control.{phase}_stopped"
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 await self._lock_exclusive(connection)
@@ -164,11 +179,11 @@ class OperatorRepositoryCommonMixin:
                     """
                     update public.operator_actions
                        set status = 'REJECTED', confirmation_hash = null,
-                           result = '{"error":"EXECUTOR_RESTART_REQUIRES_OPERATOR_START"}'::jsonb,
-                           completed_at = now()
+                           result = $1::jsonb, completed_at = now()
                      where command = 'trade_start'
                        and status = 'PENDING_CONFIRMATION'
-                    """
+                    """,
+                    json.dumps({"error": error_code}, sort_keys=True),
                 )
                 result = {
                     "state": "STOPPED",
@@ -181,8 +196,8 @@ class OperatorRepositoryCommonMixin:
                 await self._emit_control_event(
                     connection,
                     next_version,
-                    "operator_control.startup_stopped",
-                    f"operator:startup_stopped:{instance}:{next_version}",
+                    event_type,
+                    f"operator:{phase}_stopped:{instance}:{next_version}",
                     result,
                 )
         return result
