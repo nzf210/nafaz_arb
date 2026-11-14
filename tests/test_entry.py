@@ -216,6 +216,10 @@ async def test_state2_partial_fill_and_instant_short_hedge(engine, fake_redis, m
     assert pos_data["qty"] == 0.005
     assert pos_data["symbol"] == "btc_idr"
     assert engine.states[pair_tag] == PositionState.HEDGED_ACTIVE
+    # Partial fill extends Redis pending entry TTL and records PARTIALLY_FILLED in Supabase
+    ttl = await fake_redis.ttl(f"arb:pending_entry:{pair_tag}")
+    assert ttl > 0
+    assert engine.supabase._position_rows[pair_tag]["status"] == "PARTIALLY_FILLED"
 
 @pytest.mark.asyncio
 async def test_entry_order_ttl_expiration(engine, fake_redis, mock_client):
@@ -892,3 +896,24 @@ async def test_maker_refresh_does_not_requeue_when_position_is_active(engine, fa
 
     assert requeued is False
     assert await fake_redis.zscore("arb:signal_priority", pair_tag) is None
+
+
+@pytest.mark.asyncio
+async def test_independent_heartbeat_loop_publishes_status(engine, fake_redis):
+    """Heartbeat loop publishes arb:executor:status independently with TTL."""
+    engine._running = True
+    engine.config.heartbeat_interval_seconds = 0.05
+    heartbeat_task = asyncio.create_task(engine._heartbeat_loop())
+    try:
+        await asyncio.sleep(0.12)
+        raw = await fake_redis.get("arb:executor:status")
+        assert raw is not None
+        status = json.loads(raw)
+        assert status["status"] == "RUNNING"
+        ttl = await fake_redis.ttl("arb:executor:status")
+        assert ttl > 0
+    finally:
+        engine._running = False
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
+

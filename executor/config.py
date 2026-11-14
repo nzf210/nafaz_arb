@@ -27,6 +27,7 @@ class ExecutorConfig:
     min_partial_fill_usd: float = 10.0
     exit_price_move_threshold: float = 0.0015  # 0.15%
     max_order_ttl_seconds: int = 120  # Max TTL for pending maker entry orders before cancel
+    heartbeat_interval_seconds: float = 1.0  # Independent heartbeat loop cadence in seconds
     # Refresh stale, unfilled maker quotes by canceling them and waiting for a fresh scanner signal.
     maker_refresh_after_seconds: int = 8
     maker_refresh_cooldown_seconds: int = 12
@@ -158,6 +159,7 @@ class ExecutorConfig:
                 ("private_stream_max_age_seconds", float),
                 ("funding_decay_retention_ratio", float),
                 ("monitor_interval_seconds", float),
+                ("heartbeat_interval_seconds", float),
                 ("max_order_fetch_failures", int),
                 ("order_fetch_backoff_max_seconds", float),
                 ("venue_rate_limit_cooldown_seconds", float),

@@ -106,13 +106,32 @@ class SupabasePositionMixin:
 
     # --------------------------------------------------------------- positions
 
+    def upsert_partial_position(
+        self,
+        pair_key: str,
+        pos: Any,
+        pair_info: Any = None,
+        is_mock: bool = True,
+        status: str = "PARTIALLY_FILLED",
+    ) -> None:
+        """Upsert a position record immediately after a partial fill / hedge in State 2."""
+        self.position_opened(pair_key, pos, pair_info, is_mock=is_mock, status=status)
+
     def position_opened(
-        self, pair_key: str, pos: Any, pair_info: Any, is_mock: bool = True
+        self,
+        pair_key: str,
+        pos: Any,
+        pair_info: Any,
+        is_mock: bool = True,
+        status: Optional[str] = None,
     ) -> None:
         position_id = self._position_ids.get(pair_key)
         if position_id is None:
             position_id = _position_uuid(pair_key, getattr(pos, "opened_at_ms", 0) if pos else 0)
             self._position_ids[pair_key] = position_id
+        resolved_status = status or getattr(pos, "state", "HEDGED_ACTIVE") or "HEDGED_ACTIVE"
+        if hasattr(resolved_status, "value"):
+            resolved_status = resolved_status.value
         row = {
             "id": position_id,
             "pair_key": pair_key,
@@ -122,7 +141,7 @@ class SupabasePositionMixin:
             "global_symbol": getattr(pair_info, "global_symbol", "") or getattr(pos, "symbol", ""),
             "base_asset": getattr(pair_info, "base_asset", "") or "",
             "quote_asset": getattr(pair_info, "quote_asset", "") or "",
-            "status": getattr(pos, "state", "HEDGED_ACTIVE") or "HEDGED_ACTIVE",
+            "status": resolved_status,
             "execution_mode": "MAKER_TAKER",
             "is_mock": bool(is_mock),
             "qty": _num(getattr(pos, "qty", 0.0)),

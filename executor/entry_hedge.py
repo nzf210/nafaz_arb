@@ -31,12 +31,22 @@ class EntryHedgeMixin:
         """Check order fill delta and trigger short hedge if threshold is met."""
         status = order.get("status", "")
         current_filled = float(order.get("filled", 0.0) or 0.0)
-        order_info["filled"] = max(
-            float(order_info.get("filled", 0.0) or 0.0), current_filled
-        )
+        previous_filled = float(order_info.get("filled", 0.0) or 0.0)
+        order_info["filled"] = max(previous_filled, current_filled)
         order_info["filled_spot_amount"] = order_info["filled"]
         hedged_qty = float(order_info.get("hedged_short_qty", 0.0))
         unhedged_delta = current_filled - hedged_qty
+
+        # Extend Redis TTL on partial fill so pending order record does not expire
+        if current_filled > 0 and getattr(self, "redis", None):
+            ttl = int(getattr(getattr(self, "config", None), "max_order_ttl_seconds", 120) or 120)
+            order_info["placed_time"] = time.time()
+            key = f"arb:pending_entry:{pair_tag}"
+            payload = json.dumps(order_info)
+            if hasattr(self.redis, "setex"):
+                await self.redis.setex(key, ttl, payload)
+            else:
+                await self.redis.set(key, payload, ex=ttl)
 
         if unhedged_delta <= 0:
             return
@@ -169,7 +179,8 @@ class EntryHedgeMixin:
                 )
             persist = getattr(self, "_persist_pending_entry", None)
             if callable(persist):
-                await persist(pair_tag, order_info)
+                ttl = int(getattr(self.config, "max_order_ttl_seconds", 120)) if float(order_info.get("filled", 0.0) or 0.0) > 0 else None
+                await persist(pair_tag, order_info, ttl=ttl)
             return persisted
         except Exception:
             # The hedge has already executed. Do not retry it here; the
@@ -571,12 +582,23 @@ class EntryHedgeMixin:
             global_amount_spec=order_info.get("global_amount_spec"),
             recovery_context=recovery_context,
         )
-        self.supabase.position_opened(
-            pair_tag,
-            self.active_positions[pair_tag],
-            getattr(self, "_pair_infos", {}).get(pair_tag),
-            is_mock=bool(getattr(self.config, "mock_mode", False)),
-        )
+        total_order_qty = float(order_info.get("qty", 0.0) or 0.0)
+        is_partial = total_order_qty > 0 and float(order_info.get("hedged_short_qty", 0.0) or 0.0) < total_order_qty - 1e-9
+        if is_partial:
+            self.supabase.upsert_partial_position(
+                pair_tag,
+                self.active_positions[pair_tag],
+                getattr(self, "_pair_infos", {}).get(pair_tag),
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+                status="PARTIALLY_FILLED",
+            )
+        else:
+            self.supabase.position_opened(
+                pair_tag,
+                self.active_positions[pair_tag],
+                getattr(self, "_pair_infos", {}).get(pair_tag),
+                is_mock=bool(getattr(self.config, "mock_mode", False)),
+            )
         if getattr(self, "two_leg_coordinator", None) is not None:
             coord = self.two_leg_coordinator
             fut_leg = coord.futures_manager.legs.get(f"futures-{pair_tag}")

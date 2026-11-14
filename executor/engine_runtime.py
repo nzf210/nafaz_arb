@@ -90,6 +90,7 @@ class EngineRuntimeMixin:
         self._tasks.append(asyncio.create_task(self._listen_balance_requests()))
         self._tasks.append(asyncio.create_task(self._listen_recovery_requests()))
         self._tasks.append(asyncio.create_task(self._monitoring_loop()))
+        self._tasks.append(asyncio.create_task(self._heartbeat_loop(), name="executor-heartbeat"))
 
         # Subscribe once per configured venue client. Only clients exposing
         # CCXT Pro's watch_orders are eligible; ordinary ccxt.async_support

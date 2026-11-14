@@ -184,5 +184,6 @@ class EntryMonitoringMixin:
             # Persist cumulative fill/hedge progress before the next poll or
             # restart. This prevents an already-hedged partial fill being
             # interpreted as unhedged after recovery.
-            await self._persist_pending_entry(pair_tag, order_info)
+            ttl = int(getattr(self.config, "max_order_ttl_seconds", 120)) if float(order_info.get("filled", 0.0) or 0.0) > 0 else None
+            await self._persist_pending_entry(pair_tag, order_info, ttl=ttl)
             await self._finalize_entry_order(pair_tag, order.get("status", ""))

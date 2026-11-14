@@ -198,7 +198,8 @@ class EntryOrderManagementMixin:
             submitted_at_ms=int(float(order_info.get("placed_time", 0.0) or 0.0) * 1000) or None,
         )
         await self._handle_entry_fills(pair_tag, order_info, order)
-        await self._persist_pending_entry(pair_tag, order_info)
+        ttl = int(getattr(self.config, "max_order_ttl_seconds", 120)) if float(order_info.get("filled", 0.0) or 0.0) > 0 else None
+        await self._persist_pending_entry(pair_tag, order_info, ttl=ttl)
         if self.states.get(pair_tag) in (
             PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
         ):

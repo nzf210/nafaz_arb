@@ -314,6 +314,21 @@ class EngineStatusMixin:
         except Exception:
             logger.exception("failed to publish executor status")
 
+    async def _heartbeat_loop(self) -> None:
+        """Dedicated heartbeat loop publishing status to Redis independently of trading/HTTP loops."""
+        interval = float(getattr(self.config, "heartbeat_interval_seconds", 1.0))
+        while self._running:
+            try:
+                await self.publish_status()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("error in heartbeat loop")
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                break
+
     # -------------------------------------------------------------
     # Emergency Cancel Handling
     # -------------------------------------------------------------

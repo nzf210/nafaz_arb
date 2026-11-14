@@ -215,6 +215,18 @@ class TestPositions:
         parent = next(row for table, _, row in rows if table == "positions")
         assert parent["is_mock"] is False
 
+    def test_upsert_partial_position_sets_partially_filled_status(self):
+        writer = _writer()
+        pos = _pos()
+        writer.upsert_partial_position("indodax:btc_idr", pos, None, is_mock=False, status="PARTIALLY_FILLED")
+        rows = _drain(writer)
+        position_row = next(row for table, _, row in rows if table == "positions")
+        assert position_row["status"] == "PARTIALLY_FILLED"
+        legs = [row for table, _, row in rows if table == "position_legs"]
+        assert len(legs) == 2
+        for leg in legs:
+            assert leg["status"] == "PARTIALLY_FILLED"
+
     def test_position_opened_persists_independent_spot_and_perpetual_legs(self):
         writer = _writer()
         pair = SimpleNamespace(local_symbol="BTC/IDR", global_symbol="BTC/USDT")

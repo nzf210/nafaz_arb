@@ -241,14 +241,22 @@ class EngineRecoveryMixin:
             )
         return verified_pairs
 
-    async def _persist_pending_entry(self, pair_tag: str, order_info: dict) -> None:
+    async def _persist_pending_entry(
+        self, pair_tag: str, order_info: dict, ttl: Optional[int] = None
+    ) -> None:
         """Persists a pending entry order so a restart can adopt or cancel it."""
         if not self.redis:
             return
         try:
-            await self.redis.set(
-                PENDING_ENTRY_KEY_PREFIX + pair_tag, json.dumps(order_info)
-            )
+            key = PENDING_ENTRY_KEY_PREFIX + pair_tag
+            payload = json.dumps(order_info)
+            if ttl is not None and ttl > 0:
+                if hasattr(self.redis, "setex"):
+                    await self.redis.setex(key, int(ttl), payload)
+                else:
+                    await self.redis.set(key, payload, ex=int(ttl))
+            else:
+                await self.redis.set(key, payload)
         except Exception:
             logger.exception(f"[Recovery] failed to persist pending entry for {pair_tag}")
 
