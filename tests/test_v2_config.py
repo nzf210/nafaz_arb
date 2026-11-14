@@ -46,6 +46,7 @@ def _valid_snapshot():
                 "enabled": True,
                 "source": "configured_live_fx_market",
                 "max_age_seconds": 5,
+                "max_spread_pct": 0.25,
                 "static_fallback_allowed_in_live": False,
             },
         },
@@ -272,6 +273,20 @@ def test_v2_contract_rejects_signals_and_non_public_scanner():
     snapshot = _valid_snapshot()
     snapshot["scanner"]["public_market_data_only"] = False
     with pytest.raises(ConfigSnapshotError, match="public-market-data-only"):
+        validate_v2_snapshot(snapshot)
+
+
+def test_v2_live_fx_requires_spread_guard_and_non_synthetic_source():
+    from executor.v2_config import validate_v2_snapshot
+
+    snapshot = _valid_snapshot()
+    del snapshot["scanner"]["synthetic_fx"]["max_spread_pct"]
+    with pytest.raises(ConfigSnapshotError, match="max_spread_pct is required"):
+        validate_v2_snapshot(snapshot)
+
+    snapshot = _valid_snapshot()
+    snapshot["scanner"]["synthetic_fx"]["source"] = "static_rate"
+    with pytest.raises(ConfigSnapshotError, match="live FX feed"):
         validate_v2_snapshot(snapshot)
 
 
