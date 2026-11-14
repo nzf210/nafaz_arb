@@ -35,6 +35,7 @@ type Server struct {
 	activeScans   int
 	scanInFlight  atomic.Bool
 	executor      *redishandler.Client
+	intervalCh    chan time.Duration
 }
 
 type OperationalStatus struct {
@@ -54,7 +55,12 @@ type OperationalStatus struct {
 }
 
 func New(s *scanner.Service, h *history.Store, c config.Config) *Server {
-	return &Server{scanner: s, history: h, cfg: c}
+	return &Server{
+		scanner:    s,
+		history:    h,
+		cfg:        c,
+		intervalCh: make(chan time.Duration, 1),
+	}
 }
 
 // SetExecutorClient wires the Redis client used to read executor status.
@@ -106,10 +112,18 @@ func (s *Server) Config() config.Config {
 // UpdateConfig updates the server and scanner service runtime configuration dynamically.
 func (s *Server) UpdateConfig(cfg config.Config) {
 	s.mu.Lock()
+	oldInterval := s.cfg.ScanIntervalSeconds
 	s.cfg = cfg
+	newInterval := cfg.ScanIntervalSeconds
 	s.mu.Unlock()
 	if s.scanner != nil {
 		s.scanner.UpdateConfig(cfg)
+	}
+	if newInterval > 0 && newInterval != oldInterval && s.intervalCh != nil {
+		select {
+		case s.intervalCh <- time.Duration(newInterval) * time.Second:
+		default:
+		}
 	}
 }
 func (s *Server) Handler() http.Handler {
@@ -151,12 +165,22 @@ func (s *Server) RunPeriodic(ctx context.Context) {
 	if _, err := s.runScan(ctx); err != nil {
 		log.Printf("initial scheduled scan failed: %v", err)
 	}
-	t := time.NewTicker(time.Duration(s.cfg.ScanIntervalSeconds) * time.Second)
+	s.mu.RLock()
+	interval := s.cfg.ScanIntervalSeconds
+	s.mu.RUnlock()
+	if interval <= 0 {
+		interval = 30
+	}
+	t := time.NewTicker(time.Duration(interval) * time.Second)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case newDur := <-s.intervalCh:
+			if newDur > 0 {
+				t.Reset(newDur)
+			}
 		case <-t.C:
 			if _, err := s.runScan(ctx); err != nil {
 				log.Printf("scheduled scan failed: %v", err)

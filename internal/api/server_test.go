@@ -237,6 +237,24 @@ func TestLiveAPIWithoutTokenFailsClosed(t *testing.T) {
     }
 }
 
+func TestUpdateConfigResetsIntervalCh(t *testing.T) {
+	cfg := config.Config{Mode: "MOCK", ScanIntervalSeconds: 30}
+	srv := New(nil, nil, cfg)
+
+	cfg2 := cfg
+	cfg2.ScanIntervalSeconds = 10
+	srv.UpdateConfig(cfg2)
+
+	select {
+	case dur := <-srv.intervalCh:
+		if dur != 10*time.Second {
+			t.Fatalf("expected 10s duration, got %v", dur)
+		}
+	default:
+		t.Fatal("expected duration in intervalCh, but channel was empty")
+	}
+}
+
 
 func TestExecutorStatusDoesNotExposeRedisErrors(t *testing.T) {
     rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:1"})

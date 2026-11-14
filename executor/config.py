@@ -37,6 +37,7 @@ class ExecutorConfig:
     indodax_maker_refresh_cooldown_seconds: int = 15
     mock_mode: bool = True  # Paper trading / simulation by default
     initial_exchange_balance_usdt: float = 100.0  # $100 per exchange
+    capital_total: float = 0.0  # Total capital budget across pairs
     allocation_per_pair: float = 0.5  # Max 50% capital per pair
     min_allocated_capital: float = 10.0  # Minimum capital to enter position
     max_position_usdt: float = 0.0  # Cap on position size per leg in USDT (0 = use signal directive)
@@ -127,6 +128,8 @@ class ExecutorConfig:
             self.execution_mode = str(data.get("execution_mode", self.execution_mode)).strip().upper()
 
             # Check root-level config values as fallbacks
+            if "capital_total" in data:
+                self.capital_total = float(data["capital_total"])
             if "allocation_per_pair" in data:
                 self.allocation_per_pair = float(data["allocation_per_pair"])
             if "min_allocated_capital" in data:
@@ -221,6 +224,12 @@ class ExecutorConfig:
 
         if mock_env := os.getenv("EXECUTOR_MOCK_MODE"):
             self.mock_mode = mock_env.lower() in ("true", "1", "yes")
+
+        if cap_env := os.getenv("CAPITAL_TOTAL"):
+            try:
+                self.capital_total = float(cap_env)
+            except ValueError:
+                pass
 
         if max_pos_env := os.getenv("MAX_POSITION_USDT"):
             try:

@@ -339,6 +339,12 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		b.cfg.CapitalTotal = v
 		fileUpdater = func(raw map[string]interface{}) error {
 			raw["capital_total"] = v
+			exec, ok := raw["executor"].(map[string]interface{})
+			if !ok {
+				exec = make(map[string]interface{})
+				raw["executor"] = exec
+			}
+			exec["max_position_usdt"] = v * b.cfg.AllocationPerPair
 			return nil
 		}
 		desc = fmt.Sprintf("Total Capital Budget: $%.2f → <b>$%.2f</b>", old, v)
@@ -360,6 +366,13 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		b.cfg.AllocationPerPair = v
 		fileUpdater = func(raw map[string]interface{}) error {
 			raw["allocation_per_pair"] = v
+			exec, ok := raw["executor"].(map[string]interface{})
+			if !ok {
+				exec = make(map[string]interface{})
+				raw["executor"] = exec
+			}
+			exec["allocation_per_pair"] = v
+			exec["max_position_usdt"] = b.cfg.CapitalTotal * v
 			return nil
 		}
 		desc = fmt.Sprintf("Alokasi Per Pair: %.1f%% → <b>%.1f%% ($%.2f)</b>", old*100, v*100, b.cfg.CapitalTotal*v)
@@ -416,6 +429,12 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 		b.cfg.MinAllocatedCapital = v
 		fileUpdater = func(raw map[string]interface{}) error {
 			raw["min_allocated_capital"] = v
+			exec, ok := raw["executor"].(map[string]interface{})
+			if !ok {
+				exec = make(map[string]interface{})
+				raw["executor"] = exec
+			}
+			exec["min_allocated_capital"] = v
 			return nil
 		}
 		desc = fmt.Sprintf("Min Allocated Capital: $%.2f → <b>$%.2f</b>", old, v)
@@ -562,6 +581,11 @@ func (b *Bot) exportDynamicConfigMap() map[string]interface{} {
 		"mode":                  b.cfg.Mode,
 		"execution_mode":        b.cfg.ExecutionMode,
 		"enable_synthetic_idr":  b.cfg.EnableSyntheticIDR,
+		"executor": map[string]interface{}{
+			"allocation_per_pair":   b.cfg.AllocationPerPair,
+			"min_allocated_capital": b.cfg.MinAllocatedCapital,
+			"max_position_usdt":     b.cfg.CapitalTotal * b.cfg.AllocationPerPair,
+		},
 	}
 	if b.cfg.EnableAdaptiveSizing != nil {
 		m["enable_adaptive_sizing"] = *b.cfg.EnableAdaptiveSizing

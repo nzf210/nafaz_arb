@@ -112,6 +112,15 @@ class RiskFundingMixin:
         if max_pos_usdt <= 0:
             max_pos_usdt = 100.0
         max_pos_limit = float(getattr(self.config, "max_position_usdt", 0.0) or 0.0)
+        cap_total = float(getattr(self.config, "capital_total", 0.0) or 0.0)
+        alloc_ratio = float(getattr(self.config, "allocation_per_pair", 0.0) or 0.0)
+        if cap_total > 0 and alloc_ratio > 0:
+            dynamic_cap = cap_total * alloc_ratio
+            if max_pos_limit > 0:
+                max_pos_limit = min(max_pos_limit, dynamic_cap)
+            else:
+                max_pos_limit = dynamic_cap
+
         if max_pos_limit > 0:
             max_pos_usdt = min(max_pos_usdt, max_pos_limit)
         min_cap = getattr(self.config, "min_allocated_capital", 10.0)

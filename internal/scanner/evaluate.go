@@ -290,6 +290,9 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	if minimumEntrySpreadPct < subsidyFloor {
 		minimumEntrySpreadPct = subsidyFloor
 	}
+	if s.cfg.MinNetROIPct > 0 && minimumEntrySpreadPct < s.cfg.MinNetROIPct {
+		minimumEntrySpreadPct = s.cfg.MinNetROIPct
+	}
 
 	var cancelIfGlobalBidDropsBelowUSDT float64
 	denom := comparisonRate * (1.0 - (minimumEntrySpreadPct / 100.0))
@@ -316,6 +319,12 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	// Lapis 2: Maker-Taker Entry Spread Filter
 	if entrySpreadPct < minimumEntrySpreadPct {
 		op.ExclusionReasons = append(op.ExclusionReasons, "ENTRY_SPREAD_BELOW_MINIMUM")
+	}
+	if s.cfg.MinNetROIPct > 0 && op.NetROIPct < s.cfg.MinNetROIPct {
+		op.ExclusionReasons = append(op.ExclusionReasons, "ROI_BELOW_MINIMUM")
+	}
+	if s.cfg.MaxNetROIPct > 0 && op.NetROIPct > s.cfg.MaxNetROIPct {
+		op.ExclusionReasons = append(op.ExclusionReasons, "ROI_ABOVE_MAXIMUM")
 	}
 
 	// Active Position in Executor check. A failed check must fail closed:

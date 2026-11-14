@@ -221,3 +221,62 @@ def test_funding_decay_retention_ratio_default_and_sanitization():
     warnings = cfg.sanitize()
     assert cfg.funding_decay_retention_ratio == pytest.approx(0.60)
     assert any("funding_decay_retention_ratio" in warning for warning in warnings)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_config_sync_and_entry_sizing(mock_client):
+    """Verify live reload from Redis config update and sizing sync."""
+    from executor.engine import ArbitrageEngine
+    from executor.models import ExecutorPayload
+    from tests.conftest import _fresh_signal_payload
+    import time
+
+    cfg = ExecutorConfig(
+        mock_mode=True,
+        capital_total=100.0,
+        allocation_per_pair=0.5,
+        min_allocated_capital=10.0,
+        max_position_usdt=50.0,
+    )
+    engine = ArbitrageEngine(config=cfg, client=mock_client)
+
+    # Initial state
+    assert engine.config.max_position_usdt == 50.0
+
+    # Apply dynamic config from Redis arb:config snapshot
+    dyn_data = {
+        "capital_total": 200.0,
+        "allocation_per_pair": 0.25,
+        "min_allocated_capital": 15.0,
+        "mode": "MOCK",
+        "execution_mode": "MAKER_TAKER",
+        "executor": {
+            "allocation_per_pair": 0.25,
+            "min_allocated_capital": 15.0,
+            "max_position_usdt": 50.0,
+        },
+    }
+    engine._apply_dynamic_config_dict(dyn_data)
+
+    assert engine.config.capital_total == 200.0
+    assert engine.config.allocation_per_pair == 0.25
+    assert engine.config.min_allocated_capital == 15.0
+    assert engine.config.max_position_usdt == 50.0
+    assert engine.config.execution_mode == "MAKER_TAKER"
+    assert engine.config.mock_mode is True
+
+    # Test _compute_entry_sizing with dynamic cap
+    raw_payload = _fresh_signal_payload(int(time.time() * 1000))
+    raw_payload["execution_directives"]["max_position_usdt"] = 100.0
+    payload = ExecutorPayload.from_dict(raw_payload)
+
+    engine._balance_snapshots["indodax:btc_idr"] = {
+        "spot_available": 100.0,
+        "futures_available": 100.0,
+    }
+    sized, min_c = await engine._compute_entry_sizing("indodax:btc_idr", payload)
+    assert min_c == 15.0
+    # Sized must be capped at min(directives(100), max_pos_limit(50), usable(100)) - fees
+    assert sized <= 50.0
+    assert sized >= 15.0
+

@@ -89,6 +89,7 @@ class EngineRuntimeMixin:
         self._tasks.append(asyncio.create_task(self._listen_spot_order_limits()))
         self._tasks.append(asyncio.create_task(self._listen_balance_requests()))
         self._tasks.append(asyncio.create_task(self._listen_recovery_requests()))
+        self._tasks.append(asyncio.create_task(self._listen_config_updates()))
         self._tasks.append(asyncio.create_task(self._monitoring_loop()))
         self._tasks.append(asyncio.create_task(self._heartbeat_loop(), name="executor-heartbeat"))
 
@@ -416,6 +417,87 @@ class EngineRuntimeMixin:
         finally:
             await pubsub.unsubscribe("arb:recovery_request")
             await pubsub.close()
+
+    async def _listen_config_updates(self) -> None:
+        """Subscribe to Redis arb:config_update and synchronize self.config live."""
+        pubsub = self.redis.pubsub()
+        await pubsub.subscribe("arb:config_update")
+        try:
+            # Initial sync from Redis snapshot arb:config if available
+            try:
+                raw_cfg = await self.redis.get("arb:config")
+                if raw_cfg:
+                    data = json.loads(
+                        raw_cfg if isinstance(raw_cfg, str) else raw_cfg.decode("utf-8")
+                    )
+                    self._apply_dynamic_config_dict(data)
+            except Exception:
+                logger.exception("[Dynamic Config] failed initial sync from arb:config")
+
+            while self._running:
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
+                if message and message.get("type") == "message":
+                    try:
+                        raw_snap = await self.redis.get("arb:config")
+                        if raw_snap:
+                            data = json.loads(
+                                raw_snap if isinstance(raw_snap, str) else raw_snap.decode("utf-8")
+                            )
+                            self._apply_dynamic_config_dict(data)
+                        elif message.get("data"):
+                            msg_data = message.get("data")
+                            data = json.loads(
+                                msg_data if isinstance(msg_data, str) else msg_data.decode("utf-8")
+                            )
+                            if isinstance(data, dict) and "param" in data and "value" in data:
+                                self._apply_dynamic_config_dict({data["param"]: data["value"]})
+                    except Exception:
+                        logger.exception("[Dynamic Config] failed to apply config update")
+                await asyncio.sleep(0.01)
+        finally:
+            await pubsub.unsubscribe("arb:config_update")
+            await pubsub.close()
+
+    def _apply_dynamic_config_dict(self, data: dict) -> None:
+        exec_data = data.get("executor", {}) if isinstance(data.get("executor"), dict) else {}
+        cap = float(data.get("capital_total", getattr(self.config, "capital_total", 0.0)) or 0.0)
+        alloc = float(
+            exec_data.get("allocation_per_pair")
+            or data.get("allocation_per_pair", getattr(self.config, "allocation_per_pair", 0.0))
+            or 0.0
+        )
+        if cap > 0:
+            self.config.capital_total = cap
+        if alloc > 0:
+            self.config.allocation_per_pair = alloc
+
+        if "max_position_usdt" in exec_data and float(exec_data["max_position_usdt"] or 0) > 0:
+            self.config.max_position_usdt = float(exec_data["max_position_usdt"])
+        elif cap > 0 and alloc > 0:
+            self.config.max_position_usdt = cap * alloc
+
+        min_cap = (
+            exec_data.get("min_allocated_capital")
+            if "min_allocated_capital" in exec_data
+            else data.get("min_allocated_capital")
+        )
+        if min_cap is not None and float(min_cap or 0) > 0:
+            self.config.min_allocated_capital = float(min_cap)
+
+        if "mode" in data:
+            self.config.mock_mode = str(data["mode"]).upper() != "LIVE"
+        if "execution_mode" in data and data["execution_mode"]:
+            self.config.execution_mode = str(data["execution_mode"])
+
+        logger.info(
+            "Dynamic config reloaded from Redis: max_pos=%.2f, alloc=%.4f, min_cap=%.2f, mock=%s",
+            self.config.max_position_usdt,
+            self.config.allocation_per_pair,
+            self.config.min_allocated_capital,
+            self.config.mock_mode,
+        )
 
     async def _load_spot_order_limits(self) -> None:
         """Restore Telegram-managed per-venue limits from durable Redis hash."""
