@@ -155,13 +155,16 @@ class V2ControlPlaneRuntime:
             telegram = config.snapshot.get("telegram")
             if isinstance(telegram, dict) and telegram.get("enabled") is True:
                 policy = TelegramPolicy.from_snapshot(config.snapshot)
-                def secret_resolver(_reference: str) -> str:
+                def secret_resolver(reference: str) -> str:
+                    if reference != "secret://nafaz/telegram/bot-token":
+                        return ""
                     return os.environ.get("NAFAZ_TELEGRAM_BOT_TOKEN", "")
                 try:
                     service = TelegramControlService(
                         operator_repository,
                         repository,
                         readiness_provider=readiness_provider,
+                        secret_resolver=secret_resolver,
                     )
                     telegram_bot = TelegramControlBot(
                         policy, service, secret_resolver=secret_resolver
@@ -241,6 +244,16 @@ class V2ControlPlaneRuntime:
         self._stop_event.set()
         if self._telegram_bot is not None:
             self._telegram_bot.stop()
+        if self._started:
+            try:
+                await self.operator_repository.enforce_stopped_on_shutdown(self.instance_id)
+            except Exception as exc:
+                # DB failure also blocks admission on every healthy consumer;
+                # never report a durable STOP when this transaction did not commit.
+                logger.error(
+                    "V2 shutdown could not persist durable STOPPED error_type=%s",
+                    type(exc).__name__,
+                )
         for task in self._tasks:
             task.cancel()
         if self._tasks:

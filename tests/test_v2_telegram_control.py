@@ -12,26 +12,39 @@ from executor.v2_operator_control import (
     TelegramPolicy,
 )
 from executor.v2_telegram_bot import TelegramControlService
+from executor.v2_control_runtime import V2ControlPlaneRuntime
+
+
+def _telegram_section(*, allowed_user_ids=(101,), allowed_chat_ids=(-10012345,)):
+    return {
+        "enabled": True,
+        "bot_token_ref": "secret://nafaz/telegram/bot-token",
+        "allowed_user_ids": list(allowed_user_ids),
+        "allowed_chat_ids": list(allowed_chat_ids),
+        "start_confirmation_ttl_seconds": 300,
+    }
+
+
+def _secret_resolver(reference):
+    return "test-token" if reference == "secret://nafaz/telegram/bot-token" else ""
 
 
 def _policy():
-    return TelegramPolicy.from_snapshot({
-        "telegram": {
-            "enabled": True,
-            "bot_token_env": "NAFAZ_TELEGRAM_TOKEN",
-            "allowed_user_ids": [101],
-            "allowed_chat_ids": [-10012345],
-            "start_confirmation_ttl_seconds": 300,
-        }
-    })
+    return TelegramPolicy.from_snapshot(_config().snapshot)
 
 
-def _config(*, signals_enabled=False):
+def _config(*, signals_enabled=False, allowed_user_ids=(101,), allowed_chat_ids=(-10012345,)):
     return ConfigSnapshot(
         version=12,
         schema_version=2,
         content_sha256="a" * 64,
-        snapshot={"execution": {"signals_enabled": signals_enabled}},
+        snapshot={
+            "execution": {"signals_enabled": signals_enabled},
+            "telegram": _telegram_section(
+                allowed_user_ids=allowed_user_ids,
+                allowed_chat_ids=allowed_chat_ids,
+            ),
+        },
     )
 
 
@@ -141,14 +154,19 @@ class _Repository:
 
 
 class _ConfigRepository:
+    def __init__(self, config=None):
+        self.config = config or _config()
+
     async def fetch_active(self):
-        return _config()
+        return self.config
 
 
 @pytest.mark.asyncio
 async def test_unauthorized_user_or_chat_is_audited_and_never_runs_command():
     repository = _Repository()
-    service = TelegramControlService(repository, _ConfigRepository())
+    service = TelegramControlService(
+        repository, _ConfigRepository(), secret_resolver=_secret_resolver
+    )
     reply = await service.handle_update(
         _update(1, "/trade_stop unauthorized", user_id=999),
         _policy(),
@@ -162,7 +180,9 @@ async def test_unauthorized_user_or_chat_is_audited_and_never_runs_command():
 @pytest.mark.asyncio
 async def test_trade_start_creates_actor_bound_confirmation_and_does_not_enable_trading():
     repository = _Repository()
-    service = TelegramControlService(repository, _ConfigRepository())
+    service = TelegramControlService(
+        repository, _ConfigRepository(), secret_resolver=_secret_resolver
+    )
     reply = await service.handle_update(
         _update(2, "/trade_start reviewed maintenance window"),
         _policy(),
@@ -179,7 +199,9 @@ async def test_trade_start_creates_actor_bound_confirmation_and_does_not_enable_
 @pytest.mark.asyncio
 async def test_trade_stop_uses_keep_and_manage_and_never_closes_positions():
     repository = _Repository()
-    service = TelegramControlService(repository, _ConfigRepository())
+    service = TelegramControlService(
+        repository, _ConfigRepository(), secret_resolver=_secret_resolver
+    )
     reply = await service.handle_update(
         _update(3, "/trade_stop operator requested pause"),
         _policy(),
@@ -196,7 +218,9 @@ async def test_trade_stop_uses_keep_and_manage_and_never_closes_positions():
 @pytest.mark.asyncio
 async def test_duplicate_telegram_stop_update_has_one_state_transition():
     repository = _Repository()
-    service = TelegramControlService(repository, _ConfigRepository())
+    service = TelegramControlService(
+        repository, _ConfigRepository(), secret_resolver=_secret_resolver
+    )
     update = _update(33, "/trade_stop duplicate delivery")
 
     first = await service.handle_update(update, _policy(), "test-token")
@@ -210,7 +234,9 @@ async def test_duplicate_telegram_stop_update_has_one_state_transition():
 @pytest.mark.asyncio
 async def test_trade_confirm_is_fail_closed_when_readiness_provider_is_not_wired():
     repository = _Repository()
-    service = TelegramControlService(repository, _ConfigRepository())
+    service = TelegramControlService(
+        repository, _ConfigRepository(), secret_resolver=_secret_resolver
+    )
     reply = await service.handle_update(
         _update(4, "/trade_confirm " + "x" * 40),
         _policy(),
@@ -361,14 +387,114 @@ async def test_executor_restart_durably_resets_trading_to_stopped():
     assert connection.lock_acquired
     assert any(
         "update public.operator_actions" in query
-        and "EXECUTOR_RESTART_REQUIRES_OPERATOR_START" in query
-        for query, _ in connection.executed
+        and any(
+            "EXECUTOR_RESTART_REQUIRES_OPERATOR_START" in str(value)
+            for value in args
+        )
+        for query, args in connection.executed
     )
     assert any(
         "operator_control.startup_stopped" in query
         for query, _ in connection.executed
     )
 
+
+
+@pytest.mark.asyncio
+async def test_telegram_allowlist_is_refreshed_from_active_config_before_each_command():
+    repository = _Repository()
+    config_repository = _ConfigRepository(_config(allowed_user_ids=(202,)))
+    service = TelegramControlService(
+        repository, config_repository, secret_resolver=_secret_resolver
+    )
+
+    old_operator = await service.handle_update(
+        _update(20, "/trade_stop stale operator"), _policy(), "test-token"
+    )
+    assert "allowlist aktif" in old_operator
+    assert repository.stop_request is None
+    assert repository.rejected[-1][3] == "TELEGRAM_ALLOWLIST_DENIED"
+
+    current_operator = await service.handle_update(
+        _update(21, "/trade_stop current operator", user_id=202),
+        _policy(),
+        "test-token",
+    )
+    assert "STOPPED" in current_operator
+    assert repository.stop_request[0].user_id == 202
+
+
+@pytest.mark.asyncio
+async def test_telegram_token_rotation_requires_executor_restart():
+    repository = _Repository()
+    token_state = {"value": "test-token"}
+    service = TelegramControlService(
+        repository,
+        _ConfigRepository(),
+        secret_resolver=lambda _reference: token_state["value"],
+    )
+    token_state["value"] = "rotated-token"
+
+    reply = await service.handle_update(
+        _update(22, "/trade_stop token rotation"), _policy(), "test-token"
+    )
+
+    assert "restart executor" in reply.lower()
+    assert repository.stop_request is None
+    assert repository.rejected[-1][3] == "TELEGRAM_TOKEN_ROTATION_REQUIRES_RESTART"
+
+
+class _ShutdownOperatorRepository:
+    def __init__(self):
+        self.calls = []
+
+    async def enforce_stopped_on_shutdown(self, instance_id):
+        self.calls.append(instance_id)
+
+
+class _ShutdownRegistry:
+    def __init__(self):
+        self.stopped = False
+
+    async def stop(self):
+        self.stopped = True
+
+
+class _AsyncCloser:
+    def __init__(self):
+        self.closed = False
+
+    async def close(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_control_plane_graceful_shutdown_persists_stopped_before_closing_dependencies():
+    operator_repository = _ShutdownOperatorRepository()
+    registry = _ShutdownRegistry()
+    redis = _AsyncCloser()
+    pool = _AsyncCloser()
+    runtime = V2ControlPlaneRuntime(
+        pool=pool,
+        redis=redis,
+        repository=object(),
+        registry=registry,
+        operator_repository=operator_repository,
+        admission_gate=object(),
+        invalidation_consumer=object(),
+        outbox_publisher=object(),
+        telegram_bot=None,
+        instance_id="executor-test",
+        process_id="executor-test-1",
+    )
+    runtime._started = True
+
+    await runtime.stop()
+
+    assert operator_repository.calls == ["executor-test"]
+    assert registry.stopped is True
+    assert redis.closed is True
+    assert pool.closed is True
 
 
 @pytest.mark.asyncio

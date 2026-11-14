@@ -480,7 +480,7 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     engine.client = client
     # Explicitly inject an allow gate: this test exercises venue rejection
     # mapping after control-plane admission has succeeded.
-    engine.v2_admission_gate = AsyncMock()
+    engine.v2_admission_gate = _AllowV2AdmissionGate()
     # Keep this test focused on mapping the venue rejection to its public
     # failure reason; adaptive-maker book validation is covered separately.
     engine._apply_indodax_adaptive_maker_quote = AsyncMock(return_value=True)

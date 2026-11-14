@@ -10,7 +10,7 @@ import base64
 import hashlib
 import hmac
 import logging
-from typing import Any, Mapping, Optional
+from typing import Any, Awaitable, Callable, Mapping, Optional
 
 from executor.v2_config import ConfigSnapshot, PostgresConfigRepository
 from executor.v2_operator_control import (
@@ -31,10 +31,12 @@ class TelegramControlService:
         config_repository: PostgresConfigRepository,
         *,
         readiness_provider: Optional[Callable[[ConfigSnapshot], Awaitable[Any]]] = None,
+        secret_resolver: Optional[Callable[[str], str]] = None,
     ):
         self._repository = repository
         self._config_repository = config_repository
         self._readiness_provider = readiness_provider
+        self._secret_resolver = secret_resolver
 
     @staticmethod
     def _identity(update: Mapping[str, Any]) -> Optional[TelegramIdentity]:
@@ -91,11 +93,34 @@ class TelegramControlService:
         if command not in {"trade_start", "trade_stop", "trade_status", "trade_confirm"}:
             return None
 
-        if not policy.authorize(identity):
-            await self._repository.record_rejected(
+        # The bot may live across config activations. Re-read PostgreSQL for
+        # every command so removed operators cannot keep using a stale allowlist.
+        # Redis notifications are not an authorization source.
+        try:
+            config = await self._config_repository.fetch_active()
+            active_policy = TelegramPolicy.from_snapshot(config.snapshot)
+            active_token = active_policy.resolve_token(self._secret_resolver)
+            if not hmac.compare_digest(active_token, token):
+                raise OperatorControlError(
+                    "active Telegram token changed; executor restart is required"
+                )
+        except Exception as exc:
+            error_code = (
+                "TELEGRAM_TOKEN_ROTATION_REQUIRES_RESTART"
+                if "token changed" in str(exc).lower()
+                else "TELEGRAM_POLICY_UNAVAILABLE"
+            )
+            await self._record_rejected_safely(identity, command, argument, error_code)
+            return (
+                "Perintah ditolak: konfigurasi Telegram/token aktif tidak dapat "
+                "diverifikasi. Periksa PostgreSQL dan restart executor bila secret berubah."
+            )
+
+        if not active_policy.authorize(identity):
+            await self._record_rejected_safely(
                 identity, command, argument, "TELEGRAM_ALLOWLIST_DENIED"
             )
-            return "Akses ditolak. User ID dan chat ID tidak masuk allowlist."
+            return "Akses ditolak. User ID dan chat ID tidak masuk allowlist aktif."
 
         if command == "trade_status":
             status = await self._repository.record_status_command(identity)
@@ -126,9 +151,6 @@ class TelegramControlService:
                     identity, command, "", "START_REASON_REQUIRED"
                 )
                 return "START ditolak: sertakan alasan, contoh /trade_start operator-approved."
-            config = await self._active_config(identity, command, argument)
-            if config is None:
-                return "START ditolak: active PostgreSQL config tidak dapat diverifikasi."
             code = self._confirmation_code(token, identity, config.version)
             result = await self._repository.request_start(
                 identity,
@@ -158,14 +180,6 @@ class TelegramControlService:
                 identity, command, "", "START_CONFIRMATION_CODE_REQUIRED"
             )
             return "Konfirmasi ditolak: kode tidak ditemukan."
-        try:
-            config = await self._config_repository.fetch_active()
-        except Exception:
-            await self._repository.record_rejected(
-                identity, command, "Confirm START", "ACTIVE_CONFIG_UNAVAILABLE"
-            )
-            return "START gagal: active config PostgreSQL tidak tersedia atau tidak valid."
-
         readiness = await self._readiness(config)
         execution = config.snapshot.get("execution")
         signals_enabled = (
@@ -187,19 +201,20 @@ class TelegramControlService:
             return "START gagal secara fail-closed. Pemeriksaan belum lulus: " + suffix
         return "START berhasil setelah seluruh pemeriksaan readiness dan convergence lulus."
 
-    async def _active_config(
+    async def _record_rejected_safely(
         self,
         identity: TelegramIdentity,
         command: str,
         reason: str,
-    ) -> Optional[ConfigSnapshot]:
+        error_code: str,
+    ) -> None:
         try:
-            return await self._config_repository.fetch_active()
-        except Exception:
-            await self._repository.record_rejected(
-                identity, command, reason, "ACTIVE_CONFIG_UNAVAILABLE"
+            await self._repository.record_rejected(identity, command, reason, error_code)
+        except Exception as exc:
+            logger.warning(
+                "Telegram command rejection could not be audited error_type=%s",
+                type(exc).__name__,
             )
-            return None
 
     async def _readiness(self, config: ConfigSnapshot) -> StartReadinessReport:
         if self._readiness_provider is None:

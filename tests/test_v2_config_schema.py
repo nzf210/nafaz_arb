@@ -52,6 +52,7 @@ def _base():
                 "enabled": True,
                 "source": "configured_live_fx_market",
                 "max_age_seconds": 5,
+                "max_spread_pct": 0.25,
                 "static_fallback_allowed_in_live": False,
             },
         },
