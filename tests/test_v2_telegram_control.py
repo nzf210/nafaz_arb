@@ -103,6 +103,8 @@ class _Repository:
         self.start_request = None
         self.stop_request = None
         self.confirm_request = None
+        self.seen_updates = set()
+        self.stop_transitions = 0
         self.status = {
             "state": "STOPPED",
             "trading_enabled": False,
@@ -125,6 +127,10 @@ class _Repository:
         return {"duplicate": False, "status": "PENDING_CONFIRMATION"}
 
     async def stop(self, identity, **kwargs):
+        if identity.update_id in self.seen_updates:
+            return {"duplicate": True, "status": "COMPLETED"}
+        self.seen_updates.add(identity.update_id)
+        self.stop_transitions += 1
         self.stop_request = (identity, kwargs)
         return {"duplicate": False, "state": "STOPPED"}
 
@@ -185,6 +191,20 @@ async def test_trade_stop_uses_keep_and_manage_and_never_closes_positions():
         "reason": "operator requested pause",
         "open_order_policy": "keep_and_manage",
     }
+
+
+@pytest.mark.asyncio
+async def test_duplicate_telegram_stop_update_has_one_state_transition():
+    repository = _Repository()
+    service = TelegramControlService(repository, _ConfigRepository())
+    update = _update(33, "/trade_stop duplicate delivery")
+
+    first = await service.handle_update(update, _policy(), "test-token")
+    second = await service.handle_update(update, _policy(), "test-token")
+
+    assert "STOPPED" in first
+    assert "sudah diproses" in second
+    assert repository.stop_transitions == 1
 
 
 @pytest.mark.asyncio
