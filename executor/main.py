@@ -67,12 +67,12 @@ async def main():
             pass
 
     try:
-        # engine.start() performs the complete startup recovery before it
-        # starts signal consumers, then owns the single periodic reconciliation
-        # workers. V2 operator state is already durably STOPPED at bootstrap.
-        await engine.start()
+        # Start the V2 lease/invalidation heartbeat before the engine can drain
+        # its durable signal queue. The durable operator state is STOPPED.
         if v2_control is not None:
             await v2_control.start()
+        # engine.start() completes startup recovery before signal processing.
+        await engine.start()
         await stop_event.wait()
     finally:
         await engine.stop()
