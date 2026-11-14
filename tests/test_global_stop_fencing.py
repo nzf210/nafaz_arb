@@ -90,7 +90,15 @@ class _FakeConnection:
             return None
         if "where client_order_id = $1" in query:
             row = self.attempts.get(args[0])
-            return dict(row) if row else None
+            if row is None:
+                return None
+            select_clause = query.lower().split("select", 1)[1].split(
+                "from public.executor_submit_attempts", 1
+            )[0]
+            selected_columns = [
+                column.strip() for column in select_clause.replace("\\n", " ").split(",")
+            ]
+            return {column: row.get(column) for column in selected_columns}
         return None
 
 
