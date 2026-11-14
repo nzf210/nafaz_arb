@@ -15,6 +15,51 @@ from executor.engine import ArbitrageEngine
 
 from tests.conftest import BalancesMockClient, MockExchangeClient, SlowLimitBuyClient, _exposure_engine, _fee_buffer_engine, _fresh_signal_payload, _half_budget_signal, engine, fake_redis, fake_redis_set
 
+
+class _RiskFence:
+    def __init__(self, service, client_order_id):
+        self.service = service
+        self.client_order_id = client_order_id
+
+    async def __aenter__(self):
+        self.service.statuses[self.client_order_id] = "SUBMITTING"
+        return object()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _RiskGlobalStop:
+    enabled = True
+
+    def __init__(self):
+        self.statuses = {}
+
+    async def prepare_submit_attempt(self, **kwargs):
+        self.statuses[kwargs["client_order_id"]] = "PREPARED"
+
+    def order_submit_fence(self, *, client_order_id):
+        return _RiskFence(self, client_order_id)
+
+    async def mark_submit_acknowledged(self, client_order_id, order):
+        self.statuses[client_order_id] = "ACKNOWLEDGED"
+
+    async def mark_submit_rejected(self, client_order_id, error):
+        self.statuses[client_order_id] = "REJECTED"
+
+    async def mark_submit_aborted(self, client_order_id, reason):
+        self.statuses[client_order_id] = "ABORTED"
+
+    async def mark_submit_unknown(self, client_order_id, error):
+        self.statuses[client_order_id] = "UNKNOWN"
+
+    async def request_stop_in_transaction(self, conn, reason, *, source, metadata):
+        return {"is_stopped": True, "epoch": 1, "reason": reason, "source": source}
+
+    async def notify_state(self, state):
+        pass
+
+
 @pytest.mark.asyncio
 async def test_p2_06_fee_buffer_shrinks_locked_capital(fake_redis):
     """A 1% round-trip fee must reserve 1% of the budget instead of locking it all."""
@@ -426,6 +471,7 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
 
     client.get_balances = fail_balances
     engine.config.mock_mode = False
+    engine.global_stop = _RiskGlobalStop()
     engine.config.global_exchange_name = "binance"
     engine.client = client
     # This test isolates balance-probe behavior; the separate adaptive-maker
@@ -462,6 +508,7 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     client.get_balances = fail_balances
     client.place_local_limit_buy = reject_order
     engine.config.mock_mode = False
+    engine.global_stop = _RiskGlobalStop()
     engine.config.global_exchange_name = "binance"
     engine.client = client
     # Keep this test focused on mapping the venue rejection to its public
