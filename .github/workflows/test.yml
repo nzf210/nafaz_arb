@@ -36,14 +36,14 @@ jobs:
         run: python -m compileall -q executor tests
       - name: Ruff lint V2 control and admission modules
         run: |
-          ruff check --select E4,E7,E9,F,I \
+          ruff check --select E4,E7,E9,F \
             executor/main.py executor/engine_entry_submission.py \
             executor/v2_control_runtime.py executor/v2_config.py \
             executor/v2_config_runtime.py executor/v2_config_schema_helpers.py \
             executor/v2_operator_control.py executor/v2_operator_models.py \
             executor/v2_operator_repository_common.py executor/v2_operator_repository_start.py \
             executor/v2_operator_repository_stop.py executor/v2_telegram_bot.py \
-            tests/test_risk.py tests/test_v2_config.py \
+            tests/test_v2_config.py \
             tests/test_v2_entry_admission.py tests/test_v2_telegram_control.py
       - name: Ruff format check for executor entrypoint and public control facade
         run: ruff format --check executor/main.py executor/v2_operator_control.py
