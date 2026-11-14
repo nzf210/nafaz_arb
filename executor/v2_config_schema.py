@@ -1,377 +1,49 @@
-"""Strict V2 configuration domain model and fail-closed route validation.
-
-The parser is intentionally separate from the legacy ExecutorConfig loader.
-A config can be structurally valid while its routes remain non-executable until
-an adapter capability registry has been verified by tests and documentation.
-"""
+"""Strict V2 configuration parser and fail-closed route capability validation."""
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any, Mapping, Optional
 
-
-class V2ConfigValidationError(ValueError):
-    """Raised when a V2 snapshot violates its schema or safety contract."""
-
-
-_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
-_EXCHANGE_RE = re.compile(r"^[a-z][a-z0-9_-]{1,62}$")
-_ENV_RE = re.compile(r"^[A-Z_][A-Z0-9_]{1,127}$")
-_SECRET_REF_RE = re.compile(r"^secret://[A-Za-z0-9._/-]{1,240}$")
-_ASSET_RE = re.compile(r"^[A-Z0-9]{2,24}$")
-
-_ROOT_KEYS = {
-    "schema_version", "mode", "execution", "storage", "redis", "venues",
-    "accounts", "routes", "risk_profiles", "scanner", "observability",
-    "telegram", "fx",
-}
-_EXECUTION_KEYS = {
-    "engine", "execution_mode", "signals_enabled",
-    "startup_reconciliation_required",
-}
-_STORAGE_KEYS = {"driver", "dsn_env", "migrations", "outbox"}
-_OUTBOX_KEYS = {"enabled", "delivery"}
-_REDIS_KEYS = {"enabled", "url_env", "purpose"}
-_VENUE_KEYS = {
-    "id", "exchange", "market_type", "account_id", "enabled",
-    "market_data", "execution",
-}
-_MARKET_DATA_KEYS = {"enabled", "adapter"}
-_VENUE_EXECUTION_KEYS = {
-    "enabled", "adapter", "credentials", "position_mode", "margin_mode",
-    "required_leverage",
-}
-_CREDENTIAL_KEYS = {
-    "api_key_env", "api_key_ref", "api_secret_env", "api_secret_ref",
-    "passphrase_env", "passphrase_ref",
-}
-_ACCOUNT_KEYS = {"id", "venue_id", "label", "enabled"}
-_ROUTE_KEYS = {
-    "id", "spot", "futures", "enabled", "symbols", "risk_profile",
-}
-_SPOT_LEG_KEYS = {"venue_id", "account_id", "quote_assets"}
-_FUTURES_LEG_KEYS = {"venue_id", "account_id", "settle_assets"}
-_SYMBOL_KEYS = {"allow", "deny"}
-_RISK_KEYS = {
-    "max_daily_loss_usdt", "max_exposure_per_account_usdt",
-    "max_exposure_per_route_usdt", "max_entry_slippage_pct",
-    "max_consecutive_order_failures", "max_open_spot_orders",
-    "max_open_futures_orders", "require_fresh_balance",
-    "require_position_reconciliation",
-}
-_SCANNER_KEYS = {
-    "enabled", "public_market_data_only", "scan_interval_seconds",
-    "quote_assets", "synthetic_fx",
-}
-_FX_KEYS = {
-    "enabled", "source", "max_age_seconds", "max_spread_pct",
-    "static_fallback_allowed_in_live",
-}
-_TELEGRAM_KEYS = {
-    "enabled", "bot_token_env", "bot_token_ref", "allowed_user_ids",
-    "allowed_chat_ids", "start_confirmation_ttl_seconds",
-}
-_OBSERVABILITY_KEYS = {"log_level", "metrics_enabled"}
-_MARKET_TYPES = {"spot", "linear_perpetual", "inverse_perpetual"}
-
-_REQUIRED_CAPABILITIES = {
-    "spot": frozenset({
-        "balance_read", "open_orders_read", "limit_order_create",
-        "order_cancel", "order_lookup_by_client_id",
-    }),
-    "linear_perpetual": frozenset({
-        "balance_read", "positions_read", "market_order_create",
-        "reduce_only_order", "order_cancel", "order_lookup_by_client_id",
-    }),
-    "inverse_perpetual": frozenset({
-        "balance_read", "positions_read", "market_order_create",
-        "reduce_only_order", "order_cancel", "order_lookup_by_client_id",
-    }),
-}
-
-
-@dataclass(frozen=True)
-class V2VenueModel:
-    venue_id: str
-    exchange: str
-    market_type: str
-    account_id: str
-    enabled: bool
-    market_data_enabled: bool
-    execution_enabled: bool
-    market_data_adapter: Optional[str]
-    execution_adapter: Optional[str]
-    credential_refs: tuple[tuple[str, str], ...]
-    position_mode: Optional[str]
-    margin_mode: Optional[str]
-    required_leverage: Optional[Decimal]
-
-
-@dataclass(frozen=True)
-class V2AccountModel:
-    account_id: str
-    venue_id: str
-    label: str
-    enabled: bool
-
-
-@dataclass(frozen=True)
-class V2RiskProfileModel:
-    profile_id: str
-    max_daily_loss_usdt: Decimal
-    max_exposure_per_account_usdt: Decimal
-    max_exposure_per_route_usdt: Decimal
-    max_entry_slippage_pct: Decimal
-    max_consecutive_order_failures: int
-    max_open_spot_orders: int
-    max_open_futures_orders: int
-    require_fresh_balance: bool
-    require_position_reconciliation: bool
-
-
-@dataclass(frozen=True)
-class V2RouteModel:
-    route_id: str
-    spot_venue_id: str
-    spot_account_id: str
-    spot_quote_assets: tuple[str, ...]
-    futures_venue_id: str
-    futures_account_id: str
-    futures_settle_assets: tuple[str, ...]
-    allowed_symbols: tuple[str, ...]
-    denied_symbols: tuple[str, ...]
-    risk_profile: str
-    enabled: bool
-    capability_verified: bool
-
-
-@dataclass(frozen=True)
-class V2ConfigModel:
-    schema_version: int
-    mode: str
-    execution_mode: str
-    signals_enabled: bool
-    startup_reconciliation_required: bool
-    storage_driver: str
-    storage_dsn_env: Optional[str]
-    redis_enabled: bool
-    redis_url_env: Optional[str]
-    scanner_enabled: bool
-    scanner_quote_assets: tuple[str, ...]
-    venues: tuple[V2VenueModel, ...]
-    accounts: tuple[V2AccountModel, ...]
-    routes: tuple[V2RouteModel, ...]
-    risk_profiles: tuple[V2RiskProfileModel, ...]
-
-    @property
-    def risk_profile_ids(self) -> tuple[str, ...]:
-        return tuple(profile.profile_id for profile in self.risk_profiles)
-
-
-def _object(value: Any, path: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise V2ConfigValidationError(f"{path} must be an object")
-    if any(not isinstance(key, str) for key in value):
-        raise V2ConfigValidationError(f"{path} keys must be strings")
-    return value
-
-
-def _keys(value: Mapping[str, Any], allowed: set[str], required: set[str], path: str) -> None:
-    missing = sorted(required - set(value))
-    unknown = sorted(set(value) - allowed)
-    if missing:
-        raise V2ConfigValidationError(f"{path} missing required keys: {', '.join(missing)}")
-    if unknown:
-        raise V2ConfigValidationError(f"{path} has unsupported keys: {', '.join(unknown)}")
-
-
-def _identifier(value: Any, path: str) -> str:
-    if not isinstance(value, str) or not _ID_RE.fullmatch(value):
-        raise V2ConfigValidationError(f"{path} must be a lowercase stable identifier")
-    return value
-
-
-def _exchange(value: Any, path: str) -> str:
-    if not isinstance(value, str) or not _EXCHANGE_RE.fullmatch(value):
-        raise V2ConfigValidationError(f"{path} must be a lowercase adapter/exchange identifier")
-    return value
-
-
-def _boolean(value: Any, path: str) -> bool:
-    if not isinstance(value, bool):
-        raise V2ConfigValidationError(f"{path} must be a boolean")
-    return value
-
-
-def _integer(value: Any, path: str, minimum: int = 1) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise V2ConfigValidationError(f"{path} must be an integer >= {minimum}")
-    return value
-
-
-def _decimal(value: Any, path: str, *, minimum: Decimal, maximum: Optional[Decimal] = None) -> Decimal:
-    if isinstance(value, bool) or value is None:
-        raise V2ConfigValidationError(f"{path} must be a finite number")
-    try:
-        parsed = Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        raise V2ConfigValidationError(f"{path} must be a finite number") from None
-    if not parsed.is_finite() or parsed < minimum:
-        raise V2ConfigValidationError(f"{path} must be finite and >= {minimum}")
-    if maximum is not None and parsed > maximum:
-        raise V2ConfigValidationError(f"{path} must be <= {maximum}")
-    return parsed
-
-
-def _asset_list(value: Any, path: str, *, allow_empty: bool = False) -> tuple[str, ...]:
-    if not isinstance(value, list) or (not value and not allow_empty):
-        raise V2ConfigValidationError(f"{path} must be a non-empty array of asset codes")
-    assets = []
-    for asset in value:
-        if not isinstance(asset, str) or not _ASSET_RE.fullmatch(asset):
-            raise V2ConfigValidationError(f"{path} contains an invalid asset code")
-        if asset in assets:
-            raise V2ConfigValidationError(f"{path} contains duplicate asset {asset}")
-        assets.append(asset)
-    return tuple(assets)
-
-
-def _secret_reference(value: Any, key: str, path: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise V2ConfigValidationError(f"{path}.{key} must contain a secret reference, not a value")
-    valid = _ENV_RE.fullmatch(value) if key.endswith("_env") else _SECRET_REF_RE.fullmatch(value)
-    if not valid:
-        expected = "an environment variable name" if key.endswith("_env") else "a secret:// reference"
-        raise V2ConfigValidationError(f"{path}.{key} must be {expected}")
-    return value
-
-
-def _credential_refs(value: Any, path: str, *, required: bool) -> tuple[tuple[str, str], ...]:
-    refs = _object(value, path)
-    _keys(refs, _CREDENTIAL_KEYS, set(), path)
-    resolved = []
-    for credential in ("api_key", "api_secret", "passphrase"):
-        candidates = [f"{credential}_env", f"{credential}_ref"]
-        present = [key for key in candidates if key in refs]
-        if len(present) > 1:
-            raise V2ConfigValidationError(f"{path} defines multiple references for {credential}")
-        if credential in {"api_key", "api_secret"} and required and len(present) != 1:
-            raise V2ConfigValidationError(f"{path} requires a reference for {credential}")
-        if present:
-            key = present[0]
-            resolved.append((credential, _secret_reference(refs[key], key, path)))
-    return tuple(resolved)
-
-
-def _unique_index(items: Any, label: str) -> dict[str, Mapping[str, Any]]:
-    if not isinstance(items, list):
-        raise V2ConfigValidationError(f"{label}s must be an array")
-    index: dict[str, Mapping[str, Any]] = {}
-    for item in items:
-        entry = _object(item, f"{label}s[]")
-        identifier = entry.get("id")
-        if not isinstance(identifier, str) or not identifier.strip():
-            raise V2ConfigValidationError(f"{label} entry has invalid id")
-        if identifier in index:
-            raise V2ConfigValidationError(f"duplicate {label} id: {identifier}")
-        index[identifier] = entry
-    return index
-
-
-def _validate_risk_profile(profile_id: str, value: Any) -> V2RiskProfileModel:
-    profile = _object(value, f"risk_profiles.{profile_id}")
-    _keys(profile, _RISK_KEYS, _RISK_KEYS, f"risk_profiles.{profile_id}")
-    max_daily_loss = _decimal(
-        profile["max_daily_loss_usdt"],
-        f"risk_profiles.{profile_id}.max_daily_loss_usdt",
-        minimum=Decimal("0.000000000000000001"),
-    )
-    max_account_exposure = _decimal(
-        profile["max_exposure_per_account_usdt"],
-        f"risk_profiles.{profile_id}.max_exposure_per_account_usdt",
-        minimum=Decimal("0.000000000000000001"),
-    )
-    max_route_exposure = _decimal(
-        profile["max_exposure_per_route_usdt"],
-        f"risk_profiles.{profile_id}.max_exposure_per_route_usdt",
-        minimum=Decimal("0.000000000000000001"),
-    )
-    max_slippage = _decimal(
-        profile["max_entry_slippage_pct"],
-        f"risk_profiles.{profile_id}.max_entry_slippage_pct",
-        minimum=Decimal("0.000000000000000001"),
-        maximum=Decimal("100"),
-    )
-    max_failures = _integer(profile["max_consecutive_order_failures"], f"risk_profiles.{profile_id}.max_consecutive_order_failures")
-    max_spot_orders = _integer(profile["max_open_spot_orders"], f"risk_profiles.{profile_id}.max_open_spot_orders")
-    max_futures_orders = _integer(profile["max_open_futures_orders"], f"risk_profiles.{profile_id}.max_open_futures_orders")
-    fresh_balance = _boolean(profile["require_fresh_balance"], f"risk_profiles.{profile_id}.require_fresh_balance")
-    reconcile_positions = _boolean(profile["require_position_reconciliation"], f"risk_profiles.{profile_id}.require_position_reconciliation")
-    if fresh_balance is not True or reconcile_positions is not True:
-        raise V2ConfigValidationError(
-            f"risk_profiles.{profile_id} must require fresh balances and position reconciliation"
-        )
-    return V2RiskProfileModel(
-        profile_id=profile_id,
-        max_daily_loss_usdt=max_daily_loss,
-        max_exposure_per_account_usdt=max_account_exposure,
-        max_exposure_per_route_usdt=max_route_exposure,
-        max_entry_slippage_pct=max_slippage,
-        max_consecutive_order_failures=max_failures,
-        max_open_spot_orders=max_spot_orders,
-        max_open_futures_orders=max_futures_orders,
-        require_fresh_balance=fresh_balance,
-        require_position_reconciliation=reconcile_positions,
-    )
-
-
-def _validate_fx(value: Any, path: str, *, live: bool) -> None:
-    fx = _object(value, path)
-    _keys(fx, _FX_KEYS, {"enabled", "source", "max_age_seconds", "static_fallback_allowed_in_live"}, path)
-    _boolean(fx["enabled"], f"{path}.enabled")
-    if not isinstance(fx["source"], str) or not fx["source"].strip():
-        raise V2ConfigValidationError(f"{path}.source must be non-empty")
-    _integer(fx["max_age_seconds"], f"{path}.max_age_seconds")
-    if "max_spread_pct" in fx:
-        _decimal(fx["max_spread_pct"], f"{path}.max_spread_pct", minimum=Decimal("0"), maximum=Decimal("100"))
-    _boolean(fx["static_fallback_allowed_in_live"], f"{path}.static_fallback_allowed_in_live")
-    if live and not fx["enabled"]:
-        raise V2ConfigValidationError(f"{path}.enabled must be true in LIVE")
-    if live and fx["static_fallback_allowed_in_live"]:
-        raise V2ConfigValidationError(f"{path} cannot allow static FX fallback in LIVE")
-
-
-def _capability_supported(
-    adapter: str,
-    market_type: str,
-    registry: Optional[Mapping[str, Any]],
-    path: str,
-) -> bool:
-    entry = (registry or {}).get(adapter)
-    if not isinstance(entry, Mapping):
-        raise V2ConfigValidationError(
-            f"{path} adapter {adapter} has no verified capability registration"
-        )
-    market_types = entry.get("market_types")
-    capabilities = entry.get("capabilities")
-    if not isinstance(market_types, (list, tuple, set)) or market_type not in market_types:
-        raise V2ConfigValidationError(f"{path} adapter {adapter} does not support {market_type}")
-    if entry.get("multi_venue") is not True or entry.get("multi_account") is not True:
-        raise V2ConfigValidationError(
-            f"{path} adapter {adapter} is not verified for multi-venue and multi-account execution"
-        )
-    if not isinstance(capabilities, (list, tuple, set)) or any(
-        not isinstance(capability, str) for capability in capabilities
-    ):
-        raise V2ConfigValidationError(f"{path} adapter {adapter} has no verified capability set")
-    missing = sorted(_REQUIRED_CAPABILITIES[market_type] - set(capabilities))
-    if missing:
-        raise V2ConfigValidationError(
-            f"{path} adapter {adapter} is missing capabilities: {', '.join(missing)}"
-        )
-    return True
+from executor.v2_config_model import (
+    V2AccountModel,
+    V2ConfigModel,
+    V2ConfigValidationError,
+    V2RiskProfileModel,
+    V2RouteModel,
+    V2VenueModel,
+)
+from executor.v2_config_schema_helpers import (
+    _ACCOUNT_KEYS,
+    _EXECUTION_KEYS,
+    _FUTURES_LEG_KEYS,
+    _MARKET_DATA_KEYS,
+    _MARKET_TYPES,
+    _OBSERVABILITY_KEYS,
+    _OUTBOX_KEYS,
+    _REDIS_KEYS,
+    _ROOT_KEYS,
+    _ROUTE_KEYS,
+    _SCANNER_KEYS,
+    _SPOT_LEG_KEYS,
+    _STORAGE_KEYS,
+    _SYMBOL_KEYS,
+    _TELEGRAM_KEYS,
+    _VENUE_EXECUTION_KEYS,
+    _VENUE_KEYS,
+    _asset_list,
+    _boolean,
+    _capability_supported,
+    _credential_refs,
+    _decimal,
+    _exchange,
+    _identifier,
+    _integer,
+    _keys,
+    _object,
+    _unique_index,
+    _validate_fx,
+    _validate_risk_profile,
+)
 
 
 def parse_v2_config(
