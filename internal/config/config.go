@@ -143,6 +143,7 @@ type Config struct {
 	BaseTargetExitSpreadPct       float64        `json:"base_target_exit_spread_pct"`
 	SnipingWindowMinutes          int            `json:"sniping_window_minutes"`
 	FundingSubsidyFloorPct        float64        `json:"funding_subsidy_floor_pct"`
+	PostgresDSN                   string         `json:"postgres_dsn"`
 	LocalPriceTick                float64        `json:"local_price_tick"`
 	GlobalFuturesExchange         string         `json:"global_futures_exchange"`
 	EnableExecutorSignals         bool           `json:"enable_executor_signals"`

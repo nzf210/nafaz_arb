@@ -152,7 +152,11 @@ func main(){
 
 	// Initialize local PostgreSQL client if configured
 	var pgClient *postgres.Client
-	if pgDSN := strings.TrimSpace(os.Getenv("POSTGRES_DSN")); pgDSN != "" {
+	pgDSN := strings.TrimSpace(os.Getenv("POSTGRES_DSN"))
+	if pgDSN == "" {
+		pgDSN = strings.TrimSpace(cfg.PostgresDSN)
+	}
+	if pgDSN != "" {
 		pc, err := postgres.NewFromDSN(pgDSN)
 		if err != nil {
 			log.Printf("warning: postgres connection failed: %v", err)
