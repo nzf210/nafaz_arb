@@ -281,6 +281,8 @@ def _validate_fx(value: Any, path: str, *, live: bool) -> None:
     if "max_spread_pct" in fx:
         _decimal(fx["max_spread_pct"], f"{path}.max_spread_pct", minimum=Decimal("0"), maximum=Decimal("100"))
     _boolean(fx["static_fallback_allowed_in_live"], f"{path}.static_fallback_allowed_in_live")
+    if live and not fx["enabled"]:
+        raise V2ConfigValidationError(f"{path}.enabled must be true in LIVE")
     if live and fx["static_fallback_allowed_in_live"]:
         raise V2ConfigValidationError(f"{path} cannot allow static FX fallback in LIVE")
 
@@ -304,7 +306,9 @@ def _capability_supported(
         raise V2ConfigValidationError(
             f"{path} adapter {adapter} is not verified for multi-venue and multi-account execution"
         )
-    if not isinstance(capabilities, (list, tuple, set)):
+    if not isinstance(capabilities, (list, tuple, set)) or any(
+        not isinstance(capability, str) for capability in capabilities
+    ):
         raise V2ConfigValidationError(f"{path} adapter {adapter} has no verified capability set")
     missing = sorted(_REQUIRED_CAPABILITIES[market_type] - set(capabilities))
     if missing:
@@ -328,7 +332,9 @@ def parse_v2_config(
     _keys(root, _ROOT_KEYS, required_root, "V2 config")
     if isinstance(root["schema_version"], bool) or root["schema_version"] != 2:
         raise V2ConfigValidationError("V2 config schema_version must equal 2")
-    mode = str(root["mode"]).upper()
+    if not isinstance(root["mode"], str):
+        raise V2ConfigValidationError("V2 config mode must be LIVE or MOCK")
+    mode = root["mode"].upper()
     if mode not in {"LIVE", "MOCK"}:
         raise V2ConfigValidationError("V2 config mode must be LIVE or MOCK")
     live = mode == "LIVE"
@@ -340,7 +346,10 @@ def parse_v2_config(
     signals_enabled = _boolean(execution["signals_enabled"], "execution.signals_enabled")
     if signals_enabled:
         raise V2ConfigValidationError("execution.signals_enabled must remain false until sole-consumer proof")
-    execution_mode = str(execution.get("execution_mode", "MAKER_TAKER")).upper()
+    raw_execution_mode = execution.get("execution_mode", "MAKER_TAKER")
+    if not isinstance(raw_execution_mode, str):
+        raise V2ConfigValidationError("execution.execution_mode is unsupported")
+    execution_mode = raw_execution_mode.upper()
     if execution_mode not in {"MAKER_TAKER", "TAKER_TAKER"}:
         raise V2ConfigValidationError("execution.execution_mode is unsupported")
     if live and execution.get("startup_reconciliation_required") is not True:
@@ -357,14 +366,19 @@ def parse_v2_config(
             raise V2ConfigValidationError("storage.dsn_env must be an environment variable name")
     if live and (storage.get("migrations") != "required" or not storage.get("dsn_env")):
         raise V2ConfigValidationError("LIVE requires storage.dsn_env and migrations=required")
-    if "migrations" in storage and storage["migrations"] not in {"required", "managed"}:
+    if "migrations" in storage and (
+        not isinstance(storage["migrations"], str)
+        or storage["migrations"] not in {"required", "managed"}
+    ):
         raise V2ConfigValidationError("storage.migrations must be required or managed")
     if "outbox" in storage:
         outbox = _object(storage["outbox"], "storage.outbox")
         _keys(outbox, _OUTBOX_KEYS, {"enabled", "delivery"}, "storage.outbox")
         _boolean(outbox["enabled"], "storage.outbox.enabled")
-        if outbox["delivery"] not in {"redis", "database"}:
+        if not isinstance(outbox["delivery"], str) or outbox["delivery"] not in {"redis", "database"}:
             raise V2ConfigValidationError("storage.outbox.delivery is unsupported")
+        if live and not outbox["enabled"]:
+            raise V2ConfigValidationError("LIVE requires storage.outbox.enabled=true")
     elif live:
         raise V2ConfigValidationError("LIVE requires a configured transactional outbox")
 
@@ -381,15 +395,27 @@ def parse_v2_config(
     if "purpose" in redis:
         purpose = redis["purpose"]
         allowed_purpose = {"candidate_queue", "transient_cache", "coordination"}
-        if not isinstance(purpose, list) or not set(purpose) <= allowed_purpose:
+        if (
+            not isinstance(purpose, list)
+            or any(not isinstance(item, str) for item in purpose)
+            or not set(purpose) <= allowed_purpose
+        ):
             raise V2ConfigValidationError("redis.purpose contains unsupported responsibilities")
+    elif live:
+        raise V2ConfigValidationError("LIVE requires explicit Redis responsibilities")
 
     scanner = _object(root["scanner"], "scanner")
-    _keys(scanner, _SCANNER_KEYS, {"public_market_data_only"}, "scanner")
+    _keys(
+        scanner,
+        _SCANNER_KEYS,
+        {"enabled", "public_market_data_only", "scan_interval_seconds", "quote_assets"},
+        "scanner",
+    )
     if _boolean(scanner["public_market_data_only"], "scanner.public_market_data_only") is not True:
         raise V2ConfigValidationError("scanner must be public-market-data-only")
-    if "enabled" in scanner:
-        _boolean(scanner["enabled"], "scanner.enabled")
+    scanner_enabled = _boolean(scanner["enabled"], "scanner.enabled")
+    if live and not scanner_enabled:
+        raise V2ConfigValidationError("LIVE requires scanner.enabled=true")
     if "scan_interval_seconds" in scanner:
         _integer(scanner["scan_interval_seconds"], "scanner.scan_interval_seconds")
     if "quote_assets" in scanner:
@@ -406,9 +432,12 @@ def parse_v2_config(
         _keys(observability, _OBSERVABILITY_KEYS, set(), "observability")
         if "metrics_enabled" in observability:
             _boolean(observability["metrics_enabled"], "observability.metrics_enabled")
-        if "log_level" in observability and observability["log_level"] not in {
-            "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL",
-        }:
+        if "log_level" in observability and (
+            not isinstance(observability["log_level"], str)
+            or observability["log_level"] not in {
+                "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL",
+            }
+        ):
             raise V2ConfigValidationError("observability.log_level is unsupported")
 
     if "telegram" in root:
@@ -450,7 +479,7 @@ def parse_v2_config(
         _keys(venue, _VENUE_KEYS, _VENUE_KEYS, f"venue {venue_id}")
         exchange = _exchange(venue["exchange"], f"venue {venue_id}.exchange")
         market_type = venue["market_type"]
-        if market_type not in _MARKET_TYPES:
+        if not isinstance(market_type, str) or market_type not in _MARKET_TYPES:
             raise V2ConfigValidationError(f"venue {venue_id} has unsupported market_type")
         account_id = _identifier(venue["account_id"], f"venue {venue_id}.account_id")
         if account_id not in account_index:
@@ -483,9 +512,15 @@ def parse_v2_config(
                     minimum=Decimal("1"),
                     maximum=Decimal("100"),
                 )
-            if "position_mode" in venue_execution and venue_execution["position_mode"] not in {"one_way", "hedge"}:
+            if "position_mode" in venue_execution and (
+                not isinstance(venue_execution["position_mode"], str)
+                or venue_execution["position_mode"] not in {"one_way", "hedge"}
+            ):
                 raise V2ConfigValidationError(f"venue {venue_id}.execution.position_mode is unsupported")
-            if "margin_mode" in venue_execution and venue_execution["margin_mode"] not in {"cross", "isolated"}:
+            if "margin_mode" in venue_execution and (
+                not isinstance(venue_execution["margin_mode"], str)
+                or venue_execution["margin_mode"] not in {"cross", "isolated"}
+            ):
                 raise V2ConfigValidationError(f"venue {venue_id}.execution.margin_mode is unsupported")
         elif "credentials" in venue_execution:
             raise V2ConfigValidationError(
