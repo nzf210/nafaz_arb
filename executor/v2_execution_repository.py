@@ -101,6 +101,13 @@ def _reject_secret_fields(value: Any, path: str = "payload") -> None:
 def _json_payload(payload: Optional[Mapping[str, Any]]) -> str:
     data = dict(payload or {})
     _reject_secret_fields(data)
+    def encode_value(value: Any) -> str:
+        if isinstance(value, Decimal):
+            if not value.is_finite():
+                raise ValueError("non-finite decimal")
+            return str(value)
+        raise TypeError("unsupported journal payload value")
+
     try:
         encoded = json.dumps(
             data,
@@ -108,7 +115,7 @@ def _json_payload(payload: Optional[Mapping[str, Any]]) -> str:
             separators=(",", ":"),
             ensure_ascii=False,
             allow_nan=False,
-            default=lambda value: str(value) if isinstance(value, Decimal) else None,
+            default=encode_value,
         )
     except (TypeError, ValueError):
         raise ValueError("journal payload must be finite JSON data") from None
