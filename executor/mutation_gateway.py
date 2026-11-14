@@ -97,6 +97,7 @@ class MutationGateway:
         )
         return (
             is_explicit_rate_limit_rejection(exc)
+            or MutationGateway._is_explicit_ip_ban(exc)
             or error_name in definitive_types
             or any(marker in error_text for marker in definitive_messages)
         )

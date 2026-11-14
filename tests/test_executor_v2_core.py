@@ -104,6 +104,7 @@ class _FakeGatewayStop:
         self.acknowledged = []
         self.unknown = []
         self.rejected = []
+        self.stop_notifications = []
 
     async def prepare_submit_attempt(self, **kwargs):
         self.prepared.append(kwargs)
@@ -130,7 +131,7 @@ class _FakeGatewayStop:
         return {"is_stopped": True, "epoch": 2, "reason": reason, "source": source}
 
     async def notify_state(self, state):
-        pass
+        self.stop_notifications.append(state)
 
 
 @pytest.mark.asyncio
@@ -250,6 +251,27 @@ async def test_mutation_gateway_ack_persistence_failure_keeps_unresolved_slot():
     assert result.exchange_order_id == "accepted-but-unpersisted"
     assert stop.statuses[result.client_order_id] == "UNKNOWN"
     assert stop.unknown
+@pytest.mark.asyncio
+async def test_mutation_gateway_explicit_ip_ban_persists_global_stop():
+    stop = _FakeGatewayStop()
+    gateway = MutationGateway(global_stop=stop, slot_manager=OrderSlotManager())
+    client_mock = AsyncMock()
+    client_mock.create_order_direct.side_effect = RuntimeError(
+        "HTTP_418: IP address banned until reset"
+    )
+
+    result = await gateway.execute_create_order(
+        client_mock, exchange="okx", market_type="perpetual",
+        symbol="BTC/USDT:USDT", side="sell", order_type="market",
+        quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
+    )
+
+    assert result.status == MutationResultType.REJECTED
+    assert stop.statuses[result.client_order_id] == "REJECTED"
+    assert stop.stop_notifications
+    assert stop.stop_notifications[0]["is_stopped"] is True
+
+
 @pytest.mark.asyncio
 async def test_mutation_gateway_cancel():
     slot_mgr = OrderSlotManager()
