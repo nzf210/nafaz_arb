@@ -1,6 +1,7 @@
 import copy
 
 import pytest
+from decimal import Decimal
 
 from executor.v2_config import ConfigSnapshotError, validate_v2_snapshot
 
@@ -262,3 +263,20 @@ def test_active_snapshot_validation_uses_injected_production_capability_registry
 
     parsed = validate_snapshot_row(row, capability_registry=_CAPABILITIES)
     assert parsed.version == 2
+
+
+def test_typed_model_exposes_risk_route_and_secret_reference_metadata():
+    snapshot = _enabled_route_snapshot()
+    snapshot["routes"][0]["enabled"] = False
+    model = validate_v2_snapshot(snapshot)
+
+    assert model.storage_driver == "postgres"
+    assert model.redis_enabled is True
+    assert model.scanner_quote_assets == ("USDT", "USDC")
+    assert model.risk_profiles[0].max_daily_loss_usdt == Decimal("5")
+    assert model.routes[0].spot_quote_assets == ("IDR", "USDT")
+    assert model.routes[0].capability_verified is False
+    assert model.venues[0].credential_refs == (
+        ("api_key", "INDODAX_API_KEY"),
+        ("api_secret", "INDODAX_API_SECRET"),
+    )
