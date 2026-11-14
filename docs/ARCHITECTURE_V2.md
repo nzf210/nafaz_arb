@@ -1,6 +1,6 @@
 # Nafazbot V2 — Target Architecture Specification
 
-**Status:** Proposed design baseline; not yet implemented by the current runtime.
+**Status:** Target architecture. PostgreSQL config/operator-control foundations are present on PR #33; the multi-venue schema, strict config model, and execution persistence boundary are added by this implementation branch. Runtime cutover remains disabled.
 
 ## 1. Goals
 
@@ -89,7 +89,7 @@ Acceptance tests include at least two spot and two futures venues concurrently; 
 
 ## 11. Current-state gaps
 
-The baseline repository describes a Go read-only scanner and Python executor, but also describes JSON-file scanner history, a Supabase-oriented executor outbox, and executor settings centered on local_exchange_name/global_exchange_name. Those are not yet a PostgreSQL-backed multi-venue registry. This document is a target design, not an implementation claim.
+The legacy runtime still starts from config.json through ExecutorConfig.load and constructs one configured local/global pair. Existing Supabase tables, SQLite outbox, Redis recovery keys and singleton exchange settings remain compatibility paths. The V2 tables and repository introduced by the implementation branch are additive and are not yet the runtime source of truth.
 
 
 ## 12. Operator control plane and durable configuration activation
@@ -121,3 +121,22 @@ Rollback creates a new version whose snapshot is copied from a previously valida
 ### Deployment boundary
 
 This is a target contract until runtime wiring, migration application and integration tests are complete. Existing JSON/SQLite/Redis/Supabase paths are legacy compatibility paths, not silently promoted to authoritative V2 config. Cutover must be explicit and fail closed; do not dual-write conflicting authorities.
+
+
+## 13. V2 PostgreSQL foundation implementation boundary
+
+The implementation branch adds an additive timestamped migration, `20261114000100_v2_multi_venue_execution_core.sql`, after the config/control migrations. It creates V2-prefixed exchange, venue, account, secret-reference, capability, market, risk-profile, route, execution-intent, execution-journal, balance-snapshot, position-snapshot, reconciliation-run and venue-halt tables. Monetary, price, quantity, fee, PnL, contract-size, step and notional fields use PostgreSQL `NUMERIC`. Foreign keys, unique idempotency keys, route market-type checks, disabled-by-default flags and append-only journal protection are included. Nullable V2 identity columns are added to the existing order recovery registry without guessing or backfilling legacy identities.
+
+Python now has a typed V2 domain model and strict validator. It rejects unknown nested keys, duplicate and dangling references, inconsistent account/venue links, spot/perpetual market-type mismatches, invalid risk limits, malformed secret references, private scanner configuration and invalid LIVE FX policies. An enabled route also requires a code-supplied capability registry proving the required private reads, order/cancel/lookup semantics and multi-venue/multi-account support. The production registry is intentionally empty until adapter conformance tests and evidence are supplied; therefore an enabled route fails closed by default. Disabled routes remain valid configuration candidates.
+
+`PostgresExecutionRepository` provides a persistence boundary for idempotent intent creation and compare-and-swap state transitions. Each successful write appends the journal record and transactional outbox event in the same PostgreSQL transaction. Execution events are published to a separate Redis channel; Redis remains delivery-only. The repository is not yet wired into the live order submission path, so this branch does not claim that current exchange orders are persisted in PostgreSQL.
+
+### Explicitly not cut over
+
+- `executor/main.py` still loads the legacy `config.json`; no V2 snapshot is activated or substituted for the user's current configuration.
+- No legacy secrets are copied, printed, encrypted, or migrated by this change. V2 stores references only.
+- The scanner remains public-market-data-only. It does not receive private account credentials or order authority.
+- No exchange client, account setting, risk limit, execution mode, or LIVE deployment setting is changed.
+- No live order is submitted, canceled, amended, or force-closed.
+
+Remaining work includes the verified production adapter capability matrix, explicit v1-to-v2 candidate mapping for each account/route, secret-reference resolver, runtime injection and PostgreSQL startup integration, fill/order lifecycle migration, a transactional STOP-vs-submit fence, and deployed multi-process/restart/outbox-consumer tests. Until those are complete, V2 configuration is a validated foundation only and LIVE admission remains closed.
