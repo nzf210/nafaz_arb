@@ -63,6 +63,19 @@ class V2RouteModel:
 
 
 @dataclass(frozen=True)
+class V2RuntimeSettingsModel:
+    execution_mode: str
+    signals_enabled: bool
+    startup_reconciliation_required: bool
+    storage_driver: str
+    storage_dsn_env: Optional[str]
+    redis_enabled: bool
+    redis_url_env: Optional[str]
+    scanner_enabled: bool
+    scanner_quote_assets: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class V2ConfigModel:
     schema_version: int
     mode: str
