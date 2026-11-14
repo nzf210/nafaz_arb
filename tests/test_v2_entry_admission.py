@@ -257,8 +257,9 @@ async def test_fence_denial_retires_intent_without_calling_exchange():
         1_000_000_000.0,
     )
 
-    engine._mark_order_submission_rejected.assert_awaited_once_with(
-        "indodax", engine._mark_order_submission_rejected.await_args.args[1]
-    )
+    engine._mark_order_submission_rejected.assert_awaited_once()
+    rejected_args = engine._mark_order_submission_rejected.await_args.args
+    assert rejected_args[0] == "indodax"
+    assert rejected_args[1]
     engine.client.place_local_limit_buy.assert_not_awaited()
     engine._handle_entry_submission_failure.assert_not_awaited()
