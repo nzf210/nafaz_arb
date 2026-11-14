@@ -70,6 +70,7 @@ class _FakeConnection:
                 "price": args[7],
                 "pair_key": args[8],
                 "status": "PREPARED",
+                "recovery_context": args[9],
                 "amount_spec": args[10],
             }
             return dict(self.attempts[client_order_id])
@@ -101,7 +102,7 @@ class _FakePool:
         return _AsyncContext(self.conn)
 
 
-async def _prepare(service, client_order_id):
+async def _prepare(service, client_order_id, recovery_context=None):
     await service.prepare_submit_attempt(
         client_order_id=client_order_id,
         exchange="binance",
@@ -112,7 +113,9 @@ async def _prepare(service, client_order_id):
         quantity=0.01,
         price=50000,
         pair_key="binance__okx__btc",
-        recovery_context={"test": True},
+        recovery_context=(
+            recovery_context if recovery_context is not None else {"test": True}
+        ),
         amount_spec={"unit": "BASE"},
     )
 
@@ -137,6 +140,29 @@ async def test_prepared_client_id_reuse_rejects_changed_amount_spec():
             pair_key="binance__okx__btc",
             recovery_context={"test": True},
             amount_spec={"unit": "CONTRACTS", "contract_size": 0.001},
+        )
+
+
+@pytest.mark.asyncio
+async def test_prepared_client_id_reuse_rejects_changed_recovery_context():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    await _prepare(
+        service, "stable-parent-intent-id",
+        {"parent_spot_client_order_id": "spot-parent-a"},
+    )
+
+    # The same complete intent is idempotently reusable while still PREPARED.
+    await _prepare(
+        service, "stable-parent-intent-id",
+        {"parent_spot_client_order_id": "spot-parent-a"},
+    )
+
+    with pytest.raises(GlobalStopError, match="different order intent"):
+        await _prepare(
+            service, "stable-parent-intent-id",
+            {"parent_spot_client_order_id": "spot-parent-b"},
         )
 
 
