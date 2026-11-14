@@ -19,10 +19,10 @@ import redis.asyncio as aioredis
 from executor.v2_config import (
     ConfigSnapshotError,
     PostgresConfigRepository,
+    PostgresOutboxPublisher,
     RedisSnapshotCache,
     create_postgres_pool,
     load_verified_active_snapshot,
-    PostgresOutboxPublisher,
 )
 from executor.v2_config_runtime import (
     AtomicConfigSnapshot,
