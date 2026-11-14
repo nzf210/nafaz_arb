@@ -16,14 +16,102 @@ def _valid_snapshot():
     return {
         "schema_version": 2,
         "mode": "LIVE",
-        "execution": {"engine": "python", "signals_enabled": False},
-        "storage": {"driver": "postgres"},
-        "redis": {"enabled": True},
+        "execution": {
+            "engine": "python",
+            "execution_mode": "MAKER_TAKER",
+            "signals_enabled": False,
+            "startup_reconciliation_required": True,
+        },
+        "storage": {
+            "driver": "postgres",
+            "dsn_env": "NAFAZ_DATABASE_URL",
+            "migrations": "required",
+            "outbox": {"enabled": True, "delivery": "redis"},
+        },
+        "redis": {
+            "enabled": True,
+            "url_env": "NAFAZ_REDIS_URL",
+            "purpose": ["candidate_queue", "transient_cache", "coordination"],
+        },
         "venues": [],
         "accounts": [],
         "routes": [],
         "risk_profiles": {},
-        "scanner": {"public_market_data_only": True, "synthetic_fx": {"static_fallback_allowed_in_live": False}},
+        "scanner": {
+            "enabled": True,
+            "public_market_data_only": True,
+            "scan_interval_seconds": 30,
+            "quote_assets": ["USDT", "USDC"],
+            "synthetic_fx": {
+                "enabled": True,
+                "source": "configured_live_fx_market",
+                "max_age_seconds": 5,
+                "static_fallback_allowed_in_live": False,
+            },
+        },
+    }
+
+
+def _venue(venue_id, exchange, market_type, account_id, *, execution_enabled=False):
+    execution = {"enabled": execution_enabled}
+    if execution_enabled:
+        execution.update({
+            "adapter": exchange,
+            "credentials": {
+                "api_key_env": f"{exchange.upper()}_API_KEY",
+                "api_secret_env": f"{exchange.upper()}_API_SECRET",
+            },
+        })
+    return {
+        "id": venue_id,
+        "exchange": exchange,
+        "market_type": market_type,
+        "account_id": account_id,
+        "enabled": True,
+        "market_data": {"enabled": True, "adapter": exchange},
+        "execution": execution,
+    }
+
+
+def _account(account_id, venue_id, *, enabled=True):
+    return {
+        "id": account_id,
+        "venue_id": venue_id,
+        "label": account_id,
+        "enabled": enabled,
+    }
+
+
+def _risk_profile():
+    return {
+        "max_daily_loss_usdt": 5,
+        "max_exposure_per_account_usdt": 100,
+        "max_exposure_per_route_usdt": 50,
+        "max_entry_slippage_pct": 0.2,
+        "max_consecutive_order_failures": 5,
+        "max_open_spot_orders": 2,
+        "max_open_futures_orders": 2,
+        "require_fresh_balance": True,
+        "require_position_reconciliation": True,
+    }
+
+
+def _route(route_id, spot_venue, spot_account, futures_venue, futures_account, *, enabled=False):
+    return {
+        "id": route_id,
+        "spot": {
+            "venue_id": spot_venue,
+            "account_id": spot_account,
+            "quote_assets": ["IDR", "USDT"],
+        },
+        "futures": {
+            "venue_id": futures_venue,
+            "account_id": futures_account,
+            "settle_assets": ["USDT"],
+        },
+        "enabled": enabled,
+        "symbols": {"allow": ["BTC", "ETH"], "deny": []},
+        "risk_profile": "default",
     }
 
 
@@ -170,7 +258,7 @@ def test_v2_contract_rejects_unknown_root_keys():
     snapshot = _valid_snapshot()
     snapshot["mystery_setting"] = True
     from executor.v2_config import validate_v2_snapshot
-    with pytest.raises(ConfigSnapshotError, match="unsupported root keys"):
+    with pytest.raises(ConfigSnapshotError, match="unsupported keys"):
         validate_v2_snapshot(snapshot)
 
 
@@ -191,16 +279,16 @@ def test_v2_contract_rejects_duplicate_and_dangling_references():
     from executor.v2_config import validate_v2_snapshot
     snapshot = _valid_snapshot()
     snapshot["venues"] = [
-        {"id": "spot_a", "market_type": "spot", "account_id": "account_a"},
-        {"id": "spot_a", "market_type": "spot", "account_id": "account_a"},
+        _venue("spot_a", "indodax", "spot", "account_a"),
+        _venue("spot_a", "indodax", "spot", "account_a"),
     ]
-    snapshot["accounts"] = [{"id": "account_a", "venue_id": "spot_a"}]
+    snapshot["accounts"] = [_account("account_a", "spot_a")]
     with pytest.raises(ConfigSnapshotError, match="duplicate venue"):
         validate_v2_snapshot(snapshot)
 
     snapshot = _valid_snapshot()
-    snapshot["venues"] = [{"id": "spot_a", "market_type": "spot", "account_id": "missing"}]
-    snapshot["accounts"] = [{"id": "account_a", "venue_id": "spot_a"}]
+    snapshot["venues"] = [_venue("spot_a", "indodax", "spot", "missing")]
+    snapshot["accounts"] = [_account("account_a", "spot_a")]
     with pytest.raises(ConfigSnapshotError, match="unknown account"):
         validate_v2_snapshot(snapshot)
 
@@ -209,22 +297,19 @@ def test_v2_contract_rejects_route_account_venue_mismatch():
     from executor.v2_config import validate_v2_snapshot
     snapshot = _valid_snapshot()
     snapshot["venues"] = [
-        {"id": "spot_a", "market_type": "spot", "account_id": "account_a"},
-        {"id": "perp_b", "market_type": "linear_perpetual", "account_id": "account_b"},
+        _venue("spot_a", "indodax", "spot", "account_a"),
+        _venue("perp_b", "okx", "linear_perpetual", "account_b"),
     ]
     snapshot["accounts"] = [
-        {"id": "account_a", "venue_id": "spot_a"},
-        {"id": "account_b", "venue_id": "perp_b"},
-        {"id": "account_wrong", "venue_id": "perp_b"},
+        _account("account_a", "spot_a"),
+        _account("account_b", "perp_b"),
+        _account("account_wrong", "perp_b"),
     ]
-    snapshot["risk_profiles"] = {"default": {}}
-    snapshot["routes"] = [{
-        "id": "route_a",
-        "spot": {"venue_id": "spot_a", "account_id": "account_wrong"},
-        "futures": {"venue_id": "perp_b", "account_id": "account_b"},
-        "risk_profile": "default",
-    }]
-    with pytest.raises(ConfigSnapshotError, match="account/venue mismatch"):
+    snapshot["risk_profiles"] = {"default": _risk_profile()}
+    snapshot["routes"] = [
+        _route("route_a", "spot_a", "account_wrong", "perp_b", "account_b")
+    ]
+    with pytest.raises(ConfigSnapshotError, match="does not match venue"):
         validate_v2_snapshot(snapshot)
 
 
@@ -298,6 +383,32 @@ async def test_outbox_publisher_delivers_and_acknowledges_event():
     assert redis.messages[0][0] == "nafaz:v2:events"
     assert redis.messages[0][1]["event_key"] == "config:8:activated"
     assert len(connection.acked) == 1
+
+
+@pytest.mark.asyncio
+async def test_outbox_publisher_routes_execution_events_to_separate_channel():
+    from executor.v2_config import PostgresOutboxPublisher
+
+    event = {
+        "event_id": 43,
+        "event_key": "execution:intent:1:ack",
+        "aggregate_type": "execution",
+        "aggregate_version": 2,
+        "event_type": "execution.order.acknowledged",
+        "payload": {"intent_id": "intent-1", "journal_id": 99},
+        "attempts": 1,
+    }
+    connection = _OutboxConnection([event])
+    redis = _PublishRedis()
+    publisher = PostgresOutboxPublisher(
+        _OutboxPool(connection), redis, worker_id="execution-outbox-worker"
+    )
+
+    result = await publisher.publish_pending()
+
+    assert result["published"] == 1
+    assert redis.messages[0][0] == "nafaz:v2:execution:events"
+    assert redis.messages[0][1]["aggregate_type"] == "execution"
 
 
 @pytest.mark.asyncio

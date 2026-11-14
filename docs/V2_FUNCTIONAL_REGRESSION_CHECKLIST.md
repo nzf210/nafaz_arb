@@ -229,3 +229,18 @@
 - The two unit tests now inject an explicit test-only allow gate; production LIVE admission remains fail-closed.
 - The SQL smoke block now uses the named `$consumer$` delimiter. The migration itself had applied and replayed successfully; the failure was in the smoke-test block.
 - Re-run CI on the corrected branch head is required before treating these fixes as verified.
+
+
+## 15. V2 multi-venue schema, validator and persistence boundary
+
+- Timestamped migration `20261114000100_v2_multi_venue_execution_core.sql` is additive and ordered after V2 config/control migrations.
+- V2 registry tables use explicit exchange, venue, account, market, route and risk-profile identities. Financial columns are PostgreSQL `NUMERIC`; no credential values are stored.
+- Venue, account and route flags default disabled. The SQL route trigger rejects spot/perpetual market-type mismatch and enabled routes whose referenced venue/account execution flags are not enabled.
+- The strict Python model rejects unknown nested keys, duplicate IDs, dangling references, inconsistent account/venue ownership, invalid risk values, malformed secret references, private scanner settings and missing LIVE infrastructure/FX requirements.
+- Enabled routes require a caller-supplied capability registry with multi-venue and multi-account proof plus documented balance/order/position/cancel/reduce-only/client-ID lookup capabilities. The production registry is empty pending adapter conformance evidence; no production route is enabled.
+- `PostgresExecutionRepository` persists an idempotent intent before submission and atomically commits each state transition, append-only journal row and execution outbox event. Execution events use a separate Redis channel from config invalidation.
+- Unit tests cover multi-venue structure, duplicate/dangling references, market-type mismatch, risk/secret validation, capability gating, Decimal precision, intent idempotency, state compare-and-swap, journal/outbox and channel isolation.
+- SQL smoke test covers NUMERIC column types, route constraints, journal append-only behavior and execution outbox support.
+- V2 repository is not wired to `ArbitrageEngine`; `executor/main.py` continues to load V1 `config.json`. No data backfill, secret migration, config activation, exchange account change or order request is performed.
+
+**Release gate:** keep V2 routes disabled, `signals_enabled=false`, and operator state STOPPED until production adapter capability evidence, v1 mapping, secret resolution, startup integration, fill/order lifecycle integration, transactional STOP fencing and deployed multi-process tests are complete.

@@ -13,6 +13,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
+from executor.v2_config_schema import (
+    V2ConfigValidationError,
+    V2ConfigModel,
+    parse_v2_config,
+)
+
 logger = logging.getLogger("executor.v2_config")
 
 SUPPORTED_SCHEMA_VERSION = 2
@@ -76,99 +82,27 @@ def _reject_inline_secrets(value: Any, path: str = "snapshot") -> None:
 
 
 
-_ALLOWED_ROOT_KEYS = {
-    "schema_version", "mode", "execution", "storage", "redis",
-    "venues", "accounts", "routes", "risk_profiles", "scanner",
-    "observability", "telegram", "fx",
-}
-_REQUIRED_ROOT_KEYS = {
-    "schema_version", "mode", "execution", "storage", "redis",
-    "venues", "accounts", "routes", "risk_profiles", "scanner",
-}
+def validate_v2_snapshot(
+    snapshot: Mapping[str, Any],
+    *,
+    capability_registry: Optional[Mapping[str, Any]] = None,
+) -> V2ConfigModel:
+    """Return the typed V2 model after strict schema and route-capability checks."""
+    try:
+        return parse_v2_config(snapshot, capability_registry=capability_registry)
+    except V2ConfigValidationError as exc:
+        raise ConfigSnapshotError(str(exc)) from exc
+    except (TypeError, KeyError, AttributeError) as exc:
+        raise ConfigSnapshotError(
+            f"V2 config contains an invalid field type ({type(exc).__name__})"
+        ) from exc
 
 
-def validate_v2_snapshot(snapshot: Mapping[str, Any]) -> None:
-    """Validate the V2 root contract and all stable cross-object references."""
-    if not isinstance(snapshot, dict):
-        raise ConfigSnapshotError("V2 config must be a JSON object")
-    missing = sorted(_REQUIRED_ROOT_KEYS - set(snapshot))
-    unknown = sorted(set(snapshot) - _ALLOWED_ROOT_KEYS)
-    if missing:
-        raise ConfigSnapshotError(f"V2 config missing required root keys: {', '.join(missing)}")
-    if unknown:
-        raise ConfigSnapshotError(f"V2 config has unsupported root keys: {', '.join(unknown)}")
-    if snapshot.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
-        raise ConfigSnapshotError("V2 config schema_version is not supported")
-    if str(snapshot.get("mode", "")).upper() not in {"LIVE", "MOCK"}:
-        raise ConfigSnapshotError("V2 config mode must be LIVE or MOCK")
-
-    execution = snapshot.get("execution")
-    scanner = snapshot.get("scanner")
-    if not isinstance(execution, dict) or execution.get("engine") != "python":
-        raise ConfigSnapshotError("V2 execution.engine must be python")
-    if execution.get("signals_enabled") is not False:
-        raise ConfigSnapshotError("V2 signals must remain disabled until sole-consumer proof")
-    if not isinstance(scanner, dict) or scanner.get("public_market_data_only") is not True:
-        raise ConfigSnapshotError("V2 scanner must be public-market-data-only")
-    if str(snapshot["mode"]).upper() == "LIVE":
-        synthetic_fx = scanner.get("synthetic_fx", {})
-        if isinstance(synthetic_fx, dict) and synthetic_fx.get("static_fallback_allowed_in_live") is True:
-            raise ConfigSnapshotError("static FX fallback is forbidden for LIVE")
-
-    venues = snapshot.get("venues")
-    accounts = snapshot.get("accounts")
-    routes = snapshot.get("routes")
-    risk_profiles = snapshot.get("risk_profiles")
-    if not all(isinstance(value, list) for value in (venues, accounts, routes)):
-        raise ConfigSnapshotError("venues, accounts and routes must be arrays")
-    if not isinstance(risk_profiles, dict):
-        raise ConfigSnapshotError("risk_profiles must be an object")
-
-    def unique_index(items: list, label: str) -> dict:
-        index = {}
-        for item in items:
-            if not isinstance(item, dict):
-                raise ConfigSnapshotError(f"{label} entries must be objects")
-            identifier = item.get("id")
-            if not isinstance(identifier, str) or not identifier or identifier.strip() != identifier:
-                raise ConfigSnapshotError(f"{label} entry has invalid id")
-            if identifier in index:
-                raise ConfigSnapshotError(f"duplicate {label} id: {identifier}")
-            index[identifier] = item
-        return index
-
-    venue_index = unique_index(venues, "venue")
-    account_index = unique_index(accounts, "account")
-    route_index = unique_index(routes, "route")
-    del route_index
-
-    for venue_id, venue in venue_index.items():
-        if venue.get("market_type") not in {"spot", "linear_perpetual", "inverse_perpetual"}:
-            raise ConfigSnapshotError(f"venue {venue_id} has unsupported market_type")
-        account_id = venue.get("account_id")
-        if account_id not in account_index:
-            raise ConfigSnapshotError(f"venue {venue_id} references unknown account {account_id!r}")
-    for account_id, account in account_index.items():
-        if account.get("venue_id") not in venue_index:
-            raise ConfigSnapshotError(f"account {account_id} references unknown venue")
-    for route in routes:
-        route_id = route["id"]
-        spot = route.get("spot")
-        futures = route.get("futures")
-        if not isinstance(spot, dict) or not isinstance(futures, dict):
-            raise ConfigSnapshotError(f"route {route_id} must define spot and futures objects")
-        for leg_name, leg in (("spot", spot), ("futures", futures)):
-            venue_id = leg.get("venue_id")
-            account_id = leg.get("account_id")
-            if venue_id not in venue_index or account_id not in account_index:
-                raise ConfigSnapshotError(f"route {route_id} {leg_name} references unknown venue/account")
-            if account_index[account_id].get("venue_id") != venue_id:
-                raise ConfigSnapshotError(f"route {route_id} {leg_name} account/venue mismatch")
-        if not route.get("risk_profile") or route["risk_profile"] not in risk_profiles:
-            raise ConfigSnapshotError(f"route {route_id} references unknown risk_profile")
-
-
-def validate_snapshot_row(row: Mapping[str, Any]) -> ConfigSnapshot:
+def validate_snapshot_row(
+    row: Mapping[str, Any],
+    *,
+    capability_registry: Optional[Mapping[str, Any]] = None,
+) -> ConfigSnapshot:
     try:
         version = int(row["version"])
         schema_version = int(row["schema_version"])
@@ -193,7 +127,7 @@ def validate_snapshot_row(row: Mapping[str, Any]) -> ConfigSnapshot:
         raise ConfigSnapshotError("active configuration snapshot must be a JSON object")
 
     _reject_inline_secrets(snapshot)
-    validate_v2_snapshot(snapshot)
+    validate_v2_snapshot(snapshot, capability_registry=capability_registry)
     actual_hash = calculate_snapshot_sha256(snapshot)
     if len(expected_hash) != 64 or actual_hash != expected_hash:
         raise ConfigSnapshotError("active configuration SHA-256 does not match stored hash")
@@ -218,8 +152,14 @@ class PostgresConfigRepository:
          where a.singleton = true and v.status = 'active'
     """
 
-    def __init__(self, pool: Any):
+    def __init__(
+        self,
+        pool: Any,
+        *,
+        capability_registry: Optional[Mapping[str, Any]] = None,
+    ):
         self._pool = pool
+        self._capability_registry = capability_registry
 
     async def fetch_active(self) -> ConfigSnapshot:
         try:
@@ -229,7 +169,7 @@ class PostgresConfigRepository:
             raise ConfigSnapshotError(f"cannot read active config from PostgreSQL: {exc}") from exc
         if row is None:
             raise ConfigSnapshotError("PostgreSQL has no active configuration version")
-        return validate_snapshot_row(row)
+        return validate_snapshot_row(row, capability_registry=self._capability_registry)
 
 
 class RedisSnapshotCache:
@@ -304,8 +244,14 @@ async def create_postgres_pool(database_url: str, *, min_size: int = 1, max_size
 class PostgresConfigWriter:
     """Transactional draft/validate/activate API with CAS, audit and outbox."""
 
-    def __init__(self, pool: Any):
+    def __init__(
+        self,
+        pool: Any,
+        *,
+        capability_registry: Optional[Mapping[str, Any]] = None,
+    ):
         self._pool = pool
+        self._capability_registry = capability_registry
 
     @staticmethod
     def _require_actor_reason(actor: str, reason: str) -> None:
@@ -326,7 +272,7 @@ class PostgresConfigWriter:
         self._require_actor_reason(actor, reason)
         normalized = dict(snapshot)
         _reject_inline_secrets(normalized)
-        validate_v2_snapshot(normalized)
+        validate_v2_snapshot(normalized, capability_registry=self._capability_registry)
         digest = calculate_snapshot_sha256(normalized)
         payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         async with self._pool.acquire() as connection:
@@ -381,7 +327,9 @@ class PostgresConfigWriter:
                     raise ConfigSnapshotError(f"config version {version} does not exist")
                 if row["status"] not in {"draft", "validated"}:
                     raise ConfigSnapshotError(f"config version {version} cannot be validated from status {row['status']}")
-                config = validate_snapshot_row(row)
+                config = validate_snapshot_row(
+                    row, capability_registry=self._capability_registry
+                )
                 await connection.execute(
                     """
                     update public.config_versions
@@ -430,7 +378,7 @@ class PostgresConfigWriter:
                 )
                 if row is None or row["status"] != "validated":
                     raise ConfigSnapshotError("only an existing validated config version can be activated")
-                config = validate_snapshot_row(row)
+                config = validate_snapshot_row(row, capability_registry=self._capability_registry)
                 if current is not None:
                     await connection.execute(
                         "update public.config_versions set status = 'superseded' where version = $1",
@@ -495,7 +443,7 @@ class PostgresConfigWriter:
             )
         if row is None:
             raise ConfigSnapshotError(f"rollback source version {source_version} does not exist")
-        source = validate_snapshot_row(row)
+        source = validate_snapshot_row(row, capability_registry=self._capability_registry)
         return await self.create_draft(
             source.snapshot,
             actor=actor,
@@ -541,6 +489,7 @@ class PostgresOutboxPublisher:
         *,
         worker_id: str,
         channel: str = "nafaz:v2:events",
+        execution_channel: str = "nafaz:v2:execution:events",
         batch_size: int = 50,
         lease_seconds: int = 60,
         max_backoff_seconds: int = 300,
@@ -553,6 +502,7 @@ class PostgresOutboxPublisher:
         self._redis = redis
         self._worker_id = worker_id
         self._channel = channel
+        self._execution_channel = execution_channel
         self._batch_size = batch_size
         self._lease_seconds = lease_seconds
         self._max_backoff_seconds = max_backoff_seconds
@@ -616,8 +566,13 @@ class PostgresOutboxPublisher:
                 "payload": event["payload"],
             }
             try:
+                channel = (
+                    self._execution_channel
+                    if envelope["aggregate_type"] == "execution"
+                    else self._channel
+                )
                 await self._redis.publish(
-                    self._channel,
+                    channel,
                     json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
                 )
             except Exception as exc:

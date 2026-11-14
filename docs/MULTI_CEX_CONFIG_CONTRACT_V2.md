@@ -1,6 +1,6 @@
 # Nafazbot V2 — Multi-CEX Configuration Contract
 
-**Status:** Proposed schema v2; current runtime does not yet consume this format. JSON is retained to align with the existing project configuration style.
+**Status:** Schema v2 contract with a strict Python model/validator and additive PostgreSQL foundation. The legacy executor runtime still consumes config.json; V2 is not activated. JSON remains the transport/snapshot format.
 
 ## 1. Normative principles
 
@@ -103,7 +103,7 @@ The sample represents two spot venues and one currently active futures venue. Mo
       "id": "indodax_to_okx",
       "spot": { "venue_id": "indodax_spot_primary", "account_id": "indodax_account_1", "quote_assets": ["IDR", "USDT"] },
       "futures": { "venue_id": "okx_swap_primary", "account_id": "okx_account_1", "settle_assets": ["USDT"] },
-      "enabled": true,
+      "enabled": false,
       "symbols": { "allow": ["BTC", "ETH"], "deny": [] },
       "risk_profile": "default_live"
     },
@@ -111,7 +111,7 @@ The sample represents two spot venues and one currently active futures venue. Mo
       "id": "tokocrypto_to_okx",
       "spot": { "venue_id": "tokocrypto_spot_primary", "account_id": "tokocrypto_account_1", "quote_assets": ["USDT", "IDR"] },
       "futures": { "venue_id": "okx_swap_primary", "account_id": "okx_account_1", "settle_assets": ["USDT"] },
-      "enabled": true,
+      "enabled": false,
       "symbols": { "allow": ["BTC", "ETH"], "deny": [] },
       "risk_profile": "default_live"
     }
@@ -238,7 +238,7 @@ Current baseline uses singleton LOCAL_EXCHANGE/GLOBAL_EXCHANGE, root global_futu
 
 ## 10. Implementation boundary
 
-This is a target contract for a later implementation PR, not runtime support. Before implementation, review exchange capability matrix, executor client factory, order lifecycle and DB migration strategy. No LIVE order is enabled by this specification change.
+The strict Python model/validator and additive PostgreSQL schema are implemented on the V2 foundation branch. The sample routes are disabled because no production multi-venue capability registry has been approved yet. This is not runtime cutover: executor startup still reads the legacy config.json, signals_enabled must remain false, and no LIVE order is authorized.
 
 
 ## 9. V2 database activation and Telegram control extensions
@@ -267,4 +267,23 @@ The scanner's Go Telegram component is read-only alerting in V2. Trading control
 
 ### Migration and runtime status
 
-Migration `20261113000100_v2_config_and_operator_control.sql` establishes the durable schema only. It does not automatically migrate existing JSON/SQLite/Supabase settings, enable Telegram control, or activate LIVE. Runtime cutover, snapshot loading, Redis refresh, Python command handling and readiness integration require subsequent implementation and tests. Until then the existing runtime must not be described as V2 database-config or Telegram START/STOP complete.
+Migrations `20261113000100_v2_config_and_operator_control.sql`, `20261113000200_v2_config_consumers.sql`, and `20261114000100_v2_multi_venue_execution_core.sql` establish versioned config/control, executor-consumer and V2 multi-venue persistence schemas. The latest migration uses V2-prefixed tables to coexist with the legacy schema and uses NUMERIC for financial fields. Timestamped files are the migration version identifiers; local Supabase/PostgreSQL CI applies them in order and replays them to verify idempotency. No existing JSON/SQLite/Supabase data or secrets are automatically migrated. Runtime cutover, account/market metadata population, verified adapter capabilities, secret resolution, Telegram command handling and deployed reconciliation remain separate work.
+
+
+## 12. Implemented validator and capability gate
+
+The Python model is defined in `executor/v2_config_schema.py` and exposed through `validate_v2_snapshot`. It validates strict nested keys and types, stable lowercase IDs, exchange/market types, venue/account ownership, route leg references, risk-profile completeness, positive finite financial limits, asset lists, secret reference formats, LIVE PostgreSQL/Redis/migration requirements, startup reconciliation and public-only scanner policy.
+
+An enabled route is accepted only when a caller supplies a capability registry for both leg adapters. Each entry must explicitly list supported market types and capabilities and set `multi_venue=true` and `multi_account=true`. Spot routes require balance/open-order reads, limit-order creation, cancel and client-ID lookup. Perpetual routes additionally require position reads, market-order creation and reduce-only support. The default registry is empty because the current executor facade still represents a single configured spot/perpetual pair; do not mark a production adapter verified from a config declaration alone. A route without verified evidence must remain disabled.
+
+## 13. PostgreSQL persistence boundary
+
+Migration `20261114000100_v2_multi_venue_execution_core.sql` creates `v2_exchanges`, `v2_venues`, `v2_accounts`, `v2_account_secret_refs`, `v2_venue_capabilities`, `v2_markets`, `v2_risk_profiles`, `v2_trading_routes`, `v2_execution_intents`, `v2_execution_journal`, `v2_balance_snapshots`, `v2_position_snapshots`, `v2_reconciliation_runs`, and `v2_venue_halts`. The existing `outbox_events` table now accepts `aggregate_type=execution`. V2 identity columns on the legacy `order_registry` are nullable and intentionally not backfilled.
+
+`executor/v2_execution_repository.py` writes a durable intent before any external submission and commits each intent transition, append-only journal event and outbox event atomically. It uses Decimal-only financial inputs, unique idempotency keys, compare-and-swap state transitions and rejects secret-like payload fields. The publisher routes execution events to `nafaz:v2:execution:events`, separate from config invalidation events. The repository is not connected to `ArbitrageEngine` yet, so current LIVE order lifecycle still uses the legacy registry/Supabase writer path.
+
+The SQL migration is additive and does not activate a venue, account, route, risk profile, intent or trading state. All V2 venue/account/route rows are disabled by default. No data backfill or credential migration is performed.
+
+### Database-level execution admission checks
+
+The V2 migration enforces the market/route relationship when an intent is inserted: canonical base asset must match the venue-bound market and route symbol allowlist; spot quote and perpetual settle assets must be allowed by the route; perpetual market contract size must be present; and both route legs must still have verified capabilities. Revoking a capability after route activation blocks new intents until the route is reviewed and revalidated. Position snapshots retain repeated observations for the same exchange position ID; the identifier is a lookup index, not a uniqueness constraint.
