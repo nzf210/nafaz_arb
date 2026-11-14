@@ -3,6 +3,7 @@
 Public symbols remain here for compatibility; persistence responsibilities are
 split into focused mixins so each module stays reviewable.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -32,6 +33,7 @@ class PostgresOperatorControlRepository(
             raise ValueError("consumer_lease_seconds must be at least 5")
         self._pool = pool
         self._consumer_lease_seconds = consumer_lease_seconds
+
 
 __all__ = [
     "DuplicateCommandConflict",

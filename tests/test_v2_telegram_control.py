@@ -394,8 +394,9 @@ async def test_executor_restart_durably_resets_trading_to_stopped():
         for query, args in connection.executed
     )
     assert any(
-        "operator_control.startup_stopped" in query
-        for query, _ in connection.executed
+        "insert into public.outbox_events" in query
+        and any("operator_control.startup_stopped" in str(value) for value in args)
+        for query, args in connection.executed
     )
 
 

@@ -19,7 +19,10 @@ logger = logging.getLogger("executor.main")
 
 def _v2_control_enabled() -> bool:
     return str(os.environ.get("NAFAZ_V2_CONTROL_ENABLED", "")).strip().lower() in {
-        "1", "true", "yes", "on"
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
@@ -38,7 +41,9 @@ async def main():
                 type(exc).__name__,
             )
 
-    mode_str = "MOCK / PAPER TRADING" if config.mock_mode else "LIVE (V2 entry gate required)"
+    mode_str = (
+        "MOCK / PAPER TRADING" if config.mock_mode else "LIVE (V2 entry gate required)"
+    )
     logger.info(
         "Starting Nafaz Executor [%s] with Local=%s, Global=%s, Redis=%s, V2Control=%s",
         mode_str,
