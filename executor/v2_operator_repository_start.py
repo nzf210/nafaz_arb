@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hmac
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from executor.v2_operator_models import (
@@ -27,7 +27,6 @@ class OperatorRepositoryStartMixin:
     ) -> dict[str, Any]:
         digest = confirmation_digest(challenge_code)
         expires_at = datetime.now(timezone.utc).replace(microsecond=0)
-        from datetime import timedelta
         expires_at += timedelta(seconds=ttl_seconds)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
