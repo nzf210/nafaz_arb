@@ -293,6 +293,9 @@ create table if not exists public.v2_execution_intents (
     check (order_type <> 'limit' or limit_price is not null)
 );
 
+alter table public.v2_execution_intents
+    alter column is_mock set default false;
+
 create unique index if not exists uq_v2_intent_client_order
     on public.v2_execution_intents(venue_id, account_id, client_order_id);
 create unique index if not exists uq_v2_intent_exchange_order
