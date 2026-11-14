@@ -255,3 +255,10 @@
 - START readiness includes database, config version, Redis snapshot, credentials, market metadata, live FX, reconciliation, risk, kill switch, Python sole-consumer proof and signals-enabled. No production readiness provider is wired yet; START must remain denied.
 - Unit tests cover allowlist denial, duplicate commands, START confirmation/readiness denial, STOP policy, entry-fence lock behavior, stale consumers, startup STOP reset and Redis admission failure.
 - Manual actions still required: apply migrations to the intended PostgreSQL instance; populate a validated active V2 snapshot and Telegram allowlists/token reference; inject DB/Redis/Telegram secrets; run restart, multi-instance STOP-vs-submit, Redis/DB outage and read-only account/market/FX smoke tests. Do not enable signals or send live orders.
+
+## 17. Go scanner authority boundary audit
+
+- The Go `ReadOnlyAdapter` exposes market discovery, public order books and public funding reads; it has no CEX order-create/cancel methods. The live exchange adapter does not receive CEX API keys/secrets or authenticated account clients.
+- The legacy `OpenExposures` interface method is a no-op/empty result in the live adapter, not a private exchange position API. The legacy `check_open_positions` config field should be removed from the V2 scanner runtime contract rather than treated as an authoritative account check.
+- The Go Telegram bot still contains legacy Redis command relays for operations such as force-close, emergency cancel, orphan cleanup and spot-order-limit changes. These handlers do not call exchange APIs themselves; Python executor performs the exchange action. However, this is broader than the V2 read-only Telegram target and must be disabled or moved behind the Python operator control plane before declaring the scanner/bot boundary fully compliant.
+- The V2 Python Telegram control service is separate and owns START/STOP state. No Go scanner source was changed in this stage to avoid silently breaking existing operator workflows.
