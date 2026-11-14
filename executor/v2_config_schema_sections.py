@@ -39,6 +39,7 @@ from executor.v2_config_schema_helpers import (
     _identifier,
     _integer,
     _keys,
+    _secret_reference,
     _object,
     _unique_index,
     _validate_fx,
@@ -168,7 +169,7 @@ def _validate_optional_sections(root: Mapping[str, Any], live: bool) -> None:
         enabled = _boolean(telegram.get("enabled", False), "telegram.enabled")
         for key in ("bot_token_env", "bot_token_ref"):
             if key in telegram:
-                _credential_refs({key: telegram[key]}, "telegram", required=False)
+                _secret_reference(telegram[key], key, "telegram")
         if "bot_token_env" in telegram and "bot_token_ref" in telegram:
             raise V2ConfigValidationError("telegram must use one bot-token reference")
         if enabled and not ({"bot_token_env", "bot_token_ref"} & set(telegram)):
