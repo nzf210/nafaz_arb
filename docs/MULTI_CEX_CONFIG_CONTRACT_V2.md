@@ -303,3 +303,8 @@ The final LIVE admission path verifies the PostgreSQL active version/hash, durab
 The current validator still rejects `execution.signals_enabled=true`. The production adapter capability registry is empty, the V2 snapshot is not yet mapped into the legacy exchange-client factory, and no production readiness provider currently proves venue credentials, market metadata, live FX freshness/spread/fees, account reconciliation, risk/kill-switch state and Python-only order authority. Therefore Telegram START is implemented as a fail-closed request/confirmation flow but cannot transition to RUNNING in this stage. Do not enable signals, place live orders or claim LIVE readiness until those integrations and multi-instance/restart smoke tests are complete.
 
 The runtime bootstrap does not rewrite `config.json`, change the user's LIVE/MOCK setting, copy credentials, or alter risk limits. When V2 control bootstrap is disabled or fails, process liveness may continue but LIVE entry admission remains closed because the gate is absent.
+
+
+### LIVE FX acceptance
+
+For LIVE, `scanner.synthetic_fx.max_age_seconds` and `max_spread_pct` are mandatory, `enabled` must be true, and static/synthetic/fixed sources or static fallback are rejected. The numeric values are operator-supplied policy, not defaults. Runtime readiness must additionally prove the observed rate timestamp, bid/ask spread and fee-inclusive conversion edge against those limits; schema validation alone is not proof of a live feed.
