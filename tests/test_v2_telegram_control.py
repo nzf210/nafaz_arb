@@ -222,6 +222,17 @@ class _Acquire:
         return False
 
 
+class _Cache:
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = 0
+
+    async def verify(self, config):
+        self.calls += 1
+        if self.error:
+            raise self.error
+
+
 class _FenceConnection:
     def __init__(self, *, consumers=None, state="RUNNING"):
         self.consumers = consumers or [{
@@ -276,6 +287,7 @@ async def test_entry_submission_fence_holds_shared_database_lock_until_exit():
         _FencePool(connection),
         AtomicConfigSnapshot(config),
         SimpleNamespace(),
+        cache=_Cache(),
     )
 
     async with gate.entry_submission_fence() as report:
@@ -289,6 +301,7 @@ async def test_entry_submission_fence_rejects_stopped_or_stale_consumer():
         _FencePool(_FenceConnection(state="STOPPED")),
         AtomicConfigSnapshot(_config(signals_enabled=True)),
         SimpleNamespace(),
+        cache=_Cache(),
     )
     with pytest.raises(Exception, match="not RUNNING"):
         async with stopped.entry_submission_fence():
@@ -304,6 +317,7 @@ async def test_entry_submission_fence_rejects_stopped_or_stale_consumer():
         _FencePool(stale_connection),
         AtomicConfigSnapshot(_config(signals_enabled=True)),
         SimpleNamespace(),
+        cache=_Cache(),
     )
     with pytest.raises(Exception, match="convergence"):
         async with stale.entry_submission_fence():
