@@ -287,3 +287,19 @@ The SQL migration is additive and does not activate a venue, account, route, ris
 ### Database-level execution admission checks
 
 The V2 migration enforces the market/route relationship when an intent is inserted: canonical base asset must match the venue-bound market and route symbol allowlist; spot quote and perpetual settle assets must be allowed by the route; perpetual market contract size must be present; and both route legs must still have verified capabilities. Revoking a capability after route activation blocks new intents until the route is reviewed and revalidated. Position snapshots retain repeated observations for the same exchange position ID; the identifier is a lookup index, not a uniqueness constraint.
+
+## 14. Runtime bootstrap and START/STOP enforcement
+
+Set `NAFAZ_V2_CONTROL_ENABLED=true` only after the V2 migrations and active snapshot are installed. The executor bootstrap DSN environment name is `NAFAZ_V2_DATABASE_DSN_ENV` (default `NAFAZ_DATABASE_URL`) and must match `storage.dsn_env` in the active snapshot. The Redis URL is resolved through `redis.url_env` and must match the endpoint configured for the legacy executor. Bootstrap fetches PostgreSQL first, validates the snapshot/hash, publishes and verifies the Redis mirror, then registers the executor consumer.
+
+On every process start, the executor takes the exclusive operator-entry fence and persists `STOPPED / trading_enabled=false`; pending START confirmations are rejected. This applies even if the previous process ended unexpectedly while RUNNING. The process can remain live for monitoring and recovery, but only a fresh, confirmed Telegram START can change the durable trading state.
+
+The Python Telegram service starts only when `telegram.enabled=true` and the configured token reference resolves. `bot_token_env` reads the named environment variable. For `bot_token_ref`, the current bootstrap accepts an injected `NAFAZ_TELEGRAM_BOT_TOKEN`; a dedicated external secret-manager integration remains pending. Both `allowed_user_ids` and `allowed_chat_ids` are mandatory. Unauthorized and duplicate update IDs are audited/idempotent.
+
+The final LIVE admission path verifies the PostgreSQL active version/hash, durable RUNNING state, live executor convergence and the current Redis snapshot. It holds a shared transaction-scoped PostgreSQL advisory lock through the spot order API call. STOP and config activation use the matching exclusive lock. Redis/DB failure, stale cache, version mismatch, non-converged consumers or STOP closes new-entry admission. Existing orders and positions remain under monitoring; STOP uses `keep_and_manage` and never force-closes a position.
+
+### Deliberate non-readiness
+
+The current validator still rejects `execution.signals_enabled=true`. The production adapter capability registry is empty, the V2 snapshot is not yet mapped into the legacy exchange-client factory, and no production readiness provider currently proves venue credentials, market metadata, live FX freshness/spread/fees, account reconciliation, risk/kill-switch state and Python-only order authority. Therefore Telegram START is implemented as a fail-closed request/confirmation flow but cannot transition to RUNNING in this stage. Do not enable signals, place live orders or claim LIVE readiness until those integrations and multi-instance/restart smoke tests are complete.
+
+The runtime bootstrap does not rewrite `config.json`, change the user's LIVE/MOCK setting, copy credentials, or alter risk limits. When V2 control bootstrap is disabled or fails, process liveness may continue but LIVE entry admission remains closed because the gate is absent.
