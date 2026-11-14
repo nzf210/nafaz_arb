@@ -223,6 +223,19 @@ class EngineEntrySubmissionMixin:
             marker in error_text for marker in definitive_messages
         )
 
+    @asynccontextmanager
+    async def _v2_entry_submission_fence(self):
+        """Hold the PostgreSQL shared fence for the final LIVE entry API call."""
+        if bool(getattr(self.config, "mock_mode", False)):
+            yield
+            return
+        gate = getattr(self, "v2_admission_gate", None)
+        factory = getattr(gate, "entry_submission_fence", None)
+        if not callable(factory):
+            raise RuntimeError("LIVE entry requires the transactional V2 submission fence")
+        async with factory():
+            yield
+
     async def _submit_entry_order(
         self, pair_tag, payload, pair_info, snapshot, directives,
         buy_qty, actual_cost_usdt, buy_price_idr,
@@ -275,15 +288,16 @@ class EngineEntrySubmissionMixin:
                 )
                 logger.warning("[V2 Admission] final pre-submit check denied %s", pair_tag)
                 return
-            submission_started = True
             try:
-                order = await self.client.place_local_limit_buy(
-                    pair_info.local_symbol,
-                    buy_qty,
-                    exchange_order_price,
-                    client_order_id=entry_coid,
-                    amount_spec=pair_info.local_amount_spec,
-                )
+                async with self._v2_entry_submission_fence():
+                    submission_started = True
+                    order = await self.client.place_local_limit_buy(
+                        pair_info.local_symbol,
+                        buy_qty,
+                        exchange_order_price,
+                        client_order_id=entry_coid,
+                        amount_spec=pair_info.local_amount_spec,
+                    )
             except Exception as submit_error:
                 if self._is_definitive_order_rejection(submit_error):
                     submission_started = False
