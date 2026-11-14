@@ -6,6 +6,7 @@ from executor.v2_config import ConfigSnapshot
 from executor.v2_config_runtime import AtomicConfigSnapshot, PostgresEntryAdmissionGate
 from executor.v2_operator_control import (
     OperatorControlError,
+    PostgresOperatorControlRepository,
     StartReadinessReport,
     TelegramIdentity,
     TelegramPolicy,
@@ -230,19 +231,26 @@ class _FenceConnection:
             "acknowledged_sha256": "a" * 64,
         }]
         self.state = state
+        self.state_version = 8
         self.lock_acquired = False
+        self.executed = []
 
     def transaction(self):
         return _Transaction()
 
     async def execute(self, query, *args):
-        if "pg_advisory_xact_lock_shared" in query:
+        self.executed.append((query, args))
+        if "pg_advisory_xact_lock" in query:
             self.lock_acquired = True
+        if "update public.operator_control_state" in query:
+            self.state = "STOPPED"
+            self.state_version = args[0]
 
     async def fetchrow(self, query, *args):
         return {
             "state": self.state,
             "trading_enabled": self.state == "RUNNING",
+            "state_version": self.state_version,
             "config_version": 12,
             "active_version": 12,
             "active_sha256": "a" * 64,
@@ -300,3 +308,29 @@ async def test_entry_submission_fence_rejects_stopped_or_stale_consumer():
     with pytest.raises(Exception, match="convergence"):
         async with stale.entry_submission_fence():
             pytest.fail("stale executor must not enter")
+
+
+
+@pytest.mark.asyncio
+async def test_executor_restart_durably_resets_trading_to_stopped():
+    connection = _FenceConnection(state="RUNNING")
+    repository = PostgresOperatorControlRepository(_FencePool(connection))
+
+    result = await repository.enforce_stopped_on_startup("executor-restarted")
+
+    assert result["state"] == "STOPPED"
+    assert result["trading_enabled"] is False
+    assert result["actor"] == "system"
+    assert "executor-restarted" in result["reason"]
+    assert connection.state == "STOPPED"
+    assert connection.state_version == 9
+    assert connection.lock_acquired
+    assert any(
+        "update public.operator_actions" in query
+        and "EXECUTOR_RESTART_REQUIRES_OPERATOR_START" in query
+        for query, _ in connection.executed
+    )
+    assert any(
+        "operator_control.startup_stopped" in query
+        for query, _ in connection.executed
+    )
