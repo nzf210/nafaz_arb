@@ -173,6 +173,10 @@ class ExecutorConfig:
                     str(name).strip().lower(): limit
                     for name, limit in limits.items()
                 }
+            if pg_dsn := data.get("postgres_dsn") or exec_cfg.get("postgres_dsn"):
+                if not self.postgres_dsn:
+                    self.postgres_dsn = str(pg_dsn).strip()
+
             # Load modular exchanges dictionary if provided in config
             if "exchanges" in data and isinstance(data["exchanges"], dict):
                 for ex_name, ex_data in data["exchanges"].items():

@@ -16,6 +16,7 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/config"
 	"github.com/nafaz/spot-perp-scanner/internal/exchange"
 	"github.com/nafaz/spot-perp-scanner/internal/history"
+	"github.com/nafaz/spot-perp-scanner/internal/postgres"
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/nafaz/spot-perp-scanner/internal/scanner"
 	"github.com/nafaz/spot-perp-scanner/internal/supabase"
@@ -149,8 +150,34 @@ func main(){
 	svc.SetFundingWorker(fw)
 	defer fw.Stop()
 
-	// Synchronize configuration from Database (Supabase) / Redis if available (SSOT)
-	if remoteStore != nil {
+	// Initialize local PostgreSQL client if configured
+	var pgClient *postgres.Client
+	if pgDSN := strings.TrimSpace(os.Getenv("POSTGRES_DSN")); pgDSN != "" {
+		pc, err := postgres.NewFromDSN(pgDSN)
+		if err != nil {
+			log.Printf("warning: postgres connection failed: %v", err)
+		} else {
+			pgClient = pc
+			defer pgClient.Close()
+			log.Printf("postgres local persistence connected")
+		}
+	}
+
+	// Synchronize configuration from Database (PostgreSQL / Supabase) / Redis (SSOT)
+	if pgClient != nil {
+		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if dbCfg, err := pgClient.LoadStrategyConfig(dbCtx, "default"); err == nil && len(dbCfg) > 0 {
+			config.ApplyDynamicConfig(&cfg, dbCfg)
+			svc.UpdateConfig(cfg)
+			log.Printf("applied dynamic strategy config from PostgreSQL database")
+			if redisClient != nil {
+				_ = redisClient.SaveConfig(dbCtx, dbCfg)
+			}
+		} else if err != nil {
+			log.Printf("info: could not load strategy config from PostgreSQL: %v", err)
+		}
+		dbCancel()
+	} else if remoteStore != nil {
 		dbCtx, dbCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if dbCfg, err := remoteStore.LoadStrategyConfig(dbCtx, "default"); err == nil && len(dbCfg) > 0 {
 			config.ApplyDynamicConfig(&cfg, dbCfg)
@@ -182,7 +209,10 @@ func main(){
 
 	tgBot:=telegram.New(cfg,server)
 	tgBot.SetConfigPath(*path)
-	if remoteStore != nil {
+	if pgClient != nil {
+		tgBot.SetPositionLedgerReader(pgClient)
+		tgBot.SetStrategyConfigStore(pgClient)
+	} else if remoteStore != nil {
 		tgBot.SetOpportunityHistoryReader(remoteStore)
 		tgBot.SetPositionLedgerReader(remoteStore)
 		tgBot.SetStrategyConfigStore(remoteStore)

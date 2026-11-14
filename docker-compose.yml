@@ -56,7 +56,7 @@ services:
       - OKX_WS_RECONNECT_INTERVAL=${OKX_WS_RECONNECT_INTERVAL:-}
       - OKX_WS_MAX_RECONNECT_BACKOFF=${OKX_WS_MAX_RECONNECT_BACKOFF:-}
       # Local PostgreSQL durable persistence (replaces Supabase & SQLite outbox)
-      - POSTGRES_DSN=${POSTGRES_CONTAINER_DSN:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@nafaz-postgres:5432/${POSTGRES_DB:-nafaz}?sslmode=disable}
+      - POSTGRES_DSN=${POSTGRES_DSN:-${POSTGRES_CONTAINER_DSN:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@nafaz-postgres:5432/${POSTGRES_DB:-nafaz}?sslmode=disable}}
       - SUPABASE_URL=
       - SUPABASE_KEY=
       - ENABLE_EXECUTOR_SIGNALS=${ENABLE_EXECUTOR_SIGNALS:-true}
@@ -66,7 +66,6 @@ services:
       # - TELEGRAM_CHAT_ID=your_chat_id
     depends_on:
       - redis
-      - postgres
 
   nafaz-executor:
     build:
@@ -85,7 +84,7 @@ services:
       - TZ=Asia/Jakarta
       - REDIS_URL=redis://nafaz-redis:6380/0
       # PostgreSQL VPS durable persistence (replaces Supabase & SQLite outbox)
-      - POSTGRES_DSN=${POSTGRES_CONTAINER_DSN:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@nafaz-postgres:5432/${POSTGRES_DB:-nafaz}?sslmode=disable}
+      - POSTGRES_DSN=${POSTGRES_DSN:-${POSTGRES_CONTAINER_DSN:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@nafaz-postgres:5432/${POSTGRES_DB:-nafaz}?sslmode=disable}}
       - LOCAL_EXCHANGE=indodax
       # "all" is a scanner discovery setting, not a valid CCXT exchange id.
       - GLOBAL_EXCHANGE=okx
@@ -119,5 +118,4 @@ services:
       - EXPOSURE_RECONCILIATION_ABS_TOLERANCE=${EXPOSURE_RECONCILIATION_ABS_TOLERANCE:-}
     depends_on:
       - redis
-      - postgres
 
