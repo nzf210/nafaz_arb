@@ -251,7 +251,9 @@
 - `executor/main.py` starts the V2 control plane only when `NAFAZ_V2_CONTROL_ENABLED=true`; bootstrap failure leaves the process alive for monitoring/recovery but with no LIVE admission gate.
 - Bootstrap reads the active PostgreSQL snapshot, validates the canonical hash, verifies the Redis mirror, registers the executor lease, and durably resets operator state to STOPPED before starting the consumer/outbox/Telegram tasks.
 - Telegram uses both user and chat allowlists, secret/env token resolution, update-ID idempotency, actor/reason/timestamp audit, START confirmation TTL, and immediate STOP without confirmation.
-- STOP supports only `keep_and_manage`; it does not cancel open orders or close positions. The exclusive STOP fence serializes against every shared spot-entry submit fence.
+- Each command refreshes the active PostgreSQL Telegram policy before authorization; token-value rotation is detected and blocks commands until executor restart.
+- Graceful V2 executor shutdown attempts a durable STOP before releasing its lease and closing PostgreSQL/Redis resources.
+- STOP supports only `keep_and_manage`; it does not cancel open orders or close positions. The exclusive STOP fence serializes against every shared spot-entry submit fence and is committed before STOP acknowledgement.
 - START readiness includes database, config version, Redis snapshot, credentials, market metadata, live FX, reconciliation, risk, kill switch, Python sole-consumer proof and signals-enabled. No production readiness provider is wired yet; START must remain denied.
 - Unit tests cover allowlist denial, duplicate commands, START confirmation/readiness denial, STOP policy, entry-fence lock behavior, stale consumers, startup STOP reset and Redis admission failure.
 - Manual actions still required: apply migrations to the intended PostgreSQL instance; populate a validated active V2 snapshot and Telegram allowlists/token reference; inject DB/Redis/Telegram secrets; run restart, multi-instance STOP-vs-submit, Redis/DB outage and read-only account/market/FX smoke tests. Do not enable signals or send live orders.
