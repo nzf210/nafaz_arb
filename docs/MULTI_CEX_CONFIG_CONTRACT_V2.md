@@ -103,7 +103,7 @@ The sample represents two spot venues and one currently active futures venue. Mo
       "id": "indodax_to_okx",
       "spot": { "venue_id": "indodax_spot_primary", "account_id": "indodax_account_1", "quote_assets": ["IDR", "USDT"] },
       "futures": { "venue_id": "okx_swap_primary", "account_id": "okx_account_1", "settle_assets": ["USDT"] },
-      "enabled": true,
+      "enabled": false,
       "symbols": { "allow": ["BTC", "ETH"], "deny": [] },
       "risk_profile": "default_live"
     },
@@ -111,7 +111,7 @@ The sample represents two spot venues and one currently active futures venue. Mo
       "id": "tokocrypto_to_okx",
       "spot": { "venue_id": "tokocrypto_spot_primary", "account_id": "tokocrypto_account_1", "quote_assets": ["USDT", "IDR"] },
       "futures": { "venue_id": "okx_swap_primary", "account_id": "okx_account_1", "settle_assets": ["USDT"] },
-      "enabled": true,
+      "enabled": false,
       "symbols": { "allow": ["BTC", "ETH"], "deny": [] },
       "risk_profile": "default_live"
     }
