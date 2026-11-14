@@ -32,3 +32,13 @@ class PostgresOperatorControlRepository(
             raise ValueError("consumer_lease_seconds must be at least 5")
         self._pool = pool
         self._consumer_lease_seconds = consumer_lease_seconds
+
+__all__ = [
+    "DuplicateCommandConflict",
+    "OperatorControlError",
+    "PostgresOperatorControlRepository",
+    "StartReadinessReport",
+    "TelegramIdentity",
+    "TelegramPolicy",
+    "confirmation_digest",
+]
