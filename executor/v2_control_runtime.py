@@ -116,7 +116,12 @@ class V2ControlPlaneRuntime:
                     "legacy executor Redis endpoint differs from active V2 Redis reference"
                 )
 
-            redis = aioredis.from_url(redis_url, decode_responses=True)
+            redis = aioredis.from_url(
+                redis_url,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5,
+            )
             cache = RedisSnapshotCache(redis)
             config = await load_verified_active_snapshot(repository, cache)
             store = AtomicConfigSnapshot(config)
