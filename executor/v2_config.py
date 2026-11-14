@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 from executor.v2_config_schema import (
-    V2ConfigValidationError,
     V2ConfigModel,
+    V2ConfigValidationError,
     parse_v2_config,
 )
 
