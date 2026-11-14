@@ -7,6 +7,7 @@ then an atomic in-process snapshot replacement and durable DB acknowledgement.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 from dataclasses import dataclass
@@ -338,3 +339,75 @@ class PostgresEntryAdmissionGate:
         if str(row["active_sha256"]).strip() != config.content_sha256:
             raise ConfigSnapshotError("active PostgreSQL config hash differs from executor snapshot")
         return await self._registry.require_converged(config)
+
+    @asynccontextmanager
+    async def entry_submission_fence(self):
+        """Serialize the final exchange entry call against durable STOP/config activation.
+
+        The shared transaction-scoped advisory lock is held until the caller's
+        exchange submission returns. STOP and config activation take the same
+        lock exclusively, so once STOP commits no later entry can pass this
+        fence. Existing position-management and exit paths do not use it.
+        """
+        config = self._store.current
+        if config is None:
+            raise ConfigSnapshotError("no verified V2 config snapshot is loaded")
+        execution = config.snapshot.get("execution")
+        if not isinstance(execution, dict) or execution.get("signals_enabled") is not True:
+            raise ConfigSnapshotError("V2 execution signals are disabled; entry admission is closed")
+
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    "select pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
+                    "nafaz:v2:operator_entry_fence",
+                )
+                row = await connection.fetchrow(
+                    """
+                    select s.state, s.trading_enabled, s.config_version,
+                           v.version as active_version, v.content_sha256 as active_sha256
+                      from public.operator_control_state s
+                      join public.active_config_version p on p.singleton = true
+                      join public.config_versions v on v.version = p.version
+                     where s.singleton = true and v.status = 'active'
+                    """
+                )
+                if not row:
+                    raise ConfigSnapshotError("durable operator state or active config pointer is missing")
+                if row["state"] != "RUNNING" or row["trading_enabled"] is not True:
+                    raise ConfigSnapshotError("durable operator state is not RUNNING")
+                if row["config_version"] != config.version or row["active_version"] != config.version:
+                    raise ConfigSnapshotError("executor snapshot is not the active operator config version")
+                if str(row["active_sha256"]).strip() != config.content_sha256:
+                    raise ConfigSnapshotError("active PostgreSQL config hash differs from executor snapshot")
+
+                consumers = await connection.fetch(
+                    """
+                    select instance_id, status, acknowledged_version, acknowledged_sha256
+                      from public.config_consumers
+                     where status in ('STARTING','ACTIVE','DEGRADED')
+                       and last_seen_at >= now() - make_interval(secs => 30)
+                     order by instance_id
+                    """
+                )
+                active = len(consumers)
+                stale = tuple(
+                    str(item["instance_id"])
+                    for item in consumers
+                    if item["status"] != "ACTIVE"
+                    or item["acknowledged_version"] != config.version
+                    or str(item["acknowledged_sha256"] or "").strip() != config.content_sha256
+                )
+                if active < 1:
+                    raise ConfigSnapshotError("no live executor consumer has acknowledged the active config")
+                if stale:
+                    raise ConfigSnapshotError(
+                        "executor config convergence is incomplete: " + ", ".join(stale)
+                    )
+                yield ConvergenceReport(
+                    converged=True,
+                    active_instances=active,
+                    missing_or_stale=(),
+                    target_version=config.version,
+                    target_sha256=config.content_sha256,
+                )
