@@ -40,9 +40,12 @@ async def main():
 
     mode_str = "MOCK / PAPER TRADING" if config.mock_mode else "LIVE (V2 entry gate required)"
     logger.info(
-        f"Starting Nafaz Executor [{mode_str}] with Local={config.local_exchange_name}, "
-        f"Global={config.global_exchange_name}, Redis={config.redis_url}, "
-        f"V2Control={'enabled' if v2_control else 'unavailable'}"
+        "Starting Nafaz Executor [%s] with Local=%s, Global=%s, Redis=%s, V2Control=%s",
+        mode_str,
+        config.local_exchange_name,
+        config.global_exchange_name,
+        config.redis_url,
+        "enabled" if v2_control else "unavailable",
     )
 
     client = create_exchange_client(config)
