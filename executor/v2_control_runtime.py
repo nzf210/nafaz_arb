@@ -155,9 +155,8 @@ class V2ControlPlaneRuntime:
             telegram = config.snapshot.get("telegram")
             if isinstance(telegram, dict) and telegram.get("enabled") is True:
                 policy = TelegramPolicy.from_snapshot(config.snapshot)
-                secret_resolver = lambda _reference: os.environ.get(
-                    "NAFAZ_TELEGRAM_BOT_TOKEN", ""
-                )
+                def secret_resolver(_reference: str) -> str:
+                    return os.environ.get("NAFAZ_TELEGRAM_BOT_TOKEN", "")
                 try:
                     service = TelegramControlService(
                         operator_repository,
