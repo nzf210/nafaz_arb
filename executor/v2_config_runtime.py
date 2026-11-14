@@ -306,10 +306,22 @@ class PostgresEntryAdmissionGate:
     submission; it is not a substitute for the future transactional STOP fence.
     """
 
-    def __init__(self, pool: Any, store: AtomicConfigSnapshot, registry: ConfigConsumerRegistry):
+    def __init__(
+        self,
+        pool: Any,
+        store: AtomicConfigSnapshot,
+        registry: ConfigConsumerRegistry,
+        cache: Optional[RedisSnapshotCache] = None,
+    ):
         self._pool = pool
         self._store = store
         self._registry = registry
+        self._cache = cache
+
+    async def _verify_redis_snapshot(self, config: ConfigSnapshot) -> None:
+        if self._cache is None:
+            raise ConfigSnapshotError("Redis snapshot verification is not configured")
+        await self._cache.verify(config)
 
     async def require_entry_allowed(self) -> ConvergenceReport:
         config = self._store.current
@@ -318,6 +330,7 @@ class PostgresEntryAdmissionGate:
         execution = config.snapshot.get("execution")
         if not isinstance(execution, dict) or execution.get("signals_enabled") is not True:
             raise ConfigSnapshotError("V2 execution signals are disabled; entry admission is closed")
+        await self._verify_redis_snapshot(config)
 
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
@@ -362,6 +375,7 @@ class PostgresEntryAdmissionGate:
                     "select pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
                     "nafaz:v2:operator_entry_fence",
                 )
+                await self._verify_redis_snapshot(config)
                 row = await connection.fetchrow(
                     """
                     select s.state, s.trading_enabled, s.config_version,
