@@ -15,6 +15,7 @@ from executor.v2_config_model import (
 from executor.v2_config_schema_helpers import (
     _ACCOUNT_KEYS,
     _EXECUTION_KEYS,
+    _ENV_RE,
     _FUTURES_LEG_KEYS,
     _MARKET_DATA_KEYS,
     _MARKET_TYPES,
