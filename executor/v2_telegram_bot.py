@@ -10,7 +10,7 @@ import base64
 import hashlib
 import hmac
 import logging
-from typing import Any, Awaitable, Callable, Mapping, Optional
+from typing import Any, Mapping, Optional
 
 from executor.v2_config import ConfigSnapshot, PostgresConfigRepository
 from executor.v2_operator_control import (
