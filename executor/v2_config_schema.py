@@ -103,13 +103,32 @@ class V2VenueModel:
     execution_enabled: bool
     market_data_adapter: Optional[str]
     execution_adapter: Optional[str]
+    credential_refs: tuple[tuple[str, str], ...]
+    position_mode: Optional[str]
+    margin_mode: Optional[str]
+    required_leverage: Optional[Decimal]
 
 
 @dataclass(frozen=True)
 class V2AccountModel:
     account_id: str
     venue_id: str
+    label: str
     enabled: bool
+
+
+@dataclass(frozen=True)
+class V2RiskProfileModel:
+    profile_id: str
+    max_daily_loss_usdt: Decimal
+    max_exposure_per_account_usdt: Decimal
+    max_exposure_per_route_usdt: Decimal
+    max_entry_slippage_pct: Decimal
+    max_consecutive_order_failures: int
+    max_open_spot_orders: int
+    max_open_futures_orders: int
+    require_fresh_balance: bool
+    require_position_reconciliation: bool
 
 
 @dataclass(frozen=True)
@@ -117,8 +136,12 @@ class V2RouteModel:
     route_id: str
     spot_venue_id: str
     spot_account_id: str
+    spot_quote_assets: tuple[str, ...]
     futures_venue_id: str
     futures_account_id: str
+    futures_settle_assets: tuple[str, ...]
+    allowed_symbols: tuple[str, ...]
+    denied_symbols: tuple[str, ...]
     risk_profile: str
     enabled: bool
     capability_verified: bool
@@ -130,10 +153,21 @@ class V2ConfigModel:
     mode: str
     execution_mode: str
     signals_enabled: bool
+    startup_reconciliation_required: bool
+    storage_driver: str
+    storage_dsn_env: Optional[str]
+    redis_enabled: bool
+    redis_url_env: Optional[str]
+    scanner_enabled: bool
+    scanner_quote_assets: tuple[str, ...]
     venues: tuple[V2VenueModel, ...]
     accounts: tuple[V2AccountModel, ...]
     routes: tuple[V2RouteModel, ...]
-    risk_profile_ids: tuple[str, ...]
+    risk_profiles: tuple[V2RiskProfileModel, ...]
+
+    @property
+    def risk_profile_ids(self) -> tuple[str, ...]:
+        return tuple(profile.profile_id for profile in self.risk_profiles)
 
 
 def _object(value: Any, path: str) -> Mapping[str, Any]:
@@ -246,29 +280,51 @@ def _unique_index(items: Any, label: str) -> dict[str, Mapping[str, Any]]:
     return index
 
 
-def _validate_risk_profile(profile_id: str, value: Any) -> None:
+def _validate_risk_profile(profile_id: str, value: Any) -> V2RiskProfileModel:
     profile = _object(value, f"risk_profiles.{profile_id}")
     _keys(profile, _RISK_KEYS, _RISK_KEYS, f"risk_profiles.{profile_id}")
-    for field in (
-        "max_daily_loss_usdt", "max_exposure_per_account_usdt",
-        "max_exposure_per_route_usdt",
-    ):
-        _decimal(profile[field], f"risk_profiles.{profile_id}.{field}", minimum=Decimal("0.000000000000000001"))
-    _decimal(
+    max_daily_loss = _decimal(
+        profile["max_daily_loss_usdt"],
+        f"risk_profiles.{profile_id}.max_daily_loss_usdt",
+        minimum=Decimal("0.000000000000000001"),
+    )
+    max_account_exposure = _decimal(
+        profile["max_exposure_per_account_usdt"],
+        f"risk_profiles.{profile_id}.max_exposure_per_account_usdt",
+        minimum=Decimal("0.000000000000000001"),
+    )
+    max_route_exposure = _decimal(
+        profile["max_exposure_per_route_usdt"],
+        f"risk_profiles.{profile_id}.max_exposure_per_route_usdt",
+        minimum=Decimal("0.000000000000000001"),
+    )
+    max_slippage = _decimal(
         profile["max_entry_slippage_pct"],
         f"risk_profiles.{profile_id}.max_entry_slippage_pct",
         minimum=Decimal("0.000000000000000001"),
         maximum=Decimal("100"),
     )
-    _integer(profile["max_consecutive_order_failures"], f"risk_profiles.{profile_id}.max_consecutive_order_failures")
-    _integer(profile["max_open_spot_orders"], f"risk_profiles.{profile_id}.max_open_spot_orders")
-    _integer(profile["max_open_futures_orders"], f"risk_profiles.{profile_id}.max_open_futures_orders")
-    _boolean(profile["require_fresh_balance"], f"risk_profiles.{profile_id}.require_fresh_balance")
-    _boolean(profile["require_position_reconciliation"], f"risk_profiles.{profile_id}.require_position_reconciliation")
-    if profile["require_fresh_balance"] is not True or profile["require_position_reconciliation"] is not True:
+    max_failures = _integer(profile["max_consecutive_order_failures"], f"risk_profiles.{profile_id}.max_consecutive_order_failures")
+    max_spot_orders = _integer(profile["max_open_spot_orders"], f"risk_profiles.{profile_id}.max_open_spot_orders")
+    max_futures_orders = _integer(profile["max_open_futures_orders"], f"risk_profiles.{profile_id}.max_open_futures_orders")
+    fresh_balance = _boolean(profile["require_fresh_balance"], f"risk_profiles.{profile_id}.require_fresh_balance")
+    reconcile_positions = _boolean(profile["require_position_reconciliation"], f"risk_profiles.{profile_id}.require_position_reconciliation")
+    if fresh_balance is not True or reconcile_positions is not True:
         raise V2ConfigValidationError(
             f"risk_profiles.{profile_id} must require fresh balances and position reconciliation"
         )
+    return V2RiskProfileModel(
+        profile_id=profile_id,
+        max_daily_loss_usdt=max_daily_loss,
+        max_exposure_per_account_usdt=max_account_exposure,
+        max_exposure_per_route_usdt=max_route_exposure,
+        max_entry_slippage_pct=max_slippage,
+        max_consecutive_order_failures=max_failures,
+        max_open_spot_orders=max_spot_orders,
+        max_open_futures_orders=max_futures_orders,
+        require_fresh_balance=fresh_balance,
+        require_position_reconciliation=reconcile_positions,
+    )
 
 
 def _validate_fx(value: Any, path: str, *, live: bool) -> None:
