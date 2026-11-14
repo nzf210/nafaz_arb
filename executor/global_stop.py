@@ -126,7 +126,8 @@ class GlobalStopService:
             if row is None:
                 existing = await conn.fetchrow(
                     "select client_order_id, status, created_at, exchange, market_type, symbol, "
-                    "side, order_type, quantity, price, pair_key, amount_spec from public.executor_submit_attempts "
+                    "side, order_type, quantity, price, pair_key, amount_spec, recovery_context "
+                    "from public.executor_submit_attempts "
                     "where client_order_id = $1",
                     client_order_id,
                 )
