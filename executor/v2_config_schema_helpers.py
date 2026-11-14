@@ -248,6 +248,8 @@ def _validate_fx(value: Any, path: str, *, live: bool) -> None:
     if not isinstance(fx["source"], str) or not fx["source"].strip():
         raise V2ConfigValidationError(f"{path}.source must be non-empty")
     _integer(fx["max_age_seconds"], f"{path}.max_age_seconds")
+    if live and "max_spread_pct" not in fx:
+        raise V2ConfigValidationError(f"{path}.max_spread_pct is required in LIVE")
     if "max_spread_pct" in fx:
         _decimal(fx["max_spread_pct"], f"{path}.max_spread_pct", minimum=Decimal("0"), maximum=Decimal("100"))
     _boolean(fx["static_fallback_allowed_in_live"], f"{path}.static_fallback_allowed_in_live")
@@ -255,6 +257,8 @@ def _validate_fx(value: Any, path: str, *, live: bool) -> None:
         raise V2ConfigValidationError(f"{path}.enabled must be true in LIVE")
     if live and fx["static_fallback_allowed_in_live"]:
         raise V2ConfigValidationError(f"{path} cannot allow static FX fallback in LIVE")
+    if live and any(marker in fx["source"].lower() for marker in ("static", "synthetic", "fixed")):
+        raise V2ConfigValidationError(f"{path}.source must identify a live FX feed in LIVE")
 
 
 def _capability_supported(
