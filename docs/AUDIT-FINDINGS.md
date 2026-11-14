@@ -123,7 +123,7 @@ Remaining blockers: complete runtime call-site/call-graph audit across all venue
 
 ## R-27 — Operator-authenticated resolution for ambiguous submit attempts
 
-**Status: IMPLEMENTED IN CODE; CI verification pending.**
+**Status: IMPLEMENTED; PostgreSQL integration CI verified on 2026-11-14 (workflow 43570939910). Operational closure remains OPEN.**
 
 - Added migration `20261113000300_add_submit_resolution_audit.sql` for an append-only audit table with unique nonce, operator ID, decision, two distinct evidence references, rationale and signed-payload hash.
 - Added `GlobalStopService.resolve_submit_attempt_signed`: HMAC-SHA256 signature verification, bounded timestamp window, nonce replay protection through a unique DB constraint, shared fencing lock, row lock, and atomic transition from SUBMITTING/UNKNOWN to ACKNOWLEDGED/REJECTED/ABORTED.
@@ -133,11 +133,11 @@ Remaining blockers: complete runtime call-site/call-graph audit across all venue
 
 ## R-28 — PostgreSQL multi-process disconnect/fault injection
 
-**Status: TEST IMPLEMENTED; CI verification pending.**
+**Status: TEST PASSED against disposable PostgreSQL in CI on 2026-11-14 (workflow 43570939910). Production-topology review and repeated fault-boundary validation remain OPEN.**
 
 - Added `tests/test_postgres_submit_fencing_integration.py`: independent executor process commits SUBMITTING and enters a fake venue request; parent kills the executor process while a separate fake venue process remains active; a peer executor process must be rejected by the durable unresolved-attempt gate.
 - The same integration file verifies signed operator resolution against PostgreSQL and confirms the audit row is persisted.
-- CI now provisions PostgreSQL and runs this test after applying all migrations. Initial CI attempts exposed a missing dependency install in the schema job; workflow was corrected to install the repository requirements under Python 3.12. The newest run must pass before marking this item verified.
+- CI now provisions PostgreSQL and runs this test after applying all migrations. Initial CI attempts exposed a missing dependency install in the schema job; workflow was corrected to install the repository requirements under Python 3.12. The 2026-11-14 workflow ran this integration file with 2 passed tests, including the multi-process disconnect/fake-venue boundary and signed operator-resolution/audit case.
 
 ## R-29 — Venue recovery and pending-close contract coverage
 
@@ -201,3 +201,35 @@ Regression coverage added for missing service, connection reset, explicit reject
 4. Runtime adapter configuration coverage, all account/position modes, and deployment-wide shared PostgreSQL DSN consistency still require verification.
 
 No merge, deployment, production migration, or cutover was performed.
+
+
+## R-32 — PREPARED intent reuse omitted recovery context
+
+**Status: FIXED IN SOURCE; new regression awaits CI.**
+
+- `GlobalStopService.prepare_submit_attempt` already compared exchange, market type, symbol, side, order type, quantity, price, pair key and `amount_spec` when the same client order ID was presented again while PREPARED.
+- It did not compare JSONB `recovery_context`. For a futures hedge, this context binds the submit to its parent spot exchange/order/client ID. A stale PREPARED ID could therefore be accepted with a different parent identity even though the actual venue parameters were unchanged.
+- Commit `01f412a09edcc5ec23781d1b0eedbfa4b061a942` adds consistent JSONB mapping and compares `recovery_context` with the rest of the durable intent.
+- Commit `d8eb70d647f452744c894a3f92c5b8fb3f1dde6c` adds a regression test: identical PREPARED context is reusable; changing the parent spot client ID is rejected.
+- This does not permit a second venue submit from SUBMITTING/UNKNOWN/ACKNOWLEDGED rows; those states were already non-reusable. The patch tightens intent integrity rather than changing order admission policy.
+
+## V2 audit continuation — 2026-11-14
+
+The current source review traced the active exposure-increasing calls:
+1. Spot BUY entry → `place_local_limit_buy` → CCXT `create_limit_buy_order`; Indodax uses TAPIv2 `_create_order` and one signed `POST /api/v2/order`.
+2. Futures SELL hedge → `open_global_short_market` → CCXT `create_market_sell_order` with `reduceOnly=False` and short-side params.
+3. Generic `MutationGateway.execute_create_order` is potentially exposure-increasing but has no production create caller in the reviewed branch; the command processor uses only the cancel method. The generic create API itself is fail-closed and uses the durable ledger/fence.
+
+Risk-reducing paths remain outside the entry STOP fence by design: spot limit SELL exit, spot market SELL rollback/force-close, futures market BUY with `reduceOnly=True`, and cancel. Their independent retry, exact-ID and reconciliation controls remain required; a generic STOP must not block de-risking.
+
+The checked GlobalStop signatures match the actual spot, futures and generic-gateway callers. Startup reconciliation routes exact client-ID lookup by market type. Found orders are ACKNOWLEDGED; NOT_FOUND and lookup errors remain SUBMITTING/UNKNOWN and block new entries because venue history may be eventually consistent. Ambiguous request errors are not retried; ACK persistence failures do not authorize a new client ID or new submit. Indodax's raw POST boundary has no generic POST retry. No direct create calls were found in the modular `executor/venues/*` adapters.
+
+### CI evidence and remaining risk
+
+- Pre-patch head `5956c230`: workflow [43570939910](https://github.com/nzf210/nafaz_arb/actions/runs/43570939910) passed all four jobs. The PostgreSQL integration file reported 2 passed; full Python suite reported 558 passed, 2 skipped. The recovery-context regression was added after this run and still needs CI verification.
+- Operator resolution has a passing HMAC + PostgreSQL audit integration test. Deployment identity provisioning, secret custody/rotation, approval controls, audit retrieval and runbook remain OPEN; this is shared-secret HMAC, not SSO/OIDC.
+- The multi-process PostgreSQL backend-disconnect test passed on disposable CI PostgreSQL, but final-patch verification, repeated fault-boundary review and production topology validation remain OPEN.
+- Real per-venue sandbox/paper probes remain OPEN for exact client-ID visibility, eventual consistency, pending/partial hedge market orders, cancel/fill races and reduceOnly close semantics.
+- Latest partial-fill sizing may intentionally enlarge the futures short beyond actual spot fill to meet venue minimum notional/contract rules. Delta imbalance is logged; the hard-drift path currently logs rather than automatically unwinding. This is a strategy/risk-policy review gate, not a STOP-fence bypass; it was not changed in this audit.
+
+**Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration or cutover was performed.
