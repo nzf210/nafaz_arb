@@ -483,12 +483,12 @@ insert into public.v2_venue_capabilities(
 
 insert into public.v2_markets(
     market_id, venue_id, native_symbol, canonical_base_asset, quote_asset,
-    settle_asset, amount_step, minimum_amount, price_tick, minimum_notional,
+    settle_asset, contract_size, amount_step, minimum_amount, price_tick, minimum_notional,
     observed_at
 ) values
-    ('smoke_btc_idr','smoke_spot','btc_idr','BTC','IDR',null,
+    ('smoke_btc_idr','smoke_spot','btc_idr','BTC','IDR',null,null,
      0.00000001,0.00000001,1,1000,now()),
-    ('smoke_btc_usdt_swap','smoke_perp','BTC/USDT:USDT','BTC','USDT','USDT',
+    ('smoke_btc_usdt_swap','smoke_perp','BTC/USDT:USDT','BTC','USDT','USDT',0.001,
      0.001,0.001,0.1,5,now());
 
 insert into public.v2_risk_profiles(
@@ -556,12 +556,20 @@ insert into public.v2_balance_snapshots(
 ) values ('smoke_spot','smoke_spot_account','IDR',1000000,900000,100000,now(),true);
 
 insert into public.v2_position_snapshots(
-    venue_id, account_id, market_id, position_side, contracts,
+    venue_id, account_id, market_id, exchange_position_id, position_side, contracts,
     base_quantity, entry_price, mark_price, unrealized_pnl,
     margin_used, margin_asset, observed_at, is_mock
 ) values (
-    'smoke_perp','smoke_perp_account','smoke_btc_usdt_swap','short',
+    'smoke_perp','smoke_perp_account','smoke_btc_usdt_swap','smoke-position-1','short',
     0.001,0.001,50000,49900,0.1,50,'USDT',now(),true
+);
+insert into public.v2_position_snapshots(
+    venue_id, account_id, market_id, exchange_position_id, position_side, contracts,
+    base_quantity, entry_price, mark_price, unrealized_pnl,
+    margin_used, margin_asset, observed_at, is_mock
+) values (
+    'smoke_perp','smoke_perp_account','smoke_btc_usdt_swap','smoke-position-1','short',
+    0.001,0.001,50000,49950,0.12,50,'USDT',now() + interval '1 second',true
 );
 
 do $v2_core$
@@ -569,6 +577,7 @@ declare
     journal_count integer;
     requested_qty_type text;
     journal_price_type text;
+    position_snapshot_count integer;
 begin
     select count(*) into journal_count
       from public.v2_execution_journal
@@ -591,6 +600,15 @@ begin
         raise exception 'V2 financial columns must use NUMERIC';
     end if;
 
+    select count(*) into position_snapshot_count
+      from public.v2_position_snapshots
+     where venue_id = 'smoke_perp'
+       and account_id = 'smoke_perp_account'
+       and exchange_position_id = 'smoke-position-1';
+    if position_snapshot_count <> 2 then
+        raise exception 'V2 position snapshots must allow repeated observations of one exchange position';
+    end if;
+
     begin
         update public.v2_execution_journal
            set event_type = 'tampered'
@@ -598,6 +616,22 @@ begin
         raise exception 'journal mutation unexpectedly succeeded';
     exception when others then
         if sqlerrm = 'journal mutation unexpectedly succeeded' then
+            raise;
+        end if;
+    end;
+
+    begin
+        insert into public.v2_markets(
+            market_id, venue_id, native_symbol, canonical_base_asset, quote_asset,
+            settle_asset, contract_size, amount_step, minimum_amount, price_tick,
+            minimum_notional, observed_at
+        ) values (
+            'smoke_bad_perp','smoke_perp','ETH/USDT:USDT','ETH','USDT','USDT',
+            null,0.001,0.001,0.1,5,now()
+        );
+        raise exception 'perpetual market without contract_size unexpectedly succeeded';
+    exception when others then
+        if sqlerrm = 'perpetual market without contract_size unexpectedly succeeded' then
             raise;
         end if;
     end;
@@ -623,6 +657,27 @@ $v2_core$;
 
 
 
+do $v2_intent_market_guard$
+begin
+    begin
+        insert into public.v2_execution_intents(
+            idempotency_key, route_id, venue_id, account_id, market_id,
+            canonical_symbol, order_role, side, order_type, client_order_id,
+            requested_qty, limit_price, is_mock
+        ) values (
+            'schema-smoke-bad-symbol','smoke_route','smoke_spot',
+            'smoke_spot_account','smoke_btc_idr','ETH','ENTRY','buy','limit',
+            'schema-smoke-bad-symbol-client',0.001,500000000,true
+        );
+        raise exception 'V2 intent with mismatched canonical market symbol unexpectedly succeeded';
+    exception when others then
+        if sqlerrm = 'V2 intent with mismatched canonical market symbol unexpectedly succeeded' then
+            raise;
+        end if;
+    end;
+end;
+$v2_intent_market_guard$;
+
 do $v2_live_gate$
 begin
     begin
@@ -646,3 +701,27 @@ end;
 $v2_live_gate$;
 
 rollback;
+
+do $v2_capability_recheck$
+begin
+    delete from public.v2_venue_capabilities
+     where venue_id = 'smoke_perp' and capability = 'reduce_only_order';
+    begin
+        insert into public.v2_execution_intents(
+            idempotency_key, route_id, venue_id, account_id, market_id,
+            canonical_symbol, order_role, side, order_type, client_order_id,
+            requested_qty, limit_price, is_mock
+        ) values (
+            'schema-smoke-capability-revoked','smoke_route','smoke_spot',
+            'smoke_spot_account','smoke_btc_idr','BTC','ENTRY','buy','limit',
+            'schema-smoke-capability-revoked-client',0.001,500000000,true
+        );
+        raise exception 'V2 intent unexpectedly passed after route capability evidence was revoked';
+    exception when others then
+        if sqlerrm = 'V2 intent unexpectedly passed after route capability evidence was revoked' then
+            raise;
+        end if;
+    end;
+end;
+$v2_capability_recheck$;
+
