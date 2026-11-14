@@ -98,7 +98,19 @@ func (s *Server) Scanner() *scanner.Service {
 
 // Config returns active configuration.
 func (s *Server) Config() config.Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.cfg
+}
+
+// UpdateConfig updates the server and scanner service runtime configuration dynamically.
+func (s *Server) UpdateConfig(cfg config.Config) {
+	s.mu.Lock()
+	s.cfg = cfg
+	s.mu.Unlock()
+	if s.scanner != nil {
+		s.scanner.UpdateConfig(cfg)
+	}
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()

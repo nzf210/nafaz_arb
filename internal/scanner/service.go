@@ -73,6 +73,13 @@ func (s *Service) SetSupabaseClient(client OpportunityPersister) {
 	s.supabaseClient = client
 }
 
+// UpdateConfig updates the scanner service runtime configuration dynamically.
+func (s *Service) UpdateConfig(cfg config.Config) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg = cfg
+}
+
 // SetFundingWorker sets the background funding rate worker.
 func (s *Service) SetFundingWorker(w *exchange.FundingWorker) {
 	s.mu.Lock()

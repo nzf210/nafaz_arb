@@ -162,6 +162,9 @@ func (b *Bot) setNotifMode(ctx context.Context, chatID int64, mode string) {
 		tg["notify_errors"] = *b.cfg.Telegram.NotifyErrors
 		return nil
 	})
+	if b.server != nil {
+		b.server.UpdateConfig(b.cfg)
+	}
 	b.mu.Unlock()
 
 	b.sendReplyWithMarkup(ctx, chatID, 0, b.formatNotificationSettings(), b.notifKeyboard())
@@ -209,6 +212,9 @@ func (b *Bot) toggleNotifKey(ctx context.Context, chatID int64, key string) {
 		}
 		return nil
 	})
+	if b.server != nil {
+		b.server.UpdateConfig(b.cfg)
+	}
 	b.mu.Unlock()
 
 	b.sendReplyWithMarkup(ctx, chatID, 0, b.formatNotificationSettings(), b.notifKeyboard())
@@ -457,6 +463,10 @@ func (b *Bot) handleSetConfigCommand(ctx context.Context, msg *Message, parts []
 			b.defaultKeyboard(),
 		)
 		return
+	}
+
+	if b.server != nil {
+		b.server.UpdateConfig(b.cfg)
 	}
 
 	b.sendReplyWithMarkup(
