@@ -1,4 +1,23 @@
 services:
+  postgres:
+    image: docker.io/library/postgres:15-alpine
+    container_name: nafaz-postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nafaz}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data:Z
+      - ./supabase/migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-nafaz}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   redis:
     image: docker.io/library/redis:7-alpine
     container_name: nafaz-redis
@@ -19,7 +38,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./config.json:/app/config.json:ro
+      - ./config.json:/app/config.json
       - ./data:/app/data:Z
     environment:
       - TZ=Asia/Jakarta
@@ -36,10 +55,10 @@ services:
       - OKX_WS_STALE_AFTER=${OKX_WS_STALE_AFTER:-}
       - OKX_WS_RECONNECT_INTERVAL=${OKX_WS_RECONNECT_INTERVAL:-}
       - OKX_WS_MAX_RECONNECT_BACKOFF=${OKX_WS_MAX_RECONNECT_BACKOFF:-}
-      # Server-only service_role key; shared with the executor, never put in tracked files.
-      - SUPABASE_URL=${SUPABASE_URL:-}
-      - SUPABASE_KEY=${SUPABASE_KEY:-}
-      - SUPABASE_SCANNER_OUTBOX_PATH=${SUPABASE_SCANNER_OUTBOX_PATH:-/app/data/scanner/supabase-outbox.jsonl}
+      # Local PostgreSQL durable persistence (replaces Supabase & SQLite outbox)
+      - POSTGRES_DSN=${POSTGRES_CONTAINER_DSN:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@nafaz-postgres:5432/${POSTGRES_DB:-nafaz}?sslmode=disable}
+      - SUPABASE_URL=
+      - SUPABASE_KEY=
       - ENABLE_EXECUTOR_SIGNALS=${ENABLE_EXECUTOR_SIGNALS:-true}
       # Optional override for Telegram config:
       # - TELEGRAM_ENABLED=true
@@ -47,6 +66,7 @@ services:
       # - TELEGRAM_CHAT_ID=your_chat_id
     depends_on:
       - redis
+      - postgres
 
   nafaz-executor:
     build:
@@ -58,23 +78,23 @@ services:
     container_name: nafaz-executor
     restart: always
     volumes:
-      - ./config.json:/app/config.json:ro
+      - ./config.json:/app/config.json
       - ./executor:/app/executor:ro
       - ./data/executor:/app/data/executor:Z
     environment:
       - TZ=Asia/Jakarta
       - REDIS_URL=redis://nafaz-redis:6380/0
       # PostgreSQL VPS durable persistence (replaces Supabase & SQLite outbox)
-      - POSTGRES_DSN=${POSTGRES_DSN:-}
+      - POSTGRES_DSN=${POSTGRES_CONTAINER_DSN:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@nafaz-postgres:5432/${POSTGRES_DB:-nafaz}?sslmode=disable}
       - LOCAL_EXCHANGE=indodax
       # "all" is a scanner discovery setting, not a valid CCXT exchange id.
       - GLOBAL_EXCHANGE=okx
       # Executor mode follows config.json mode (MOCK/LIVE).
       # Set EXECUTOR_MOCK_MODE=true only as an explicit emergency override.
       - EXECUTOR_MOCK_MODE=${EXECUTOR_MOCK_MODE:-}
-      # Legacy Supabase persistence (optional / deprecated in favor of POSTGRES_DSN)
-      - SUPABASE_URL=${SUPABASE_URL:-}
-      - SUPABASE_KEY=${SUPABASE_KEY:-}
+      # Supabase disabled (replaced by local PostgreSQL)
+      - SUPABASE_URL=
+      - SUPABASE_KEY=
       # Private order/balance feed. NOTE: the private-stream cache is currently
       # read-only -- nothing populates it yet (no websocket subscriber is wired),
       # so enabling it does NOT reduce REST polling. Leave off until a feed
@@ -99,4 +119,5 @@ services:
       - EXPOSURE_RECONCILIATION_ABS_TOLERANCE=${EXPOSURE_RECONCILIATION_ABS_TOLERANCE:-}
     depends_on:
       - redis
+      - postgres
 

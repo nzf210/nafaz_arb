@@ -399,11 +399,13 @@ class ExecutorConfig:
             self.exchanges[self.global_exchange_name.lower()] = self.global_credentials
 
         if sup_url := os.getenv("SUPABASE_URL"):
-            self.supabase.url = sup_url
-            self.supabase.enabled = True
+            self.supabase.url = sup_url.strip()
         if sup_key := os.getenv("SUPABASE_KEY"):
-            self.supabase.key = sup_key
-            self.supabase.enabled = True
+            self.supabase.key = sup_key.strip()
+        if sup_enabled := os.getenv("SUPABASE_ENABLED"):
+            self.supabase.enabled = sup_enabled.lower() in ("true", "1", "yes")
+        else:
+            self.supabase.enabled = bool(self.supabase.url and self.supabase.key)
         if outbox_path := os.getenv("SUPABASE_OUTBOX_PATH"):
             self.supabase.outbox_path = outbox_path
 

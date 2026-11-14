@@ -31,6 +31,9 @@ config.*.json
 !/data/.gitkeep
 *.log
 logs/
+*.db
+*.sqlite
+*.sqlite3
 
 # Knowledge graph and AI tool outputs
 graphify-out/
