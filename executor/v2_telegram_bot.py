@@ -107,7 +107,9 @@ class TelegramControlService:
                     identity, command, "", "STOP_REASON_REQUIRED"
                 )
                 return "STOP ditolak: sertakan alasan, contoh /trade_stop maintenance."
-            result = await self._repository.stop(identity, reason=argument)
+            result = await self._repository.stop(
+                identity, reason=argument, open_order_policy="keep_and_manage"
+            )
             if result.get("duplicate"):
                 return "Update STOP ini sudah diproses sebelumnya; tidak ada aksi yang diulang."
             return (
