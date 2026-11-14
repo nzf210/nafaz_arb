@@ -297,3 +297,55 @@ Audited branch head before this patch: \`97819da0d068ca67f8c51f74cb2f9129f150a27
 - [ ] Run real per-venue sandbox/paper probes for client-ID exact lookup, delayed visibility, pending/partial hedge market orders, and reduceOnly close semantics.
 
 **Status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+
+## 31. Audit continuation — 2026-11-14
+
+**Source baseline reviewed:** branch head `5956c23071b61ff075393cecfa5ed3de75a07420`.  
+**Audit patch commits:** `01f412a09edcc5ec23781d1b0eedbfa4b061a942` and `d8eb70d647f452744c894a3f92c5b8fb3f1dde6c`.  
+The recovery-context regression added by these commits is awaiting its own CI run; do not attribute the previous green workflow to this new test.
+
+### 31.1 Call-site inventory and exposure classification
+
+| Path / call site | Concrete call chain | Classification | Durable PREPARED/SUBMITTING + shared fence |
+|---|---|---|---|
+| Spot entry | `EngineEntrySubmissionMixin._submit_entry_order` → `ExchangeOrderMixin.place_local_limit_buy` → CCXT `create_limit_buy_order`; Indodax uses `IndodaxTAPIv2.create_limit_buy_order` → `_create_order` → signed `POST /api/v2/order` | Opens spot exposure | REQUIRED; LIVE path prepares and fences before HTTP |
+| Futures hedge | `EntryHedgeMixin._submit_entry_hedge_order` → `ExchangeFuturesMixin.open_global_short_market` → CCXT `create_market_sell_order`, `reduceOnly=False`, short position-side parameters | Opens/adds short exposure; latest sizing may intentionally scale above the spot fill to meet venue minimums | REQUIRED; LIVE path prepares and fences before HTTP |
+| Generic create gateway | `MutationGateway.execute_create_order` → `create_order_direct` or `create_order` | Potentially exposure-increasing | REQUIRED; service must be initialized, PREPARED is committed, fence changes to SUBMITTING, ACK/rejection/unknown is persisted. No production create caller found in the reviewed call graph |
+| Spot exit | `ExitOrdersMixin` → `place_local_limit_sell` → CCXT `create_limit_sell_order` | Reduces spot inventory | Deliberately outside entry STOP fence; separate exact-ID and cancel/replace reconciliation |
+| Spot rollback / force-close | `RollbackMixin` / `ForceCloseLegMixin` → `place_local_market_sell` → CCXT `create_market_sell_order` | Reduces spot inventory | Deliberately outside entry STOP fence; retries only explicit HTTP 429; ambiguous transport/503 is not retried |
+| Futures exit / force-close | `ExitExecutionMixin` / `ForceCloseLegMixin` → `close_global_short_market` → CCXT `create_market_buy_order`, `reduceOnly=True` | Reduces short exposure | Deliberately outside entry STOP fence; deterministic force-close ID and exact-ID recovery; unresolved/pending/partial result blocks duplicate close |
+| Cancel | `CommandProcessor` → `MutationGateway.execute_cancel_order` | Cancels an existing order; not a create | Not subject to entry admission |
+
+Additional findings:
+- The reviewed `executor/venues/{indodax,mexc,okx,tokocrypto}.py` modules do not call create-order APIs directly; they provide venue formatting/lookup support. Runtime venue/account-mode certification is still open.
+- `IndodaxTAPIv2._create_order` is the custom raw HTTP create boundary. It makes one request and does not wrap POST in generic retry.
+- `MutationGateway.execute_create_order` has no production caller in the inspected branch. The Telegram command processor calls only `execute_cancel_order`.
+- No other live exposure-increasing create call site was found in the inspected executor lifecycle. This is source-level inventory, not live venue certification.
+
+### 31.2 Durable intent and GlobalStop API review
+
+- Actual API signatures are `prepare_submit_attempt(...)`, `order_submit_fence(client_order_id=...)`, `request_stop(reason, source=..., metadata=...)`, and `request_stop_in_transaction(conn, reason, source=..., metadata=...)`. Spot, futures hedge and generic gateway call sites use these signatures correctly.
+- The shared key is a PostgreSQL **session-level** advisory lock for the full venue request. STOP uses a conflicting transaction-level advisory lock. The committed `SUBMITTING` row survives loss of the DB session and blocks a peer even after the session lock is released.
+- Intent equality already included exchange, market type, symbol, side, order type, quantity, price, pair key and amount specification. Audit found it omitted `recovery_context`; a PREPARED client ID could therefore be reused with a different parent spot-order identity. Commit `01f412a` now compares JSONB `recovery_context` as well. Commit `d8eb70d` adds a regression test for same-context reuse and changed-parent rejection.
+- Non-definitive transport failures, timeouts, connection resets, malformed ACKs and ACK-persistence failures remain UNKNOWN/SUBMITTING; they are not blind-retried. Explicit venue rejection may be marked REJECTED. IP-ban STOP persistence failure retains the unresolved attempt.
+- Startup uses exact client-order-ID lookup routed by market type (spot/local vs perpetual/futures). Found orders become ACKNOWLEDGED. Not-found or lookup failure is recorded as evidence only and remains globally unresolved; eventual consistency is not treated as rejection.
+
+### 31.3 Verified test evidence on the pre-patch head
+
+Workflow [43570939910](https://github.com/nzf210/nafaz_arb/actions/runs/43570939910) for pre-patch head `5956c230` completed successfully:
+- All four CI jobs passed: Go, PostgreSQL schema/integration, Docker image builds, Python.
+- PostgreSQL integration file: **2 passed**, including the real multi-process backend-disconnect/fake-venue boundary and signed operator-resolution/audit test.
+- Full Python suite: **558 passed, 2 skipped**.
+- The new recovery-context idempotency test was added after that run and is **not yet CI-verified**.
+
+### 31.4 Remaining release gates
+
+- [ ] Verify the new recovery-context intent test and full CI on the post-patch branch head.
+- [ ] Operator HMAC flow has an integration test, but identity provisioning, secret custody/rotation, dual-control approval, audit retrieval and runbook remain operationally OPEN. It is shared-secret HMAC, not SSO/OIDC.
+- [ ] Review/repeat the PostgreSQL multi-process fault boundary on the final patch revision. The disposable PostgreSQL CI test passed on the pre-patch head; that does not validate production topology or CEX behavior.
+- [ ] Run per-venue sandbox/paper probes for exact client-ID lookup visibility, delayed history consistency, pending/partial market hedge behavior, cancel/fill races and reduceOnly close semantics.
+- [ ] Review the latest `scale_to_min` partial-fill policy: it can deliberately open a futures short larger than the filled spot quantity to satisfy minimum notional/contract rules. Current code logs delta imbalance; the hard-drift branch logs but does not itself close the excess. This is a strategy/risk-policy approval gate, not a STOP-fence bypass, and was not changed in this audit.
+- [ ] Verify every LIVE executor instance shares the same PostgreSQL authority/DSN and the required migrations before any deployment.
+
+**Status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
