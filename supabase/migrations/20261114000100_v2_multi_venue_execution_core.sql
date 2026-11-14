@@ -95,6 +95,35 @@ create table if not exists public.v2_markets (
     unique (venue_id, native_symbol)
 );
 
+create or replace function public.validate_v2_market_contract_metadata()
+returns trigger language plpgsql as $market$
+declare
+    venue_market_type text;
+begin
+    select venue.market_type into venue_market_type
+      from public.v2_venues venue
+     where venue.venue_id = new.venue_id;
+
+    if venue_market_type is null then
+        raise exception 'V2 market references an unknown venue';
+    end if;
+    if venue_market_type in ('linear_perpetual','inverse_perpetual')
+       and new.contract_size is null then
+        raise exception 'V2 perpetual market requires a verified positive contract_size';
+    end if;
+    if venue_market_type = 'spot' and new.contract_size is not null then
+        raise exception 'V2 spot market must not define a futures contract_size';
+    end if;
+    return new;
+end;
+$market$;
+
+drop trigger if exists trg_validate_v2_market_contract_metadata on public.v2_markets;
+create trigger trg_validate_v2_market_contract_metadata
+before insert or update of venue_id, contract_size
+on public.v2_markets
+for each row execute function public.validate_v2_market_contract_metadata();
+
 create table if not exists public.v2_risk_profiles (
     risk_profile_id text primary key
         check (risk_profile_id ~ '^[a-z][a-z0-9_]{1,62}$'),
@@ -288,10 +317,20 @@ declare
     control_state text;
     trading_enabled boolean;
     config_signals_enabled boolean;
+    route_spot_quote_assets text[];
+    route_futures_settle_assets text[];
+    route_symbol_allowlist text[];
+    market_type text;
+    market_base_asset text;
+    market_quote_asset text;
+    market_settle_asset text;
+    market_contract_size numeric(38,18);
 begin
-    select enabled, spot_venue_id, spot_account_id, futures_venue_id, futures_account_id
+    select enabled, spot_venue_id, spot_account_id, futures_venue_id, futures_account_id,
+           spot_quote_assets, futures_settle_assets, symbol_allowlist
       into route_enabled, route_spot_venue, route_spot_account,
-           route_futures_venue, route_futures_account
+           route_futures_venue, route_futures_account, route_spot_quote_assets,
+           route_futures_settle_assets, route_symbol_allowlist
       from public.v2_trading_routes where route_id = new.route_id;
     if route_enabled is distinct from true then
         raise exception 'V2 execution intent requires an enabled route';
@@ -313,6 +352,67 @@ begin
        or venue_execution_enabled is distinct from true
        or account_enabled is distinct from true then
         raise exception 'V2 execution intent venue/account execution is disabled';
+    end if;
+
+    select venue.market_type, market.canonical_base_asset, market.quote_asset,
+           market.settle_asset, market.contract_size
+      into market_type, market_base_asset, market_quote_asset,
+           market_settle_asset, market_contract_size
+      from public.v2_markets market
+      join public.v2_venues venue on venue.venue_id = market.venue_id
+     where market.venue_id = new.venue_id and market.market_id = new.market_id;
+    if market_type is null then
+        raise exception 'V2 execution intent market metadata is unavailable';
+    end if;
+    if new.canonical_symbol is distinct from market_base_asset
+       or not (new.canonical_symbol = any(route_symbol_allowlist)) then
+        raise exception 'V2 execution intent canonical symbol is not allowed by market and route';
+    end if;
+    if new.venue_id = route_spot_venue then
+        if market_type is distinct from 'spot'
+           or not (market_quote_asset = any(route_spot_quote_assets)) then
+            raise exception 'V2 execution intent spot market quote/type does not match route';
+        end if;
+    else
+        if market_type not in ('linear_perpetual','inverse_perpetual')
+           or market_contract_size is null
+           or market_settle_asset is null
+           or not (market_settle_asset = any(route_futures_settle_assets)) then
+            raise exception 'V2 execution intent futures market metadata does not match route';
+        end if;
+    end if;
+
+    -- Capability evidence may be revoked after a route was enabled. Recheck both
+    -- legs at intent creation so stale route flags cannot bypass the gate.
+    if exists (
+        select 1
+          from unnest(array[
+              'balance_read','open_orders_read','limit_order_create',
+              'order_cancel','order_lookup_by_client_id','multi_venue','multi_account'
+          ]::text[]) as required(capability)
+         where not exists (
+             select 1 from public.v2_venue_capabilities capability
+              where capability.venue_id = route_spot_venue
+                and capability.capability = required.capability
+                and capability.status = 'verified'
+         )
+    ) then
+        raise exception 'V2 execution intent denied: spot capability evidence is not verified';
+    end if;
+    if exists (
+        select 1
+          from unnest(array[
+              'balance_read','positions_read','market_order_create','reduce_only_order',
+              'order_cancel','order_lookup_by_client_id','multi_venue','multi_account'
+          ]::text[]) as required(capability)
+         where not exists (
+             select 1 from public.v2_venue_capabilities capability
+              where capability.venue_id = route_futures_venue
+                and capability.capability = required.capability
+                and capability.status = 'verified'
+         )
+    ) then
+        raise exception 'V2 execution intent denied: futures capability evidence is not verified';
     end if;
 
     if not new.is_mock then
@@ -337,7 +437,8 @@ $intent$;
 
 drop trigger if exists trg_validate_v2_execution_intent on public.v2_execution_intents;
 create trigger trg_validate_v2_execution_intent
-before insert or update of route_id, venue_id, account_id, is_mock
+before insert or update of route_id, venue_id, account_id, market_id,
+    canonical_symbol, is_mock
 on public.v2_execution_intents
 for each row execute function public.validate_v2_execution_intent();
 
@@ -415,8 +516,10 @@ create table if not exists public.v2_position_snapshots (
     foreign key (venue_id, market_id)
         references public.v2_markets(venue_id, market_id) on delete restrict
 );
-create unique index if not exists uq_v2_position_exchange_identity
-    on public.v2_position_snapshots(venue_id, account_id, exchange_position_id)
+-- Position snapshots are time-series rows; the same venue position ID must
+-- be observable repeatedly. Keep a non-unique lookup index, not a uniqueness gate.
+create index if not exists idx_v2_position_exchange_identity_time
+    on public.v2_position_snapshots(venue_id, account_id, exchange_position_id, observed_at desc)
     where exchange_position_id is not null;
 create index if not exists idx_v2_position_account_time
     on public.v2_position_snapshots(venue_id, account_id, observed_at desc);
