@@ -284,6 +284,67 @@ class PostgresOperatorControlRepository:
             "live_executor_processes": int(row["live_executor_processes"] or 0),
         }
 
+    async def enforce_stopped_on_startup(self, instance_id: str) -> dict[str, Any]:
+        """Persist STOPPED on every process start; liveness never implies trading."""
+        instance = str(instance_id or "").strip()
+        if not instance or len(instance) > 128:
+            raise OperatorControlError("executor instance ID is invalid")
+        reason = (
+            "system startup safety reset; explicit Telegram START is required; "
+            f"instance={instance}"
+        )
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await self._lock_exclusive(connection)
+                state = await connection.fetchrow(
+                    """
+                    select state, trading_enabled, state_version
+                      from public.operator_control_state
+                     where singleton = true
+                     for update
+                    """
+                )
+                if state is None:
+                    raise OperatorControlError("durable operator control state is missing")
+                next_version = int(state["state_version"]) + 1
+                await connection.execute(
+                    """
+                    update public.operator_control_state
+                       set state = 'STOPPED', trading_enabled = false,
+                           state_version = $1,
+                           last_actor_user_id = null, last_actor_chat_id = null,
+                           last_reason = $2, updated_at = now()
+                     where singleton = true
+                    """,
+                    next_version, reason,
+                )
+                await connection.execute(
+                    """
+                    update public.operator_actions
+                       set status = 'REJECTED', confirmation_hash = null,
+                           result = '{"error":"EXECUTOR_RESTART_REQUIRES_OPERATOR_START"}'::jsonb,
+                           completed_at = now()
+                     where command = 'trade_start'
+                       and status = 'PENDING_CONFIRMATION'
+                    """
+                )
+                result = {
+                    "state": "STOPPED",
+                    "trading_enabled": False,
+                    "state_version": next_version,
+                    "actor": "system",
+                    "reason": reason,
+                    "instance_id": instance,
+                }
+                await self._emit_control_event(
+                    connection,
+                    next_version,
+                    "operator_control.startup_stopped",
+                    f"operator:startup_stopped:{instance}:{next_version}",
+                    result,
+                )
+        return result
+
     async def record_status_command(self, identity: TelegramIdentity) -> dict[str, Any]:
         async with self._pool.acquire() as connection:
             async with connection.transaction():
