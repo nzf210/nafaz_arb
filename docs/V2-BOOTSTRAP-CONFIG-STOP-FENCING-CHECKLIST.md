@@ -333,15 +333,16 @@ Additional findings:
 
 ### 31.3 Verified test evidence after the source patch
 
-- Workflow [43571991627](https://github.com/nzf210/nafaz_arb/actions/runs/43571991627), on source patch commit `d8eb70d`, completed successfully: all four jobs (Go, PostgreSQL schema/integration, Docker image builds, Python) passed.
-- The focused PostgreSQL integration file reported **2 passed**, including the multi-process backend-disconnect/fake-venue boundary and signed operator-resolution/audit test.
-- The full Python suite reported **559 passed, 2 skipped**. The new recovery-context idempotency regression is included in this run.
-- The final documentation head `d8c1f207` also passed workflow [43572108728](https://github.com/nzf210/nafaz_arb/actions/runs/43572108728): all four jobs passed. Python again reported 559 passed, 2 skipped; the PostgreSQL integration file reported 2 passed.
+- A first recovery-context regression run passed, but a subsequent SQL review found the production SELECT projection still omitted `recovery_context`; the original fake connection returned the full row and masked that omission. That earlier pass is not treated as proof of the database read path.
+- Commit `be30fc2` adds `recovery_context` to the existing-attempt SELECT projection. Commit `df41a7c` makes the fake connection return only selected columns, so the regression fails if the production query omits the field.
+- Workflow [43572374744](https://github.com/nzf210/nafaz_arb/actions/runs/43572374744), on source/test head `df41a7c`, completed successfully: all four jobs (Go, PostgreSQL schema/integration, Docker image builds, Python) passed.
+- The full Python suite reported **559 passed, 2 skipped**. The dedicated PostgreSQL integration file reported **2 passed**, including the multi-process backend-disconnect/fake-venue boundary and signed operator-resolution/audit test.
+- Go tests, Go race tests, Go vet, both Docker builds, migration ordering/idempotency, RLS/grants/triggers and VPS migration runner shell syntax all passed.
 - The two skips are in the general Python job; the separate PostgreSQL integration job explicitly ran both integration tests against disposable PostgreSQL. Pytest reports two unknown `integration` marker warnings; these are non-failing configuration warnings.
 
 ### 31.4 Remaining release gates
 
-- [x] Recovery-context intent equality regression and full CI passed on the source patch and final documentation head.
+- [x] Recovery-context intent equality regression, including the actual SQL SELECT projection and a projection-aware fake, passed in workflow 43572374744.
 - [x] HMAC operator-resolution signature, nonce/evidence checks and audit persistence passed the disposable PostgreSQL integration test. Identity provisioning, secret custody/rotation, dual-control approval, audit retrieval and runbook remain operationally OPEN; this is shared-secret HMAC, not SSO/OIDC.
 - [x] PostgreSQL multi-process backend-disconnect/fake-venue boundary passed on the source patch and final documentation head. Repeated stress/fault-boundary review and production topology validation remain OPEN; CI does not validate a real CEX.
 - [ ] Run per-venue sandbox/paper probes for exact client-ID lookup visibility, delayed history consistency, pending/partial market hedge behavior, cancel/fill races and reduceOnly close semantics.
