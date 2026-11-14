@@ -7,11 +7,11 @@ then an atomic in-process snapshot replacement and durable DB acknowledgement.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 import json
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Mapping, Optional
+from typing import Any, Mapping, Optional
 
 from executor.v2_config import (
     ConfigSnapshot,
