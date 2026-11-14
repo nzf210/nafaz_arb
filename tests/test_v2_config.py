@@ -309,7 +309,7 @@ def test_v2_contract_rejects_route_account_venue_mismatch():
     snapshot["routes"] = [
         _route("route_a", "spot_a", "account_wrong", "perp_b", "account_b")
     ]
-    with pytest.raises(ConfigSnapshotError, match="account/venue mismatch"):
+    with pytest.raises(ConfigSnapshotError, match="does not match venue"):
         validate_v2_snapshot(snapshot)
 
 
