@@ -434,3 +434,178 @@ insert into public.outbox_events (
 );
 
 rollback;
+
+
+-- V2 multi-venue schema, NUMERIC precision, route constraints and journal/outbox atomicity.
+begin;
+
+insert into public.v2_exchanges(exchange_code, display_name)
+values ('indodax','Indodax'), ('okx','OKX')
+on conflict (exchange_code) do nothing;
+
+insert into public.v2_venues(
+    venue_id, exchange_code, market_type, adapter, enabled,
+    market_data_enabled, execution_enabled
+) values
+    ('smoke_spot','indodax','spot','indodax',true,true,true),
+    ('smoke_perp','okx','linear_perpetual','okx',true,true,true);
+
+insert into public.v2_accounts(account_id, venue_id, label, enabled)
+values
+    ('smoke_spot_account','smoke_spot','smoke spot',true),
+    ('smoke_perp_account','smoke_perp','smoke perp',true);
+
+insert into public.v2_account_secret_refs(account_id, credential_name, secret_ref)
+values
+    ('smoke_spot_account','api_key','SMOKE_INDODAX_API_KEY'),
+    ('smoke_spot_account','api_secret','SMOKE_INDODAX_API_SECRET'),
+    ('smoke_perp_account','api_key','SMOKE_OKX_API_KEY'),
+    ('smoke_perp_account','api_secret','SMOKE_OKX_API_SECRET');
+
+insert into public.v2_venue_capabilities(
+    venue_id, capability, status, evidence_ref, verified_by, verified_at
+) values
+    ('smoke_spot','balance_read','verified','test://schema-smoke/spot','ci',now()),
+    ('smoke_perp','positions_read','verified','test://schema-smoke/perp','ci',now());
+
+insert into public.v2_markets(
+    market_id, venue_id, native_symbol, canonical_base_asset, quote_asset,
+    settle_asset, amount_step, minimum_amount, price_tick, minimum_notional,
+    observed_at
+) values
+    ('smoke_btc_idr','smoke_spot','btc_idr','BTC','IDR',null,
+     0.00000001,0.00000001,1,1000,now()),
+    ('smoke_btc_usdt_swap','smoke_perp','BTC/USDT:USDT','BTC','USDT','USDT',
+     0.001,0.001,0.1,5,now());
+
+insert into public.v2_risk_profiles(
+    risk_profile_id, max_daily_loss_usdt, max_exposure_per_account_usdt,
+    max_exposure_per_route_usdt, max_entry_slippage_pct,
+    max_consecutive_order_failures, max_open_spot_orders,
+    max_open_futures_orders, require_fresh_balance,
+    require_position_reconciliation
+) values ('smoke_default',5,100,50,0.2,5,2,2,true,true);
+
+insert into public.v2_trading_routes(
+    route_id, spot_venue_id, spot_account_id, futures_venue_id,
+    futures_account_id, risk_profile_id, enabled, spot_quote_assets,
+    futures_settle_assets, symbol_allowlist, symbol_denylist
+) values (
+    'smoke_route','smoke_spot','smoke_spot_account','smoke_perp',
+    'smoke_perp_account','smoke_default',true,
+    array['IDR','USDT'],array['USDT'],array['BTC'],array[]::text[]
+);
+
+insert into public.v2_execution_intents(
+    intent_id, idempotency_key, route_id, venue_id, account_id, market_id,
+    canonical_symbol, order_role, side, order_type, client_order_id,
+    requested_qty, limit_price, is_mock
+) values (
+    '33333333-3333-3333-3333-333333333333',
+    'schema-smoke-intent-1','smoke_route','smoke_spot',
+    'smoke_spot_account','smoke_btc_idr','BTC','ENTRY','buy','limit',
+    'schema-smoke-client-1',0.001,500000000,true
+);
+
+insert into public.v2_execution_journal(
+    event_key, intent_id, event_type, to_state, quantity, price,
+    quote_amount, payload
+) values (
+    'schema-smoke-execution-1',
+    '33333333-3333-3333-3333-333333333333',
+    'intent.received','RECEIVED',0.001,500000000,500000,
+    '{"source":"schema_smoke"}'::jsonb
+)
+on conflict (event_key) do nothing;
+
+insert into public.v2_execution_journal(
+    event_key, intent_id, event_type, to_state, quantity, price,
+    quote_amount, payload
+) values (
+    'schema-smoke-execution-1',
+    '33333333-3333-3333-3333-333333333333',
+    'intent.received','RECEIVED',0.001,500000000,500000,
+    '{"source":"duplicate_replay"}'::jsonb
+)
+on conflict (event_key) do nothing;
+
+insert into public.outbox_events(
+    event_key, aggregate_type, aggregate_version, event_type, payload
+) values (
+    'execution:schema-smoke-execution-1','execution',0,
+    'execution.intent.received',
+    '{"event_key":"schema-smoke-execution-1","journal_id":1}'::jsonb
+)
+on conflict (event_key) do nothing;
+
+insert into public.v2_balance_snapshots(
+    venue_id, account_id, asset, total, free, used, observed_at, is_mock
+) values ('smoke_spot','smoke_spot_account','IDR',1000000,900000,100000,now(),true);
+
+insert into public.v2_position_snapshots(
+    venue_id, account_id, market_id, position_side, contracts,
+    base_quantity, entry_price, mark_price, unrealized_pnl,
+    margin_used, margin_asset, observed_at, is_mock
+) values (
+    'smoke_perp','smoke_perp_account','smoke_btc_usdt_swap','short',
+    0.001,0.001,50000,49900,0.1,50,'USDT',now(),true
+);
+
+do $v2_core$
+declare
+    journal_count integer;
+    requested_qty_type text;
+    journal_price_type text;
+begin
+    select count(*) into journal_count
+      from public.v2_execution_journal
+     where event_key = 'schema-smoke-execution-1';
+    if journal_count <> 1 then
+        raise exception 'V2 execution journal event key is not idempotent';
+    end if;
+
+    select data_type into requested_qty_type
+      from information_schema.columns
+     where table_schema = 'public'
+       and table_name = 'v2_execution_intents'
+       and column_name = 'requested_qty';
+    select data_type into journal_price_type
+      from information_schema.columns
+     where table_schema = 'public'
+       and table_name = 'v2_execution_journal'
+       and column_name = 'price';
+    if requested_qty_type <> 'numeric' or journal_price_type <> 'numeric' then
+        raise exception 'V2 financial columns must use NUMERIC';
+    end if;
+
+    begin
+        update public.v2_execution_journal
+           set event_type = 'tampered'
+         where event_key = 'schema-smoke-execution-1';
+        raise exception 'journal mutation unexpectedly succeeded';
+    exception when others then
+        if sqlerrm = 'journal mutation unexpectedly succeeded' then
+            raise;
+        end if;
+    end;
+
+    begin
+        insert into public.v2_trading_routes(
+            route_id, spot_venue_id, spot_account_id, futures_venue_id,
+            futures_account_id, risk_profile_id, enabled, spot_quote_assets,
+            futures_settle_assets, symbol_allowlist
+        ) values (
+            'smoke_invalid_route','smoke_perp','smoke_perp_account',
+            'smoke_spot','smoke_spot_account','smoke_default',false,
+            array['USDT'],array['USDT'],array['BTC']
+        );
+        raise exception 'route market-type mismatch unexpectedly succeeded';
+    exception when others then
+        if sqlerrm = 'route market-type mismatch unexpectedly succeeded' then
+            raise;
+        end if;
+    end;
+end;
+$v2_core$;
+
+rollback;
