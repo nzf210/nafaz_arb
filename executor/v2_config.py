@@ -98,7 +98,11 @@ def validate_v2_snapshot(
         ) from exc
 
 
-def validate_snapshot_row(row: Mapping[str, Any]) -> ConfigSnapshot:
+def validate_snapshot_row(
+    row: Mapping[str, Any],
+    *,
+    capability_registry: Optional[Mapping[str, Any]] = None,
+) -> ConfigSnapshot:
     try:
         version = int(row["version"])
         schema_version = int(row["schema_version"])
@@ -123,7 +127,7 @@ def validate_snapshot_row(row: Mapping[str, Any]) -> ConfigSnapshot:
         raise ConfigSnapshotError("active configuration snapshot must be a JSON object")
 
     _reject_inline_secrets(snapshot)
-    validate_v2_snapshot(snapshot)
+    validate_v2_snapshot(snapshot, capability_registry=capability_registry)
     actual_hash = calculate_snapshot_sha256(snapshot)
     if len(expected_hash) != 64 or actual_hash != expected_hash:
         raise ConfigSnapshotError("active configuration SHA-256 does not match stored hash")
@@ -148,8 +152,14 @@ class PostgresConfigRepository:
          where a.singleton = true and v.status = 'active'
     """
 
-    def __init__(self, pool: Any):
+    def __init__(
+        self,
+        pool: Any,
+        *,
+        capability_registry: Optional[Mapping[str, Any]] = None,
+    ):
         self._pool = pool
+        self._capability_registry = capability_registry
 
     async def fetch_active(self) -> ConfigSnapshot:
         try:
@@ -159,7 +169,7 @@ class PostgresConfigRepository:
             raise ConfigSnapshotError(f"cannot read active config from PostgreSQL: {exc}") from exc
         if row is None:
             raise ConfigSnapshotError("PostgreSQL has no active configuration version")
-        return validate_snapshot_row(row)
+        return validate_snapshot_row(row, capability_registry=self._capability_registry)
 
 
 class RedisSnapshotCache:
@@ -234,8 +244,14 @@ async def create_postgres_pool(database_url: str, *, min_size: int = 1, max_size
 class PostgresConfigWriter:
     """Transactional draft/validate/activate API with CAS, audit and outbox."""
 
-    def __init__(self, pool: Any):
+    def __init__(
+        self,
+        pool: Any,
+        *,
+        capability_registry: Optional[Mapping[str, Any]] = None,
+    ):
         self._pool = pool
+        self._capability_registry = capability_registry
 
     @staticmethod
     def _require_actor_reason(actor: str, reason: str) -> None:
@@ -256,7 +272,7 @@ class PostgresConfigWriter:
         self._require_actor_reason(actor, reason)
         normalized = dict(snapshot)
         _reject_inline_secrets(normalized)
-        validate_v2_snapshot(normalized)
+        validate_v2_snapshot(normalized, capability_registry=self._capability_registry)
         digest = calculate_snapshot_sha256(normalized)
         payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
         async with self._pool.acquire() as connection:
@@ -311,7 +327,9 @@ class PostgresConfigWriter:
                     raise ConfigSnapshotError(f"config version {version} does not exist")
                 if row["status"] not in {"draft", "validated"}:
                     raise ConfigSnapshotError(f"config version {version} cannot be validated from status {row['status']}")
-                config = validate_snapshot_row(row)
+                config = validate_snapshot_row(
+                    row, capability_registry=self._capability_registry
+                )
                 await connection.execute(
                     """
                     update public.config_versions
