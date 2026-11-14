@@ -466,7 +466,20 @@ insert into public.v2_venue_capabilities(
     venue_id, capability, status, evidence_ref, verified_by, verified_at
 ) values
     ('smoke_spot','balance_read','verified','test://schema-smoke/spot','ci',now()),
-    ('smoke_perp','positions_read','verified','test://schema-smoke/perp','ci',now());
+    ('smoke_spot','open_orders_read','verified','test://schema-smoke/spot','ci',now()),
+    ('smoke_spot','limit_order_create','verified','test://schema-smoke/spot','ci',now()),
+    ('smoke_spot','order_cancel','verified','test://schema-smoke/spot','ci',now()),
+    ('smoke_spot','order_lookup_by_client_id','verified','test://schema-smoke/spot','ci',now()),
+    ('smoke_spot','multi_venue','verified','test://schema-smoke/spot','ci',now()),
+    ('smoke_spot','multi_account','verified','test://schema-smoke/spot','ci',now()),
+    ('smoke_perp','balance_read','verified','test://schema-smoke/perp','ci',now()),
+    ('smoke_perp','positions_read','verified','test://schema-smoke/perp','ci',now()),
+    ('smoke_perp','market_order_create','verified','test://schema-smoke/perp','ci',now()),
+    ('smoke_perp','reduce_only_order','verified','test://schema-smoke/perp','ci',now()),
+    ('smoke_perp','order_cancel','verified','test://schema-smoke/perp','ci',now()),
+    ('smoke_perp','order_lookup_by_client_id','verified','test://schema-smoke/perp','ci',now()),
+    ('smoke_perp','multi_venue','verified','test://schema-smoke/perp','ci',now()),
+    ('smoke_perp','multi_account','verified','test://schema-smoke/perp','ci',now());
 
 insert into public.v2_markets(
     market_id, venue_id, native_symbol, canonical_base_asset, quote_asset,
