@@ -386,7 +386,7 @@ def parse_v2_config(
         "venues", "accounts", "routes", "risk_profiles", "scanner",
     }
     _keys(root, _ROOT_KEYS, required_root, "V2 config")
-    if isinstance(root["schema_version"], bool) or root["schema_version"] != 2:
+    if not isinstance(root["schema_version"], int) or isinstance(root["schema_version"], bool) or root["schema_version"] != 2:
         raise V2ConfigValidationError("V2 config schema_version must equal 2")
     if not isinstance(root["mode"], str):
         raise V2ConfigValidationError("V2 config mode must be LIVE or MOCK")
@@ -410,8 +410,10 @@ def parse_v2_config(
         raise V2ConfigValidationError("execution.execution_mode is unsupported")
     if live and execution.get("startup_reconciliation_required") is not True:
         raise V2ConfigValidationError("LIVE requires execution.startup_reconciliation_required=true")
-    if "startup_reconciliation_required" in execution:
-        _boolean(execution["startup_reconciliation_required"], "execution.startup_reconciliation_required")
+    startup_reconciliation_required = _boolean(
+        execution.get("startup_reconciliation_required", False),
+        "execution.startup_reconciliation_required",
+    )
 
     storage = _object(root["storage"], "storage")
     _keys(storage, _STORAGE_KEYS, {"driver"}, "storage")
@@ -422,6 +424,7 @@ def parse_v2_config(
             raise V2ConfigValidationError("storage.dsn_env must be an environment variable name")
     if live and (storage.get("migrations") != "required" or not storage.get("dsn_env")):
         raise V2ConfigValidationError("LIVE requires storage.dsn_env and migrations=required")
+    storage_dsn_env = storage.get("dsn_env")
     if "migrations" in storage and (
         not isinstance(storage["migrations"], str)
         or storage["migrations"] not in {"required", "managed"}
@@ -448,6 +451,7 @@ def parse_v2_config(
             raise V2ConfigValidationError("redis.url_env must be an environment variable name")
     if live and not redis.get("url_env"):
         raise V2ConfigValidationError("LIVE requires redis.url_env")
+    redis_url_env = redis.get("url_env")
     if "purpose" in redis:
         purpose = redis["purpose"]
         allowed_purpose = {"candidate_queue", "transient_cache", "coordination"}
@@ -474,8 +478,7 @@ def parse_v2_config(
         raise V2ConfigValidationError("LIVE requires scanner.enabled=true")
     if "scan_interval_seconds" in scanner:
         _integer(scanner["scan_interval_seconds"], "scanner.scan_interval_seconds")
-    if "quote_assets" in scanner:
-        _asset_list(scanner["quote_assets"], "scanner.quote_assets")
+    scanner_quote_assets = _asset_list(scanner["quote_assets"], "scanner.quote_assets")
     if "synthetic_fx" in scanner:
         _validate_fx(scanner["synthetic_fx"], "scanner.synthetic_fx", live=live)
     if "fx" in root:
@@ -525,9 +528,10 @@ def parse_v2_config(
     route_index = _unique_index(root["routes"], "route")
     risk_profiles = _object(root["risk_profiles"], "risk_profiles")
 
+    risk_models: list[V2RiskProfileModel] = []
     for risk_id, profile in risk_profiles.items():
         _identifier(risk_id, f"risk_profiles key {risk_id!r}")
-        _validate_risk_profile(risk_id, profile)
+        risk_models.append(_validate_risk_profile(risk_id, profile))
 
     venues: list[V2VenueModel] = []
     for venue_id, venue in venue_index.items():
@@ -555,14 +559,18 @@ def parse_v2_config(
         _keys(venue_execution, _VENUE_EXECUTION_KEYS, {"enabled"}, f"venue {venue_id}.execution")
         execution_enabled = _boolean(venue_execution["enabled"], f"venue {venue_id}.execution.enabled")
         execution_adapter = None
+        credential_refs: tuple[tuple[str, str], ...] = ()
+        required_leverage = None
         if execution_enabled:
             execution_adapter = _exchange(
                 venue_execution.get("adapter"), f"venue {venue_id}.execution.adapter"
             )
             credentials = venue_execution.get("credentials")
-            _credential_refs(credentials, f"venue {venue_id}.execution.credentials", required=True)
+            credential_refs = _credential_refs(
+                credentials, f"venue {venue_id}.execution.credentials", required=True
+            )
             if "required_leverage" in venue_execution:
-                _decimal(
+                required_leverage = _decimal(
                     venue_execution["required_leverage"],
                     f"venue {venue_id}.execution.required_leverage",
                     minimum=Decimal("1"),
@@ -582,6 +590,8 @@ def parse_v2_config(
             raise V2ConfigValidationError(
                 f"venue {venue_id} must not attach credentials while execution is disabled"
             )
+        position_mode = venue_execution.get("position_mode")
+        margin_mode = venue_execution.get("margin_mode")
 
         venues.append(V2VenueModel(
             venue_id=venue_id,
@@ -593,6 +603,10 @@ def parse_v2_config(
             execution_enabled=execution_enabled,
             market_data_adapter=market_data_adapter,
             execution_adapter=execution_adapter,
+            credential_refs=credential_refs,
+            position_mode=position_mode,
+            margin_mode=margin_mode,
+            required_leverage=required_leverage,
         ))
 
     accounts: list[V2AccountModel] = []
@@ -610,6 +624,7 @@ def parse_v2_config(
         accounts.append(V2AccountModel(
             account_id=account_id,
             venue_id=venue_id,
+            label=label.strip(),
             enabled=_boolean(account["enabled"], f"account {account_id}.enabled"),
         ))
 
@@ -640,8 +655,8 @@ def parse_v2_config(
             "linear_perpetual", "inverse_perpetual",
         }:
             raise V2ConfigValidationError(f"route {route_id} futures leg references a non-perpetual venue")
-        _asset_list(spot["quote_assets"], f"route {route_id}.spot.quote_assets")
-        _asset_list(futures["settle_assets"], f"route {route_id}.futures.settle_assets")
+        spot_quote_assets = _asset_list(spot["quote_assets"], f"route {route_id}.spot.quote_assets")
+        futures_settle_assets = _asset_list(futures["settle_assets"], f"route {route_id}.futures.settle_assets")
 
         symbols = _object(route["symbols"], f"route {route_id}.symbols")
         _keys(symbols, _SYMBOL_KEYS, {"allow", "deny"}, f"route {route_id}.symbols")
@@ -689,8 +704,12 @@ def parse_v2_config(
             route_id=route_id,
             spot_venue_id=spot_venue_id,
             spot_account_id=spot_account_id,
+            spot_quote_assets=spot_quote_assets,
             futures_venue_id=futures_venue_id,
             futures_account_id=futures_account_id,
+            futures_settle_assets=futures_settle_assets,
+            allowed_symbols=allowed_symbols,
+            denied_symbols=denied_symbols,
             risk_profile=risk_id,
             enabled=enabled,
             capability_verified=capability_verified,
@@ -701,8 +720,15 @@ def parse_v2_config(
         mode=mode,
         execution_mode=execution_mode,
         signals_enabled=signals_enabled,
+        startup_reconciliation_required=startup_reconciliation_required,
+        storage_driver=str(storage["driver"]),
+        storage_dsn_env=storage_dsn_env,
+        redis_enabled=redis_enabled,
+        redis_url_env=redis_url_env,
+        scanner_enabled=scanner_enabled,
+        scanner_quote_assets=scanner_quote_assets,
         venues=tuple(venues),
         accounts=tuple(accounts),
         routes=tuple(routes),
-        risk_profile_ids=tuple(sorted(risk_profiles)),
+        risk_profiles=tuple(risk_models),
     )
