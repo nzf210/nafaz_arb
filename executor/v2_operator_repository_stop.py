@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from executor.v2_operator_models import OperatorControlError, TelegramIdentity
 
