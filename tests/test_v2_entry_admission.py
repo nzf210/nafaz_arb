@@ -230,7 +230,8 @@ class _DenyFence:
 async def test_fence_denial_retires_intent_without_calling_exchange():
     engine = object.__new__(ArbitrageEngine)
     engine.config = SimpleNamespace(mock_mode=False)
-    engine.client = SimpleNamespace(place_local_limit_buy=AsyncMock())
+    engine._client_context = SimpleNamespace(get=lambda: None)
+    engine._base_client = SimpleNamespace(place_local_limit_buy=AsyncMock())
     engine._v2_entry_admission_allowed = AsyncMock(side_effect=[True, True])
     engine._next_order_seq = lambda: 1
     engine._entry_recovery_context = lambda *args: {}
@@ -261,5 +262,5 @@ async def test_fence_denial_retires_intent_without_calling_exchange():
     rejected_args = engine._mark_order_submission_rejected.await_args.args
     assert rejected_args[0] == "indodax"
     assert rejected_args[1]
-    engine.client.place_local_limit_buy.assert_not_awaited()
+    engine._base_client.place_local_limit_buy.assert_not_awaited()
     engine._handle_entry_submission_failure.assert_not_awaited()
