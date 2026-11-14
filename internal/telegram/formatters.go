@@ -35,6 +35,8 @@ func (b *Bot) formatHelp() string {
 /pending - <i>Lihat pending order Spot yang belum selesai</i>
 /spotmax [cex] [jumlah] - <i>Atur maksimum open order/posisi Spot per CEX (default 2)</i>
 /settings - <i>Lihat konfigurasi modal, sizing, dan parameter aktif</i>
+/set [parameter] [nilai] - <i>Ubah parameter config langsung dari Telegram</i>
+/notif - <i>Atur filter switch notifikasi alert (atau: /notif trades)</i>
 /balance - <i>Cek saldo live seluruh aset Spot & Futures</i>
 /scan - <i>Jalankan scan pasar on-demand</i>
 /latest - <i>Lihat peluang dari 10 scan terakhir</i>
@@ -153,6 +155,8 @@ func formatExchangeMetrics(metrics []domain.ExchangeScanMetrics) string {
 }
 
 func (b *Bot) formatSettings() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	legSizing := b.cfg.CapitalTotal * b.cfg.AllocationPerPair / 2.0
 	return fmt.Sprintf(`⚙️ <b>Pengaturan &amp; Parameter Trading NAFAZ</b>
 
@@ -167,7 +171,19 @@ func (b *Bot) formatSettings() string {
 • <b>Perp Leverage:</b> %.0fx
 • <b>Scan Interval:</b> %ds
 • <b>Batas Order Spot Per CEX:</b> Atur lewat <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>
-• <b>Kill Switch Entry:</b> Aktifkan/matikan via <code>/killswitch [on|off]</code>`,
+• <b>Kill Switch Entry:</b> Aktifkan/matikan via <code>/killswitch [on|off]</code>
+• <b>Filter Notifikasi:</b> Atur via <code>/notif</code> atau tombol di bawah
+
+📝 <b>Ubah Parameter via Telegram:</b>
+<code>/set &lt;param&gt; &lt;nilai&gt;</code>
+<i>Contoh:</i>
+• <code>/set capital 100</code> (Budget total modal USD)
+• <code>/set allocation 0.5</code> (50%% per pair)
+• <code>/set minroi 0.3</code> (Min ROI %%)
+• <code>/set leverage 1</code> (Perp leverage)
+• <code>/set scan 30</code> (Interval scan detik)
+• <code>/set mincap 10</code> (Min modal per posisi $)
+• <code>/notif trades</code> (Hanya notif order filled &amp; closed)`,
 		html.EscapeString(b.cfg.Mode),
 		b.cfg.CapitalTotal,
 		b.cfg.AllocationPerPair*100,

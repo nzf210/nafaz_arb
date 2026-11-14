@@ -99,7 +99,8 @@ type Bot struct {
 	botUsername string
 	lastOffset  int64
 	redisClient *redishandler.Client
-	opportunityReader interface { LatestOpportunityScans(context.Context, int) ([]domain.ScanResult, error) }
+	configPath           string
+	opportunityReader    interface { LatestOpportunityScans(context.Context, int) ([]domain.ScanResult, error) }
 	positionLedgerReader interface { PositionOrderFills(context.Context, string) (map[string][]json.RawMessage, error) }
 
 	mu          sync.Mutex
@@ -123,11 +124,19 @@ func New(cfg config.Config, server *api.Server) *Bot {
 	}
 	return &Bot{
 		cfg:         cfg,
+		configPath:  "config.json",
 		server:      server,
 		client:      &http.Client{Timeout: 35 * time.Second},
 		baseURL:     baseURL,
 		alertedKeys: make(map[string]time.Time),
 	}
+}
+
+// SetConfigPath sets the filesystem path for reading and writing config.
+func (b *Bot) SetConfigPath(p string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.configPath = p
 }
 
 // SetRedisClient configures the Redis client for active position queries and commands.
@@ -213,6 +222,8 @@ func (b *Bot) Start(ctx context.Context) error {
 		{Command: "mute", Description: "🔕 Bisukan alert sementara (misal: /mute 1h)"},
 		{Command: "unmute", Description: "🔔 Aktifkan kembali notifikasi alert"},
 		{Command: "settings", Description: "⚙️ Pengaturan & parameter trading aktif"},
+		{Command: "set", Description: "📝 Ubah parameter config (misal: /set capital 100)"},
+		{Command: "notif", Description: "🔔 Filter & switch notifikasi alert"},
 		{Command: "killswitch", Description: "🛑 Hentikan/lanjutkan semua entry baru (on/off)"},
 		{Command: "help", Description: "ℹ️ Petunjuk lengkap & bantuan"},
 	}
@@ -379,6 +390,7 @@ func (b *Bot) defaultKeyboard() *InlineKeyboardMarkup {
 			},
 			{
 				{Text: "⚙️ Pengaturan / Setup", CallbackData: "settings"},
+				{Text: "🔔 Notifikasi", CallbackData: "notif"},
 				{Text: "🛡️ Risk Status", CallbackData: "risk"},
 			},
 			{
@@ -563,26 +575,31 @@ func (b *Bot) onScanCompleted(_ context.Context, r domain.ScanResult) {
 		}
 	}
 	if !hasEligibleOpportunity && (r.MatchedPairs > 0 || len(r.Opportunities) > 0 || r.FailedPairs > 0) {
-		const rejectionAlertKey = "scan-rejection-summary"
-		lastAlert, alreadyAlerted := b.alertedKeys[rejectionAlertKey]
-		if !alreadyAlerted || now.Sub(lastAlert) >= cooldown {
-			b.alertedKeys[rejectionAlertKey] = now
-			message := b.formatScanRejectionSummary(r)
-			go b.sendReplyWithMarkup(context.Background(), b.cfg.Telegram.ChatID, 0, message, b.defaultKeyboard())
+		if b.cfg.Telegram.NotifyRejectionsEnabled() {
+			const rejectionAlertKey = "scan-rejection-summary"
+			lastAlert, alreadyAlerted := b.alertedKeys[rejectionAlertKey]
+			if !alreadyAlerted || now.Sub(lastAlert) >= cooldown {
+				b.alertedKeys[rejectionAlertKey] = now
+				message := b.formatScanRejectionSummary(r)
+				go b.sendReplyWithMarkup(context.Background(), b.cfg.Telegram.ChatID, 0, message, b.defaultKeyboard())
+			}
 		}
 	}
-	for _, op := range r.Opportunities {
-		if !op.TradingEligible ||
-			op.NetROIPct < b.cfg.Telegram.AlertMinNetROIPct ||
-			op.NetProfit < b.cfg.Telegram.AlertMinNetProfitQuote {
-			continue
-		}
 
-		lastAlert, exists := b.alertedKeys[op.OpportunityKey]
-		if !exists || now.Sub(lastAlert) >= cooldown {
-			b.alertedKeys[op.OpportunityKey] = now
-			alertMsg := b.formatOpportunityAlert(op)
-			go b.sendReplyWithMarkup(context.Background(), b.cfg.Telegram.ChatID, 0, alertMsg, b.alertKeyboard(op.BaseAsset))
+	if b.cfg.Telegram.NotifyOpportunitiesEnabled() {
+		for _, op := range r.Opportunities {
+			if !op.TradingEligible ||
+				op.NetROIPct < b.cfg.Telegram.AlertMinNetROIPct ||
+				op.NetProfit < b.cfg.Telegram.AlertMinNetProfitQuote {
+				continue
+			}
+
+			lastAlert, exists := b.alertedKeys[op.OpportunityKey]
+			if !exists || now.Sub(lastAlert) >= cooldown {
+				b.alertedKeys[op.OpportunityKey] = now
+				alertMsg := b.formatOpportunityAlert(op)
+				go b.sendReplyWithMarkup(context.Background(), b.cfg.Telegram.ChatID, 0, alertMsg, b.alertKeyboard(op.BaseAsset))
+			}
 		}
 	}
 }

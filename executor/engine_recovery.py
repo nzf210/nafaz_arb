@@ -427,10 +427,16 @@ class EngineRecoveryMixin:
         # A record whose hedge venue and hedge symbol disagree cannot be bound
         # to any client, so every later monitor tick would raise. Treat it as a
         # corrupt record (quarantine + halt the scope) instead of adopting it.
-        global_exchange = str(order_info.get("global_exchange") or "").strip().lower()
-        global_symbol = str(order_info.get("global_symbol") or "").strip()
-        local_exchange = str(order_info.get("local_exchange") or "").strip().lower()
+        global_exchange = str(
+            order_info.get("global_exchange") or getattr(self.config, "global_exchange_name", "") or "okx"
+        ).strip().lower()
+        local_exchange = str(
+            order_info.get("local_exchange")
+            or (pair_tag.split(":")[0] if ":" in pair_tag else getattr(self.config, "local_exchange_name", ""))
+            or "indodax"
+        ).strip().lower()
         local_symbol = str(symbol or "")
+        global_symbol = str(order_info.get("global_symbol") or local_symbol or "").strip()
         try:
             ExchangePairKey.create(
                 local_exchange, local_symbol, global_exchange, global_symbol

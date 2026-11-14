@@ -493,7 +493,26 @@ func (b *Bot) handleCommand(
 	case "/metrics":
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatMetrics(), b.defaultKeyboard())
 	case "/settings", "/setting", "/config":
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatSettings(), b.defaultKeyboard())
+		if len(parts) >= 3 && (strings.EqualFold(parts[1], "set") || strings.EqualFold(parts[1], "ubah")) {
+			b.handleSetConfigCommand(ctx, msg, parts[2:])
+			return
+		}
+		if len(parts) >= 2 && !strings.EqualFold(parts[1], "help") && !strings.EqualFold(parts[1], "status") {
+			b.handleSetConfigCommand(ctx, msg, parts[1:])
+			return
+		}
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, b.formatSettings(), b.settingsKeyboard())
+	case "/set":
+		b.handleSetConfigCommand(ctx, msg, parts[1:])
+	case "/capital", "/minroi", "/maxroi", "/leverage", "/mincap", "/allocation":
+		param := strings.TrimPrefix(cmd, "/")
+		if len(parts) >= 2 {
+			b.handleSetConfigCommand(ctx, msg, []string{param, parts[1]})
+		} else {
+			b.handleSetConfigCommand(ctx, msg, []string{param})
+		}
+	case "/notif", "/notifications", "/notification":
+		b.handleNotifCommand(ctx, msg, parts[1:])
 	case "/mute":
 		b.handleMuteCommand(ctx, msg, parts)
 	case "/unmute":
@@ -547,7 +566,15 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cb *CallbackQuery) {
 	case "frozen":
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatFrozenPairs(), b.defaultKeyboard())
 	case "settings":
-		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatSettings(), b.defaultKeyboard())
+		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatSettings(), b.settingsKeyboard())
+	case "notif":
+		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatNotificationSettings(), b.notifKeyboard())
+	case "notif:trades_only":
+		b.setNotifMode(ctx, chatID, "trades_only")
+	case "notif:all_on":
+		b.setNotifMode(ctx, chatID, "all_on")
+	case "notif:all_off":
+		b.setNotifMode(ctx, chatID, "all_off")
 	case "risk":
 		b.sendMonitorSection(ctx, chatID, 0, "RISK HALT", "risk", "risk_status", "risk_halt")
 	case "menu":
@@ -606,6 +633,10 @@ func (b *Bot) sendLatestOpportunityScans(ctx context.Context, chatID, replyToID 
 }
 
 func (b *Bot) handleExtendedCallback(ctx context.Context, chatID int64, cb *CallbackQuery) {
+	if key, ok := strings.CutPrefix(cb.Data, "notif:toggle:"); ok {
+		b.toggleNotifKey(ctx, chatID, key)
+		return
+	}
 	if sym, ok := strings.CutPrefix(cb.Data, "pair:"); ok {
 		b.sendReplyWithMarkup(ctx, chatID, 0, b.formatPairDetail(sym), b.defaultKeyboard())
 		return
@@ -877,6 +908,9 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 	cleanTargetID := ""
 	switch ev.Event {
 	case "POSITION_OPENED":
+		if !b.cfg.Telegram.NotifyFillsEnabled() {
+			return
+		}
 		text = fmt.Sprintf(
 			"🟢 <b>[%s] POSISI ARBITRASE TERBUKA!</b>\n\n"+
 				"• Pasangan: <b>%s</b>\n"+
@@ -895,6 +929,9 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			ev.ShortEntryUSDT,
 		)
 	case "EXECUTION_FAILURE", "HEDGE_FAILED":
+		if !b.cfg.Telegram.NotifyErrorsEnabled() {
+			return
+		}
 		pairLabel := ev.PairTag
 		if pairLabel == "" {
 			pairLabel = ev.PairKey
@@ -956,6 +993,9 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			html.EscapeString(requiredAction),
 		)
 	case "POSITION_CLOSED":
+		if !b.cfg.Telegram.NotifyClosesEnabled() {
+			return
+		}
 		emoji := "🎉"
 		statusWord := "PROFIT"
 		if ev.NetProfitUSDT < 0 {
@@ -984,6 +1024,9 @@ func (b *Bot) broadcastTradeEvent(ctx context.Context, ev redishandler.TradeEven
 			ev.NetROIPct,
 		)
 	case "ORDER_NOT_FOUND_AFTER_RESTART", "UNKNOWN_EXCHANGE_ORDER", "ORPHAN_ORDER", "CANCEL_FAILED", "REPLACEMENT_BLOCKED", "PARTIAL_FILL_IMBALANCE", "EXPOSURE_MISMATCH", "RECOVERY_EXCHANGE_API_FAILED", "DATABASE_PERSISTENCE_FAILED", "POSITION_RECOVERY_FAILED", "RECONCILIATION_MISMATCH", "RISK_HALT", "TRADE_FILL_RECONCILIATION_REQUIRED", "EXPOSURE_EXPECTED_QTY_INVALID", "EXPOSURE_MAPPING_UNAVAILABLE", "EXPOSURE_BALANCE_UNAVAILABLE", "EXPOSURE_BALANCE_INVALID", "EXPOSURE_POSITION_UNAVAILABLE":
+		if !b.cfg.Telegram.NotifyErrorsEnabled() {
+			return
+		}
 		pair := ev.PairTag
 		if pair == "" { pair = ev.PairKey }
 		if pair == "" { pair = ev.Symbol }

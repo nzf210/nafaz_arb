@@ -154,6 +154,7 @@ func main(){
 	go server.RunPeriodic(ctx)
 
 	tgBot:=telegram.New(cfg,server)
+	tgBot.SetConfigPath(*path)
 	if remoteStore != nil {
 		tgBot.SetOpportunityHistoryReader(remoteStore)
 		tgBot.SetPositionLedgerReader(remoteStore)

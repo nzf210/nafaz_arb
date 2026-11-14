@@ -19,6 +19,46 @@ type TelegramConfig struct {
 	AlertCooldownMinutes   int     `json:"alert_cooldown_minutes"`
 	AlertMinNetROIPct      float64 `json:"alert_min_net_roi_pct"`
 	AlertMinNetProfitQuote float64 `json:"alert_min_net_profit_quote"`
+	NotifyOpportunities    *bool   `json:"notify_opportunities,omitempty"`
+	NotifyRejections       *bool   `json:"notify_rejections,omitempty"`
+	NotifyFills            *bool   `json:"notify_fills,omitempty"`
+	NotifyCloses           *bool   `json:"notify_closes,omitempty"`
+	NotifyErrors           *bool   `json:"notify_errors,omitempty"`
+}
+
+func (t TelegramConfig) NotifyOpportunitiesEnabled() bool {
+	if t.NotifyOpportunities == nil {
+		return true
+	}
+	return *t.NotifyOpportunities
+}
+
+func (t TelegramConfig) NotifyRejectionsEnabled() bool {
+	if t.NotifyRejections == nil {
+		return true
+	}
+	return *t.NotifyRejections
+}
+
+func (t TelegramConfig) NotifyFillsEnabled() bool {
+	if t.NotifyFills == nil {
+		return true
+	}
+	return *t.NotifyFills
+}
+
+func (t TelegramConfig) NotifyClosesEnabled() bool {
+	if t.NotifyCloses == nil {
+		return true
+	}
+	return *t.NotifyCloses
+}
+
+func (t TelegramConfig) NotifyErrorsEnabled() bool {
+	if t.NotifyErrors == nil {
+		return true
+	}
+	return *t.NotifyErrors
 }
 
 type RedisConfig struct {

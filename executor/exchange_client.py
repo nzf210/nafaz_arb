@@ -1,5 +1,6 @@
 """Unified exchange facade for spot and perpetual venue adapters."""
 
+import os
 import logging
 from typing import Optional, Dict, Any
 import ccxt.async_support as ccxt
@@ -182,6 +183,10 @@ def init_ccxt_exchange(exchange_name: str, creds: Any, default_type: str = "spot
 
     if getattr(creds, "passphrase", None):
         cfg["password"] = creds.passphrase
+
+    proxy = os.environ.get("https_proxy") or os.environ.get("http_proxy")
+    if proxy:
+        cfg["aiohttp_proxy"] = proxy
 
     instance = ex_class(cfg)
     if getattr(creds, "testnet", False) and hasattr(instance, "set_sandbox_mode"):

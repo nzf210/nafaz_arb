@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -888,6 +889,136 @@ func TestFormatScanResultTenItemsFitsTelegramAndFormatsMicroPrices(t *testing.T)
 	}
 	if strings.Contains(formatted, "<code>0.0000</code>") {
 		t.Fatalf("unexpected 0.0000 micro-price truncation:\n%s", formatted)
+	}
+}
+
+func TestSetConfigCommandUpdatesMemoryAndFile(t *testing.T) {
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	tmpCfg := t.TempDir() + "/config.json"
+	initialData := []byte(`{"capital_total": 100, "allocation_per_pair": 0.5}`)
+	if err := os.WriteFile(tmpCfg, initialData, 0644); err != nil {
+		t.Fatalf("write tmp config: %v", err)
+	}
+	bot.SetConfigPath(tmpCfg)
+
+	msg := &Message{
+		Chat: Chat{ID: -100123456789},
+		From: &User{ID: 1001},
+	}
+
+	bot.handleSetConfigCommand(context.Background(), msg, []string{"capital", "250"})
+	if bot.cfg.CapitalTotal != 250 {
+		t.Fatalf("expected CapitalTotal 250, got %f", bot.cfg.CapitalTotal)
+	}
+	if !strings.Contains(sent.Text, "250.00") {
+		t.Fatalf("expected confirmation message, got: %s", sent.Text)
+	}
+
+	bot.handleSetConfigCommand(context.Background(), msg, []string{"allocation", "0.25"})
+	if bot.cfg.AllocationPerPair != 0.25 {
+		t.Fatalf("expected AllocationPerPair 0.25, got %f", bot.cfg.AllocationPerPair)
+	}
+
+	readBack, err := os.ReadFile(tmpCfg)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(readBack, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if raw["capital_total"] != 250.0 {
+		t.Fatalf("expected file capital_total 250, got %v", raw["capital_total"])
+	}
+	if raw["allocation_per_pair"] != 0.25 {
+		t.Fatalf("expected file allocation_per_pair 0.25, got %v", raw["allocation_per_pair"])
+	}
+}
+
+func TestNotificationSwitchFiltersAlerts(t *testing.T) {
+	var sentMessages []SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			var sent SendMessageReq
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			sentMessages = append(sentMessages, sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+
+	tmpCfg := t.TempDir() + "/config.json"
+	_ = os.WriteFile(tmpCfg, []byte(`{}`), 0644)
+	bot.SetConfigPath(tmpCfg)
+
+	// 1. Set mode to trades_only (only fulfilled pending orders & closed positions)
+	bot.setNotifMode(context.Background(), -100123456789, "trades_only")
+	if bot.cfg.Telegram.NotifyOpportunitiesEnabled() || bot.cfg.Telegram.NotifyRejectionsEnabled() || bot.cfg.Telegram.NotifyErrorsEnabled() {
+		t.Fatalf("opps, rejections, errors should be disabled in trades_only mode")
+	}
+	if !bot.cfg.Telegram.NotifyFillsEnabled() || !bot.cfg.Telegram.NotifyClosesEnabled() {
+		t.Fatalf("fills and closes should be enabled in trades_only mode")
+	}
+
+	sentMessages = nil
+
+	// 2. An execution failure should be suppressed
+	bot.broadcastTradeEvent(context.Background(), redishandler.TradeEvent{
+		Event:   "EXECUTION_FAILURE",
+		Symbol:  "BTC",
+		Reason:  "INSUFFICIENT_FUNDS",
+		Message: "test failure",
+	})
+	if len(sentMessages) != 0 {
+		t.Fatalf("expected 0 messages for suppressed error, got %d", len(sentMessages))
+	}
+
+	// 3. POSITION_OPENED (pending order filled) should be delivered
+	bot.broadcastTradeEvent(context.Background(), redishandler.TradeEvent{
+		Event:         "POSITION_OPENED",
+		Symbol:        "BTC",
+		LocalExchange: "indodax",
+		GlobalExchange: "okx",
+		Qty:           0.001,
+	})
+	if len(sentMessages) != 1 || !strings.Contains(sentMessages[0].Text, "POSISI ARBITRASE TERBUKA") {
+		t.Fatalf("expected POSITION_OPENED alert sent, got: %+v", sentMessages)
+	}
+
+	// 4. POSITION_CLOSED should be delivered
+	sentMessages = nil
+	bot.broadcastTradeEvent(context.Background(), redishandler.TradeEvent{
+		Event:         "POSITION_CLOSED",
+		Symbol:        "BTC",
+		Qty:           0.001,
+		NetProfitUSDT: 0.5,
+	})
+	if len(sentMessages) != 1 || !strings.Contains(sentMessages[0].Text, "POSISI BERHASIL DITUTUP") {
+		t.Fatalf("expected POSITION_CLOSED alert sent, got: %+v", sentMessages)
+	}
+
+	// 5. Toggle fills OFF -> now POSITION_OPENED should be suppressed
+	bot.toggleNotifKey(context.Background(), -100123456789, "fills")
+	if bot.cfg.Telegram.NotifyFillsEnabled() {
+		t.Fatalf("expected fills disabled after toggle")
+	}
+	sentMessages = nil
+	bot.broadcastTradeEvent(context.Background(), redishandler.TradeEvent{
+		Event:  "POSITION_OPENED",
+		Symbol: "BTC",
+	})
+	if len(sentMessages) != 0 {
+		t.Fatalf("expected POSITION_OPENED suppressed when fills=false, got %d", len(sentMessages))
 	}
 }
 
