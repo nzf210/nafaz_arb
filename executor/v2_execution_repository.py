@@ -178,6 +178,56 @@ class PostgresExecutionRepository:
             raise ValueError("event_type must be a lowercase event identifier")
         return event_type
 
+    @staticmethod
+    def _same_journal_event(
+        existing: Mapping[str, Any],
+        *,
+        intent_id: str,
+        event_type: str,
+        from_state: Optional[str],
+        to_state: Optional[str],
+        payload: str,
+        quantity: Optional[Decimal],
+        price: Optional[Decimal],
+        quote_amount: Optional[Decimal],
+        fee_amount: Optional[Decimal],
+        realized_pnl: Optional[Decimal],
+        asset: Optional[str],
+        exchange_event_at: Any,
+    ) -> bool:
+        """Require an event-key replay to match the complete persisted event."""
+        if (
+            str(existing["intent_id"]) != str(intent_id)
+            or str(existing["event_type"]) != event_type
+            or existing["from_state"] != from_state
+            or existing["to_state"] != to_state
+            or existing["asset"] != asset
+            or existing["exchange_event_at"] != exchange_event_at
+        ):
+            return False
+        try:
+            stored_payload = existing["payload"]
+            if isinstance(stored_payload, str):
+                stored_payload = json.loads(stored_payload)
+            if _json_payload(stored_payload) != payload:
+                return False
+            for field, expected in (
+                ("quantity", quantity),
+                ("price", price),
+                ("quote_amount", quote_amount),
+                ("fee_amount", fee_amount),
+                ("realized_pnl", realized_pnl),
+            ):
+                actual = existing[field]
+                if expected is None:
+                    if actual is not None:
+                        return False
+                elif actual is None or Decimal(str(actual)) != expected:
+                    return False
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            return False
+        return True
+
     async def _append_journal_and_outbox(
         self,
         connection: Any,
@@ -215,18 +265,29 @@ class PostgresExecutionRepository:
         if journal is None:
             existing = await connection.fetchrow(
                 """
-                select journal_id, intent_id::text, event_type, to_state
+                select journal_id, intent_id::text, event_type, from_state, to_state,
+                       quantity, price, quote_amount, fee_amount, realized_pnl,
+                       asset, exchange_event_at, payload
                   from public.v2_execution_journal where event_key = $1
                 """,
                 event_key,
             )
-            if (
-                existing is None
-                or str(existing["intent_id"]) != str(intent_id)
-                or str(existing["event_type"]) != event_type
-                or existing["to_state"] != to_state
+            if existing is None or not self._same_journal_event(
+                existing,
+                intent_id=intent_id,
+                event_type=event_type,
+                from_state=from_state,
+                to_state=to_state,
+                payload=payload,
+                quantity=quantity,
+                price=price,
+                quote_amount=quote_amount,
+                fee_amount=fee_amount,
+                realized_pnl=realized_pnl,
+                asset=asset,
+                exchange_event_at=exchange_event_at,
             ):
-                raise ExecutionIdempotencyConflict("execution journal event key was reused")
+                raise ExecutionIdempotencyConflict("execution journal event key was reused for different event data")
             return int(existing["journal_id"])
 
         journal_id = int(journal["journal_id"])
@@ -395,14 +456,32 @@ class PostgresExecutionRepository:
                 async with connection.transaction():
                     prior = await connection.fetchrow(
                         """
-                        select journal_id, intent_id::text, to_state
+                        select journal_id, intent_id::text, event_type, from_state, to_state,
+                               quantity, price, quote_amount, fee_amount, realized_pnl,
+                               asset, exchange_event_at, payload
                           from public.v2_execution_journal where event_key = $1
                         """,
                         event_key,
                     )
                     if prior is not None:
-                        if str(prior["intent_id"]) != intent_id or prior["to_state"] != next_state:
-                            raise ExecutionIdempotencyConflict("execution event key was reused")
+                        if not self._same_journal_event(
+                            prior,
+                            intent_id=intent_id,
+                            event_type=event_type,
+                            from_state=expected_state,
+                            to_state=next_state,
+                            payload=encoded_payload,
+                            quantity=financials["quantity"],
+                            price=financials["price"],
+                            quote_amount=financials["quote_amount"],
+                            fee_amount=financials["fee_amount"],
+                            realized_pnl=financials["realized_pnl"],
+                            asset=asset,
+                            exchange_event_at=exchange_event_at,
+                        ):
+                            raise ExecutionIdempotencyConflict(
+                                "execution event key was reused for different event data"
+                            )
                         return {
                             "intent_id": intent_id,
                             "duplicate": True,
