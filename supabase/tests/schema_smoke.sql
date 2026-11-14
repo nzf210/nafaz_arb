@@ -433,6 +433,30 @@ insert into public.outbox_events (
     'config.activated', '{"version":9223372036854770000}'::jsonb
 );
 
+
+do $v2_operator_running_gate$
+begin
+    if (select open_order_stop_policy
+          from public.operator_control_state where singleton = true) <> 'keep_and_manage' then
+        raise exception 'operator STOP policy must default to keep_and_manage';
+    end if;
+
+    begin
+        update public.operator_control_state
+           set state = 'RUNNING',
+               trading_enabled = true,
+               state_version = state_version + 1,
+               config_version = 1
+         where singleton = true;
+        raise exception 'operator RUNNING unexpectedly bypassed active config and consumer gate';
+    exception when others then
+        if sqlerrm = 'operator RUNNING unexpectedly bypassed active config and consumer gate' then
+            raise;
+        end if;
+    end;
+end;
+$v2_operator_running_gate$;
+
 rollback;
 
 
