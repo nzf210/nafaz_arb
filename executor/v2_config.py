@@ -359,9 +359,19 @@ class PostgresConfigWriter:
         self._require_actor_reason(actor, reason)
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                # Config activation shares the entry fence with Telegram STOP.
+                # A validated snapshot may become active only while trading is STOPPED.
+                await connection.execute(
+                    "select pg_advisory_xact_lock(hashtextextended('nafaz:v2:operator_entry_fence', 0))"
+                )
                 await connection.execute(
                     "select pg_advisory_xact_lock(hashtextextended('nafaz:v2:active_config', 0))"
                 )
+                control = await connection.fetchrow(
+                    "select state, trading_enabled from public.operator_control_state where singleton = true for update"
+                )
+                if control is None or control["state"] != "STOPPED" or control["trading_enabled"] is True:
+                    raise ConfigSnapshotError("config activation requires durable operator state STOPPED")
                 current = await connection.fetchval(
                     "select version from public.active_config_version where singleton = true for update"
                 )
