@@ -126,6 +126,24 @@ class MockExchangeClient:
         # Default mock: no futures positions open anywhere.
         return []
 
+    async def fetch_spot_free_balance(self, asset: str) -> float:
+        """Local spot inventory used by two-leg startup verification.
+
+        Raises unless a test declares inventory: the default stub must not turn
+        an "unknown balance" into a hard zero, which would make every rollback
+        look like a missing-inventory incident.
+        """
+        if not getattr(self, "spot_balances", None):
+            raise NotImplementedError(
+                "mock client has no spot balance inventory configured"
+            )
+        return float(self.spot_balances.get(str(asset).upper(), 0.0))
+
+    def set_spot_balance(self, asset: str, amount: float) -> None:
+        if not hasattr(self, "spot_balances"):
+            self.spot_balances = {}
+        self.spot_balances[str(asset).upper()] = float(amount)
+
     async def fetch_global_order(self, order_id: str, symbol: str, amount_spec=None):
         if order_id in self.orders:
             return self.orders[order_id]

@@ -32,6 +32,11 @@ class EngineRuntimeMixin:
             try:
                 async with self._exchange_reconciliation_lock:
                     if not self._recovery_complete:
+                        if self.global_stop is not None:
+                            # Re-prove the canonical authority before restoring
+                            # readiness; a dropped fencing connection means every
+                            # earlier admission decision is stale.
+                            await self.global_stop.ensure_pool()
                         # A replica that started while another owner held the
                         # lease must retry the full startup restore, not only
                         # order polling, before it can become READY.
@@ -127,6 +132,8 @@ class EngineRuntimeMixin:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         if self.global_stop is not None:
             await self.global_stop.close()
+        if getattr(self, "fill_ledger", None) is not None:
+            await self.fill_ledger.close()
         if getattr(self, "postgres_risk", None) is not None:
             await self.postgres_risk.close()
         if self.supabase.enabled:

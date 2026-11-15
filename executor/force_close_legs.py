@@ -9,6 +9,7 @@ from executor.models import OrderRole
 from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt
 from executor import helpers
 from executor.helpers import RetryExhausted, build_client_order_id
+from executor.derisk_fence import derisk_fence
 
 logger = logging.getLogger("executor.engine")
 
@@ -320,12 +321,13 @@ class ForceCloseLegMixin:
                 global_amount_spec=pos.global_amount_spec,
                 required=not is_mock,
             )
-            res = await self.client.close_global_short_market(
-                global_sym,
-                pos.qty,
-                client_order_id=force_coid,
-                amount_spec=pos.global_amount_spec,
-            )
+            async with derisk_fence(self, client_order_id=force_coid):
+                res = await self.client.close_global_short_market(
+                    global_sym,
+                    pos.qty,
+                    client_order_id=force_coid,
+                    amount_spec=pos.global_amount_spec,
+                )
             if not isinstance(res, dict):
                 logger.critical(
                     f"[Force Close] futures close returned no verifiable order for {pair_key}"
@@ -462,13 +464,20 @@ class ForceCloseLegMixin:
                 quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
                 required=False,
             )
+            async def _fenced_spot_sell():
+                # Each attempt takes the shared serialization lock so a force
+                # close cannot interleave with a STOP or another submit. STOP
+                # itself never blocks a liquidation.
+                async with derisk_fence(self, client_order_id=client_order_id):
+                    return await self.client.place_local_market_sell(
+                        pos.symbol,
+                        pos.qty,
+                        client_order_id=client_order_id,
+                        amount_spec=pos.local_amount_spec,
+                    )
+
             spot_order = await helpers.retry_with_backoff(
-                lambda: self.client.place_local_market_sell(
-                    pos.symbol,
-                    pos.qty,
-                    client_order_id=client_order_id,
-                    amount_spec=pos.local_amount_spec,
-                ),
+                _fenced_spot_sell,
                 max_retries=4,
                 base_delay=0.5,
                 label=f"force-close spot liquidation {pos.symbol} for {pair_key}",

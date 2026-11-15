@@ -62,6 +62,12 @@ class EngineEntrySubmissionMixin:
             ),
             "spot_cost_usdt": actual_cost,
             "futures_margin_usdt": actual_cost,
+            "expected_net_profit_usdt": float(
+                getattr(directives, "estimated_net_profit_usdt", 0.0) or 0.0
+            ),
+            "expected_fees_usdt": float(
+                getattr(directives, "estimated_fees_usdt", 0.0) or 0.0
+            ),
         }
 
     def _pending_entry_record(
@@ -113,6 +119,15 @@ class EngineEntrySubmissionMixin:
             "placed_time": placed_time,
             "spot_cost_usdt": actual_cost_usdt,
             "futures_margin_usdt": actual_cost_usdt,
+            "expected_net_profit_usdt": float(
+                getattr(directives, "estimated_net_profit_usdt", 0.0) or 0.0
+            ),
+            "expected_fees_usdt": float(
+                getattr(directives, "estimated_fees_usdt", 0.0) or 0.0
+            ),
+            "expected_hold_hours": float(
+                getattr(self.config, "estimated_holding_hours", 0) or 0
+            ),
         }
 
     @staticmethod

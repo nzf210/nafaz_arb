@@ -210,7 +210,12 @@ class EngineRecoveryMixin:
             )
 
     async def _verify_recovered_active_positions(self) -> set:
-        """Verify restored live positions and return pairs proven consistent."""
+        """Verify restored live positions on both legs before unlocking entry.
+
+        A futures short with no spot inventory is not delta neutral: the hedge
+        protects nothing, and the exit path cannot sell what the local venue
+        does not hold. Both legs must agree with the restored snapshot.
+        """
         verified_pairs = set()
         if not self.active_positions:
             return verified_pairs
@@ -224,11 +229,13 @@ class EngineRecoveryMixin:
                 await self._mark_recovered_group_unverified(symbol, items)
             return verified_pairs
 
+        spot_deficits = await self._verify_recovered_spot_legs()
+
         for (_, global_symbol), items in groups.items():
             actual_qty, reason = await self._fetch_recovered_short_quantity(
                 global_symbol, items
             )
-            if reason is None:
+            if reason is None and global_symbol not in spot_deficits:
                 verified_pairs.update(pair_tag for pair_tag, _ in items)
                 logger.info(
                     f"[Recovery] verified {global_symbol} short quantity "
@@ -236,10 +243,96 @@ class EngineRecoveryMixin:
                     f"{sum(pos.qty for _, pos in items)}"
                 )
                 continue
+            if reason is None:
+                reason = spot_deficits[global_symbol]
             await self._mark_recovered_group_mismatch(
                 global_symbol, items, reason, actual_qty
             )
         return verified_pairs
+
+    @staticmethod
+    def _base_asset_from_symbol(symbol: str) -> str:
+        """Best-effort base asset for a venue symbol ('btc_idr' -> 'BTC')."""
+        raw = str(symbol or "").upper().replace(":USDT", "")
+        for separator in ("/", "_", "-"):
+            if separator in raw:
+                return raw.split(separator)[0].strip()
+        for quote in ("IDR", "USDT", "USDC", "BTC", "ETH"):
+            if raw.endswith(quote) and len(raw) > len(quote):
+                return raw[: -len(quote)].strip()
+        return ""
+
+    async def _verify_recovered_spot_legs(self) -> dict:
+        """Return {global_symbol: reason} for pairs whose spot inventory is short.
+
+        Read-only. Never sells, never sizes an order: an operator must see the
+        mismatch before any position is re-opened for trading.
+        """
+        deficits: dict = {}
+        if not self.active_positions:
+            return deficits
+        balance_of = getattr(self.client, "fetch_spot_free_balance", None)
+        if not callable(balance_of):
+            logger.warning(
+                "[Recovery] client cannot read local spot balances; "
+                "spot leg is unverified for %d restored position(s)",
+                len(self.active_positions),
+            )
+            for pair_tag, pos in self.active_positions.items():
+                symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
+                deficits[symbol] = (
+                    "local spot balance API is unavailable; spot leg could not be "
+                    "verified after restart"
+                )
+            return deficits
+
+        # Aggregate per (local venue, base asset): several pairs can hold the
+        # same asset, and the venue reports one combined balance.
+        expected: dict = {}
+        symbols_by_key: dict = {}
+        for pair_tag, pos in self.active_positions.items():
+            base_asset = str(
+                getattr(pos, "base_asset", "")
+                or getattr(self._pair_infos.get(pair_tag), "base_asset", "")
+                or ""
+            ).strip().upper()
+            if not base_asset:
+                base_asset = self._base_asset_from_symbol(
+                    getattr(pos, "symbol", "") or ""
+                )
+            symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
+            if not base_asset:
+                deficits[symbol] = (
+                    "base asset is unknown; local spot leg cannot be verified"
+                )
+                continue
+            key = (str(getattr(pos, "local_exchange", "") or "").lower(), base_asset, pair_tag)
+            expected[key] = float(getattr(pos, "qty", 0.0) or 0.0)
+            symbols_by_key[key] = symbol
+
+        for (local_venue, base_asset, pair_tag), expected_qty in expected.items():
+            symbol = symbols_by_key[(local_venue, base_asset, pair_tag)]
+            try:
+                actual = await balance_of(base_asset)
+                actual = float(actual)
+            except Exception as exc:
+                deficits[symbol] = (
+                    f"cannot verify local spot {base_asset} balance on "
+                    f"{local_venue or 'unknown'}: {type(exc).__name__}: {exc}"
+                )
+                continue
+            tolerance = max(1e-10, abs(expected_qty) * 1e-4)
+            if actual + tolerance < expected_qty:
+                deficits[symbol] = (
+                    f"local spot inventory short after restart: expected={expected_qty} "
+                    f"{base_asset}, venue free balance={actual} on "
+                    f"{local_venue or 'unknown'}"
+                )
+                logger.critical(
+                    "[Recovery] %s: spot leg short %s %s on %s (expected %s)",
+                    symbol, expected_qty - actual, base_asset, local_venue, expected_qty,
+                )
+        return deficits
 
     async def _persist_pending_entry(
         self, pair_tag: str, order_info: dict, ttl: Optional[int] = None

@@ -1074,6 +1074,8 @@ Acceptance:
 - Mismatch tidak hilang setelah restart.
 - Semua adjustment dapat diaudit.
 
+**Status implementasi (2026-11-15):** tabel `public.execution_fill_ledger` dan `public.pair_pnl_deviations` sudah ada; penulisan aktual memakai asyncpg (`executor/fill_ledger.py`) karena Supabase REST nonaktif di VPS. Lihat [TAHAP4-FILL-LEDGER-HARDENING.md](./TAHAP4-FILL-LEDGER-HARDENING.md). Acceptance di atas belum seluruhnya tertutup: replay trade individual per-fill masih bergantung pada worker yang memakai Supabase, dan `funding_deviation_usd` belum dimodelkan.
+
 ## 23. P1 tambahan — wajib sebelum ekspansi LIVE
 
 ### 23.1 Market Data Quality & Execution Readiness Gate

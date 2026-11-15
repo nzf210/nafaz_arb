@@ -8,6 +8,7 @@ stable client order id and reconcile ambiguous acknowledgements.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import hashlib
@@ -45,10 +46,68 @@ class GlobalStopService:
         self.min_size = min_size
         self.max_size = max_size
         self.pool = None
+        # Set only when the driver is missing or the DSN is unusable: retrying
+        # such a configuration on every order would add latency for nothing.
+        self._pool_unusable = False
 
     @property
     def enabled(self) -> bool:
         return self.pool is not None
+
+    @staticmethod
+    def _is_connection_error(exc: BaseException) -> bool:
+        """True for errors that mean the pool itself is dead, not the statement."""
+        name = type(exc).__name__
+        return name in (
+            "ConnectionDoesNotExistError", "ConnectionFailureError",
+            "InterfaceError", "TooManyConnectionsError", "PostgresConnectionError",
+            "OSError", "ConnectionResetError", "TimeoutError",
+        )
+
+    async def ensure_pool(self) -> bool:
+        """Return a usable pool, transparently reconnecting after a drop.
+
+        PostgreSQL is the canonical fencing authority, so an instance that has
+        lost its connection must prove the authority is reachable again rather
+        than silently keep trading. A failed reconnect leaves the pool empty and
+        the caller fails closed.
+        """
+        if self.pool is not None:
+            return True
+        if self._pool_unusable or not self.dsn:
+            return False
+        try:
+            import asyncpg
+        except ImportError:
+            self._pool_unusable = True
+            logger.critical("asyncpg missing; PostgreSQL STOP fencing is unavailable")
+            return False
+        try:
+            self.pool = await asyncpg.create_pool(
+                dsn=self.dsn, min_size=self.min_size, max_size=self.max_size,
+                command_timeout=10,
+            )
+            logger.warning("PostgreSQL STOP/fencing pool re-established")
+            return True
+        except Exception:
+            logger.exception("PostgreSQL STOP/fencing pool reconnect failed")
+            self.pool = None
+            return False
+
+    def _demote_broken_pool(self, exc: BaseException) -> None:
+        if not self._is_connection_error(exc):
+            return
+        pool = self.pool
+        self.pool = None
+        if pool is not None:
+            try:
+                asyncio.create_task(pool.close())
+            except Exception:
+                pass
+        logger.critical(
+            "PostgreSQL STOP/fencing connection lost (%s); the next order will re-prove "
+            "the authority before submitting", type(exc).__name__,
+        )
 
     async def start(self) -> None:
         if self.pool is not None:
@@ -158,6 +217,73 @@ class GlobalStopService:
         return dict(row)
 
     @asynccontextmanager
+    async def derisk_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
+        """Fence a risk-reducing submit (exit, unwind, rollback, force-close).
+
+        Global STOP blocks new exposure, never the removal of existing exposure.
+        A stopped system that cannot close a position is strictly more dangerous
+        than one that can, so these legs proceed while STOP is active.
+
+        The serialization lock and the unresolved-submit guard are still applied:
+        a stop must not interleave with a de-risking submit, and an ambiguous
+        in-flight order must be resolved before another one is issued.
+        """
+        if not await self.ensure_pool():
+            raise GlobalStopError("PostgreSQL STOP serialization is unavailable; de-risking blocked")
+        if not client_order_id or len(client_order_id) > 128:
+            raise GlobalStopError("valid stable client_order_id is required before submit")
+        try:
+            async with self.pool.acquire() as conn:
+                locked = False
+                try:
+                    await conn.execute("select pg_advisory_lock($1)", FENCE_LOCK_KEY)
+                    locked = True
+                    async with conn.transaction():
+                        control = await conn.fetchrow(
+                            "select is_stopped, epoch, reason from public.executor_global_control "
+                            "where singleton_id = 1 for update"
+                        )
+                        if control is None:
+                            raise GlobalStopError("global control row is missing")
+                        if control["is_stopped"]:
+                            logger.warning(
+                                "de-risking submit %s proceeds under global STOP (epoch=%s reason=%s)",
+                                client_order_id, control["epoch"], control["reason"] or "unspecified",
+                            )
+                        unresolved = await conn.fetchrow(
+                            "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
+                            "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
+                            "order by created_at limit 1",
+                            client_order_id,
+                        )
+                        if unresolved is not None:
+                            # Advisory only for de-risking: refusing to close a
+                            # position because an unrelated entry is ambiguous
+                            # would leave real exposure open. The serialization
+                            # lock still prevents the two from interleaving.
+                            logger.warning(
+                                "de-risking submit %s proceeds while an unresolved submit exists "
+                                "(%s:%s client_order_id=%s status=%s)",
+                                client_order_id, unresolved["exchange"], unresolved["symbol"],
+                                unresolved["client_order_id"], unresolved["status"],
+                            )
+                    yield conn
+                finally:
+                    if locked:
+                        try:
+                            await conn.execute("select pg_advisory_unlock($1)", FENCE_LOCK_KEY)
+                        except Exception:
+                            logger.warning(
+                                "could not release PostgreSQL de-risking session lock; "
+                                "connection loss must be treated as ambiguous"
+                            )
+        except GlobalStopError:
+            raise
+        except Exception as exc:
+            self._demote_broken_pool(exc)
+            raise
+
+    @asynccontextmanager
     async def order_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
         """Hold a session advisory lock while a committed SUBMITTING row protects the HTTP side effect.
 
@@ -165,64 +291,71 @@ class GlobalStopService:
         The separately committed SUBMITTING ledger row survives that disconnect
         and blocks every later entry until venue reconciliation resolves it.
         """
-        self._require_pool()
+        if not await self.ensure_pool():
+            raise GlobalStopError("PostgreSQL STOP fencing is unavailable; create-order blocked")
         if not client_order_id or len(client_order_id) > 128:
             raise GlobalStopError("valid stable client_order_id is required before submit")
-        async with self.pool.acquire() as conn:
-            locked = False
-            try:
-                await conn.execute("select pg_advisory_lock($1)", FENCE_LOCK_KEY)
-                locked = True
-                async with conn.transaction():
-                    control = await conn.fetchrow(
-                        "select is_stopped, epoch, reason from public.executor_global_control "
-                        "where singleton_id = 1 for update"
-                    )
-                    if control is None:
-                        raise GlobalStopError("global control row is missing")
-                    if control["is_stopped"]:
-                        raise GlobalStopError(
-                            f"global STOP active (epoch={control['epoch']} reason={control['reason'] or 'unspecified'})"
+        try:
+            async with self.pool.acquire() as conn:
+                locked = False
+                try:
+                    await conn.execute("select pg_advisory_lock($1)", FENCE_LOCK_KEY)
+                    locked = True
+                    async with conn.transaction():
+                        control = await conn.fetchrow(
+                            "select is_stopped, epoch, reason from public.executor_global_control "
+                            "where singleton_id = 1 for update"
                         )
-                    unresolved = await conn.fetchrow(
-                        "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
-                        "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
-                        "order by created_at limit 1",
-                        client_order_id,
-                    )
-                    if unresolved is not None:
-                        raise GlobalStopError(
-                            "unresolved in-flight submit blocks new entries: "
-                            f"{unresolved['exchange']}:{unresolved['symbol']} "
-                            f"client_order_id={unresolved['client_order_id']} status={unresolved['status']}"
+                        if control is None:
+                            raise GlobalStopError("global control row is missing")
+                        if control["is_stopped"]:
+                            raise GlobalStopError(
+                                f"global STOP active (epoch={control['epoch']} reason={control['reason'] or 'unspecified'})"
+                            )
+                        unresolved = await conn.fetchrow(
+                            "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
+                            "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
+                            "order by created_at limit 1",
+                            client_order_id,
                         )
-                    attempt = await conn.fetchrow(
-                        "update public.executor_submit_attempts "
-                        "set status='SUBMITTING', submit_started_at=now(), "
-                        "submit_count=submit_count+1, fence_epoch=$2, updated_at=now() "
-                        "where client_order_id=$1 and status='PREPARED' "
-                        "returning client_order_id",
-                        client_order_id, int(control["epoch"]),
-                    )
-                    if attempt is None:
-                        raise GlobalStopError(
-                            f"durable PREPARED submit attempt missing or already used: {client_order_id}"
+                        if unresolved is not None:
+                            raise GlobalStopError(
+                                "unresolved in-flight submit blocks new entries: "
+                                f"{unresolved['exchange']}:{unresolved['symbol']} "
+                                f"client_order_id={unresolved['client_order_id']} status={unresolved['status']}"
+                            )
+                        attempt = await conn.fetchrow(
+                            "update public.executor_submit_attempts "
+                            "set status='SUBMITTING', submit_started_at=now(), "
+                            "submit_count=submit_count+1, fence_epoch=$2, updated_at=now() "
+                            "where client_order_id=$1 and status='PREPARED' "
+                            "returning client_order_id",
+                            client_order_id, int(control["epoch"]),
                         )
-                # The SUBMITTING state is committed while the session lock is
-                # still held. A connection loss now releases the lock but not
-                # this durable row.
-                yield conn
-            finally:
-                if locked:
-                    try:
-                        await conn.execute("select pg_advisory_unlock($1)", FENCE_LOCK_KEY)
-                    except Exception:
-                        # A broken connection has already caused PostgreSQL to
-                        # release its session-level lock; the ledger is the guard.
-                        logger.warning(
-                            "could not explicitly release PostgreSQL submit session lock; "
-                            "connection loss must be treated as ambiguous"
-                        )
+                        if attempt is None:
+                            raise GlobalStopError(
+                                f"durable PREPARED submit attempt missing or already used: {client_order_id}"
+                            )
+                    # The SUBMITTING state is committed while the session lock is
+                    # still held. A connection loss now releases the lock but not
+                    # this durable row.
+                    yield conn
+                finally:
+                    if locked:
+                        try:
+                            await conn.execute("select pg_advisory_unlock($1)", FENCE_LOCK_KEY)
+                        except Exception:
+                            # A broken connection has already caused PostgreSQL to
+                            # release its session-level lock; the ledger is the guard.
+                            logger.warning(
+                                "could not explicitly release PostgreSQL submit session lock; "
+                                "connection loss must be treated as ambiguous"
+                            )
+        except GlobalStopError:
+            raise
+        except Exception as exc:
+            self._demote_broken_pool(exc)
+            raise
 
     async def mark_submit_acknowledged(
         self, client_order_id: str, order: dict

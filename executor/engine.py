@@ -45,9 +45,11 @@ from executor.order_recovery import OrderRecoveryMixin
 from executor.order_registry import UniversalOrderRegistry
 from executor.models import OrderRecord, OrderRole
 from executor.risk import RiskMixin
+from executor.ledger_hooks import LedgerMixin
 from executor.rollback import RollbackMixin
 from executor.supabase import SupabaseWriter
 from executor.global_stop import GlobalStopService
+from executor.fill_ledger import ExecutionFillLedger
 from executor.postgres_risk import PostgresRiskStateService
 from executor.order_slots import OrderSlotManager
 from executor.mutation_gateway import MutationGateway
@@ -94,6 +96,7 @@ class ArbitrageEngine(
     OrderRecoveryMixin,
     RollbackMixin,
     RiskMixin,
+    LedgerMixin,
 ):
     """
     Hybrid Maker-Taker + Positive Funding Rate Arbitrage Engine.
@@ -192,6 +195,9 @@ class ArbitrageEngine(
             PostgresRiskStateService(dsn=pg_dsn)
             if pg_dsn else None
         )
+        # Shares the fencing pool: PostgreSQL is the only reliable sink here,
+        # because the Supabase REST writer is disabled in production.
+        self.fill_ledger = ExecutionFillLedger(dsn=pg_dsn) if pg_dsn else None
         self.slot_manager = OrderSlotManager()
         self.mutation_gateway = MutationGateway(
             global_stop=self.global_stop,
@@ -294,6 +300,8 @@ class ArbitrageEngine(
                 self.slot_manager.pool = self.global_stop.pool
             if self.command_processor is not None:
                 self.command_processor.pool = self.global_stop.pool
+            if getattr(self, "fill_ledger", None) is not None:
+                self.fill_ledger.pool = self.global_stop.pool
         # Align venue clocks before any signed request. A drifted local clock is
         # rejected as an invalid signature, which is easily mistaken for a
         # permission problem and cannot be retried into success.

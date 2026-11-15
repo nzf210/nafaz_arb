@@ -92,6 +92,12 @@ class EntryHedgeMixin:
                     filled_qty=unhedged_delta,
                     price=price_idr / usdt_rate if usdt_rate > 0 else price_idr,
                 )
+            # Ledger the spot leg before the hedge so a hedge failure still
+            # leaves the actual spot execution on record for reconciliation.
+            spot_fill_price = helpers.extract_fill_price(order) or price_idr
+            await self._record_spot_entry_fill(
+                pair_tag, order_info, order, unhedged_delta, spot_fill_price, usdt_rate
+            )
             await self._execute_entry_hedge(
                 pair_tag, order_info, unhedged_delta, price_idr, usdt_rate
             )
@@ -556,6 +562,11 @@ class EntryHedgeMixin:
             pair_tag, order_info, actual_hedged_qty,
             short_order, price_idr, usdt_rate,
         )
+        # Immutable ledger: the spot leg that triggered this hedge was already
+        # appended in _handle_entry_fills, so only the hedge leg is new here.
+        await self._record_futures_entry_fill(
+            pair_tag, order_info, short_order, actual_hedged_qty, usdt_rate
+        )
         self.supabase.order(
             pair_tag,
             "futures_entry",
@@ -871,6 +882,9 @@ class EntryHedgeMixin:
                 fee_verified=bool(order_info.get("fee_verified", False)),
                 fee_fetched_at_ms=int(order_info.get("fee_fetched_at_ms", 0)),
                 fee_asset_surcharge_pct=float(order_info.get("fee_asset_surcharge_pct", 0.0)),
+                expected_net_profit_usdt=float(order_info.get("expected_net_profit_usdt", 0.0) or 0.0),
+                expected_fees_usdt=float(order_info.get("expected_fees_usdt", 0.0) or 0.0),
+                expected_hold_hours=float(order_info.get("expected_hold_hours", 0.0) or 0.0),
             )
         else:
             self.active_positions[pair_tag].qty += qty

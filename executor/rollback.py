@@ -20,6 +20,7 @@ from executor.helpers import (
 )
 from executor.models import OrderRole, PositionState
 from executor.quantity import AmountSpec
+from executor.derisk_fence import derisk_fence
 
 logger = logging.getLogger("executor.engine")
 
@@ -84,23 +85,29 @@ class RollbackMixin:
                 pair_tag, unhedged_delta, sell_qty, symbol,
             )
         try:
+            async def _fenced_rollback_sell():
+                # Emergency unwind: STOP must never block removing exposure, but
+                # the submit still serializes against STOP and other submits.
+                async with derisk_fence(self, client_order_id=rollback_coid):
+                    return await self.client.place_local_market_sell(
+                        symbol,
+                        sell_qty,
+                        client_order_id=rollback_coid,
+                        amount_spec=amount_spec
+                        or (
+                            AmountSpec(
+                                unit="BASE",
+                                step=legacy_amount_step,
+                                minimum=legacy_amount_step,
+                                base_per_unit=1.0,
+                            )
+                            if legacy_amount_step > 0
+                            else None
+                        ),
+                    )
+
             emergency_order = await retry_with_backoff(
-                lambda: self.client.place_local_market_sell(
-                    symbol,
-                    sell_qty,
-                    client_order_id=rollback_coid,
-                    amount_spec=amount_spec
-                    or (
-                        AmountSpec(
-                            unit="BASE",
-                            step=legacy_amount_step,
-                            minimum=legacy_amount_step,
-                            base_per_unit=1.0,
-                        )
-                        if legacy_amount_step > 0
-                        else None
-                    ),
-                ),
+                _fenced_rollback_sell,
                 max_retries=max_retries,
                 base_delay=0.5,
                 label=f"hedge rollback sell {symbol} for {pair_tag}",

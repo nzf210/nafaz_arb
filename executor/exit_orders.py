@@ -14,6 +14,7 @@ from executor.private_stream import fetch_order_preferring_stream
 from executor.fee_engine import rates_for_position, round_trip_fees_usdt
 from executor.exit_decision_engine import ExitAction
 from executor.exit_pricing import compute_vwap_exit_fill, calculate_chunk_exit_qty
+from executor.derisk_fence import derisk_fence
 
 logger = logging.getLogger("executor.engine")
 
@@ -194,13 +195,14 @@ class ExitOrderManagementMixin:
                 required=False,
             )
             try:
-                order = await self.client.place_local_limit_sell(
-                    pos.symbol,
-                    qty_to_sell,
-                    exchange_limit_sell_price,
-                    client_order_id=exit_coid,
-                    amount_spec=pos.local_amount_spec,
-                )
+                async with derisk_fence(self, client_order_id=exit_coid):
+                    order = await self.client.place_local_limit_sell(
+                        pos.symbol,
+                        qty_to_sell,
+                        exchange_limit_sell_price,
+                        client_order_id=exit_coid,
+                        amount_spec=pos.local_amount_spec,
+                    )
             except Exception as submit_err:
                 rejection_check = getattr(self, "_is_definitive_order_rejection", None)
                 if callable(rejection_check) and rejection_check(submit_err):
@@ -425,12 +427,13 @@ class ExitOrderManagementMixin:
             required=False,
         )
         try:
-            order = await self.client.place_local_market_sell(
-                pos.symbol,
-                sell_qty,
-                client_order_id=taker_coid,
-                amount_spec=pos.local_amount_spec,
-            )
+            async with derisk_fence(self, client_order_id=taker_coid):
+                order = await self.client.place_local_market_sell(
+                    pos.symbol,
+                    sell_qty,
+                    client_order_id=taker_coid,
+                    amount_spec=pos.local_amount_spec,
+                )
         except Exception as exc:
             rejection_check = getattr(self, "_is_definitive_order_rejection", None)
             if callable(rejection_check) and rejection_check(exc):

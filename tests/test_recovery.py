@@ -578,6 +578,8 @@ async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis,
     async def matching_short(symbol):
         return [{"symbol": symbol, "contracts": 0.005, "contractSize": 1.0, "side": "short"}]
     client.fetch_positions = matching_short
+    # Both legs must match: a futures short alone is not delta neutral.
+    client.set_spot_balance("BTC", 0.005)
     await fake_redis.set("arb:active_pos:indodax:btc_idr", json.dumps(pos.to_dict()))
 
     from executor.global_stop import GlobalStopService

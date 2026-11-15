@@ -49,6 +49,11 @@ class ActivePosition:
     fee_fetched_at_ms: int = 0
     fee_asset_surcharge_pct: float = 0.0
     unhedged_exit_base_qty: float = 0.0
+    # Scanner-predicted economics captured at entry, used to attribute realized
+    # fills back to the model that justified the trade (Tahap 4.1).
+    expected_net_profit_usdt: float = 0.0
+    expected_fees_usdt: float = 0.0
+    expected_hold_hours: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -91,6 +96,9 @@ class ActivePosition:
             "fee_fetched_at_ms": self.fee_fetched_at_ms,
             "fee_asset_surcharge_pct": self.fee_asset_surcharge_pct,
             "unhedged_exit_base_qty": self.unhedged_exit_base_qty,
+            "expected_net_profit_usdt": self.expected_net_profit_usdt,
+            "expected_fees_usdt": self.expected_fees_usdt,
+            "expected_hold_hours": self.expected_hold_hours,
         }
 
     @classmethod
@@ -152,6 +160,9 @@ class ActivePosition:
             fee_fetched_at_ms=int(d.get("fee_fetched_at_ms", 0)),
             fee_asset_surcharge_pct=float(d.get("fee_asset_surcharge_pct", 0.0)),
             unhedged_exit_base_qty=float(d.get("unhedged_exit_base_qty", 0.0) or 0.0),
+            expected_net_profit_usdt=float(d.get("expected_net_profit_usdt", 0.0) or 0.0),
+            expected_fees_usdt=float(d.get("expected_fees_usdt", 0.0) or 0.0),
+            expected_hold_hours=float(d.get("expected_hold_hours", 0.0) or 0.0),
         )
 
 

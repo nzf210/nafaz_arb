@@ -64,6 +64,7 @@ Tidak boleh melakukan normalisasi yang mengubah nilai efektif (mis. pembulatan n
 - [ ] Order intent dibuat durable sebelum network submit dengan idempotency key/client order id yang stabil.
 - [x] Jalur spot entry `_submit_entry_order` dan STOP request memakai advisory transaction lock PostgreSQL yang sama; transaksi menahan lock selama create-order HTTP call.
 - [ ] Audit dan integrasikan seluruh jalur create-order lain yang membuka exposure; tambahkan concurrent multi-instance integration test.
+  - Sebagian: jalur de-risking (`exit_orders`, `exit_execution`, `force_close_legs`, `rollback`) sekarang melewati advisory lock serialisasi yang sama via `derisk_submit_fence`. Entry tetap fail-closed. Concurrent multi-instance integration test belum ada.
 - [ ] STOP commit harus mendahului setiap submit yang belum melewati titik serialisasi; submit yang telah memperoleh hak serialisasi lebih dahulu dicatat sebagai in-flight dan diselesaikan/reconcile secara eksplisit.
 - [ ] Jangan menganggap pemeriksaan STOP lalu melepas transaksi sebelum HTTP request sebagai fencing yang cukup.
 - [ ] Redis Pub/Sub hanya mempercepat propagasi STOP. Setiap instance wajib membaca ulang state PostgreSQL sebelum order admission dan pada jalur submit.

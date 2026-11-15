@@ -8,6 +8,7 @@ from executor.models import ActivePosition, OrderRole, PositionState
 from executor import helpers
 from executor.helpers import ARB_TRADE_HISTORY_KEY, ARB_TRADE_HISTORY_MAX_LEN, BALANCES_KEY, build_client_order_id
 from executor.fee_engine import rates_for_position, round_trip_fee_breakdown_usdt
+from executor.derisk_fence import derisk_fence
 
 logger = logging.getLogger("executor.engine")
 
@@ -208,12 +209,13 @@ class ExitExecutionMixin:
                 global_amount_spec=pos.global_amount_spec,
                 required=False,
             )
-            close_order = await self.client.close_global_short_market(
-                global_sym,
-                unclosed_delta,
-                client_order_id=unwind_coid,
-                amount_spec=pos.global_amount_spec,
-            )
+            async with derisk_fence(self, client_order_id=unwind_coid):
+                close_order = await self.client.close_global_short_market(
+                    global_sym,
+                    unclosed_delta,
+                    client_order_id=unwind_coid,
+                    amount_spec=pos.global_amount_spec,
+                )
             if not isinstance(close_order, dict):
                 raise ValueError(
                     "futures close returned no verifiable order payload after spot exit fill"
@@ -288,6 +290,22 @@ class ExitExecutionMixin:
                     entry_price_idr, short_entry_usdt, short_exit_usdt,
                     usdt_rate, total_qty_before,
                 )
+            )
+            # Ledger both exit legs before any bookkeeping that could fail, so
+            # the immutable fill record does not depend on post-trade reporting.
+            spot_exit_order = dict(order_info)
+            await self._record_spot_exit_fill(
+                pair_tag, pos, spot_exit_order, unclosed_delta,
+                exit_price_idr, usdt_rate,
+                realized_funding_usd=float(closed_trade.get("accumulated_funding_usdt") or 0.0),
+            )
+            await self._record_futures_exit_fill(
+                pair_tag, pos, close_order, unclosed_delta,
+                short_exit_usdt, usdt_rate,
+            )
+            await self._record_expected_vs_realized(
+                pair_tag, pos, closed_trade, unclosed_delta,
+                price_idr=exit_price_idr, usdt_rate=usdt_rate,
             )
             await self._persist_closed_trade(
                 pair_tag, pos, closed_trade, spot_cost, futures_margin,
