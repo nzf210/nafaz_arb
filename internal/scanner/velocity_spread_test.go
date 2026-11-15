@@ -295,3 +295,40 @@ func TestPriorityScore_RedisZSetRanksHigherVelocityFirst(t *testing.T) {
 		t.Errorf("got score %f, want 1.35", top[0].Score)
 	}
 }
+
+func TestPriorityScore_ExitabilityPenaltyBeatsWideNominalSpread(t *testing.T) {
+	targetOrderUSD := 100.0
+
+	// Coin X: NetROIPct = 2.0%, active velocity (turnover = 450, vel = 1.5), but exitability = 0.10 (internal spread > 1.5%)
+	scoreX, _ := calculatePriorityScore(2.0, 450.0, targetOrderUSD, 1.0, 0.10)
+	expectedX := 2.0 * 1.5 * 1.0 * 0.10 // 0.30
+	if math.Abs(scoreX-expectedX) > 1e-6 {
+		t.Errorf("expected Coin X score %.4f, got %.4f", expectedX, scoreX)
+	}
+
+	// Coin Y: NetROIPct = 0.8%, normal velocity (turnover = 300, vel = 1.0), high exitability = 0.95 (tight internal spread)
+	scoreY, _ := calculatePriorityScore(0.8, 300.0, targetOrderUSD, 1.0, 0.95)
+	expectedY := 0.8 * 1.0 * 1.0 * 0.95 // 0.76
+	if math.Abs(scoreY-expectedY) > 1e-6 {
+		t.Errorf("expected Coin Y score %.4f, got %.4f", expectedY, scoreY)
+	}
+
+	// High exitability Coin Y MUST rank above Coin X despite Coin X having 2.5x larger nominal ROI
+	if scoreY <= scoreX {
+		t.Fatalf("Coin Y (score %.4f) with high exitability should beat Coin X (score %.4f) with penalized exitability", scoreY, scoreX)
+	}
+}
+
+func TestSpreadTracker_ConfigurableThresholds(t *testing.T) {
+	st := &SpreadTracker{}
+
+	// Test custom threshold EMA = 2.0, StdDev = 0.15
+	var isStructural bool
+	for i := 0; i < 30; i++ {
+		_, _, _, isStructural = st.UpdateWithThresholds(2.2, 2.0, 0.15)
+	}
+	if !isStructural {
+		t.Fatalf("expected structural spread trap with custom thresholds (ema > 2.0, stdDev < 0.15)")
+	}
+}
+

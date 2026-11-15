@@ -44,7 +44,67 @@ func (s *Service) validateLiquidityVelocity(sb, pb domain.OrderBook, requiredNot
 	if quote := topOfBookQuoteValue(pb.Bids); quote.LessThan(threshold) {
 		return fmt.Errorf("insufficient perp top-of-book liquidity: %s < %s", quote.String(), threshold.String())
 	}
+	if quote := topOfBookQuoteValue(sb.Bids); quote.LessThan(threshold) {
+		return fmt.Errorf("insufficient spot bid (exit) top-of-book liquidity: %s < %s", quote.String(), threshold.String())
+	}
+	if quote := topOfBookQuoteValue(pb.Asks); quote.LessThan(threshold) {
+		return fmt.Errorf("insufficient perp ask (exit) top-of-book liquidity: %s < %s", quote.String(), threshold.String())
+	}
 	return nil
+}
+
+// CalculateExitabilityScore evaluates how easily the spot leg can be closed (exitability).
+// Penalizes empty bid depth and high internal bid-ask spread (> 1.5%).
+// ponytail: depth within 1.5% and spread penalty bounded [0.01, 1.0]; upgrade to orderbook-walker for multi-tier VWAP.
+func CalculateExitabilityScore(rawSB domain.OrderBook, fxRate float64, targetOrderUSD float64) float64 {
+	if len(rawSB.Bids) == 0 || rawSB.Bids[0].Price <= 0 || rawSB.Bids[0].Quantity <= 0 {
+		return 0.0
+	}
+	if len(rawSB.Asks) == 0 || rawSB.Asks[0].Price <= 0 || rawSB.Asks[0].Quantity <= 0 {
+		return 0.0
+	}
+
+	bestBid := rawSB.Bids[0].Price
+	bestAsk := rawSB.Asks[0].Price
+	if bestAsk <= bestBid {
+		return 0.0
+	}
+
+	internalSpreadPct := ((bestAsk - bestBid) / bestAsk) * 100.0
+
+	if targetOrderUSD <= 0 {
+		targetOrderUSD = 50.0
+	}
+
+	minExitPrice := bestBid * 0.985
+	var exitDepthUSD float64
+	for _, lvl := range rawSB.Bids {
+		if lvl.Price <= 0 || lvl.Quantity <= 0 || lvl.Price < minExitPrice {
+			break
+		}
+		if fxRate > 1.0 {
+			exitDepthUSD += (lvl.Price * lvl.Quantity) / fxRate
+		} else {
+			exitDepthUSD += lvl.Price * lvl.Quantity
+		}
+	}
+
+	depthRatio := exitDepthUSD / targetOrderUSD
+	baseScore := math.Min(1.0, math.Max(0.05, depthRatio))
+
+	if internalSpreadPct > 1.5 {
+		penaltyFactor := 0.2 * (1.5 / internalSpreadPct)
+		if penaltyFactor > 0.2 {
+			penaltyFactor = 0.2
+		}
+		if penaltyFactor < 0.01 {
+			penaltyFactor = 0.01
+		}
+		return baseScore * penaltyFactor
+	}
+
+	spreadDiscount := 1.0 - (internalSpreadPct / 1.5) * 0.15
+	return math.Max(0.05, baseScore*spreadDiscount)
 }
 
 // topOfBookQuoteValue returns the notional (price * quantity) resting on the

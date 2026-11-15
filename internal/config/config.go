@@ -79,26 +79,26 @@ type ExchangeFeeProfile struct {
 }
 
 type Config struct {
-	Mode                          string         `json:"mode"`
-	ExecutionMode                 string         `json:"execution_mode"`
-	ListenAddr                    string         `json:"listen_addr"`
-	APIAuthToken                  string         `json:"api_auth_token"`
-	ScanIntervalSeconds           int            `json:"scan_interval_seconds"`
-	QuoteAssets                   []string       `json:"quote_assets"`
-	CheckOpenPositions            bool           `json:"check_open_positions"`
-	ExcludeOpenOrders             bool           `json:"exclude_open_orders"`
-	CapitalTotal                  float64        `json:"capital_total"`
-	AllocationPerPair             float64        `json:"allocation_per_pair"`
-	PerpLeverage                  float64        `json:"perp_leverage"`
-	EstimatedHoldingHours         int            `json:"estimated_holding_hours"`
-	MinNetROIPct                  float64        `json:"min_net_roi_pct"`
-	MaxNetROIPct                  float64        `json:"max_net_roi_pct"`
-	MinNetProfitQuote             float64        `json:"min_net_profit_quote"`
-	MaxSlippagePct                float64        `json:"max_slippage_pct"`
-	SpotTakerFeePct               float64        `json:"spot_taker_fee_pct"`
-	FeeProfiles                   map[string]ExchangeFeeProfile `json:"fee_profiles,omitempty"`
-	SpotMakerFeePct               float64        `json:"spot_maker_fee_pct"`
-	PerpTakerFeePct               float64        `json:"perp_taker_fee_pct"`
+	Mode                  string                        `json:"mode"`
+	ExecutionMode         string                        `json:"execution_mode"`
+	ListenAddr            string                        `json:"listen_addr"`
+	APIAuthToken          string                        `json:"api_auth_token"`
+	ScanIntervalSeconds   int                           `json:"scan_interval_seconds"`
+	QuoteAssets           []string                      `json:"quote_assets"`
+	CheckOpenPositions    bool                          `json:"check_open_positions"`
+	ExcludeOpenOrders     bool                          `json:"exclude_open_orders"`
+	CapitalTotal          float64                       `json:"capital_total"`
+	AllocationPerPair     float64                       `json:"allocation_per_pair"`
+	PerpLeverage          float64                       `json:"perp_leverage"`
+	EstimatedHoldingHours int                           `json:"estimated_holding_hours"`
+	MinNetROIPct          float64                       `json:"min_net_roi_pct"`
+	MaxNetROIPct          float64                       `json:"max_net_roi_pct"`
+	MinNetProfitQuote     float64                       `json:"min_net_profit_quote"`
+	MaxSlippagePct        float64                       `json:"max_slippage_pct"`
+	SpotTakerFeePct       float64                       `json:"spot_taker_fee_pct"`
+	FeeProfiles           map[string]ExchangeFeeProfile `json:"fee_profiles,omitempty"`
+	SpotMakerFeePct       float64                       `json:"spot_maker_fee_pct"`
+	PerpTakerFeePct       float64                       `json:"perp_taker_fee_pct"`
 	// FeeAssetSurchargePct adds a conservative surcharge (in percent of
 	// notional) for fee-asset effects that the simple rate model misses:
 	// BNB discount changing the effective rate, fees billed in a non-quote
@@ -113,6 +113,8 @@ type Config struct {
 	MinSpikeScans                 int            `json:"min_spike_scans"`
 	MaxLastTradeAgeSeconds        int            `json:"max_last_trade_age_seconds"`
 	FXRateSanityPct               float64        `json:"fx_rate_sanity_pct"`
+	StructuralSpreadEMAPct        float64        `json:"structural_spread_ema_pct,omitempty"`
+	StructuralSpreadStdDevPct     float64        `json:"structural_spread_stddev_pct,omitempty"`
 	EnableWebSocketFeed           bool           `json:"enable_websocket_feed"`
 	OKXWebSocketEnabled           *bool          `json:"okx_ws_enabled,omitempty"`
 	OKXWSURL                      string         `json:"okx_ws_url"`
@@ -178,7 +180,10 @@ func (c *Config) setDefaults() {
 	c.ExchangeErrorRateThreshold = defaultFloat(c.ExchangeErrorRateThreshold, 0.5)
 	c.ExchangeErrorMinRequests = defaultInt(c.ExchangeErrorMinRequests, 5)
 	c.WebSocketBookMaxAgeSeconds = defaultInt(c.WebSocketBookMaxAgeSeconds, 2)
-	if c.OKXWebSocketEnabled == nil { enabled := strings.EqualFold(c.Mode, "LIVE"); c.OKXWebSocketEnabled = &enabled }
+	if c.OKXWebSocketEnabled == nil {
+		enabled := strings.EqualFold(c.Mode, "LIVE")
+		c.OKXWebSocketEnabled = &enabled
+	}
 	c.OKXWSURL = defaultString(c.OKXWSURL, "wss://ws.okx.com/ws/v5/public")
 	c.OKXWSStaleAfter = defaultString(c.OKXWSStaleAfter, "65s")
 	c.OKXWSReconnectInterval = defaultString(c.OKXWSReconnectInterval, "1s")
@@ -207,6 +212,8 @@ func (c *Config) setDefaults() {
 	c.SnipingWindowMinutes = defaultInt(c.SnipingWindowMinutes, 30)
 	c.FundingSubsidyFloorPct = defaultFloat(c.FundingSubsidyFloorPct, 0.08)
 	c.LocalPriceTick = defaultFloat(c.LocalPriceTick, 1.0)
+	c.StructuralSpreadEMAPct = defaultFloat(c.StructuralSpreadEMAPct, 1.5)
+	c.StructuralSpreadStdDevPct = defaultFloat(c.StructuralSpreadStdDevPct, 0.08)
 	c.GlobalFuturesExchange = defaultString(c.GlobalFuturesExchange, "binance")
 	c.Redis.Addr = defaultString(c.Redis.Addr, "localhost:6380")
 }
@@ -278,12 +285,14 @@ func (c *Config) validate() error {
 		return fmt.Errorf("indodax_ws_url must use wss://")
 	}
 	for name, value := range map[string]string{
-		"okx_ws_stale_after": c.OKXWSStaleAfter,
-		"okx_ws_reconnect_interval": c.OKXWSReconnectInterval,
+		"okx_ws_stale_after":           c.OKXWSStaleAfter,
+		"okx_ws_reconnect_interval":    c.OKXWSReconnectInterval,
 		"okx_ws_max_reconnect_backoff": c.OKXWSMaxReconnectBackoff,
-		"indodax_ws_stale_after": c.IndodaxWSStaleAfter,
+		"indodax_ws_stale_after":       c.IndodaxWSStaleAfter,
 	} {
-		if strings.TrimSpace(value) == "" { continue }
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
 		d, err := time.ParseDuration(value)
 		if err != nil || d <= 0 {
 			return fmt.Errorf("%s must be a positive Go duration", name)

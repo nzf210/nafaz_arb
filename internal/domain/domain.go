@@ -122,6 +122,7 @@ type Opportunity struct {
 	SpotTurnover5mUSD      float64   `json:"spot_turnover_5m_usd,omitempty"`
 	TradeVelocityScore     float64   `json:"trade_velocity_score,omitempty"`
 	SpreadVolatilityFactor float64   `json:"spread_volatility_factor,omitempty"`
+	ExitabilityScore       float64   `json:"exitability_score,omitempty"`
 	PriorityScore          float64   `json:"priority_score,omitempty"`
 }
 
@@ -200,6 +201,7 @@ type ExecutionDirectives struct {
 	EstimatedNetProfitUSDT           float64 `json:"estimated_net_profit_usdt"`
 	PriorityScore                   float64 `json:"priority_score,omitempty"`
 	TradeVelocityScore              float64 `json:"trade_velocity_score,omitempty"`
+	ExitabilityScore                float64 `json:"exitability_score,omitempty"`
 	SpotTurnover5mUSD               float64 `json:"spot_turnover_5m_usd,omitempty"`
 	SpreadVolatilityFactor          float64 `json:"spread_volatility_factor,omitempty"`
 	SpotEntryFeePct                  float64 `json:"spot_entry_fee_pct"`

@@ -57,6 +57,10 @@ const (
 // Update records a new spread observation, updates rolling EMA and stdDev,
 // and returns whether this pair exhibits a structural spread trap.
 func (st *SpreadTracker) Update(spreadPct float64) (ema float64, stdDev float64, count int, isStructural bool) {
+	return st.UpdateWithThresholds(spreadPct, StructuralSpreadEMA, StructuralSpreadStdDev)
+}
+
+func (st *SpreadTracker) UpdateWithThresholds(spreadPct, emaThreshold, stdDevThreshold float64) (ema float64, stdDev float64, count int, isStructural bool) {
 	st.Lock()
 	defer st.Unlock()
 
@@ -88,10 +92,16 @@ func (st *SpreadTracker) Update(spreadPct float64) (ema float64, stdDev float64,
 	variance /= n
 	stdDev = math.Sqrt(variance)
 
-	if st.count >= MinSpreadSamples && st.ema > StructuralSpreadEMA && stdDev < StructuralSpreadStdDev {
-		isStructural = true
+	if emaThreshold <= 0 {
+		emaThreshold = StructuralSpreadEMA
+	}
+	if stdDevThreshold <= 0 {
+		stdDevThreshold = StructuralSpreadStdDev
 	}
 
+	if st.count >= MinSpreadSamples && st.ema > emaThreshold && stdDev < stdDevThreshold {
+		isStructural = true
+	}
 	return st.ema, stdDev, st.count, isStructural
 }
 
@@ -126,9 +136,11 @@ func (s *Service) updateSpreadTracker(pairKey string, spreadPct float64) (ema fl
 		tracker = &SpreadTracker{}
 		s.spreadTrackers[pairKey] = tracker
 	}
+	emaThresh := s.cfg.StructuralSpreadEMAPct
+	stdDevThresh := s.cfg.StructuralSpreadStdDevPct
 	s.mu.Unlock()
 
-	return tracker.Update(spreadPct)
+	return tracker.UpdateWithThresholds(spreadPct, emaThresh, stdDevThresh)
 }
 
 // SetSpreadSamples populates historical spread samples for a pair to simulate history.
@@ -326,13 +338,18 @@ func calculateTradeVelocityScore(turnover5mUSD, targetOrderUSD float64) float64 
 	return math.Min(1.5, ratio)
 }
 
-// calculatePriorityScore computes: NetROIPct * min(1.5, SpotTurnover5mUSD / (3 * TargetOrderUSD)) * SpreadVolatilityFactor
-func calculatePriorityScore(netROIPct, turnover5mUSD, targetOrderUSD, spreadVolFactor float64) (priorityScore float64, tradeVelocityScore float64) {
-	if netROIPct <= 0 {
+// calculatePriorityScore computes: NetROIPct * min(1.5, SpotTurnover5mUSD / (3 * TargetOrderUSD)) * SpreadVolatilityFactor * ExitabilityScore
+// ponytail: multiplicative score; upgrade to multi-objective optimizer if queue priority needs dynamic weights.
+func calculatePriorityScore(netROIPct, turnover5mUSD, targetOrderUSD, spreadVolFactor float64, exitabilityScore ...float64) (priorityScore float64, tradeVelocityScore float64) {
+	exitScore := 1.0
+	if len(exitabilityScore) > 0 {
+		exitScore = exitabilityScore[0]
+	}
+	if netROIPct <= 0 || exitScore <= 0 {
 		return 0.0, 0.0
 	}
 	tradeVelocityScore = calculateTradeVelocityScore(turnover5mUSD, targetOrderUSD)
-	priorityScore = netROIPct * tradeVelocityScore * spreadVolFactor
+	priorityScore = netROIPct * tradeVelocityScore * spreadVolFactor * exitScore
 	if math.IsNaN(priorityScore) || math.IsInf(priorityScore, 0) || priorityScore < 0 {
 		priorityScore = 0.0
 	}
@@ -734,11 +751,13 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	}
 	spotTurnover5m := s.getSpotTurnover5mUSD(sm, rawSB, fxRate, now)
 	spreadVolFactor := calculateSpreadVolatilityFactor(entrySpreadPct, emaSpread, stdDevSpread, spreadCount)
-	priorityScore, tradeVelocityScore := calculatePriorityScore(op.NetROIPct, spotTurnover5m, targetOrderUSD, spreadVolFactor)
+	exitabilityScore := CalculateExitabilityScore(rawSB, fxRate, targetOrderUSD)
+	priorityScore, tradeVelocityScore := calculatePriorityScore(op.NetROIPct, spotTurnover5m, targetOrderUSD, spreadVolFactor, exitabilityScore)
 
 	op.SpotTurnover5mUSD = spotTurnover5m
 	op.TradeVelocityScore = tradeVelocityScore
 	op.SpreadVolatilityFactor = spreadVolFactor
+	op.ExitabilityScore = exitabilityScore
 	op.PriorityScore = priorityScore
 
 	// Redis updates
@@ -818,6 +837,7 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					EstimatedNetProfitUSDT:           netProfitUSDT,
 					PriorityScore:                   priorityScore,
 					TradeVelocityScore:              tradeVelocityScore,
+					ExitabilityScore:                exitabilityScore,
 					SpotTurnover5mUSD:               spotTurnover5m,
 					SpreadVolatilityFactor:          spreadVolFactor,
 					SpotEntryFeePct:                  op.SpotEntryFeePct,

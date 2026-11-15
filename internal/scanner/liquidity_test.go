@@ -312,3 +312,79 @@ func TestValidateFXRateSanity(t *testing.T) {
 		}
 	})
 }
+
+func TestLiquidityFilterRejectsThinSpotBid(t *testing.T) {
+	s := New(config.Config{CapitalTotal: 1000, AllocationPerPair: 0.5, MinTopOfBookQuoteUSDT: 50}, nil)
+	// Deep spot asks ($100 * 10 = $1000), but thin spot bids ($100 * 0.1 = $10)
+	thinBidSpot := domain.OrderBook{
+		Bids: []domain.PriceLevel{{Price: 100, Quantity: 0.1}},
+		Asks: []domain.PriceLevel{{Price: 100, Quantity: 10}},
+	}
+	deepPerp := bookWithTouch(100, 10)
+	err := s.validateLiquidityVelocity(thinBidSpot, deepPerp, decimal.NewFromFloat(50))
+	if err == nil {
+		t.Fatal("expected rejection for thin spot bid exit depth")
+	}
+	if !strings.Contains(err.Error(), "spot bid (exit)") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestLiquidityFilterRejectsThinPerpAsk(t *testing.T) {
+	s := New(config.Config{CapitalTotal: 1000, AllocationPerPair: 0.5, MinTopOfBookQuoteUSDT: 50}, nil)
+	deepSpot := bookWithTouch(100, 10)
+	thinAskPerp := domain.OrderBook{
+		Bids: []domain.PriceLevel{{Price: 100, Quantity: 10}},
+		Asks: []domain.PriceLevel{{Price: 100, Quantity: 0.1}},
+	}
+	err := s.validateLiquidityVelocity(deepSpot, thinAskPerp, decimal.NewFromFloat(50))
+	if err == nil {
+		t.Fatal("expected rejection for thin perp ask exit depth")
+	}
+	if !strings.Contains(err.Error(), "perp ask (exit)") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestCalculateExitabilityScore(t *testing.T) {
+	t.Run("empty bid side returns zero", func(t *testing.T) {
+		book := domain.OrderBook{
+			Bids: []domain.PriceLevel{},
+			Asks: []domain.PriceLevel{{Price: 100, Quantity: 10}},
+		}
+		score := CalculateExitabilityScore(book, 1.0, 50.0)
+		if score != 0.0 {
+			t.Fatalf("expected 0.0 for empty bid side, got %f", score)
+		}
+	})
+
+	t.Run("internal spread above 1.5% heavily penalized", func(t *testing.T) {
+		// Best bid: 97, best ask: 100 -> internal spread = 3.0% (> 1.5%)
+		// Deep bid: 10 units * 97 = $970 depth for $50 target
+		book := domain.OrderBook{
+			Bids: []domain.PriceLevel{{Price: 97, Quantity: 10}},
+			Asks: []domain.PriceLevel{{Price: 100, Quantity: 10}},
+		}
+		score := CalculateExitabilityScore(book, 1.0, 50.0)
+		if score > 0.20 {
+			t.Fatalf("expected heavy penalty (<= 0.20) for 3.0%% internal spread, got %f", score)
+		}
+		if score <= 0.0 {
+			t.Fatalf("expected non-zero penalized score, got %f", score)
+		}
+	})
+
+	t.Run("tight internal spread has high exitability", func(t *testing.T) {
+		// Best bid: 99.8, best ask: 100 -> internal spread = 0.2% (< 1.5%)
+		// Deep bid: 5 units * 99.8 = ~500 USD for $50 target
+		book := domain.OrderBook{
+			Bids: []domain.PriceLevel{{Price: 99.8, Quantity: 5}},
+			Asks: []domain.PriceLevel{{Price: 100, Quantity: 5}},
+		}
+		score := CalculateExitabilityScore(book, 1.0, 50.0)
+		if score < 0.90 {
+			t.Fatalf("expected high exitability score (>= 0.90), got %f", score)
+		}
+	})
+}
+

@@ -229,7 +229,11 @@ func (c *Client) PublishSignal(ctx context.Context, payload domain.ExecutorPaylo
 	profit := payload.ExecutionDirectives.EstimatedNetProfitUSDT
 	score := payload.ExecutionDirectives.PriorityScore
 	if math.IsNaN(score) || math.IsInf(score, 0) || score <= 0 {
-		score = profit
+		if payload.ExecutionDirectives.ScannerValidated && (payload.ExecutionDirectives.ExitabilityScore <= 0 || payload.ExecutionDirectives.TradeVelocityScore <= 0) {
+			score = 0.0
+		} else {
+			score = profit
+		}
 	}
 	if !math.IsNaN(score) && !math.IsInf(score, 0) && score > 0 {
 		pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: score, Member: tag})

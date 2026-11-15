@@ -41,6 +41,12 @@ class OpportunityCandidate:
     expiry_ms: int = field(compare=False)
     ranking_score: float = field(default=0.0, compare=False)
     metadata: Dict[str, Any] = field(default_factory=dict, compare=False)
+    p_entry: Optional[float] = field(default=None, compare=False)
+    p_exit: Optional[float] = field(default=None, compare=False)
+    estimated_slippage_and_fee_risk_usdt: Optional[float] = field(default=None, compare=False)
+    estimated_hold_hours: Optional[float] = field(default=None, compare=False)
+    trade_velocity_usd_per_min: Optional[float] = field(default=None, compare=False)
+    mean_reversion_frequency_per_hour: Optional[float] = field(default=None, compare=False)
 
     def __post_init__(self):
         # Tie-breaker: (inverted score, inverted net profit, timestamp, opportunity_id)
@@ -104,14 +110,90 @@ class OpportunityRanker:
         return True, "PASSED"
 
     def compute_score(self, candidate: OpportunityCandidate) -> float:
-        """Calculate lexicographic ranking score based on ROI, profit, and risk penalties."""
-        base_score = (candidate.expected_net_roi_pct * 0.7) + (
-            (candidate.expected_net_profit_usdt / max(1.0, candidate.allocated_capital_usdt)) * 100.0 * 0.3
-        )
-        # Latency penalty: penalize older quotes
-        latency_penalty = (candidate.quote_age_ms / self.max_quote_age_ms) * 0.05
-        final_score = max(0.0, base_score - latency_penalty)
-        candidate.ranking_score = round(final_score, 4)
+        """Calculate ranking score based on Expected Realized Profit per Capital-Hour."""
+        # 1. P_entry (Probability of successful entry fill)
+        p_entry = candidate.p_entry
+        if p_entry is None and "p_entry" in candidate.metadata:
+            p_entry = float(candidate.metadata["p_entry"])
+        if p_entry is None:
+            vel_score = float(candidate.metadata.get("trade_velocity_score", 1.0))
+            p_entry = min(0.98, max(0.2, 0.5 + 0.3 * min(1.5, vel_score)))
+        p_entry = max(0.01, min(0.99, p_entry))
+
+        # 2. P_exit (Probability of successful exit / high exitability)
+        p_exit = candidate.p_exit
+        if p_exit is None and "p_exit" in candidate.metadata:
+            p_exit = float(candidate.metadata["p_exit"])
+        if p_exit is None and "exitability_score" in candidate.metadata:
+            p_exit = float(candidate.metadata["exitability_score"])
+        if p_exit is None:
+            p_exit = 0.85
+        p_exit = max(0.01, min(0.99, p_exit))
+
+        # 3. Estimated Slippage & Fee Risk (USD)
+        risk_usdt = candidate.estimated_slippage_and_fee_risk_usdt
+        if risk_usdt is None and "estimated_slippage_and_fee_risk_usdt" in candidate.metadata:
+            risk_usdt = float(candidate.metadata["estimated_slippage_and_fee_risk_usdt"])
+        if risk_usdt is None:
+            fees = float(candidate.metadata.get("estimated_fees_usdt", candidate.allocated_capital_usdt * 0.002))
+            slippage_risk = candidate.allocated_capital_usdt * (self.max_entry_slippage_pct * 2.0)
+            risk_usdt = fees + slippage_risk
+        risk_usdt = max(0.05, risk_usdt)
+
+        # 4. Expected Realized Profit (USD)
+        p_joint = p_entry * p_exit
+        expected_net_profit = candidate.expected_net_profit_usdt
+        expected_realized_profit = (p_joint * expected_net_profit) - ((1.0 - p_joint) * risk_usdt)
+
+        # 5. Estimated Hold Hours (ratio of order size to TradeVelocityUSDPerMin + spread mean-reversion frequency)
+        hold_hours = candidate.estimated_hold_hours
+        if hold_hours is None and "estimated_hold_hours" in candidate.metadata:
+            hold_hours = float(candidate.metadata["estimated_hold_hours"])
+        if hold_hours is None:
+            vel_usd_per_min = candidate.trade_velocity_usd_per_min
+            if vel_usd_per_min is None and "trade_velocity_usd_per_min" in candidate.metadata:
+                vel_usd_per_min = float(candidate.metadata["trade_velocity_usd_per_min"])
+            if vel_usd_per_min is None and "spot_turnover_5m_usd" in candidate.metadata:
+                vel_usd_per_min = float(candidate.metadata["spot_turnover_5m_usd"]) / 5.0
+            if vel_usd_per_min is None and "trade_velocity_1m_usd" in candidate.metadata:
+                vel_usd_per_min = float(candidate.metadata["trade_velocity_1m_usd"])
+            if vel_usd_per_min is None or vel_usd_per_min <= 0:
+                vel_usd_per_min = max(1.0, candidate.allocated_capital_usdt / 10.0)
+
+            order_size = max(1.0, candidate.allocated_capital_usdt)
+            fill_hours = (order_size / max(0.1, vel_usd_per_min)) / 60.0
+
+            reversion_freq = candidate.mean_reversion_frequency_per_hour
+            if reversion_freq is None and "mean_reversion_frequency_per_hour" in candidate.metadata:
+                reversion_freq = float(candidate.metadata["mean_reversion_frequency_per_hour"])
+            if reversion_freq is None and "spread_volatility_factor" in candidate.metadata:
+                vol_factor = float(candidate.metadata["spread_volatility_factor"])
+                reversion_freq = max(0.2, vol_factor * 1.5)
+            if reversion_freq is None or reversion_freq <= 0:
+                reversion_freq = 1.0
+
+            reversion_cycle_hours = 1.0 / max(0.1, reversion_freq)
+            hold_hours = fill_hours + reversion_cycle_hours
+
+        hold_hours = max(0.05, min(72.0, hold_hours))
+
+        # 6. Capital-Hour Score
+        total_capital = max(1.0, candidate.allocated_capital_usdt)
+        capital_hour_score = expected_realized_profit / (total_capital * hold_hours)
+
+        # 7. Quote staleness discount
+        latency_discount = max(0.5, 1.0 - (candidate.quote_age_ms / self.max_quote_age_ms) * 0.2)
+        # ponytail: proportional latency discount on capital-hour score; upgrade to exponential decay if staleness non-linear.
+        final_score = max(0.0, capital_hour_score * latency_discount)
+
+        candidate.metadata["p_entry"] = p_entry
+        candidate.metadata["p_exit"] = p_exit
+        candidate.metadata["estimated_risk_usdt"] = risk_usdt
+        candidate.metadata["expected_realized_profit_usdt"] = expected_realized_profit
+        candidate.metadata["estimated_hold_hours"] = hold_hours
+        candidate.metadata["capital_hour_score"] = capital_hour_score
+
+        candidate.ranking_score = round(final_score, 6)
         candidate.__post_init__()
         return candidate.ranking_score
 
