@@ -10,6 +10,8 @@ from executor.recovery_discovery import RecoveryDiscoveryMixin
 from executor.exchange_common import (
     acknowledged_order_result,
     exchange_order_id_from,
+    venue_client_order_id,
+    _accepted_client_order_ids,
 )
 from executor.supabase import SupabaseWriter
 
@@ -155,3 +157,57 @@ async def test_recovery_backfills_missing_exchange_id_from_tokocrypto_venue_orde
     assert linked.exchange_order_id == "T-RECOVERED-1"
     assert linked.venue_client_order_id == "wire-client-id"
     assert recovery.order_registry.record.exchange_order_id == "T-RECOVERED-1"
+
+
+def test_okx_logical_client_id_maps_to_recoverable_wire_id():
+    exchange = SimpleNamespace(id="okx")
+    logical = "btc-usdt-swap-futures-hedge-12345678901234567890"
+    wire = venue_client_order_id(exchange, logical)
+    assert len(wire) == 32
+    assert wire.isalnum()
+    assert wire in _accepted_client_order_ids(exchange, logical)
+    assert logical in _accepted_client_order_ids(exchange, logical)
+
+
+@pytest.mark.asyncio
+async def test_futures_short_submit_uses_okx_wire_client_id():
+    from executor.exchange_futures import ExchangeFuturesMixin
+    from executor.quantity import AmountSpec
+
+    class FakeOKX:
+        id = "okx"
+
+        def __init__(self):
+            self.params = None
+
+        async def create_market_sell_order(self, symbol, amount, params):
+            self.params = dict(params)
+            return {
+                "id": "okx-order-1",
+                "clientOrderId": params["clientOrderId"],
+                "status": "open",
+                "amount": amount,
+                "filled": 0.0,
+            }
+
+    class Harness(ExchangeFuturesMixin):
+        def __init__(self):
+            self.global_fut = FakeOKX()
+            self._global_broker_prefix = ""
+            self._global_scope = "okx"
+
+        async def _resolve_symbol(self, exchange, symbol, market_kind):
+            return symbol
+
+    engine = Harness()
+    logical = "btc-usdt-swap-futures-hedge-12345678901234567890"
+    await engine.open_global_short_market(
+        "BTC/USDT:USDT",
+        0.001,
+        client_order_id=logical,
+        amount_spec=AmountSpec("CONTRACT", 1, 1, 0.001),
+    )
+    wire = engine.global_fut.params["clientOrderId"]
+    assert wire == venue_client_order_id(SimpleNamespace(id="okx"), logical)
+    assert len(wire) == 32
+    assert wire.isalnum()
