@@ -1604,3 +1604,18 @@ The modular `executor/venues/{indodax,mexc,okx,tokocrypto}.py` modules contain c
 - This is a source/CCXT contract fix; a real OKX sandbox/live contract probe is still required before relying on the mapping operationally. Other venue wire formats remain subject to per-venue probes.
 
 **Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+
+## R-37 — Unfenced OKX create-endpoint permission probe removed
+
+**Status: FIX IMPLEMENTED; regression CI queued at time of this entry.**
+
+- A final scan found one additional direct call to OKX `privatePostTradeOrder` inside `ExchangeFuturesMixin.probe_short_tradability`. It submitted an intentionally invalid zero-size/zero-price payload to infer trade permission.
+- No production caller of this method was found, but the call still crossed a private create-order endpoint without the durable submit ledger or shared STOP fence. Relying on current venue validation to guarantee that a zero-size payload can never mutate state is not an acceptable safety boundary.
+- The direct POST has been removed. For OKX, the method now returns a fail-closed “non-mutating probe unavailable” result and sends no order. A real permission probe must be a separately approved sandbox procedure or use a venue-supported read-only permission endpoint.
+- A fake-venue regression asserts the method returns non-tradable and never invokes `privatePostTradeOrder`.
+- This does not change any active spot/futures entry or risk-reducing close path; the method had no production caller in the reviewed branch.
+
+The source/test head containing this removal and regression is awaiting CI. Previous OKX wire-ID mapping and direct-recovery tests passed workflows [43692697374](https://github.com/nzf210/nafaz_arb/actions/runs/43692697374) and [43692706776](https://github.com/nzf210/nafaz_arb/actions/runs/43692706776), each with all four jobs successful.
+
+**Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
