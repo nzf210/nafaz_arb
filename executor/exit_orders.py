@@ -427,10 +427,54 @@ class ExitOrderManagementMixin:
                 amount_spec=pos.local_amount_spec,
             )
         except Exception as exc:
-            logger.exception(
-                f"[Taker Sniper Exit] place_local_market_sell failed for {pair_tag}: {exc}"
+            rejection_check = getattr(self, "_is_definitive_order_rejection", None)
+            if callable(rejection_check) and rejection_check(exc):
+                await self._mark_order_submission_rejected(
+                    pos.local_exchange, taker_coid
+                )
+                logger.warning(
+                    "[Taker Sniper Exit] venue definitively rejected %s: %s",
+                    taker_coid, exc,
+                )
+                return False
+
+            # A timeout/reset can happen after the spot SELL reached the venue.
+            # Resolve only by the exact client ID; never fall through to a new
+            # maker SELL with a different ID while this market SELL is unknown.
+            lookup = getattr(
+                self.client, "fetch_local_order_by_client_id", None
             )
-            return False
+            recovered = None
+            if callable(lookup):
+                try:
+                    recovered = await lookup(
+                        taker_coid, pos.symbol, pos.local_amount_spec
+                    )
+                except Exception:
+                    logger.exception(
+                        "[Taker Sniper Exit] exact client-id lookup failed for %s",
+                        taker_coid,
+                    )
+            if not isinstance(recovered, dict) or not recovered.get("id"):
+                await self._mark_order_submission_ambiguous(
+                    pair_tag, pos.local_exchange, taker_coid,
+                    f"taker sniper spot SELL outcome ambiguous: "
+                    f"{type(exc).__name__}: {exc}; exact client-id lookup "
+                    "did not return a verifiable order",
+                )
+                return True
+            logger.warning(
+                "[Taker Sniper Exit] recovered market SELL %s by exact client id",
+                taker_coid,
+            )
+            order = recovered
+
+        if not isinstance(order, dict) or not order.get("id"):
+            await self._mark_order_submission_ambiguous(
+                pair_tag, pos.local_exchange, taker_coid,
+                "taker sniper venue acknowledgement has no verifiable exchange order id",
+            )
+            return True
 
         order_id = str(order.get("id", ""))
         self.supabase.order(
