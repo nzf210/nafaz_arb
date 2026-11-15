@@ -20,6 +20,8 @@ from typing import Any, Dict, Optional
 from executor.global_stop import GlobalStopError, GlobalStopService
 from executor.helpers import is_explicit_rate_limit_rejection
 from executor.order_slots import OrderSlotManager, SlotExhaustedError
+from executor.exchange_common import venue_client_order_id
+from types import SimpleNamespace
 
 logger = logging.getLogger("executor.mutation_gateway")
 
@@ -155,7 +157,9 @@ class MutationGateway:
                 error_message="stable client order ID is required",
             )
         params["client_order_id"] = client_order_id
-        params["clientOrderId"] = client_order_id
+        params["clientOrderId"] = venue_client_order_id(
+            SimpleNamespace(id=exchange), client_order_id
+        )
 
         if not callable(getattr(client, "create_order_direct", None)) and not callable(
             getattr(client, "create_order", None)
