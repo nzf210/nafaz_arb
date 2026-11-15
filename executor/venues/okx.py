@@ -23,7 +23,7 @@ class OKXVenue(BaseExchangeVenue):
         return 10.0
 
     def format_client_order_id(self, client_order_id: str, broker_prefix: str = "") -> str:
-        """Format client order id for OKX (capped at 32 chars)."""
+        """Format client order id as <=32 alphanumeric chars without truncation collisions."""
         if not client_order_id:
             return client_order_id
         if (
