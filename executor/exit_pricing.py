@@ -14,6 +14,132 @@ from executor.fee_engine import rates_for_position, required_spot_exit_usdt as r
 logger = logging.getLogger("executor.engine")
 
 
+def compute_vwap_exit_fill(
+    orderbook_levels: Optional[list] = None,
+    target_qty: float = 0.0,
+    side: str = "bid",
+    chunk_qty: Optional[float] = None,
+) -> dict:
+    """Computes full-depth VWAP exit fill by sweeping orderbook bids (descending)
+    or asks (ascending).
+
+    Returns fail-closed dict:
+    - If orderbook_levels is empty or None -> status="DEPTH_UNKNOWN", can_exit=False, can_exit_full=False
+    - If total available volume < target_qty -> can_exit_full=False.
+      If chunk_qty is specified and total available >= chunk_qty -> can_exit=True (chunked), status="CHUNK_DEPTH_SUFFICIENT".
+      Else -> can_exit=False, status="DEPTH_INSUFFICIENT".
+    """
+    if not orderbook_levels or not isinstance(orderbook_levels, (list, tuple)):
+        return {
+            "status": "DEPTH_UNKNOWN",
+            "can_exit": False,
+            "can_exit_full": False,
+            "vwap_price": 0.0,
+            "best_price": 0.0,
+            "filled_qty": 0.0,
+            "total_cost": 0.0,
+            "slippage_pct": 0.0,
+            "depth_volume": 0.0,
+        }
+
+    target = float(target_qty or 0.0)
+    if target <= 0 or not math.isfinite(target):
+        return {
+            "status": "INVALID_TARGET_QTY",
+            "can_exit": False,
+            "can_exit_full": False,
+            "vwap_price": 0.0,
+            "best_price": 0.0,
+            "filled_qty": 0.0,
+            "total_cost": 0.0,
+            "slippage_pct": 0.0,
+            "depth_volume": 0.0,
+        }
+
+    parsed_levels = []
+    for lvl in orderbook_levels:
+        if isinstance(lvl, (list, tuple)) and len(lvl) >= 2:
+            try:
+                p, q = float(lvl[0]), float(lvl[1])
+            except (TypeError, ValueError):
+                continue
+        elif isinstance(lvl, dict):
+            try:
+                p = float(lvl.get("price", 0.0) or 0.0)
+                q = float(lvl.get("quantity") or lvl.get("qty") or lvl.get("amount") or 0.0)
+            except (TypeError, ValueError):
+                continue
+        else:
+            continue
+        if p > 0 and q > 0 and math.isfinite(p) and math.isfinite(q):
+            parsed_levels.append((p, q))
+
+    if not parsed_levels:
+        return {
+            "status": "DEPTH_UNKNOWN",
+            "can_exit": False,
+            "can_exit_full": False,
+            "vwap_price": 0.0,
+            "best_price": 0.0,
+            "filled_qty": 0.0,
+            "total_cost": 0.0,
+            "slippage_pct": 0.0,
+            "depth_volume": 0.0,
+        }
+
+    is_bid = (str(side or "").strip().lower() == "bid")
+    sorted_levels = sorted(parsed_levels, key=lambda x: x[0], reverse=is_bid)
+
+    total_avail = sum(q for _, q in sorted_levels)
+    best_price = sorted_levels[0][0]
+
+    can_exit_full = (total_avail >= target - 1e-12)
+    if not can_exit_full:
+        if chunk_qty is not None and float(chunk_qty) > 0 and total_avail >= float(chunk_qty) - 1e-12:
+            can_exit = True
+            status = "CHUNK_DEPTH_SUFFICIENT"
+            effective_target = float(chunk_qty)
+        else:
+            can_exit = False
+            status = "DEPTH_INSUFFICIENT"
+            effective_target = min(target, total_avail)
+    else:
+        can_exit = True
+        status = "DEPTH_SUFFICIENT"
+        effective_target = target
+
+    remaining = effective_target
+    accum_cost = 0.0
+    accum_qty = 0.0
+
+    for price, qty in sorted_levels:
+        fill = min(remaining, qty)
+        accum_cost += fill * price
+        accum_qty += fill
+        remaining -= fill
+        if remaining <= 1e-12:
+            break
+
+    vwap = (accum_cost / accum_qty) if accum_qty > 0 else 0.0
+    slippage_pct = 0.0
+    if best_price > 0 and vwap > 0:
+        if is_bid:
+            slippage_pct = max(0.0, ((best_price - vwap) / best_price) * 100.0)
+        else:
+            slippage_pct = max(0.0, ((vwap - best_price) / best_price) * 100.0)
+
+    return {
+        "status": status,
+        "can_exit": can_exit,
+        "can_exit_full": can_exit_full,
+        "vwap_price": vwap,
+        "best_price": best_price,
+        "filled_qty": accum_qty,
+        "total_cost": accum_cost,
+        "slippage_pct": slippage_pct,
+        "depth_volume": total_avail,
+    }
+
 
 class ExitPricingMixin:
     """Focused exit pricing, order management, or execution responsibilities."""

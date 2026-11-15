@@ -463,7 +463,7 @@ async def test_pair_auto_blacklist_after_two_consecutive_failures(engine, fake_r
 
 @pytest.mark.asyncio
 async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis):
-    """Live order submission, not a balance endpoint, decides whether funds suffice."""
+    """Fail-closed: a balance endpoint failure blocks entry before submitting order."""
     client = BalancesMockClient()
 
     def fail_balances():
@@ -488,7 +488,7 @@ async def test_live_entry_does_not_read_balance_before_order(engine, fake_redis)
 
     await engine.handle_signal_notification(pair_tag)
 
-    assert len(client.placed_buys) == 1
+    assert len(client.placed_buys) == 0
     assert engine._exchange_halted == {}
 
 
@@ -499,13 +499,13 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     """An insufficient-funds rejection is reported with the venue's reason."""
     client = BalancesMockClient()
 
-    def fail_balances():
-        raise TimeoutError("balance endpoint rate limited")
+    async def valid_balances(**_):
+        return {"spot_available": 1000.0, "futures_available": 1000.0}
 
     async def reject_order(*args, **kwargs):
         raise RuntimeError("InsufficientFunds: insufficient balance")
 
-    client.get_balances = fail_balances
+    client.get_balances = valid_balances
     client.place_local_limit_buy = reject_order
     engine.config.mock_mode = False
     engine.global_stop = _RiskGlobalStop()

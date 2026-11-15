@@ -29,6 +29,14 @@ class PairPnLSnapshot:
     currency: str = "USDT"
     spot_executable_bid: float = 0.0
     futures_executable_ask: float = 0.0
+    net_spread_roi_pct: float = 0.0
+    return_on_deployed_capital_pct: float = 0.0
+    total_capital_deployed: float = 0.0
+    total_fees_usd: float = 0.0
+    spot_entry_fee_usd: float = 0.0
+    futures_entry_fee_usd: float = 0.0
+    spot_exit_fee_usd: float = 0.0
+    futures_exit_fee_usd: float = 0.0
 
 
 class PairPnLEngine:
@@ -61,12 +69,54 @@ class PairPnLEngine:
         fx_spot_to_report: float = 1.0,
         fx_futures_to_report: float = 1.0,
         reporting_currency: str = "USDT",
+        effective_leverage: float = 1.0,
+        actual_initial_margin_usd: Optional[float] = None,
+        fee_reserve_usd: float = 0.0,
+        spot_tax_rate: float = 0.0,
     ) -> PairPnLSnapshot:
         """Calculate combined two-leg net liquidation PnL if closed immediately at orderbook depth."""
+        pos_state = position_state if isinstance(position_state, dict) else {}
+        if actual_initial_margin_usd is None:
+            raw_margin = (
+                pos_state.get("actual_initial_margin_usd")
+                or pos_state.get("futures_initial_margin")
+                or pos_state.get("initial_margin")
+            )
+            if raw_margin is not None:
+                try:
+                    actual_initial_margin_usd = float(raw_margin)
+                except (TypeError, ValueError):
+                    actual_initial_margin_usd = None
+
+        if effective_leverage == 1.0:
+            raw_lev = pos_state.get("effective_leverage") or pos_state.get("leverage")
+            if raw_lev is not None:
+                try:
+                    effective_leverage = float(raw_lev)
+                except (TypeError, ValueError):
+                    effective_leverage = 1.0
+
+        if fee_reserve_usd == 0.0:
+            raw_reserve = pos_state.get("fee_reserve_usd") or pos_state.get("fee_reserve")
+            if raw_reserve is not None:
+                try:
+                    fee_reserve_usd = float(raw_reserve)
+                except (TypeError, ValueError):
+                    fee_reserve_usd = 0.0
+
+        if spot_tax_rate == 0.0:
+            raw_tax = pos_state.get("spot_tax_rate") or pos_state.get("tax_rate")
+            if raw_tax is not None:
+                try:
+                    spot_tax_rate = float(raw_tax)
+                except (TypeError, ValueError):
+                    spot_tax_rate = 0.0
+
         # 1. Spot Economics
         # Gross proceeds if sold at current executable bid depth
+        spot_effective_exit_fee_rate = spot_exit_fee_rate + spot_tax_rate
         spot_gross_proceeds = spot_qty * spot_executable_bid
-        spot_close_fee = spot_gross_proceeds * spot_exit_fee_rate
+        spot_close_fee = spot_gross_proceeds * spot_effective_exit_fee_rate
         spot_net_proceeds = spot_gross_proceeds - spot_close_fee
         spot_net_pnl_native = spot_net_proceeds - spot_entry_cost_quote - spot_entry_fee_quote
         spot_net_pnl_report = spot_net_pnl_native * fx_spot_to_report
@@ -84,7 +134,6 @@ class PairPnLEngine:
             if futures_entry_fee_rate is not None
             else getattr(self, "futures_taker_fee_rate", 0.0005)
         )
-        pos_state = position_state if isinstance(position_state, dict) else {}
         if futures_entry_fee is not None:
             futures_entry_fee_native = float(futures_entry_fee)
         else:
@@ -107,21 +156,40 @@ class PairPnLEngine:
         # 3. Combined Economics
         pair_net_pnl = spot_net_pnl_report + futures_net_pnl_report
 
-        # Capital basis: Spot entry cost + Futures initial margin (typically ~10% for 10x or 100% unleveraged)
-        total_capital = (spot_entry_cost_quote * fx_spot_to_report) + (
-            futures_entry_notional * fx_futures_to_report * 0.2
-        )
-        pair_roi_pct = (pair_net_pnl / total_capital * 100.0) if total_capital > 0 else 0.0
-
+        # 4-Fill Unified Fee: Sum all four legs explicitly in reporting currency
         spot_entry_fee_usd = spot_entry_fee_quote * fx_spot_to_report
         futures_entry_fee_usd = futures_entry_fee_native * fx_futures_to_report
-        total_entry_fee = spot_entry_fee_usd + futures_entry_fee_usd
-
         spot_exit_fee_usd = spot_close_fee * fx_spot_to_report
         futures_exit_fee_usd = futures_close_fee * fx_futures_to_report
-        total_exit_fee = spot_exit_fee_usd + futures_exit_fee_usd
-        expected_close_fee = total_exit_fee
-        total_fees = total_entry_fee + total_exit_fee
+        total_entry_fee = spot_entry_fee_usd + futures_entry_fee_usd
+        expected_close_fee = spot_exit_fee_usd + futures_exit_fee_usd
+        total_fees_usd = spot_entry_fee_usd + futures_entry_fee_usd + spot_exit_fee_usd + futures_exit_fee_usd
+
+        # Capital basis: Actual deployed capital without hardcoded margin assumption
+        spot_entry_notional_usd = spot_entry_cost_quote * fx_spot_to_report
+        futures_entry_notional_usd = futures_entry_notional * fx_futures_to_report
+        lev = max(float(effective_leverage or 1.0), 1.0)
+        if actual_initial_margin_usd is not None and actual_initial_margin_usd > 0:
+            futures_margin_used_usd = float(actual_initial_margin_usd)
+        else:
+            futures_margin_used_usd = futures_entry_notional_usd / lev
+
+        total_capital_deployed_usd = (
+            spot_entry_notional_usd + futures_margin_used_usd + float(fee_reserve_usd or 0.0)
+        )
+
+        # Two ROI metrics:
+        # 1. net_spread_roi_pct: per-leg efficiency vs spot entry notional
+        net_spread_roi_pct = (
+            (pair_net_pnl / spot_entry_notional_usd * 100.0)
+            if spot_entry_notional_usd > 0 else 0.0
+        )
+        # 2. return_on_deployed_capital_pct: return on total locked/deployed capital
+        return_on_deployed_capital_pct = (
+            (pair_net_pnl / total_capital_deployed_usd * 100.0)
+            if total_capital_deployed_usd > 0 else 0.0
+        )
+        pair_roi_pct = return_on_deployed_capital_pct
 
         return PairPnLSnapshot(
             session_id=session_id,
@@ -136,4 +204,12 @@ class PairPnLEngine:
             currency=reporting_currency,
             spot_executable_bid=spot_executable_bid,
             futures_executable_ask=futures_executable_ask,
+            net_spread_roi_pct=round(net_spread_roi_pct, 4),
+            return_on_deployed_capital_pct=round(return_on_deployed_capital_pct, 4),
+            total_capital_deployed=round(total_capital_deployed_usd, 4),
+            total_fees_usd=round(total_fees_usd, 4),
+            spot_entry_fee_usd=round(spot_entry_fee_usd, 4),
+            futures_entry_fee_usd=round(futures_entry_fee_usd, 4),
+            spot_exit_fee_usd=round(spot_exit_fee_usd, 4),
+            futures_exit_fee_usd=round(futures_exit_fee_usd, 4),
         )

@@ -180,33 +180,86 @@ class RiskFundingMixin:
                     pair_info=pair_info,
                     usdt_idr_rate=usdt_idr_rate,
                 )
-        except Exception:
-            # A balance probe failure must not silently pass the gate; surface it
-            # and let the caller decide, matching the pre-existing fail-open on
-            # unsupported clients while logging loudly.
-            logger.exception(
-                "[State 1 Funding Preflight] balance probe failed for %s",
-                pair_tag,
+        except Exception as exc:
+            logger.error(
+                "[State 1 Funding Preflight] fail-closed: balance probe failed for %s: %s",
+                pair_tag, exc,
             )
-            return True
+            await self._publish_execution_failure(
+                pair_tag,
+                "BALANCE_UNVERIFIED",
+                f"Gagal memverifikasi saldo kedua kaki: {exc}",
+                detail={"error": str(exc), "stage": "probe_exception"},
+            )
+            return False
 
         if not isinstance(balances, dict):
-            return True
+            logger.error(
+                "[State 1 Funding Preflight] fail-closed: invalid balance payload for %s (got %s)",
+                pair_tag, type(balances).__name__,
+            )
+            await self._publish_execution_failure(
+                pair_tag,
+                "BALANCE_UNVERIFIED",
+                "Payload saldo bukan dict yang valid.",
+                detail={"stage": "invalid_dict"},
+            )
+            return False
+
+        if "spot_available" not in balances or "futures_available" not in balances:
+            logger.error(
+                "[State 1 Funding Preflight] fail-closed: missing balance keys for %s",
+                pair_tag,
+            )
+            await self._publish_execution_failure(
+                pair_tag,
+                "BALANCE_UNVERIFIED",
+                "Kunci saldo spot_available atau futures_available tidak ditemukan.",
+                detail={"balances_keys": list(balances.keys()), "stage": "missing_keys"},
+            )
+            return False
 
         try:
             avail_spot = float(balances.get("spot_available", 0.0) or 0.0)
             avail_fut = float(balances.get("futures_available", 0.0) or 0.0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
             logger.error(
-                f"[State 1 Funding Preflight] unreadable balance payload for {pair_tag}"
+                "[State 1 Funding Preflight] fail-closed: unreadable balance payload for %s: %s",
+                pair_tag, exc,
             )
-            return True
+            await self._publish_execution_failure(
+                pair_tag,
+                "BALANCE_UNVERIFIED",
+                "Nilai saldo tidak dapat diurai.",
+                detail={"error": str(exc), "stage": "parse_error"},
+            )
+            return False
 
         if not (math.isfinite(avail_spot) and math.isfinite(avail_fut)):
             logger.error(
-                f"[State 1 Funding Preflight] non-finite balance for {pair_tag}"
+                "[State 1 Funding Preflight] fail-closed: non-finite balance for %s (spot=%s, fut=%s)",
+                pair_tag, avail_spot, avail_fut,
             )
-            return True
+            await self._publish_execution_failure(
+                pair_tag,
+                "BALANCE_UNVERIFIED",
+                "Nilai saldo bernilai non-finite (NaN atau Inf).",
+                detail={"spot_available": str(avail_spot), "futures_available": str(avail_fut), "stage": "non_finite"},
+            )
+            return False
+
+        if avail_spot < 0 or avail_fut < 0:
+            logger.error(
+                "[State 1 Funding Preflight] fail-closed: negative balance for %s (spot=%s, fut=%s)",
+                pair_tag, avail_spot, avail_fut,
+            )
+            await self._publish_execution_failure(
+                pair_tag,
+                "BALANCE_UNVERIFIED",
+                "Nilai saldo bernilai negatif.",
+                detail={"spot_available": str(avail_spot), "futures_available": str(avail_fut), "stage": "negative_balance"},
+            )
+            return False
 
         required = float(required_usdt)
         missing = []

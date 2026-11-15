@@ -12,6 +12,7 @@ from executor.helpers import build_client_order_id
 from executor.private_stream import fetch_order_preferring_stream
 from executor.fee_engine import rates_for_position, round_trip_fees_usdt
 from executor.exit_decision_engine import ExitAction
+from executor.exit_pricing import compute_vwap_exit_fill
 
 logger = logging.getLogger("executor.engine")
 
@@ -652,18 +653,64 @@ class ExitOrderManagementMixin:
         # ExitDecisionEngine & Taker Sniper vs Smart Maker evaluation
         raw_bid = float((live_snapshot or {}).get("local_best_bid", 0.0) or (live_snapshot or {}).get("spot_best_bid", 0.0) or 0.0)
         if raw_bid > 0 and getattr(self, "exit_decision_engine", None) and getattr(self, "pair_pnl_engine", None):
-            # Scenario 1: Taker Sniper Exit (Spot Taker Fee + Futures Taker Fee at best bid)
+            # Compute full-depth VWAP for Spot bids and Futures asks
+            spot_levels = (
+                (live_snapshot or {}).get("spot_bids")
+                if "spot_bids" in (live_snapshot or {})
+                else (live_snapshot or {}).get("bids")
+            )
+            has_explicit_depth = spot_levels is not None
+            if spot_levels is None:
+                spot_bid_qty = (
+                    (live_snapshot or {}).get("spot_bid_qty")
+                    if "spot_bid_qty" in (live_snapshot or {})
+                    else (
+                        (live_snapshot or {}).get("local_bid_qty")
+                        if "local_bid_qty" in (live_snapshot or {})
+                        else (live_snapshot or {}).get("bid_qty")
+                    )
+                )
+                if spot_bid_qty is not None:
+                    has_explicit_depth = True
+                    try:
+                        spot_levels = [[local_best_bid, float(spot_bid_qty)]]
+                    except (TypeError, ValueError):
+                        spot_levels = None
+                else:
+                    # Price-only snapshot without explicit depth fields
+                    spot_levels = [[local_best_bid, pos.qty]]
+
+            # Fail-closed depth check: if explicit orderbook levels are empty/None -> DEPTH_UNKNOWN, can_exit=False
+            spot_vwap_res = compute_vwap_exit_fill(
+                spot_levels, target_qty=pos.qty, side="bid", chunk_qty=0.70 * pos.qty
+            )
+            executable_spot_bid = spot_vwap_res["vwap_price"] if spot_vwap_res["vwap_price"] > 0 else local_best_bid
+
+            # Futures asks depth if available
+            fut_levels = (
+                (live_snapshot or {}).get("futures_asks")
+                or (live_snapshot or {}).get("asks")
+            )
+            if fut_levels is not None:
+                fut_vwap_res = compute_vwap_exit_fill(
+                    fut_levels, target_qty=pos.qty, side="ask"
+                )
+                executable_fut_ask = fut_vwap_res["vwap_price"] if fut_vwap_res["vwap_price"] > 0 else global_ask_usdt
+            else:
+                executable_fut_ask = global_ask_usdt
+
+            # Scenario 1: Taker Sniper Exit (Spot Taker Fee + Futures Taker Fee at VWAP executable bid)
             taker_pnl_snapshot = self.pair_pnl_engine.compute_pair_pnl(
                 session_id=str(getattr(pos, "session_id", pair_tag) or pair_tag),
                 pair_key=pair_tag,
                 spot_qty=pos.qty,
                 spot_entry_cost_quote=pos.qty * pos.entry_price_idr,
-                spot_executable_bid=local_best_bid,
+                spot_executable_bid=executable_spot_bid,
                 spot_exit_fee_rate=spot_taker_fee_rate,
                 spot_entry_fee_quote=spot_entry_fee_quote,
                 futures_qty=pos.qty,
                 futures_entry_price=pos.short_entry_usdt,
-                futures_executable_ask=global_ask_usdt,
+                futures_executable_ask=executable_fut_ask,
                 futures_close_fee_rate=futures_taker_fee_rate,
                 futures_entry_fee_rate=futures_entry_fee_rate,
                 funding_accrued=pos.accumulated_funding_usdt,
@@ -685,7 +732,7 @@ class ExitOrderManagementMixin:
                 spot_entry_fee_quote=spot_entry_fee_quote,
                 futures_qty=pos.qty,
                 futures_entry_price=pos.short_entry_usdt,
-                futures_executable_ask=global_ask_usdt,
+                futures_executable_ask=executable_fut_ask,
                 futures_close_fee_rate=futures_taker_fee_rate,
                 futures_entry_fee_rate=futures_entry_fee_rate,
                 funding_accrued=pos.accumulated_funding_usdt,
@@ -731,29 +778,21 @@ class ExitOrderManagementMixin:
                 and taker_pnl_snapshot.pair_net_liquidation_pnl >= 0
             )
 
-            # Volume check on spot_best_bid: minimal 70% kuantitas kita
-            spot_bid_qty = None
-            if live_snapshot:
-                spot_bid_qty = (
-                    live_snapshot.get("spot_bid_qty")
-                    if "spot_bid_qty" in live_snapshot
-                    else (
-                        live_snapshot.get("local_bid_qty")
-                        if "local_bid_qty" in live_snapshot
-                        else live_snapshot.get("bid_qty")
-                    )
+            # Volume check on spot bids: fail-closed depth check (can_exit must be True if depth explicit)
+            if has_explicit_depth:
+                has_sufficient_bid_volume = spot_vwap_res["can_exit"] and (
+                    spot_vwap_res["can_exit_full"] or spot_vwap_res["depth_volume"] >= 0.70 * pos.qty
                 )
-            has_sufficient_bid_volume = (
-                spot_bid_qty is None or float(spot_bid_qty) >= 0.70 * pos.qty
-            )
+            else:
+                has_sufficient_bid_volume = True
 
             # Kondisi 1: TAKER_SNIPER_EXIT
-            taker_profitable = (taker_exit_net_roi_pct >= required_net_roi_pct) or (local_best_bid >= target_sell_idr)
+            taker_profitable = (taker_exit_net_roi_pct >= required_net_roi_pct) or (executable_spot_bid >= target_sell_idr)
             if (taker_profitable and has_sufficient_bid_volume) or time_stop_triggered or approaching_negative_funding:
                 if taker_profitable:
                     sniper_reason = (
                         f"TAKER_SNIPER_EXIT (taker_roi={taker_exit_net_roi_pct:.3f}% >= req={required_net_roi_pct:.3f}%, "
-                        f"bid={local_best_bid:.2f} >= target={target_sell_idr:.2f})"
+                        f"vwap_bid={executable_spot_bid:.2f} >= target={target_sell_idr:.2f})"
                     )
                 elif time_stop_triggered:
                     sniper_reason = decision.reason
@@ -762,11 +801,11 @@ class ExitOrderManagementMixin:
 
                 logger.info(
                     f"[State 3 Taker Sniper Exit] Triggering immediate Taker Sell for {pair_tag}: "
-                    f"local_bid={local_best_bid}, target_sell_idr={target_sell_idr:.2f}, "
+                    f"vwap_bid={executable_spot_bid:.2f}, target_sell_idr={target_sell_idr:.2f}, "
                     f"pnl_usdt={taker_pnl_snapshot.pair_net_liquidation_pnl:.4f}, reason={sniper_reason}"
                 )
                 if await self._execute_taker_sniper_exit(
-                    pair_tag, pos, local_best_bid, global_ask_usdt, usdt_idr_rate, reason=sniper_reason
+                    pair_tag, pos, executable_spot_bid, executable_fut_ask, usdt_idr_rate, reason=sniper_reason
                 ):
                     return
 
