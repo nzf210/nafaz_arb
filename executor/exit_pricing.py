@@ -286,6 +286,7 @@ class ExitPricingMixin:
         pos: ActivePosition,
         global_ask_usdt: float,
         usdt_idr_rate: float,
+        local_best_ask_idr: float = 0.0,
     ) -> tuple[float, float]:
         # 1. Base pegged exit price using spread & funding decay
         pos_value_usdt = pos.qty * global_ask_usdt
@@ -326,6 +327,11 @@ class ExitPricingMixin:
                 tick_size = self.pending_exit_orders[pair_tag].get("tick_size", 1.0)
             else:
                 tick_size = 1.0
+
+        # Smart Maker Ask: undercut best ask by 1 tick if above limit_sell_idr floor
+        # ponytail: simple undercut; complex orderbook queue optimization deferred
+        if local_best_ask_idr > 0:
+            limit_sell_idr = max(limit_sell_idr, local_best_ask_idr - tick_size)
 
         # CEIL to tick size so rounding NEVER rounds down below profitable floor
         limit_sell_idr = ceil_to_tick(limit_sell_idr, tick_size)

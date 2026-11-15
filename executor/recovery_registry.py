@@ -378,9 +378,15 @@ class RecoveryRegistryMixin:
                 (exchange, record.symbol, record.pair_key, record.market_type), []
             ).append(record)
         for (exchange, symbol, pair_tag, _market_type), group in groups.items():
-            await self._reconcile_registered_group(
-                exchange, symbol, pair_tag, group
-            )
+            if pair_tag:
+                async with self._pair_lock(pair_tag):
+                    await self._reconcile_registered_group(
+                        exchange, symbol, pair_tag, group
+                    )
+            else:
+                await self._reconcile_registered_group(
+                    exchange, symbol, pair_tag, group
+                )
 
     async def _reconcile_registered_order(
         self, record: OrderRecord, exchange: str, symbol: str
@@ -632,54 +638,66 @@ class RecoveryRegistryMixin:
 
     # ------------------------------------------------- venue open-order sweep
 
+    async def _reconcile_single_venue_target(
+        self, exchange: str, symbol: str, pair_tag: str, market: str, amount_spec: Any
+    ) -> None:
+        open_orders = None
+        for attempt in range(3):
+            try:
+                open_orders = await self._fetch_recovery_orders(exchange, symbol, market, amount_spec)
+                break
+            except NotImplementedError as exc:
+                logger.info("[Recovery] %s cannot list open orders: %s", exchange, exc)
+                break
+            except Exception as exc:
+                err_str = str(exc).lower()
+                is_rl = "code\":1008" in err_str or "code: 1008" in err_str or "too many requests" in err_str or "429" in err_str
+                if is_rl and attempt < 2:
+                    match = re.search(r"try again in (\d+)", str(exc))
+                    venue_wait = float(match.group(1)) if match else 0.0
+                    wait_s = max(venue_wait + 1.0, 2.0 * (attempt + 1))
+                    logger.warning(
+                        "[Recovery] %s rate limited listing open orders (attempt %d/3); retrying in %.1fs: %s",
+                        exchange, attempt + 1, wait_s, exc,
+                    )
+                    await asyncio.sleep(wait_s)
+                    continue
+                logger.critical(
+                    "[Recovery] cannot read %s open orders for %s: %s; entry halted on that venue",
+                    exchange, symbol or "account", exc,
+                )
+                scope = pair_tag or exchange
+                self._halt_exposure_scope(scope, "open-order sweep failed after restart")
+                await self._publish_execution_failure(
+                    f"recovery:{scope}",
+                    "RECOVERY_OPEN_ORDERS_UNAVAILABLE",
+                    f"Cannot verify resting orders on {exchange} after restart: {exc}. "
+                    "New entries are blocked until the venue is reachable again.",
+                    detail={"exchange": exchange, "symbol": symbol, "error": str(exc)},
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                break
+        if open_orders is not None:
+            for order in open_orders:
+                await self._adopt_venue_order(order, exchange, symbol, pair_tag, market, amount_spec)
+            await self._detect_phantom_orders(exchange, market, open_orders)
+            self._clear_sweep_halt(exchange)
+
     async def _reconcile_venue_open_orders(self) -> None:
         """Adopts orders that exist on an active venue but nowhere in bot state."""
         targets = self._recovery_venue_targets()
         if not targets:
             return
         for exchange, symbol, pair_tag, market, amount_spec in targets:
-            open_orders = None
-            for attempt in range(3):
-                try:
-                    open_orders = await self._fetch_recovery_orders(exchange, symbol, market, amount_spec)
-                    break
-                except NotImplementedError as exc:
-                    logger.info("[Recovery] %s cannot list open orders: %s", exchange, exc)
-                    break
-                except Exception as exc:
-                    err_str = str(exc).lower()
-                    is_rl = "code\":1008" in err_str or "code: 1008" in err_str or "too many requests" in err_str or "429" in err_str
-                    if is_rl and attempt < 2:
-                        match = re.search(r"try again in (\d+)", str(exc))
-                        venue_wait = float(match.group(1)) if match else 0.0
-                        wait_s = max(venue_wait + 1.0, 2.0 * (attempt + 1))
-                        logger.warning(
-                            "[Recovery] %s rate limited listing open orders (attempt %d/3); retrying in %.1fs: %s",
-                            exchange, attempt + 1, wait_s, exc,
-                        )
-                        await asyncio.sleep(wait_s)
-                        continue
-                    logger.critical(
-                        "[Recovery] cannot read %s open orders for %s: %s; entry halted on that venue",
-                        exchange, symbol or "account", exc,
+            if pair_tag:
+                async with self._pair_lock(pair_tag):
+                    await self._reconcile_single_venue_target(
+                        exchange, symbol, pair_tag, market, amount_spec
                     )
-                    scope = pair_tag or exchange
-                    self._halt_exposure_scope(scope, "open-order sweep failed after restart")
-                    await self._publish_execution_failure(
-                        f"recovery:{scope}",
-                        "RECOVERY_OPEN_ORDERS_UNAVAILABLE",
-                        f"Cannot verify resting orders on {exchange} after restart: {exc}. "
-                        "New entries are blocked until the venue is reachable again.",
-                        detail={"exchange": exchange, "symbol": symbol, "error": str(exc)},
-                        state=PositionState.RECONCILIATION_REQUIRED,
-                    )
-                    break
-            if open_orders is None:
-                continue
-            for order in open_orders:
-                await self._adopt_venue_order(order, exchange, symbol, pair_tag, market, amount_spec)
-            await self._detect_phantom_orders(exchange, market, open_orders)
-            self._clear_sweep_halt(exchange)
+            else:
+                await self._reconcile_single_venue_target(
+                    exchange, symbol, pair_tag, market, amount_spec
+                )
 
     @staticmethod
     def _is_phantom_candidate(

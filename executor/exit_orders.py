@@ -10,6 +10,7 @@ from executor import helpers
 from executor.helpers import build_client_order_id
 from executor.private_stream import fetch_order_preferring_stream
 from executor.fee_engine import rates_for_position, round_trip_fees_usdt
+from executor.exit_decision_engine import ExitAction
 
 logger = logging.getLogger("executor.engine")
 
@@ -240,6 +241,7 @@ class ExitOrderManagementMixin:
                 "filled": 0.0,
                 "closed_short_qty": 0.0,
                 "tick_size": tick_size,
+                "usdt_idr_rate": usdt_idr_rate,
             }
             self.last_pegged_global_ask[pair_tag] = global_ask_usdt
             self.states[pair_tag] = PositionState.EXIT_PENDING
@@ -325,45 +327,239 @@ class ExitOrderManagementMixin:
             f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
         )
 
-    async def _check_dynamic_exit_pair_bound(self, pair_tag: str) -> None:
-        if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
-            return
-        pos = self.active_positions.get(pair_tag)
-        if not pos or pos.qty <= 0:
-            return
-        price_data = await self._fetch_live_price(pair_tag)
-        if not price_data:
-            return
-        global_ask_usdt, usdt_idr_rate = price_data
-        live_snapshot, local_best_bid, _local_best_ask = (
-            await self._exit_live_snapshot(pair_tag, pos)
-        )
-        now_ms = int(time.time() * 1000)
-        await self._refresh_predicted_funding_rate(pair_tag, pos, now_ms)
-        funding_passed = await self._handle_funding_rollover(
-            pair_tag, pos, now_ms
-        )
-        await self._persist_exit_unrealized_pnl(
-            pair_tag, pos, local_best_bid, global_ask_usdt,
-            usdt_idr_rate, now_ms, live_snapshot,
-        )
-        if not self._should_repeg_exit(
-            pair_tag, global_ask_usdt, funding_passed
-        ):
-            return
-        limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
-            pair_tag, pos, global_ask_usdt, usdt_idr_rate
-        )
+    async def _execute_taker_sniper_exit(
+        self,
+        pair_tag: str,
+        pos: ActivePosition,
+        local_best_bid: float,
+        global_ask_usdt: float,
+        usdt_idr_rate: float,
+        reason: str = "TAKER_SNIPER_EXIT",
+    ) -> bool:
+        """Execute immediate taker market sell and unwind hedge."""
+        # ponytail: single-shot market sell; smart chunking deferred to high liquidity
         if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
-            return
-        # Cancellation may race a fill and reduce or close the position.
+            logger.warning(
+                f"[Taker Sniper Exit] could not cancel existing exit order for {pair_tag}; aborting"
+            )
+            return False
+
         pos = self.active_positions.get(pair_tag)
         if not pos or pos.qty <= 0:
-            return
-        await self._place_dynamic_limit_sell(
-            pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt,
-            usdt_idr_rate,
+            return True
+
+        pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
+        if pair_info is None:
+            raw_symbol = str(pos.symbol or "").split(":")[-1]
+            quote_asset = (
+                raw_symbol.rsplit("/", 1)[-1]
+                if "/" in raw_symbol
+                else (raw_symbol.rsplit("_", 1)[-1] if "_" in raw_symbol else "IDR")
+            )
+            pair_info = SimpleNamespace(quote_asset=quote_asset)
+
+        taker_coid = build_client_order_id(pair_tag, "sniper-exit", self._next_order_seq())
+        await self._register_order_intent(
+            pair_tag,
+            taker_coid,
+            exchange=pos.local_exchange,
+            market_type="spot",
+            symbol=pos.symbol,
+            role=OrderRole.EXIT_SPOT.value,
+            side="sell",
+            order_type="market",
+            price=local_best_bid,
+            quantity=pos.qty,
+            local_amount_spec=pos.local_amount_spec,
+            required=False,
         )
+
+        try:
+            order = await self.client.place_local_market_sell(
+                pos.symbol,
+                pos.qty,
+                client_order_id=taker_coid,
+                amount_spec=pos.local_amount_spec,
+            )
+        except Exception as exc:
+            logger.exception(
+                f"[Taker Sniper Exit] place_local_market_sell failed for {pair_tag}: {exc}"
+            )
+            return False
+
+        order_id = str(order.get("id", ""))
+        self.supabase.order(
+            pair_tag,
+            "spot_exit",
+            pos.local_exchange,
+            "spot",
+            pos.symbol,
+            order,
+            client_order_id=taker_coid,
+            is_mock=bool(getattr(self.config, "mock_mode", False)),
+        )
+        await self._register_order(
+            pair_tag,
+            taker_coid,
+            order,
+            exchange=pos.local_exchange,
+            market_type="spot",
+            symbol=pos.symbol,
+            role=OrderRole.EXIT_SPOT.value,
+            side="sell",
+            order_type="market",
+            price=local_best_bid,
+            quantity=pos.qty,
+            local_amount_spec=pos.local_amount_spec,
+        )
+
+        filled_qty = float(order.get("filled", 0.0) or order.get("amount", 0.0) or pos.qty)
+        fill_price = helpers.extract_fill_price(order)
+        if not fill_price or fill_price <= 0 or (getattr(self.config, "mock_mode", False) and fill_price < local_best_bid * 0.5):
+            fill_price = local_best_bid
+
+        order_info = {
+            "order_id": order_id,
+            "client_order_id": taker_coid,
+            "symbol": pos.symbol,
+            "price": fill_price,
+            "qty": pos.qty,
+            "filled": filled_qty,
+            "closed_short_qty": 0.0,
+            "tick_size": getattr(pos, "local_price_tick", 1.0),
+            "usdt_idr_rate": usdt_idr_rate,
+        }
+        self.pending_exit_orders[pair_tag] = order_info
+        self.last_pegged_global_ask[pair_tag] = global_ask_usdt
+        logger.info(
+            f"[Taker Sniper Exit] {pair_tag}: executed spot market sell for {filled_qty} "
+            f"at {fill_price} IDR (reason: {reason}). Unwinding hedge..."
+        )
+        await self._execute_exit_fill(pair_tag, order_info, pos, filled_qty)
+        return True
+
+    async def _check_dynamic_exit_pair_bound(self, pair_tag: str) -> None:
+        async with self._pair_lock(pair_tag):
+            if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+                return
+            pos = self.active_positions.get(pair_tag)
+            if not pos or pos.qty <= 0:
+                return
+            price_data = await self._fetch_live_price(pair_tag)
+            if not price_data:
+                return
+            global_ask_usdt, usdt_idr_rate = price_data
+            live_snapshot, local_best_bid, _local_best_ask = (
+                await self._exit_live_snapshot(pair_tag, pos)
+            )
+            now_ms = int(time.time() * 1000)
+            await self._refresh_predicted_funding_rate(pair_tag, pos, now_ms)
+            funding_passed = await self._handle_funding_rollover(
+                pair_tag, pos, now_ms
+            )
+            await self._persist_exit_unrealized_pnl(
+                pair_tag, pos, local_best_bid, global_ask_usdt,
+                usdt_idr_rate, now_ms, live_snapshot,
+            )
+
+            target_sell_idr, tick_size = self._calculate_limit_sell_idr(
+                pair_tag, pos, global_ask_usdt, usdt_idr_rate, local_best_ask_idr=0.0
+            )
+
+            # ExitDecisionEngine & Taker Sniper Exit evaluation
+            raw_bid = float((live_snapshot or {}).get("local_best_bid", 0.0) or 0.0)
+            if raw_bid > 0 and getattr(self, "exit_decision_engine", None) and getattr(self, "pair_pnl_engine", None):
+                rates = rates_for_position(pos)
+                fx_spot = 1.0 / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
+                spot_exit_fee_rate = rates.spot_exit_pct / 100.0
+                spot_entry_fee_quote = pos.qty * pos.entry_price_idr * (rates.spot_entry_pct / 100.0)
+                futures_close_fee_rate = rates.perp_exit_pct / 100.0
+                pnl_snapshot = self.pair_pnl_engine.compute_pair_pnl(
+                    session_id=str(getattr(pos, "session_id", pair_tag) or pair_tag),
+                    pair_key=pair_tag,
+                    spot_qty=pos.qty,
+                    spot_entry_cost_quote=pos.qty * pos.entry_price_idr,
+                    spot_executable_bid=local_best_bid,
+                    spot_exit_fee_rate=spot_exit_fee_rate,
+                    spot_entry_fee_quote=spot_entry_fee_quote,
+                    futures_qty=pos.qty,
+                    futures_entry_price=pos.short_entry_usdt,
+                    futures_executable_ask=global_ask_usdt,
+                    futures_close_fee_rate=futures_close_fee_rate,
+                    funding_accrued=pos.accumulated_funding_usdt,
+                    fx_spot_to_report=fx_spot,
+                    fx_futures_to_report=1.0,
+                    reporting_currency="USDT",
+                )
+
+                position_age_seconds = max(
+                    0.0, (now_ms - getattr(pos, "opened_at_ms", 0)) / 1000.0
+                ) if getattr(pos, "opened_at_ms", 0) > 0 else 0.0
+
+                min_roi_pct = max(0.05, pos.base_target_exit_spread_pct * 0.25)
+                capital_usdt = pos.qty * pos.short_entry_usdt
+                dynamic_target_usdt = max(
+                    capital_usdt * (min_roi_pct / 100.0),
+                    getattr(self.exit_decision_engine, "min_profit_target_usdt", 0.50),
+                )
+
+                decision = self.exit_decision_engine.evaluate_exit(
+                    pnl_snapshot,
+                    position_age_seconds=position_age_seconds,
+                    dynamic_target_usdt=dynamic_target_usdt,
+                )
+
+                target_profit_reached = local_best_bid >= target_sell_idr
+                time_stop_triggered = (
+                    (decision.action == ExitAction.CLOSE_BOTH and "TIME_STOP" in decision.reason)
+                    or (position_age_seconds >= getattr(self.exit_decision_engine, "max_position_age", 3600.0)
+                        and pnl_snapshot.pair_net_liquidation_pnl > 0)
+                )
+
+                time_to_funding_ms = (pos.next_funding_time_ms - now_ms) if pos.next_funding_time_ms > 0 else None
+                approaching_negative_funding = (
+                    time_to_funding_ms is not None
+                    and 0 < time_to_funding_ms <= 300_000
+                    and getattr(pos, "current_funding_rate", 0.0) < 0
+                    and pnl_snapshot.pair_net_liquidation_pnl >= 0
+                )
+
+                if target_profit_reached or time_stop_triggered or approaching_negative_funding:
+                    if target_profit_reached:
+                        sniper_reason = f"TARGET_PROFIT_BID_REACHED (bid={local_best_bid:.2f} >= target={target_sell_idr:.2f})"
+                    elif time_stop_triggered:
+                        sniper_reason = decision.reason
+                    else:
+                        sniper_reason = f"NEGATIVE_FUNDING_APPROACHING (rate={pos.current_funding_rate:.6f}, in {time_to_funding_ms/1000:.0f}s)"
+
+                    logger.info(
+                        f"[State 3 Taker Sniper Exit] Triggering immediate Taker Sell for {pair_tag}: "
+                        f"local_bid={local_best_bid}, target_sell_idr={target_sell_idr:.2f}, "
+                        f"pnl_usdt={pnl_snapshot.pair_net_liquidation_pnl:.4f}, reason={sniper_reason}"
+                    )
+                    if await self._execute_taker_sniper_exit(
+                        pair_tag, pos, local_best_bid, global_ask_usdt, usdt_idr_rate, reason=sniper_reason
+                    ):
+                        return
+
+            if not self._should_repeg_exit(
+                pair_tag, global_ask_usdt, funding_passed
+            ):
+                return
+            # Smart Maker Ask: undercut local_best_ask by 1 tick if above target_sell_idr
+            limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
+                pair_tag, pos, global_ask_usdt, usdt_idr_rate, local_best_ask_idr=_local_best_ask
+            )
+            if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
+                return
+            # Cancellation may race a fill and reduce or close the position.
+            pos = self.active_positions.get(pair_tag)
+            if not pos or pos.qty <= 0:
+                return
+            await self._place_dynamic_limit_sell(
+                pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt,
+                usdt_idr_rate,
+            )
 
     async def _check_dynamic_exits(self):
         """
@@ -410,6 +606,12 @@ class ExitOrderManagementMixin:
 
         ``force_reconcile`` is used only by force close while holding the pair lock.
         """
+        if not force_reconcile:
+            async with self._pair_lock(pair_tag):
+                return await self._process_pending_exit_bound(
+                    pair_tag, force_reconcile=True
+                )
+
         if (
             self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED
             and not force_reconcile
@@ -458,9 +660,10 @@ class ExitOrderManagementMixin:
             logger.exception(f"failed to fetch exit order {order_id}")
             return
 
-        current_filled = float(order.get("filled", 0.0))
-        closed_qty = float(order_info.get("closed_short_qty", 0.0))
+        current_filled = float(order.get("filled", 0.0) or 0.0)
+        closed_qty = float(order_info.get("closed_short_qty", 0.0) or 0.0)
         unclosed_delta = current_filled - closed_qty
+        order_info["filled"] = current_filled
 
         if isinstance(order, dict):
             self.supabase.order(
@@ -475,4 +678,32 @@ class ExitOrderManagementMixin:
             )
 
         if unclosed_delta > 0:
-            await self._execute_exit_fill(pair_tag, order_info, pos, unclosed_delta)
+            status = str(order.get("status") or "").strip().lower()
+            is_terminal = status in (
+                "closed", "canceled", "cancelled", "rejected", "expired", "filled"
+            )
+            rate = float(order_info.get("usdt_idr_rate", 0.0) or 0.0)
+            if rate <= 0 and live_price_raw:
+                try:
+                    rate = float(json.loads(live_price_raw).get("usdt_idr_rate", 0.0) or 0.0)
+                except Exception:
+                    rate = 0.0
+            if rate <= 0:
+                rate = float(getattr(helpers, "FALLBACK_USDT_IDR_RATE", 16000.0))
+
+            price_idr = float(order_info.get("price", 0.0) or 0.0)
+            delta_val_usd = (
+                (unclosed_delta * price_idr) / rate
+                if (price_idr > 0 and rate > 0)
+                else (unclosed_delta * float(pos.short_entry_usdt))
+            )
+            min_fill_usd = float(getattr(self.config, "min_partial_fill_usd", 1.0) or 1.0)
+
+            # ponytail: accumulator checks value against threshold; adaptive partial sizing deferred
+            if delta_val_usd >= min_fill_usd or is_terminal or unclosed_delta >= pos.qty:
+                await self._execute_exit_fill(pair_tag, order_info, pos, unclosed_delta)
+            else:
+                logger.info(
+                    f"[State 4 Partial Fill Exit] {pair_tag} unclosed exit fill {unclosed_delta} "
+                    f"(${delta_val_usd:.2f}) below threshold (${min_fill_usd:.2f}); accumulating"
+                )

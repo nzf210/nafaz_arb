@@ -245,16 +245,15 @@ class EngineEntryFlowMixin:
         ):
             return
 
-        sizing = await self._prepare_entry_sizing(
-            pair_tag, payload, pair_info, directives
-        )
-        if sizing is None:
-            return
-        buy_qty, actual_cost_usdt, buy_price_idr = sizing
-        # The exchange-wide lock closes the race where simultaneous signals
-        # for different pairs would all pass the same venue cap.
         exchange = str(pair_info.local_exchange or "").strip().lower()
         async with self._spot_exchange_entry_lock(exchange):
+            sizing = await self._prepare_entry_sizing(
+                pair_tag, payload, pair_info, directives
+            )
+            if sizing is None:
+                return
+            buy_qty, actual_cost_usdt, buy_price_idr = sizing
+
             current = self._spot_open_order_count(exchange)
             maximum = self._spot_order_limit(exchange)
             if current >= maximum:
