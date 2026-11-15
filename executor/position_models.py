@@ -48,6 +48,7 @@ class ActivePosition:
     fee_verified: bool = False
     fee_fetched_at_ms: int = 0
     fee_asset_surcharge_pct: float = 0.0
+    unhedged_exit_base_qty: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -89,6 +90,7 @@ class ActivePosition:
             "fee_verified": self.fee_verified,
             "fee_fetched_at_ms": self.fee_fetched_at_ms,
             "fee_asset_surcharge_pct": self.fee_asset_surcharge_pct,
+            "unhedged_exit_base_qty": self.unhedged_exit_base_qty,
         }
 
     @classmethod
@@ -149,6 +151,7 @@ class ActivePosition:
             fee_verified=bool(d.get("fee_verified", False)),
             fee_fetched_at_ms=int(d.get("fee_fetched_at_ms", 0)),
             fee_asset_surcharge_pct=float(d.get("fee_asset_surcharge_pct", 0.0)),
+            unhedged_exit_base_qty=float(d.get("unhedged_exit_base_qty", 0.0) or 0.0),
         )
 
 

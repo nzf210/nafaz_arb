@@ -270,10 +270,30 @@ class ExitPricingMixin:
         return True
 
     def _should_repeg_exit(
-        self, pair_tag: str, global_ask_usdt: float, funding_passed: bool
+        self,
+        pair_tag: str,
+        global_ask_usdt: float,
+        funding_passed: bool,
+        local_best_ask_idr: float = 0.0,
+        maker_roi_viable: bool = True,
     ) -> bool:
         if pair_tag not in self.pending_exit_orders:
             return True
+
+        order_info = self.pending_exit_orders[pair_tag]
+        current_price = float(order_info.get("price", 0.0) or 0.0)
+        now_s = time.time()
+        last_repeg_ts = float(order_info.get("last_repeg_ts", order_info.get("placed_at_ts", 0.0)) or 0.0)
+
+        # Monitor every 10s: if opponent best ask moved lower than our price and still profitable, re-peg
+        if (
+            local_best_ask_idr > 0
+            and current_price > 0
+            and local_best_ask_idr < current_price
+            and maker_roi_viable
+        ):
+            if now_s - last_repeg_ts >= 10.0:
+                return True
 
         last_ask = self.last_pegged_global_ask.get(pair_tag, 0.0)
         ask_movement = 0.0
@@ -293,6 +313,7 @@ class ExitPricingMixin:
         global_ask_usdt: float,
         usdt_idr_rate: float,
         local_best_ask_idr: float = 0.0,
+        local_best_bid_idr: float = 0.0,
     ) -> tuple[float, float]:
         # 1. Base pegged exit price using spread & funding decay
         pos_value_usdt = pos.qty * global_ask_usdt
@@ -338,6 +359,10 @@ class ExitPricingMixin:
         # ponytail: simple undercut; complex orderbook queue optimization deferred
         if local_best_ask_idr > 0:
             limit_sell_idr = max(limit_sell_idr, local_best_ask_idr - tick_size)
+
+        # Ensure limit sell does not cross the best bid (selama tidak menabrak bid)
+        if local_best_bid_idr > 0:
+            limit_sell_idr = max(limit_sell_idr, local_best_bid_idr + tick_size)
 
         # CEIL to tick size so rounding NEVER rounds down below profitable floor
         limit_sell_idr = ceil_to_tick(limit_sell_idr, tick_size)

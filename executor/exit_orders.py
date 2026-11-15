@@ -73,11 +73,30 @@ class ExitOrderManagementMixin:
                 pair_tag, old_order.get("order_id"),
             )
             return False
-        unclosed_delta = final_filled - already_closed
-        if unclosed_delta > 0:
-            await self._execute_exit_fill(pair_tag, old_order, pos, unclosed_delta)
-            if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
-                return False
+        last_tracked = max(already_closed, float(old_order.get("last_spot_fill", already_closed) or 0.0))
+        new_fill = max(0.0, final_filled - last_tracked)
+        if new_fill > 0:
+            pos.unhedged_exit_base_qty = float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0) + new_fill
+            old_order["last_spot_fill"] = final_filled
+            old_order["filled"] = final_filled
+            pos.updated_at = int(time.time() * 1000)
+            await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+        unhedged = float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0)
+        if unhedged > 0:
+            price_data = await self._fetch_live_price(pair_tag)
+            futures_ask_price = price_data[0] if price_data else pos.short_entry_usdt
+            min_futures_notional_usd = float(
+                getattr(self.config, "min_futures_notional_usd", 0.0)
+                or getattr(self.config, "min_partial_fill_usd", 0.0)
+                or 5.0
+            )
+            min_threshold = max(min_futures_notional_usd, 5.50)
+            if unhedged * futures_ask_price >= min_threshold or unhedged >= pos.qty:
+                qty_to_close = min(unhedged, pos.qty)
+                await self._execute_exit_fill(pair_tag, old_order, pos, qty_to_close)
+                if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+                    return False
         return pair_tag in self.active_positions
 
     async def _cancel_existing_exit_order(self, pair_tag: str, symbol: str) -> bool:
@@ -129,6 +148,14 @@ class ExitOrderManagementMixin:
         usdt_idr_rate: float,
     ) -> None:
         try:
+            unhedged = float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0)
+            qty_to_sell = max(0.0, pos.qty - unhedged)
+            if qty_to_sell <= 1e-8:
+                logger.info(
+                    f"[State 3] Spot qty for {pair_tag} already sold ({unhedged} unhedged); skipping new limit sell"
+                )
+                return
+
             pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
             if pair_info is None:
                 raw_symbol = str(pos.symbol or "").split(":")[-1]
@@ -159,14 +186,14 @@ class ExitOrderManagementMixin:
                 exchange=pos.local_exchange, market_type="spot",
                 symbol=pos.symbol, role=OrderRole.EXIT_SPOT.value,
                 side="sell", order_type="limit", price=limit_sell_idr,
-                quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
+                quantity=qty_to_sell, local_amount_spec=pos.local_amount_spec,
                 recovery_context=recovery_context,
                 required=False,
             )
             try:
                 order = await self.client.place_local_limit_sell(
                     pos.symbol,
-                    pos.qty,
+                    qty_to_sell,
                     exchange_limit_sell_price,
                     client_order_id=exit_coid,
                     amount_spec=pos.local_amount_spec,
@@ -228,20 +255,24 @@ class ExitOrderManagementMixin:
                 side="sell",
                 order_type="limit",
                 price=limit_sell_idr,
-                quantity=pos.qty,
+                quantity=qty_to_sell,
                 local_amount_spec=pos.local_amount_spec,
                 recovery_context=recovery_context,
             )
+            now_s = time.time()
             self.pending_exit_orders[pair_tag] = {
                 "order_id": order_id,
                 "client_order_id": exit_coid,
                 "symbol": pos.symbol,
                 "price": limit_sell_idr,
-                "qty": pos.qty,
+                "qty": qty_to_sell,
                 "filled": 0.0,
                 "closed_short_qty": 0.0,
+                "last_spot_fill": 0.0,
                 "tick_size": tick_size,
                 "usdt_idr_rate": usdt_idr_rate,
+                "placed_at_ts": now_s,
+                "last_repeg_ts": now_s,
             }
             self.last_pegged_global_ask[pair_tag] = global_ask_usdt
             self.states[pair_tag] = PositionState.EXIT_PENDING
@@ -432,6 +463,7 @@ class ExitOrderManagementMixin:
         if not fill_price or fill_price <= 0 or (getattr(self.config, "mock_mode", False) and fill_price < local_best_bid * 0.5):
             fill_price = local_best_bid
 
+        now_s = time.time()
         order_info = {
             "order_id": order_id,
             "client_order_id": taker_coid,
@@ -440,8 +472,11 @@ class ExitOrderManagementMixin:
             "qty": pos.qty,
             "filled": filled_qty,
             "closed_short_qty": 0.0,
+            "last_spot_fill": filled_qty,
             "tick_size": getattr(pos, "local_price_tick", 1.0),
             "usdt_idr_rate": usdt_idr_rate,
+            "placed_at_ts": now_s,
+            "last_repeg_ts": now_s,
         }
         self.pending_exit_orders[pair_tag] = order_info
         self.last_pegged_global_ask[pair_tag] = global_ask_usdt
@@ -449,6 +484,7 @@ class ExitOrderManagementMixin:
             f"[Taker Sniper Exit] {pair_tag}: executed spot market sell for {filled_qty} "
             f"at {fill_price} IDR (reason: {reason}). Unwinding hedge..."
         )
+        pos.unhedged_exit_base_qty = float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0) + filled_qty
         await self._execute_exit_fill(pair_tag, order_info, pos, filled_qty)
         return True
 
@@ -483,31 +519,61 @@ class ExitOrderManagementMixin:
             usdt_idr_rate, now_ms, live_snapshot,
         )
 
-        target_sell_idr, tick_size = self._calculate_limit_sell_idr(
+        target_sell_idr, _ = self._calculate_limit_sell_idr(
             pair_tag, pos, global_ask_usdt, usdt_idr_rate, local_best_ask_idr=0.0
         )
 
-        # ExitDecisionEngine & Taker Sniper Exit evaluation
-        raw_bid = float((live_snapshot or {}).get("local_best_bid", 0.0) or 0.0)
+        tick_size = getattr(pos, "local_price_tick", 1.0)
+        if tick_size <= 0:
+            tick_size = 1.0
+
+        rates = rates_for_position(pos)
+        fx_spot = 1.0 / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
+        spot_entry_fee_quote = pos.qty * pos.entry_price_idr * (rates.spot_entry_pct / 100.0)
+        futures_entry_fee_rate = (rates.perp_entry_pct / 100.0) if rates.perp_entry_pct > 0 else 0.0005
+        futures_taker_fee_rate = (rates.perp_exit_pct + rates.surcharge_pct) / 100.0 if rates.perp_exit_pct > 0 else 0.0005
+        spot_taker_fee_rate = (rates.spot_exit_pct + rates.surcharge_pct) / 100.0
+
+        cached_profile = None
+        if hasattr(self, "_load_cached_fee_profile"):
+            try:
+                cached_profile = await self._load_cached_fee_profile(pos.local_exchange, "spot", pos.symbol)
+            except Exception:
+                pass
+        if cached_profile and "maker" in cached_profile:
+            spot_maker_fee_rate = float(cached_profile["maker"]) / 100.0
+        elif str(pos.local_exchange).lower() == "indodax":
+            spot_maker_fee_rate = 0.0
+        else:
+            spot_maker_fee_rate = (
+                float(getattr(self.config, "spot_maker_fee_pct", 0.0)) / 100.0
+                if getattr(self.config, "spot_maker_fee_pct", 0.0) > 0
+                else spot_taker_fee_rate
+            )
+
+        # Smart Maker sell price candidate at top-of-book
+        if _local_best_ask > 0:
+            maker_candidate_price = max(local_best_bid + tick_size, _local_best_ask - tick_size)
+        else:
+            maker_candidate_price = local_best_bid + tick_size
+        maker_candidate_price = helpers.ceil_to_tick(maker_candidate_price, tick_size)
+
+        # ExitDecisionEngine & Taker Sniper vs Smart Maker evaluation
+        raw_bid = float((live_snapshot or {}).get("local_best_bid", 0.0) or (live_snapshot or {}).get("spot_best_bid", 0.0) or 0.0)
         if raw_bid > 0 and getattr(self, "exit_decision_engine", None) and getattr(self, "pair_pnl_engine", None):
-            rates = rates_for_position(pos)
-            fx_spot = 1.0 / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
-            spot_exit_fee_rate = rates.spot_exit_pct / 100.0
-            spot_entry_fee_quote = pos.qty * pos.entry_price_idr * (rates.spot_entry_pct / 100.0)
-            futures_close_fee_rate = rates.perp_exit_pct / 100.0
-            futures_entry_fee_rate = (rates.perp_entry_pct / 100.0) if rates.perp_entry_pct > 0 else 0.0005
-            pnl_snapshot = self.pair_pnl_engine.compute_pair_pnl(
+            # Scenario 1: Taker Sniper Exit (Spot Taker Fee + Futures Taker Fee at best bid)
+            taker_pnl_snapshot = self.pair_pnl_engine.compute_pair_pnl(
                 session_id=str(getattr(pos, "session_id", pair_tag) or pair_tag),
                 pair_key=pair_tag,
                 spot_qty=pos.qty,
                 spot_entry_cost_quote=pos.qty * pos.entry_price_idr,
                 spot_executable_bid=local_best_bid,
-                spot_exit_fee_rate=spot_exit_fee_rate,
+                spot_exit_fee_rate=spot_taker_fee_rate,
                 spot_entry_fee_quote=spot_entry_fee_quote,
                 futures_qty=pos.qty,
                 futures_entry_price=pos.short_entry_usdt,
                 futures_executable_ask=global_ask_usdt,
-                futures_close_fee_rate=futures_close_fee_rate,
+                futures_close_fee_rate=futures_taker_fee_rate,
                 futures_entry_fee_rate=futures_entry_fee_rate,
                 funding_accrued=pos.accumulated_funding_usdt,
                 fx_spot_to_report=fx_spot,
@@ -515,29 +581,55 @@ class ExitOrderManagementMixin:
                 reporting_currency="USDT",
                 position_state=pos.to_dict() if hasattr(pos, "to_dict") else None,
             )
+            taker_exit_net_roi_pct = taker_pnl_snapshot.pair_net_roi_pct
+
+            # Scenario 2: Smart Maker Exit (Spot Maker Fee at top-of-book ask undercut + Futures Taker Fee)
+            maker_pnl_snapshot = self.pair_pnl_engine.compute_pair_pnl(
+                session_id=str(getattr(pos, "session_id", pair_tag) or pair_tag),
+                pair_key=pair_tag,
+                spot_qty=pos.qty,
+                spot_entry_cost_quote=pos.qty * pos.entry_price_idr,
+                spot_executable_bid=maker_candidate_price,
+                spot_exit_fee_rate=spot_maker_fee_rate,
+                spot_entry_fee_quote=spot_entry_fee_quote,
+                futures_qty=pos.qty,
+                futures_entry_price=pos.short_entry_usdt,
+                futures_executable_ask=global_ask_usdt,
+                futures_close_fee_rate=futures_taker_fee_rate,
+                futures_entry_fee_rate=futures_entry_fee_rate,
+                funding_accrued=pos.accumulated_funding_usdt,
+                fx_spot_to_report=fx_spot,
+                fx_futures_to_report=1.0,
+                reporting_currency="USDT",
+                position_state=pos.to_dict() if hasattr(pos, "to_dict") else None,
+            )
+            maker_exit_net_roi_pct = maker_pnl_snapshot.pair_net_roi_pct
+
+            required_net_roi_pct = float(
+                getattr(self.config, "required_net_roi_pct", 0.0)
+                or getattr(self.config, "min_net_roi_pct", 0.0)
+                or getattr(pos, "required_net_roi_pct", 0.0)
+                or pos.base_target_exit_spread_pct
+            )
 
             position_age_seconds = max(
                 0.0, (now_ms - getattr(pos, "opened_at_ms", 0)) / 1000.0
             ) if getattr(pos, "opened_at_ms", 0) > 0 else 0.0
-
-            min_roi_pct = max(0.05, pos.base_target_exit_spread_pct * 0.25)
             capital_usdt = pos.qty * pos.short_entry_usdt
             dynamic_target_usdt = max(
-                capital_usdt * (min_roi_pct / 100.0),
+                capital_usdt * (required_net_roi_pct / 100.0),
                 getattr(self.exit_decision_engine, "min_profit_target_usdt", 0.50),
             )
-
             decision = self.exit_decision_engine.evaluate_exit(
-                pnl_snapshot,
+                taker_pnl_snapshot,
                 position_age_seconds=position_age_seconds,
                 dynamic_target_usdt=dynamic_target_usdt,
             )
 
-            target_profit_reached = local_best_bid >= target_sell_idr
             time_stop_triggered = (
                 (decision.action == ExitAction.CLOSE_BOTH and "TIME_STOP" in decision.reason)
                 or (position_age_seconds >= getattr(self.exit_decision_engine, "max_position_age", 3600.0)
-                    and pnl_snapshot.pair_net_liquidation_pnl > 0)
+                    and taker_pnl_snapshot.pair_net_liquidation_pnl > 0)
             )
 
             time_to_funding_ms = (pos.next_funding_time_ms - now_ms) if pos.next_funding_time_ms > 0 else None
@@ -545,12 +637,33 @@ class ExitOrderManagementMixin:
                 time_to_funding_ms is not None
                 and 0 < time_to_funding_ms <= 300_000
                 and getattr(pos, "current_funding_rate", 0.0) < 0
-                and pnl_snapshot.pair_net_liquidation_pnl >= 0
+                and taker_pnl_snapshot.pair_net_liquidation_pnl >= 0
             )
 
-            if target_profit_reached or time_stop_triggered or approaching_negative_funding:
-                if target_profit_reached:
-                    sniper_reason = f"TARGET_PROFIT_BID_REACHED (bid={local_best_bid:.2f} >= target={target_sell_idr:.2f})"
+            # Volume check on spot_best_bid: minimal 70% kuantitas kita
+            spot_bid_qty = None
+            if live_snapshot:
+                spot_bid_qty = (
+                    live_snapshot.get("spot_bid_qty")
+                    if "spot_bid_qty" in live_snapshot
+                    else (
+                        live_snapshot.get("local_bid_qty")
+                        if "local_bid_qty" in live_snapshot
+                        else live_snapshot.get("bid_qty")
+                    )
+                )
+            has_sufficient_bid_volume = (
+                spot_bid_qty is None or float(spot_bid_qty) >= 0.70 * pos.qty
+            )
+
+            # Kondisi 1: TAKER_SNIPER_EXIT
+            taker_profitable = (taker_exit_net_roi_pct >= required_net_roi_pct) or (local_best_bid >= target_sell_idr)
+            if (taker_profitable and has_sufficient_bid_volume) or time_stop_triggered or approaching_negative_funding:
+                if taker_profitable:
+                    sniper_reason = (
+                        f"TAKER_SNIPER_EXIT (taker_roi={taker_exit_net_roi_pct:.3f}% >= req={required_net_roi_pct:.3f}%, "
+                        f"bid={local_best_bid:.2f} >= target={target_sell_idr:.2f})"
+                    )
                 elif time_stop_triggered:
                     sniper_reason = decision.reason
                 else:
@@ -559,32 +672,67 @@ class ExitOrderManagementMixin:
                 logger.info(
                     f"[State 3 Taker Sniper Exit] Triggering immediate Taker Sell for {pair_tag}: "
                     f"local_bid={local_best_bid}, target_sell_idr={target_sell_idr:.2f}, "
-                    f"pnl_usdt={pnl_snapshot.pair_net_liquidation_pnl:.4f}, reason={sniper_reason}"
+                    f"pnl_usdt={taker_pnl_snapshot.pair_net_liquidation_pnl:.4f}, reason={sniper_reason}"
                 )
                 if await self._execute_taker_sniper_exit(
                     pair_tag, pos, local_best_bid, global_ask_usdt, usdt_idr_rate, reason=sniper_reason
                 ):
                     return
 
+            # Kondisi 2: SMART_MAKER_EXIT dengan Auto Re-Peg
+            if maker_exit_net_roi_pct >= required_net_roi_pct:
+                limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
+                    pair_tag, pos, global_ask_usdt, usdt_idr_rate,
+                    local_best_ask_idr=_local_best_ask,
+                    local_best_bid_idr=local_best_bid,
+                )
+
+                if not self._should_repeg_exit(
+                    pair_tag, global_ask_usdt, funding_passed,
+                    local_best_ask_idr=_local_best_ask,
+                    maker_roi_viable=(maker_exit_net_roi_pct >= required_net_roi_pct),
+                ):
+                    return
+
+                if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
+                    return
+
+                pos = self.active_positions.get(pair_tag)
+                if not pos or pos.qty <= 0:
+                    return
+
+                await self._place_dynamic_limit_sell(
+                    pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt,
+                    usdt_idr_rate,
+                )
+                return
+
         if not self._should_repeg_exit(
-            pair_tag, global_ask_usdt, funding_passed
+            pair_tag, global_ask_usdt, funding_passed,
+            local_best_ask_idr=_local_best_ask,
+            maker_roi_viable=True,
         ):
             return
+
         # Smart Maker Ask: undercut local_best_ask by 1 tick if above target_sell_idr
         limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
-            pair_tag, pos, global_ask_usdt, usdt_idr_rate, local_best_ask_idr=_local_best_ask
+            pair_tag, pos, global_ask_usdt, usdt_idr_rate,
+            local_best_ask_idr=_local_best_ask,
+            local_best_bid_idr=local_best_bid,
         )
+
         if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
             return
-        # Cancellation may race a fill and reduce or close the position.
+
+        # Cancellation may race with fill and reduce or close position.
         pos = self.active_positions.get(pair_tag)
         if not pos or pos.qty <= 0:
             return
+
         await self._place_dynamic_limit_sell(
             pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt,
             usdt_idr_rate,
         )
-
     async def _check_dynamic_exits(self):
         """
         State 3: Dynamic Exit Limit Sell Pegging:
@@ -686,8 +834,15 @@ class ExitOrderManagementMixin:
 
         current_filled = float(order.get("filled", 0.0) or 0.0)
         closed_qty = float(order_info.get("closed_short_qty", 0.0) or 0.0)
-        unclosed_delta = current_filled - closed_qty
         order_info["filled"] = current_filled
+
+        last_spot_fill = float(order_info.get("last_spot_fill", closed_qty) or 0.0)
+        new_spot_fill = max(0.0, current_filled - last_spot_fill)
+        if new_spot_fill > 0:
+            pos.unhedged_exit_base_qty = float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0) + new_spot_fill
+            order_info["last_spot_fill"] = current_filled
+            pos.updated_at = int(time.time() * 1000)
+            await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
 
         if isinstance(order, dict):
             self.supabase.order(
@@ -701,33 +856,52 @@ class ExitOrderManagementMixin:
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
             )
 
-        if unclosed_delta > 0:
+        unhedged_qty = float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0)
+        if unhedged_qty > 0:
             status = str(order.get("status") or "").strip().lower()
             is_terminal = status in (
                 "closed", "canceled", "cancelled", "rejected", "expired", "filled"
             )
-            rate = float(order_info.get("usdt_idr_rate", 0.0) or 0.0)
-            if rate <= 0 and live_price_raw:
-                try:
-                    rate = float(json.loads(live_price_raw).get("usdt_idr_rate", 0.0) or 0.0)
-                except Exception:
-                    rate = 0.0
-            if rate <= 0:
-                rate = float(getattr(helpers, "FALLBACK_USDT_IDR_RATE", 16000.0))
-
-            price_idr = float(order_info.get("price", 0.0) or 0.0)
-            delta_val_usd = (
-                (unclosed_delta * price_idr) / rate
-                if (price_idr > 0 and rate > 0)
-                else (unclosed_delta * float(pos.short_entry_usdt))
+            order_qty = float(order_info.get("qty", 0.0) or pos.qty)
+            is_100_pct_filled = (
+                current_filled >= order_qty - 1e-8
+                or pos.qty <= unhedged_qty + 1e-8
+                or is_terminal
             )
-            min_fill_usd = float(getattr(self.config, "min_partial_fill_usd", 1.0) or 1.0)
 
-            # ponytail: accumulator checks value against threshold; adaptive partial sizing deferred
-            if delta_val_usd >= min_fill_usd or is_terminal or unclosed_delta >= pos.qty:
-                await self._execute_exit_fill(pair_tag, order_info, pos, unclosed_delta)
+            futures_ask_price = 0.0
+            if live_price_raw:
+                try:
+                    snap = json.loads(live_price_raw)
+                    futures_ask_price = float(
+                        snap.get("global_best_ask_usdt")
+                        or snap.get("futures_best_ask")
+                        or 0.0
+                    )
+                except Exception:
+                    pass
+            if futures_ask_price <= 0:
+                price_idr = float(order_info.get("price", 0.0) or 0.0)
+                rate = float(order_info.get("usdt_idr_rate", 0.0) or 0.0)
+                if rate > 0 and price_idr > 0:
+                    futures_ask_price = price_idr / rate
+                else:
+                    futures_ask_price = float(pos.short_entry_usdt or 0.0)
+
+            min_futures_notional_usd = float(
+                getattr(self.config, "min_futures_notional_usd", 0.0)
+                or getattr(self.config, "min_partial_fill_usd", 0.0)
+                or 5.0
+            )
+            min_threshold = max(min_futures_notional_usd, 5.50)
+            notional_usd = unhedged_qty * futures_ask_price
+
+            # ponytail: buffer check against min notional avoids futures exchange rejection; 100% fill drains residual
+            if notional_usd >= min_threshold or is_100_pct_filled:
+                qty_to_close = min(unhedged_qty, pos.qty)
+                await self._execute_exit_fill(pair_tag, order_info, pos, qty_to_close)
             else:
                 logger.info(
-                    f"[State 4 Partial Fill Exit] {pair_tag} unclosed exit fill {unclosed_delta} "
-                    f"(${delta_val_usd:.2f}) below threshold (${min_fill_usd:.2f}); accumulating"
+                    f"[State 4 Partial Fill Exit] {pair_tag} unhedged exit qty {unhedged_qty} "
+                    f"(${notional_usd:.2f}) below threshold (${min_threshold:.2f}); accumulating"
                 )

@@ -269,6 +269,9 @@ class ExitExecutionMixin:
             total_qty_before = pos.qty
             order_info["closed_short_qty"] += unclosed_delta
             pos.qty -= unclosed_delta
+            pos.unhedged_exit_base_qty = max(
+                0.0, float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0) - unclosed_delta
+            )
             pos.updated_at = int(time.time() * 1000)
             await self.redis.set(
                 f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
