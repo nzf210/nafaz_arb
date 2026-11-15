@@ -198,12 +198,11 @@ def venue_client_order_id(
 ) -> Optional[str]:
     """Adapts a logical client id to the exact form its venue accepts.
 
-    Tokocrypto (Binance Cloud) rejects ids that are longer than 32 characters
-    or contain anything but alphanumerics, so those ids are rewritten instead
-    of being sent unchanged and bouncing with error 3703. Every other venue
-    keeps the id verbatim: a broker prefix is prepended only when the account
-    actually has one registered, because a fabricated prefix is rejected even
-    more reliably than a malformed id.
+    Tokocrypto (Binance Cloud) needs a broker-aware 32-character wire ID;
+    OKX requires up to 32 alphanumeric characters. Both mappings are
+    deterministic so recovery can derive the exact wire ID even when the
+    submit acknowledgement is lost. Other configured venues keep the logical
+    ID verbatim unless their own contract is added here.
     """
     if not client_order_id:
         return client_order_id
@@ -352,10 +351,10 @@ def _accepted_client_order_ids(
 ) -> set:
     """Every id spelling that may legitimately appear on the venue.
 
-    Tokocrypto rewrites the logical id (see ``venue_client_order_id``), so a
-    venue response carries the rewritten form rather than the logical one.
-    Accepting both keeps recovery working without loosening the exact-match
-    guarantee: only ids derived from this one logical id are admitted.
+    Venue adapters may rewrite the logical id (see ``venue_client_order_id``).
+    Recovery accepts the logical ID, its deterministic wire form, and any
+    response alias learned for this exact intent; it never accepts another
+    order's alias.
     """
     accepted = {client_order_id}
     # A deterministic venue wire ID must be searchable even when the submit
