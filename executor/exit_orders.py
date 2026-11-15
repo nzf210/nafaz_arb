@@ -503,7 +503,6 @@ class ExitOrderManagementMixin:
             local_amount_spec=pos.local_amount_spec,
         )
 
-        filled_qty = float(order.get("filled", 0.0) or order.get("amount", 0.0) or pos.qty)
         fill_price = helpers.extract_fill_price(order)
         if not fill_price or fill_price <= 0 or (getattr(self.config, "mock_mode", False) and fill_price < local_best_bid * 0.5):
             fill_price = local_best_bid
