@@ -474,3 +474,112 @@ async def test_partial_fill_buffer_min_notional_five_point_five_usd(engine, fake
     assert mock_client.global_close_buys[1]["amount"] == pytest.approx(0.00002)
     assert pos.unhedged_exit_base_qty == pytest.approx(0.0)
 
+
+
+@pytest.mark.asyncio
+async def test_taker_sniper_exit_recovers_accepted_market_sell_by_exact_client_id(
+    engine, fake_redis, mock_client
+):
+    """A lost ACK is adopted by exact client ID; no second spot SELL is sent."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        accumulated_funding_usdt=0.0,
+        base_target_exit_spread_pct=0.30,
+        local_price_tick=1000.0,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(
+        f"arb:live_price:{pair_tag}",
+        json.dumps({
+            "local_best_bid": 1_045_000_000.0,
+            "local_best_ask": 1_046_000_000.0,
+            "global_best_ask_usdt": 65_000.0,
+            "usdt_idr_rate": 16_000.0,
+            "timestamp_ms": now_ms,
+        }),
+    )
+
+    original_submit = mock_client.place_local_market_sell
+    async def accepted_then_timeout(symbol, amount, client_order_id=None, amount_spec=None):
+        await original_submit(
+            symbol, amount, client_order_id=client_order_id,
+            amount_spec=amount_spec,
+        )
+        raise TimeoutError("connection reset after venue accepted market SELL")
+
+    async def exact_lookup(client_order_id, symbol, amount_spec=None):
+        return next(
+            (
+                dict(order) for order in mock_client.orders.values()
+                if order.get("client_order_id") == client_order_id
+                and order.get("symbol") == symbol
+            ),
+            None,
+        )
+
+    mock_client.place_local_market_sell = accepted_then_timeout
+    mock_client.fetch_local_order_by_client_id = exact_lookup
+
+    await engine._check_dynamic_exit_pair_bound(pair_tag)
+
+    assert len(mock_client.placed_sells) == 1
+    assert mock_client.placed_sells[0]["type"] == "market"
+    assert len(mock_client.global_close_buys) == 1
+    assert pair_tag not in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_taker_sniper_exit_unknown_client_id_stops_fallback_sell(
+    engine, fake_redis, mock_client
+):
+    """A negative exact-ID lookup is not proof of rejection; no maker SELL follows."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        accumulated_funding_usdt=0.0,
+        base_target_exit_spread_pct=0.30,
+        local_price_tick=1000.0,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(
+        f"arb:live_price:{pair_tag}",
+        json.dumps({
+            "local_best_bid": 1_045_000_000.0,
+            "local_best_ask": 1_046_000_000.0,
+            "global_best_ask_usdt": 65_000.0,
+            "usdt_idr_rate": 16_000.0,
+            "timestamp_ms": now_ms,
+        }),
+    )
+
+    async def ambiguous_submit(*_args, **_kwargs):
+        raise TimeoutError("venue request may have been accepted")
+
+    async def exact_lookup(*_args, **_kwargs):
+        return None
+
+    mock_client.place_local_market_sell = ambiguous_submit
+    mock_client.fetch_local_order_by_client_id = exact_lookup
+
+    await engine._check_dynamic_exit_pair_bound(pair_tag)
+
+    assert mock_client.placed_sells == []
+    assert mock_client.global_close_buys == []
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    assert pair_tag in engine.active_positions
