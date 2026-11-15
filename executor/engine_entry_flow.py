@@ -211,42 +211,41 @@ class EngineEntryFlowMixin:
             return
 
         exchange = str(payload.pair_info.local_exchange or "").strip().lower()
-        current_open = self._spot_open_order_count(exchange)
-        max_open = self._spot_order_limit(exchange)
-        if current_open >= max_open:
-            logger.info(
-                "[Entry] skipping %s: %s already has %d/%d open spot positions or pending entries",
-                pair_tag, exchange, current_open, max_open,
-            )
-            return
-
-        if not await self._validate_entry_spread(pair_tag, payload):
-            return
-
-        directives = payload.execution_directives
-        # Refresh account-specific rates before any new LIVE order. If a venue
-        # lacks an authenticated fee endpoint, retain the explicitly supplied
-        # scanner profile and keep its source/verification status unchanged.
-
-        await self._refresh_fee_snapshot(pair_tag, payload, directives)
-        if not await self._validate_dynamic_fee_edge(pair_tag, directives):
-            return
-
-        pair_info = payload.pair_info
-        snapshot = payload.pricing_snapshot
-        if not await self._validate_entry_market_rules(pair_tag, pair_info):
-            return
-
-        if not await self._validate_hedge_leg_tradable(pair_tag, pair_info):
-            return
-
-        if not await self._apply_indodax_adaptive_maker_quote(
-            pair_tag, payload, directives
-        ):
-            return
-
-        exchange = str(pair_info.local_exchange or "").strip().lower()
         async with self._spot_exchange_entry_lock(exchange):
+            current_open = self._spot_open_order_count(exchange)
+            max_open = self._spot_order_limit(exchange)
+            if current_open >= max_open:
+                logger.info(
+                    "[Entry] skipping %s: %s already has %d/%d open spot positions or pending entries",
+                    pair_tag, exchange, current_open, max_open,
+                )
+                return
+
+            if not await self._validate_entry_spread(pair_tag, payload):
+                return
+
+            directives = payload.execution_directives
+            # Refresh account-specific rates before any new LIVE order. If a venue
+            # lacks an authenticated fee endpoint, retain the explicitly supplied
+            # scanner profile and keep its source/verification status unchanged.
+
+            await self._refresh_fee_snapshot(pair_tag, payload, directives)
+            if not await self._validate_dynamic_fee_edge(pair_tag, directives):
+                return
+
+            pair_info = payload.pair_info
+            snapshot = payload.pricing_snapshot
+            if not await self._validate_entry_market_rules(pair_tag, pair_info):
+                return
+
+            if not await self._validate_hedge_leg_tradable(pair_tag, pair_info):
+                return
+
+            if not await self._apply_indodax_adaptive_maker_quote(
+                pair_tag, payload, directives
+            ):
+                return
+
             sizing = await self._prepare_entry_sizing(
                 pair_tag, payload, pair_info, directives
             )
@@ -265,7 +264,46 @@ class EngineEntryFlowMixin:
                 )
                 await self.publish_status()
                 return
+
             await self._submit_entry_order(
                 pair_tag, payload, pair_info, snapshot, directives,
                 buy_qty, actual_cost_usdt, buy_price_idr,
             )
+
+    async def _get_available_spot_quote_balance(self, spot_venue: str) -> float:
+        """Fetch available spot quote balance for a venue."""
+        venue = str(spot_venue or "").strip().lower()
+        resolver = getattr(getattr(self, "client", None), "for_venue", None)
+        venue_client = resolver(venue) if callable(resolver) else getattr(self, "client", None)
+        fetch_bal = getattr(venue_client, "get_balances", None)
+        if callable(fetch_bal):
+            bals = fetch_bal()
+            if asyncio.iscoroutine(bals):
+                bals = await bals
+            return float(bals.get("spot_available", 0.0) or 0.0)
+        return 0.0
+
+    async def execute_entry_signal(self, signal: dict) -> dict:
+        """Entry execution facade with pair lock and advanced spot venue lock."""
+        spot_venue = str(signal.get("spot_venue") or signal.get("local_exchange") or "").lower()
+        pair_tag = str(signal.get("pair_tag") or signal.get("symbol") or "")
+
+        async with self._pair_lock(pair_tag):
+            # Ambil lock bursa Spot SEBELUM fetch balance dan dynamic sizing
+            async with self._spot_exchange_entry_lock(spot_venue):
+                free_spot_balance = await self._get_available_spot_quote_balance(spot_venue)
+                compute_sizing = getattr(self, "_compute_entry_sizing_from_balance", None)
+                if callable(compute_sizing):
+                    sized_order = await compute_sizing(signal, free_spot_balance)
+                    if hasattr(sized_order, "is_viable") and not sized_order.is_viable:
+                        return {"status": "SKIPPED_SIZING", "reason": getattr(sized_order, "reason", "not viable")}
+                place_legs = getattr(self, "_place_and_monitor_entry_legs", None)
+                if callable(place_legs):
+                    return await place_legs(signal, locals().get("sized_order"))
+                payload = getattr(self, "_signal_payloads", {}).get(pair_tag)
+                if payload is None and hasattr(self, "_load_signal_payload"):
+                    payload = await self._load_signal_payload(pair_tag)
+                if payload is not None:
+                    await self._handle_signal_locked(pair_tag, payload)
+                    return {"status": "SUBMITTED", "pair_tag": pair_tag}
+                return {"status": "SUCCESS", "pair_tag": pair_tag, "free_spot_balance": free_spot_balance}

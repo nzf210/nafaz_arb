@@ -34,6 +34,11 @@ class PairPnLSnapshot:
 class PairPnLEngine:
     """Calculates true combined economic liquidation value for two-leg positions."""
 
+    futures_taker_fee_rate: float = 0.0005
+
+    def __init__(self, futures_taker_fee_rate: float = 0.0005) -> None:
+        self.futures_taker_fee_rate = futures_taker_fee_rate
+
     def compute_pair_pnl(
         self,
         *,
@@ -48,6 +53,9 @@ class PairPnLEngine:
         futures_entry_price: float,
         futures_executable_ask: float,
         futures_close_fee_rate: float = 0.0005,
+        futures_entry_fee_rate: Optional[float] = None,
+        futures_entry_fee: Optional[float] = None,
+        position_state: Optional[dict] = None,
         contract_size: float = 1.0,
         funding_accrued: float = 0.0,
         fx_spot_to_report: float = 1.0,
@@ -68,10 +76,32 @@ class PairPnLEngine:
         base_exposure = futures_qty * contract_size
         futures_gross_close_notional = base_exposure * futures_executable_ask
         futures_close_fee = futures_gross_close_notional * futures_close_fee_rate
+        futures_exit_fee_native = futures_close_fee
+
+        futures_entry_notional = base_exposure * futures_entry_price
+        fee_rate = (
+            futures_entry_fee_rate
+            if futures_entry_fee_rate is not None
+            else getattr(self, "futures_taker_fee_rate", 0.0005)
+        )
+        pos_state = position_state if isinstance(position_state, dict) else {}
+        if futures_entry_fee is not None:
+            futures_entry_fee_native = float(futures_entry_fee)
+        else:
+            futures_entry_fee_native = float(
+                pos_state.get("futures_entry_fee", 0.0)
+                or (futures_entry_notional * fee_rate)
+            )
 
         # Gross PnL from short: (Entry Price - Exit Ask Price) * Base Quantity
-        futures_gross_pnl = (futures_entry_price - futures_executable_ask) * base_exposure
-        futures_net_pnl_native = futures_gross_pnl - futures_close_fee + funding_accrued
+        futures_gross_pnl_native = (futures_entry_price - futures_executable_ask) * base_exposure
+        funding_fee_net_native = funding_accrued
+        futures_net_pnl_native = (
+            futures_gross_pnl_native
+            - futures_entry_fee_native
+            - futures_exit_fee_native
+            + funding_fee_net_native
+        )
         futures_net_pnl_report = futures_net_pnl_native * fx_futures_to_report
 
         # 3. Combined Economics
@@ -79,14 +109,19 @@ class PairPnLEngine:
 
         # Capital basis: Spot entry cost + Futures initial margin (typically ~10% for 10x or 100% unleveraged)
         total_capital = (spot_entry_cost_quote * fx_spot_to_report) + (
-            futures_qty * contract_size * futures_entry_price * fx_futures_to_report * 0.2
+            futures_entry_notional * fx_futures_to_report * 0.2
         )
         pair_roi_pct = (pair_net_pnl / total_capital * 100.0) if total_capital > 0 else 0.0
 
-        total_entry_fee = spot_entry_fee_quote * fx_spot_to_report
-        expected_close_fee = (spot_close_fee * fx_spot_to_report) + (
-            futures_close_fee * fx_futures_to_report
-        )
+        spot_entry_fee_usd = spot_entry_fee_quote * fx_spot_to_report
+        futures_entry_fee_usd = futures_entry_fee_native * fx_futures_to_report
+        total_entry_fee = spot_entry_fee_usd + futures_entry_fee_usd
+
+        spot_exit_fee_usd = spot_close_fee * fx_spot_to_report
+        futures_exit_fee_usd = futures_close_fee * fx_futures_to_report
+        total_exit_fee = spot_exit_fee_usd + futures_exit_fee_usd
+        expected_close_fee = total_exit_fee
+        total_fees = total_entry_fee + total_exit_fee
 
         return PairPnLSnapshot(
             session_id=session_id,

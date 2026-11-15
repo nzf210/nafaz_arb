@@ -439,127 +439,137 @@ class ExitOrderManagementMixin:
         return True
 
     async def _check_dynamic_exit_pair_bound(self, pair_tag: str) -> None:
-        async with self._pair_lock(pair_tag):
-            if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
-                return
-            pos = self.active_positions.get(pair_tag)
-            if not pos or pos.qty <= 0:
-                return
-            price_data = await self._fetch_live_price(pair_tag)
-            if not price_data:
-                return
-            global_ask_usdt, usdt_idr_rate = price_data
-            live_snapshot, local_best_bid, _local_best_ask = (
-                await self._exit_live_snapshot(pair_tag, pos)
-            )
-            now_ms = int(time.time() * 1000)
-            await self._refresh_predicted_funding_rate(pair_tag, pos, now_ms)
-            funding_passed = await self._handle_funding_rollover(
-                pair_tag, pos, now_ms
-            )
-            await self._persist_exit_unrealized_pnl(
-                pair_tag, pos, local_best_bid, global_ask_usdt,
-                usdt_idr_rate, now_ms, live_snapshot,
+        lock = self._pair_lock(pair_tag)
+        if lock.locked():
+            # Skip siklus ini jika pair sedang dieksekusi oleh entry/recovery worker
+            return
+        async with lock:
+            await self._check_dynamic_exit_pair_inner(pair_tag)
+
+    async def _check_dynamic_exit_pair_inner(self, pair_tag: str) -> None:
+        if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+            return
+        pos = self.active_positions.get(pair_tag)
+        if not pos or pos.qty <= 0:
+            return
+        price_data = await self._fetch_live_price(pair_tag)
+        if not price_data:
+            return
+        global_ask_usdt, usdt_idr_rate = price_data
+        live_snapshot, local_best_bid, _local_best_ask = (
+            await self._exit_live_snapshot(pair_tag, pos)
+        )
+        now_ms = int(time.time() * 1000)
+        await self._refresh_predicted_funding_rate(pair_tag, pos, now_ms)
+        funding_passed = await self._handle_funding_rollover(
+            pair_tag, pos, now_ms
+        )
+        await self._persist_exit_unrealized_pnl(
+            pair_tag, pos, local_best_bid, global_ask_usdt,
+            usdt_idr_rate, now_ms, live_snapshot,
+        )
+
+        target_sell_idr, tick_size = self._calculate_limit_sell_idr(
+            pair_tag, pos, global_ask_usdt, usdt_idr_rate, local_best_ask_idr=0.0
+        )
+
+        # ExitDecisionEngine & Taker Sniper Exit evaluation
+        raw_bid = float((live_snapshot or {}).get("local_best_bid", 0.0) or 0.0)
+        if raw_bid > 0 and getattr(self, "exit_decision_engine", None) and getattr(self, "pair_pnl_engine", None):
+            rates = rates_for_position(pos)
+            fx_spot = 1.0 / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
+            spot_exit_fee_rate = rates.spot_exit_pct / 100.0
+            spot_entry_fee_quote = pos.qty * pos.entry_price_idr * (rates.spot_entry_pct / 100.0)
+            futures_close_fee_rate = rates.perp_exit_pct / 100.0
+            futures_entry_fee_rate = (rates.perp_entry_pct / 100.0) if rates.perp_entry_pct > 0 else 0.0005
+            pnl_snapshot = self.pair_pnl_engine.compute_pair_pnl(
+                session_id=str(getattr(pos, "session_id", pair_tag) or pair_tag),
+                pair_key=pair_tag,
+                spot_qty=pos.qty,
+                spot_entry_cost_quote=pos.qty * pos.entry_price_idr,
+                spot_executable_bid=local_best_bid,
+                spot_exit_fee_rate=spot_exit_fee_rate,
+                spot_entry_fee_quote=spot_entry_fee_quote,
+                futures_qty=pos.qty,
+                futures_entry_price=pos.short_entry_usdt,
+                futures_executable_ask=global_ask_usdt,
+                futures_close_fee_rate=futures_close_fee_rate,
+                futures_entry_fee_rate=futures_entry_fee_rate,
+                funding_accrued=pos.accumulated_funding_usdt,
+                fx_spot_to_report=fx_spot,
+                fx_futures_to_report=1.0,
+                reporting_currency="USDT",
+                position_state=pos.to_dict() if hasattr(pos, "to_dict") else None,
             )
 
-            target_sell_idr, tick_size = self._calculate_limit_sell_idr(
-                pair_tag, pos, global_ask_usdt, usdt_idr_rate, local_best_ask_idr=0.0
+            position_age_seconds = max(
+                0.0, (now_ms - getattr(pos, "opened_at_ms", 0)) / 1000.0
+            ) if getattr(pos, "opened_at_ms", 0) > 0 else 0.0
+
+            min_roi_pct = max(0.05, pos.base_target_exit_spread_pct * 0.25)
+            capital_usdt = pos.qty * pos.short_entry_usdt
+            dynamic_target_usdt = max(
+                capital_usdt * (min_roi_pct / 100.0),
+                getattr(self.exit_decision_engine, "min_profit_target_usdt", 0.50),
             )
 
-            # ExitDecisionEngine & Taker Sniper Exit evaluation
-            raw_bid = float((live_snapshot or {}).get("local_best_bid", 0.0) or 0.0)
-            if raw_bid > 0 and getattr(self, "exit_decision_engine", None) and getattr(self, "pair_pnl_engine", None):
-                rates = rates_for_position(pos)
-                fx_spot = 1.0 / usdt_idr_rate if usdt_idr_rate > 0 else 0.0
-                spot_exit_fee_rate = rates.spot_exit_pct / 100.0
-                spot_entry_fee_quote = pos.qty * pos.entry_price_idr * (rates.spot_entry_pct / 100.0)
-                futures_close_fee_rate = rates.perp_exit_pct / 100.0
-                pnl_snapshot = self.pair_pnl_engine.compute_pair_pnl(
-                    session_id=str(getattr(pos, "session_id", pair_tag) or pair_tag),
-                    pair_key=pair_tag,
-                    spot_qty=pos.qty,
-                    spot_entry_cost_quote=pos.qty * pos.entry_price_idr,
-                    spot_executable_bid=local_best_bid,
-                    spot_exit_fee_rate=spot_exit_fee_rate,
-                    spot_entry_fee_quote=spot_entry_fee_quote,
-                    futures_qty=pos.qty,
-                    futures_entry_price=pos.short_entry_usdt,
-                    futures_executable_ask=global_ask_usdt,
-                    futures_close_fee_rate=futures_close_fee_rate,
-                    funding_accrued=pos.accumulated_funding_usdt,
-                    fx_spot_to_report=fx_spot,
-                    fx_futures_to_report=1.0,
-                    reporting_currency="USDT",
+            decision = self.exit_decision_engine.evaluate_exit(
+                pnl_snapshot,
+                position_age_seconds=position_age_seconds,
+                dynamic_target_usdt=dynamic_target_usdt,
+            )
+
+            target_profit_reached = local_best_bid >= target_sell_idr
+            time_stop_triggered = (
+                (decision.action == ExitAction.CLOSE_BOTH and "TIME_STOP" in decision.reason)
+                or (position_age_seconds >= getattr(self.exit_decision_engine, "max_position_age", 3600.0)
+                    and pnl_snapshot.pair_net_liquidation_pnl > 0)
+            )
+
+            time_to_funding_ms = (pos.next_funding_time_ms - now_ms) if pos.next_funding_time_ms > 0 else None
+            approaching_negative_funding = (
+                time_to_funding_ms is not None
+                and 0 < time_to_funding_ms <= 300_000
+                and getattr(pos, "current_funding_rate", 0.0) < 0
+                and pnl_snapshot.pair_net_liquidation_pnl >= 0
+            )
+
+            if target_profit_reached or time_stop_triggered or approaching_negative_funding:
+                if target_profit_reached:
+                    sniper_reason = f"TARGET_PROFIT_BID_REACHED (bid={local_best_bid:.2f} >= target={target_sell_idr:.2f})"
+                elif time_stop_triggered:
+                    sniper_reason = decision.reason
+                else:
+                    sniper_reason = f"NEGATIVE_FUNDING_APPROACHING (rate={pos.current_funding_rate:.6f}, in {time_to_funding_ms/1000:.0f}s)"
+
+                logger.info(
+                    f"[State 3 Taker Sniper Exit] Triggering immediate Taker Sell for {pair_tag}: "
+                    f"local_bid={local_best_bid}, target_sell_idr={target_sell_idr:.2f}, "
+                    f"pnl_usdt={pnl_snapshot.pair_net_liquidation_pnl:.4f}, reason={sniper_reason}"
                 )
+                if await self._execute_taker_sniper_exit(
+                    pair_tag, pos, local_best_bid, global_ask_usdt, usdt_idr_rate, reason=sniper_reason
+                ):
+                    return
 
-                position_age_seconds = max(
-                    0.0, (now_ms - getattr(pos, "opened_at_ms", 0)) / 1000.0
-                ) if getattr(pos, "opened_at_ms", 0) > 0 else 0.0
-
-                min_roi_pct = max(0.05, pos.base_target_exit_spread_pct * 0.25)
-                capital_usdt = pos.qty * pos.short_entry_usdt
-                dynamic_target_usdt = max(
-                    capital_usdt * (min_roi_pct / 100.0),
-                    getattr(self.exit_decision_engine, "min_profit_target_usdt", 0.50),
-                )
-
-                decision = self.exit_decision_engine.evaluate_exit(
-                    pnl_snapshot,
-                    position_age_seconds=position_age_seconds,
-                    dynamic_target_usdt=dynamic_target_usdt,
-                )
-
-                target_profit_reached = local_best_bid >= target_sell_idr
-                time_stop_triggered = (
-                    (decision.action == ExitAction.CLOSE_BOTH and "TIME_STOP" in decision.reason)
-                    or (position_age_seconds >= getattr(self.exit_decision_engine, "max_position_age", 3600.0)
-                        and pnl_snapshot.pair_net_liquidation_pnl > 0)
-                )
-
-                time_to_funding_ms = (pos.next_funding_time_ms - now_ms) if pos.next_funding_time_ms > 0 else None
-                approaching_negative_funding = (
-                    time_to_funding_ms is not None
-                    and 0 < time_to_funding_ms <= 300_000
-                    and getattr(pos, "current_funding_rate", 0.0) < 0
-                    and pnl_snapshot.pair_net_liquidation_pnl >= 0
-                )
-
-                if target_profit_reached or time_stop_triggered or approaching_negative_funding:
-                    if target_profit_reached:
-                        sniper_reason = f"TARGET_PROFIT_BID_REACHED (bid={local_best_bid:.2f} >= target={target_sell_idr:.2f})"
-                    elif time_stop_triggered:
-                        sniper_reason = decision.reason
-                    else:
-                        sniper_reason = f"NEGATIVE_FUNDING_APPROACHING (rate={pos.current_funding_rate:.6f}, in {time_to_funding_ms/1000:.0f}s)"
-
-                    logger.info(
-                        f"[State 3 Taker Sniper Exit] Triggering immediate Taker Sell for {pair_tag}: "
-                        f"local_bid={local_best_bid}, target_sell_idr={target_sell_idr:.2f}, "
-                        f"pnl_usdt={pnl_snapshot.pair_net_liquidation_pnl:.4f}, reason={sniper_reason}"
-                    )
-                    if await self._execute_taker_sniper_exit(
-                        pair_tag, pos, local_best_bid, global_ask_usdt, usdt_idr_rate, reason=sniper_reason
-                    ):
-                        return
-
-            if not self._should_repeg_exit(
-                pair_tag, global_ask_usdt, funding_passed
-            ):
-                return
-            # Smart Maker Ask: undercut local_best_ask by 1 tick if above target_sell_idr
-            limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
-                pair_tag, pos, global_ask_usdt, usdt_idr_rate, local_best_ask_idr=_local_best_ask
-            )
-            if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
-                return
-            # Cancellation may race a fill and reduce or close the position.
-            pos = self.active_positions.get(pair_tag)
-            if not pos or pos.qty <= 0:
-                return
-            await self._place_dynamic_limit_sell(
-                pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt,
-                usdt_idr_rate,
-            )
+        if not self._should_repeg_exit(
+            pair_tag, global_ask_usdt, funding_passed
+        ):
+            return
+        # Smart Maker Ask: undercut local_best_ask by 1 tick if above target_sell_idr
+        limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
+            pair_tag, pos, global_ask_usdt, usdt_idr_rate, local_best_ask_idr=_local_best_ask
+        )
+        if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
+            return
+        # Cancellation may race a fill and reduce or close the position.
+        pos = self.active_positions.get(pair_tag)
+        if not pos or pos.qty <= 0:
+            return
+        await self._place_dynamic_limit_sell(
+            pair_tag, pos, limit_sell_idr, tick_size, global_ask_usdt,
+            usdt_idr_rate,
+        )
 
     async def _check_dynamic_exits(self):
         """
@@ -608,13 +618,13 @@ class ExitOrderManagementMixin:
         """
         if not force_reconcile:
             async with self._pair_lock(pair_tag):
-                return await self._process_pending_exit_bound(
-                    pair_tag, force_reconcile=True
-                )
+                return await self._process_pending_exit_inner(pair_tag)
+        return await self._process_pending_exit_inner(pair_tag)
 
+    async def _process_pending_exit_inner(self, pair_tag: str) -> None:
         if (
             self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED
-            and not force_reconcile
+            and not getattr(self, "_force_reconcile_active", False)
         ):
             return
 

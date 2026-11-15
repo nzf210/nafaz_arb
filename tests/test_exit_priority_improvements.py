@@ -188,3 +188,112 @@ def test_smart_maker_ask_undercuts_best_ask(engine):
         pair_tag, pos, global_ask, usdt_idr_rate, local_best_ask_idr=1_020_000_000.0
     )
     assert floor_price == base_price
+
+
+@pytest.mark.asyncio
+async def test_pair_pnl_engine_includes_futures_entry_fee():
+    """Verify compute_pair_pnl accounts for futures entry fee in PnL and total entry fee."""
+    from executor.pair_pnl_engine import PairPnLEngine
+
+    engine = PairPnLEngine(futures_taker_fee_rate=0.0005)
+    # 0.01 BTC at $60,000 -> futures_entry_notional = $600
+    # futures_entry_fee (0.05%) = $0.30
+    # futures_close_fee (0.05% of $600) = $0.30
+    # futures gross pnl = ($60,000 - $60,000) * 0.01 = $0.0
+    # futures_net_pnl_native = 0.0 - 0.30 (entry) - 0.30 (close) = -0.60
+    snap = engine.compute_pair_pnl(
+        session_id="test_fee",
+        pair_key="indodax:btc_idr",
+        spot_qty=0.01,
+        spot_entry_cost_quote=600.0,
+        spot_executable_bid=600.0,
+        spot_exit_fee_rate=0.001,
+        spot_entry_fee_quote=0.60,
+        futures_qty=0.01,
+        futures_entry_price=60000.0,
+        futures_executable_ask=60000.0,
+        futures_close_fee_rate=0.0005,
+    )
+    assert snap.total_entry_fee == pytest.approx(0.60 + 0.30, rel=1e-3)
+    assert snap.futures_net_liquidation_pnl == pytest.approx(-0.60, rel=1e-3)
+
+    # With explicit position_state
+    snap_explicit = engine.compute_pair_pnl(
+        session_id="test_fee_explicit",
+        pair_key="indodax:btc_idr",
+        spot_qty=0.01,
+        spot_entry_cost_quote=600.0,
+        spot_executable_bid=600.0,
+        spot_entry_fee_quote=0.60,
+        futures_qty=0.01,
+        futures_entry_price=60000.0,
+        futures_executable_ask=60000.0,
+        position_state={"futures_entry_fee": 0.45},
+    )
+    assert snap_explicit.total_entry_fee == pytest.approx(0.60 + 0.45, rel=1e-3)
+    assert snap_explicit.futures_net_liquidation_pnl == pytest.approx(-0.75, rel=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_exit_skips_when_pair_lock_already_held(engine):
+    """When _pair_lock is locked by another task, dynamic exit skips rather than blocking."""
+    pair_tag = "indodax:btc_idr"
+    lock = engine._pair_lock(pair_tag)
+    await lock.acquire()
+    assert lock.locked()
+
+    inner_called = False
+    async def fake_inner(pt):
+        nonlocal inner_called
+        inner_called = True
+
+    engine._check_dynamic_exit_pair_inner = fake_inner
+    try:
+        await engine._check_dynamic_exit_pair_bound(pair_tag)
+        assert not inner_called
+    finally:
+        lock.release()
+
+
+@pytest.mark.asyncio
+async def test_run_order_recovery_for_pair_holds_pair_lock(engine):
+    """_run_order_recovery_for_pair executes under _pair_lock."""
+    pair_tag = "indodax:btc_idr"
+    lock = engine._pair_lock(pair_tag)
+
+    lock_state_during = False
+    async def fake_recovery(pt, rec):
+        nonlocal lock_state_during
+        lock_state_during = lock.locked()
+
+    engine._execute_single_pair_recovery = fake_recovery
+    await engine._run_order_recovery_for_pair(pair_tag, {"symbol": "btc_idr"})
+    assert lock_state_during
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_execute_entry_signal_locks_pair_and_spot_venue(engine):
+    """execute_entry_signal holds both pair_lock and spot_exchange_entry_lock."""
+    pair_tag = "indodax:btc_idr"
+    spot_venue = "indodax"
+    p_lock = engine._pair_lock(pair_tag)
+    s_lock = engine._spot_exchange_entry_lock(spot_venue)
+
+    p_locked_during = False
+    s_locked_during = False
+
+    async def fake_get_balance(venue):
+        nonlocal p_locked_during, s_locked_during
+        p_locked_during = p_lock.locked()
+        s_locked_during = s_lock.locked()
+        return 500.0
+
+    engine._get_available_spot_quote_balance = fake_get_balance
+    result = await engine.execute_entry_signal({"spot_venue": spot_venue, "pair_tag": pair_tag})
+    assert p_locked_during
+    assert s_locked_during
+    assert not p_lock.locked()
+    assert not s_lock.locked()
+    assert result.get("status") in ("SUCCESS", "SUBMITTED")
+

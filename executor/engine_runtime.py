@@ -658,6 +658,35 @@ class EngineRuntimeMixin:
             self._pair_locks[pair_tag] = lock
         return lock
 
+    async def _check_dynamic_exit_pair_bound(self, pair_tag: str) -> None:
+        lock = self._pair_lock(pair_tag)
+        if lock.locked():
+            # Skip siklus ini jika pair sedang dieksekusi oleh entry/recovery worker
+            return
+        async with lock:
+            await self._check_dynamic_exit_pair_inner(pair_tag)
+
+    async def _process_pending_exit_bound(
+        self, pair_tag: str, force_reconcile: bool = False
+    ) -> None:
+        if force_reconcile:
+            await self._process_pending_exit_inner(pair_tag)
+            return
+        async with self._pair_lock(pair_tag):
+            await self._process_pending_exit_inner(pair_tag)
+
+    async def _run_order_recovery_for_pair(self, pair_tag: str, order_record: dict) -> None:
+        async with self._pair_lock(pair_tag):
+            await self._execute_single_pair_recovery(pair_tag, order_record)
+
+    async def _execute_single_pair_recovery(self, pair_tag: str, order_record: dict) -> None:
+        logger.debug("[Recovery] executing single pair recovery for %s", pair_tag)
+        reconcile_order = getattr(self, "_reconcile_registered_order", None)
+        exchange = (order_record.get("exchange") or getattr(getattr(self, "config", None), "local_exchange_name", "") or "").lower()
+        symbol = order_record.get("symbol", "")
+        if callable(reconcile_order):
+            await reconcile_order(order_record, exchange, symbol)
+
     def _pair_info_for_tag(self, pair_tag: str):
         info = self._pair_infos.get(pair_tag)
         if info is not None:
