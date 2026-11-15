@@ -239,3 +239,29 @@ async def test_okx_direct_recovery_tries_deterministic_wire_id_after_logical_id(
     assert exchange.calls == [logical, wire]
     assert found is not None
     assert found["id"] == "okx-direct-1"
+
+
+@pytest.mark.asyncio
+async def test_okx_permission_probe_never_calls_create_order_endpoint():
+    from executor.exchange_futures import ExchangeFuturesMixin
+
+    class FakeOKX:
+        id = "okx"
+
+        def __init__(self):
+            self.create_endpoint_calls = 0
+
+        async def privatePostTradeOrder(self, _payload):
+            self.create_endpoint_calls += 1
+            raise AssertionError("startup permission probe must not POST an order")
+
+    class Harness(ExchangeFuturesMixin):
+        def __init__(self):
+            self.global_fut = FakeOKX()
+
+    engine = Harness()
+    tradable, reason = await engine.probe_short_tradability("BTC/USDT:USDT")
+
+    assert tradable is False
+    assert "non-mutating" in reason
+    assert engine.global_fut.create_endpoint_calls == 0
