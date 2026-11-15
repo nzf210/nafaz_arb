@@ -562,16 +562,24 @@ async def _find_order_by_client_id(
     failures = []
     direct_lookup = getattr(exchange, "fetch_order_by_client_id", None)
     if callable(direct_lookup):
-        try:
-            direct = await direct_lookup(client_order_id, symbol)
-            if direct is not None:
-                if not isinstance(direct, dict) or not matches(direct):
-                    raise ValueError(
-                        "fetch_order_by_client_id returned a mismatched client id"
-                    )
-                return _expose_client_order_id(dict(direct))
-        except Exception as exc:
-            failures.append(f"fetch_order_by_client_id: {type(exc).__name__}: {exc}")
+        direct_ids = [client_order_id]
+        wire_id = venue_client_order_id(exchange, client_order_id, broker_prefix)
+        if wire_id and wire_id not in direct_ids:
+            direct_ids.append(wire_id)
+        for lookup_id in direct_ids:
+            try:
+                direct = await direct_lookup(lookup_id, symbol)
+                if direct is not None:
+                    if not isinstance(direct, dict) or not matches(direct):
+                        raise ValueError(
+                            "fetch_order_by_client_id returned a mismatched client id"
+                        )
+                    return _expose_client_order_id(dict(direct))
+            except Exception as exc:
+                failures.append(
+                    f"fetch_order_by_client_id({lookup_id}): "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
     historical_queries = 0
     discovered_orders = []
