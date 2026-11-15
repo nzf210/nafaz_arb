@@ -55,9 +55,9 @@ def build_client_order_id(pair_tag: str, leg: str, seq: int) -> str:
     double-filling. Kept to lowercase alphanumerics and dashes because Binance,
     OKX and Indodax each accept a different, partly overlapping character set.
 
-    Binance Cloud broker prefixes are applied on the wire by
-    ``executor.exchange_client.venue_client_order_id``, which also enforces the
-    36-character budget, so no prefix room is reserved here.
+    This is the durable logical ID (up to 36 characters). Venue adapters map it
+    deterministically to stricter wire formats when needed: Tokocrypto applies
+    its broker-aware hash and OKX uses a 32-character alphanumeric hash.
     """
     clean_pair = "".join(c if c.isalnum() else "-" for c in pair_tag.lower()).strip("-")
     clean_leg = "".join(c if c.isalnum() else "-" for c in leg.lower()).strip("-")
