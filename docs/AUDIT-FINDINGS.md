@@ -245,3 +245,62 @@ The checked GlobalStop signatures match the actual spot, futures and generic-gat
 - Commit `be30fc2710b3b24c325ac6f275a7ad5a5981eda9` adds `recovery_context` to the SELECT projection.
 - Commit `df41a7c2d9e4234d85be42b0f16276aef9ca3a7f` makes the fake connection project only the columns actually selected, so the regression now detects a missing projection.
 - Workflow `43572374744` passed: 559 Python tests passed (2 skipped), and the disposable PostgreSQL integration job reported 2 passed. This confirms the corrected fake/unit path and the real PostgreSQL fencing tests; it is not a production VPS or exchange test.
+
+
+## V2 audit continuation — 2026-11-15 (source baseline `ca8f2e7095b7`)
+
+### Complete mutation inventory from executor wrappers
+
+The production Python order-mutation boundaries found in this pass are:
+
+| Boundary | Raw venue call | Exposure classification | Durable entry ledger + shared session fence |
+|---|---|---|---|
+| `ExchangeOrdersMixin.place_local_limit_buy` | `create_limit_buy_order` | Spot BUY; opens exposure | REQUIRED; active LIVE caller `_submit_entry_order` prepares and fences |
+| `ExchangeOrdersMixin.place_local_limit_sell` | `create_limit_sell_order` | Spot SELL; reduces inventory | Not entry-fenced; exact-ID ambiguity recovery and cancel/replace controls apply |
+| `ExchangeOrdersMixin.place_local_market_sell` | `create_market_sell_order` | Spot SELL; rollback/force-close/sniper de-risking | Not entry-fenced; retry/ambiguity controls apply |
+| `ExchangeFuturesMixin.open_global_short_market` | `create_market_sell_order`, `reduceOnly=False` | Futures SELL; opens/adds short | REQUIRED; active LIVE caller `_submit_entry_hedge_order` prepares and fences |
+| `ExchangeFuturesMixin.close_global_short_market` | `create_market_buy_order`, `reduceOnly=True` | Futures BUY; closes short | Not entry-fenced; close lifecycle has independent exact-ID/reconciliation controls |
+| `IndodaxTAPIv2._create_order` | signed `POST /api/v2/order` | Adapter raw boundary used by the above spot BUY/SELL wrappers | Inherits caller classification; no generic POST retry |
+| `MutationGateway.execute_create_order` | `create_order_direct` or CCXT `create_order` | Generic, potentially exposure-increasing | REQUIRED; method itself fails closed and persists PREPARED/SUBMITTING/ACK/rejection/unknown. No active production create caller found; engine imports no create call and command processor uses cancel only |
+
+The modular `executor/venues/{indodax,mexc,okx,tokocrypto}.py` modules contain client-ID formatting/venue parameter helpers, not raw create-order calls. Paper exchange methods are simulation-only and do not call a CEX. No additional direct create-order boundary was found in the reviewed executor orchestration, recovery, rollback, force-close, or Go market-data adapter files.
+
+### R-34 — Taker-sniper spot SELL ambiguous ACK could fall through to another SELL
+
+**Status: FIX IMPLEMENTED; first regression CI passed, fill-validation follow-up CI pending at time of this entry.**
+
+- The taker-sniper path returned `False` for every market SELL exception. Its caller could then continue into smart-maker exit and submit a second SELL with a new client ID even when the first request might have reached the venue.
+- It now classifies explicit venue rejection separately. For ambiguous timeout/transport outcomes it performs exact client-ID lookup; a match is adopted, while not-found/lookup failure marks the pair RECONCILIATION_REQUIRED and returns a handled result so no fallback SELL is sent.
+- A venue ACK without an exchange order ID also becomes reconciliation-required.
+- Regression tests cover lost ACK with exact-ID match and not-found. Workflow [43691790303](https://github.com/nzf210/nafaz_arb/actions/runs/43691790303) passed all four jobs on test head `17c4f67446d0`.
+
+### R-35 — Taker-sniper futures close used requested amount instead of confirmed spot fill
+
+**Status: FIX IMPLEMENTED; latest CI pending.**
+
+- The prior code used `filled or amount or position_qty`. An acknowledged market SELL with `filled=0` could therefore close the entire futures short even though no spot quantity had sold; a partial fill could also over-close the short.
+- The path now requires a present, finite, non-negative cumulative `filled` value no larger than the position quantity (within tolerance). Missing or invalid fill evidence becomes reconciliation-required.
+- A zero-fill open order is retained as the same pending exit order; no futures close and no fallback SELL occurs. Explicit terminal no-fill rejection/cancel/expiry can be retired and the caller may continue with a replacement exit.
+- Futures `reduceOnly=True` close is sent only for the confirmed spot-filled quantity. New fake-venue regressions cover zero-fill and half-fill behavior.
+- These changes do not put exits behind Global STOP. They prevent a risk-reducing path from creating a naked spot-long delta by closing more futures than spot actually sold.
+
+### Other exposure and STOP findings
+
+- The two active LIVE exposure-opening call chains remain spot BUY and futures short SELL. Both commit PREPARED before the venue call and hold the shared PostgreSQL session advisory fence while the venue request is active.
+- Generic gateway create is fail-closed but no active production create caller was found.
+- GlobalStop signatures and callers were rechecked: `prepare_submit_attempt(...)`, `order_submit_fence(client_order_id=...)`, `request_stop(reason, source=..., metadata=...)`, and `request_stop_in_transaction(conn, reason, source=..., metadata=...)`. The entry fence uses the session-level advisory lock; STOP takes the conflicting transaction-level lock.
+- Intent equality includes exchange, market type, symbol, side, order type, quantity, price, pair key, amount specification and recovery context. PREPARED reuse is only allowed for identical intent; SUBMITTING/UNKNOWN and terminal states cannot be reused.
+- Startup recovery routes exact client-ID lookup by spot/perpetual market type. Found orders are ACKNOWLEDGED. NOT_FOUND and lookup failure remain unresolved; eventual consistency is not treated as definitive rejection. ACK persistence failure leaves the durable submit unresolved and does not authorize a new ID or submit.
+- The entry `scale_to_min` policy can intentionally make the futures short larger than the actual spot fill to satisfy futures minimum notional/contract rules. This is fenced but remains a material strategy exposure decision; delta imbalance is recorded, and hard-drift does not yet automatically unwind the excess. Keep this as an explicit strategy approval gate.
+- Risk-reducing spot SELL, futures `reduceOnly=True` BUY close, and cancel remain outside entry STOP by design. Their own exact-ID, retry, fill-quantity and reconciliation protections are required; do not apply a generic STOP to these operations.
+
+### Verification and release state
+
+- Source baseline CI before the new exit fixes: workflow [43677081780](https://github.com/nzf210/nafaz_arb/actions/runs/43677081780) passed all four jobs (Python, Go/race/vet, PostgreSQL schema/integration, Docker builds).
+- R-34 exact-ID recovery regression head: workflow [43691790303](https://github.com/nzf210/nafaz_arb/actions/runs/43691790303) passed all four jobs.
+- R-35 fill-validation changes and its new zero/partial-fill tests were pushed after that run; their CI was still running when this entry was written. Do not treat the earlier green workflow as verification of R-35.
+- Operator HMAC resolution remains a shared-secret mechanism, not enterprise identity/SSO. Provisioning, key custody/rotation, dual approval, audit retrieval and operational runbook remain open.
+- PostgreSQL multi-process disconnect/fake-venue integration has passed in prior CI, but repeated stress/fault-boundary review and production VPS topology validation remain open. It is not a real CEX contract probe.
+- Real per-venue sandbox/paper probes remain open for client-ID visibility, eventual consistency, pending/partial hedge semantics, cancel/fill races and reduceOnly close behavior.
+
+**Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
