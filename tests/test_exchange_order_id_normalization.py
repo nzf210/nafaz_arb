@@ -211,3 +211,31 @@ async def test_futures_short_submit_uses_okx_wire_client_id():
     assert wire == venue_client_order_id(SimpleNamespace(id="okx"), logical)
     assert len(wire) == 32
     assert wire.isalnum()
+
+
+@pytest.mark.asyncio
+async def test_okx_direct_recovery_tries_deterministic_wire_id_after_logical_id():
+    from executor.exchange_common import _find_order_by_client_id
+
+    logical = "btc-usdt-swap-futures-hedge-12345678901234567890"
+    exchange = SimpleNamespace(id="okx", calls=[])
+
+    async def fetch_order_by_client_id(client_order_id, symbol):
+        exchange.calls.append(client_order_id)
+        if client_order_id == venue_client_order_id(exchange, logical):
+            return {
+                "id": "okx-direct-1",
+                "clientOrderId": client_order_id,
+                "symbol": symbol,
+                "status": "open",
+                "filled": 0.0,
+            }
+        return None
+
+    exchange.fetch_order_by_client_id = fetch_order_by_client_id
+    found = await _find_order_by_client_id(exchange, "BTC/USDT:USDT", logical)
+
+    wire = venue_client_order_id(exchange, logical)
+    assert exchange.calls == [logical, wire]
+    assert found is not None
+    assert found["id"] == "okx-direct-1"
