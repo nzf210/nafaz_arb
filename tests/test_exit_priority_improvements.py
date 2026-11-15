@@ -583,3 +583,117 @@ async def test_taker_sniper_exit_unknown_client_id_stops_fallback_sell(
     assert mock_client.global_close_buys == []
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
     assert pair_tag in engine.active_positions
+
+
+@pytest.mark.asyncio
+async def test_taker_sniper_zero_fill_does_not_close_futures_or_fallback_sell(
+    engine, fake_redis, mock_client
+):
+    """An acknowledged but unfilled market SELL stays pending; hedge remains open."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        base_target_exit_spread_pct=0.30,
+        local_price_tick=1000.0,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(
+        f"arb:live_price:{pair_tag}",
+        json.dumps({
+            "local_best_bid": 1_045_000_000.0,
+            "local_best_ask": 1_046_000_000.0,
+            "global_best_ask_usdt": 65_000.0,
+            "usdt_idr_rate": 16_000.0,
+            "timestamp_ms": now_ms,
+        }),
+    )
+
+    async def accepted_unfilled(symbol, amount, client_order_id=None, amount_spec=None):
+        order = {
+            "id": "market-unfilled-1",
+            "symbol": symbol,
+            "side": "sell",
+            "type": "market",
+            "amount": amount,
+            "filled": 0.0,
+            "remaining": amount,
+            "status": "open",
+            "client_order_id": client_order_id,
+        }
+        mock_client.orders[order["id"]] = order
+        mock_client.placed_sells.append(order)
+        return order
+
+    mock_client.place_local_market_sell = accepted_unfilled
+
+    await engine._check_dynamic_exit_pair_bound(pair_tag)
+
+    assert len(mock_client.placed_sells) == 1
+    assert mock_client.global_close_buys == []
+    assert engine.pending_exit_orders[pair_tag]["filled"] == 0.0
+    assert engine.states[pair_tag] == PositionState.EXIT_PENDING
+    assert engine.active_positions[pair_tag].qty == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
+async def test_taker_sniper_partial_fill_closes_only_confirmed_spot_quantity(
+    engine, fake_redis, mock_client
+):
+    """The futures reduceOnly close is sized from actual spot fill, not order amount."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.01,
+        base_target_exit_spread_pct=0.30,
+        local_price_tick=1000.0,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+    await fake_redis.set(
+        f"arb:live_price:{pair_tag}",
+        json.dumps({
+            "local_best_bid": 1_045_000_000.0,
+            "local_best_ask": 1_046_000_000.0,
+            "global_best_ask_usdt": 65_000.0,
+            "usdt_idr_rate": 16_000.0,
+            "timestamp_ms": now_ms,
+        }),
+    )
+
+    async def accepted_partial(symbol, amount, client_order_id=None, amount_spec=None):
+        order = {
+            "id": "market-partial-1",
+            "symbol": symbol,
+            "side": "sell",
+            "type": "market",
+            "amount": amount,
+            "filled": amount / 2,
+            "remaining": amount / 2,
+            "status": "open",
+            "price": 1_045_000_000.0,
+            "average": 1_045_000_000.0,
+            "client_order_id": client_order_id,
+        }
+        mock_client.orders[order["id"]] = order
+        mock_client.placed_sells.append(order)
+        return order
+
+    mock_client.place_local_market_sell = accepted_partial
+
+    await engine._check_dynamic_exit_pair_bound(pair_tag)
+
+    assert len(mock_client.global_close_buys) == 1
+    assert mock_client.global_close_buys[0]["amount"] == pytest.approx(0.005)
+    assert engine.active_positions[pair_tag].qty == pytest.approx(0.005)
