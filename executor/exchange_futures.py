@@ -8,7 +8,7 @@ from executor.helpers import is_trading_permission_denied
 from executor.exchange_common import (
     _base_order_result, _expose_client_order_id, acknowledged_order_result,
     _normalize_open_order, _require_amount_spec, _find_order_by_client_id,
-    futures_position_side_params, logger,
+    futures_position_side_params, venue_client_order_id, logger,
 )
 
 
@@ -81,8 +81,11 @@ class ExchangeFuturesMixin:
         # two positional mappings (which raises before the venue request).
         params = {"reduceOnly": False}
         params.update(futures_position_side_params(self.global_fut, "short"))
-        if client_order_id:
-            params["clientOrderId"] = client_order_id
+        wire_client_id = venue_client_order_id(
+            self.global_fut, client_order_id, self._global_broker_prefix
+        )
+        if wire_client_id:
+            params["clientOrderId"] = wire_client_id
         order = await self.global_fut.create_market_sell_order(
             order_symbol, order_amount, params
         )
@@ -106,8 +109,11 @@ class ExchangeFuturesMixin:
         order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
         params = {"reduceOnly": True}
         params.update(futures_position_side_params(self.global_fut, "short"))
-        if client_order_id:
-            params["clientOrderId"] = client_order_id
+        wire_client_id = venue_client_order_id(
+            self.global_fut, client_order_id, self._global_broker_prefix
+        )
+        if wire_client_id:
+            params["clientOrderId"] = wire_client_id
         order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)
         return acknowledged_order_result(
             self.global_fut, order, spec, client_order_id,
@@ -151,7 +157,11 @@ class ExchangeFuturesMixin:
         unusable, while a validation error proves the key reached the matcher.
         """
         venue_id = str(getattr(self.global_fut, "id", "") or "").lower()
-        client_order_id = f"probe-{int(time.time() * 1000) % 10_000_000}"
+        client_order_id = venue_client_order_id(
+            self.global_fut,
+            f"probe-{int(time.time() * 1000) % 10_000_000}",
+            self._global_broker_prefix,
+        )
         try:
             if venue_id == "okx" and hasattr(self.global_fut, "privatePostTradeOrder"):
                 await self.global_fut.privatePostTradeOrder(
