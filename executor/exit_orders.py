@@ -257,16 +257,30 @@ class ExitOrderManagementMixin:
 
     async def _exit_live_snapshot(self, pair_tag: str, pos):
         raw = await self.redis.get(f"arb:live_price:{pair_tag}")
+        if not raw:
+            raw = await self.redis.get(f"arb:market_snapshot:{pair_tag}")
         local_bid = pos.entry_price_idr
         local_ask = 0.0
         snapshot = None
         if raw:
             try:
                 snapshot = json.loads(raw)
-                raw_bid = float(snapshot.get("local_best_bid", 0.0) or 0.0)
-                raw_ask = float(snapshot.get("local_best_ask", 0.0) or 0.0)
+                raw_bid = float(
+                    snapshot.get("local_best_bid")
+                    or snapshot.get("spot_best_bid")
+                    or 0.0
+                )
+                raw_ask = float(
+                    snapshot.get("local_best_ask")
+                    or snapshot.get("spot_best_ask")
+                    or 0.0
+                )
                 if not helpers.snapshot_is_stale(snapshot):
-                    rate = float(snapshot.get("usdt_idr_rate", 0.0) or 0.0)
+                    rate = float(
+                        snapshot.get("usdt_idr_rate")
+                        or snapshot.get("usd_idr_rate")
+                        or 0.0
+                    )
                     raw_sym = str(pos.symbol or "").upper()
                     is_usdt_quote = raw_sym.endswith(("_USDT", "/USDT", "_USDC", "/USDC"))
                     if is_usdt_quote and rate > 0:

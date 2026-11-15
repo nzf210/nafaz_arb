@@ -434,7 +434,22 @@ class EngineRuntimeMixin:
             except Exception:
                 logger.exception("[Dynamic Config] failed initial sync from arb:config")
 
+            last_periodic_sync = time.time()
             while self._running:
+                # Periodic sync every 10 seconds from arb:config
+                now = time.time()
+                if now - last_periodic_sync >= 10.0:
+                    last_periodic_sync = now
+                    try:
+                        raw_snap = await self.redis.get("arb:config")
+                        if raw_snap:
+                            data = json.loads(
+                                raw_snap if isinstance(raw_snap, str) else raw_snap.decode("utf-8")
+                            )
+                            self._apply_dynamic_config_dict(data)
+                    except Exception:
+                        pass
+
                 message = await pubsub.get_message(
                     ignore_subscribe_messages=True, timeout=1.0
                 )
@@ -445,6 +460,13 @@ class EngineRuntimeMixin:
                             data = json.loads(
                                 raw_snap if isinstance(raw_snap, str) else raw_snap.decode("utf-8")
                             )
+                            if message.get("data"):
+                                msg_data = message.get("data")
+                                evt = json.loads(
+                                    msg_data if isinstance(msg_data, str) else msg_data.decode("utf-8")
+                                )
+                                if isinstance(evt, dict) and "param" in evt and "value" in evt:
+                                    data[evt["param"]] = evt["value"]
                             self._apply_dynamic_config_dict(data)
                         elif message.get("data"):
                             msg_data = message.get("data")
@@ -461,42 +483,128 @@ class EngineRuntimeMixin:
             await pubsub.close()
 
     def _apply_dynamic_config_dict(self, data: dict) -> None:
+        if not isinstance(data, dict):
+            return
+
+        # Normalize incoming param keys if received as param/value or alias
+        if "param" in data and "value" in data:
+            p = str(data["param"]).strip().lower()
+            val = data["value"]
+            if p in ("capital", "capital_total"):
+                data["capital_total"] = val
+            elif p in ("allocation", "allocation_per_pair"):
+                data["allocation_per_pair"] = val
+            elif p in ("mincap", "min_allocated_capital"):
+                data["min_allocated_capital"] = val
+            elif p in ("max_pos", "max_position_usdt"):
+                data["max_position_usdt"] = val
+            elif p == "mode":
+                data["mode"] = val
+            elif p == "execution_mode":
+                data["execution_mode"] = val
+
         exec_data = data.get("executor", {}) if isinstance(data.get("executor"), dict) else {}
-        cap = float(data.get("capital_total", getattr(self.config, "capital_total", 0.0)) or 0.0)
-        alloc = float(
-            exec_data.get("allocation_per_pair")
-            or data.get("allocation_per_pair", getattr(self.config, "allocation_per_pair", 0.0))
-            or 0.0
-        )
-        if cap > 0:
-            self.config.capital_total = cap
-        if alloc > 0:
-            self.config.allocation_per_pair = alloc
+        cap_val = data.get("capital_total") if "capital_total" in data else getattr(self.config, "capital_total", 0.0)
+        try:
+            cap = float(cap_val or 0.0)
+        except (TypeError, ValueError):
+            cap = float(getattr(self.config, "capital_total", 0.0) or 0.0)
 
-        if "max_position_usdt" in exec_data and float(exec_data["max_position_usdt"] or 0) > 0:
-            self.config.max_position_usdt = float(exec_data["max_position_usdt"])
+        alloc_val = (
+            data.get("allocation_per_pair")
+            if "allocation_per_pair" in data
+            else exec_data.get("allocation_per_pair", getattr(self.config, "allocation_per_pair", 0.0))
+        )
+        try:
+            alloc = float(alloc_val or 0.0)
+        except (TypeError, ValueError):
+            alloc = float(getattr(self.config, "allocation_per_pair", 0.0) or 0.0)
+
+        if "max_position_usdt" in data and float(data["max_position_usdt"] or 0) > 0:
+            max_pos = float(data["max_position_usdt"])
+        elif ("capital_total" in data or "allocation_per_pair" in data) and cap > 0 and alloc > 0:
+            max_pos = cap * alloc
+        elif "max_position_usdt" in exec_data and float(exec_data["max_position_usdt"] or 0) > 0:
+            max_pos = float(exec_data["max_position_usdt"])
         elif cap > 0 and alloc > 0:
-            self.config.max_position_usdt = cap * alloc
+            max_pos = cap * alloc
+        else:
+            max_pos = float(getattr(self.config, "max_position_usdt", 0.0) or 0.0)
 
-        min_cap = (
-            exec_data.get("min_allocated_capital")
-            if "min_allocated_capital" in exec_data
-            else data.get("min_allocated_capital")
+        min_cap_val = (
+            data.get("min_allocated_capital")
+            if "min_allocated_capital" in data
+            else exec_data.get("min_allocated_capital")
         )
-        if min_cap is not None and float(min_cap or 0) > 0:
-            self.config.min_allocated_capital = float(min_cap)
+        if min_cap_val is None:
+            min_cap_val = getattr(self.config, "min_allocated_capital", 10.0)
+        try:
+            min_cap = float(min_cap_val or 0.0)
+        except (TypeError, ValueError):
+            min_cap = 10.0
+
+        if cap > 0:
+            if hasattr(self.config, "capital_total"):
+                self.config.capital_total = cap
+            if isinstance(self.config, dict):
+                self.config["capital_total"] = cap
+
+        if alloc > 0:
+            if hasattr(self.config, "allocation_per_pair"):
+                self.config.allocation_per_pair = alloc
+            if isinstance(self.config, dict):
+                self.config["allocation_per_pair"] = alloc
+
+        if max_pos > 0:
+            if hasattr(self.config, "max_position_usdt"):
+                self.config.max_position_usdt = max_pos
+            if isinstance(self.config, dict):
+                self.config["max_position_usdt"] = max_pos
+
+        if min_cap > 0:
+            if hasattr(self.config, "min_allocated_capital"):
+                self.config.min_allocated_capital = min_cap
+            if isinstance(self.config, dict):
+                self.config["min_allocated_capital"] = min_cap
 
         if "mode" in data:
-            self.config.mock_mode = str(data["mode"]).upper() != "LIVE"
+            mock_mode = str(data["mode"]).upper() != "LIVE"
+            if hasattr(self.config, "mock_mode"):
+                self.config.mock_mode = mock_mode
+            if isinstance(self.config, dict):
+                self.config["mock_mode"] = mock_mode
+
         if "execution_mode" in data and data["execution_mode"]:
-            self.config.execution_mode = str(data["execution_mode"])
+            exec_mode = str(data["execution_mode"])
+            if hasattr(self.config, "execution_mode"):
+                self.config.execution_mode = exec_mode
+            if isinstance(self.config, dict):
+                self.config["execution_mode"] = exec_mode
+
+        # Synchronize sub-dictionary self.config["executor"]
+        exec_sub = {
+            "allocation_per_pair": getattr(self.config, "allocation_per_pair", alloc),
+            "max_position_usdt": getattr(self.config, "max_position_usdt", max_pos),
+            "min_allocated_capital": getattr(self.config, "min_allocated_capital", min_cap),
+            "mock_mode": getattr(self.config, "mock_mode", False),
+            "execution_mode": getattr(self.config, "execution_mode", "TAKER_TAKER"),
+        }
+        if isinstance(self.config, dict):
+            if "executor" not in self.config or not isinstance(self.config["executor"], dict):
+                self.config["executor"] = {}
+            self.config["executor"].update(exec_sub)
+        else:
+            try:
+                self.config["executor"] = exec_sub
+            except Exception:
+                pass
 
         logger.info(
             "Dynamic config reloaded from Redis: max_pos=%.2f, alloc=%.4f, min_cap=%.2f, mock=%s",
-            self.config.max_position_usdt,
-            self.config.allocation_per_pair,
-            self.config.min_allocated_capital,
-            self.config.mock_mode,
+            getattr(self.config, "max_position_usdt", 0.0),
+            getattr(self.config, "allocation_per_pair", 0.0),
+            getattr(self.config, "min_allocated_capital", 0.0),
+            getattr(self.config, "mock_mode", False),
         )
 
     async def _load_spot_order_limits(self) -> None:

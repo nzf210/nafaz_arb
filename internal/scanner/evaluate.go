@@ -128,6 +128,37 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 		// Direct USDT/USDC pairs do not depend on the IDR FX endpoint.
 		fxRate = s.lastKnownFXRate()
 	}
+
+	var spotBestBid, spotBestAsk, spotBidQty, spotAskQty float64
+	if len(rawSB.Bids) > 0 {
+		spotBestBid = rawSB.Bids[0].Price
+		spotBidQty = rawSB.Bids[0].Quantity
+	}
+	if len(rawSB.Asks) > 0 {
+		spotBestAsk = rawSB.Asks[0].Price
+		spotAskQty = rawSB.Asks[0].Quantity
+	}
+	var futuresBestBid, futuresBestAsk float64
+	if len(pb.Bids) > 0 {
+		futuresBestBid = pb.Bids[0].Price
+	}
+	if len(pb.Asks) > 0 {
+		futuresBestAsk = pb.Asks[0].Price
+	}
+	s.publishMarketSnapshot(ctx, MarketSnapshot{
+		PairTag:        redishandler.CleanPairKey(sm.Exchange, sm.Symbol, pm.Exchange, pm.Symbol),
+		SpotVenue:      strings.ToLower(sm.Exchange),
+		FuturesVenue:   strings.ToLower(pm.Exchange),
+		SpotBestBid:    spotBestBid,
+		SpotBestAsk:    spotBestAsk,
+		SpotBidQty:     spotBidQty,
+		SpotAskQty:     spotAskQty,
+		FuturesBestBid: futuresBestBid,
+		FuturesBestAsk: futuresBestAsk,
+		UsdIdrRate:     fxRate,
+		UpdatedAtMs:    time.Now().UnixMilli(),
+	})
+
 	requiredNotional := s.requiredNotionalUsdt()
 	// Evaluate freshness against the time after both order books were received,
 	// not the beginning of the full scan (which can be seconds earlier).
@@ -290,8 +321,10 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	if minimumEntrySpreadPct < subsidyFloor {
 		minimumEntrySpreadPct = subsidyFloor
 	}
-	if s.cfg.MinNetROIPct > 0 && minimumEntrySpreadPct < s.cfg.MinNetROIPct {
-		minimumEntrySpreadPct = s.cfg.MinNetROIPct
+	minROI := s.MinNetROIPct()
+	maxROI := s.MaxNetROIPct()
+	if minROI > 0 && minimumEntrySpreadPct < minROI {
+		minimumEntrySpreadPct = minROI
 	}
 
 	var cancelIfGlobalBidDropsBelowUSDT float64
@@ -320,10 +353,10 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	if entrySpreadPct < minimumEntrySpreadPct {
 		op.ExclusionReasons = append(op.ExclusionReasons, "ENTRY_SPREAD_BELOW_MINIMUM")
 	}
-	if s.cfg.MinNetROIPct > 0 && op.NetROIPct < s.cfg.MinNetROIPct {
+	if minROI > 0 && op.NetROIPct < minROI {
 		op.ExclusionReasons = append(op.ExclusionReasons, "ROI_BELOW_MINIMUM")
 	}
-	if s.cfg.MaxNetROIPct > 0 && op.NetROIPct > s.cfg.MaxNetROIPct {
+	if maxROI > 0 && op.NetROIPct > maxROI {
 		op.ExclusionReasons = append(op.ExclusionReasons, "ROI_ABOVE_MAXIMUM")
 	}
 

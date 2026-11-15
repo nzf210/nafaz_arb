@@ -2,11 +2,13 @@ package scanner
 
 import (
 	"context"
-	"log"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +19,27 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/redishandler"
 	"github.com/shopspring/decimal"
 )
+
+type MarketSnapshot struct {
+	PairTag        string  `json:"pair_tag"`
+	SpotVenue      string  `json:"spot_venue"`
+	FuturesVenue   string  `json:"futures_venue"`
+	SpotBestBid    float64 `json:"spot_best_bid"`
+	SpotBestAsk    float64 `json:"spot_best_ask"`
+	SpotBidQty     float64 `json:"spot_bid_qty"`
+	SpotAskQty     float64 `json:"spot_ask_qty"`
+	FuturesBestBid float64 `json:"futures_best_bid"`
+	FuturesBestAsk float64 `json:"futures_best_ask"`
+	UsdIdrRate     float64 `json:"usd_idr_rate"`
+	UpdatedAtMs    int64   `json:"updated_at_ms"`
+}
+
+type ScannerConfig struct {
+	sync.RWMutex
+	MinNetROIPct        float64
+	MaxNetROIPct        float64
+	ScanIntervalSeconds int
+}
 
 type emptyBookRecord struct {
 	consecutiveCount int
@@ -54,6 +77,176 @@ type Service struct {
 	emptyTrackers  map[string]emptyBookRecord
 	spikeTrackers  map[string]*spikeRecord
 	lastLiveFXRate float64
+	ScannerConfig  ScannerConfig
+	subCancel      context.CancelFunc
+}
+
+func (s *Service) publishMarketSnapshot(ctx context.Context, snap MarketSnapshot) {
+	if s.redisClient == nil {
+		return
+	}
+	key := fmt.Sprintf("arb:market_snapshot:%s", snap.PairTag)
+	payload, err := json.Marshal(snap)
+	if err != nil {
+		return
+	}
+	// TTL 15 detik agar otomatis bersih jika pair tidak lagi aktif dipindai
+	_ = s.redisClient.Set(ctx, key, payload, 15*time.Second).Err()
+}
+
+func (s *Service) MinNetROIPct() float64 {
+	s.ScannerConfig.RLock()
+	defer s.ScannerConfig.RUnlock()
+	return s.ScannerConfig.MinNetROIPct
+}
+
+func (s *Service) SetMinNetROIPct(val float64) {
+	s.ScannerConfig.Lock()
+	s.ScannerConfig.MinNetROIPct = val
+	s.ScannerConfig.Unlock()
+	s.mu.Lock()
+	s.cfg.MinNetROIPct = val
+	s.mu.Unlock()
+}
+
+func (s *Service) MaxNetROIPct() float64 {
+	s.ScannerConfig.RLock()
+	defer s.ScannerConfig.RUnlock()
+	return s.ScannerConfig.MaxNetROIPct
+}
+
+func (s *Service) SetMaxNetROIPct(val float64) {
+	s.ScannerConfig.Lock()
+	s.ScannerConfig.MaxNetROIPct = val
+	s.ScannerConfig.Unlock()
+	s.mu.Lock()
+	s.cfg.MaxNetROIPct = val
+	s.mu.Unlock()
+}
+
+func (s *Service) ScanIntervalSeconds() int {
+	s.ScannerConfig.RLock()
+	defer s.ScannerConfig.RUnlock()
+	return s.ScannerConfig.ScanIntervalSeconds
+}
+
+func (s *Service) SetScanIntervalSeconds(val int) {
+	s.ScannerConfig.Lock()
+	s.ScannerConfig.ScanIntervalSeconds = val
+	s.ScannerConfig.Unlock()
+	s.mu.Lock()
+	s.cfg.ScanIntervalSeconds = val
+	s.mu.Unlock()
+}
+
+// StartConfigSubscriber starts background subscriber on arb:config_update channel.
+func (s *Service) StartConfigSubscriber(ctx context.Context) {
+	s.mu.Lock()
+	rc := s.redisClient
+	if s.subCancel != nil {
+		s.subCancel()
+		s.subCancel = nil
+	}
+	subCtx, cancel := context.WithCancel(ctx)
+	s.subCancel = cancel
+	s.mu.Unlock()
+
+	if rc == nil {
+		return
+	}
+
+	pubsub := rc.SubscribeConfigUpdate(subCtx)
+	if pubsub == nil {
+		return
+	}
+
+	go func() {
+		defer pubsub.Close()
+		ch := pubsub.Channel()
+		for {
+			select {
+			case <-subCtx.Done():
+				return
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				s.applyConfigUpdateEvent(subCtx, msg.Payload)
+			}
+		}
+	}()
+}
+
+func (s *Service) applyConfigUpdateEvent(ctx context.Context, payload string) {
+	var evt struct {
+		Event string      `json:"event"`
+		Param string      `json:"param"`
+		Value interface{} `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(payload), &evt); err == nil && evt.Param != "" {
+		param := strings.ToLower(strings.TrimSpace(evt.Param))
+		switch param {
+		case "minroi", "min_net_roi_pct":
+			if val, ok := toFloat(evt.Value); ok && val >= 0 {
+				s.SetMinNetROIPct(val)
+			}
+		case "maxroi", "max_net_roi_pct":
+			if val, ok := toFloat(evt.Value); ok && val > 0 {
+				s.SetMaxNetROIPct(val)
+			}
+		case "scan", "scan_interval", "scan_interval_seconds":
+			if val, ok := toInt(evt.Value); ok && val >= 5 {
+				s.SetScanIntervalSeconds(val)
+			}
+		}
+	}
+
+	s.mu.Lock()
+	rc := s.redisClient
+	s.mu.Unlock()
+	if rc != nil {
+		if rawCfg, err := rc.LoadConfig(ctx); err == nil && len(rawCfg) > 0 {
+			s.mu.Lock()
+			config.ApplyDynamicConfig(&s.cfg, rawCfg)
+			newCfg := s.cfg
+			s.mu.Unlock()
+			s.ScannerConfig.Lock()
+			s.ScannerConfig.MinNetROIPct = newCfg.MinNetROIPct
+			s.ScannerConfig.MaxNetROIPct = newCfg.MaxNetROIPct
+			s.ScannerConfig.ScanIntervalSeconds = newCfg.ScanIntervalSeconds
+			s.ScannerConfig.Unlock()
+		}
+	}
+}
+
+func toFloat(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(n), "%"), 64)
+		return f, err == nil
+	}
+	return 0, false
+}
+
+func toInt(v interface{}) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case string:
+		i, err := strconv.Atoi(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(n)), "s"))
+		return i, err == nil
+	}
+	return 0, false
 }
 
 func New(cfg config.Config, adapter exchange.ReadOnlyAdapter) *Service {
@@ -62,6 +255,11 @@ func New(cfg config.Config, adapter exchange.ReadOnlyAdapter) *Service {
 		adapter:       adapter,
 		emptyTrackers: make(map[string]emptyBookRecord),
 		spikeTrackers: make(map[string]*spikeRecord),
+		ScannerConfig: ScannerConfig{
+			MinNetROIPct:        cfg.MinNetROIPct,
+			MaxNetROIPct:        cfg.MaxNetROIPct,
+			ScanIntervalSeconds: cfg.ScanIntervalSeconds,
+		},
 	}
 }
 
@@ -76,8 +274,14 @@ func (s *Service) SetSupabaseClient(client OpportunityPersister) {
 // UpdateConfig updates the scanner service runtime configuration dynamically.
 func (s *Service) UpdateConfig(cfg config.Config) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.cfg = cfg
+	s.mu.Unlock()
+
+	s.ScannerConfig.Lock()
+	s.ScannerConfig.MinNetROIPct = cfg.MinNetROIPct
+	s.ScannerConfig.MaxNetROIPct = cfg.MaxNetROIPct
+	s.ScannerConfig.ScanIntervalSeconds = cfg.ScanIntervalSeconds
+	s.ScannerConfig.Unlock()
 }
 
 // SetFundingWorker sets the background funding rate worker.
@@ -90,8 +294,11 @@ func (s *Service) SetFundingWorker(w *exchange.FundingWorker) {
 // SetRedisClient sets the Redis client for pub/sub and caching.
 func (s *Service) SetRedisClient(r *redishandler.Client) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.redisClient = r
+	s.mu.Unlock()
+	if r != nil {
+		s.StartConfigSubscriber(context.Background())
+	}
 }
 
 func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete bool, scanErr error) {
@@ -810,9 +1017,9 @@ func (s *Service) calculateOpportunityProfit(
 	switch {
 	case net.LessThanOrEqual(decimal.Zero):
 		status = "NOT_PROFITABLE"
-	case roiFloat < s.cfg.MinNetROIPct:
+	case roiFloat < s.MinNetROIPct():
 		status = "BELOW_MIN_TARGET"
-	case roiFloat > s.cfg.MaxNetROIPct:
+	case roiFloat > s.MaxNetROIPct():
 		status = "ABOVE_MAX_TARGET"
 	}
 	minAcceptablePerpPrice := calculateMinAcceptablePerpPrice(

@@ -519,6 +519,44 @@ class ExecutorConfig:
             )
         return warnings
 
+    def __getitem__(self, key: str) -> Any:
+        if key == "executor":
+            if not hasattr(self, "_executor_dict") or not isinstance(self._executor_dict, dict):
+                self._executor_dict = {}
+            self._executor_dict.update({
+                "max_position_usdt": getattr(self, "max_position_usdt", 0.0),
+                "allocation_per_pair": getattr(self, "allocation_per_pair", 0.0),
+                "min_allocated_capital": getattr(self, "min_allocated_capital", 0.0),
+                "mock_mode": getattr(self, "mock_mode", False),
+                "execution_mode": getattr(self, "execution_mode", "TAKER_TAKER"),
+            })
+            return self._executor_dict
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key == "executor" and isinstance(value, dict):
+            if not hasattr(self, "_executor_dict") or not isinstance(self._executor_dict, dict):
+                self._executor_dict = {}
+            self._executor_dict.update(value)
+            for k, v in value.items():
+                if hasattr(self, k):
+                    setattr(self, k, v)
+        elif hasattr(self, key):
+            setattr(self, key, value)
+        else:
+            setattr(self, key, value)
+
+    def __contains__(self, key: str) -> bool:
+        return key == "executor" or hasattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
     @classmethod
     def load(cls, config_path: str = "config.json") -> "ExecutorConfig":
         cfg = cls()

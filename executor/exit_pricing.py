@@ -23,14 +23,20 @@ class ExitPricingMixin:
     ) -> Optional[tuple[float, float]]:
         """Return fresh (global ask, USDT/IDR rate), or None when unavailable."""
         live_price_raw = await self.redis.get(f"arb:live_price:{pair_tag}")
+        if not live_price_raw:
+            live_price_raw = await self.redis.get(f"arb:market_snapshot:{pair_tag}")
         if live_price_raw:
             try:
                 live_snapshot = json.loads(live_price_raw)
                 global_ask_usdt = float(
-                    live_snapshot.get("global_best_ask_usdt", 0.0)
+                    live_snapshot.get("global_best_ask_usdt")
+                    or live_snapshot.get("futures_best_ask")
+                    or 0.0
                 )
                 usdt_idr_rate = float(
-                    live_snapshot.get("usdt_idr_rate", 0.0) or 0.0
+                    live_snapshot.get("usdt_idr_rate")
+                    or live_snapshot.get("usd_idr_rate")
+                    or 0.0
                 )
                 if (
                     global_ask_usdt > 0

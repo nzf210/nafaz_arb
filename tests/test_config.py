@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 
 from executor.models import ExecutionDirectives
 
@@ -279,4 +280,88 @@ async def test_dynamic_config_sync_and_entry_sizing(mock_client):
     # Sized must be capped at min(directives(100), max_pos_limit(50), usable(100)) - fees
     assert sized <= 50.0
     assert sized >= 15.0
+
+
+@pytest.mark.asyncio
+async def test_dynamic_config_sync_root_and_executor_subdict(mock_client):
+    """Verify both root and executor sub-dictionary are kept in sync and stale nested keys don't overwrite."""
+    from executor.engine import ArbitrageEngine
+
+    cfg = ExecutorConfig(
+        capital_total=100.0,
+        allocation_per_pair=0.5,
+        min_allocated_capital=10.0,
+        max_position_usdt=50.0,
+    )
+    engine = ArbitrageEngine(config=cfg, client=mock_client)
+
+    # 1. Update capital_total at root
+    engine._apply_dynamic_config_dict({
+        "capital_total": 400.0,
+        "allocation_per_pair": 0.5,
+        "executor": {
+            "max_position_usdt": 50.0,  # Old stale nested value
+        },
+    })
+    # Since capital_total was updated, max_position_usdt should recompute to cap * alloc = 200.0
+    assert engine.config.capital_total == 400.0
+    assert engine.config.max_position_usdt == 200.0
+    assert engine.config["executor"]["max_position_usdt"] == 200.0
+    assert engine.config["executor"]["allocation_per_pair"] == 0.5
+
+    # 2. Update via single param
+    engine._apply_dynamic_config_dict({"param": "capital", "value": 600.0})
+    assert engine.config.capital_total == 600.0
+    assert engine.config.max_position_usdt == 300.0
+    assert engine.config["executor"]["max_position_usdt"] == 300.0
+
+
+@pytest.mark.asyncio
+async def test_market_snapshot_fallback_for_dynamic_exit(mock_client):
+    """Verify _fetch_live_price and _exit_live_snapshot fallback to arb:market_snapshot:<pair_tag>."""
+    import fakeredis.aioredis as fake_aioredis
+    from executor.engine import ArbitrageEngine
+    from executor.models import ActivePosition
+
+    fake_redis = fake_aioredis.FakeRedis()
+    cfg = ExecutorConfig()
+    engine = ArbitrageEngine(config=cfg, client=mock_client, redis_client=fake_redis)
+
+    pair_tag = "tokocrypto:btc_usdt__binance:btcusdt"
+    snap = {
+        "pair_tag": pair_tag,
+        "spot_venue": "tokocrypto",
+        "futures_venue": "binance",
+        "spot_best_bid": 65000.0,
+        "spot_best_ask": 65010.0,
+        "spot_bid_qty": 1.0,
+        "spot_ask_qty": 2.0,
+        "futures_best_bid": 65100.0,
+        "futures_best_ask": 65105.0,
+        "usd_idr_rate": 16000.0,
+        "updated_at_ms": int(time.time() * 1000),
+    }
+    await fake_redis.set(f"arb:market_snapshot:{pair_tag}", json.dumps(snap))
+
+    # Test _fetch_live_price
+    live_price = await engine._fetch_live_price(pair_tag)
+    assert live_price is not None
+    ask, rate = live_price
+    assert ask == 65105.0
+    assert rate == 16000.0
+
+    # Test _exit_live_snapshot
+    pos = ActivePosition(
+        local_exchange="tokocrypto",
+        global_exchange="binance",
+        symbol="btc_usdt",
+        qty=1.0,
+        entry_price_idr=65000.0 * 16000.0,
+        short_entry_usdt=65100.0,
+    )
+    snapshot, local_bid, local_ask = await engine._exit_live_snapshot(pair_tag, pos)
+    assert snapshot is not None
+    assert local_bid == 65000.0 * 16000.0
+    assert local_ask == 65010.0 * 16000.0
+
 

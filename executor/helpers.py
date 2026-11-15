@@ -258,7 +258,7 @@ def snapshot_is_stale(snapshot: dict) -> bool:
     """True when a live-price snapshot is missing or older than LIVE_PRICE_STALE_MS."""
     import time as _time
 
-    ts = float(snapshot.get("timestamp_ms", 0) or 0)
+    ts = float(snapshot.get("timestamp_ms") or snapshot.get("updated_at_ms") or 0)
     if ts <= 0:
         return True
     return (int(_time.time() * 1000) - ts) > LIVE_PRICE_STALE_MS

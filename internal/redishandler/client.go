@@ -34,7 +34,8 @@ const (
 	KeyPrefixSignal        = "arb:signal:"
 	KeySignalPriority      = "arb:signal_priority"
 	KeyPrefixLivePrice     = "arb:live_price:"
-	KeyPrefixActivePos     = "arb:active_pos:"
+	KeyPrefixMarketSnapshot     = "arb:market_snapshot:"
+	KeyPrefixActivePos          = "arb:active_pos:"
 	KeyTradeHistory        = "arb:trade_history"
 	KeyTradeStats          = "arb:stats"
 	KeyBalances            = "arb:balances"
@@ -663,6 +664,22 @@ func (c *Client) PublishConfigUpdate(ctx context.Context, param string, value in
 		return err
 	}
 	return c.rdb.Publish(ctx, ChannelConfigUpdate, data).Err()
+}
+
+// Set sets a key-value pair with TTL in Redis.
+func (c *Client) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
+	if c == nil || c.rdb == nil {
+		return redis.NewStatusCmd(ctx)
+	}
+	return c.rdb.Set(ctx, key, value, expiration)
+}
+
+// SubscribeConfigUpdate subscribes to the arb:config_update channel.
+func (c *Client) SubscribeConfigUpdate(ctx context.Context) *redis.PubSub {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	return c.rdb.Subscribe(ctx, ChannelConfigUpdate)
 }
 
 // SubscribeTradeEvents subscribes to the arb:trade_events channel.
