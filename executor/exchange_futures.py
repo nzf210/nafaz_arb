@@ -1,6 +1,5 @@
 """exchange futures methods for the exchange facade."""
 
-import time
 from typing import Optional, Dict, Any
 
 from executor.quantity import AmountSpec, base_to_order_amount
@@ -148,42 +147,20 @@ class ExchangeFuturesMixin:
         return _expose_client_order_id(normalized)
 
     async def probe_short_tradability(self, symbol: str) -> tuple[bool, str]:
-        """Non-mutating check that this futures key may place orders.
+        """Fail closed when no non-mutating venue permission probe exists.
 
-        OKX rejects every order with 50123 when the key lacks trade scope even
-        though ``/account/config`` still reports ``perm=read_only,trade``. The
-        only authoritative answer is an order-endpoint response, so probe with
-        a deliberately invalid request: a permission refusal proves the key is
-        unusable, while a validation error proves the key reached the matcher.
+        Do not POST a deliberately invalid zero-size order to the create-order
+        endpoint: even a validation probe is a private order mutation surface
+        and must never bypass the executor's durable submit ledger/STOP fence.
+        A real OKX trade-permission contract probe belongs in an isolated
+        sandbox procedure, not executor startup.
         """
         venue_id = str(getattr(self.global_fut, "id", "") or "").lower()
-        client_order_id = venue_client_order_id(
-            self.global_fut,
-            f"probe-{int(time.time() * 1000) % 10_000_000}",
-            self._global_broker_prefix,
-        )
-        try:
-            if venue_id == "okx" and hasattr(self.global_fut, "privatePostTradeOrder"):
-                await self.global_fut.privatePostTradeOrder(
-                    {
-                        "instId": "BTC-USDT-SWAP",
-                        "tdMode": "cross",
-                        "side": "sell",
-                        "posSide": "short",
-                        "ordType": "limit",
-                        "sz": "0",
-                        "px": "0",
-                        "clOrdId": client_order_id,
-                    }
-                )
-                return True, ""
-        except Exception as exc:
-            error_text = str(exc)
-            if is_trading_permission_denied(exc):
-                return False, error_text[:400]
-            # Any other error (size/price validation, symbol state) proves the
-            # request passed authentication and the trade scope is usable.
-            return True, ""
+        if venue_id == "okx":
+            return (
+                False,
+                "non-mutating OKX trade-permission probe is unavailable; no order was sent",
+            )
         return True, ""
 
     async def fetch_global_open_orders(
