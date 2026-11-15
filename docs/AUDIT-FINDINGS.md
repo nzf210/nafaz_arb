@@ -323,7 +323,7 @@ The modular `executor/venues/{indodax,mexc,okx,tokocrypto}.py` modules contain c
 
 ## R-37 — Unfenced OKX create-endpoint permission probe removed
 
-**Status: FIX IMPLEMENTED; regression CI queued at time of this entry.**
+**Status: FIX IMPLEMENTED AND VERIFIED IN CI (2026-11-15).**
 
 - A final scan found one additional direct call to OKX `privatePostTradeOrder` inside `ExchangeFuturesMixin.probe_short_tradability`. It submitted an intentionally invalid zero-size/zero-price payload to infer trade permission.
 - No production caller of this method was found, but the call still crossed a private create-order endpoint without the durable submit ledger or shared STOP fence. Relying on current venue validation to guarantee that a zero-size payload can never mutate state is not an acceptable safety boundary.
@@ -331,6 +331,6 @@ The modular `executor/venues/{indodax,mexc,okx,tokocrypto}.py` modules contain c
 - A fake-venue regression asserts the method returns non-tradable and never invokes `privatePostTradeOrder`.
 - This does not change any active spot/futures entry or risk-reducing close path; the method had no production caller in the reviewed branch.
 
-The source/test head containing this removal and regression is awaiting CI. Previous OKX wire-ID mapping and direct-recovery tests passed workflows [43692697374](https://github.com/nzf210/nafaz_arb/actions/runs/43692697374) and [43692706776](https://github.com/nzf210/nafaz_arb/actions/runs/43692706776), each with all four jobs successful.
+Source head [b9716184e23c](https://github.com/nzf210/nafaz_arb/commit/b9716184e23ce1152d6e4ece1a1220f16748a10c) and regression-test head [5dcad7dc8cde](https://github.com/nzf210/nafaz_arb/commit/5dcad7dc8cde710c248bf7f7b8eb19ad738211f5) both passed all four CI jobs: [43692777060](https://github.com/nzf210/nafaz_arb/actions/runs/43692777060) and [43692785951](https://github.com/nzf210/nafaz_arb/actions/runs/43692785951). Python executor tests, PostgreSQL schema/integration, Go/race/vet and Docker builds all succeeded. Previous OKX wire-ID mapping and direct-recovery tests also passed workflows [43692697374](https://github.com/nzf210/nafaz_arb/actions/runs/43692697374) and [43692706776](https://github.com/nzf210/nafaz_arb/actions/runs/43692706776).
 
 **Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
