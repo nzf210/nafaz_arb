@@ -28,6 +28,7 @@ class OKXVenue(BaseExchangeVenue):
             return client_order_id
         if (
             len(client_order_id) <= OKX_CLIENT_ORDER_ID_MAX_LEN
+            and client_order_id.isascii()
             and client_order_id.isalnum()
         ):
             return client_order_id
