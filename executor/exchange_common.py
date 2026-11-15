@@ -208,6 +208,8 @@ def venue_client_order_id(
     if not client_order_id:
         return client_order_id
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
+    if exchange_id == "okx":
+        return get_venue("okx").format_client_order_id(client_order_id)
     if exchange_id != "tokocrypto":
         return client_order_id
     already_charset_safe = all(c.isalnum() for c in client_order_id)
@@ -356,12 +358,13 @@ def _accepted_client_order_ids(
     guarantee: only ids derived from this one logical id are admitted.
     """
     accepted = {client_order_id}
-    # An id the venue already acknowledged is authoritative for any venue, not
-    # only the one whose rewrite rules this module knows.
+    # A deterministic venue wire ID must be searchable even when the submit
+    # ACK was lost before the process could learn an alias from the response.
+    accepted.add(venue_client_order_id(exchange, client_order_id, broker_prefix))
+    # An id the venue already acknowledged is authoritative for any venue.
     accepted.add(CLIENT_ORDER_ID_ALIASES.wire_id(exchange, scope, client_order_id))
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
     if exchange_id == "tokocrypto":
-        accepted.add(venue_client_order_id(exchange, client_order_id, broker_prefix))
         accepted.add(_tokocrypto_client_order_id(client_order_id, broker_prefix))
         if broker_prefix:
             accepted.add(f"{broker_prefix}{client_order_id}")
