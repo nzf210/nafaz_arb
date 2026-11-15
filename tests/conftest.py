@@ -162,14 +162,18 @@ class MockExchangeClient:
         return record
 
     async def close_global_short_market(self, symbol: str, amount: float, client_order_id=None, amount_spec=None):
+        clean = symbol.lower().replace("/", "_").replace("-", "_")
+        price = 65050.0
+        if clean in self.market_prices and self.market_prices[clean].get("ask", 0.0) > 0:
+            price = self.market_prices[clean]["ask"]
         record = {
             "symbol": symbol,
             "side": "buy",
             "amount": amount,
             "filled": amount,
             "status": "closed",
-            "price": 65050.0,
-            "average": 65050.0,
+            "price": price,
+            "average": price,
             "params": {"reduceOnly": True},
             "client_order_id": client_order_id,
         }

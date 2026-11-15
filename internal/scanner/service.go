@@ -21,17 +21,22 @@ import (
 )
 
 type MarketSnapshot struct {
-	PairTag        string  `json:"pair_tag"`
-	SpotVenue      string  `json:"spot_venue"`
-	FuturesVenue   string  `json:"futures_venue"`
-	SpotBestBid    float64 `json:"spot_best_bid"`
-	SpotBestAsk    float64 `json:"spot_best_ask"`
-	SpotBidQty     float64 `json:"spot_bid_qty"`
-	SpotAskQty     float64 `json:"spot_ask_qty"`
-	FuturesBestBid float64 `json:"futures_best_bid"`
-	FuturesBestAsk float64 `json:"futures_best_ask"`
-	UsdIdrRate     float64 `json:"usd_idr_rate"`
-	UpdatedAtMs    int64   `json:"updated_at_ms"`
+	PairTag            string       `json:"pair_tag"`
+	SpotVenue          string       `json:"spot_venue"`
+	FuturesVenue       string       `json:"futures_venue"`
+	SpotBestBid        float64      `json:"spot_best_bid"`
+	SpotBestAsk        float64      `json:"spot_best_ask"`
+	SpotBidQty         float64      `json:"spot_bid_qty"`
+	SpotAskQty         float64      `json:"spot_ask_qty"`
+	FuturesBestBid     float64      `json:"futures_best_bid"`
+	FuturesBestAsk     float64      `json:"futures_best_ask"`
+	UsdIdrRate         float64      `json:"usd_idr_rate"`
+	UpdatedAtMs        int64        `json:"updated_at_ms"`
+	SpotBidsTop5       [][2]float64 `json:"spot_bids_top5"`
+	SpotAsksTop5       [][2]float64 `json:"spot_asks_top5"`
+	FuturesBidsTop5    [][2]float64 `json:"futures_bids_top5"`
+	FuturesAsksTop5    [][2]float64 `json:"futures_asks_top5"`
+	TradeVelocity1mUSD float64      `json:"trade_velocity_1m_usd"`
 }
 
 type ScannerConfig struct {

@@ -32,19 +32,23 @@ func TestPublishMarketSnapshot_SavesWithTTL(t *testing.T) {
 
 	ctx := context.Background()
 	snap := MarketSnapshot{
-		PairTag:        "tokocrypto:btc_usdt__binance:btcusdt",
-		SpotVenue:      "tokocrypto",
-		FuturesVenue:   "binance",
-		SpotBestBid:    65000.0,
-		SpotBestAsk:    65010.0,
-		SpotBidQty:     1.5,
-		SpotAskQty:     2.0,
-		FuturesBestBid: 65100.0,
-		FuturesBestAsk: 65105.0,
-		UsdIdrRate:     16000.0,
-		UpdatedAtMs:    time.Now().UnixMilli(),
+		PairTag:            "tokocrypto:btc_usdt__binance:btcusdt",
+		SpotVenue:          "tokocrypto",
+		FuturesVenue:       "binance",
+		SpotBestBid:        65000.0,
+		SpotBestAsk:        65010.0,
+		SpotBidQty:         1.5,
+		SpotAskQty:         2.0,
+		FuturesBestBid:     65100.0,
+		FuturesBestAsk:     65105.0,
+		UsdIdrRate:         16000.0,
+		UpdatedAtMs:        time.Now().UnixMilli(),
+		SpotBidsTop5:       [][2]float64{{65000.0, 1.5}, {64990.0, 3.0}},
+		SpotAsksTop5:       [][2]float64{{65010.0, 2.0}, {65020.0, 4.0}},
+		FuturesBidsTop5:    [][2]float64{{65100.0, 10.0}},
+		FuturesAsksTop5:    [][2]float64{{65105.0, 12.0}},
+		TradeVelocity1mUSD: 5000.0,
 	}
-
 	svc.publishMarketSnapshot(ctx, snap)
 
 	key := "arb:market_snapshot:tokocrypto:btc_usdt__binance:btcusdt"
@@ -57,7 +61,8 @@ func TestPublishMarketSnapshot_SavesWithTTL(t *testing.T) {
 	if err := json.Unmarshal([]byte(val), &got); err != nil {
 		t.Fatalf("unmarshal snapshot: %v", err)
 	}
-	if got.PairTag != snap.PairTag || got.SpotBestBid != 65000.0 || got.FuturesBestAsk != 65105.0 {
+	if got.PairTag != snap.PairTag || got.SpotBestBid != 65000.0 || got.FuturesBestAsk != 65105.0 ||
+		len(got.SpotBidsTop5) != 2 || got.TradeVelocity1mUSD != 5000.0 {
 		t.Fatalf("unexpected snapshot content: %+v", got)
 	}
 

@@ -5,6 +5,7 @@ import math
 import json
 import time
 from types import SimpleNamespace
+from typing import Optional
 
 from executor.models import ActivePosition, OrderRole, PositionState
 from executor import helpers
@@ -12,7 +13,7 @@ from executor.helpers import build_client_order_id
 from executor.private_stream import fetch_order_preferring_stream
 from executor.fee_engine import rates_for_position, round_trip_fees_usdt
 from executor.exit_decision_engine import ExitAction
-from executor.exit_pricing import compute_vwap_exit_fill
+from executor.exit_pricing import compute_vwap_exit_fill, calculate_chunk_exit_qty
 
 logger = logging.getLogger("executor.engine")
 
@@ -94,7 +95,7 @@ class ExitOrderManagementMixin:
                 or 5.0
             )
             min_threshold = max(min_futures_notional_usd, 5.50)
-            if unhedged * futures_ask_price >= min_threshold or unhedged >= pos.qty:
+            if unhedged * futures_ask_price >= min_threshold or unhedged >= pos.qty - 1e-8:
                 qty_to_close = min(unhedged, pos.qty)
                 await self._execute_exit_fill(pair_tag, old_order, pos, qty_to_close)
                 if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
@@ -382,9 +383,10 @@ class ExitOrderManagementMixin:
         global_ask_usdt: float,
         usdt_idr_rate: float,
         reason: str = "TAKER_SNIPER_EXIT",
+        exit_qty: Optional[float] = None,
     ) -> bool:
         """Execute immediate taker market sell and unwind hedge."""
-        # ponytail: single-shot market sell; smart chunking deferred to high liquidity
+        # ponytail: single-shot or chunked market sell; partial-fill hedge buffer prevents reconciliation deadlock
         if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
             logger.warning(
                 f"[Taker Sniper Exit] could not cancel existing exit order for {pair_tag}; aborting"
@@ -394,6 +396,8 @@ class ExitOrderManagementMixin:
         pos = self.active_positions.get(pair_tag)
         if not pos or pos.qty <= 0:
             return True
+
+        sell_qty = min(pos.qty, float(exit_qty)) if exit_qty is not None and float(exit_qty) > 0 else pos.qty
 
         pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
         if pair_info is None:
@@ -416,15 +420,14 @@ class ExitOrderManagementMixin:
             side="sell",
             order_type="market",
             price=local_best_bid,
-            quantity=pos.qty,
+            quantity=sell_qty,
             local_amount_spec=pos.local_amount_spec,
             required=False,
         )
-
         try:
             order = await self.client.place_local_market_sell(
                 pos.symbol,
-                pos.qty,
+                sell_qty,
                 client_order_id=taker_coid,
                 amount_spec=pos.local_amount_spec,
             )
@@ -500,7 +503,7 @@ class ExitOrderManagementMixin:
             side="sell",
             order_type="market",
             price=local_best_bid,
-            quantity=pos.qty,
+            quantity=sell_qty,
             local_amount_spec=pos.local_amount_spec,
         )
 
@@ -520,26 +523,26 @@ class ExitOrderManagementMixin:
             filled_qty = float(raw_filled or 0.0)
         except (TypeError, ValueError):
             filled_qty = float("nan")
-        fill_tolerance = max(1e-12, pos.qty * 1e-8)
+        fill_tolerance = max(1e-12, sell_qty * 1e-8)
         if (
             not math.isfinite(filled_qty)
             or filled_qty < 0
-            or filled_qty > pos.qty + fill_tolerance
+            or filled_qty > sell_qty + fill_tolerance
         ):
             await self._mark_order_submission_ambiguous(
                 pair_tag, pos.local_exchange, taker_coid,
                 f"taker sniper market SELL returned invalid cumulative fill {raw_filled!r} "
-                f"for requested quantity {pos.qty}",
+                f"for requested quantity {sell_qty}",
             )
             return True
-        filled_qty = min(filled_qty, pos.qty)
+        filled_qty = min(filled_qty, sell_qty)
 
         order_info = {
             "order_id": order_id,
             "client_order_id": taker_coid,
             "symbol": pos.symbol,
             "price": fill_price,
-            "qty": pos.qty,
+            "qty": sell_qty,
             "filled": filled_qty,
             "closed_short_qty": 0.0,
             "last_spot_fill": filled_qty,
@@ -578,6 +581,9 @@ class ExitOrderManagementMixin:
         )
         pos.unhedged_exit_base_qty = float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0) + filled_qty
         await self._execute_exit_fill(pair_tag, order_info, pos, filled_qty)
+        self.pending_exit_orders.pop(pair_tag, None)
+        if pos.qty > 0.00001:
+            self.states[pair_tag] = PositionState.HEDGED_ACTIVE
         return True
 
     async def _check_dynamic_exit_pair_bound(self, pair_tag: str) -> None:
@@ -655,9 +661,9 @@ class ExitOrderManagementMixin:
         if raw_bid > 0 and getattr(self, "exit_decision_engine", None) and getattr(self, "pair_pnl_engine", None):
             # Compute full-depth VWAP for Spot bids and Futures asks
             spot_levels = (
-                (live_snapshot or {}).get("spot_bids")
-                if "spot_bids" in (live_snapshot or {})
-                else (live_snapshot or {}).get("bids")
+                (live_snapshot or {}).get("spot_bids_top5")
+                or (live_snapshot or {}).get("spot_bids")
+                or (live_snapshot or {}).get("bids")
             )
             has_explicit_depth = spot_levels is not None
             if spot_levels is None:
@@ -688,7 +694,8 @@ class ExitOrderManagementMixin:
 
             # Futures asks depth if available
             fut_levels = (
-                (live_snapshot or {}).get("futures_asks")
+                (live_snapshot or {}).get("futures_asks_top5")
+                or (live_snapshot or {}).get("futures_asks")
                 or (live_snapshot or {}).get("asks")
             )
             if fut_levels is not None:
@@ -698,6 +705,24 @@ class ExitOrderManagementMixin:
                 executable_fut_ask = fut_vwap_res["vwap_price"] if fut_vwap_res["vwap_price"] > 0 else global_ask_usdt
             else:
                 executable_fut_ask = global_ask_usdt
+
+            # Chunk evaluation for spot taker exit
+            unit_price_usd = (executable_spot_bid / usdt_idr_rate) if usdt_idr_rate > 0 else pos.short_entry_usdt
+            min_futures_unwind_usd = max(
+                float(getattr(self.config, "min_futures_notional_usd", 0.0) or 5.0),
+                5.50,
+            )
+            min_order_notional_usd = max(
+                float(getattr(self.config, "min_order_notional_usd", 0.0) or 5.0),
+                5.50,
+            )
+            chunk_ok, chunk_qty, _ = calculate_chunk_exit_qty(
+                spot_levels,
+                total_qty=pos.qty,
+                unit_price_usd=unit_price_usd,
+                min_futures_unwind_usd=min_futures_unwind_usd,
+                min_order_notional_usd=min_order_notional_usd,
+            )
 
             # Scenario 1: Taker Sniper Exit (Spot Taker Fee + Futures Taker Fee at VWAP executable bid)
             taker_pnl_snapshot = self.pair_pnl_engine.compute_pair_pnl(
@@ -758,11 +783,64 @@ class ExitOrderManagementMixin:
                 capital_usdt * (required_net_roi_pct / 100.0),
                 getattr(self.exit_decision_engine, "min_profit_target_usdt", 0.50),
             )
+            net_funding_rate = getattr(pos, "current_funding_rate", 0.0)
+            required_decay_roi = self.exit_decision_engine.get_required_decay_roi(
+                position_age_seconds,
+                target_exit_net_roi_pct=required_net_roi_pct,
+                net_funding_rate=net_funding_rate,
+            )
             decision = self.exit_decision_engine.evaluate_exit(
                 taker_pnl_snapshot,
                 position_age_seconds=position_age_seconds,
                 dynamic_target_usdt=dynamic_target_usdt,
+                net_funding_rate=net_funding_rate,
+                target_exit_net_roi_pct=required_net_roi_pct,
             )
+
+            # Probabilistic Fill & EV comparison (Maker vs Taker)
+            has_turnover_data = "trade_velocity_1m_usd" in (live_snapshot or {}) or getattr(pos, "spot_turnover_5m_usd", 0.0) > 0
+            if has_turnover_data:
+                trade_vel_1m = float((live_snapshot or {}).get("trade_velocity_1m_usd", 0.0) or 0.0)
+                if trade_vel_1m <= 0:
+                    trade_vel_1m = float(getattr(pos, "spot_turnover_5m_usd", 0.0) or 0.0) / 5.0
+                turnover_30s_usd = trade_vel_1m * 0.5
+
+                spot_asks = (
+                    (live_snapshot or {}).get("spot_asks_top5")
+                    or (live_snapshot or {}).get("spot_asks")
+                    or (live_snapshot or {}).get("asks")
+                    or []
+                )
+                queue_ahead_usd = 0.0
+                for lvl in spot_asks:
+                    if isinstance(lvl, (list, tuple)) and len(lvl) >= 2:
+                        try:
+                            p, q = float(lvl[0]), float(lvl[1])
+                        except (TypeError, ValueError):
+                            continue
+                        if p <= maker_candidate_price and usdt_idr_rate > 0:
+                            queue_ahead_usd += (p * q) / usdt_idr_rate
+
+                order_notional_usd = pos.qty * ((maker_candidate_price / usdt_idr_rate) if usdt_idr_rate > 0 else pos.short_entry_usdt)
+                p_fill = self.exit_decision_engine.calculate_fill_probability(
+                    turnover_30s_usd, queue_ahead_usd, order_notional_usd
+                )
+                spread_decay_penalty = order_notional_usd * (getattr(self.exit_decision_engine, "spread_decay_penalty_pct", 0.05) / 100.0)
+
+                _, ev_taker, ev_maker = self.exit_decision_engine.evaluate_maker_vs_taker(
+                    taker_roi_pct=taker_exit_net_roi_pct,
+                    net_pnl_taker=taker_pnl_snapshot.pair_net_liquidation_pnl,
+                    maker_roi_pct=maker_exit_net_roi_pct,
+                    net_pnl_maker=maker_pnl_snapshot.pair_net_liquidation_pnl,
+                    required_decay_roi=required_decay_roi,
+                    p_fill=p_fill,
+                    spread_decay_penalty=spread_decay_penalty,
+                )
+            else:
+                should_taker_ev = False
+                ev_taker = float(taker_pnl_snapshot.pair_net_liquidation_pnl)
+                ev_maker = float(maker_pnl_snapshot.pair_net_liquidation_pnl)
+                p_fill = 1.0
 
             time_stop_triggered = (
                 (decision.action == ExitAction.CLOSE_BOTH and "TIME_STOP" in decision.reason)
@@ -779,38 +857,66 @@ class ExitOrderManagementMixin:
             )
 
             # Volume check on spot bids: fail-closed depth check (can_exit must be True if depth explicit)
-            if has_explicit_depth:
+            is_multilevel_depth = isinstance(spot_levels, list) and len(spot_levels) > 1
+            if is_multilevel_depth and chunk_ok:
+                has_sufficient_bid_volume = True
+            elif has_explicit_depth:
                 has_sufficient_bid_volume = spot_vwap_res["can_exit"] and (
                     spot_vwap_res["can_exit_full"] or spot_vwap_res["depth_volume"] >= 0.70 * pos.qty
                 )
             else:
                 has_sufficient_bid_volume = True
 
-            # Kondisi 1: TAKER_SNIPER_EXIT
-            taker_profitable = (taker_exit_net_roi_pct >= required_net_roi_pct) or (executable_spot_bid >= target_sell_idr)
-            if (taker_profitable and has_sufficient_bid_volume) or time_stop_triggered or approaching_negative_funding:
-                if taker_profitable:
+            taker_profitable = (taker_exit_net_roi_pct >= required_decay_roi) or (executable_spot_bid >= target_sell_idr)
+            maker_viable = (maker_exit_net_roi_pct >= required_decay_roi)
+            taker_ev_superior = maker_viable and (ev_taker > ev_maker)
+
+            should_taker = (
+                (taker_profitable and has_sufficient_bid_volume)
+                or (taker_ev_superior and has_sufficient_bid_volume)
+                or (decision.action == ExitAction.CLOSE_BOTH and has_sufficient_bid_volume)
+                or time_stop_triggered
+                or approaching_negative_funding
+            )
+
+            if is_multilevel_depth and chunk_ok and not (spot_vwap_res["can_exit_full"] or spot_vwap_res["depth_volume"] >= 0.70 * pos.qty):
+                exit_qty = chunk_qty
+            else:
+                exit_qty = pos.qty
+
+            if should_taker:
+                if is_multilevel_depth and chunk_ok and chunk_qty < pos.qty and not (spot_vwap_res["can_exit_full"] or spot_vwap_res["depth_volume"] >= 0.70 * pos.qty):
                     sniper_reason = (
-                        f"TAKER_SNIPER_EXIT (taker_roi={taker_exit_net_roi_pct:.3f}% >= req={required_net_roi_pct:.3f}%, "
+                        f"CHUNKED_TAKER_EXIT (chunk={chunk_qty:.6f}/{pos.qty:.6f}, "
+                        f"taker_roi={taker_exit_net_roi_pct:.3f}%, req={required_decay_roi:.3f}%, "
+                        f"ev_taker={ev_taker:.3f}, ev_maker={ev_maker:.3f})"
+                    )
+                elif taker_profitable:
+                    sniper_reason = (
+                        f"TAKER_SNIPER_EXIT (taker_roi={taker_exit_net_roi_pct:.3f}% >= req={required_decay_roi:.3f}%, "
                         f"vwap_bid={executable_spot_bid:.2f} >= target={target_sell_idr:.2f})"
                     )
+                elif decision.action == ExitAction.CLOSE_BOTH:
+                    sniper_reason = decision.reason
                 elif time_stop_triggered:
                     sniper_reason = decision.reason
-                else:
+                elif approaching_negative_funding:
                     sniper_reason = f"NEGATIVE_FUNDING_APPROACHING (rate={pos.current_funding_rate:.6f}, in {time_to_funding_ms/1000:.0f}s)"
+                else:
+                    sniper_reason = f"EV_TAKER_SUPERIOR (ev_taker={ev_taker:.3f} > ev_maker={ev_maker:.3f}, p_fill={p_fill:.3f})"
 
                 logger.info(
-                    f"[State 3 Taker Sniper Exit] Triggering immediate Taker Sell for {pair_tag}: "
-                    f"vwap_bid={executable_spot_bid:.2f}, target_sell_idr={target_sell_idr:.2f}, "
+                    f"[State 3 Taker Exit] Triggering immediate Taker Sell for {pair_tag}: "
+                    f"qty={exit_qty}/{pos.qty}, vwap_bid={executable_spot_bid:.2f}, target_sell_idr={target_sell_idr:.2f}, "
                     f"pnl_usdt={taker_pnl_snapshot.pair_net_liquidation_pnl:.4f}, reason={sniper_reason}"
                 )
                 if await self._execute_taker_sniper_exit(
-                    pair_tag, pos, executable_spot_bid, executable_fut_ask, usdt_idr_rate, reason=sniper_reason
+                    pair_tag, pos, executable_spot_bid, executable_fut_ask, usdt_idr_rate, reason=sniper_reason, exit_qty=exit_qty
                 ):
                     return
 
             # Kondisi 2: SMART_MAKER_EXIT dengan Auto Re-Peg
-            if maker_exit_net_roi_pct >= required_net_roi_pct:
+            if maker_exit_net_roi_pct >= required_decay_roi:
                 limit_sell_idr, tick_size = self._calculate_limit_sell_idr(
                     pair_tag, pos, global_ask_usdt, usdt_idr_rate,
                     local_best_ask_idr=_local_best_ask,
@@ -820,7 +926,7 @@ class ExitOrderManagementMixin:
                 if not self._should_repeg_exit(
                     pair_tag, global_ask_usdt, funding_passed,
                     local_best_ask_idr=_local_best_ask,
-                    maker_roi_viable=(maker_exit_net_roi_pct >= required_net_roi_pct),
+                    maker_roi_viable=(maker_exit_net_roi_pct >= required_decay_roi),
                 ):
                     return
 
@@ -989,14 +1095,11 @@ class ExitOrderManagementMixin:
         unhedged_qty = float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0)
         if unhedged_qty > 0:
             status = str(order.get("status") or "").strip().lower()
-            is_terminal = status in (
-                "closed", "canceled", "cancelled", "rejected", "expired", "filled"
-            )
             order_qty = float(order_info.get("qty", 0.0) or pos.qty)
-            is_100_pct_filled = (
+            is_spot_order_complete = (
                 current_filled >= order_qty - 1e-8
                 or pos.qty <= unhedged_qty + 1e-8
-                or is_terminal
+                or (status in ("closed", "filled") and current_filled > 0)
             )
 
             futures_ask_price = 0.0
@@ -1026,8 +1129,8 @@ class ExitOrderManagementMixin:
             min_threshold = max(min_futures_notional_usd, 5.50)
             notional_usd = unhedged_qty * futures_ask_price
 
-            # ponytail: buffer check against min notional avoids futures exchange rejection; 100% fill drains residual
-            if notional_usd >= min_threshold or is_100_pct_filled:
+            # ponytail: buffer check against min notional avoids futures exchange rejection; completed spot drains residual
+            if notional_usd >= min_threshold or is_spot_order_complete:
                 qty_to_close = min(unhedged_qty, pos.qty)
                 await self._execute_exit_fill(pair_tag, order_info, pos, qty_to_close)
             else:

@@ -141,6 +141,62 @@ def compute_vwap_exit_fill(
     }
 
 
+def calculate_chunk_exit_qty(
+    orderbook_levels: Optional[list] = None,
+    total_qty: float = 0.0,
+    unit_price_usd: float = 0.0,
+    min_futures_unwind_usd: float = 5.50,
+    min_order_notional_usd: float = 5.50,
+) -> tuple[bool, float, str]:
+    """Evaluates whether full or chunked taker exit is executable:
+    - Returns (True, total_qty, "FULL_EXIT") if total available depth >= total_qty.
+    - Returns (True, chunk_qty, "CHUNKED_EXIT") if available chunk notional >= min_futures_unwind_usd
+      AND remaining position notional >= min_order_notional_usd.
+    - Otherwise returns (False, 0.0, reason).
+    """
+    target = float(total_qty or 0.0)
+    if target <= 0 or not math.isfinite(target):
+        return False, 0.0, "INVALID_TARGET_QTY"
+    if not orderbook_levels:
+        return False, 0.0, "DEPTH_UNKNOWN"
+
+    total_avail = 0.0
+    for lvl in orderbook_levels:
+        q = 0.0
+        if isinstance(lvl, (list, tuple)) and len(lvl) >= 2:
+            try:
+                q = float(lvl[1])
+            except (TypeError, ValueError):
+                continue
+        elif isinstance(lvl, dict):
+            try:
+                q = float(lvl.get("quantity") or lvl.get("qty") or lvl.get("amount") or 0.0)
+            except (TypeError, ValueError):
+                continue
+        if q > 0 and math.isfinite(q):
+            total_avail += q
+
+    if total_avail >= target - 1e-12:
+        return True, target, "FULL_EXIT"
+
+    chunk_qty = total_avail
+    price_usd = float(unit_price_usd or 0.0)
+    if price_usd <= 0:
+        return False, 0.0, "PRICE_UNAVAILABLE"
+
+    chunk_usd = chunk_qty * price_usd
+    remaining_qty = target - chunk_qty
+    remaining_usd = remaining_qty * price_usd
+
+    min_unwind = max(0.0, float(min_futures_unwind_usd or 5.50))
+    min_order = max(0.0, float(min_order_notional_usd or 5.50))
+
+    if chunk_usd >= min_unwind and remaining_usd >= min_order:
+        return True, chunk_qty, "CHUNKED_EXIT"
+
+    return False, 0.0, "CHUNK_CONSTRAINTS_NOT_MET"
+
+
 class ExitPricingMixin:
     """Focused exit pricing, order management, or execution responsibilities."""
 

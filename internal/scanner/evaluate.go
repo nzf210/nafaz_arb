@@ -166,6 +166,18 @@ func calculateSpreadVolatilityFactor(currentSpread, ema, stdDev float64, count i
 	return math.Max(0.2, 1.0+zScore*0.25)
 }
 
+func extractTop5(levels []domain.PriceLevel) [][2]float64 {
+	n := len(levels)
+	if n > 5 {
+		n = 5
+	}
+	res := make([][2]float64, 0, n)
+	for i := 0; i < n; i++ {
+		res = append(res, [2]float64{levels[i].Price, levels[i].Quantity})
+	}
+	return res
+}
+
 type spotTurnoverPoint struct {
 	at     time.Time
 	amount float64 // in USD
@@ -182,14 +194,12 @@ type spotTurnoverTracker struct {
 	override   *float64
 }
 
-func (t *spotTurnoverTracker) update(now time.Time, rawSB domain.OrderBook, fxRate float64) float64 {
+func (t *spotTurnoverTracker) update(now time.Time, rawSB domain.OrderBook, fxRate float64) (float64, float64) {
 	t.Lock()
 	defer t.Unlock()
-
 	if t.override != nil {
-		return *t.override
+		return *t.override, *t.override / 5.0
 	}
-
 	var bidPrice, askPrice, bidQty, askQty float64
 	if len(rawSB.Bids) > 0 {
 		bidPrice = rawSB.Bids[0].Price
@@ -199,7 +209,6 @@ func (t *spotTurnoverTracker) update(now time.Time, rawSB domain.OrderBook, fxRa
 		askPrice = rawSB.Asks[0].Price
 		askQty = rawSB.Asks[0].Quantity
 	}
-
 	var bidUSD, askUSD float64
 	if fxRate > 1.0 {
 		bidUSD = (bidPrice * bidQty) / fxRate
@@ -209,7 +218,6 @@ func (t *spotTurnoverTracker) update(now time.Time, rawSB domain.OrderBook, fxRa
 		askUSD = askPrice * askQty
 	}
 	depthUSD := (bidUSD + askUSD) / 2.0
-
 	if !t.lastSeen.IsZero() {
 		changed := bidPrice != t.lastBid || askPrice != t.lastAsk ||
 			bidQty != t.lastBidQty || askQty != t.lastAskQty
@@ -231,16 +239,20 @@ func (t *spotTurnoverTracker) update(now time.Time, rawSB domain.OrderBook, fxRa
 	t.lastAskQty = askQty
 
 	cutoff := now.Add(-5 * time.Minute)
+	cutoff1m := now.Add(-1 * time.Minute)
 	valid := t.points[:0]
-	var totalUSD float64
+	var totalUSD, total1mUSD float64
 	for _, p := range t.points {
 		if p.at.After(cutoff) {
 			valid = append(valid, p)
 			totalUSD += p.amount
+			if p.at.After(cutoff1m) {
+				total1mUSD += p.amount
+			}
 		}
 	}
 	t.points = valid
-	return totalUSD
+	return totalUSD, total1mUSD
 }
 
 func (t *spotTurnoverTracker) setOverride(val float64) {
@@ -249,20 +261,18 @@ func (t *spotTurnoverTracker) setOverride(val float64) {
 	t.override = &val
 }
 
-func (s *Service) getSpotTurnover5mUSD(sm domain.Market, rawSB domain.OrderBook, fxRate float64, now time.Time) float64 {
+func (s *Service) getSpotTurnoverUSD(sm domain.Market, rawSB domain.OrderBook, fxRate float64, now time.Time) (float64, float64) {
 	if p, ok := s.adapter.(spotTurnoverProvider); ok {
 		if val, found := p.SpotTurnover5mUSD(sm.Exchange, sm.Symbol); found && val >= 0 {
-			return val
+			return val, val / 5.0
 		}
 	}
-
 	if activity, ok := s.adapter.(tradeActivityProvider); ok {
 		last := activity.LastBookUpdate(sm.Exchange, sm.Symbol)
 		if !last.IsZero() && now.Sub(last) > 5*time.Minute {
-			return 0.0
+			return 0.0, 0.0
 		}
 	}
-
 	key := strings.ToLower(sm.Exchange) + ":" + strings.ToLower(sm.Symbol)
 	s.mu.Lock()
 	if s.turnoverTrackers == nil {
@@ -274,8 +284,12 @@ func (s *Service) getSpotTurnover5mUSD(sm domain.Market, rawSB domain.OrderBook,
 		s.turnoverTrackers[key] = tracker
 	}
 	s.mu.Unlock()
-
 	return tracker.update(now, rawSB, fxRate)
+}
+
+func (s *Service) getSpotTurnover5mUSD(sm domain.Market, rawSB domain.OrderBook, fxRate float64, now time.Time) float64 {
+	t5, _ := s.getSpotTurnoverUSD(sm, rawSB, fxRate, now)
+	return t5
 }
 
 // SetSpotTurnover sets or overrides 5-minute spot turnover in USD for an exchange and symbol.
@@ -436,24 +450,32 @@ func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, expos
 	if len(pb.Asks) > 0 {
 		futuresBestAsk = pb.Asks[0].Price
 	}
-	s.publishMarketSnapshot(ctx, MarketSnapshot{
-		PairTag:        redishandler.CleanPairKey(sm.Exchange, sm.Symbol, pm.Exchange, pm.Symbol),
-		SpotVenue:      strings.ToLower(sm.Exchange),
-		FuturesVenue:   strings.ToLower(pm.Exchange),
-		SpotBestBid:    spotBestBid,
-		SpotBestAsk:    spotBestAsk,
-		SpotBidQty:     spotBidQty,
-		SpotAskQty:     spotAskQty,
-		FuturesBestBid: futuresBestBid,
-		FuturesBestAsk: futuresBestAsk,
-		UsdIdrRate:     fxRate,
-		UpdatedAtMs:    time.Now().UnixMilli(),
-	})
 
-	requiredNotional := s.requiredNotionalUsdt()
 	// Evaluate freshness against the time after both order books were received,
 	// not the beginning of the full scan (which can be seconds earlier).
 	evaluationTime := time.Now().UTC()
+	_, spotTurnover1m := s.getSpotTurnoverUSD(sm, rawSB, fxRate, evaluationTime)
+
+	s.publishMarketSnapshot(ctx, MarketSnapshot{
+		PairTag:            redishandler.CleanPairKey(sm.Exchange, sm.Symbol, pm.Exchange, pm.Symbol),
+		SpotVenue:          strings.ToLower(sm.Exchange),
+		FuturesVenue:       strings.ToLower(pm.Exchange),
+		SpotBestBid:        spotBestBid,
+		SpotBestAsk:        spotBestAsk,
+		SpotBidQty:         spotBidQty,
+		SpotAskQty:         spotAskQty,
+		FuturesBestBid:     futuresBestBid,
+		FuturesBestAsk:     futuresBestAsk,
+		UsdIdrRate:         fxRate,
+		UpdatedAtMs:        time.Now().UnixMilli(),
+		SpotBidsTop5:       extractTop5(rawSB.Bids),
+		SpotAsksTop5:       extractTop5(rawSB.Asks),
+		FuturesBidsTop5:    extractTop5(pb.Bids),
+		FuturesAsksTop5:    extractTop5(pb.Asks),
+		TradeVelocity1mUSD: spotTurnover1m,
+	})
+
+	requiredNotional := s.requiredNotionalUsdt()
 	var dynamicSpotFee, dynamicPerpFee *redishandler.DynamicFeeProfile
 	s.mu.Lock()
 	feeRedis := s.redisClient
