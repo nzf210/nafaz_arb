@@ -1,6 +1,7 @@
 """exit order management methods for exit lifecycle management."""
 
 import logging
+import math
 import json
 import time
 from types import SimpleNamespace
@@ -508,6 +509,31 @@ class ExitOrderManagementMixin:
             fill_price = local_best_bid
 
         now_s = time.time()
+        raw_filled = order.get("filled")
+        if raw_filled is None:
+            await self._mark_order_submission_ambiguous(
+                pair_tag, pos.local_exchange, taker_coid,
+                "taker sniper market SELL acknowledgement has no cumulative filled quantity",
+            )
+            return True
+        try:
+            filled_qty = float(raw_filled or 0.0)
+        except (TypeError, ValueError):
+            filled_qty = float("nan")
+        fill_tolerance = max(1e-12, pos.qty * 1e-8)
+        if (
+            not math.isfinite(filled_qty)
+            or filled_qty < 0
+            or filled_qty > pos.qty + fill_tolerance
+        ):
+            await self._mark_order_submission_ambiguous(
+                pair_tag, pos.local_exchange, taker_coid,
+                f"taker sniper market SELL returned invalid cumulative fill {raw_filled!r} "
+                f"for requested quantity {pos.qty}",
+            )
+            return True
+        filled_qty = min(filled_qty, pos.qty)
+
         order_info = {
             "order_id": order_id,
             "client_order_id": taker_coid,
@@ -524,6 +550,28 @@ class ExitOrderManagementMixin:
         }
         self.pending_exit_orders[pair_tag] = order_info
         self.last_pegged_global_ask[pair_tag] = global_ask_usdt
+
+        if filled_qty <= fill_tolerance:
+            status = str(order.get("status") or "").strip().lower()
+            if status in ("rejected", "canceled", "cancelled", "expired"):
+                await self._mark_order_submission_rejected(
+                    pos.local_exchange, taker_coid
+                )
+                self.pending_exit_orders.pop(pair_tag, None)
+                return False
+            # Acknowledged but not yet filled: keep tracking this exact order.
+            # Do not close any futures quantity and do not place a fallback SELL.
+            self.states[pair_tag] = PositionState.EXIT_PENDING
+            await self.redis.set(
+                f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
+            )
+            logger.info(
+                "[Taker Sniper Exit] %s market SELL %s is %s with zero fill; "
+                "tracking the same order without closing the futures hedge",
+                pair_tag, taker_coid, status or "unknown",
+            )
+            return True
+
         logger.info(
             f"[Taker Sniper Exit] {pair_tag}: executed spot market sell for {filled_qty} "
             f"at {fill_price} IDR (reason: {reason}). Unwinding hedge..."
