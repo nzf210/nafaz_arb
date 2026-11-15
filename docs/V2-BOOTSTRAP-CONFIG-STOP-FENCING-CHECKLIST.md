@@ -291,7 +291,7 @@ Audited branch head before this patch: \`97819da0d068ca67f8c51f74cb2f9129f150a27
 ### Verification contract
 
 - [x] Regression tests added for unfenced gateway denial, direct LIVE spot/futures missing-GlobalStop denial, connection-reset ambiguity, explicit rejection, missing order ID and ACK-persistence failure.
-- [ ] Run focused Python tests and full relevant CI after this patch; record actual result below.
+- [x] Focused Python regressions and full relevant CI passed: source/test workflow [43691977186](https://github.com/nzf210/nafaz_arb/actions/runs/43691977186); final documentation head workflow [43692065378](https://github.com/nzf210/nafaz_arb/actions/runs/43692065378).
 - [ ] Review operator-authenticated resolution end-to-end (HMAC key custody/rotation, operator identity, dual evidence, approval, audit retrieval and runbook).
 - [ ] Close real PostgreSQL multi-process disconnect/fault-injection review on the latest CI revision.
 - [ ] Run real per-venue sandbox/paper probes for client-ID exact lookup, delayed visibility, pending/partial hedge market orders, and reduceOnly close semantics.
@@ -403,7 +403,7 @@ The modular `executor/venues/{indodax,mexc,okx,tokocrypto}.py` modules contain c
 
 - Source baseline CI before the new exit fixes: workflow [43677081780](https://github.com/nzf210/nafaz_arb/actions/runs/43677081780) passed all four jobs (Python, Go/race/vet, PostgreSQL schema/integration, Docker builds).
 - R-34 exact-ID recovery regression head: workflow [43691790303](https://github.com/nzf210/nafaz_arb/actions/runs/43691790303) passed all four jobs.
-- R-35 fill-validation changes and its new zero/partial-fill tests were pushed after that run; their CI was still running when this entry was written. Do not treat the earlier green workflow as verification of R-35.
+- Source/test head `ee1c2db2707c` (including R-34/R-35 and all four new fake-venue regression tests) completed workflow [43691977186](https://github.com/nzf210/nafaz_arb/actions/runs/43691977186) with all four jobs successful: Python executor tests, Go tests/race/vet, PostgreSQL schema/integration, and Docker builds. The PostgreSQL job's multi-process backend-disconnect/fake-venue step also passed. The final documentation head `19c8b3aeebdc` completed workflow [43692065378](https://github.com/nzf210/nafaz_arb/actions/runs/43692065378) with all four jobs successful. CI uses disposable PostgreSQL and fake venue behavior; it does not validate production VPS topology or real CEX contracts.
 - Operator HMAC resolution remains a shared-secret mechanism, not enterprise identity/SSO. Provisioning, key custody/rotation, dual approval, audit retrieval and operational runbook remain open.
 - PostgreSQL multi-process disconnect/fake-venue integration has passed in prior CI, but repeated stress/fault-boundary review and production VPS topology validation remain open. It is not a real CEX contract probe.
 - Real per-venue sandbox/paper probes remain open for client-ID visibility, eventual consistency, pending/partial hedge semantics, cancel/fill races and reduceOnly close behavior.
