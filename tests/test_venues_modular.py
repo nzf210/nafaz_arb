@@ -61,3 +61,14 @@ def test_mexc_balance_fetch_params():
     mexc = get_venue("mexc")
     assert mexc.balance_fetch_params("futures") == {"type": "swap"}
     assert mexc.balance_fetch_params("spot") == {}
+
+
+def test_okx_client_order_id_is_alphanumeric_bounded_and_collision_resistant():
+    okx = get_venue("okx")
+    logical = "btc-usdt-swap-futures-hedge-12345678901234567890"
+    wire = okx.format_client_order_id(logical)
+    assert len(wire) == 32
+    assert wire.isalnum()
+    assert wire == okx.format_client_order_id(logical)
+    assert wire != okx.format_client_order_id(logical + "-different")
+    assert okx.format_client_order_id("A1B2C3") == "A1B2C3"
