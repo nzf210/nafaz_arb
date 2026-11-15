@@ -72,3 +72,6 @@ def test_okx_client_order_id_is_alphanumeric_bounded_and_collision_resistant():
     assert wire == okx.format_client_order_id(logical)
     assert wire != okx.format_client_order_id(logical + "-different")
     assert okx.format_client_order_id("A1B2C3") == "A1B2C3"
+    unicode_wire = okx.format_client_order_id("btc-å-hedge")
+    assert len(unicode_wire) == 32
+    assert unicode_wire.isascii() and unicode_wire.isalnum()
