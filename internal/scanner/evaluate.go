@@ -34,6 +34,297 @@ type tradeActivityProvider interface {
 	LastBookUpdate(exchange, symbol string) time.Time
 }
 
+// spotTurnoverProvider is an optional interface implemented by adapters or tests
+// that report 5-minute spot turnover in USD directly.
+type spotTurnoverProvider interface {
+	SpotTurnover5mUSD(exchange, symbol string) (float64, bool)
+}
+
+// SpreadTracker tracks rolling spread metrics for a single pair to detect structural spreads.
+type SpreadTracker struct {
+	sync.RWMutex
+	samples []float64
+	ema     float64
+	count   int
+}
+
+const (
+	MinSpreadSamples       = 30
+	StructuralSpreadEMA    = 1.5   // percent
+	StructuralSpreadStdDev = 0.08  // percent
+)
+
+// Update records a new spread observation, updates rolling EMA and stdDev,
+// and returns whether this pair exhibits a structural spread trap.
+func (st *SpreadTracker) Update(spreadPct float64) (ema float64, stdDev float64, count int, isStructural bool) {
+	st.Lock()
+	defer st.Unlock()
+
+	st.count++
+	const alpha = 2.0 / (float64(MinSpreadSamples) + 1.0)
+	if st.count == 1 {
+		st.ema = spreadPct
+	} else {
+		st.ema = alpha*spreadPct + (1.0-alpha)*st.ema
+	}
+
+	st.samples = append(st.samples, spreadPct)
+	if len(st.samples) > MinSpreadSamples {
+		st.samples = st.samples[1:]
+	}
+
+	n := float64(len(st.samples))
+	var sum float64
+	for _, s := range st.samples {
+		sum += s
+	}
+	mean := sum / n
+
+	var variance float64
+	for _, s := range st.samples {
+		d := s - mean
+		variance += d * d
+	}
+	variance /= n
+	stdDev = math.Sqrt(variance)
+
+	if st.count >= MinSpreadSamples && st.ema > StructuralSpreadEMA && stdDev < StructuralSpreadStdDev {
+		isStructural = true
+	}
+
+	return st.ema, stdDev, st.count, isStructural
+}
+
+func (st *SpreadTracker) Metrics() (ema float64, stdDev float64, count int) {
+	st.RLock()
+	defer st.RUnlock()
+	n := float64(len(st.samples))
+	if n == 0 {
+		return st.ema, 0, st.count
+	}
+	var sum float64
+	for _, s := range st.samples {
+		sum += s
+	}
+	mean := sum / n
+	var variance float64
+	for _, s := range st.samples {
+		d := s - mean
+		variance += d * d
+	}
+	variance /= n
+	return st.ema, math.Sqrt(variance), st.count
+}
+
+func (s *Service) updateSpreadTracker(pairKey string, spreadPct float64) (ema float64, stdDev float64, count int, isStructural bool) {
+	s.mu.Lock()
+	if s.spreadTrackers == nil {
+		s.spreadTrackers = make(map[string]*SpreadTracker)
+	}
+	tracker, ok := s.spreadTrackers[pairKey]
+	if !ok {
+		tracker = &SpreadTracker{}
+		s.spreadTrackers[pairKey] = tracker
+	}
+	s.mu.Unlock()
+
+	return tracker.Update(spreadPct)
+}
+
+// SetSpreadSamples populates historical spread samples for a pair to simulate history.
+func (s *Service) SetSpreadSamples(pairKey string, samples []float64) {
+	s.mu.Lock()
+	if s.spreadTrackers == nil {
+		s.spreadTrackers = make(map[string]*SpreadTracker)
+	}
+	tracker := &SpreadTracker{}
+	s.spreadTrackers[pairKey] = tracker
+	s.mu.Unlock()
+
+	for _, sample := range samples {
+		tracker.Update(sample)
+	}
+}
+
+// calculateSpreadVolatilityFactor computes a multiplier based on the spread's Z-Score and volatility.
+// If pair has fewer than MinSpreadSamples (30), defaults to 1.0 (neutral baseline).
+// ponytail: bounded Z-score volatility factor [0.1, 2.0]; upgrade to GARCH model if regime-switching needed.
+func calculateSpreadVolatilityFactor(currentSpread, ema, stdDev float64, count int) float64 {
+	if count < MinSpreadSamples {
+		return 1.0
+	}
+	if stdDev < StructuralSpreadStdDev {
+		if stdDev <= 0 {
+			return 0.1
+		}
+		return math.Max(0.1, stdDev/StructuralSpreadStdDev)
+	}
+	zScore := (currentSpread - ema) / stdDev
+	if zScore >= 0 {
+		return 1.0 + math.Min(1.0, zScore*0.5)
+	}
+	return math.Max(0.2, 1.0+zScore*0.25)
+}
+
+type spotTurnoverPoint struct {
+	at     time.Time
+	amount float64 // in USD
+}
+
+type spotTurnoverTracker struct {
+	sync.RWMutex
+	lastSeen   time.Time
+	lastBid    float64
+	lastAsk    float64
+	lastBidQty float64
+	lastAskQty float64
+	points     []spotTurnoverPoint
+	override   *float64
+}
+
+func (t *spotTurnoverTracker) update(now time.Time, rawSB domain.OrderBook, fxRate float64) float64 {
+	t.Lock()
+	defer t.Unlock()
+
+	if t.override != nil {
+		return *t.override
+	}
+
+	var bidPrice, askPrice, bidQty, askQty float64
+	if len(rawSB.Bids) > 0 {
+		bidPrice = rawSB.Bids[0].Price
+		bidQty = rawSB.Bids[0].Quantity
+	}
+	if len(rawSB.Asks) > 0 {
+		askPrice = rawSB.Asks[0].Price
+		askQty = rawSB.Asks[0].Quantity
+	}
+
+	var bidUSD, askUSD float64
+	if fxRate > 1.0 {
+		bidUSD = (bidPrice * bidQty) / fxRate
+		askUSD = (askPrice * askQty) / fxRate
+	} else {
+		bidUSD = bidPrice * bidQty
+		askUSD = askPrice * askQty
+	}
+	depthUSD := (bidUSD + askUSD) / 2.0
+
+	if !t.lastSeen.IsZero() {
+		changed := bidPrice != t.lastBid || askPrice != t.lastAsk ||
+			bidQty != t.lastBidQty || askQty != t.lastAskQty
+		if changed {
+			deltaUSD := math.Abs(bidUSD-t.lastBid*t.lastBidQty) + math.Abs(askUSD-t.lastAsk*t.lastAskQty)
+			if deltaUSD <= 0 {
+				deltaUSD = depthUSD
+			}
+			t.points = append(t.points, spotTurnoverPoint{at: now, amount: deltaUSD})
+		}
+	} else if depthUSD > 0 {
+		t.points = append(t.points, spotTurnoverPoint{at: now, amount: depthUSD})
+	}
+
+	t.lastSeen = now
+	t.lastBid = bidPrice
+	t.lastAsk = askPrice
+	t.lastBidQty = bidQty
+	t.lastAskQty = askQty
+
+	cutoff := now.Add(-5 * time.Minute)
+	valid := t.points[:0]
+	var totalUSD float64
+	for _, p := range t.points {
+		if p.at.After(cutoff) {
+			valid = append(valid, p)
+			totalUSD += p.amount
+		}
+	}
+	t.points = valid
+	return totalUSD
+}
+
+func (t *spotTurnoverTracker) setOverride(val float64) {
+	t.Lock()
+	defer t.Unlock()
+	t.override = &val
+}
+
+func (s *Service) getSpotTurnover5mUSD(sm domain.Market, rawSB domain.OrderBook, fxRate float64, now time.Time) float64 {
+	if p, ok := s.adapter.(spotTurnoverProvider); ok {
+		if val, found := p.SpotTurnover5mUSD(sm.Exchange, sm.Symbol); found && val >= 0 {
+			return val
+		}
+	}
+
+	if activity, ok := s.adapter.(tradeActivityProvider); ok {
+		last := activity.LastBookUpdate(sm.Exchange, sm.Symbol)
+		if !last.IsZero() && now.Sub(last) > 5*time.Minute {
+			return 0.0
+		}
+	}
+
+	key := strings.ToLower(sm.Exchange) + ":" + strings.ToLower(sm.Symbol)
+	s.mu.Lock()
+	if s.turnoverTrackers == nil {
+		s.turnoverTrackers = make(map[string]*spotTurnoverTracker)
+	}
+	tracker, ok := s.turnoverTrackers[key]
+	if !ok {
+		tracker = &spotTurnoverTracker{}
+		s.turnoverTrackers[key] = tracker
+	}
+	s.mu.Unlock()
+
+	return tracker.update(now, rawSB, fxRate)
+}
+
+// SetSpotTurnover sets or overrides 5-minute spot turnover in USD for an exchange and symbol.
+func (s *Service) SetSpotTurnover(exchange, symbol string, val float64) {
+	key := strings.ToLower(exchange) + ":" + strings.ToLower(symbol)
+	s.mu.Lock()
+	if s.turnoverTrackers == nil {
+		s.turnoverTrackers = make(map[string]*spotTurnoverTracker)
+	}
+	tracker, ok := s.turnoverTrackers[key]
+	if !ok {
+		tracker = &spotTurnoverTracker{}
+		s.turnoverTrackers[key] = tracker
+	}
+	s.mu.Unlock()
+
+	tracker.setOverride(val)
+}
+
+// calculateTradeVelocityScore computes: min(1.5, SpotTurnover5mUSD / (3 * TargetOrderUSD))
+// ponytail: linear turnover ratio capped at 1.5; add orderbook slope decay if large-lot slippage occurs.
+func calculateTradeVelocityScore(turnover5mUSD, targetOrderUSD float64) float64 {
+	if turnover5mUSD <= 0 {
+		return 0.0
+	}
+	if targetOrderUSD <= 0 {
+		targetOrderUSD = 50.0
+	}
+	denom := 3.0 * targetOrderUSD
+	if denom <= 0 {
+		return 0.0
+	}
+	ratio := turnover5mUSD / denom
+	return math.Min(1.5, ratio)
+}
+
+// calculatePriorityScore computes: NetROIPct * min(1.5, SpotTurnover5mUSD / (3 * TargetOrderUSD)) * SpreadVolatilityFactor
+func calculatePriorityScore(netROIPct, turnover5mUSD, targetOrderUSD, spreadVolFactor float64) (priorityScore float64, tradeVelocityScore float64) {
+	if netROIPct <= 0 {
+		return 0.0, 0.0
+	}
+	tradeVelocityScore = calculateTradeVelocityScore(turnover5mUSD, targetOrderUSD)
+	priorityScore = netROIPct * tradeVelocityScore * spreadVolFactor
+	if math.IsNaN(priorityScore) || math.IsInf(priorityScore, 0) || priorityScore < 0 {
+		priorityScore = 0.0
+	}
+	return priorityScore, tradeVelocityScore
+}
+
 func (s *Service) evaluatePair(ctx context.Context, pair [2]domain.Market, exposures []domain.OpenExposure, positionStateKnown bool, started time.Time) evalResult {
 	sm, pm := pair[0], pair[1]
 	pairKey := sm.Symbol + ":" + pm.Symbol
@@ -306,6 +597,14 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 		op.ExclusionReasons = append(op.ExclusionReasons, "SPIKE_PERSISTENCE_WAIT")
 	}
 
+	// Structural spread detection (Langkah 4.1)
+	pairTag := redishandler.CleanPairKey(sm.Exchange, sm.Symbol, pm.Exchange, pm.Symbol)
+	emaSpread, stdDevSpread, spreadCount, isStructural := s.updateSpreadTracker(pairTag, entrySpreadPct)
+	if isStructural {
+		op.IsStructuralSpread = true
+		op.ExclusionReasons = append(op.ExclusionReasons, "STRUCTURAL_SPREAD_TRAP")
+	}
+
 	currentFundingRatePct := lastFundingRate * 100.0
 	var fundingSubsidyPct float64
 	if isSnipingWindow {
@@ -403,6 +702,23 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 	op.MinutesToNextFunding = minutesToNextFunding
 	op.CurrentFundingRate = lastFundingRate
 
+	// Trade Velocity & Composite Priority Score calculation (Langkah 4.2)
+	targetOrderUSD := op.AllocatedCapital
+	if targetOrderUSD <= 0 {
+		targetOrderUSD = s.cfg.CapitalTotal * s.cfg.AllocationPerPair
+	}
+	if targetOrderUSD <= 0 {
+		targetOrderUSD = 50.0
+	}
+	spotTurnover5m := s.getSpotTurnover5mUSD(sm, rawSB, fxRate, now)
+	spreadVolFactor := calculateSpreadVolatilityFactor(entrySpreadPct, emaSpread, stdDevSpread, spreadCount)
+	priorityScore, tradeVelocityScore := calculatePriorityScore(op.NetROIPct, spotTurnover5m, targetOrderUSD, spreadVolFactor)
+
+	op.SpotTurnover5mUSD = spotTurnover5m
+	op.TradeVelocityScore = tradeVelocityScore
+	op.SpreadVolatilityFactor = spreadVolFactor
+	op.PriorityScore = priorityScore
+
 	// Redis updates
 	pricingSnapshot := domain.PricingSnapshot{
 		LocalBestBid:      rawSB.Bids[0].Price,
@@ -478,6 +794,10 @@ func (s *Service) applyHybridMakerTakerRules(ctx context.Context, op *domain.Opp
 					CancelIfGlobalBidDropsBelowUSDT: cancelIfGlobalBidDropsBelowUSDT,
 					ScannerValidated:                true,
 					EstimatedNetProfitUSDT:           netProfitUSDT,
+					PriorityScore:                   priorityScore,
+					TradeVelocityScore:              tradeVelocityScore,
+					SpotTurnover5mUSD:               spotTurnover5m,
+					SpreadVolatilityFactor:          spreadVolFactor,
 					SpotEntryFeePct:                  op.SpotEntryFeePct,
 					SpotExitFeePct:                   op.SpotExitFeePct,
 					PerpEntryFeePct:                  op.PerpEntryFeePct,

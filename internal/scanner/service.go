@@ -76,9 +76,11 @@ type Service struct {
 	mu             sync.Mutex
 	emptyTrackers  map[string]emptyBookRecord
 	spikeTrackers  map[string]*spikeRecord
-	lastLiveFXRate float64
-	ScannerConfig  ScannerConfig
-	subCancel      context.CancelFunc
+	spreadTrackers   map[string]*SpreadTracker
+	turnoverTrackers map[string]*spotTurnoverTracker
+	lastLiveFXRate   float64
+	ScannerConfig    ScannerConfig
+	subCancel        context.CancelFunc
 }
 
 func (s *Service) publishMarketSnapshot(ctx context.Context, snap MarketSnapshot) {
@@ -251,10 +253,12 @@ func toInt(v interface{}) (int, bool) {
 
 func New(cfg config.Config, adapter exchange.ReadOnlyAdapter) *Service {
 	return &Service{
-		cfg:           cfg,
-		adapter:       adapter,
-		emptyTrackers: make(map[string]emptyBookRecord),
-		spikeTrackers: make(map[string]*spikeRecord),
+		cfg:              cfg,
+		adapter:          adapter,
+		emptyTrackers:    make(map[string]emptyBookRecord),
+		spikeTrackers:    make(map[string]*spikeRecord),
+		spreadTrackers:   make(map[string]*SpreadTracker),
+		turnoverTrackers: make(map[string]*spotTurnoverTracker),
 		ScannerConfig: ScannerConfig{
 			MinNetROIPct:        cfg.MinNetROIPct,
 			MaxNetROIPct:        cfg.MaxNetROIPct,

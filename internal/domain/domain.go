@@ -118,6 +118,11 @@ type Opportunity struct {
 	IsSnipingWindow        bool      `json:"is_sniping_window,omitempty"`
 	MinutesToNextFunding   float64   `json:"minutes_to_next_funding,omitempty"`
 	CurrentFundingRate     float64   `json:"current_funding_rate,omitempty"`
+	IsStructuralSpread     bool      `json:"is_structural_spread,omitempty"`
+	SpotTurnover5mUSD      float64   `json:"spot_turnover_5m_usd,omitempty"`
+	TradeVelocityScore     float64   `json:"trade_velocity_score,omitempty"`
+	SpreadVolatilityFactor float64   `json:"spread_volatility_factor,omitempty"`
+	PriorityScore          float64   `json:"priority_score,omitempty"`
 }
 
 type ScanResult struct {
@@ -193,6 +198,10 @@ type ExecutionDirectives struct {
 	// a replayed Redis key.
 	ScannerValidated                bool    `json:"scanner_validated"`
 	EstimatedNetProfitUSDT           float64 `json:"estimated_net_profit_usdt"`
+	PriorityScore                   float64 `json:"priority_score,omitempty"`
+	TradeVelocityScore              float64 `json:"trade_velocity_score,omitempty"`
+	SpotTurnover5mUSD               float64 `json:"spot_turnover_5m_usd,omitempty"`
+	SpreadVolatilityFactor          float64 `json:"spread_volatility_factor,omitempty"`
 	SpotEntryFeePct                  float64 `json:"spot_entry_fee_pct"`
 	SpotExitFeePct                   float64 `json:"spot_exit_fee_pct"`
 	PerpEntryFeePct                  float64 `json:"perp_entry_fee_pct"`

@@ -227,8 +227,12 @@ func (c *Client) PublishSignal(ctx context.Context, payload domain.ExecutorPaylo
 	pipe := c.rdb.Pipeline()
 	pipe.Set(ctx, liveKey, liveData, DefaultTTL)
 	profit := payload.ExecutionDirectives.EstimatedNetProfitUSDT
-	if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
-		pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
+	score := payload.ExecutionDirectives.PriorityScore
+	if math.IsNaN(score) || math.IsInf(score, 0) || score <= 0 {
+		score = profit
+	}
+	if !math.IsNaN(score) && !math.IsInf(score, 0) && score > 0 {
+		pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: score, Member: tag})
 		pipe.Expire(ctx, KeySignalPriority, SignalTTL+5*time.Second)
 	}
 	pipe.Set(ctx, signalKey, signalData, SignalTTL)
@@ -287,8 +291,12 @@ func (c *Client) ExecuteBatchUpdates(ctx context.Context, updates []PairUpdate) 
 			signalData, err := json.Marshal(u.Payload)
 			if err == nil {
 				profit := u.Payload.ExecutionDirectives.EstimatedNetProfitUSDT
-				if !math.IsNaN(profit) && !math.IsInf(profit, 0) && profit > 0 {
-					pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: profit, Member: tag})
+				score := u.Payload.ExecutionDirectives.PriorityScore
+				if math.IsNaN(score) || math.IsInf(score, 0) || score <= 0 {
+					score = profit
+				}
+				if !math.IsNaN(score) && !math.IsInf(score, 0) && score > 0 {
+					pipe.ZAdd(ctx, KeySignalPriority, redis.Z{Score: score, Member: tag})
 					pipe.Expire(ctx, KeySignalPriority, SignalTTL+5*time.Second)
 				}
 				pipe.Set(ctx, signalKey, signalData, SignalTTL)
