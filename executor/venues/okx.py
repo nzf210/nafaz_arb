@@ -1,4 +1,5 @@
 """OKX exchange venue module."""
+import hashlib
 from typing import Any, Dict, Optional
 from executor.venues.base import BaseExchangeVenue
 
@@ -25,10 +26,17 @@ class OKXVenue(BaseExchangeVenue):
         """Format client order id for OKX (capped at 32 chars)."""
         if not client_order_id:
             return client_order_id
-        if len(client_order_id) <= OKX_CLIENT_ORDER_ID_MAX_LEN:
+        if (
+            len(client_order_id) <= OKX_CLIENT_ORDER_ID_MAX_LEN
+            and client_order_id.isalnum()
+        ):
             return client_order_id
-        # Truncate or hash if exceeding limit while preserving uniqueness
-        return client_order_id[:OKX_CLIENT_ORDER_ID_MAX_LEN]
+        # OKX requires alphanumeric IDs <= 32 chars. Hash the complete logical
+        # ID instead of truncating its suffix, which could collapse distinct
+        # sequence IDs into the same venue ID.
+        return hashlib.sha256(client_order_id.encode("utf-8")).hexdigest()[
+            :OKX_CLIENT_ORDER_ID_MAX_LEN
+        ]
 
     def position_side_params(self, position_side: str) -> Dict[str, Any]:
         """Parameters for long/short hedged position mode on OKX."""
