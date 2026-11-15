@@ -242,26 +242,50 @@ async def test_okx_direct_recovery_tries_deterministic_wire_id_after_logical_id(
 
 
 @pytest.mark.asyncio
-async def test_okx_permission_probe_never_calls_create_order_endpoint():
+async def test_okx_permission_probe_reads_permission_without_creating_orders():
     from executor.exchange_futures import ExchangeFuturesMixin
 
     class FakeOKX:
         id = "okx"
 
-        def __init__(self):
+        def __init__(self, perm):
+            self.perm = perm
             self.create_endpoint_calls = 0
+
+        async def privateGetAccountConfig(self):
+            return {"data": [{"perm": self.perm, "acctLv": "2"}]}
 
         async def privatePostTradeOrder(self, _payload):
             self.create_endpoint_calls += 1
             raise AssertionError("startup permission probe must not POST an order")
 
     class Harness(ExchangeFuturesMixin):
+        def __init__(self, perm):
+            self.global_fut = FakeOKX(perm)
+
+    allowed, _ = await Harness("read_only,trade").probe_short_tradability("BTC/USDT:USDT")
+    assert allowed is True
+
+    denied, reason = await Harness("read_only").probe_short_tradability("BTC/USDT:USDT")
+    assert denied is False
+    assert "read_only" in reason
+
+
+@pytest.mark.asyncio
+async def test_okx_permission_probe_does_not_halt_when_read_is_unavailable():
+    from executor.exchange_futures import ExchangeFuturesMixin
+
+    class BrokenOKX:
+        id = "okx"
+
+        async def privateGetAccountConfig(self):
+            raise RuntimeError("network down")
+
+    class Harness(ExchangeFuturesMixin):
         def __init__(self):
-            self.global_fut = FakeOKX()
+            self.global_fut = BrokenOKX()
 
-    engine = Harness()
-    tradable, reason = await engine.probe_short_tradability("BTC/USDT:USDT")
-
-    assert tradable is False
-    assert "non-mutating" in reason
-    assert engine.global_fut.create_endpoint_calls == 0
+    # An unreadable probe must defer to the real hedge attempt, not fabricate
+    # a permission denial that halts the venue for every pair.
+    allowed, _ = await Harness().probe_short_tradability("BTC/USDT:USDT")
+    assert allowed is True

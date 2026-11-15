@@ -94,6 +94,10 @@ class RecoveryRegistryMixin:
     async def _run_startup_recovery_with_lock(self) -> None:
         """Restore positions, pending entries and orders as one exclusive pass."""
         await self._restore_risk_state()
+        # A durable hedge-permission halt must be re-proven, not inherited: a
+        # rotated key (or a halt written when the permission could not be read)
+        # would otherwise block every hedge on that venue forever.
+        await self._reverify_hedge_permission_halts()
         await self._recover_active_positions()
         await self._recover_pending_entry_orders()
         await self._run_order_recovery_with_lock()

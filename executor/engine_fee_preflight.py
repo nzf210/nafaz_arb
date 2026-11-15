@@ -217,6 +217,62 @@ class EngineFeePreflightMixin:
             self._hedge_permission_denied = denials = {}
         denials[name] = str(reason)[:400]
 
+    def _resume_stale_hedge_permission_halt(self, venue: str) -> None:
+        """Lifts a hedge-permission halt the probe now disproves.
+
+        The halt is durable, so a key that was reported denied (or reported by an
+        older build that could not read the permission at all) would otherwise
+        block every hedge on that venue for the lifetime of the database.
+        """
+        name = str(venue or "").lower()
+        reason = str(getattr(self, "_exchange_halted", {}).get(name) or "")
+        if not reason.startswith("hedge key trading permission denied"):
+            return
+        denials = getattr(self, "_hedge_permission_denied", None)
+        if isinstance(denials, dict):
+            denials.pop(name, None)
+        del self._exchange_halted[name]
+        self._persist_risk_state(
+            "exchange_halt", scope="exchange", exchange=name,
+            reason="hedge key trading permission re-verified", resolved=True,
+        )
+        self._refresh_entry_gate()
+        logger.warning(
+            "[Risk Control] Exchange %s resumed: hedge key permission re-verified", name,
+        )
+
+    async def _reverify_hedge_permission_halts(self) -> None:
+        """Re-probe venues halted only for hedge-key permissions at startup.
+
+        The halt is durable, so a rotated key — or a halt written by a build
+        that could not read the permission at all — would otherwise block every
+        hedge on that venue forever. A venue whose probe still reports no trade
+        scope keeps its halt.
+        """
+        halted = [
+            venue
+            for venue, reason in (getattr(self, "_exchange_halted", {}) or {}).items()
+            if str(reason).startswith("hedge key trading permission denied")
+        ]
+        for venue in halted:
+            client = self._client_for_exchange(venue)
+            probe = getattr(client, "probe_short_tradability", None)
+            if not callable(probe):
+                continue
+            try:
+                allowed, reason = await probe("")
+            except Exception:
+                logger.exception(
+                    "[Risk Control] hedge permission re-probe failed for %s", venue,
+                )
+                continue
+            if allowed:
+                self._resume_stale_hedge_permission_halt(venue)
+            else:
+                logger.warning(
+                    "[Risk Control] %s still lacks hedge trading permission: %s", venue, reason,
+                )
+
     async def _validate_hedge_leg_tradable(self, pair_tag, pair_info) -> bool:
         """Refuse to buy spot when the futures key cannot open the hedge.
 
@@ -281,6 +337,7 @@ class EngineFeePreflightMixin:
             return True
         if allowed:
             verified[venue] = True
+            self._resume_stale_hedge_permission_halt(venue)
             return True
         self._record_hedge_key_denied(venue, reason)
         self._exchange_halted[venue] = f"hedge key trading permission denied ({reason[:120]})"

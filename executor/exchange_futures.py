@@ -147,20 +147,50 @@ class ExchangeFuturesMixin:
         return _expose_client_order_id(normalized)
 
     async def probe_short_tradability(self, symbol: str) -> tuple[bool, str]:
-        """Fail closed when no non-mutating venue permission probe exists.
+        """Read-only check that the hedge key may place orders.
 
-        Do not POST a deliberately invalid zero-size order to the create-order
-        endpoint: even a validation probe is a private order mutation surface
-        and must never bypass the executor's durable submit ledger/STOP fence.
-        A real OKX trade-permission contract probe belongs in an isolated
-        sandbox procedure, not executor startup.
+        Never POST to the create-order endpoint: even a validation probe is a
+        private order *mutation* surface and must not bypass the executor's
+        durable submit ledger/STOP fence. OKX exposes the key permission on a
+        non-mutating GET, so read that instead. When no read-only probe exists
+        or the read fails, report "unknown" (True) rather than fabricating a
+        denial: a real permission refusal still halts the venue through
+        ``is_trading_permission_denied`` on the actual hedge attempt.
         """
         venue_id = str(getattr(self.global_fut, "id", "") or "").lower()
-        if venue_id == "okx":
-            return (
-                False,
-                "non-mutating OKX trade-permission probe is unavailable; no order was sent",
+        if venue_id != "okx":
+            return True, ""
+        probe = getattr(self.global_fut, "privateGetAccountConfig", None)
+        if not callable(probe):
+            return True, ""
+        try:
+            payload = await probe()
+        except Exception as exc:
+            logger.warning(
+                "[State 1 Hedge Preflight] OKX permission read failed, deferring to the "
+                "hedge attempt: %s",
+                exc,
             )
+            return True, ""
+        accounts = None
+        if isinstance(payload, dict):
+            accounts = payload.get("data")
+        for account in accounts if isinstance(accounts, list) else []:
+            if not isinstance(account, dict):
+                continue
+            perms = {
+                part.strip().lower()
+                for part in str(account.get("perm") or "").split(",")
+                if part.strip()
+            }
+            if "trade" not in perms:
+                return (
+                    False,
+                    "OKX key permission is '"
+                    + (",".join(sorted(perms)) or "none")
+                    + "'; trading is required for the hedge leg"
+                )
+            return True, ""
         return True, ""
 
     async def fetch_global_open_orders(

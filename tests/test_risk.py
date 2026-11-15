@@ -381,6 +381,59 @@ def test_resume_exchange_clears_halt_and_failures(engine):
 
 
 @pytest.mark.asyncio
+async def test_hedge_permission_halt_is_reproven_and_lifted(engine, monkeypatch):
+    """A durable hedge-permission halt must not outlive the condition it described."""
+    engine._exchange_halted["okx"] = (
+        "hedge key trading permission denied (non-mutating OKX trade-permission probe unavailable)"
+    )
+    engine._hedge_permission_denied = {"okx": "stale reason"}
+    engine._persist_risk_state = lambda *a, **kw: True
+
+    class TradableClient:
+        async def probe_short_tradability(self, _symbol):
+            return True, ""
+
+    engine._client_for_exchange = lambda _venue: TradableClient()
+
+    await engine._reverify_hedge_permission_halts()
+
+    assert "okx" not in engine._exchange_halted
+    assert "okx" not in engine._hedge_permission_denied
+
+
+@pytest.mark.asyncio
+async def test_hedge_permission_halt_survives_a_real_denial(engine):
+    engine._exchange_halted["okx"] = "hedge key trading permission denied (old)"
+    engine._persist_risk_state = lambda *a, **kw: True
+
+    class DeniedClient:
+        async def probe_short_tradability(self, _symbol):
+            return False, "okx key permission is 'read_only'"
+
+    engine._client_for_exchange = lambda _venue: DeniedClient()
+
+    await engine._reverify_hedge_permission_halts()
+
+    assert "okx" in engine._exchange_halted
+
+
+@pytest.mark.asyncio
+async def test_non_permission_exchange_halt_is_left_alone(engine):
+    engine._exchange_halted["okx"] = "3 consecutive order failures (SUBMIT_FAILED)"
+    engine._persist_risk_state = lambda *a, **kw: True
+
+    class TradableClient:
+        async def probe_short_tradability(self, _symbol):
+            return True, ""
+
+    engine._client_for_exchange = lambda _venue: TradableClient()
+
+    await engine._reverify_hedge_permission_halts()
+
+    assert engine._exchange_halted["okx"].startswith("3 consecutive order failures")
+
+
+@pytest.mark.asyncio
 async def test_balance_feed_failure_halts_even_when_mismatch_threshold_disabled(engine, fake_redis):
     """Disabling mismatch detection must not disable fail-closed balance availability."""
     engine.config.balance_mismatch_fraction = 0.0

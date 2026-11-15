@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -128,6 +129,71 @@ func TestMonitorSectionTruncatesLongTelegramMessages(t *testing.T) {
 	bot.SetRedisClient(redishandler.NewWithClient(rdb))
 	bot.sendMonitorSection(context.Background(), -100123456789, 0, "RECONCILIATION MISMATCHES", "reconciliation")
 	if len([]rune(sent.Text)) > 4096 { t.Fatalf("Telegram message exceeds 4096 characters: %d", len([]rune(sent.Text))) }
+}
+
+func TestReconcileOutputIsReadableAndWithinTelegramLimit(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	payload := map[string]interface{}{
+		"status": "RUNNING",
+		"recovery": map[string]interface{}{
+			"complete":      true,
+			"ready":         false,
+			"pending_orders": map[string]string{},
+			"scope_halts": map[string]string{
+				"indodax:API3IDR":   "order recovery: orphan order requires manual reconciliation",
+				"tokocrypto:ATH/USDT": "order recovery: orphan order requires manual reconciliation",
+			},
+			"orphan_orders": []map[string]string{
+				{"orphan_id": "2f10c017-5b21", "scope": "indodax:API3IDR", "exchange": "indodax", "symbol": "API3IDR"},
+			},
+		},
+		"reconciliation": map[string]interface{}{
+			"exposure_mismatches":   map[string]string{},
+			"trade_fill_mismatches": map[string]string{},
+		},
+		"failures": map[string]string{},
+	}
+	for i := 0; i < 120; i++ {
+		payload["failures"].(map[string]string)[fmt.Sprintf("pair-%03d", i)] = "2 consecutive failures (ADAPTIVE_MAKER_QUOTE_UNSAFE)"
+	}
+	raw, _ := json.Marshal(payload)
+	if err := rdb.Set(context.Background(), redishandler.KeyExecutorStatus, raw, 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	var sent SendMessageReq
+	tsHandler := func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sendMessage" {
+			_ = json.NewDecoder(r.Body).Decode(&sent)
+			_ = json.NewEncoder(w).Encode(APIResponse[Message]{Ok: true})
+		}
+	}
+	bot, _, ts := setupTestBot(t, tsHandler)
+	defer ts.Close()
+	bot.SetRedisClient(redishandler.NewWithClient(rdb))
+	bot.handleReconcileCommand(context.Background(), &Message{Chat: Chat{ID: -100123456789}, MessageID: 9}, []string{"/reconcile"})
+
+	if sent.ParseMode != "HTML" {
+		t.Fatalf("expected HTML output (message fits Telegram limit), got parse mode %q", sent.ParseMode)
+	}
+	if n := len([]rune(sent.Text)); n > 4096 {
+		t.Fatalf("message exceeds Telegram limit: %d runes", n)
+	}
+	for _, want := range []string{"RECONCILIATION", "Scope halt", "indodax:API3IDR", "2f10c017-5b21"} {
+		if !strings.Contains(sent.Text, want) {
+			t.Fatalf("expected %q in readable summary, got: %s", want, sent.Text)
+		}
+	}
+	if strings.Contains(sent.Text, `"scope_halts"`) {
+		t.Fatalf("raw JSON snapshot leaked into the message: %s", sent.Text)
+	}
 }
 
 func TestPositionDetailExplainsMissingSupabaseFillLedger(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"sort"
 	"strings"
 	"time"
 
@@ -125,26 +126,91 @@ func (b *Bot) sendOrphanOrderSection(
 	b.sendJSONPages(ctx, chatID, replyToID, "ORPHAN EXCHANGE ORDERS", items)
 }
 
+const monitorListLimit = 8
+
+func boolLabel(value bool, whenTrue, whenFalse string) string {
+	if value {
+		return whenTrue
+	}
+	return whenFalse
+}
+
+func formatStringMapBullets(values map[string]string, limit int) string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var out strings.Builder
+	for i, key := range keys {
+		if i == limit {
+			fmt.Fprintf(&out, "• … +%d lainnya\n", len(keys)-limit)
+			break
+		}
+		fmt.Fprintf(&out, "• <code>%s</code> — %s\n", html.EscapeString(key), html.EscapeString(values[key]))
+	}
+	return out.String()
+}
+
+// formatReconcileIncidents renders /reconcile as a readable summary. The raw
+// snapshot carries ~100 blacklisted pairs plus full JSON records, which is
+// unreadable and exceeds the Telegram limit once escaped.
+func formatReconcileIncidents(snapshot monitorSnapshot) string {
+	var recovery, reconciliation monitorSnapshot
+	_ = json.Unmarshal(rawField(snapshot, "recovery"), &recovery)
+	_ = json.Unmarshal(rawField(snapshot, "reconciliation"), &reconciliation)
+
+	var complete, ready bool
+	_ = json.Unmarshal(rawField(recovery, "complete"), &complete)
+	_ = json.Unmarshal(rawField(recovery, "ready"), &ready)
+
+	orphans := decodeList(rawField(recovery, "orphan_orders"))
+	var pendingOrders, scopeHalts map[string]string
+	_ = json.Unmarshal(rawField(recovery, "pending_orders"), &pendingOrders)
+	_ = json.Unmarshal(rawField(recovery, "scope_halts"), &scopeHalts)
+	exposure := countSnapshotMap(rawField(reconciliation, "exposure_mismatches"))
+	tradeFill := countSnapshotMap(rawField(reconciliation, "trade_fill_mismatches"))
+
+	var out strings.Builder
+	out.WriteString("🧾 <b>RECONCILIATION</b>\n\n")
+	fmt.Fprintf(&out, "• Recovery: <code>%s</code>\n", boolLabel(complete, "SELESAI", "BELUM SELESAI"))
+	fmt.Fprintf(&out, "• Entry gate: <code>%s</code>\n", boolLabel(ready, "TERBUKA", "BLOKIR"))
+	fmt.Fprintf(&out, "• Pending order: <code>%d</code> | Scope halt: <code>%d</code> | Orphan: <code>%d</code>\n",
+		len(pendingOrders), len(scopeHalts), len(orphans))
+	fmt.Fprintf(&out, "• Mismatch: exposure <code>%d</code> | trade-fill <code>%d</code>\n", exposure, tradeFill)
+	fmt.Fprintf(&out, "• Failed pair tercatat: <code>%d</code>\n", countSnapshotMap(rawField(snapshot, "failures")))
+
+	if len(orphans) > 0 {
+		out.WriteString("\n<b>ORPHAN</b>\n")
+		for i, raw := range orphans {
+			if i == monitorListLimit {
+				fmt.Fprintf(&out, "• … +%d lainnya\n", len(orphans)-monitorListLimit)
+				break
+			}
+			var orphan map[string]interface{}
+			_ = json.Unmarshal(raw, &orphan)
+			fmt.Fprintf(&out, "• <code>%s</code> — %s\n",
+				html.EscapeString(firstMapValue(orphan, "orphan_id", "exchange_order_id")),
+				html.EscapeString(firstMapValue(orphan, "scope", "symbol", "exchange")))
+		}
+		out.WriteString("<i>resolve: </i><code>/reconcile resolve ID</code>")
+		out.WriteString("<i> (butuh order terminal + fill nol di exchange), atau </i><code>/cleanorphan ID</code>\n")
+	}
+	if len(pendingOrders) > 0 {
+		out.WriteString("\n<b>PENDING ORDER</b>\n")
+		out.WriteString(formatStringMapBullets(pendingOrders, monitorListLimit))
+	}
+	if len(scopeHalts) > 0 {
+		out.WriteString("\n<b>SCOPE HALT</b>\n")
+		out.WriteString(formatStringMapBullets(scopeHalts, monitorListLimit))
+	}
+	out.WriteString("\n<i>Read-only. /reconcile retry untuk verifikasi ulang.</i>")
+	return out.String()
+}
+
 func buildMonitorSectionRaw(
 	snapshot monitorSnapshot, title string, fields []string,
 ) json.RawMessage {
-	if title == "RECONCILIATION INCIDENTS" {
-		var recovery monitorSnapshot
-		_ = json.Unmarshal(rawField(snapshot, "recovery"), &recovery)
-		view := monitorSnapshot{}
-		for key, value := range map[string]json.RawMessage{
-			"mismatches": rawField(snapshot, "reconciliation", "reconciliation_mismatches", "mismatches"),
-			"pending_orders": rawField(recovery, "pending_orders"),
-			"scope_halts": rawField(recovery, "scope_halts"),
-			"failures": rawField(snapshot, "failures"),
-		} {
-			if len(value) > 0 {
-				view[key] = value
-			}
-		}
-		raw, _ := json.Marshal(view)
-		return raw
-	}
 	if title == "RISK HALT" {
 		view := monitorSnapshot{}
 		for _, key := range []string{
@@ -167,13 +233,24 @@ func buildMonitorSectionRaw(
 }
 
 func formatMonitorSectionMessage(title, body string) string {
-	if len([]rune(body)) > 3300 {
-		runes := []rune(body)
-		body = string(runes[:3200]) + "\n... dipotong; gunakan detail spesifik."
+	const telegramLimit = 4000
+	header := "📡 <b>" + html.EscapeString(title) + "</b>\n\n<pre>"
+	footer := htmlPreClose + "\n\n<i>Read-only. Sumber: snapshot executor terakhir.</i>"
+	const cutNote = "\n... dipotong; gunakan detail spesifik."
+	budget := telegramLimit - len([]rune(header)) - len([]rune(footer)) - len([]rune(cutNote))
+
+	// Cap the escaped text, not the raw text: escaping expands quotes/ampersands,
+	// so a raw cap can still exceed the Telegram limit and force a plain-text
+	// fallback that leaks raw <b>/<pre> tags into the chat.
+	escaped := []rune(html.EscapeString(body))
+	if len(escaped) > budget {
+		cut := string(escaped[:budget])
+		if idx := strings.LastIndex(cut, "&"); idx >= 0 && !strings.Contains(cut[idx:], ";") {
+			cut = cut[:idx]
+		}
+		escaped = []rune(cut + cutNote)
 	}
-	return "📡 <b>" + html.EscapeString(title) + "</b>\n\n<pre>" +
-		html.EscapeString(body) + htmlPreClose +
-		"\n\n<i>Read-only. Sumber: snapshot executor terakhir.</i>"
+	return header + string(escaped) + footer
 }
 
 func (b *Bot) sendMonitorSection(
@@ -190,6 +267,10 @@ func (b *Bot) sendMonitorSection(
 	}
 	if title == "ORPHAN ORDERS" {
 		b.sendOrphanOrderSection(ctx, chatID, replyToID, snapshot)
+		return
+	}
+	if title == "RECONCILIATION INCIDENTS" {
+		b.sendReplyWithMarkup(ctx, chatID, replyToID, formatReconcileIncidents(snapshot), b.defaultKeyboard())
 		return
 	}
 	raw := buildMonitorSectionRaw(snapshot, title, fields)

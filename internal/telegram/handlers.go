@@ -253,10 +253,10 @@ func (b *Bot) handleReconcileRetryCommand(ctx context.Context, msg *Message) {
 		time.UnixMilli(reply.TimestampMS).UTC().Format("2006-01-02 15:04:05 UTC"),
 	)
 	if len(reply.PendingOrders) > 0 {
-		message += "\n\n<b>Pending:</b> <code>" + html.EscapeString(prettyJSON(mustJSONRaw(reply.PendingOrders))) + "</code>"
+		message += "\n\n<b>Pending:</b>\n" + formatStringMapBullets(reply.PendingOrders, monitorListLimit)
 	}
 	if len(reply.ScopeHalts) > 0 {
-		message += "\n\n<b>Halt:</b> <code>" + html.EscapeString(prettyJSON(mustJSONRaw(reply.ScopeHalts))) + "</code>"
+		message += "\n\n<b>Halt:</b>\n" + formatStringMapBullets(reply.ScopeHalts, monitorListLimit)
 	}
 	if reply.Error != "" {
 		message += "\n\n<b>Catatan:</b> " + html.EscapeString(reply.Error)
