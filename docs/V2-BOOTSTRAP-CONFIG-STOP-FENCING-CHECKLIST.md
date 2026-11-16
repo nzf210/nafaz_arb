@@ -440,3 +440,39 @@ The modular `executor/venues/{indodax,mexc,okx,tokocrypto}.py` modules contain c
 Source head [b9716184e23c](https://github.com/nzf210/nafaz_arb/commit/b9716184e23ce1152d6e4ece1a1220f16748a10c) and regression-test head [5dcad7dc8cde](https://github.com/nzf210/nafaz_arb/commit/5dcad7dc8cde710c248bf7f7b8eb19ad738211f5) both passed all four CI jobs: [43692777060](https://github.com/nzf210/nafaz_arb/actions/runs/43692777060) and [43692785951](https://github.com/nzf210/nafaz_arb/actions/runs/43692785951). Python executor tests, PostgreSQL schema/integration, Go/race/vet and Docker builds all succeeded. Previous OKX wire-ID mapping and direct-recovery tests also passed workflows [43692697374](https://github.com/nzf210/nafaz_arb/actions/runs/43692697374) and [43692706776](https://github.com/nzf210/nafaz_arb/actions/runs/43692706776).
 
 **Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+
+## 10. Exposure-path audit execution — 2026-11-16
+
+**Audited baseline:** `ea44caf051de4a435c5e40a8e36e288438c86063`  
+**Source/test remediation head:** `7aa7b9b30732b06ef74ffce758f0143325377ddd`
+
+### 10.1 Call-site coverage
+
+- [x] Enumerated all 100 Python executor source files for direct and indirect create-order boundaries.
+- [x] Enumerated all 69 Go source files; no CEX private create-order path was found in the scanner/exchange code.
+- [x] Traced spot BUY through `_submit_entry_order` → `place_local_limit_buy` → `create_limit_buy_order`.
+- [x] Traced futures short SELL through `_submit_entry_hedge_order` → `open_global_short_market` → `create_market_sell_order`.
+- [x] Traced generic `MutationGateway.execute_create_order` dynamic `create_order_direct/create_order`; no active production caller was found.
+- [x] Traced Indodax TAPIv2 create wrappers to `_create_order` → `POST /api/v2/order`.
+- [x] Classified spot limit/market SELL and futures reduceOnly BUY as de-risking; cancellation is not a create-order path.
+
+### 10.2 Findings fixed and regression evidence
+
+- [x] Futures `hedge_submit_started` now flips only immediately before the venue create call. PREPARED/fence failure remains pre-submit and does not trigger false exact-ID ambiguity.
+- [x] Rollback no longer retries timeout, connection reset, generic internal error, system busy, or service-unavailable responses. Only explicit venue settlement rejection and explicit HTTP 429 qualify for retry.
+- [x] PostgreSQL fence no longer demotes a healthy pool solely because a venue request raised TimeoutError/ConnectionResetError inside the yielded submit scope. Failed session unlock still demotes the broken pool while durable SUBMITTING remains.
+- [x] De-risking proceeds under active Global STOP and treats unresolved entry as advisory. If PostgreSQL connectivity is unavailable before the de-risk POST, it can proceed without shared serialization with a CRITICAL log; LIVE entry remains fail-closed.
+- [x] Fake-venue/fault-boundary regressions cover rollback timeout single-submit, futures PREPARED failure, STOP-active de-risk, PostgreSQL-unavailable de-risk, venue timeout versus DB disconnect, and durable SUBMITTING preservation.
+
+Source/test CI: [GitHub Actions run 43824720908](https://github.com/nzf210/nafaz_arb/actions/runs/43824720908) completed successfully for `7aa7b9b`. Python, Go/race/vet, disposable PostgreSQL schema/idempotency/RLS and multi-process disconnect integration, and Docker image jobs passed.
+
+### 10.3 Still-open release gates
+
+- [ ] Run venue-specific sandbox/paper contract tests for client-ID idempotency, exact-ID visibility, eventual consistency, partial/pending hedge, cancel/fill race, and reduceOnly semantics on every configured CEX.
+- [ ] Complete operator identity provisioning, HMAC secret custody/rotation, dual approval, audit retrieval, and signed-resolution runbook. The current HMAC/two-evidence code tests do not close operational governance.
+- [ ] Repeat PostgreSQL disconnect/fault-injection under stress and validate the actual VPS topology. Disposable CI PostgreSQL success is not VPS production sign-off.
+- [ ] Approve and implement a policy for `scale_to_min` futures over-hedge/delta imbalance, including hard-drift remediation.
+- [ ] Resolve schema/permission/control-row integrity failures before allowing de-risking through the fence; only recognized connectivity loss has the explicit unfenced emergency fallback.
+
+**Release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
