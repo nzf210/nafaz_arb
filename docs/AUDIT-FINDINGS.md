@@ -334,3 +334,59 @@ The modular `executor/venues/{indodax,mexc,okx,tokocrypto}.py` modules contain c
 Source head [b9716184e23c](https://github.com/nzf210/nafaz_arb/commit/b9716184e23ce1152d6e4ece1a1220f16748a10c) and regression-test head [5dcad7dc8cde](https://github.com/nzf210/nafaz_arb/commit/5dcad7dc8cde710c248bf7f7b8eb19ad738211f5) both passed all four CI jobs: [43692777060](https://github.com/nzf210/nafaz_arb/actions/runs/43692777060) and [43692785951](https://github.com/nzf210/nafaz_arb/actions/runs/43692785951). Python executor tests, PostgreSQL schema/integration, Go/race/vet and Docker builds all succeeded. Previous OKX wire-ID mapping and direct-recovery tests also passed workflows [43692697374](https://github.com/nzf210/nafaz_arb/actions/runs/43692697374) and [43692706776](https://github.com/nzf210/nafaz_arb/actions/runs/43692706776).
 
 **Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+
+## Order-mutation and exposure-path audit — 2026-11-16
+
+**Audited source baseline:** `ea44caf051de4a435c5e40a8e36e288438c86063`  
+**Remediation/test head:** `7aa7b9b30732b06ef74ffce758f0143325377ddd`  
+**Scope:** all 100 `executor/**/*.py` source files and all 69 Go source files at the audited baseline; focused review of the entry/hedge, adapter, recovery, STOP, rollback, exit, and force-close call chains.
+
+### Call-site inventory and classification
+
+| Call-site / wrapper | Lifecycle | STOP fencing classification |
+|---|---|---|
+| `ExchangeOrderMixin.place_local_limit_buy` → CCXT `create_limit_buy_order` | Spot BUY entry; opens exposure | Durable PREPARED/SUBMITTING + shared PostgreSQL session fence required |
+| `ExchangeFuturesMixin.open_global_short_market` → CCXT `create_market_sell_order` (`reduceOnly=False`) | Futures short hedge; opens/adds exposure | Durable PREPARED/SUBMITTING + shared PostgreSQL session fence required |
+| `MutationGateway.execute_create_order` → `create_order_direct` or generic `create_order` | Generic private create | Requires durable ledger + shared fence; no production caller was found in the audited tree |
+| `place_local_limit_sell` → `create_limit_sell_order` | Spot exit | Risk-reducing; uses de-risk fence, not entry PREPARED/SUBMITTING |
+| `place_local_market_sell` → `create_market_sell_order` | Rollback, taker exit, force-close | Risk-reducing; uses de-risk fence, not entry PREPARED/SUBMITTING |
+| `close_global_short_market` → `create_market_buy_order` (`reduceOnly=True`) | Futures close | Risk-reducing; reduceOnly is mandatory; uses de-risk fence |
+| Indodax `create_limit_buy_order` / `create_limit_sell_order` / `create_market_sell_order` → `_create_order` → `POST /api/v2/order` | Venue raw HTTP boundary | Classification is inherited from the caller; no independent production caller bypass was found |
+| `cancel_local_order` / venue `cancel_order` | Cancel existing order | Not a create-order exposure path; must remain available under STOP and reconcile final fills/status |
+
+The two live exposure-increasing call chains are spot BUY and futures short SELL. Both refuse LIVE operation without an initialized `GlobalStopService`, persist PREPARED before the venue boundary, and enter the shared session advisory fence before the create call. The direct no-service branches are compatibility/mock-only after the explicit LIVE guards. The Go scanner/exchange packages contain no CEX private create-order call; their POST requests found in this scan are scanner/Supabase/Telegram APIs. The modular `executor/venues/*` adapters do not expose another independent create-order call-site.
+
+Risk-reducing spot SELL and futures reduceOnly BUY calls do not use the entry ledger. They use stable client IDs/order-intent registry and exact-ID recovery in their owning lifecycle. They take the shared PostgreSQL lock when available, but Global STOP itself does not reject them. An unresolved entry is advisory for de-risking rather than a global close blocker.
+
+### Findings fixed in this execution
+
+| ID | Finding | Remediation | Status |
+|---|---|---|---|
+| R-38 | Futures `hedge_submit_started` was set before durable PREPARED and before entering the submit fence. A DB/STOP failure before the venue POST could be misclassified as an ambiguous submitted hedge, suppressing the normal spot rollback path. | Reset the flag at function entry; set it only immediately before the futures venue create call (including mock-only direct path). | FIXED; regression test verifies PREPARED failure makes zero venue/lookup calls and leaves the flag false |
+| R-39 | Rollback retry predicate treated generic `timeout`, `internal error`, `system busy`, and `service unavailable` text as transient settlement failures. Those can be ambiguous after POST and could resubmit a spot SELL. | Keep retries only for explicit venue business rejections (Tokocrypto 2206/989012 and matching-engine balance rejection) plus explicit HTTP 429. Generic transport/server errors no longer qualify. | FIXED; fake venue timeout test verifies exactly one POST |
+| R-40 | `GlobalStopService.order_submit_fence` and `derisk_submit_fence` demoted the PostgreSQL pool for connection-shaped exceptions raised by the yielded venue request, because the exception handler enclosed the yield. A venue timeout/reset could therefore be mistaken for a PostgreSQL disconnect and prevent ACK/UNKNOWN persistence on the still-healthy pool. | Track whether control was yielded. Only pre-yield DB errors and failed advisory unlock demote the pool; a venue exception is propagated without falsely demoting PostgreSQL. | FIXED; fake boundary tests distinguish venue timeout from PostgreSQL unlock disconnect |
+| R-41 | De-risk submissions were blocked when a configured PostgreSQL service could not reconnect, even though STOP must not prevent removal of existing exposure. | De-risk fence now falls back unfenced only for recognized PostgreSQL connectivity/authority-unavailable failures, logs CRITICAL, and still requires a stable client ID. LIVE entry remains fail-closed. Invalid IDs and non-connectivity integrity errors remain blocked. | FIXED; regression tests cover STOP-active/unresolved pass-through and DB-unavailable de-risk fallback |
+
+### Lifecycle invariants rechecked
+
+- PREPARED intent equality includes exchange, market type, symbol, side, order type, quantity, price, pair key, `amount_spec`, and `recovery_context`.
+- Entry fence commits PREPARED → SUBMITTING before yielding to the venue request. A duplicate/reused non-PREPARED client ID is rejected.
+- Venue ACK persistence failure leaves SUBMITTING/UNKNOWN durable; it does not authorize a new client ID.
+- Definitive venue rejection is distinguished from timeout/reset/5xx ambiguity. The rollback retry predicate is now restricted to explicit business rejection and explicit 429 evidence.
+- Startup exact-client-ID reconciliation routes spot versus perpetual lookup by market type. A NOT_FOUND result or unavailable lookup remains unresolved; eventual consistency is not treated as proof of rejection.
+- STOP and entry submit use the same advisory lock key. The current `request_stop` and `request_stop_in_transaction` signatures match the spot/futures IP-ban call sites.
+- HMAC manual resolution requires a valid signature, bounded timestamp, nonce, two distinct evidence references, and append-only audit persistence. Operational identity provisioning, key custody/rotation, dual control, and runbook are not complete.
+
+### Verification and remaining release gates
+
+GitHub Actions run [43824720908](https://github.com/nzf210/nafaz_arb/actions/runs/43824720908) for source/test head `7aa7b9b` completed successfully: Python executor suite, Go tests/race/vet, PostgreSQL schema/idempotency/RLS checks, real disposable-PostgreSQL multi-process submit-disconnect integration, and Docker scanner/executor builds all passed. The new regression file is included in the passing Python job. No local VPS or CEX sandbox test was performed.
+
+Still OPEN:
+- Venue contract validation for each configured CEX: client-ID idempotency, exact-ID visibility, lookup eventual consistency, partial/pending hedge, cancel/fill race, and reduceOnly semantics.
+- Operator resolution operational controls: verified operator identity, secret custody/rotation, dual approval, audit retrieval, and runbook.
+- Repeated PostgreSQL chaos/fault injection and validation against the actual VPS topology. CI disposable PostgreSQL evidence is not a production-topology sign-off.
+- `scale_to_min` may intentionally create a futures short larger than the spot fill to satisfy venue minimum notional; hard-drift still needs an approved automatic/manual remediation policy.
+- De-risking remains blocked on non-connectivity integrity failures such as missing Global STOP control row/schema/permission errors; operator repair is required rather than silently bypassing a corrupt authority.
+
+**Status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
