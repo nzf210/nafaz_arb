@@ -50,6 +50,93 @@ def test_p3_04_sanitize_announces_disabled_safety_nets():
     assert cfg.estimated_round_trip_fee_pct == 0.0
     assert cfg.max_entry_slippage_pct == 0.0
 
+def test_hedging_defaults_match_spec():
+    cfg = ExecutorConfig()
+    hed = cfg.hedging
+    assert hed.enabled is True
+    assert hed.mode == "incremental"
+    assert hed.spot_fill_trigger_pct == 20.0
+    assert hed.futures_target_hedge_ratio == 1.0
+    assert hed.futures_min_order_policy == "wait_until_covered"
+    assert hed.futures_allow_min_notional_overhedge is False
+    assert hed.futures_max_overhedge_pct == 0.0
+    assert hed.execution_prevent_duplicate_hedges is True
+    assert hed.execution_durable_hedge_intent is True
+    assert cfg.sanitize() == []
+
+def test_hedging_sanitize_clamps_and_normalizes():
+    cfg = ExecutorConfig()
+    cfg.hedging.spot_fill_trigger_pct = 150.0
+    cfg.hedging.futures_target_hedge_ratio = -1.0
+    cfg.hedging.futures_min_order_policy = "yolo"
+    cfg.hedging.mode = "instant"
+    warnings = cfg.hedging.sanitize()
+
+    assert cfg.hedging.spot_fill_trigger_pct == 100.0
+    assert cfg.hedging.futures_target_hedge_ratio == 0.0
+    assert cfg.hedging.futures_min_order_policy == "wait_until_covered"
+    assert cfg.hedging.mode == "incremental"
+    assert len(warnings) == 4
+    # Executor-level sanitize must propagate hedging warnings.
+    assert ExecutorConfig().sanitize() == []
+    propagated = ExecutorConfig()
+    propagated.hedging.spot_fill_trigger_pct = "garbage"
+    assert any("hedging.spot_fill_trigger_pct" in w for w in propagated.sanitize())
+
+def test_hedging_section_loaded_from_file(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "hedging": {
+            "enabled": False,
+            "mode": "incremental",
+            "spot": {"fill_trigger_pct": 35.5},
+            "futures": {
+                "target_hedge_ratio": 1.5,
+                "min_order_policy": "allow_min_notional",
+                "allow_min_notional_overhedge": True,
+                "max_overhedge_pct": 2.0,
+            },
+            "execution": {
+                "hedge_on_partial_fill": False,
+                "prevent_duplicate_hedges": False,
+                "durable_hedge_intent": False,
+            },
+        }
+    }))
+    cfg = ExecutorConfig()
+    cfg._apply_file(str(config_path))
+
+    hed = cfg.hedging
+    assert hed.enabled is False
+    assert hed.spot_fill_trigger_pct == 35.5
+    assert hed.futures_target_hedge_ratio == 1.5
+    assert hed.futures_min_order_policy == "allow_min_notional"
+    assert hed.futures_allow_min_notional_overhedge is True
+    assert hed.futures_max_overhedge_pct == 2.0
+    assert hed.execution_hedge_on_partial_fill is False
+    assert hed.execution_prevent_duplicate_hedges is False
+    assert hed.execution_durable_hedge_intent is False
+    # Untouched execution flags keep their defaults.
+    assert hed.execution_use_cumulative_spot_fills is True
+
+def test_hedging_malformed_sections_fail_safe(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "hedging": {
+            "spot": "not-a-dict",
+            "futures": None,
+            "execution": [],
+            "fill_trigger_pct": 42.0,
+        }
+    }))
+    cfg = ExecutorConfig()
+    cfg._apply_file(str(config_path))
+    cfg.sanitize()
+
+    assert cfg.hedging.enabled is True
+    assert cfg.hedging.spot_fill_trigger_pct == 20.0
+    assert cfg.hedging.futures_min_order_policy == "wait_until_covered"
+
 @pytest.mark.asyncio
 async def test_modular_exchanges_config_and_env(monkeypatch):
     """Verify modular exchanges loaded from file and dynamic env vars."""

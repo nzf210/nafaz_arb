@@ -437,6 +437,64 @@ async def test_p2_01_partial_fill_above_threshold_hedges_and_activates(engine, f
     assert pair_tag in engine.active_positions
 
 @pytest.mark.asyncio
+async def test_hedging_fill_threshold_waits_below_pct(engine, fake_redis, mock_client):
+    """A USD-significant fill below the configured cumulative fill threshold stays unhedged."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+
+    # 15% of 0.01 BTC ≈ $93 — above the $10 min-notional floor but below the
+    # 20% hedge activation threshold, so the hedge must wait.
+    order_info = _entry_order_info(pair_tag, now_ms)
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.0015,
+    }
+
+    await engine._check_entry_orders()
+
+    assert engine.states[pair_tag] == PositionState.ENTRY_PARTIAL
+    assert mock_client.global_short_sells == []
+    assert pair_tag in engine.pending_entry_orders
+
+@pytest.mark.asyncio
+async def test_hedging_fill_threshold_hedges_once_crossed(engine, fake_redis, mock_client):
+    """Crossing the cumulative fill threshold activates the incremental hedge."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+
+    order_info = _entry_order_info(pair_tag, now_ms)
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.005,
+    }
+
+    await engine._check_entry_orders()
+
+    assert engine.states[pair_tag] == PositionState.HEDGED_ACTIVE
+    assert len(mock_client.global_short_sells) == 1
+
+@pytest.mark.asyncio
+async def test_hedging_disabled_restores_usd_delta_behavior(engine, fake_redis, mock_client):
+    """hedging.enabled=false falls back to the legacy USD-delta hedge trigger."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+
+    engine.config.hedging.enabled = False
+    order_info = _entry_order_info(pair_tag, now_ms)
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.0015,
+    }
+
+    await engine._check_entry_orders()
+
+    assert engine.states[pair_tag] == PositionState.HEDGED_ACTIVE
+    assert len(mock_client.global_short_sells) == 1
+
+@pytest.mark.asyncio
 async def test_p2_02_excessive_slippage_aborts_and_rolls_back(fake_redis):
     """An ask far above the expected short price must abort the hedge, not open a bad position."""
     pair_tag = "indodax:btc_idr"

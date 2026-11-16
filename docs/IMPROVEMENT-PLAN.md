@@ -699,3 +699,20 @@ Detail checklist: [V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md](./V2-BOOTSTRAP
 - [ ] Config diff has zero unexplained changes to protected risk/venue fields.
 - [ ] Paper-mode restart, IP-ban STOP, fencing, and controlled resume scenarios pass.
 - [ ] No LIVE cutover until all checklist items are verified and approved.
+
+## Hedging — configurable spot fill threshold (2026-11-16)
+
+Sesuai spesifikasi incremental futures hedging, konfigurasi baru bagian
+`hedging` (lihat `config.example.json`) di-load oleh `ExecutorConfig` dan
+divalidasi di `HedgingConfig.sanitize()`:
+
+- `spot.fill_trigger_pct` (default 20.0): threshold aktivasi hedge berdasarkan
+  persentase **fill kumulatif confirmed** terhadap `qty` target spot, bukan
+  nilai USD satu event fill. Sebelum threshold tercapai, fill parsial tetap
+  `ENTRY_PARTIAL` dan tidak di-hedge kecuali order selesai
+  (policy `wait_until_covered`).
+- `hedging.enabled: false` memulihkan perilaku lama berbasis
+  `min_partial_fill_usd` per delta fill.
+- Semua nilai numerik di-clamp ke rentang aman; `mode` dan
+  `min_order_policy` di-whitelist; `allow_min_notional_overhedge` default
+  `false` dan peringatan eksplisit bila diaktifkan.

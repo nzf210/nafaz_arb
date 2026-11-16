@@ -72,10 +72,34 @@ class EntryHedgeMixin:
         delta_val_usd = (unhedged_delta * price_idr) / usdt_rate
 
         is_complete = status in ("closed", "canceled", "cancelled", "rejected", "expired")
-        if delta_val_usd >= self.config.min_partial_fill_usd or is_complete:
+        # Cumulative spot fill percentage (spec §4.1): computed from confirmed
+        # fills against the spot target quantity, never a single fill event.
+        spot_target_qty = float(order_info.get("qty", 0.0) or 0.0)
+        cumulative_filled = float(order_info.get("filled", 0.0) or 0.0)
+        spot_fill_pct = (
+            (cumulative_filled / spot_target_qty) * 100.0
+            if spot_target_qty > 0 else 0.0
+        )
+        hedging = getattr(self.config, "hedging", None)
+        hedging_enabled = hedging is not None and getattr(hedging, "enabled", False)
+        threshold_pct = (
+            float(hedging.spot_fill_trigger_pct) if hedging_enabled else 0.0
+        )
+        threshold_reached = hedging_enabled and spot_fill_pct >= threshold_pct
+        # "wait_until_covered" policy: before the threshold activates hedging, a
+        # partial fill stays unhedged regardless of its USD value. Once active,
+        # a submission still waits until the delta covers a min-notional order.
+        hedgeable_delta = delta_val_usd >= self.config.min_partial_fill_usd
+        if hedging_enabled:
+            should_hedge = (threshold_reached and hedgeable_delta) or is_complete
+        else:
+            should_hedge = hedgeable_delta or is_complete
+        if should_hedge:
             logger.info(
                 f"[State 2 Instant Short Hedge] Fill detected: delta_qty={unhedged_delta} "
-                f"(${delta_val_usd:.2f}) on {pair_tag}. Opening Market Short on Global Futures!"
+                f"(${delta_val_usd:.2f}) on {pair_tag} "
+                f"(cumulative fill {spot_fill_pct:.1f}% / threshold {threshold_pct:.1f}%). "
+                "Opening Market Short on Global Futures!"
             )
             if getattr(self, "two_leg_coordinator", None) is not None:
                 coord = self.two_leg_coordinator

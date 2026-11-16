@@ -120,6 +120,27 @@
         "url": "",
         "key": ""
     },
+    "hedging": {
+        "enabled": true,
+        "mode": "incremental",
+        "spot": {
+            "fill_trigger_pct": 20.0
+        },
+        "futures": {
+            "target_hedge_ratio": 1.0,
+            "min_order_policy": "wait_until_covered",
+            "allow_min_notional_overhedge": false,
+            "max_overhedge_pct": 0.0
+        },
+        "execution": {
+            "hedge_on_partial_fill": true,
+            "use_cumulative_spot_fills": true,
+            "use_confirmed_futures_fills": true,
+            "prevent_duplicate_hedges": true,
+            "reconcile_unknown_orders_before_retry": true,
+            "durable_hedge_intent": true
+        }
+    },
     "executor": {
         "mock_mode": true,
         "max_order_ttl_seconds": 120,

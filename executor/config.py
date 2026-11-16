@@ -21,6 +21,69 @@ class SupabaseConfig:
     outbox_path: str = "/app/data/executor/supabase-outbox.sqlite3"
 
 @dataclass
+class HedgingConfig:
+    """Incremental futures-hedging policy (spec: spot fill threshold + incremental hedge).
+
+    The fill threshold is a percentage of the spot target quantity reached by
+    cumulative confirmed spot fills; it is a one-time activation condition for
+    an entry, after which every partial fill continues to update the hedge.
+    """
+
+    enabled: bool = True
+    mode: str = "incremental"  # only "incremental" is supported
+    spot_fill_trigger_pct: float = 20.0  # cumulative spot fill % that activates hedging
+    futures_target_hedge_ratio: float = 1.0  # futures qty per unit of unhedged spot exposure
+    futures_min_order_policy: str = "wait_until_covered"  # or "allow_min_notional"
+    futures_allow_min_notional_overhedge: bool = False
+    futures_max_overhedge_pct: float = 0.0
+    execution_hedge_on_partial_fill: bool = True
+    execution_use_cumulative_spot_fills: bool = True
+    execution_use_confirmed_futures_fills: bool = True
+    execution_prevent_duplicate_hedges: bool = True
+    execution_reconcile_unknown_orders_before_retry: bool = True
+    execution_durable_hedge_intent: bool = True
+
+    _MODES = ("incremental",)
+    _MIN_ORDER_POLICIES = ("wait_until_covered", "allow_min_notional")
+
+    def sanitize(self) -> list:
+        warnings = []
+        if self.mode not in self._MODES:
+            warnings.append(
+                f"hedging.mode={self.mode!r} unsupported; using 'incremental'"
+            )
+            self.mode = "incremental"
+        for field_name, minimum, maximum, fallback in (
+            ("spot_fill_trigger_pct", 0.0, 100.0, 20.0),
+            ("futures_target_hedge_ratio", 0.0, 10.0, 1.0),
+            ("futures_max_overhedge_pct", 0.0, 100.0, 0.0),
+        ):
+            raw = getattr(self, field_name)
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                value = None
+            if value is None or value != value:  # unparseable or NaN
+                value = fallback
+            value = max(minimum, min(maximum, value))
+            if value != raw:
+                warnings.append(f"hedging.{field_name}={raw!r} out of range, using {value!r}")
+            setattr(self, field_name, value)
+        if self.futures_min_order_policy not in self._MIN_ORDER_POLICIES:
+            warnings.append(
+                f"hedging.futures_min_order_policy={self.futures_min_order_policy!r} "
+                "unsupported; using 'wait_until_covered'"
+            )
+            self.futures_min_order_policy = "wait_until_covered"
+        if self.futures_allow_min_notional_overhedge:
+            warnings.append(
+                "hedging.futures_allow_min_notional_overhedge=true permits deliberate "
+                "overhedge up to futures_max_overhedge_pct; confirm this is intentional"
+            )
+        return warnings
+
+
+@dataclass
 class ExecutorConfig:
     redis_url: str = "redis://localhost:6380/0"
     max_stale_latency_ms: int = 2500
@@ -102,6 +165,8 @@ class ExecutorConfig:
     local_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
     global_credentials: ExchangeCredentials = field(default_factory=ExchangeCredentials)
     supabase: SupabaseConfig = field(default_factory=SupabaseConfig)
+    # Incremental futures-hedging policy for spot entry fills.
+    hedging: HedgingConfig = field(default_factory=HedgingConfig)
     # Direct PostgreSQL DSN for transactional global STOP and submit fencing.
     postgres_dsn: str = ""
 
@@ -203,6 +268,44 @@ class ExecutorConfig:
                 self.supabase.outbox_path = str(
                     sup_data.get("outbox_path", self.supabase.outbox_path)
                 )
+
+            # Load incremental-hedging policy if present
+            if "hedging" in data and isinstance(data["hedging"], dict):
+                hed = data["hedging"]
+                hed_spot = hed.get("spot", {}) if isinstance(hed.get("spot"), dict) else {}
+                hed_fut = hed.get("futures", {}) if isinstance(hed.get("futures"), dict) else {}
+                hed_exec = hed.get("execution", {}) if isinstance(hed.get("execution"), dict) else {}
+                cfg_map = {
+                    "enabled": ("enabled", bool),
+                    "mode": ("mode", str),
+                    "spot": {"fill_trigger_pct": ("spot_fill_trigger_pct", float)},
+                    "futures": {
+                        "target_hedge_ratio": ("futures_target_hedge_ratio", float),
+                        "min_order_policy": ("futures_min_order_policy", str),
+                        "allow_min_notional_overhedge": ("futures_allow_min_notional_overhedge", bool),
+                        "max_overhedge_pct": ("futures_max_overhedge_pct", float),
+                    },
+                    "execution": {
+                        "hedge_on_partial_fill": ("execution_hedge_on_partial_fill", bool),
+                        "use_cumulative_spot_fills": ("execution_use_cumulative_spot_fills", bool),
+                        "use_confirmed_futures_fills": ("execution_use_confirmed_futures_fills", bool),
+                        "prevent_duplicate_hedges": ("execution_prevent_duplicate_hedges", bool),
+                        "reconcile_unknown_orders_before_retry": ("execution_reconcile_unknown_orders_before_retry", bool),
+                        "durable_hedge_intent": ("execution_durable_hedge_intent", bool),
+                    },
+                }
+                for top_key, spec in cfg_map.items():
+                    if top_key in ("spot", "futures", "execution"):
+                        section = hed.get(top_key, {})
+                        if not isinstance(section, dict):
+                            continue
+                        for src_key, (attr, conv) in spec.items():
+                            if src_key in section:
+                                setattr(self.hedging, attr, conv(section[src_key]))
+                    else:
+                        attr, conv = spec
+                        if top_key in hed:
+                            setattr(self.hedging, attr, conv(hed[top_key]))
         except Exception as e:
             print(f"warning: error loading config file: {e}")
 
@@ -498,6 +601,9 @@ class ExecutorConfig:
                 limit = 2
             clean_limits[name] = limit
         self.max_open_spot_orders_per_exchange = clean_limits
+
+        # Hedging policy validation (threshold bounds, policy whitelist).
+        warnings.extend(self.hedging.sanitize())
 
         if self.allocation_per_pair <= 0:
             warnings.append("allocation_per_pair must be > 0, using 0.5")
