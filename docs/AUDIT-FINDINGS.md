@@ -339,7 +339,7 @@ Source head [b9716184e23c](https://github.com/nzf210/nafaz_arb/commit/b9716184e2
 ## Order-mutation and exposure-path audit — 2026-11-16
 
 **Audited source baseline:** `ea44caf051de4a435c5e40a8e36e288438c86063`  
-**Remediation/test head:** `7aa7b9b30732b06ef74ffce758f0143325377ddd`  
+**Remediation/test head:** `f113e79c1ef3997a872c1ebf6517f9b55eb475fe`  
 **Scope:** all 100 `executor/**/*.py` source files and all 69 Go source files at the audited baseline; focused review of the entry/hedge, adapter, recovery, STOP, rollback, exit, and force-close call chains.
 
 ### Call-site inventory and classification
@@ -380,7 +380,7 @@ Risk-reducing spot SELL and futures reduceOnly BUY calls do not use the entry le
 
 ### Verification and remaining release gates
 
-GitHub Actions run [43824720908](https://github.com/nzf210/nafaz_arb/actions/runs/43824720908) for source/test head `7aa7b9b` completed successfully: Python executor suite, Go tests/race/vet, PostgreSQL schema/idempotency/RLS checks, real disposable-PostgreSQL multi-process submit-disconnect integration, and Docker scanner/executor builds all passed. The new regression file is included in the passing Python job. No local VPS or CEX sandbox test was performed.
+GitHub Actions run [43825126487](https://github.com/nzf210/nafaz_arb/actions/runs/43825126487) for source/test head `f113e79` completed successfully: Python executor suite, Go tests/race/vet, PostgreSQL schema/idempotency/RLS checks, real disposable-PostgreSQL multi-process submit-disconnect integration, and Docker scanner/executor builds all passed. The new regression file is included in the passing Python job. No local VPS or CEX sandbox test was performed.
 
 Still OPEN:
 - Venue contract validation for each configured CEX: client-ID idempotency, exact-ID visibility, lookup eventual consistency, partial/pending hedge, cancel/fill race, and reduceOnly semantics.
@@ -390,3 +390,12 @@ Still OPEN:
 - De-risking remains blocked on non-connectivity integrity failures such as missing Global STOP control row/schema/permission errors; operator repair is required rather than silently bypassing a corrupt authority.
 
 **Status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+
+### Additional status-transition hardening — 2026-11-16
+
+| ID | Finding | Remediation | Status |
+|---|---|---|---|
+| R-42 | `mark_submit_aborted` used the generic transition predicate and could technically change SUBMITTING/UNKNOWN to ABORTED, despite its contract meaning “venue boundary was never crossed.” Current callers were guarded, but the service API itself did not enforce the invariant. | Restrict ABORTED SQL transition to `status='PREPARED'` only. SUBMITTING/UNKNOWN can no longer be cleared by a pre-submit abort path; a lost boundary/fence race remains unresolved and requires reconciliation. | FIXED; regression verifies UPDATE 0 is rejected for an unresolved attempt |
+
+Latest source/test CI [43825126487](https://github.com/nzf210/nafaz_arb/actions/runs/43825126487) completed successfully for `f113e79`; all four jobs passed, including the full Python executor job and disposable PostgreSQL multi-process disconnect integration.
