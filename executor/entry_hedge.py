@@ -414,10 +414,12 @@ class EntryHedgeMixin:
                 order_info["hedge_waiting_for_coverage"] = True
                 return None, {}, None, 0.0
             order_info["hedge_claim_key"] = claim["claim_key"]
-        hedge_coid = str(
-            order_info.get("pending_hedge_client_order_id") or ""
-        ) or (
-            claim["hedge_client_order_id"] if claim else ""
+        # A fresh durable claim owns its deterministic client id. Never
+        # reuse the previous generation's pending id after a deferred fill;
+        # doing so would make the claim row point at a different venue order.
+        hedge_coid = (
+            str(claim["hedge_client_order_id"])
+            if claim else str(order_info.get("pending_hedge_client_order_id") or "")
         ) or build_client_order_id(
             pair_tag, "hedge", self._next_order_seq()
         )
