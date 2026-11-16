@@ -65,27 +65,28 @@ Supabase remote is an explicit opt-in target.
 
 Prerequisites for local PostgreSQL:
 
-- PostgreSQL is running and accepting TCP connections on the VPS (default
-  `127.0.0.1:5432`).
+- The PostgreSQL Docker container is running and accessible through the host
+  Docker CLI. The default container is `wch-stg-postgres`; override it with
+  `NAFAZ_PG_CONTAINER` when the container has another name.
 - The target database already exists (default database name: `nafaz`).
 - The connection user can inspect the schema, create tables/extensions, and
-  apply the reviewed migrations.
+  apply the reviewed migrations. By default the runner reads
+  `POSTGRES_USER` from the container environment; override with `PGUSER`.
 - PostgreSQL roles `anon`, `authenticated`, and `service_role` already
   exist. The runner deliberately does not create or alter security roles.
-- `psql`, `pg_isready`, `pg_dump`, `pg_restore`, `sha256sum`, and
-  `flock` are installed.
+- `psql`, `pg_isready`, `pg_dump`, and `pg_restore` must exist **inside
+  the PostgreSQL container**. On the VPS host only `docker`, `sha256sum`,
+  `flock`, and the standard shell utilities are required.
 
 The runner reads a simple repository-root `.env` file by default (or the
-path in `NAFAZ_ENV_FILE`). It reads only the supported migration connection
-variables and does **not** execute the file as shell code. Variables already
-present in the process environment take precedence. Example:
+path in `NAFAZ_ENV_FILE`). It reads only the supported migration variables
+and does **not** execute the file as shell code. Variables already present in
+the process environment take precedence. Example:
 
 ```dotenv
-PGHOST=127.0.0.1
-PGPORT=5432
+NAFAZ_PG_CONTAINER=wch-stg-postgres
 PGDATABASE=nafaz
 PGUSER=postgres
-PGPASSWORD="replace-with-your-local-postgres-password"
 MIGRATION_BACKUP_DIR=/var/backups/nafaz-db-migrations
 ```
 
@@ -102,12 +103,14 @@ Alternatively, use a protected `.pgpass` file or a secret manager instead of
 storing the password in `.env`. Do not paste real credentials into chat or
 commit them. The runner does not print password values.
 
-Dry-run checks the local server identity, role prerequisites, existing
-migration ledger, and pending migration checksums. It makes no schema changes.
-If NAFAZ tables already exist but the runner's migration ledger does not, it
-stops rather than replaying the baseline over an unknown existing installation.
-Existing installations must be schema-reviewed and explicitly baseline-adopted
-before this runner can manage their migration history.
+Dry-run checks the selected container identity, database/user, role
+prerequisites, existing migration ledger, and pending migration checksums. It
+makes no schema changes. For a fresh database with no public tables and no
+ledger, it lists the complete migration chain as pending. If any public table
+already exists but the ledger does not, it stops rather than replaying the
+baseline over an unknown existing installation. Existing installations must
+be schema-reviewed and explicitly baseline-adopted before this runner can
+manage their migration history.
 
 After reviewing the target and pending files, apply with:
 
@@ -115,10 +118,12 @@ After reviewing the target and pending files, apply with:
 bash scripts/vps-migrate.sh --apply
 ```
 
-Apply mode first creates and verifies a full custom-format `pg_dump` archive
-under `/var/backups/nafaz-db-migrations/` (override with
-`MIGRATION_BACKUP_DIR`), then applies each pending migration in its own
-transaction and records its SHA-256 checksum in
+Apply mode runs `pg_dump` and `pg_restore` inside the PostgreSQL container,
+while streaming the custom-format backup to the VPS host. It creates and
+verifies the archive under `/var/backups/nafaz-db-migrations/` (override with
+`MIGRATION_BACKUP_DIR`), then streams each pending SQL file into the
+container and applies it in its own transaction. The runner records each
+migration's SHA-256 checksum in
 `public.nafaz_schema_migrations`. A changed checksum for an already-applied
 migration causes a hard stop. No application containers or services are
 restarted. A successful archive listing is not a tested restore; protect the
