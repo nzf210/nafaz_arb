@@ -314,6 +314,7 @@ class EngineEntrySubmissionMixin:
         submission_started = False
         submit_attempt_acknowledged = False
         entry_coid = ""
+        pending_entry_record = None
         try:
             logger.info(
                 f"[State 1] Placing Maker Limit Buy on {pair_info.local_exchange} for {pair_info.local_symbol}: "
@@ -369,11 +370,40 @@ class EngineEntrySubmissionMixin:
                     amount_spec=pair_info.local_amount_spec.to_dict(),
                 )
             ip_ban_stop_persistence_failed = False
+
+            async def _persist_pending_entry_before_unlock(accepted_order):
+                nonlocal pending_entry_record
+                if pending_entry_record is not None:
+                    return
+                if not isinstance(accepted_order, dict) or not accepted_order.get("id"):
+                    return
+                pending_entry_record = {
+                    "order_id": str(accepted_order["id"]),
+                    "client_order_id": entry_coid,
+                    **self._pending_entry_record(
+                        pair_info, snapshot, directives, payload,
+                        buy_price_idr, buy_qty, actual_cost_usdt, placed_time,
+                    ),
+                }
+                self.states[pair_tag] = PositionState.ENTRY_PENDING
+                self.pending_entry_orders[pair_tag] = pending_entry_record
+                await self._persist_pending_entry(
+                    pair_tag,
+                    pending_entry_record,
+                    strict=not bool(getattr(self.config, "mock_mode", False)),
+                )
+
+            async def _pair_admission_guard():
+                return not await self._has_active_or_pending_position(pair_tag)
+
             try:
                 if self.global_stop is not None:
                     ip_ban_state = None
                     try:
-                        async with self.global_stop.order_submit_fence(client_order_id=entry_coid) as fence_conn:
+                        async with self.global_stop.order_submit_fence(
+                            client_order_id=entry_coid,
+                            pre_submit_guard=_pair_admission_guard,
+                        ) as fence_conn:
                             submission_started = True
                             try:
                                 order = await self.client.place_local_limit_buy(
@@ -409,6 +439,7 @@ class EngineEntrySubmissionMixin:
                                             "CRITICAL: failed to persist CEX IP-ban STOP inside submit fence"
                                         )
                                 raise
+                            await _persist_pending_entry_before_unlock(order)
                     finally:
                         if ip_ban_state is not None:
                             await self.global_stop.notify_state(ip_ban_state)
@@ -423,6 +454,7 @@ class EngineEntrySubmissionMixin:
                         client_order_id=entry_coid,
                         amount_spec=pair_info.local_amount_spec,
                     )
+                    await _persist_pending_entry_before_unlock(order)
             except Exception as submit_error:
                 if ip_ban_stop_persistence_failed:
                     # Never let an eventually-consistent client-id lookup retire
@@ -483,6 +515,11 @@ class EngineEntrySubmissionMixin:
                     "[State 1] recovered spot order %s by client id after lost acknowledgement",
                     entry_coid,
                 )
+
+            # A lost-ACK lookup occurs after the original fence has unwound.
+            # Keep SUBMITTING unresolved while recreating the shared pair marker.
+            if pending_entry_record is None:
+                await _persist_pending_entry_before_unlock(order)
 
             if self.global_stop is not None:
                 try:
@@ -552,18 +589,6 @@ class EngineEntrySubmissionMixin:
                 local_amount_spec=pair_info.local_amount_spec,
                 global_amount_spec=pair_info.global_amount_spec,
                 recovery_context=recovery_context,
-            )
-            self.states[pair_tag] = PositionState.ENTRY_PENDING
-            self.pending_entry_orders[pair_tag] = {
-                "order_id": order_id,
-                "client_order_id": entry_coid,
-                **self._pending_entry_record(
-                    pair_info, snapshot, directives, payload,
-                    buy_price_idr, buy_qty, actual_cost_usdt, placed_time,
-                ),
-            }
-            await self._persist_pending_entry(
-                pair_tag, self.pending_entry_orders[pair_tag]
             )
             if registered is None:
                 await self._mark_order_submission_ambiguous(
