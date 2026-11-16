@@ -188,6 +188,13 @@ class RecoveryAdoptionMixin:
         amount_spec: Any,
     ) -> bool:
         """Reconciles an already-terminal order discovered during the sweep."""
+        if record.order_role == OrderRole.HEDGE.value:
+            # Hedge recovery owns its own finalization. Do not retire the
+            # durable record until both the Spot watermark and claim state are
+            # persisted successfully.
+            return await self._reconcile_recovered_entry_hedge(
+                record, order, pair_tag
+            )
         await self.order_registry.register(record)
         await self.order_registry.retire(record)
         if record.order_role == OrderRole.ENTRY.value:
@@ -197,10 +204,6 @@ class RecoveryAdoptionMixin:
         if record.order_role == OrderRole.EXIT_SPOT.value:
             return await self._finalize_terminal_spot_exit(
                 record, pair_tag, amount_spec
-            )
-        if record.order_role == OrderRole.HEDGE.value:
-            return await self._reconcile_recovered_entry_hedge(
-                record, order, pair_tag
             )
         if record.order_role in ACKNOWLEDGED_EXIT_ROLES:
             logger.info(
@@ -312,6 +315,31 @@ class RecoveryAdoptionMixin:
             parent, hedge_record, filled
         )
         await self._sync_live_parent_hedge_watermark(pair_tag, parent)
+
+        claim_key = str(context.get("hedge_claim_key") or "")
+        if claim_key:
+            claims_service = getattr(self, "hedge_claims", None)
+            confirmed = bool(
+                claims_service is not None
+                and await claims_service.mark_confirmed(claim_key, filled)
+            )
+            if not confirmed:
+                await self.order_registry.mark_pending_recovery(
+                    hedge_record.local_order_id,
+                    "venue fill is confirmed but durable hedge claim confirmation failed",
+                )
+                self._halt_exposure_scope(
+                    pair_tag or parent_exchange,
+                    "recovered hedge claim confirmation failed",
+                )
+                self._refresh_entry_gate()
+                logger.critical(
+                    "[Recovery] hedge %s is filled but claim %s is not confirmed; "
+                    "order record retained and new entries blocked",
+                    hedge_record.client_order_id, claim_key,
+                )
+                return False
+
         await self._finalize_recovered_hedge_record(
             hedge_record, venue_order, filled, hedge_key, pair_tag, parent
         )
@@ -376,8 +404,29 @@ class RecoveryAdoptionMixin:
             return await self._reconcile_recovered_entry_hedge(
                 hedge, venue_order, pair_tag
             )
-        # A confirmed zero-fill terminal hedge is safe to retire. The spot
-        # fill handler below may then place the hedge once.
+        # A confirmed zero-fill terminal hedge is safe to release, but its
+        # durable claim must transition out of SUBMITTED first. Otherwise a
+        # crash/restart leaves the next cumulative fill permanently blocked.
+        context = hedge.recovery_context or {}
+        claim_key = str(context.get("hedge_claim_key") or "")
+        if claim_key:
+            claims_service = getattr(self, "hedge_claims", None)
+            released = bool(
+                claims_service is not None
+                and await claims_service.mark_zero_fill_terminal(
+                    claim_key, "exchange confirmed terminal order with zero fill"
+                )
+            )
+            if not released:
+                await self.order_registry.mark_pending_recovery(
+                    hedge.local_order_id,
+                    "terminal zero-fill order is verified but durable claim release failed",
+                )
+                self._halt_exposure_scope(
+                    pair_tag or hedge.exchange,
+                    "terminal zero-fill hedge claim release failed",
+                )
+                return False
         await self.order_registry.register(hedge)
         await self.order_registry.retire(hedge)
         await self.order_registry.clear_pending_recovery(hedge.local_order_id)
