@@ -447,27 +447,131 @@ class ForceCloseLegMixin:
             )
         return filled_qty, exit_price
 
+    async def _adopt_existing_force_close_spot(
+        self, pair_key: str, pos, client_order_id: str
+    ) -> float:
+        """Adopt an earlier spot liquidation; never mint a second ID while uncertain."""
+        lookup = getattr(self.client, "fetch_local_order_by_client_id", None)
+        if not callable(lookup):
+            logger.critical(
+                "[Force Close] exact client-ID lookup is unavailable for prior spot liquidation %s",
+                client_order_id,
+            )
+            return 0.0
+        try:
+            order = await lookup(
+                client_order_id, pos.symbol, pos.local_amount_spec
+            )
+        except Exception:
+            logger.exception(
+                "[Force Close] exact client-ID lookup failed for prior spot liquidation %s",
+                client_order_id,
+            )
+            return 0.0
+        if not isinstance(order, dict) or not order.get("id"):
+            logger.critical(
+                "[Force Close] prior spot liquidation %s is not visible yet; "
+                "refusing a new client ID while venue history may be eventually consistent",
+                client_order_id,
+            )
+            return 0.0
+
+        await self._record_force_close_spot_order(
+            pair_key, pos, order, client_order_id
+        )
+        status = str(order.get("status") or "").lower()
+        terminal = status in {
+            "closed", "filled", "canceled", "cancelled", "expired", "rejected",
+        }
+        if not terminal:
+            logger.critical(
+                "[Force Close] prior spot liquidation %s remains non-terminal (%s); "
+                "refusing duplicate SELL",
+                client_order_id, status or "unknown",
+            )
+            return 0.0
+        filled_qty, exit_price = await self._verified_force_close_spot_fill(
+            pair_key, pos, order
+        )
+        if (
+            filled_qty + max(1e-12, pos.qty * 1e-8) < pos.qty
+            or exit_price <= 0
+        ):
+            logger.critical(
+                "[Force Close] prior spot liquidation %s is terminal but not a "
+                "verified full fill (requested=%s filled=%s); manual reconciliation required",
+                client_order_id, pos.qty, filled_qty,
+            )
+            return 0.0
+        return exit_price
+
     async def _liquidate_spot_leg(self, pair_key: str, pos) -> float:
         """
-        Liquidates the local spot leg. Returns the realized exit price in IDR
-        only if the order actually filled. Never falls back to entry price.
+        Liquidates the local spot leg. Returns the realized exit price only after
+        a verified full fill. LIVE retries reuse a position-bound client ID and
+        adopt any prior intent before another create-order call.
         """
         logger.warning(f"[Force Close] Selling {pos.qty} {pos.symbol} spot leg...")
+        is_mock = bool(getattr(self.config, "mock_mode", False))
+        opened_at_ms = int(getattr(pos, "opened_at_ms", 0) or 0)
+        if not is_mock and opened_at_ms <= 0:
+            logger.critical(
+                "[Force Close] refusing LIVE spot liquidation without stable "
+                "position opened_at_ms for deterministic client-ID recovery (%s)",
+                pair_key,
+            )
+            return 0.0
+
+        if not is_mock:
+            registry = getattr(self, "order_registry", None)
+            if registry is None:
+                logger.critical(
+                    "[Force Close] LIVE spot liquidation requires the durable order registry (%s)",
+                    pair_key,
+                )
+                return 0.0
+            force_seq = (opened_at_ms % 1_000_000_000) or 1
+        else:
+            registry = None
+            force_seq = self._next_order_seq()
+
+        client_order_id = build_client_order_id(
+            pair_key, "force-liq", force_seq
+        )
+        if not is_mock:
+            try:
+                prior_intent = await registry.find_by_client_id(
+                    pos.local_exchange, client_order_id
+                )
+            except Exception:
+                logger.exception(
+                    "[Force Close] cannot inspect prior spot liquidation %s; refusing resubmit",
+                    client_order_id,
+                )
+                return 0.0
+            if prior_intent is not None:
+                return await self._adopt_existing_force_close_spot(
+                    pair_key, pos, client_order_id
+                )
+
         try:
-            seq = self._next_order_seq()
-            client_order_id = build_client_order_id(pair_key, "force-liq", seq)
             await self._register_order_intent(
                 pair_key, client_order_id,
                 exchange=pos.local_exchange, market_type="spot",
                 symbol=pos.symbol, role=OrderRole.FORCE_CLOSE.value,
                 side="sell", order_type="market", price=0.0,
                 quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
-                required=False,
+                recovery_context={
+                    "position_opened_at_ms": opened_at_ms,
+                    "force_close_leg": "spot",
+                },
+                required=not is_mock,
             )
+
             async def _fenced_spot_sell():
-                # Each attempt takes the shared serialization lock so a force
-                # close cannot interleave with a STOP or another submit. STOP
-                # itself never blocks a liquidation.
+                # Each attempt takes the shared serialization lock when available.
+                # STOP never rejects de-risking; DB connectivity loss is an
+                # explicitly logged unfenced emergency-close fallback.
                 async with derisk_fence(self, client_order_id=client_order_id):
                     return await self.client.place_local_market_sell(
                         pos.symbol,
@@ -487,11 +591,13 @@ class ForceCloseLegMixin:
                 await self._record_force_close_spot_order(
                     pair_key, pos, spot_order, client_order_id
                 )
+                status = str(spot_order.get("status") or "").lower()
                 filled_qty, exit_price = await self._verified_force_close_spot_fill(
                     pair_key, pos, spot_order
                 )
                 if (
-                    filled_qty + max(1e-12, pos.qty * 1e-8) >= pos.qty
+                    status in ("closed", "filled")
+                    and filled_qty + max(1e-12, pos.qty * 1e-8) >= pos.qty
                     and exit_price > 0
                 ):
                     logger.info(
