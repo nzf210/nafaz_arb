@@ -27,6 +27,11 @@ class _FakeConn:
     async def fetchrow(self, query, *args):
         if "select status, confirmed_qty" in query:
             row = self.table.get(args[0])
+            if row is None or row.get("hedge_client_order_id") != args[2]:
+                return None
+            return dict(row)
+        if "select status, version, hedge_client_order_id" in query:
+            row = self.table.get(args[0])
             return dict(row) if row is not None else None
         if "select status" in query and "where claim_key = $1" in query:
             row = self.table.get(args[0])
@@ -66,16 +71,24 @@ class _FakeConn:
         if "set status = 'ABANDONED'" in query:
             row = self.table.get(args[0])
             allowed = ("CLAIMED", "SUBMITTED") if "status in" in query else ("CLAIMED",)
-            if row is None or row["status"] not in allowed:
+            if (
+                row is None
+                or row["status"] not in allowed
+                or row.get("hedge_client_order_id") != args[1]
+            ):
                 return "UPDATE 0"
             row["status"] = "ABANDONED"
-            if "hedge_client_order_id = $2" in query:
-                row["hedge_client_order_id"] = args[1]
+            if "hedge_client_order_id = $3" in query:
+                row["hedge_client_order_id"] = args[2]
             row["version"] = int(row["version"]) + 1
             return "UPDATE 1"
         if "set status = 'CONFIRMED'" in query:
             row = self.table.get(args[0])
-            if row is None or row["status"] not in ("CLAIMED", "SUBMITTED"):
+            if (
+                row is None
+                or row["status"] not in ("CLAIMED", "SUBMITTED")
+                or row.get("hedge_client_order_id") != args[2]
+            ):
                 return "UPDATE 0"
             row["status"] = "CONFIRMED"
             row["confirmed_qty"] = max(
@@ -85,7 +98,11 @@ class _FakeConn:
             return "UPDATE 1"
         if "set status = $2" in query:
             row = self.table.get(args[0])
-            if row is None or row["status"] != "CLAIMED":
+            if (
+                row is None
+                or row["status"] != "CLAIMED"
+                or row.get("hedge_client_order_id") != args[2]
+            ):
                 return "UPDATE 0"
             row["status"] = args[1]
             row["version"] = int(row["version"]) + 1
@@ -179,7 +196,7 @@ async def test_new_fill_generation_waits_for_previous_claim_resolution():
     later_kwargs = {**_claim_kwargs(), "cumulative_spot_filled": 0.006}
     assert await worker.claim_generation(**later_kwargs) is None
 
-    assert await worker.mark_confirmed(first["claim_key"], 0.004)
+    assert await worker.mark_confirmed(first["claim_key"], 0.004, first["hedge_client_order_id"])
     second = await worker.claim_generation(**later_kwargs)
     assert second is not None
     assert second["claim_key"] != first["claim_key"]
@@ -192,7 +209,7 @@ async def test_abandoned_pre_submit_claim_allows_later_fill_generation():
 
     first = await worker.claim_generation(**_claim_kwargs())
     assert first is not None
-    assert await worker.mark_abandoned(first["claim_key"], "minimum notional")
+    assert await worker.mark_abandoned(first["claim_key"], first["hedge_client_order_id"], "minimum notional")
 
     second = await worker.claim_generation(**{
         **_claim_kwargs(), "cumulative_spot_filled": 0.006,
@@ -209,7 +226,7 @@ async def test_abandoned_generation_can_be_reclaimed_with_same_stable_client_id(
 
     first = await worker.claim_generation(**_claim_kwargs())
     assert first is not None
-    assert await worker.mark_abandoned(first["claim_key"], "pre-submit validation")
+    assert await worker.mark_abandoned(first["claim_key"], first["hedge_client_order_id"], "pre-submit validation")
 
     retry = await worker.claim_generation(**_claim_kwargs())
     assert retry is not None
@@ -225,10 +242,10 @@ async def test_confirmed_claim_confirmation_is_idempotent():
     claim = await worker.claim_generation(**_claim_kwargs())
     assert claim is not None
 
-    assert await worker.mark_confirmed(claim["claim_key"], 0.004)
+    assert await worker.mark_confirmed(claim["claim_key"], 0.004, claim["hedge_client_order_id"])
     # Replayed recovery confirmation succeeds without double-counting.
     assert await worker.mark_confirmed(claim["claim_key"], 0.004)
-    assert not await worker.mark_confirmed(claim["claim_key"], 0.005)
+    assert not await worker.mark_confirmed(claim["claim_key"], 0.005, claim["hedge_client_order_id"])
     row = table[claim["claim_key"]]
     assert row["confirmed_qty"] == pytest.approx(0.004)
 
@@ -239,10 +256,11 @@ async def test_terminal_zero_fill_releases_submitted_claim():
     worker = _service(table)
     claim = await worker.claim_generation(**_claim_kwargs())
     assert claim is not None
-    assert await worker.mark_submitted(claim["claim_key"])
+    assert await worker.mark_submitted(claim["claim_key"], claim["hedge_client_order_id"])
 
     assert await worker.mark_zero_fill_terminal(
-        claim["claim_key"], "exchange confirmed canceled with zero fill"
+        claim["claim_key"], claim["hedge_client_order_id"],
+        "exchange confirmed canceled with zero fill"
     )
     assert table[claim["claim_key"]]["status"] == "ABANDONED"
     rotated_client_id = table[claim["claim_key"]]["hedge_client_order_id"]
@@ -255,10 +273,13 @@ async def test_terminal_zero_fill_releases_submitted_claim():
     assert retry["claim_key"] == claim["claim_key"]
     assert retry["hedge_client_order_id"] == rotated_client_id
 
-    # Re-running recovery after a crash is idempotent and does not rotate again.
+    # Replaying the previous attempt's terminal result after a retry has
+    # started must not abandon or rotate the new attempt.
     assert await worker.mark_zero_fill_terminal(
-        claim["claim_key"], "replayed terminal recovery"
+        claim["claim_key"], claim["hedge_client_order_id"],
+        "replayed terminal recovery"
     )
+    assert table[claim["claim_key"]]["status"] == "CLAIMED"
     assert table[claim["claim_key"]]["hedge_client_order_id"] == rotated_client_id
 
 @pytest.mark.asyncio
@@ -295,9 +316,9 @@ async def test_two_full_executors_same_spot_order_single_intent():
     assert claim_b is None
 
     # Only executor A may advance the claim to SUBMITTED.
-    assert await executor_a.mark_submitted(claim_a["claim_key"])
+    assert await executor_a.mark_submitted(claim_a["claim_key"], claim_a["hedge_client_order_id"])
     # B cannot advance a claim it does not hold (already past CLAIMED).
-    assert not await executor_b.mark_submitted(claim_a["claim_key"])
+    assert not await executor_b.mark_submitted(claim_a["claim_key"], claim_a["hedge_client_order_id"])
 
     # Exactly one claim row exists for the generation.
     assert len(table) == 1
