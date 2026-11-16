@@ -206,6 +206,10 @@ class EntryHedgeMixin:
             raise GlobalStopError(
                 "LIVE futures hedge requires initialized PostgreSQL PREPARED/SUBMITTING fencing"
             )
+        # This flag means the venue create-order boundary was actually crossed,
+        # not merely that an intent is being prepared. A PREPARED/STOP failure
+        # must still allow the caller to unwind the already-filled spot leg.
+        order_info["hedge_submit_started"] = False
         hedge_coid = str(
             order_info.get("pending_hedge_client_order_id") or ""
         ) or build_client_order_id(
@@ -290,7 +294,6 @@ class EntryHedgeMixin:
             recovery_context=recovery_context,
             required=True,
         )
-        order_info["hedge_submit_started"] = True
         global_stop = getattr(self, "global_stop", None)
         if global_stop is not None:
             await global_stop.prepare_submit_attempt(
@@ -309,6 +312,7 @@ class EntryHedgeMixin:
         ip_ban_stop_persistence_failed = False
         try:
             if global_stop is None:
+                order_info["hedge_submit_started"] = True
                 short_order = await self.client.open_global_short_market(
                     global_symbol,
                     futures_hedge_qty,
@@ -322,6 +326,7 @@ class EntryHedgeMixin:
                     async with global_stop.order_submit_fence(
                         client_order_id=hedge_coid
                     ) as fence_conn:
+                        order_info["hedge_submit_started"] = True
                         try:
                             short_order = await self.client.open_global_short_market(
                                 global_symbol,
