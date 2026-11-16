@@ -114,3 +114,105 @@ jobs:
         run: docker build -f Dockerfile -t nafaz-scanner:ci .
       - name: Build executor image
         run: docker build -f Dockerfile.executor -t nafaz-executor:ci .
+
+  vps-migration-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start isolated Docker PostgreSQL
+        run: |
+          docker run --detach --name nafaz-migration-pg \
+            --env POSTGRES_USER=postgres \
+            --env POSTGRES_DB=nafaz \
+            --env POSTGRES_HOST_AUTH_METHOD=trust \
+            postgres:16
+          ready=false
+          for attempt in $(seq 1 30); do
+            if docker exec nafaz-migration-pg pg_isready -U postgres -d nafaz >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          [[ "$ready" == true ]]
+          docker exec nafaz-migration-pg psql -U postgres -d nafaz -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE anon NOLOGIN;" \
+            -c "CREATE ROLE authenticated NOLOGIN;" \
+            -c "CREATE ROLE service_role NOLOGIN BYPASSRLS;"
+      - name: Dry-run a fresh database without host PostgreSQL tools
+        env:
+          NAFAZ_ENV_FILE: /dev/null
+          NAFAZ_PG_CONTAINER: nafaz-migration-pg
+          PGDATABASE: nafaz
+          PGUSER: postgres
+          MIGRATION_BACKUP_DIR: /tmp/nafaz-migration-runner-backups
+        run: |
+          output="$(bash scripts/vps-migrate.sh --dry-run 2>&1)" || {
+            printf '%s\n' "$output"
+            exit 1
+          }
+          printf '%s\n' "$output"
+          grep -q "fresh installation" <<< "$output"
+          grep -q "DRY-RUN:" <<< "$output"
+          ledger="$(docker exec nafaz-migration-pg psql -U postgres -d nafaz -Atqc \
+            "select to_regclass('public.nafaz_schema_migrations') is not null")"
+          [[ "$ledger" == "f" ]]
+      - name: Apply migrations through Docker and verify ledger
+        env:
+          NAFAZ_ENV_FILE: /dev/null
+          NAFAZ_PG_CONTAINER: nafaz-migration-pg
+          PGDATABASE: nafaz
+          PGUSER: postgres
+          MIGRATION_BACKUP_DIR: /tmp/nafaz-migration-runner-backups
+        run: |
+          bash scripts/vps-migrate.sh --apply
+          expected="$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | wc -l)"
+          actual="$(docker exec nafaz-migration-pg psql -U postgres -d nafaz -Atqc \
+            "select count(*) from public.nafaz_schema_migrations")"
+          [[ "$actual" == "$expected" ]]
+          backup="$(find /tmp/nafaz-migration-runner-backups -maxdepth 1 -type f -name '*.dump' -print -quit)"
+          [[ -n "$backup" && -s "$backup" ]]
+          [[ "$(stat -c '%a' "$backup")" == "600" ]]
+          [[ "$(stat -c '%a' /tmp/nafaz-migration-runner-backups)" == "700" ]]
+          echo "Applied $actual migrations; verified backup: $backup"
+      - name: Verify idempotent rerun and restore the generated backup
+        env:
+          NAFAZ_ENV_FILE: /dev/null
+          NAFAZ_PG_CONTAINER: nafaz-migration-pg
+          PGDATABASE: nafaz
+          PGUSER: postgres
+          MIGRATION_BACKUP_DIR: /tmp/nafaz-migration-runner-backups
+        run: |
+          output="$(bash scripts/vps-migrate.sh --dry-run 2>&1)"
+          printf '%s\n' "$output"
+          grep -q "already up to date" <<< "$output"
+          backup="$(find /tmp/nafaz-migration-runner-backups -maxdepth 1 -type f -name '*.dump' -print -quit)"
+          docker exec nafaz-migration-pg createdb -U postgres nafaz_restore_test
+          docker exec -i nafaz-migration-pg pg_restore -U postgres -d nafaz_restore_test \
+            --no-owner --no-acl < "$backup"
+          restored="$(docker exec nafaz-migration-pg psql -U postgres -d nafaz_restore_test -Atqc \
+            "select count(*) from public.nafaz_schema_migrations")"
+          expected="$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | wc -l)"
+          [[ "$restored" == "$expected" ]]
+      - name: Refuse an untracked existing schema without changing it
+        env:
+          NAFAZ_ENV_FILE: /dev/null
+          NAFAZ_PG_CONTAINER: nafaz-migration-pg
+          PGUSER: postgres
+        run: |
+          docker exec nafaz-migration-pg createdb -U postgres nafaz_legacy_test
+          docker exec nafaz-migration-pg psql -U postgres -d nafaz_legacy_test -v ON_ERROR_STOP=1 \
+            -c "CREATE TABLE public.existing_application_data (id integer primary key);"
+          if PGDATABASE=nafaz_legacy_test bash scripts/vps-migrate.sh --dry-run > /tmp/nafaz-legacy-guard.log 2>&1; then
+            cat /tmp/nafaz-legacy-guard.log
+            echo "Expected the runner to reject an existing schema without a migration ledger." >&2
+            exit 1
+          fi
+          grep -q "Existing public tables found" /tmp/nafaz-legacy-guard.log
+          count="$(docker exec nafaz-migration-pg psql -U postgres -d nafaz_legacy_test -Atqc \
+            "select count(*) from information_schema.tables where table_schema='public'")"
+          [[ "$count" == "1" ]]
+      - name: Remove isolated Docker PostgreSQL
+        if: always()
+        run: docker rm --force nafaz-migration-pg || true
+
