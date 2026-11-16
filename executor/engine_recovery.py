@@ -10,11 +10,62 @@ from executor.models import PositionState, ActivePosition
 from executor.pair_registry import ExchangePairKey
 from executor.helpers import PENDING_ENTRY_KEY_PREFIX, is_explicit_rate_limit_rejection
 from executor.engine_common import logger
+from executor.exchange_common import exchange_order_id_from
 
 
 
 class EngineRecoveryMixin:
     """Focused orchestration responsibilities, composed by ArbitrageEngine."""
+
+    async def _persist_reconciled_submit_order(
+        self, exchange: str, client_order_id: str, order: dict
+    ) -> None:
+        """Attach a client-id lookup result to its durable pre-submit intent.
+
+        Keep the record non-terminal until the normal order-recovery path fetches
+        the exact exchange order. This is essential when the acknowledgement was
+        lost and the found order is already terminal: terminalizing the intent
+        here would remove it from the recovery index before its Spot/Futures
+        lifecycle (including hedge-claim confirmation) is reconciled.
+        """
+        registry = getattr(self, "order_registry", None)
+        if registry is None:
+            return
+        record = await registry.find_by_client_id(exchange, client_order_id)
+        if record is None:
+            raise RuntimeError(
+                "venue order was found by client order ID but its durable order intent "
+                "is missing from the registry"
+            )
+        exchange_order_id = exchange_order_id_from(order)
+        if not exchange_order_id:
+            raise RuntimeError(
+                "venue order lookup returned no exchange order ID for durable intent"
+            )
+        record.exchange_order_id = exchange_order_id
+        record.status = "open"  # non-terminal until exact-order recovery fetches venue state
+        try:
+            filled = float(order.get("filled") or 0.0)
+            if filled < 0:
+                raise ValueError("negative filled quantity")
+            record.filled_quantity = max(
+                float(record.filled_quantity or 0.0), filled
+            )
+            requested = float(record.original_quantity or order.get("amount") or 0.0)
+            record.remaining_quantity = max(0.0, requested - record.filled_quantity)
+            average = order.get("average") or order.get("average_fill_price")
+            if average is not None and float(average) > 0:
+                record.average_fill_price = float(average)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"venue order lookup returned invalid fill metadata: {exc}"
+            ) from exc
+        venue_client_id = str(
+            order.get("clientOrderId") or order.get("client_order_id") or ""
+        )
+        if venue_client_id and venue_client_id != client_order_id:
+            record.venue_client_order_id = venue_client_id
+        await registry.register(record)
 
     async def _reconcile_durable_submit_attempts(self) -> bool:
         """Resolve exact client-id matches; keep negative/failed lookups fenced."""
@@ -46,7 +97,13 @@ class EngineRecoveryMixin:
                 order = await lookup(
                     client_order_id, symbol, attempt.get("amount_spec") or None
                 )
-                if isinstance(order, dict) and order.get("id"):
+                if isinstance(order, dict) and exchange_order_id_from(order):
+                    # Persist the exchange order ID against the original durable
+                    # intent before ACKing the global attempt. If this fails,
+                    # leave the attempt unresolved so the global fence remains.
+                    await self._persist_reconciled_submit_order(
+                        exchange, client_order_id, order
+                    )
                     await service.reconcile_submit_attempt_found(client_order_id, order)
                     logger.warning(
                         "[Submit Recovery] found unresolved venue order %s on %s; "
