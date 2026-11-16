@@ -6,6 +6,7 @@ from typing import Optional
 
 from executor.models import ExecutorPayload
 from executor.pair_registry import ExchangePairKey
+from executor.helpers import PENDING_ENTRY_KEY_PREFIX
 from executor.engine_common import logger
 
 
@@ -148,10 +149,24 @@ class EngineSignalMixin:
         return await self._has_active_or_pending_position(pair_tag)
 
     async def _has_active_or_pending_position(self, pair_tag: str) -> bool:
-        """True when this pair already has a live position or an order in flight."""
-        if await self.redis.exists(f"arb:active_pos:{pair_tag}"):
+        """True when shared Redis or local state already owns this pair's entry."""
+        if pair_tag in self.active_positions or pair_tag in self.pending_entry_orders:
             return True
-        return pair_tag in self.active_positions or pair_tag in self.pending_entry_orders
+        if self.redis is None:
+            # LIVE pair admission cannot be proven without the shared state store.
+            return not bool(getattr(self.config, "mock_mode", False))
+        try:
+            if await self.redis.exists(f"arb:active_pos:{pair_tag}"):
+                return True
+            if await self.redis.exists(PENDING_ENTRY_KEY_PREFIX + pair_tag):
+                return True
+        except Exception:
+            logger.exception(
+                "[Entry] cannot verify shared active/pending state for %s; rejecting entry",
+                pair_tag,
+            )
+            return True
+        return False
 
     async def _validate_entry_spread(self, pair_tag: str, payload: ExecutorPayload) -> bool:
         """
