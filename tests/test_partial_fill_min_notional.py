@@ -369,3 +369,323 @@ async def test_hedge_gate_uses_actual_futures_minimum_not_partial_knob(engine, f
     assert len(mock_client.placed_sells) == 0
     assert engine._failure_reasons.get(pair_tag) is None
     assert pair_tag in engine.pending_entry_orders
+
+
+def test_canonical_hedge_target_ratios():
+    """Canonical formula: target = spot × ratio; residual = max(0, target − confirmed)."""
+    from executor.quantity import canonical_hedge_target
+
+    # ratio 0.5: spot 1.0, confirmed 0.0 → residual 0.5
+    t, r, _ = canonical_hedge_target(1.0, 0.0, 0.5)
+    assert t == pytest.approx(0.5) and r == pytest.approx(0.5)
+    # ratio 1.0: spot 1.0, confirmed 0.4 (partial futures fill) → residual 0.6
+    t, r, _ = canonical_hedge_target(1.0, 0.4, 1.0)
+    assert t == pytest.approx(1.0) and r == pytest.approx(0.6)
+    # ratio 1.5: spot 1.0, confirmed 0.0 → residual 1.5
+    t, r, _ = canonical_hedge_target(1.0, 0.0, 1.5)
+    assert t == pytest.approx(1.5) and r == pytest.approx(1.5)
+    # Over-confirmed clamps to 0 (never negative residual).
+    t, r, _ = canonical_hedge_target(1.0, 1.2, 1.0)
+    assert r == 0.0
+
+
+def test_canonical_hedge_target_rejects_invalid_inputs():
+    from executor.quantity import canonical_hedge_target
+
+    for bad_spot in (float("nan"), float("inf"), -0.1):
+        with pytest.raises(ValueError):
+            canonical_hedge_target(bad_spot, 0.0, 1.0)
+    for bad_confirmed in (float("nan"), float("inf"), -0.1):
+        with pytest.raises(ValueError):
+            canonical_hedge_target(1.0, bad_confirmed, 1.0)
+    for bad_ratio in (0.0, -1.0, float("nan")):
+        with pytest.raises(ValueError):
+            canonical_hedge_target(1.0, 0.0, bad_ratio)
+
+
+def test_repeated_and_decreasing_snapshots_are_idempotent():
+    """Repeated identical snapshots and decreasing snapshots never re-hedge."""
+    from executor.quantity import canonical_hedge_target
+
+    confirmed = 0.005
+    # Same snapshot twice → same residual.
+    _, r1, _ = canonical_hedge_target(0.005, confirmed, 1.0)
+    _, r2, _ = canonical_hedge_target(0.005, confirmed, 1.0)
+    assert r1 == r2 == pytest.approx(0.0)
+    # Decreasing snapshot (0.001 < 0.005 confirmed) → residual 0.
+    _, r3, _ = canonical_hedge_target(0.001, confirmed, 1.0)
+    assert r3 == 0.0
+
+
+def test_contract_multiplier_conversion_in_residual():
+    """Futures fills in CONTRACT units must be converted to base before residual."""
+    from executor.quantity import AmountSpec, order_amount_to_base, canonical_hedge_target
+
+    # 1 contract = 0.01 BTC; venue reports 2 contracts filled = 0.02 base.
+    spec = AmountSpec("CONTRACT", 1.0, 1.0, 0.01)
+    confirmed_base = order_amount_to_base(2.0, spec)
+    assert confirmed_base == pytest.approx(0.02)
+    # Spot 0.03 filled, ratio 1.0 → residual 0.01 base.
+    _, residual, _ = canonical_hedge_target(0.03, confirmed_base, 1.0)
+    assert residual == pytest.approx(0.01)
+
+
+def test_decimal_precision_quantity_steps():
+    """Step rounding must not create phantom residual from float noise."""
+    from executor.quantity import AmountSpec, base_to_order_amount, order_amount_to_base
+
+    spec = AmountSpec("BASE", 0.0001, 0.0001, 1.0)
+    # 0.0055 rounds DOWN to 0.0055 (already on step).
+    amt = base_to_order_amount(0.0055, spec)
+    assert order_amount_to_base(amt, spec) == pytest.approx(0.0055)
+    # 0.00555 rounds down to 0.0055 — never up (no silent overhedge).
+    amt = base_to_order_amount(0.00555, spec)
+    assert order_amount_to_base(amt, spec) == pytest.approx(0.0055)
+
+
+def test_exact_minimum_notional_is_hedgeable():
+    """Fill exactly at the futures minimum notional must be hedgeable."""
+    from executor.quantity import AmountSpec, calculate_order_size
+
+    spec = AmountSpec("BASE", 0.0001, 0.0001, 1.0)
+    # 0.0002 × 50000 = exactly $10.
+    qty, notional, imbalance = calculate_order_size(
+        filled_spot_amount=0.0002,
+        expected_price_usdt=50000.0,
+        futures_amount_spec=spec,
+        futures_min_notional=10.0,
+        safety_policy="offset_spot",
+    )
+    assert qty == pytest.approx(0.0002)
+    assert notional == pytest.approx(10.0)
+    assert imbalance == pytest.approx(0.0)
+
+
+def test_spot_futures_price_difference_uses_futures_price():
+    """Notional must be computed with the FUTURES price, not the spot price."""
+    from executor.quantity import AmountSpec, calculate_order_size
+
+    spec = AmountSpec("BASE", 0.0001, 0.0001, 1.0)
+    # Spot price $40k, futures price $50k: min notional $10 needs 0.0002 base
+    # at the futures price.
+    qty, notional, _ = calculate_order_size(
+        filled_spot_amount=0.0001,
+        expected_price_usdt=50000.0,
+        futures_amount_spec=spec,
+        futures_min_notional=10.0,
+        safety_policy="offset_spot",
+    )
+    # 0.0001 × 50000 = $5 < $10 → deferred (0).
+    assert qty == 0.0
+
+
+def test_invalid_metadata_fails_closed():
+    from executor.quantity import AmountSpec, validate_futures_sizing_metadata
+
+    # Missing spec.
+    assert validate_futures_sizing_metadata(None, 50000.0, 10.0)
+    # Invalid price.
+    assert validate_futures_sizing_metadata(
+        AmountSpec("BASE", 0.0001, 0.0001, 1.0), 0.0, 10.0
+    )
+    # Invalid notional.
+    assert validate_futures_sizing_metadata(
+        AmountSpec("BASE", 0.0001, 0.0001, 1.0), 50000.0, -1.0
+    )
+
+
+def test_missing_reference_price_fails_closed():
+    from executor.quantity import AmountSpec, validate_futures_sizing_metadata
+
+    reasons = validate_futures_sizing_metadata(
+        AmountSpec("BASE", 0.0001, 0.0001, 1.0), float("nan"), 10.0
+    )
+    assert any("price" in r for r in reasons)
+
+
+@pytest.mark.asyncio
+async def test_deferred_hedge_executes_once_fill_reaches_minimum(engine, fake_redis, mock_client):
+    """Deferred (wait) → fill bertambah sampai minimum terpenuhi → hedge terkirim
+    hanya sebesar residual."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 1
+    order_info["qty"] = 0.01
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+    order_info["futures_min_notional"] = 10.0
+    # State dari defer sebelumnya: spot 0.00005 ($2.50) sudah tercatat.
+    order_info["filled"] = 0.00005
+    order_info["filled_spot_amount"] = 0.00005
+    order_info["hedged_short_qty"] = 0.0
+    order_info["hedge_waiting_for_coverage"] = True
+
+    engine.config.max_order_ttl_seconds = 120
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PARTIAL
+
+    # Fill baru: kumulatif naik ke 0.0005 ($25 > $10 min).
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.0005,
+    }
+
+    await engine._check_entry_orders()
+
+    # Hedge terkirim sebesar residual penuh (0.0005), bukan hanya delta terakhir.
+    assert len(mock_client.global_short_sells) == 1
+    assert mock_client.global_short_sells[0]["amount"] == pytest.approx(0.0005)
+    assert order_info.get("hedged_short_qty") == pytest.approx(0.0005)
+    assert order_info.get("hedge_waiting_for_coverage") is False
+
+
+@pytest.mark.asyncio
+async def test_partial_futures_fill_then_new_spot_fill_hedges_only_residual(engine, fake_redis, mock_client):
+    """Futures partial fill (0.002 dari 0.005 diminta) + spot fill baru →
+    hedge berikutnya hanya residual target − confirmed futures."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["qty"] = 0.01
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+    # Spot kumulatif 0.006; futures confirmed hanya 0.002 (partial).
+    order_info["filled"] = 0.006
+    order_info["filled_spot_amount"] = 0.006
+    order_info["hedged_short_qty"] = 0.002
+
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PARTIAL
+
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.006,
+    }
+
+    await engine._check_entry_orders()
+
+    # Residual = 0.006 − 0.002 = 0.004 (bukan 0.006 penuh).
+    assert len(mock_client.global_short_sells) == 1
+    assert mock_client.global_short_sells[0]["amount"] == pytest.approx(0.004)
+
+
+@pytest.mark.asyncio
+async def test_fully_covered_target_never_rehedges(engine, fake_redis, mock_client):
+    """Target terpenuhi penuh (spot 0.005, futures confirmed 0.005) → tanpa hedge baru."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["qty"] = 0.01
+    order_info["filled"] = 0.005
+    order_info["filled_spot_amount"] = 0.005
+    order_info["hedged_short_qty"] = 0.005
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PARTIAL
+
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.005,
+    }
+
+    await engine._check_entry_orders()
+
+    assert len(mock_client.global_short_sells) == 0
+    assert len(mock_client.placed_sells) == 0
+
+
+@pytest.mark.asyncio
+async def test_ttl_expiry_with_residual_requires_reconciliation_not_idle(engine, fake_redis, mock_client):
+    """TTL expired dengan residual unhedged → RECONCILIATION_REQUIRED, bukan IDLE."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 60  # past TTL
+    order_info["qty"] = 0.01
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+    order_info["futures_min_notional"] = 10.0
+    order_info["hedge_waiting_for_coverage"] = True
+    order_info["filled"] = 0.00005
+    order_info["hedged_short_qty"] = 0.0
+
+    engine.config.max_order_ttl_seconds = 10
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PARTIAL
+
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "canceled",  # TTL cancel path
+        "filled": 0.00005,
+    }
+
+    await engine._check_entry_orders()
+
+    assert pair_tag not in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    reason = engine._failure_reasons.get(pair_tag, {}).get("reason")
+    assert reason in (
+        "TERMINAL_ORDER_BELOW_MIN_NOTIONAL",
+        "DEFERRED_HEDGE_UNCOVERED_ON_TERMINAL_SPOT",
+        "HEDGE_RESIDUAL_ON_TERMINAL_SPOT",
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_while_deferred_keeps_obligation_durable(engine, fake_redis, mock_client):
+    """Restart saat hedge deferred: kewajiban hedge harus survive restart —
+    pending entry record dengan hedge_waiting_for_coverage + residual."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 1
+    order_info["qty"] = 0.01
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+    order_info["futures_min_notional"] = 10.0
+    order_info["filled"] = 0.00005
+    order_info["hedged_short_qty"] = 0.0
+    order_info["hedge_waiting_for_coverage"] = True
+
+    engine.config.max_order_ttl_seconds = 120
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PARTIAL
+
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.00005,
+    }
+
+    await engine._check_entry_orders()
+
+    # Deferred: pair stays pending, durable record retains the obligation.
+    assert pair_tag in engine.pending_entry_orders
+    persisted = await fake_redis.get("arb:pending_entry:" + pair_tag)
+    assert persisted is not None
+    import json as _json
+    record = _json.loads(persisted)
+    assert record.get("hedge_waiting_for_coverage") is True
+    assert record.get("filled") == pytest.approx(0.00005)
+    assert record.get("hedged_short_qty") == pytest.approx(0.0)

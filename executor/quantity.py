@@ -190,3 +190,72 @@ def calculate_order_size(
 
 
 calculate_futures_hedge_size = calculate_order_size
+
+
+def canonical_hedge_target(
+    cumulative_spot_filled: float,
+    confirmed_futures_filled_base: float,
+    hedge_ratio: float = 1.0,
+) -> tuple[float, float, float]:
+    """Canonical spot-to-futures hedge target and residual calculation.
+
+    Single source of truth for every hedge caller:
+        target   = cumulative_spot_filled * hedge_ratio
+        residual = max(0, target - confirmed_futures_filled_base)
+
+    Args:
+        cumulative_spot_filled: monotonic cumulative confirmed spot fill (base units).
+        confirmed_futures_filled_base: confirmed futures fills converted to
+            base-equivalent units (never submitted quantity).
+        hedge_ratio: futures target quantity per unit of spot exposure.
+
+    Returns:
+        (target_hedge_qty, residual_hedge_qty, hedge_ratio)
+        residual is always >= 0 and NaN/infinite inputs are rejected.
+
+    Raises:
+        ValueError: on non-finite or negative quantities, non-positive ratio.
+    """
+    spot = _decimal(cumulative_spot_filled)
+    confirmed = _decimal(confirmed_futures_filled_base)
+    ratio = _decimal(hedge_ratio)
+    if spot < 0:
+        raise ValueError(f"negative cumulative spot fill: {cumulative_spot_filled}")
+    if confirmed < 0:
+        raise ValueError(
+            f"negative confirmed futures fill: {confirmed_futures_filled_base}"
+        )
+    if ratio <= 0:
+        raise ValueError(f"hedge ratio must be positive: {hedge_ratio}")
+    target = spot * ratio
+    residual = target - confirmed
+    if residual < 0:
+        residual = Decimal(0)
+    return float(target), float(residual), float(ratio)
+
+
+def validate_futures_sizing_metadata(
+    amount_spec: AmountSpec | None,
+    futures_price: float,
+    min_notional: float,
+) -> list[str]:
+    """Fail-closed validation of futures sizing metadata.
+
+    Returns a list of rejection reasons (empty = metadata usable). Sizing must
+    not proceed while any reason is present: missing or invalid metadata would
+    otherwise let a mis-sized hedge reach the venue.
+    """
+    reasons: list[str] = []
+    if amount_spec is None:
+        reasons.append("missing futures amount spec")
+        return reasons
+    try:
+        amount_spec.validate()
+    except ValueError as exc:
+        reasons.append(f"invalid futures amount spec: {exc}")
+        return reasons
+    if not math.isfinite(futures_price) or futures_price <= 0:
+        reasons.append(f"invalid futures reference price: {futures_price}")
+    if not math.isfinite(min_notional) or min_notional < 0:
+        reasons.append(f"invalid futures minimum notional: {min_notional}")
+    return reasons

@@ -189,6 +189,9 @@ async def test_state2_partial_fill_and_instant_short_hedge(engine, fake_redis, m
         "next_funding_time_ms": now_ms + 3600000,
         "base_target_exit_spread_pct": 0.3,
         "current_funding_rate": 0.0003,
+        "global_amount_spec": {
+            "unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0
+        },
     }
     engine.states[pair_tag] = PositionState.ENTRY_PENDING
 

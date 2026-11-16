@@ -482,6 +482,9 @@ async def test_p0_pending_entry_terminal_partial_fill_is_hedged_on_recovery(engi
         "tick_size": 1.0,
         "spot_cost_usdt": 625.0,
         "futures_margin_usdt": 625.0,
+        "global_amount_spec": {
+            "unit": "BASE", "step": 0.00000001, "min": 0.00000001, "base_per_unit": 1.0
+        },
     }
     await fake_redis.set("arb:pending_entry:" + pair_tag, json.dumps(order_info))
     mock_client.orders["889"] = {

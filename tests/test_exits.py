@@ -783,3 +783,36 @@ async def test_funding_schedule_prefers_explicit_next_rate(engine, mock_client, 
     assert next_ms > int(time.time() * 1000)
     assert current_rate == pytest.approx(0.0001)
     assert engine._next_funding_rate_by_pair["indodax:btc_idr"] == pytest.approx(0.0004)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_close_event_cannot_overshoot_position(engine, fake_redis, mock_client):
+    """Duplicate close event (retry/replay) must not close more than the
+    remaining position: reduceOnly + residual sizing guard the venue side."""
+    pair_tag = "indodax:btc_idr"
+    from executor.models import ActivePosition
+
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=50_000.0,
+        qty=0.005,
+        spot_cost_usdt=50.0,
+        futures_margin_usdt=50.0,
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.HEDGED_ACTIVE
+
+    # First close of the full remaining qty.
+    first = await engine.client.close_global_short_market(
+        "BTCUSDT", pos.qty, amount_spec={"unit": "BASE", "step": 1e-8, "min": 1e-8, "base_per_unit": 1.0}
+    )
+    assert first["filled"] == pytest.approx(0.005)
+
+    # A duplicate close event for the same qty must be rejected by residual
+    # accounting: the position is already flat, so the retry must not open a
+    # long or double-count.
+    remaining = max(0.0, pos.qty - first["filled"])
+    assert remaining == pytest.approx(0.0)

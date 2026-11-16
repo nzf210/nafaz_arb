@@ -8,7 +8,12 @@ from typing import Any, Dict
 from executor.models import ActivePosition, OrderRole, PositionState
 from executor.global_stop import GlobalStopError
 from executor import helpers
-from executor.quantity import AmountSpec, calculate_order_size
+from executor.quantity import (
+    AmountSpec,
+    calculate_order_size,
+    canonical_hedge_target,
+    validate_futures_sizing_metadata,
+)
 from executor.helpers import (
     HedgeSlippageExceeded,
     build_client_order_id,
@@ -40,11 +45,11 @@ class EntryHedgeMixin:
         # obligation. Compute the unhedged delta from the validated cumulative
         # value, not the raw snapshot.
         cumulative_spot_filled = max(previous_filled, current_filled)
-        # Target hedge quantity is derived from TOTAL cumulative spot exposure
-        # times the configured hedge ratio, minus confirmed futures fills. With
-        # ratio != 1.0, hedged_qty is measured in futures-target units, not
-        # spot units, so a plain (cumulative_spot_filled - hedged_qty) would
-        # never converge and would re-hedge indefinitely.
+        # Canonical hedge target/residual (single source of truth):
+        #   target = cumulative_spot_filled × ratio
+        #   residual = max(0, target − confirmed futures fills in base units)
+        # hedged_short_qty stores confirmed futures fills in base-equivalent
+        # units, so a non-1:1 ratio converges instead of re-hedging forever.
         _hedging_cfg = getattr(getattr(self, "config", None), "hedging", None)
         try:
             _hedge_ratio = float(
@@ -54,8 +59,9 @@ class EntryHedgeMixin:
             _hedge_ratio = 1.0
         if not (_hedge_ratio > 0):
             _hedge_ratio = 1.0
-        target_hedge_qty = cumulative_spot_filled * _hedge_ratio
-        unhedged_delta = max(0.0, target_hedge_qty - hedged_qty)
+        target_hedge_qty, unhedged_delta, _hedge_ratio = canonical_hedge_target(
+            cumulative_spot_filled, hedged_qty, _hedge_ratio
+        )
 
         # Extend Redis TTL on partial fill so pending order record does not expire
         if current_filled > 0 and getattr(self, "redis", None):
@@ -147,6 +153,16 @@ class EntryHedgeMixin:
             unhedged_delta >= min_hedge_qty - 1e-12
             if min_hedge_qty > 0
             else delta_val_usd >= self.config.min_partial_fill_usd
+        )
+        # Structured hedge decision log (Phase 9 observability): every field
+        # an operator needs to audit a hedge decision in one line.
+        logger.info(
+            "[Hedge Decision] %s: spot_order=%s cumulative_spot=%.8f ratio=%.4f "
+            "target=%.8f confirmed_futures=%.8f residual=%.8f spot_fill_pct=%.2f%% "
+            "threshold=%.2f%% min_hedge_qty=%.8f hedgeable=%s status=%s",
+            pair_tag, order_info.get("order_id"), cumulative_spot_filled,
+            _hedge_ratio, target_hedge_qty, hedged_qty, unhedged_delta,
+            spot_fill_pct, threshold_pct, min_hedge_qty, hedgeable_delta, status,
         )
         if hedging_enabled:
             # A terminal order (closed/canceled/etc.) must not silently bypass
@@ -349,8 +365,49 @@ class EntryHedgeMixin:
         # not merely that an intent is being prepared. A PREPARED/STOP failure
         # must still allow the caller to unwind the already-filled spot leg.
         order_info["hedge_submit_started"] = False
+        # Cross-instance claim: only one worker may hedge this (parent spot
+        # order, cumulative fill) generation. The claim also yields the stable
+        # deterministic client order id. In mock mode (no PostgreSQL) the
+        # claim is skipped and the legacy id path is used.
+        claim = None
+        claims_service = getattr(self, "hedge_claims", None)
+        if claims_service is not None and claims_service.enabled:
+            _cfg0 = getattr(self, "config", None)
+            _hed0 = getattr(_cfg0, "hedging", None)
+            try:
+                _ratio0 = float(getattr(_hed0, "futures_target_hedge_ratio", 1.0) or 1.0)
+            except (TypeError, ValueError):
+                _ratio0 = 1.0
+            _target0, _residual0, _ratio0 = canonical_hedge_target(
+                float(order_info.get("filled", 0.0) or 0.0),
+                float(order_info.get("hedged_short_qty", 0.0) or 0.0),
+                _ratio0,
+            )
+            claim = await claims_service.claim_generation(
+                parent_spot_exchange=str(order_info.get("local_exchange", "")),
+                parent_spot_order_id=str(order_info.get("order_id", "")),
+                parent_spot_client_order_id=str(order_info.get("client_order_id", "")),
+                cumulative_spot_filled=float(order_info.get("filled", 0.0) or 0.0),
+                target_hedge_qty=_target0,
+                residual_qty=unhedged_delta,
+                hedge_ratio=_ratio0,
+                futures_exchange=str(order_info.get("global_exchange", "")),
+                futures_symbol=global_symbol,
+                claimed_by=f"executor:{id(self):x}",
+            )
+            if claim is None:
+                logger.info(
+                    "[Hedge Claim] %s: generation already claimed by another "
+                    "worker (or DB unavailable); skipping duplicate hedge.",
+                    pair_tag,
+                )
+                order_info["hedge_waiting_for_coverage"] = True
+                return None, {}, None, 0.0
+            order_info["hedge_claim_key"] = claim["claim_key"]
         hedge_coid = str(
             order_info.get("pending_hedge_client_order_id") or ""
+        ) or (
+            claim["hedge_client_order_id"] if claim else ""
         ) or build_client_order_id(
             pair_tag, "hedge", self._next_order_seq()
         )
@@ -385,6 +442,15 @@ class EntryHedgeMixin:
         amount_spec = AmountSpec.from_dict(
             order_info.get("global_amount_spec")
         )
+        # Fail-closed metadata validation: sizing must not proceed with
+        # missing/invalid spec, price, or notional metadata.
+        metadata_reasons = validate_futures_sizing_metadata(
+            amount_spec, expected_short_price, futures_min_notional
+        )
+        if metadata_reasons:
+            raise ValueError(
+                "futures sizing metadata invalid: " + "; ".join(metadata_reasons)
+            )
         # Min-order policy is governed by the configured hedging policy
         # (hedging.futures.min_order_policy), not a legacy partial-fill safety
         # knob. "wait_until_covered" (the sanitized default) must never scale a
@@ -743,6 +809,8 @@ class EntryHedgeMixin:
     ) -> None:
         global_symbol = order_info["global_symbol"]
         order_info["hedged_short_qty"] += actual_hedged_qty
+        # The deferred obligation is now (at least partially) covered.
+        order_info["hedge_waiting_for_coverage"] = False
         watermark_persisted = await self._persist_entry_hedge_watermark(
             pair_tag,
             order_info,
@@ -881,6 +949,13 @@ class EntryHedgeMixin:
                 hedge_coid, recovery_context, short_order, actual_hedged_qty,
                 expected_short_price,
             )
+            claim_key = str(order_info.get("hedge_claim_key") or "")
+            if claim_key:
+                claims_service = getattr(self, "hedge_claims", None)
+                if claims_service is not None:
+                    await claims_service.mark_confirmed(
+                        claim_key, actual_hedged_qty
+                    )
         except Exception as he:
             logger.critical(
                 f"[State 2 CRITICAL] Failed to execute instant short hedge for {pair_tag}: {he}"
@@ -1118,8 +1193,27 @@ class EntryHedgeMixin:
                 await self.slot_manager.release_slot(venue, client_order_id=coid, reason=status.upper())
 
         awaiting_coverage = bool(order_info.get("hedge_waiting_for_coverage"))
-        unhedged_qty = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
+        hedged_qty = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
         cumulative_filled = float(order_info.get("filled", 0.0) or 0.0)
+        # Canonical residual check: existence of active_positions alone is not
+        # proof the hedge target is complete.
+        _hed_cfg = getattr(getattr(self, "config", None), "hedging", None)
+        try:
+            _ratio = float(getattr(_hed_cfg, "futures_target_hedge_ratio", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            _ratio = 1.0
+        if not (_ratio > 0):
+            _ratio = 1.0
+        _target, residual, _ = canonical_hedge_target(
+            cumulative_filled, hedged_qty, _ratio
+        )
+        # Any unresolved (UNKNOWN) hedge submission for this entry also blocks
+        # a clean finalize: the hedge may exist on the venue.
+        has_unknown_hedge = bool(
+            getattr(self, "global_stop", None) is not None
+            and order_info.get("pending_hedge_client_order_id")
+            and order_info.get("hedge_submit_started")
+        )
         del self.pending_entry_orders[pair_tag]
         await self._clear_pending_entry(pair_tag)
         if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
@@ -1131,24 +1225,30 @@ class EntryHedgeMixin:
         if pair_tag in self.active_positions and self.active_positions[pair_tag].qty > 0:
             self.states[pair_tag] = PositionState.HEDGED_ACTIVE
             return
-        if awaiting_coverage and unhedged_qty < cumulative_filled - 1e-12:
-            # A deferred hedge (wait_until_covered) with a terminal spot order
-            # can never accumulate more fills: the residual unhedged exposure
-            # is stranded. It must surface as a reconciliation obligation, not
-            # collapse into IDLE as if the lifecycle finished cleanly.
+        if residual > 1e-12 or has_unknown_hedge:
+            # Residual unhedged exposure (deferred or not) or an unresolved
+            # hedge submission must surface as a reconciliation obligation,
+            # never collapse into IDLE as if the lifecycle finished cleanly.
             self._mark_failed(
                 pair_tag,
-                "DEFERRED_HEDGE_UNCOVERED_ON_TERMINAL_SPOT",
+                "DEFERRED_HEDGE_UNCOVERED_ON_TERMINAL_SPOT"
+                if awaiting_coverage else "HEDGE_RESIDUAL_ON_TERMINAL_SPOT",
                 (
-                    f"Spot order terminal ('{status}') while a hedge was deferred "
-                    f"under 'wait_until_covered'; residual unhedged exposure "
-                    f"remains — manual reconciliation required."
+                    f"Spot order terminal ('{status}') with residual unhedged "
+                    f"exposure {residual:.8f}"
+                    + (" and an unresolved hedge submission" if has_unknown_hedge else "")
+                    + " — manual reconciliation required."
                 ),
                 detail={
                     "order_id": order_info.get("order_id"),
                     "cumulative_filled": cumulative_filled,
-                    "hedged_qty": unhedged_qty,
-                    "unhedged_qty": cumulative_filled - unhedged_qty,
+                    "hedged_qty": hedged_qty,
+                    "target_hedge_qty": _target,
+                    "residual": residual,
+                    "unknown_hedge_client_order_id": (
+                        order_info.get("pending_hedge_client_order_id")
+                        if has_unknown_hedge else None
+                    ),
                 },
                 state=PositionState.RECONCILIATION_REQUIRED,
             )
