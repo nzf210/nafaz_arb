@@ -299,7 +299,7 @@ def test_postgres_pair_guard_blocks_second_replica_after_first_entry_ack():
     finally:
         release_first.set()
         for process in (guard_retry, second, first):
-            if process.is_alive():
+            if process is not None and process.is_alive():
                 process.terminate()
                 process.join(5)
 
