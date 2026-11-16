@@ -69,6 +69,8 @@ class _FakeConn:
             if row is None or row["status"] not in allowed:
                 return "UPDATE 0"
             row["status"] = "ABANDONED"
+            if "hedge_client_order_id = $2" in query:
+                row["hedge_client_order_id"] = args[1]
             row["version"] = int(row["version"]) + 1
             return "UPDATE 1"
         if "set status = 'CONFIRMED'" in query:
@@ -243,11 +245,21 @@ async def test_terminal_zero_fill_releases_submitted_claim():
         claim["claim_key"], "exchange confirmed canceled with zero fill"
     )
     assert table[claim["claim_key"]]["status"] == "ABANDONED"
+    rotated_client_id = table[claim["claim_key"]]["hedge_client_order_id"]
+    assert rotated_client_id != claim["hedge_client_order_id"]
 
-    # Re-running recovery after a crash is idempotent.
+    # The same cumulative Spot fill can be re-claimed, but must use a fresh
+    # client ID because the venue has already consumed the previous one.
+    retry = await worker.claim_generation(**_claim_kwargs())
+    assert retry is not None
+    assert retry["claim_key"] == claim["claim_key"]
+    assert retry["hedge_client_order_id"] == rotated_client_id
+
+    # Re-running recovery after a crash is idempotent and does not rotate again.
     assert await worker.mark_zero_fill_terminal(
         claim["claim_key"], "replayed terminal recovery"
     )
+    assert table[claim["claim_key"]]["hedge_client_order_id"] == rotated_client_id
 
 @pytest.mark.asyncio
 async def test_db_unavailable_fails_closed():
