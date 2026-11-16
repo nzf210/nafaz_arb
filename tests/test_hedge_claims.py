@@ -244,7 +244,7 @@ async def test_confirmed_claim_confirmation_is_idempotent():
 
     assert await worker.mark_confirmed(claim["claim_key"], 0.004, claim["hedge_client_order_id"])
     # Replayed recovery confirmation succeeds without double-counting.
-    assert await worker.mark_confirmed(claim["claim_key"], 0.004)
+    assert await worker.mark_confirmed(claim["claim_key"], 0.004, claim["hedge_client_order_id"])
     assert not await worker.mark_confirmed(claim["claim_key"], 0.005, claim["hedge_client_order_id"])
     row = table[claim["claim_key"]]
     assert row["confirmed_qty"] == pytest.approx(0.004)
