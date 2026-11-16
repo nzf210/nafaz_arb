@@ -321,7 +321,9 @@ class RecoveryAdoptionMixin:
             claims_service = getattr(self, "hedge_claims", None)
             confirmed = bool(
                 claims_service is not None
-                and await claims_service.mark_confirmed(claim_key, filled)
+                and await claims_service.mark_confirmed(
+                    claim_key, filled, hedge_record.client_order_id
+                )
             )
             if not confirmed:
                 await self.order_registry.mark_pending_recovery(
@@ -414,7 +416,8 @@ class RecoveryAdoptionMixin:
             released = bool(
                 claims_service is not None
                 and await claims_service.mark_zero_fill_terminal(
-                    claim_key, "exchange confirmed terminal order with zero fill"
+                    claim_key, hedge.client_order_id,
+                    "exchange confirmed terminal order with zero fill"
                 )
             )
             if not released:
