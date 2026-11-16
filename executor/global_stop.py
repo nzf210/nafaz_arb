@@ -283,12 +283,18 @@ class GlobalStopService:
             raise
 
     @asynccontextmanager
-    async def order_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
+    async def order_submit_fence(
+        self, *, client_order_id: str, pre_submit_guard: Optional[Any] = None
+    ) -> AsyncIterator[Any]:
         """Hold a session advisory lock across a durable SUBMITTING venue request.
 
         The SUBMITTING row is committed before yielding and survives a lost
         PostgreSQL session. A venue transport error must not be mistaken for a
         PostgreSQL disconnect; the yielded scope contains the external request.
+        An optional asynchronous ``pre_submit_guard`` runs after acquiring the
+        shared session lock but before changing the durable attempt to
+        SUBMITTING. A false result or guard error fails closed while leaving the
+        attempt PREPARED, so the caller can safely mark it ABORTED.
         """
         if not await self.ensure_pool():
             raise GlobalStopError("PostgreSQL STOP fencing is unavailable; create-order blocked")
@@ -302,6 +308,20 @@ class GlobalStopService:
                 try:
                     await conn.execute("select pg_advisory_lock($1)", FENCE_LOCK_KEY)
                     locked = True
+                    if pre_submit_guard is not None:
+                        try:
+                            allowed = pre_submit_guard()
+                            if hasattr(allowed, "__await__"):
+                                allowed = await allowed
+                        except Exception as guard_error:
+                            raise GlobalStopError(
+                                "pre-submit admission guard failed closed: "
+                                f"{type(guard_error).__name__}: {guard_error}"
+                            ) from guard_error
+                        if not allowed:
+                            raise GlobalStopError(
+                                "pre-submit admission guard rejected an already active or pending pair"
+                            )
                     async with conn.transaction():
                         control = await conn.fetchrow(
                             "select is_stopped, epoch, reason from public.executor_global_control "
