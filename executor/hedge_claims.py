@@ -208,7 +208,7 @@ class HedgeIntentClaimService:
                     """
                     select status, confirmed_qty
                     from public.executor_hedge_intent_claims
-                    where claim_key = $1 and hedge_client_order_id = $3
+                    where claim_key = $1 and hedge_client_order_id = $2
                     """,
                     claim_key, hedge_client_order_id,
                 )
@@ -301,7 +301,7 @@ class HedgeIntentClaimService:
                         """
                         update public.executor_hedge_intent_claims
                         set status = 'ABANDONED',
-                            hedge_client_order_id = $2,
+                            hedge_client_order_id = $3,
                             version = version + 1,
                             updated_at = now()
                         where claim_key = $1
