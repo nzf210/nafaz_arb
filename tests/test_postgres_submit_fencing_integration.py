@@ -172,6 +172,130 @@ def test_postgres_disconnect_during_active_venue_request_keeps_peer_fenced():
             submitter.join(5)
 
 
+def _pair_guard_submitter(
+    dsn, client_id, pair_key, shared_claims, entered, release, result_queue
+):
+    async def run():
+        service = GlobalStopService(dsn, min_size=1, max_size=2)
+        await service.start()
+        try:
+            await service.prepare_submit_attempt(
+                client_order_id=client_id, exchange="tokocrypto", market_type="spot",
+                symbol="BTC/IDR", side="buy", order_type="limit",
+                quantity=0.001, price=1_000_000_000, pair_key=pair_key,
+            )
+
+            async def pair_guard():
+                return pair_key not in shared_claims
+
+            async with service.order_submit_fence(
+                client_order_id=client_id,
+                pre_submit_guard=pair_guard,
+            ):
+                # Simulated fake-venue create-order boundary. The shared marker
+                # is persisted before the first process releases the PG fence.
+                shared_claims[pair_key] = client_id
+                result_queue.put("FAKE_VENUE_CREATE_ORDER")
+                entered.set()
+                await asyncio.to_thread(release.wait, 30)
+            await service.mark_submit_acknowledged(
+                client_id, {"id": "fake-venue-order", "status": "open"}
+            )
+            result_queue.put("FIRST_ACKNOWLEDGED")
+        except GlobalStopError as exc:
+            result_queue.put("BLOCKED:" + str(exc))
+        finally:
+            await service.close()
+    asyncio.run(run())
+
+
+@pytest.mark.integration
+def test_postgres_pair_guard_blocks_second_replica_after_first_entry_ack():
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    ctx = mp.get_context("fork")
+    manager = ctx.Manager()
+    claims = manager.dict()
+    pair_key = "tokocrypto:BTC_IDR:" + uuid.uuid4().hex[:8]
+    first_id = "pg-pair-first-" + uuid.uuid4().hex[:12]
+    second_id = "pg-pair-second-" + uuid.uuid4().hex[:12]
+    first_entered = ctx.Event()
+    release_first = ctx.Event()
+    first_queue = ctx.Queue()
+    second_queue = ctx.Queue()
+    first = ctx.Process(
+        target=_pair_guard_submitter,
+        args=(dsn, first_id, pair_key, claims, first_entered, release_first, first_queue),
+    )
+    second = ctx.Process(
+        target=_pair_guard_submitter,
+        args=(dsn, second_id, pair_key, claims, ctx.Event(), ctx.Event(), second_queue),
+    )
+    try:
+        first.start()
+        assert first_entered.wait(15), "first replica never reached fake venue"
+        assert first_queue.get(timeout=3) == "FAKE_VENUE_CREATE_ORDER"
+
+        second.start()
+        second.join(15)
+        if second.is_alive():
+            second.terminate()
+            second.join(5)
+            pytest.fail("second replica did not finish pair admission")
+        assert second.exitcode == 0
+        outcome = second_queue.get(timeout=3)
+        assert outcome.startswith("BLOCKED:")
+        assert "pre-submit admission guard" in outcome
+
+        release_first.set()
+        first.join(15)
+        if first.is_alive():
+            first.terminate()
+            first.join(5)
+            pytest.fail("first replica did not leave fake venue boundary")
+        assert first.exitcode == 0
+        assert first_queue.get(timeout=3) == "FIRST_ACKNOWLEDGED"
+
+        async def statuses():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                return await conn.fetch(
+                    "select client_order_id, status from public.executor_submit_attempts "
+                    "where client_order_id = any($1::text[])",
+                    [first_id, second_id],
+                )
+            finally:
+                await conn.close()
+
+        rows = asyncio.run(statuses())
+        by_id = {row["client_order_id"]: row["status"] for row in rows}
+        assert by_id[first_id] == "ACKNOWLEDGED"
+        assert by_id[second_id] == "PREPARED"
+    finally:
+        release_first.set()
+        for process in (second, first):
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+
+        async def cleanup():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                await conn.execute(
+                    "delete from public.executor_submit_attempts "
+                    "where client_order_id = any($1::text[])",
+                    [first_id, second_id],
+                )
+            finally:
+                await conn.close()
+        asyncio.run(cleanup())
+        manager.shutdown()
+
+
 @pytest.mark.integration
 def test_signed_operator_resolution_requires_auth_and_independent_evidence():
     dsn = os.getenv("TEST_POSTGRES_DSN")
