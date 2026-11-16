@@ -234,7 +234,17 @@ class GlobalStopService:
             async with self.pool.acquire() as conn:
                 locked = False
                 try:
-                    await conn.execute("select pg_advisory_lock($1)", FENCE_LOCK_KEY)
+                    # Never wait on a session-level submit fence until the
+                    # connection command timeout. A concurrent venue request already
+                    # owns the global admission boundary; reject this attempt before
+                    # the venue side effect and let its caller retry after admission.
+                    lock_acquired = await conn.fetchval(
+                        "select pg_try_advisory_lock($1)", FENCE_LOCK_KEY
+                    )
+                    if not lock_acquired:
+                        raise GlobalStopError(
+                            "another venue submission currently holds the global submit fence"
+                        )
                     locked = True
                     async with conn.transaction():
                         control = await conn.fetchrow(
