@@ -330,6 +330,38 @@ class EntryHedgeMixin:
         await registry.register(record)
         return True
 
+    async def _retain_hedge_claim_for_recovery(
+        self, pair_tag: str, exchange: str, client_order_id: str, reason: str
+    ) -> bool:
+        """Keep an acknowledged hedge indexed until its durable claim is resolved."""
+        registry = getattr(self, "order_registry", None)
+        if registry is None:
+            logger.critical(
+                "[Hedge Claim] cannot retain recovery record for %s: order registry missing",
+                client_order_id,
+            )
+            return False
+        try:
+            record = await registry.find_by_client_id(exchange, client_order_id)
+            if record is None:
+                raise RuntimeError("acknowledged hedge order intent is missing from registry")
+            # The venue fill is real, but the claim state is not yet durable.
+            # Force the record back into the active recovery index so startup
+            # recovery can fetch this exact venue order and retry mark_confirmed.
+            record.status = "open"
+            record.recovery_status = "UNVERIFIED"
+            await registry.register(record)
+            await registry.mark_pending_recovery(
+                record.local_order_id, str(reason)[:1000]
+            )
+            return True
+        except Exception:
+            logger.exception(
+                "[Hedge Claim] could not retain acknowledged hedge %s for recovery",
+                client_order_id,
+            )
+            return False
+
     async def _persist_entry_hedge_watermark(
         self, pair_tag: str, order_info: dict, hedged_quantity: float,
         hedge_order_id: str = "",
@@ -999,11 +1031,19 @@ class EntryHedgeMixin:
                     )
                     if not claim_confirmed:
                         # The venue hedge is already filled. Do not undo it or
-                        # release the claim: retain the active position, block
-                        # further entry on this pair, and surface the durable
-                        # claim persistence failure for reconciliation.
+                        # release the claim. Re-open the exact terminal order
+                        # record in the recovery index so startup recovery can
+                        # retry claim confirmation rather than silently skipping it.
+                        retained = await self._retain_hedge_claim_for_recovery(
+                            pair_tag,
+                            str(order_info.get("global_exchange") or ""),
+                            hedge_coid,
+                            "venue hedge fill confirmed; durable claim confirmation requires retry",
+                        )
                         self._halt_exposure_scope(
-                            pair_tag, "confirmed futures hedge claim was not persisted"
+                            pair_tag,
+                            "confirmed futures hedge claim was not persisted"
+                            + ("" if retained else "; recovery record retention also failed"),
                         )
                         self._refresh_entry_gate()
                         self._mark_failed(
