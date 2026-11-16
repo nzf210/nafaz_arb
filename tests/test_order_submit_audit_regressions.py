@@ -431,3 +431,24 @@ async def test_optional_live_derisk_intent_can_still_proceed_without_durable_reg
     )
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_force_close_spot_ids_do_not_collide_after_one_billion_ms():
+    engine = _ForceCloseHarness()
+    base = {
+        "local_exchange": "tokocrypto",
+        "symbol": "BTC/USDT",
+        "qty": 0.01,
+        "local_amount_spec": {"unit": "BASE", "step": 0.001},
+    }
+    first = SimpleNamespace(opened_at_ms=1_800_000_000_123, **base)
+    second = SimpleNamespace(opened_at_ms=1_801_000_000_123, **base)
+
+    await engine._liquidate_spot_leg("pair:btc", first)
+    await engine._liquidate_spot_leg("pair:btc", second)
+
+    client_ids = [item[1] for item in engine.registered_intents]
+    assert len(client_ids) == 2
+    assert client_ids[0] != client_ids[1]
+    assert engine.client.submit_calls == 2
