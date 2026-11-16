@@ -13,12 +13,12 @@ class _FakeHedgeClaims:
         self.confirmed = []
         self.released = []
 
-    async def mark_confirmed(self, claim_key, qty):
-        self.confirmed.append((claim_key, qty))
+    async def mark_confirmed(self, claim_key, qty, hedge_client_order_id):
+        self.confirmed.append((claim_key, qty, hedge_client_order_id))
         return self.confirm_result
 
-    async def mark_zero_fill_terminal(self, claim_key, reason):
-        self.released.append((claim_key, reason))
+    async def mark_zero_fill_terminal(self, claim_key, hedge_client_order_id, reason):
+        self.released.append((claim_key, hedge_client_order_id, reason))
         return self.release_result
 
 
@@ -211,7 +211,7 @@ async def test_terminal_zero_fill_hedge_releases_durable_claim(fake_redis):
         "hedged_short_qty": 0.0,
     }
     assert await engine._reconcile_pending_entry_hedges(PAIR_TAG, spot_info)
-    assert claims.released[0][0] == "claim-key-zero-fill"
+    assert claims.released[0][:2] == ("claim-key-zero-fill", "hedge-coid-zero")
     assert hedge.local_order_id not in await engine.order_registry.active_records()
     assert hedge.local_order_id not in await engine.order_registry.pending_recovery_ids()
 
