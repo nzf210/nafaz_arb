@@ -252,33 +252,43 @@ class HedgeIntentClaimService:
             return False
         try:
             async with pool.acquire() as conn:
-                result = await conn.execute(
-                    """
-                    update public.executor_hedge_intent_claims
-                    set status = 'ABANDONED',
-                        version = version + 1,
-                        updated_at = now()
-                    where claim_key = $1 and status in ('CLAIMED', 'SUBMITTED')
-                    """,
-                    claim_key,
-                )
-                if result.endswith("1"):
-                    return True
-                row = await conn.fetchrow(
-                    """
-                    select status
-                    from public.executor_hedge_intent_claims
-                    where claim_key = $1
-                    """,
-                    claim_key,
-                )
-                if row and str(row["status"]) == "ABANDONED":
-                    return True
-                logger.error(
-                    "[Hedge Claim] could not release terminal zero-fill claim %s (%s)",
-                    claim_key, str(reason)[:300],
-                )
-                return False
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        """
+                        select status, version
+                        from public.executor_hedge_intent_claims
+                        where claim_key = $1
+                        for update
+                        """,
+                        claim_key,
+                    )
+                    if row is None:
+                        return False
+                    status = str(row["status"])
+                    if status == "ABANDONED":
+                        return True
+                    if status not in ("CLAIMED", "SUBMITTED"):
+                        return False
+                    # A terminal zero-fill order has consumed its venue client
+                    # order ID. Rotate the ID before allowing this fill
+                    # generation to be claimed again; the old ACKNOWLEDGED
+                    # submit-attempt row must never be reused for a new order.
+                    next_version = int(row["version"] or 0) + 1
+                    retry_coid = hedge_client_order_id_for_claim(
+                        f"{claim_key}:retry:{next_version}"
+                    )
+                    result = await conn.execute(
+                        """
+                        update public.executor_hedge_intent_claims
+                        set status = 'ABANDONED',
+                            hedge_client_order_id = $2,
+                            version = version + 1,
+                            updated_at = now()
+                        where claim_key = $1 and status in ('CLAIMED', 'SUBMITTED')
+                        """,
+                        claim_key, retry_coid,
+                    )
+                    return result.endswith("1")
         except Exception:
             logger.exception(
                 "[Hedge Claim] terminal zero-fill transition failed for %s", claim_key
