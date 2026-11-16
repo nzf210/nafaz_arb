@@ -1676,3 +1676,12 @@ The current implementation is PARTIAL. Venue-specific live contract tests, opera
 ### 17.5 Terminal transition guard
 
 `ABORTED` is reserved for an intent proven not to have crossed the venue HTTP boundary. The PostgreSQL transition now permits `PREPARED → ABORTED` only. A `SUBMITTING` or `UNKNOWN` attempt cannot be retired by a pre-submit abort handler; it remains globally unresolved until exact-ID reconciliation or authenticated operator resolution. Definitive venue rejection remains a separate `REJECTED` transition, and positive venue acknowledgement remains `ACKNOWLEDGED`.
+
+
+### 17.6 Force-close spot idempotency and order-registry authority
+
+LIVE force-close spot liquidation uses a deterministic client ID derived from the pair and the persisted position `opened_at_ms`. It requires a durable order-registry intent before the first POST. A retry first checks the registry; if an intent exists, the executor performs exact-client-ID lookup and adopts only a terminal, verified full fill. NOT_FOUND/eventual-consistency, lookup failure, non-terminal, or partial-fill outcomes do not authorize another SELL or a new client ID.
+
+The GlobalStop PostgreSQL DSN is not the universal order-registry writer. Required LIVE order intents now require the actual enabled Supabase/outbox writer; a local STOP database alone cannot make a Redis-only order record durable. Optional de-risk intents remain best-effort so ordinary exits are not globally blocked by the registry writer, but this is a documented residual recovery risk if Redis data is lost while Supabase is disabled.
+
+Force-close cancellation still waits for terminal venue status and reconciles racing entry/exit fills before closing legs. This can delay force close when a pending order cannot be verified; it is intentional because an unverified entry may fill after the close and reopen exposure.
