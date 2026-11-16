@@ -797,3 +797,26 @@ Tetap tindak lanjut: transaksi `pg_advisory_xact_lock` per
 `exchange + order_id` yang membungkus langkah 1–5 (baca fill → hitung →
 intent → persist) secara atomik lintas instance; fondasi idempotency di
 atas membatasi dampaknya, tetapi atomicity penuh masih perlu diuji.
+
+### Revisi implementasi policy (2026-11-16, iterasi 3)
+
+Perbaikan atas review iterasi-2:
+
+- **Deferred hedge tidak lagi berakhir IDLE.** State `ENTRY_PARTIAL` hanya
+  dinaikkan ke `HEDGED_ACTIVE` bila hedge benar-benar terkirim
+  (`hedge_waiting_for_coverage` false). Spot terminal saat hedge masih
+  deferred → `DEFERRED_UNCOVERED_ON_TERMINAL_SPOT` /
+  `TERMINAL_ORDER_BELOW_MIN_NOTIONAL` (RECONCILIATION_REQUIRED), bukan IDLE.
+- **Pengalian hedge ratio ganda dihapus.** Ratio kini diterapkan tepat satu
+  kali, di `_handle_entry_fills`
+  (`target = cumulative_spot × ratio − confirmed_hedge`);
+  `_submit_entry_hedge_order` sizing langsung dari residual tanpa
+  re-scaling. Test ratio 0.5/1.5 submit baru + konvergensi + partial
+  futures fill residual.
+- **Gate hedgeable memakai minimum Futures aktual** (metadata venue:
+  `futures_min_notional` / amount-spec minimum), bukan
+  `min_partial_fill_usd`. Knob legacy hanya fallback bila metadata tidak
+  tersedia. Test: fill $20 dengan min venue $500 → tetap wait, tanpa
+  overhedge, tanpa rollback.
+- **Multi-instance claim/CAS** tetap tindak lanjut (fondasi idempotency
+  `hedge_fill_orders` sudah tercakup test double-count).

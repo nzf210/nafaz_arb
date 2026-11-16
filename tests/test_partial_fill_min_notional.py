@@ -292,3 +292,80 @@ async def test_hedge_ratio_05_reaches_target_and_stops(engine, fake_redis, mock_
 
     # Converged: no additional hedge may be submitted.
     assert len(mock_client.global_short_sells) == 0
+
+
+@pytest.mark.asyncio
+async def test_deferred_hedge_on_terminal_spot_requires_reconciliation(engine, fake_redis, mock_client):
+    """Spot terminal + hedge deferred (wait_until_covered) → RECONCILIATION_REQUIRED,
+    tidak boleh IDLE (kewajiban hedge tidak boleh hilang)."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 30
+    order_info["qty"] = 0.01
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+    order_info["futures_min_notional"] = 10.0
+    # Simulasi: hedge sudah pernah di-defer pada fill sebelumnya.
+    order_info["hedge_waiting_for_coverage"] = True
+    order_info["filled"] = 0.00005
+    order_info["hedged_short_qty"] = 0.0
+
+    engine.config.max_order_ttl_seconds = 10
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PARTIAL
+
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "closed",
+        "filled": 0.00005,
+    }
+
+    await engine._check_entry_orders()
+
+    assert pair_tag not in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    reason = engine._failure_reasons.get(pair_tag, {}).get("reason")
+    # Tertangkap di fill handler (lebih awal) atau di finalize; keduanya
+    # mencegah state IDLE dengan exposure tersisa.
+    assert reason in (
+        "TERMINAL_ORDER_BELOW_MIN_NOTIONAL",
+        "DEFERRED_HEDGE_UNCOVERED_ON_TERMINAL_SPOT",
+    )
+
+
+@pytest.mark.asyncio
+async def test_hedge_gate_uses_actual_futures_minimum_not_partial_knob(engine, fake_redis, mock_client):
+    """Minimum Futures aktual (metadata) yang menentukan hedgeable, bukan
+    min_partial_fill_usd: fill $20 dengan min Futures $500 harus tetap wait."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 1
+    order_info["qty"] = 0.01
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+    # Min futures aktual $500 (metadata venue), knob legacy $10.
+    order_info["futures_min_notional"] = 500.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
+    # Spot filled $20 (> $10 knob, < $500 venue min), order masih open.
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.0004,  # 0.0004 * 50000 = $20
+    }
+
+    await engine._check_entry_orders()
+
+    # Tidak boleh submit short $500 (overhedge) — harus menunggu.
+    assert len(mock_client.global_short_sells) == 0
+    assert len(mock_client.placed_sells) == 0
+    assert engine._failure_reasons.get(pair_tag) is None
+    assert pair_tag in engine.pending_entry_orders

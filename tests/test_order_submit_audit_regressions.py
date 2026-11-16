@@ -587,17 +587,21 @@ async def test_hedge_sizing_scales_within_max_overhedge_pct():
 
 @pytest.mark.asyncio
 async def test_hedge_sizing_applies_target_hedge_ratio():
-    """futures_target_hedge_ratio scales the hedged quantity, not just spot fill."""
+    """Ratio is applied ONCE, in _handle_entry_fills (target = spot × ratio −
+    confirmed hedge). _submit_entry_hedge_order sizes directly from the
+    residual without re-scaling."""
     from executor.config import HedgingConfig
 
     cfg = HedgingConfig()
     cfg.futures_target_hedge_ratio = 0.5
     harness = _PolicyHarness(cfg)
     order_info = _policy_order_info()
+    # Residual already in target units: spot 0.002 × 0.5 − 0 confirmed = 0.001.
     await harness._submit_entry_hedge_order(
         "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.001, 50000.0
     )
-    assert harness.client.submitted == [pytest.approx(0.0005)]
+    # No second ×0.5: the submitted qty equals the residual verbatim.
+    assert harness.client.submitted == [pytest.approx(0.001)]
 
 
 @pytest.mark.asyncio
@@ -657,3 +661,47 @@ def test_partial_futures_fill_is_not_treated_as_full_hedge():
     # never futures_hedge_qty.
     recorded = actual_hedged_qty
     assert recorded < futures_hedge_qty
+
+
+@pytest.mark.asyncio
+async def test_hedge_ratio_05_submits_half_of_spot():
+    """ratio 0.5, belum ada futures fill: submit 0.5 × cumulative spot."""
+    from executor.config import HedgingConfig
+
+    cfg = HedgingConfig()
+    cfg.futures_target_hedge_ratio = 0.5
+    harness = _PolicyHarness(cfg)
+    order_info = _policy_order_info()
+    # Residual = 0.002 × 0.5 − 0 = 0.001 (dihitung di _handle_entry_fills).
+    await harness._submit_entry_hedge_order(
+        "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.001, 50000.0
+    )
+    assert harness.client.submitted == [pytest.approx(0.001)]
+
+
+@pytest.mark.asyncio
+async def test_hedge_ratio_15_submits_one_and_half_of_spot():
+    """ratio 1.5, belum ada futures fill: submit 1.5 × cumulative spot."""
+    from executor.config import HedgingConfig
+
+    cfg = HedgingConfig()
+    cfg.futures_target_hedge_ratio = 1.5
+    harness = _PolicyHarness(cfg)
+    order_info = _policy_order_info()
+    # Residual = 0.002 × 1.5 − 0 = 0.003.
+    await harness._submit_entry_hedge_order(
+        "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.003, 50000.0
+    )
+    assert harness.client.submitted == [pytest.approx(0.003)]
+
+
+def test_partial_futures_fill_leaves_only_residual_for_next_hedge():
+    """Futures partial fill: hanya residual target yang dikirim berikutnya."""
+    # Formula di _handle_entry_fills:
+    cumulative_spot = 0.01
+    ratio = 1.0
+    confirmed_futures = 0.004  # partial fill dari hedge sebelumnya
+    target_hedge_qty = cumulative_spot * ratio
+    residual = max(0.0, target_hedge_qty - confirmed_futures)
+    assert residual == pytest.approx(0.006)
+    # Bukan full 0.01 dan bukan 0: hanya sisa yang di-hedge ulang.

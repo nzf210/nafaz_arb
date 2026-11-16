@@ -109,7 +109,45 @@ class EntryHedgeMixin:
         # "wait_until_covered" policy: before the threshold activates hedging, a
         # partial fill stays unhedged regardless of its USD value. Once active,
         # a submission still waits until the delta covers a min-notional order.
-        hedgeable_delta = delta_val_usd >= self.config.min_partial_fill_usd
+        # Minimum order size for hedging is governed by the ACTUAL futures
+        # venue metadata (min notional / amount spec), not by
+        # min_partial_fill_usd (a legacy partial-fill knob). Using the wrong
+        # floor either blocks a valid hedge (venue min < knob) or defers a
+        # hedge that can never cover (venue min > knob).
+        min_hedge_base = 0.0
+        min_hedge_notional = float(
+            order_info.get("futures_min_notional", 0.0) or 0.0
+        )
+        amount_spec_preview = AmountSpec.from_dict(
+            order_info.get("global_amount_spec")
+        )
+        if amount_spec_preview is not None:
+            min_hedge_base = float(
+                amount_spec_preview.minimum * amount_spec_preview.base_per_unit
+            )
+        if min_hedge_notional <= 0:
+            capabilities = getattr(
+                self, "capabilities", None
+            )
+            if capabilities is not None and hasattr(capabilities, "get_profile"):
+                prof = capabilities.get_profile(
+                    str(order_info.get(
+                        "global_exchange"
+                    ) or ""), "futures"
+                )
+                if prof and getattr(prof, "min_notional_usdt", 0) > 0:
+                    min_hedge_notional = float(prof.min_notional_usdt)
+        min_hedge_base_by_notional = (
+            min_hedge_notional / price_idr * usdt_rate
+            if (min_hedge_notional > 0 and price_idr > 0 and usdt_rate > 0)
+            else 0.0
+        )
+        min_hedge_qty = max(min_hedge_base, min_hedge_base_by_notional)
+        hedgeable_delta = (
+            unhedged_delta >= min_hedge_qty - 1e-12
+            if min_hedge_qty > 0
+            else delta_val_usd >= self.config.min_partial_fill_usd
+        )
         if hedging_enabled:
             # A terminal order (closed/canceled/etc.) must not silently bypass
             # the activation threshold: hedging below the agreed trigger would
@@ -192,10 +230,18 @@ class EntryHedgeMixin:
                 pair_tag, order_info, order, unhedged_delta, spot_fill_price, usdt_rate
             )
             await self._execute_entry_hedge(
-                pair_tag, order_info, unhedged_delta, price_idr, usdt_rate
+                pair_tag, order_info,
+                unhedged_delta, price_idr, usdt_rate,
+                hedge_ratio=_hedge_ratio,
             )
-            # Only clear the partial marker once the hedge actually went through.
-            if self.states.get(pair_tag) == PositionState.ENTRY_PARTIAL:
+            # Only clear the partial marker once the hedge actually went
+            # through. A deferred hedge (wait_until_covered) keeps the pair in
+            # ENTRY_PARTIAL: the unhedged exposure stays a visible obligation,
+            # never silently promoted to HEDGED_ACTIVE.
+            if (
+                self.states.get(pair_tag) == PositionState.ENTRY_PARTIAL
+                and not order_info.get("hedge_waiting_for_coverage")
+            ):
                 self.states[pair_tag] = PositionState.HEDGED_ACTIVE
         elif 0 < current_filled < float(order_info.get("qty", 0.0)):
             # Below the hedge threshold with the maker order still resting: the spot
@@ -362,15 +408,11 @@ class EntryHedgeMixin:
             else "offset_spot"
         )
 
-        hedge_ratio = 1.0
-        if hedging_cfg is not None:
-            try:
-                hedge_ratio = float(getattr(hedging_cfg, "futures_target_hedge_ratio", 1.0) or 1.0)
-            except (TypeError, ValueError):
-                hedge_ratio = 1.0
-        if not (hedge_ratio > 0):
-            hedge_ratio = 1.0
-        target_unhedged_delta = unhedged_delta * hedge_ratio
+        # unhedged_delta already arrives in futures-target units (computed as
+        # cumulative_spot_filled × ratio − confirmed hedge in
+        # _handle_entry_fills). Applying the ratio again would double-scale
+        # non-1:1 configurations, so size directly from the residual.
+        target_unhedged_delta = unhedged_delta
 
         futures_hedge_qty, target_notional, delta_imbalance = calculate_order_size(
             filled_spot_amount=target_unhedged_delta,
@@ -805,6 +847,7 @@ class EntryHedgeMixin:
         unhedged_delta: float,
         price_idr: float,
         usdt_rate: float,
+        hedge_ratio: float = 1.0,
     ) -> None:
         """Execute market short on global exchange and persist position state."""
         global_symbol = order_info["global_symbol"]
@@ -1074,6 +1117,9 @@ class EntryHedgeMixin:
             if venue and coid:
                 await self.slot_manager.release_slot(venue, client_order_id=coid, reason=status.upper())
 
+        awaiting_coverage = bool(order_info.get("hedge_waiting_for_coverage"))
+        unhedged_qty = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
+        cumulative_filled = float(order_info.get("filled", 0.0) or 0.0)
         del self.pending_entry_orders[pair_tag]
         await self._clear_pending_entry(pair_tag)
         if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
@@ -1084,5 +1130,27 @@ class EntryHedgeMixin:
             return
         if pair_tag in self.active_positions and self.active_positions[pair_tag].qty > 0:
             self.states[pair_tag] = PositionState.HEDGED_ACTIVE
-        else:
-            self.states[pair_tag] = PositionState.IDLE
+            return
+        if awaiting_coverage and unhedged_qty < cumulative_filled - 1e-12:
+            # A deferred hedge (wait_until_covered) with a terminal spot order
+            # can never accumulate more fills: the residual unhedged exposure
+            # is stranded. It must surface as a reconciliation obligation, not
+            # collapse into IDLE as if the lifecycle finished cleanly.
+            self._mark_failed(
+                pair_tag,
+                "DEFERRED_HEDGE_UNCOVERED_ON_TERMINAL_SPOT",
+                (
+                    f"Spot order terminal ('{status}') while a hedge was deferred "
+                    f"under 'wait_until_covered'; residual unhedged exposure "
+                    f"remains — manual reconciliation required."
+                ),
+                detail={
+                    "order_id": order_info.get("order_id"),
+                    "cumulative_filled": cumulative_filled,
+                    "hedged_qty": unhedged_qty,
+                    "unhedged_qty": cumulative_filled - unhedged_qty,
+                },
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+            return
+        self.states[pair_tag] = PositionState.IDLE
