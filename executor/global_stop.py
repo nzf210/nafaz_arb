@@ -403,13 +403,20 @@ class GlobalStopService:
         self._require_pool()
         if status not in {"ACKNOWLEDGED", "REJECTED", "UNKNOWN", "ABORTED"}:
             raise ValueError("invalid submit-attempt transition")
+        # ABORTED is proof that the venue boundary was never crossed. It may
+        # retire PREPARED only; it must never clear a SUBMITTING/UNKNOWN attempt.
+        allowed_from = (
+            "status = 'PREPARED'"
+            if status == "ABORTED"
+            else "status in ('PREPARED','SUBMITTING','UNKNOWN')"
+        )
         async with self.pool.acquire() as conn:
             result = await conn.execute(
                 "update public.executor_submit_attempts set status=$2, "
                 "exchange_order_id=coalesce($3, exchange_order_id), "
                 "venue_response=case when $4::jsonb is null then venue_response else $4::jsonb end, "
                 "last_error=$5, resolved_at=case when $2 in ('ACKNOWLEDGED','REJECTED','ABORTED') then now() else null end, "
-                "updated_at=now() where client_order_id=$1 and status in ('PREPARED','SUBMITTING','UNKNOWN')",
+                f"updated_at=now() where client_order_id=$1 and {allowed_from}",
                 client_order_id, status, exchange_order_id,
                 json.dumps(venue_response, separators=(",", ":"), default=str) if venue_response is not None else None,
                 error,
