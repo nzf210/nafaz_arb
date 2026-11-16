@@ -399,3 +399,17 @@ Still OPEN:
 | R-42 | `mark_submit_aborted` used the generic transition predicate and could technically change SUBMITTING/UNKNOWN to ABORTED, despite its contract meaning “venue boundary was never crossed.” Current callers were guarded, but the service API itself did not enforce the invariant. | Restrict ABORTED SQL transition to `status='PREPARED'` only. SUBMITTING/UNKNOWN can no longer be cleared by a pre-submit abort path; a lost boundary/fence race remains unresolved and requires reconciliation. | FIXED; regression verifies UPDATE 0 is rejected for an unresolved attempt |
 
 Latest source/test CI [43825126487](https://github.com/nzf210/nafaz_arb/actions/runs/43825126487) completed successfully for `f113e79`; all four jobs passed, including the full Python executor job and disposable PostgreSQL multi-process disconnect integration.
+
+
+### Force-close and order-registry hardening — 2026-11-16
+
+| ID | Finding | Remediation | Status |
+|---|---|---|---|
+| R-43 | LIVE force-close spot liquidation generated a new sequence-based client ID on each invocation and recorded its pre-submit intent as optional. After a lost acknowledgement, a later force-close retry could therefore create a second SELL with a new ID. | Bind the force-close spot ID deterministically to pair + position `opened_at_ms`; require the durable order registry for LIVE; if a prior intent exists, perform exact client-ID lookup and adopt only a terminal verified full fill. NOT_FOUND, lookup failure, partial, or non-terminal results never create a new ID. | FIXED; fake venue test proves one POST across a lost ACK and retry |
+| R-44 | `_register_order_intent` treated `config.postgres_dsn` as proof that the universal order registry was durable, although that DSN is used by GlobalStop and does not enable the Supabase order-record writer. A required LIVE intent could be Redis-only while the code believed it was durable. | Required LIVE order intents now require `supabase.enabled`; a local GlobalStop DSN alone is not accepted as the order-registry writer. Optional de-risk intents remain allowed so the general exit/rollback path is not blocked solely by registry outage. LIVE force-close spot now uses a required intent. | FIXED; regression covers local PostgreSQL DSN + disabled Supabase |
+
+Force-close cancellation remains deliberately conservative: cancel acknowledgement alone is not terminal proof. The executor fetches final venue status, reconciles any entry fill and hedges any exit fill before allowing force-close legs to proceed. If a pending order remains non-terminal or its final status cannot be verified, force-close waits for reconciliation rather than risk a late entry fill reopening exposure.
+
+**Residual de-risk trade-off:** ordinary optional exit/taker intents may still be best-effort/Redis-backed when Supabase is disabled, because blocking all exits on the order-registry writer would strand exposure. Force-close spot is stricter because it can be invoked repeatedly after a lost ACK and now requires durable intent ownership. This asymmetry and venue client-ID contract tests remain release-review items.
+
+Latest source/test CI [43825962830](https://github.com/nzf210/nafaz_arb/actions/runs/43825962830) passed all four jobs for `838aac5`: Python, Go/race/vet, PostgreSQL schema plus multi-process disconnect integration, and Docker builds.
