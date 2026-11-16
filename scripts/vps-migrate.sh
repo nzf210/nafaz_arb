@@ -183,13 +183,21 @@ if [[ "$TARGET" == local ]]; then
   backup="$BACKUP_DIR/nafaz-$backup_label-$stamp.dump"
   tmp_backup="$backup.partial"
   tmp_sql="$(mktemp "${TMPDIR:-/tmp}/nafaz-migration.XXXXXX.sql")"
-  cleanup(){ rm -f "$tmp_sql" "$tmp_backup"; }
+  container_backup="/tmp/$(basename "$tmp_backup")"
+  cleanup(){
+    rm -f "$tmp_sql" "$tmp_backup"
+    docker exec "$PG_CONTAINER" rm -f "$container_backup" >/dev/null 2>&1 || true
+  }
   trap cleanup EXIT
 
   log "Creating full backup of database=$PGDATABASE from container=$PG_CONTAINER."
   db_exec pg_dump -U "$PGUSER" -d "$PGDATABASE" --format=custom --no-owner --no-acl > "$tmp_backup"
   [[ -s "$tmp_backup" ]] || die "Backup is empty."
-  db_exec pg_restore --list - < "$tmp_backup" >/dev/null || die "Backup archive verification failed."
+  docker cp "$tmp_backup" "$PG_CONTAINER:$container_backup" >/dev/null ||
+    die "Could not copy backup archive into PostgreSQL container for verification."
+  docker exec "$PG_CONTAINER" pg_restore --list "$container_backup" >/dev/null ||
+    die "Backup archive verification failed."
+  docker exec "$PG_CONTAINER" rm -f "$container_backup"
   mv "$tmp_backup" "$backup"; chmod 600 "$backup"
   log "Verified backup on VPS host: $backup"
 
