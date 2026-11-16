@@ -260,3 +260,44 @@ async def test_confirmed_hedge_claim_persistence_failure_keeps_recovery_record(f
     assert PAIR_TAG in engine._recovery_scope_halts
     assert hedge.local_order_id in await engine.order_registry.active_records()
 
+@pytest.mark.asyncio
+async def test_filled_hedge_claim_failure_keeps_terminal_order_in_recovery_index(fake_redis):
+    engine = await _build(fake_redis)
+    record = OrderRecord(
+        local_order_id=OrderRecord.local_id_for("binance", "hedge-claim-retry", "906"),
+        client_order_id="hedge-claim-retry",
+        exchange_order_id="906",
+        pair_key=PAIR_TAG,
+        exchange="binance",
+        market_type="perpetual",
+        symbol="BTCUSDT",
+        side="sell",
+        order_type="market",
+        order_role=OrderRole.HEDGE.value,
+        original_quantity=0.005,
+        filled_quantity=0.005,
+        remaining_quantity=0.0,
+        status="closed",
+        recovery_status=RecoveryStatus.ADOPTED.value,
+        recovery_context={
+            "parent_spot_exchange": "indodax",
+            "parent_spot_order_id": "501",
+            "parent_spot_client_order_id": "btc-idr-entry-7",
+            "hedge_claim_key": "claim-key-retain",
+        },
+    )
+    await engine.order_registry.register(record)
+
+    retained = await engine._retain_hedge_claim_for_recovery(
+        PAIR_TAG,
+        "binance",
+        "hedge-claim-retry",
+        "claim confirmation persistence failed",
+    )
+    assert retained is True
+    assert record.status == "open"
+    assert record.recovery_status == RecoveryStatus.UNVERIFIED.value
+    assert record.local_order_id in await engine.order_registry.active_records()
+    pending = await engine.order_registry.pending_recovery_ids()
+    assert pending[record.local_order_id] == "claim confirmation persistence failed"
+
