@@ -27,7 +27,7 @@ class _FakeConn:
     async def fetchrow(self, query, *args):
         if "select status, confirmed_qty" in query:
             row = self.table.get(args[0])
-            if row is None or row.get("hedge_client_order_id") != args[2]:
+            if row is None or row.get("hedge_client_order_id") != args[1]:
                 return None
             return dict(row)
         if "select status, version, hedge_client_order_id" in query:
