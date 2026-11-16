@@ -43,11 +43,13 @@ Usage:
 Default target is the PostgreSQL server on this VPS (127.0.0.1:5432).
 Supabase remote is opt-in: --target supabase.
 
-Local PostgreSQL environment:
-  PGHOST=127.0.0.1       PGPORT=5432
-  PGDATABASE=nafaz       PGUSER=postgres
-  PGPASSWORD=...         (prefer .pgpass / protected secret injection)
+Local PostgreSQL container environment:
+  NAFAZ_PG_CONTAINER=wch-stg-postgres
+  PGDATABASE=nafaz       PGUSER=<POSTGRES_USER inside container>
   MIGRATION_BACKUP_DIR=/var/backups/nafaz-db-migrations
+
+Local mode runs psql, pg_dump, pg_restore, and pg_isready inside Docker.
+No PostgreSQL client binaries are required on the VPS host.
 
 Supabase remote environment:
   EXPECTED_SUPABASE_PROJECT_REF=<project-ref>
@@ -94,6 +96,8 @@ if [[ "$TARGET" == local ]]; then
   PGDATABASE="${PGDATABASE:-nafaz}"
   command -v docker >/dev/null || die "docker CLI missing; local migrations require Docker access."
   docker inspect "$PG_CONTAINER" >/dev/null 2>&1 || die "PostgreSQL container '$PG_CONTAINER' not found or inaccessible."
+  running="$(docker inspect -f '{{.State.Running}}' "$PG_CONTAINER" 2>/dev/null || true)"
+  [[ "$running" == "true" ]] || die "PostgreSQL container '$PG_CONTAINER' is not running."
   if [[ -z "${PGUSER:-}" ]]; then
     PGUSER="$(docker exec "$PG_CONTAINER" sh -lc 'printf "%s" "${POSTGRES_USER:-postgres}"')"
   fi
@@ -118,8 +122,6 @@ if [[ "$TARGET" == local ]]; then
   db_exec() { docker exec -i "$PG_CONTAINER" "$@"; }
   db_psql() { db_exec psql -X -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 "$@"; }
 
-  running="$(docker inspect -f '{{.State.Running}}' "$PG_CONTAINER" 2>/dev/null || true)"
-  [[ "$running" == "true" ]] || die "PostgreSQL container '$PG_CONTAINER' is not running."
   log "Checking Docker PostgreSQL container=$PG_CONTAINER database=$PGDATABASE user=$PGUSER"
   db_exec pg_isready -h /var/run/postgresql -p 5432 -d "$PGDATABASE" -U "$PGUSER" >/dev/null ||
     die "PostgreSQL in container '$PG_CONTAINER' is not accepting connections."
