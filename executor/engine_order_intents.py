@@ -123,17 +123,20 @@ class EngineOrderIntentMixin:
         the exchange accepts the order but before it returns an exchange id, the
         startup open-order sweep can still bind the venue order to this intent.
         """
-        # LIVE trading must never proceed with Redis-only order tracking. The
-        # pre-submit intent is the last safe point to reject a configuration
-        # that cannot durably journal every exchange order for restart recovery.
-        has_durable = bool(getattr(self.supabase, "enabled", False)) or bool(
-            getattr(self.config, "postgres_dsn", "")
-        )
-        if not bool(getattr(self.config, "mock_mode", False)) and not has_durable:
-            raise RuntimeError(
-                "refusing LIVE order submission: durable order persistence is disabled"
-            )
+        # The GlobalStop PostgreSQL DSN is not the order-registry writer.
+        # Required LIVE intents need the actual durable Supabase/outbox writer;
+        # a configured STOP database must not be mistaken for durable order
+        # ownership when the registry would otherwise fall back to Redis only.
         required = bool(metadata.pop("required", True))
+        has_durable_registry = bool(getattr(self.supabase, "enabled", False))
+        if (
+            not bool(getattr(self.config, "mock_mode", False))
+            and required
+            and not has_durable_registry
+        ):
+            raise RuntimeError(
+                "refusing LIVE order submission: durable order registry/outbox is disabled"
+            )
         role = metadata.get("role", "unknown")
         record = await self._register_order(
             pair_tag,
