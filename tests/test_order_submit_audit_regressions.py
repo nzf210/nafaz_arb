@@ -314,3 +314,71 @@ async def test_aborted_transition_cannot_retire_submitting_or_unknown_attempt():
 
     assert "status = 'PREPARED'" in conn.query
     assert "status in ('PREPARED','SUBMITTING','UNKNOWN')" not in conn.query
+
+
+from executor.force_close_legs import ForceCloseLegMixin
+
+
+class _ForceCloseRegistry:
+    def __init__(self):
+        self.intents = {}
+
+    async def find_by_client_id(self, exchange, client_order_id):
+        return self.intents.get((exchange, client_order_id))
+
+
+class _AmbiguousSpotCloseVenue:
+    def __init__(self):
+        self.submit_calls = 0
+        self.lookup_calls = 0
+
+    async def place_local_market_sell(self, *args, **kwargs):
+        self.submit_calls += 1
+        raise TimeoutError("force-close spot POST acknowledgement lost")
+
+    async def fetch_local_order_by_client_id(self, *args, **kwargs):
+        self.lookup_calls += 1
+        return None
+
+
+class _ForceCloseHarness(ForceCloseLegMixin):
+    def __init__(self):
+        self.config = SimpleNamespace(mock_mode=False, postgres_dsn="postgresql://unused")
+        self.order_registry = _ForceCloseRegistry()
+        self.client = _AmbiguousSpotCloseVenue()
+        self.registered_intents = []
+
+    def _next_order_seq(self):
+        return 123
+
+    async def _register_order_intent(self, pair_key, client_order_id, **metadata):
+        self.registered_intents.append((pair_key, client_order_id, metadata))
+        self.order_registry.intents[(metadata["exchange"], client_order_id)] = {
+            "client_order_id": client_order_id,
+            "status": "submitting",
+        }
+        return self.order_registry.intents[(metadata["exchange"], client_order_id)]
+
+
+@pytest.mark.asyncio
+async def test_force_close_spot_retry_reuses_position_id_and_adopts_prior_intent():
+    engine = _ForceCloseHarness()
+    position = SimpleNamespace(
+        opened_at_ms=1_800_000_000_123,
+        local_exchange="tokocrypto",
+        symbol="BTC/USDT",
+        qty=0.01,
+        local_amount_spec={"unit": "BASE", "step": 0.001},
+    )
+
+    first_price = await engine._liquidate_spot_leg("pair:btc", position)
+    first_id = engine.registered_intents[0][1]
+    second_price = await engine._liquidate_spot_leg("pair:btc", position)
+
+    second_id = engine.registered_intents[0][1]
+    assert first_price == 0.0
+    assert second_price == 0.0
+    assert first_id == second_id
+    assert engine.client.submit_calls == 1
+    assert engine.client.lookup_calls == 1
+    assert len(engine.registered_intents) == 1
