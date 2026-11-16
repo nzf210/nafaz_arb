@@ -192,7 +192,23 @@ class HedgeIntentClaimService:
                     """,
                     claim_key, float(confirmed_qty),
                 )
-                return result.endswith("1")
+                if result.endswith("1"):
+                    return True
+                # Recovery is replayable: if a previous pass already confirmed
+                # this exact (or larger) fill, treat the persisted state as success.
+                row = await conn.fetchrow(
+                    """
+                    select status, confirmed_qty
+                    from public.executor_hedge_intent_claims
+                    where claim_key = $1
+                    """,
+                    claim_key,
+                )
+                return bool(
+                    row
+                    and str(row["status"]) == "CONFIRMED"
+                    and float(row["confirmed_qty"] or 0.0) >= float(confirmed_qty)
+                )
         except Exception:
             logger.exception(
                 "[Hedge Claim] confirm update failed for %s", claim_key
@@ -226,6 +242,46 @@ class HedgeIntentClaimService:
         except Exception:
             logger.exception(
                 "[Hedge Claim] abandon update failed for %s", claim_key
+            )
+            return False
+
+    async def mark_zero_fill_terminal(self, claim_key: str, reason: str) -> bool:
+        """Release a submitted claim only after the venue confirms terminal zero fill."""
+        pool = await self._conn()
+        if pool is None:
+            return False
+        try:
+            async with pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    update public.executor_hedge_intent_claims
+                    set status = 'ABANDONED',
+                        version = version + 1,
+                        updated_at = now()
+                    where claim_key = $1 and status in ('CLAIMED', 'SUBMITTED')
+                    """,
+                    claim_key,
+                )
+                if result.endswith("1"):
+                    return True
+                row = await conn.fetchrow(
+                    """
+                    select status
+                    from public.executor_hedge_intent_claims
+                    where claim_key = $1
+                    """,
+                    claim_key,
+                )
+                if row and str(row["status"]) == "ABANDONED":
+                    return True
+                logger.error(
+                    "[Hedge Claim] could not release terminal zero-fill claim %s (%s)",
+                    claim_key, str(reason)[:300],
+                )
+                return False
+        except Exception:
+            logger.exception(
+                "[Hedge Claim] terminal zero-fill transition failed for %s", claim_key
             )
             return False
 
