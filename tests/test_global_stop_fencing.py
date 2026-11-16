@@ -33,6 +33,12 @@ class _FakeConnection:
     def transaction(self):
         return _AsyncContext(self)
 
+    async def fetchval(self, query, *args):
+        self.executed.append((query, args))
+        if "pg_try_advisory_lock" in query:
+            return True
+        raise AssertionError(f"unexpected fetchval query: {query[:80]}")
+
     async def execute(self, query, *args):
         self.executed.append((query, args))
         if "set status='SUBMITTING'" in query:
@@ -343,7 +349,7 @@ class _FakeSpotStop:
     async def prepare_submit_attempt(self, **kwargs):
         self.prepared.append(kwargs)
 
-    def order_submit_fence(self, *, client_order_id):
+    def order_submit_fence(self, *, client_order_id, pre_submit_guard=None):
         return _AsyncContext(object())
 
     async def request_stop_in_transaction(self, conn, reason, *, source, metadata):
@@ -375,6 +381,8 @@ class _SpotSubmissionHarness(EngineEntrySubmissionMixin):
         self.halts = []
         self.gate_refreshed = False
         self.ambiguous = []
+        self.rejected = []
+        self.failures = []
 
     def _next_order_seq(self):
         return 17
@@ -400,6 +408,12 @@ class _SpotSubmissionHarness(EngineEntrySubmissionMixin):
 
     async def _mark_order_submission_ambiguous(self, *args):
         self.ambiguous.append(args)
+
+    async def _mark_order_submission_rejected(self, *args):
+        self.rejected.append(args)
+
+    async def _publish_execution_failure(self, *args, **kwargs):
+        self.failures.append((args, kwargs))
 
 
 class _FakeAmountSpec:
