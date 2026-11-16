@@ -32,10 +32,16 @@ class _FakeConn:
                 and row.get("parent_spot_order_id") == args[1]
                 and row.get("status") in ("CLAIMED", "SUBMITTED")
             ), None)
-        if "on conflict (claim_key) do nothing" in query:
+        if "on conflict (claim_key) do update" in query:
             key = args[0]
             if key in self.table:
-                return None  # conflict: another worker holds the generation
+                row = self.table[key]
+                if row["status"] != "ABANDONED":
+                    return None
+                row["status"] = "CLAIMED"
+                row["version"] = int(row["version"]) + 1
+                row["residual_qty"] = float(args[6])
+                return row
             self.table[key] = {
                 "claim_key": key,
                 "parent_spot_exchange": args[1],
