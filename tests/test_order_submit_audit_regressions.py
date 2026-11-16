@@ -5,6 +5,7 @@ import pytest
 from executor.derisk_fence import derisk_fence
 from executor.entry_hedge import EntryHedgeMixin
 from executor.force_close_legs import ForceCloseLegMixin
+from executor.engine_order_intents import EngineOrderIntentMixin
 from executor.global_stop import GlobalStopError, GlobalStopService
 from executor.helpers import is_transient_settlement_error
 from executor.rollback import RollbackMixin
@@ -380,3 +381,52 @@ async def test_force_close_spot_retry_reuses_position_id_and_adopts_prior_intent
     assert engine.client.submit_calls == 1
     assert engine.client.lookup_calls == 1
     assert len(engine.registered_intents) == 1
+
+
+class _OrderIntentHarness(EngineOrderIntentMixin):
+    def __init__(self, *, supabase_enabled, mock_mode=False):
+        self.config = SimpleNamespace(
+            mock_mode=mock_mode,
+            postgres_dsn="postgresql://local-postgres-is-not-the-order-registry",
+        )
+        self.supabase = SimpleNamespace(enabled=supabase_enabled)
+        self.order_registry = None
+
+
+@pytest.mark.asyncio
+async def test_local_global_stop_dsn_does_not_count_as_durable_order_registry():
+    engine = _OrderIntentHarness(supabase_enabled=False)
+
+    with pytest.raises(RuntimeError, match="durable order registry/outbox is disabled"):
+        await engine._register_order_intent(
+            "pair:btc",
+            "live-required-intent-1",
+            exchange="tokocrypto",
+            market_type="spot",
+            symbol="BTC/IDR",
+            role="entry_spot",
+            side="buy",
+            order_type="limit",
+            quantity=0.01,
+            required=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_optional_live_derisk_intent_can_still_proceed_without_durable_registry():
+    engine = _OrderIntentHarness(supabase_enabled=False)
+
+    result = await engine._register_order_intent(
+        "pair:btc",
+        "live-optional-exit-1",
+        exchange="tokocrypto",
+        market_type="spot",
+        symbol="BTC/IDR",
+        role="exit_spot",
+        side="sell",
+        order_type="market",
+        quantity=0.01,
+        required=False,
+    )
+
+    assert result is None
