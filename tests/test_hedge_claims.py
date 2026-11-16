@@ -164,3 +164,52 @@ async def test_zero_residual_is_never_claimed():
     worker = _service(table)
     assert await worker.claim_generation(**_claim_kwargs(residual=0.0)) is None
     assert table == {}
+
+
+@pytest.mark.asyncio
+async def test_two_full_executors_same_spot_order_single_intent():
+    """Two fully independent executor instances (separate service objects,
+    shared DB table) processing the SAME spot order: only one hedge intent
+    claim wins; the loser must not submit."""
+    table = {}
+    executor_a = _service(table)
+    executor_b = _service(table)
+
+    kwargs = _claim_kwargs()
+    claim_a = await executor_a.claim_generation(**kwargs)
+    assert claim_a is not None
+    # Executor B recomputes the same residual from the same spot fill and
+    # attempts its own claim: CAS must reject it.
+    claim_b = await executor_b.claim_generation(**kwargs)
+    assert claim_b is None
+
+    # Only executor A may advance the claim to SUBMITTED.
+    assert await executor_a.mark_submitted(claim_a["claim_key"])
+    # B cannot advance a claim it does not hold (already past CLAIMED).
+    assert not await executor_b.mark_submitted(claim_a["claim_key"])
+
+    # Exactly one claim row exists for the generation.
+    assert len(table) == 1
+    row = next(iter(table.values()))
+    assert row["status"] == "SUBMITTED"
+    assert row["hedge_client_order_id"] == claim_a["hedge_client_order_id"]
+
+
+@pytest.mark.asyncio
+async def test_crashed_worker_claim_blocks_until_reconciled():
+    """A worker that crashes after claiming (before CONFIRMED) leaves the
+    generation claimed: a restarted worker cannot double-claim it."""
+    table = {}
+    crashed = _service(table)
+    claim = await crashed.claim_generation(**_claim_kwargs())
+    assert claim is not None
+    # Simulate crash: no mark_submitted / mark_confirmed ever ran.
+
+    restarted = _service(table)
+    assert await restarted.claim_generation(**_claim_kwargs()) is None, (
+        "restart must not re-claim a generation held by a crashed worker; "
+        "reconciliation must resolve it first"
+    )
+    # The claim stays in CLAIMED state, visible for reconciliation.
+    row = table[claim["claim_key"]]
+    assert row["status"] == "CLAIMED"

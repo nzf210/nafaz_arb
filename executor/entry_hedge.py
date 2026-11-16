@@ -143,9 +143,16 @@ class EntryHedgeMixin:
                 )
                 if prof and getattr(prof, "min_notional_usdt", 0) > 0:
                     min_hedge_notional = float(prof.min_notional_usdt)
+        # Futures reference price: must match the price used by the actual
+        # sizing step (global_ask_usdt, falling back to the spot-derived
+        # rate). Using a different price here than in sizing would make the
+        # gate and the submission disagree around the minimum boundary.
+        futures_ref_price = float(order_info.get("global_ask_usdt", 0.0) or 0.0)
+        if not math.isfinite(futures_ref_price) or futures_ref_price <= 0:
+            futures_ref_price = price_idr / usdt_rate if usdt_rate > 0 else 0.0
         min_hedge_base_by_notional = (
-            min_hedge_notional / price_idr * usdt_rate
-            if (min_hedge_notional > 0 and price_idr > 0 and usdt_rate > 0)
+            min_hedge_notional / futures_ref_price
+            if (min_hedge_notional > 0 and futures_ref_price > 0)
             else 0.0
         )
         min_hedge_qty = max(min_hedge_base, min_hedge_base_by_notional)
@@ -198,15 +205,18 @@ class EntryHedgeMixin:
                     pair_tag,
                     "TERMINAL_ORDER_BELOW_MIN_NOTIONAL",
                     (
-                        f"Spot order terminal ('{status}') with unhedged delta ${delta_val_usd:.2f} "
-                        f"below the ${self.config.min_partial_fill_usd:.2f} min-notional rule "
-                        "and hedge policy 'wait_until_covered'; manual reconciliation required."
+                        f"Spot order terminal ('{status}') with unhedged delta "
+                        f"{unhedged_delta:.8f} (${delta_val_usd:.2f}) below the "
+                        f"futures minimum order size ({min_hedge_qty:.8f} base / "
+                        f"${min_hedge_notional:.2f} notional) and hedge policy "
+                        "'wait_until_covered'; manual reconciliation required."
                     ),
                     detail={
                         "order_id": order_info.get("order_id"),
                         "unhedged_qty": unhedged_delta,
                         "delta_val_usd": delta_val_usd,
-                        "min_partial_fill_usd": self.config.min_partial_fill_usd,
+                        "min_hedge_qty": min_hedge_qty,
+                        "min_hedge_notional": min_hedge_notional,
                     },
                     state=PositionState.RECONCILIATION_REQUIRED,
                 )
@@ -1222,13 +1232,14 @@ class EntryHedgeMixin:
             self.pending_entry_orders.pop(pair_tag, None)
             await self._clear_pending_entry(pair_tag)
             return
-        if pair_tag in self.active_positions and self.active_positions[pair_tag].qty > 0:
-            self.states[pair_tag] = PositionState.HEDGED_ACTIVE
-            return
+        # Residual/UNKNOWN check MUST come before the active_positions check:
+        # an active position can exist from a partial hedge while residual
+        # exposure remains. active_positions alone is never proof the hedge
+        # target is complete.
         if residual > 1e-12 or has_unknown_hedge:
             # Residual unhedged exposure (deferred or not) or an unresolved
             # hedge submission must surface as a reconciliation obligation,
-            # never collapse into IDLE as if the lifecycle finished cleanly.
+            # never collapse into IDLE or a clean HEDGED_ACTIVE.
             self._mark_failed(
                 pair_tag,
                 "DEFERRED_HEDGE_UNCOVERED_ON_TERMINAL_SPOT"
@@ -1252,5 +1263,10 @@ class EntryHedgeMixin:
                 },
                 state=PositionState.RECONCILIATION_REQUIRED,
             )
+            return
+        if pair_tag in self.active_positions and self.active_positions[pair_tag].qty > 0:
+            # Only reached when residual == 0 and no UNKNOWN submission: the
+            # hedge target is fully covered.
+            self.states[pair_tag] = PositionState.HEDGED_ACTIVE
             return
         self.states[pair_tag] = PositionState.IDLE

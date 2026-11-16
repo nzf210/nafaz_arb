@@ -689,3 +689,118 @@ async def test_restart_while_deferred_keeps_obligation_durable(engine, fake_redi
     assert record.get("hedge_waiting_for_coverage") is True
     assert record.get("filled") == pytest.approx(0.00005)
     assert record.get("hedged_short_qty") == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_min_notional_gate_uses_futures_price_not_spot_price(engine, fake_redis, mock_client):
+    """Gate minimum-notional harus memakai harga Futures (global_ask_usdt),
+    sama dengan sizing: Spot $40k vs Futures $50k di sekitar batas $10."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 1
+    order_info["qty"] = 0.01
+    # Spot IDR price implies $40k, but the FUTURES ask is $50k.
+    order_info["price"] = 640_000_000.0   # 640jt / 16000 = $40,000 spot
+    order_info["usdt_idr_rate"] = 16_000.0
+    order_info["global_ask_usdt"] = 50_000.0
+    order_info["futures_min_notional"] = 10.0
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
+    # Fill 0.0002 base: $10 at the FUTURES price ($50k), but only $8 at the
+    # spot price ($40k). Gate must use the futures price → hedgeable.
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.0002,
+    }
+
+    await engine._check_entry_orders()
+
+    # Hedge must be submitted at the futures-price boundary (0.0002 base).
+    assert len(mock_client.global_short_sells) == 1
+    assert mock_client.global_short_sells[0]["amount"] == pytest.approx(0.0002)
+
+
+@pytest.mark.asyncio
+async def test_min_notional_gate_rejects_below_futures_price_boundary(engine, fake_redis, mock_client):
+    """Fill di bawah batas harga Futures → wait; bukan dihitung dengan harga spot
+    yang lebih rendah (yang akan salah menganggapnya hedgeable)."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 1
+    order_info["qty"] = 0.01
+    order_info["price"] = 640_000_000.0
+    order_info["usdt_idr_rate"] = 16_000.0
+    order_info["global_ask_usdt"] = 50_000.0
+    order_info["futures_min_notional"] = 10.0
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
+    # Fill 0.0001: $5 at futures price ($50k) → below minimum → wait.
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.0001,
+    }
+
+    await engine._check_entry_orders()
+
+    assert len(mock_client.global_short_sells) == 0
+    assert len(mock_client.placed_sells) == 0
+    assert engine._failure_reasons.get(pair_tag) is None
+
+
+@pytest.mark.asyncio
+async def test_finalize_with_active_position_and_residual_requires_reconciliation(engine, fake_redis, mock_client):
+    """Active position dari hedge parsial + residual tersisa → terminal spot
+    harus RECONCILIATION_REQUIRED, bukan HEDGED_ACTIVE."""
+    pair_tag = "indodax:btc_idr"
+    from executor.models import ActivePosition
+
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 30
+    order_info["qty"] = 0.01
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+    # Spot kumulatif 0.006 terisi, futures baru 0.002 (partial hedge) →
+    # residual 0.004 masih terbuka. Min notional venue $500 → residual $200
+    # TIDAK hedgeable → deferred; terminal spot → RECONCILIATION_REQUIRED.
+    order_info["filled"] = 0.006
+    order_info["hedged_short_qty"] = 0.002
+    order_info["futures_min_notional"] = 500.0
+    order_info["hedge_waiting_for_coverage"] = True
+
+    engine.config.max_order_ttl_seconds = 10
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PARTIAL
+    # Active position already exists from the partial hedge.
+    engine.active_positions[pair_tag] = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="binance",
+        symbol="btc_idr",
+        entry_price_idr=800_000_000.0,
+        short_entry_usdt=50_000.0,
+        qty=0.002,
+        spot_cost_usdt=50.0,
+        futures_margin_usdt=50.0,
+    )
+
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "canceled", "filled": 0.006,
+    }
+
+    await engine._check_entry_orders()
+
+    assert pair_tag not in engine.pending_entry_orders
+    # NOT HEDGED_ACTIVE: residual 0.004 is still open.
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+    reason = engine._failure_reasons.get(pair_tag, {}).get("reason")
+    assert reason in (
+        "HEDGE_RESIDUAL_ON_TERMINAL_SPOT",
+        "DEFERRED_HEDGE_UNCOVERED_ON_TERMINAL_SPOT",
+        "TERMINAL_ORDER_BELOW_MIN_NOTIONAL",
+    )
