@@ -136,12 +136,13 @@ def is_trading_permission_denied(exc: Exception) -> bool:
 
 
 def is_transient_settlement_error(exc: Exception) -> bool:
-    """True for a venue balance/engine race that a short retry can clear.
+    """True only for explicit venue business rejections caused by settlement lag.
 
-    Tokocrypto answers 2206 / 989012 ("Balance is sufficient in the database
-    but still insufficient in the matching engine") when the spot asset was
-    just credited: the ledger and the matching engine momentarily disagree.
-    Treating it as permanent strands the position, so rollback retries it.
+    Tokocrypto 2206 / 989012 and the matching-engine balance messages are
+    definitive order rejections: the venue has stated that this order was not
+    accepted. Generic internal errors, 5xx/service-unavailable responses,
+    timeouts and transport resets are ambiguous after POST and must never be
+    retried as a fresh create-order attempt.
     """
     error_text = str(exc).lower()
     return any(
@@ -152,8 +153,6 @@ def is_transient_settlement_error(exc: Exception) -> bool:
             '"code":"989012"', "code: 989012",
             "insufficient in the matching engine",
             "balance is insufficient or potential overflow",
-            "internal error", "system busy", "please try again later",
-            "service unavailable", "timeout",
         )
     )
 
