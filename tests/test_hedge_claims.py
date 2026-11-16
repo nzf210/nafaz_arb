@@ -25,6 +25,12 @@ class _FakeConn:
         return _FakeTransaction()
 
     async def fetchrow(self, query, *args):
+        if "select status, confirmed_qty" in query:
+            row = self.table.get(args[0])
+            return dict(row) if row is not None else None
+        if "select status" in query and "where claim_key = $1" in query:
+            row = self.table.get(args[0])
+            return dict(row) if row is not None else None
         if "select claim_key, status" in query:
             return next((
                 dict(row) for row in self.table.values()
@@ -59,7 +65,8 @@ class _FakeConn:
             return "SELECT 1"
         if "set status = 'ABANDONED'" in query:
             row = self.table.get(args[0])
-            if row is None or row["status"] != "CLAIMED":
+            allowed = ("CLAIMED", "SUBMITTED") if "status in" in query else ("CLAIMED",)
+            if row is None or row["status"] not in allowed:
                 return "UPDATE 0"
             row["status"] = "ABANDONED"
             row["version"] = int(row["version"]) + 1
@@ -210,18 +217,37 @@ async def test_abandoned_generation_can_be_reclaimed_with_same_stable_client_id(
 
 
 @pytest.mark.asyncio
-async def test_confirmed_claim_cannot_be_readvanced():
+async def test_confirmed_claim_confirmation_is_idempotent():
     table = {}
     worker = _service(table)
     claim = await worker.claim_generation(**_claim_kwargs())
     assert claim is not None
 
     assert await worker.mark_confirmed(claim["claim_key"], 0.004)
-    # A replayed confirm must not double-count.
-    assert not await worker.mark_confirmed(claim["claim_key"], 0.004)
+    # Replayed recovery confirmation succeeds without double-counting.
+    assert await worker.mark_confirmed(claim["claim_key"], 0.004)
+    assert not await worker.mark_confirmed(claim["claim_key"], 0.005)
     row = table[claim["claim_key"]]
     assert row["confirmed_qty"] == pytest.approx(0.004)
 
+
+@pytest.mark.asyncio
+async def test_terminal_zero_fill_releases_submitted_claim():
+    table = {}
+    worker = _service(table)
+    claim = await worker.claim_generation(**_claim_kwargs())
+    assert claim is not None
+    assert await worker.mark_submitted(claim["claim_key"])
+
+    assert await worker.mark_zero_fill_terminal(
+        claim["claim_key"], "exchange confirmed canceled with zero fill"
+    )
+    assert table[claim["claim_key"]]["status"] == "ABANDONED"
+
+    # Re-running recovery after a crash is idempotent.
+    assert await worker.mark_zero_fill_terminal(
+        claim["claim_key"], "replayed terminal recovery"
+    )
 
 @pytest.mark.asyncio
 async def test_db_unavailable_fails_closed():
