@@ -95,42 +95,69 @@ class HedgeIntentClaimService:
         coid = hedge_client_order_id_for_claim(key)
         try:
             async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    """
-                    insert into public.executor_hedge_intent_claims (
-                        claim_key, parent_spot_exchange, parent_spot_order_id,
-                        parent_spot_client_order_id, cumulative_spot_filled,
-                        target_hedge_qty, residual_qty, hedge_ratio,
-                        futures_exchange, futures_symbol, hedge_client_order_id,
-                        status, claimed_by
-                    ) values (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                        'CLAIMED', $12
+                parent_exchange = str(parent_spot_exchange or "").lower()
+                parent_order_id = str(parent_spot_order_id or "")
+                # Serialize all generations for one parent Spot order. A later
+                # cumulative fill must not create a second hedge while an older
+                # generation is still CLAIMED/SUBMITTED and its venue outcome
+                # has not been confirmed. The lock and lookup share one DB
+                # transaction, so independent executor processes observe one
+                # linearizable claim lifecycle.
+                async with conn.transaction():
+                    await conn.execute(
+                        "select pg_advisory_xact_lock(hashtextextended($1, 0))",
+                        f"{parent_exchange}:{parent_order_id}",
                     )
-                    on conflict (claim_key) do nothing
-                    returning claim_key, hedge_client_order_id, version
-                    """,
-                    key,
-                    str(parent_spot_exchange or "").lower(),
-                    str(parent_spot_order_id or ""),
-                    str(parent_spot_client_order_id or "") or None,
-                    float(cumulative_spot_filled),
-                    float(target_hedge_qty),
-                    float(residual_qty),
-                    float(hedge_ratio),
-                    str(futures_exchange or ""),
-                    str(futures_symbol or ""),
-                    coid,
-                    str(claimed_by or ""),
-                )
-                if row is None:
-                    # Another worker holds this generation.
-                    return None
-                return {
-                    "claim_key": row["claim_key"],
-                    "hedge_client_order_id": row["hedge_client_order_id"],
-                    "version": int(row["version"]),
-                }
+                    unresolved = await conn.fetchrow(
+                        """
+                        select claim_key, status
+                        from public.executor_hedge_intent_claims
+                        where parent_spot_exchange = $1
+                          and parent_spot_order_id = $2
+                          and status in ('CLAIMED', 'SUBMITTED')
+                        order by created_at desc
+                        limit 1
+                        """,
+                        parent_exchange, parent_order_id,
+                    )
+                    if unresolved is not None:
+                        return None
+                    row = await conn.fetchrow(
+                        """
+                        insert into public.executor_hedge_intent_claims (
+                            claim_key, parent_spot_exchange, parent_spot_order_id,
+                            parent_spot_client_order_id, cumulative_spot_filled,
+                            target_hedge_qty, residual_qty, hedge_ratio,
+                            futures_exchange, futures_symbol, hedge_client_order_id,
+                            status, claimed_by
+                        ) values (
+                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                            'CLAIMED', $12
+                        )
+                        on conflict (claim_key) do nothing
+                        returning claim_key, hedge_client_order_id, version
+                        """,
+                        key,
+                        parent_exchange,
+                        parent_order_id,
+                        str(parent_spot_client_order_id or "") or None,
+                        float(cumulative_spot_filled),
+                        float(target_hedge_qty),
+                        float(residual_qty),
+                        float(hedge_ratio),
+                        str(futures_exchange or ""),
+                        str(futures_symbol or ""),
+                        coid,
+                        str(claimed_by or ""),
+                    )
+                    if row is None:
+                        # This exact generation was already claimed.
+                        return None
+                    return {
+                        "claim_key": row["claim_key"],
+                        "hedge_client_order_id": row["hedge_client_order_id"],
+                        "version": int(row["version"]),
+                    }
         except Exception:
             logger.exception(
                 "[Hedge Claim] claim insert failed for %s; failing closed", key
@@ -161,6 +188,36 @@ class HedgeIntentClaimService:
         except Exception:
             logger.exception(
                 "[Hedge Claim] confirm update failed for %s", claim_key
+            )
+            return False
+
+    async def mark_abandoned(self, claim_key: str, reason: str) -> bool:
+        """Release a claim only when no venue submission was started."""
+        pool = await self._conn()
+        if pool is None:
+            return False
+        try:
+            async with pool.acquire() as conn:
+                result = await conn.execute(
+                    """
+                    update public.executor_hedge_intent_claims
+                    set status = 'ABANDONED',
+                        version = version + 1,
+                        updated_at = now()
+                    where claim_key = $1 and status = 'CLAIMED'
+                    """,
+                    claim_key,
+                )
+                if not result.endswith("1"):
+                    logger.error(
+                        "[Hedge Claim] could not abandon unsubmitted claim %s (%s)",
+                        claim_key, str(reason)[:300],
+                    )
+                    return False
+                return True
+        except Exception:
+            logger.exception(
+                "[Hedge Claim] abandon update failed for %s", claim_key
             )
             return False
 
