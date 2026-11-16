@@ -288,3 +288,29 @@ async def test_postgres_disconnect_at_submit_fence_release_demotes_pool_but_keep
 
     assert service.pool is None
     assert conn.attempt["status"] == "SUBMITTING"
+
+
+class _AbortTransitionConnection:
+    def __init__(self, result):
+        self.result = result
+        self.query = ""
+
+    async def execute(self, query, *args):
+        self.query = query
+        return self.result
+
+
+@pytest.mark.asyncio
+async def test_aborted_transition_cannot_retire_submitting_or_unknown_attempt():
+    conn = _AbortTransitionConnection("UPDATE 0")
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _Pool(conn)
+
+    with pytest.raises(GlobalStopError, match="transition rejected"):
+        await service.mark_submit_aborted(
+            "possibly-accepted-entry-1",
+            "caller incorrectly claimed the venue boundary was not crossed",
+        )
+
+    assert "status = 'PREPARED'" in conn.query
+    assert "status in ('PREPARED','SUBMITTING','UNKNOWN')" not in conn.query
