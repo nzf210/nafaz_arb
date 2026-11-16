@@ -1671,3 +1671,8 @@ If PostgreSQL connectivity/serialization is unavailable before a de-risk request
 - PostgreSQL fencing code distinguishes exceptions raised before the venue boundary from errors raised inside the yielded venue request. A venue TimeoutError/ConnectionResetError must not by itself demote a healthy PostgreSQL pool; a failed PostgreSQL session unlock does demote it while the durable SUBMITTING row remains.
 
 The current implementation is PARTIAL. Venue-specific live contract tests, operator identity/secret governance for signed manual resolution, and repeated fault injection against the deployment's actual PostgreSQL topology remain release gates. Do not infer LIVE readiness from source-level fencing or CI alone.
+
+
+### 17.5 Terminal transition guard
+
+`ABORTED` is reserved for an intent proven not to have crossed the venue HTTP boundary. The PostgreSQL transition now permits `PREPARED → ABORTED` only. A `SUBMITTING` or `UNKNOWN` attempt cannot be retired by a pre-submit abort handler; it remains globally unresolved until exact-ID reconciliation or authenticated operator resolution. Definitive venue rejection remains a separate `REJECTED` transition, and positive venue acknowledgement remains `ACKNOWLEDGED`.
