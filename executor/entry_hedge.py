@@ -530,6 +530,19 @@ class EntryHedgeMixin:
                 f"(${futures_min_notional:.2f}); holding unhedged delta for the next fill."
             )
             order_info["hedge_waiting_for_coverage"] = True
+            # No venue request was started, so release this generation's
+            # durable claim. The next cumulative Spot fill may then claim the
+            # full outstanding residual without overlapping an older submit.
+            claim_key = str(order_info.get("hedge_claim_key") or "")
+            claims_service = getattr(self, "hedge_claims", None)
+            if claim_key and claims_service is not None:
+                if not await claims_service.mark_abandoned(
+                    claim_key, "futures residual is below venue minimum; no submit started"
+                ):
+                    logger.error(
+                        "[Hedge Claim] %s: could not release deferred pre-submit claim %s",
+                        pair_tag, claim_key,
+                    )
             return None, recovery_context, None, 0.0
 
         if abs(delta_imbalance) > 1e-12:
@@ -983,6 +996,18 @@ class EntryHedgeMixin:
             logger.critical(
                 f"[State 2 CRITICAL] Failed to execute instant short hedge for {pair_tag}: {he}"
             )
+            # A claim acquired before the venue boundary is safe to release:
+            # no exchange order can exist for this generation. Once the venue
+            # call has started, keep CLAIMED/SUBMITTED durable until recovery
+            # proves the outcome; never release an ambiguous submission.
+            claim_key = str(order_info.get("hedge_claim_key") or "")
+            claims_service = getattr(self, "hedge_claims", None)
+            if claim_key and claims_service is not None and not order_info.get(
+                "hedge_submit_started"
+            ):
+                await claims_service.mark_abandoned(
+                    claim_key, f"pre-submit hedge failure: {type(he).__name__}: {he}"
+                )
             global_exchange = str(order_info.get("global_exchange", ""))
             if global_exchange:
                 self._record_order_failure(
