@@ -45,6 +45,12 @@ class _SubmitConnection:
     def transaction(self):
         return _AsyncContext(self)
 
+    async def fetchval(self, query, *args):
+        self.statements.append(query)
+        if "pg_try_advisory_lock" in query:
+            return True
+        raise AssertionError(f"unexpected fetchval query: {query}")
+
     async def execute(self, query, *args):
         self.statements.append(query)
         if "set status='SUBMITTING'" in query and self.attempt is not None:
@@ -246,7 +252,7 @@ async def test_derisking_is_allowed_while_global_stop_is_active_and_submit_is_un
     async with service.derisk_submit_fence(client_order_id="exit-client-1") as fenced:
         assert fenced is conn
 
-    assert any("pg_advisory_lock" in query for query in conn.statements)
+    assert any("pg_try_advisory_lock" in query for query in conn.statements)
     assert any("pg_advisory_unlock" in query for query in conn.statements)
 
 
