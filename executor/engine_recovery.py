@@ -335,11 +335,18 @@ class EngineRecoveryMixin:
         return deficits
 
     async def _persist_pending_entry(
-        self, pair_tag: str, order_info: dict, ttl: Optional[int] = None
-    ) -> None:
-        """Persists a pending entry order so a restart can adopt or cancel it."""
+        self,
+        pair_tag: str,
+        order_info: dict,
+        ttl: Optional[int] = None,
+        *,
+        strict: bool = False,
+    ) -> bool:
+        """Persist a pending entry; strict callers must prove the shared marker exists."""
         if not self.redis:
-            return
+            if strict:
+                raise RuntimeError("shared Redis is unavailable for pending-entry persistence")
+            return False
         try:
             key = PENDING_ENTRY_KEY_PREFIX + pair_tag
             payload = json.dumps(order_info)
@@ -350,8 +357,12 @@ class EngineRecoveryMixin:
                     await self.redis.set(key, payload, ex=int(ttl))
             else:
                 await self.redis.set(key, payload)
+            return True
         except Exception:
             logger.exception(f"[Recovery] failed to persist pending entry for {pair_tag}")
+            if strict:
+                raise
+            return False
 
     async def _clear_pending_entry(self, pair_tag: str) -> None:
         """Removes the persisted pending-entry record once the order is resolved."""
