@@ -192,6 +192,33 @@ async def test_submit_fence_commits_durable_submitting_before_http_scope():
 
 
 @pytest.mark.asyncio
+async def test_pair_admission_guard_runs_under_lock_before_submitting_transition():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    await _prepare(service, "pair-guarded-order")
+    guard_calls = []
+
+    async def reject_existing_pair():
+        assert any("pg_advisory_lock" in query for query, _ in conn.executed)
+        guard_calls.append(True)
+        return False
+
+    with pytest.raises(GlobalStopError, match="pre-submit admission guard"):
+        async with service.order_submit_fence(
+            client_order_id="pair-guarded-order",
+            pre_submit_guard=reject_existing_pair,
+        ):
+            pytest.fail("venue request must not be entered for an occupied pair")
+
+    assert guard_calls == [True]
+    assert conn.attempts["pair-guarded-order"]["status"] == "PREPARED"
+    statements = [query for query, _ in conn.executed]
+    assert any("pg_advisory_unlock" in query for query in statements)
+    assert not any("set status='SUBMITTING'" in query for query in statements)
+
+
+@pytest.mark.asyncio
 async def test_lost_submit_connection_leaves_durable_row_blocking_next_entry():
     conn = _FakeConnection()
     service = GlobalStopService("postgresql://unused")
