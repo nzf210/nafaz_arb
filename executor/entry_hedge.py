@@ -432,6 +432,8 @@ class EntryHedgeMixin:
             "parent_spot_client_order_id": str(
                 order_info.get("client_order_id", "")
             ),
+            "hedge_claim_key": str(claim.get("claim_key") or "") if claim else "",
+            "hedge_client_order_id": hedge_coid,
             "hedge_requested_for_spot_fill": float(unhedged_delta),
         }
 
