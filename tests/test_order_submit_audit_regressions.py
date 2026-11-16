@@ -381,6 +381,7 @@ async def test_force_close_spot_retry_reuses_position_id_and_adopts_prior_intent
     assert engine.client.submit_calls == 1
     assert engine.client.lookup_calls == 1
     assert len(engine.registered_intents) == 1
+    assert engine.registered_intents[0][2]["required"] is True
 
 
 class _OrderIntentHarness(EngineOrderIntentMixin):
