@@ -1621,3 +1621,53 @@ The modular `executor/venues/{indodax,mexc,okx,tokocrypto}.py` modules contain c
 Source head [b9716184e23c](https://github.com/nzf210/nafaz_arb/commit/b9716184e23ce1152d6e4ece1a1220f16748a10c) and regression-test head [5dcad7dc8cde](https://github.com/nzf210/nafaz_arb/commit/5dcad7dc8cde710c248bf7f7b8eb19ad738211f5) both passed all four CI jobs: [43692777060](https://github.com/nzf210/nafaz_arb/actions/runs/43692777060) and [43692785951](https://github.com/nzf210/nafaz_arb/actions/runs/43692785951). Python executor tests, PostgreSQL schema/integration, Go/race/vet and Docker builds all succeeded. Previous OKX wire-ID mapping and direct-recovery tests also passed workflows [43692697374](https://github.com/nzf210/nafaz_arb/actions/runs/43692697374) and [43692706776](https://github.com/nzf210/nafaz_arb/actions/runs/43692706776).
 
 **Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+
+## 17. Order mutation boundary — audit update 2026-11-16
+
+### 17.1 Exposure-increasing submits
+
+Only the following production lifecycle paths were found to open/add exposure:
+
+1. **Spot entry BUY:** `EngineEntrySubmissionMixin._submit_entry_order` → `ExchangeOrderMixin.place_local_limit_buy` → venue `create_limit_buy_order`.
+2. **Futures hedge SELL:** `EntryHedgeMixin._submit_entry_hedge_order` → `ExchangeFuturesMixin.open_global_short_market` → venue `create_market_sell_order` with `reduceOnly=False`.
+
+Both paths require an initialized PostgreSQL `GlobalStopService` in LIVE mode. Their invariant is:
+
+`register intent → durable PREPARED → shared session advisory lock → commit SUBMITTING → venue POST → persist ACK/REJECT/UNKNOWN`
+
+A failure before the venue boundary is not an ambiguous submit. The futures `hedge_submit_started` flag is set only immediately before the actual create call, so a failed PREPARED/fence step can still invoke the spot rollback path. A failure after the boundary requires exact-client-ID recovery and must not allocate a replacement ID while unresolved.
+
+The generic `MutationGateway.execute_create_order` supports `create_order_direct` or CCXT `create_order`, but the audited source has no active production caller. It independently rejects create requests if Global STOP is missing/disabled and uses the same PREPARED/SUBMITTING fence.
+
+### 17.2 Risk-reducing submits and cancellation
+
+| Operation | Venue behavior | Admission policy |
+|---|---|---|
+| Spot limit SELL | Sell existing base inventory | Allowed under Global STOP; de-risk fence |
+| Spot market SELL | Rollback, taker exit, force-close | Allowed under Global STOP; de-risk fence |
+| Futures market BUY | `reduceOnly=True`, short position side | Allowed under Global STOP; de-risk fence |
+| Cancel existing order | Cancel by venue order ID | Not a create-order path; do not block solely because STOP is active |
+
+Risk-reducing calls do not use the entry PREPARED/SUBMITTING ledger because they must remain available to remove exposure. They retain stable logical/wire client IDs, order-intent registration, and their lifecycle's exact-ID/position reconciliation. When PostgreSQL is available, they take the same session advisory lock as STOP/entry. STOP-active state and unresolved entry rows are advisory only for de-risking; they do not reject the close.
+
+If PostgreSQL connectivity/serialization is unavailable before a de-risk request enters the venue call, the de-risk helper may proceed without the shared lock and emits a CRITICAL audit log. This is an intentional safety asymmetry: LIVE entry remains fail-closed, while a known open position is not stranded solely by a database outage. Invalid client IDs and non-connectivity integrity failures (for example a missing canonical STOP row or schema/permission error) still block and require operator repair. A DB disconnect during an active de-risk POST remains an ambiguous venue result and must be reconciled by exact client ID; it is not automatically resubmitted.
+
+### 17.3 Adapter boundary inventory
+
+- Spot CCXT create wrappers: `create_limit_buy_order`, `create_limit_sell_order`, `create_market_sell_order`.
+- Futures CCXT create wrappers: `create_market_sell_order` for short entry and `create_market_buy_order` for reduceOnly close.
+- Indodax TAPIv2 maps its three public create methods to one raw `_create_order` → `POST /api/v2/order`; caller lifecycle classification remains authoritative.
+- Generic Mutation Gateway dynamically invokes `create_order_direct` or `create_order`.
+- No additional raw CEX order POST was found in `executor/venues/*` or the Go scanner/exchange packages. Go POSTs found in the audit target scanner persistence/configuration and Telegram API endpoints, not CEX trading.
+
+### 17.4 Error and recovery semantics
+
+- Explicit venue business rejection and explicit HTTP 429 may be treated as definitive only where the venue response proves the create was rejected.
+- Timeout, connection reset, generic internal error, HTTP 5xx/service unavailable, and lookup NOT_FOUND remain ambiguous after a create POST.
+- Rollback's transient-settlement retry is limited to explicit Tokocrypto matching-engine/balance rejection signatures (2206/989012); generic transport/server errors are not retryable.
+- PREPARED client-ID reuse requires exact equality of exchange, market type, symbol, side, order type, quantity, price, pair key, `amount_spec`, and `recovery_context`.
+- ACK persistence failure leaves the durable attempt unresolved. Startup exact-client-ID lookup routes by market type; a negative/eventually-consistent lookup records NOT_FOUND but does not release the global gate.
+- PostgreSQL fencing code distinguishes exceptions raised before the venue boundary from errors raised inside the yielded venue request. A venue TimeoutError/ConnectionResetError must not by itself demote a healthy PostgreSQL pool; a failed PostgreSQL session unlock does demote it while the durable SUBMITTING row remains.
+
+The current implementation is PARTIAL. Venue-specific live contract tests, operator identity/secret governance for signed manual resolution, and repeated fault injection against the deployment's actual PostgreSQL topology remain release gates. Do not infer LIVE readiness from source-level fencing or CI alone.
