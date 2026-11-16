@@ -218,20 +218,18 @@ class GlobalStopService:
 
     @asynccontextmanager
     async def derisk_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
-        """Fence a risk-reducing submit (exit, unwind, rollback, force-close).
+        """Serialize a risk-reducing submit without allowing STOP to block it.
 
-        Global STOP blocks new exposure, never the removal of existing exposure.
-        A stopped system that cannot close a position is strictly more dangerous
-        than one that can, so these legs proceed while STOP is active.
-
-        The serialization lock and the unresolved-submit guard are still applied:
-        a stop must not interleave with a de-risking submit, and an ambiguous
-        in-flight order must be resolved before another one is issued.
+        STOP never rejects exits/unwinds/rollbacks/force-closes. An unresolved
+        entry is advisory only for de-risking: leaving known exposure open is
+        worse than allowing a bounded risk-reducing order to proceed.
         """
-        if not await self.ensure_pool():
-            raise GlobalStopError("PostgreSQL STOP serialization is unavailable; de-risking blocked")
         if not client_order_id or len(client_order_id) > 128:
             raise GlobalStopError("valid stable client_order_id is required before submit")
+        if not await self.ensure_pool():
+            raise GlobalStopError("PostgreSQL STOP serialization is unavailable; de-risking may proceed unfenced")
+
+        yielded_to_caller = False
         try:
             async with self.pool.acquire() as conn:
                 locked = False
@@ -257,22 +255,20 @@ class GlobalStopService:
                             client_order_id,
                         )
                         if unresolved is not None:
-                            # Advisory only for de-risking: refusing to close a
-                            # position because an unrelated entry is ambiguous
-                            # would leave real exposure open. The serialization
-                            # lock still prevents the two from interleaving.
                             logger.warning(
                                 "de-risking submit %s proceeds while an unresolved submit exists "
                                 "(%s:%s client_order_id=%s status=%s)",
                                 client_order_id, unresolved["exchange"], unresolved["symbol"],
                                 unresolved["client_order_id"], unresolved["status"],
                             )
+                    yielded_to_caller = True
                     yield conn
                 finally:
                     if locked:
                         try:
                             await conn.execute("select pg_advisory_unlock($1)", FENCE_LOCK_KEY)
-                        except Exception:
+                        except Exception as unlock_error:
+                            self._demote_broken_pool(unlock_error)
                             logger.warning(
                                 "could not release PostgreSQL de-risking session lock; "
                                 "connection loss must be treated as ambiguous"
@@ -280,21 +276,26 @@ class GlobalStopService:
         except GlobalStopError:
             raise
         except Exception as exc:
-            self._demote_broken_pool(exc)
+            # Do not demote the PostgreSQL pool for a venue TimeoutError or
+            # ConnectionResetError raised by the caller inside the yielded scope.
+            if not yielded_to_caller:
+                self._demote_broken_pool(exc)
             raise
 
     @asynccontextmanager
     async def order_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
-        """Hold a session advisory lock while a committed SUBMITTING row protects the HTTP side effect.
+        """Hold a session advisory lock across a durable SUBMITTING venue request.
 
-        Session locks are released by PostgreSQL if the connection/process dies.
-        The separately committed SUBMITTING ledger row survives that disconnect
-        and blocks every later entry until venue reconciliation resolves it.
+        The SUBMITTING row is committed before yielding and survives a lost
+        PostgreSQL session. A venue transport error must not be mistaken for a
+        PostgreSQL disconnect; the yielded scope contains the external request.
         """
         if not await self.ensure_pool():
             raise GlobalStopError("PostgreSQL STOP fencing is unavailable; create-order blocked")
         if not client_order_id or len(client_order_id) > 128:
             raise GlobalStopError("valid stable client_order_id is required before submit")
+
+        yielded_to_caller = False
         try:
             async with self.pool.acquire() as conn:
                 locked = False
@@ -339,14 +340,14 @@ class GlobalStopService:
                     # The SUBMITTING state is committed while the session lock is
                     # still held. A connection loss now releases the lock but not
                     # this durable row.
+                    yielded_to_caller = True
                     yield conn
                 finally:
                     if locked:
                         try:
                             await conn.execute("select pg_advisory_unlock($1)", FENCE_LOCK_KEY)
-                        except Exception:
-                            # A broken connection has already caused PostgreSQL to
-                            # release its session-level lock; the ledger is the guard.
+                        except Exception as unlock_error:
+                            self._demote_broken_pool(unlock_error)
                             logger.warning(
                                 "could not explicitly release PostgreSQL submit session lock; "
                                 "connection loss must be treated as ambiguous"
@@ -354,7 +355,11 @@ class GlobalStopService:
         except GlobalStopError:
             raise
         except Exception as exc:
-            self._demote_broken_pool(exc)
+            # ConnectionResetError/TimeoutError from the venue belongs to the
+            # yielded request, not to the PostgreSQL pool. A real DB disconnect
+            # is detected by the failed session unlock above.
+            if not yielded_to_caller:
+                self._demote_broken_pool(exc)
             raise
 
     async def mark_submit_acknowledged(
