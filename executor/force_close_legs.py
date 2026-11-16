@@ -602,24 +602,24 @@ class ForceCloseLegMixin:
                     await self._record_force_close_spot_order(
                         pair_key, pos, spot_order, client_order_id
                     )
-                status = str(spot_order.get("status") or "").lower()
-                filled_qty, exit_price = await self._verified_force_close_spot_fill(
-                    pair_key, pos, spot_order
-                )
-                if (
-                    status in ("closed", "filled")
-                    and filled_qty + max(1e-12, pos.qty * 1e-8) >= pos.qty
-                    and exit_price > 0
-                ):
-                    logger.info(
-                        f"[Force Close] Spot leg fully liquidated: {pos.qty} {pos.symbol} "
-                        f"@ {exit_price} (filled={filled_qty})"
+                    status = str(spot_order.get("status") or "").lower()
+                    filled_qty, exit_price = await self._verified_force_close_spot_fill(
+                        pair_key, pos, spot_order
                     )
-                    return exit_price
-                logger.critical(
-                    f"[Force Close] partial/unverified spot liquidation for {pair_key}: "
-                    f"requested={pos.qty}, filled={filled_qty}; manual reconciliation required"
-                )
+                    if (
+                        status in ("closed", "filled")
+                        and filled_qty + max(1e-12, pos.qty * 1e-8) >= pos.qty
+                        and exit_price > 0
+                    ):
+                        logger.info(
+                            f"[Force Close] Spot leg fully liquidated: {pos.qty} {pos.symbol} "
+                            f"@ {exit_price} (filled={filled_qty})"
+                        )
+                        return exit_price
+                    logger.critical(
+                        f"[Force Close] partial/unverified spot liquidation for {pair_key}: "
+                        f"requested={pos.qty}, filled={filled_qty}; manual reconciliation required"
+                    )
 
             logger.critical(
                 f"[Force Close] FAILED to liquidate spot leg for {pair_key}. "
