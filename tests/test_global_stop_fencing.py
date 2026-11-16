@@ -192,7 +192,7 @@ async def test_submit_fence_commits_durable_submitting_before_http_scope():
         assert conn.attempts["stable-client-order-id"]["status"] == "SUBMITTING"
 
     statements = [query for query, _ in conn.executed]
-    assert any("pg_advisory_lock" in query for query in statements)
+    assert any("pg_try_advisory_lock" in query for query in statements)
     assert any("pg_advisory_unlock" in query for query in statements)
     assert conn.attempts["stable-client-order-id"]["fence_epoch"] == 12
 
@@ -206,7 +206,7 @@ async def test_pair_admission_guard_runs_under_lock_before_submitting_transition
     guard_calls = []
 
     async def reject_existing_pair():
-        assert any("pg_advisory_lock" in query for query, _ in conn.executed)
+        assert any("pg_try_advisory_lock" in query for query, _ in conn.executed)
         guard_calls.append(True)
         return False
 
