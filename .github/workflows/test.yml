@@ -190,10 +190,15 @@ jobs:
           docker exec nafaz-migration-pg createdb -U postgres nafaz_restore_test
           docker exec -i nafaz-migration-pg pg_restore -U postgres -d nafaz_restore_test \
             --no-owner --no-acl < "$backup"
-          restored="$(docker exec nafaz-migration-pg psql -U postgres -d nafaz_restore_test -Atqc \
-            "select count(*) from public.nafaz_schema_migrations")"
-          expected="$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' | wc -l)"
-          [[ "$restored" == "$expected" ]]
+          # The runner deliberately snapshots the database BEFORE creating
+          # the migration ledger or applying schema changes. A restore of this
+          # archive must therefore reproduce the pristine pre-migration state.
+          restored_ledger="$(docker exec nafaz-migration-pg psql -U postgres -d nafaz_restore_test -Atqc \
+            "select to_regclass('public.nafaz_schema_migrations') is not null")"
+          restored_tables="$(docker exec nafaz-migration-pg psql -U postgres -d nafaz_restore_test -Atqc \
+            "select count(*) from pg_tables where schemaname='public'")"
+          [[ "$restored_ledger" == "f" ]]
+          [[ "$restored_tables" == "0" ]]
       - name: Refuse an untracked existing schema without changing it
         env:
           NAFAZ_ENV_FILE: /dev/null
