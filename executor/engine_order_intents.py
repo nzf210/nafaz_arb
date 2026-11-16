@@ -128,7 +128,11 @@ class EngineOrderIntentMixin:
         # a configured STOP database must not be mistaken for durable order
         # ownership when the registry would otherwise fall back to Redis only.
         required = bool(metadata.pop("required", True))
-        has_durable_registry = bool(getattr(self.supabase, "enabled", False))
+        has_durable_registry = bool(getattr(self.supabase, "enabled", False)) or (
+            bool(getattr(self.config, "postgres_dsn", ""))
+            and getattr(self, "global_stop", None) is not None
+            and getattr(self.global_stop, "enabled", False)
+        )
         if (
             not bool(getattr(self.config, "mock_mode", False))
             and required
