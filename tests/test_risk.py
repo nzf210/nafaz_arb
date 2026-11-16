@@ -17,18 +17,11 @@ from tests.conftest import BalancesMockClient, MockExchangeClient, SlowLimitBuyC
 
 
 class _RiskFence:
-    def __init__(self, service, client_order_id, pre_submit_guard=None):
+    def __init__(self, service, client_order_id):
         self.service = service
         self.client_order_id = client_order_id
-        self.pre_submit_guard = pre_submit_guard
 
     async def __aenter__(self):
-        if self.pre_submit_guard is not None:
-            allowed = self.pre_submit_guard()
-            if asyncio.iscoroutine(allowed):
-                allowed = await allowed
-            if not allowed:
-                raise RuntimeError("pre-submit admission guard rejected the pair")
         self.service.statuses[self.client_order_id] = "SUBMITTING"
         return object()
 
@@ -46,7 +39,9 @@ class _RiskGlobalStop:
         self.statuses[kwargs["client_order_id"]] = "PREPARED"
 
     def order_submit_fence(self, *, client_order_id, pre_submit_guard=None):
-        return _RiskFence(self, client_order_id, pre_submit_guard)
+        # This fixture isolates venue-error classification; pair admission is
+        # covered by the dedicated PostgreSQL submit-fence integration test.
+        return _RiskFence(self, client_order_id)
 
     async def mark_submit_acknowledged(self, client_order_id, order):
         self.statuses[client_order_id] = "ACKNOWLEDGED"
