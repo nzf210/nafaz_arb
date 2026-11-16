@@ -716,3 +716,46 @@ divalidasi di `HedgingConfig.sanitize()`:
 - Semua nilai numerik di-clamp ke rentang aman; `mode` dan
   `min_order_policy` di-whitelist; `allow_min_notional_overhedge` default
   `false` dan peringatan eksplisit bila diaktifkan.
+
+## Hedging policy enforcement fix (2026-11-16)
+
+Perbaikan penerapan kebijakan incremental hedging agar konfigurasi
+`hedging.futures.min_order_policy` benar-benar mengikat eksekusi:
+
+- `_submit_entry_hedge_order` kini membaca `hedging.futures_min_order_policy`
+  (fallback ke legacy `futures_min_order_policy`, default
+  `wait_until_covered`). Kebijakan `wait_until_covered` dipetakan ke
+  `calculate_order_size(safety_policy="offset_spot")`: delta di bawah
+  minimum notional **tidak** di-scale ke minimum Futures (tanpa overhedge),
+  melainkan menolak hedge dan menandai pasangan
+  `RECONCILIATION_REQUIRED`. Scaling ke minimum hanya terjadi bila policy
+  `allow_min_notional` **dan** `futures_allow_min_notional_overhedge=true`.
+- `ExchangeFuturesMixin.open_global_short_market` tidak lagi melakukan
+  `base_to_order_amount(..., scale_to_min=True)` dan tidak lagi men-scale
+  notional ke bawah minimum sendiri — sizing sudah diputuskan upstream;
+  boundary venue kini menolak (raise) order di bawah minimum.
+- Delta kumulatif fill dihitung monotonic (`max(previous, current)`) dan
+  `unhedged_delta = max(0, cumulative - hedged_qty)`, sehingga snapshot
+  fill yang mundur dari venue tidak pernah mengecilkan kewajiban hedge.
+- Order spot terminal (closed/canceled/...) di bawah threshold
+  `spot_fill_trigger_pct`, atau yang unhedged delta-nya di bawah
+  `min_partial_fill_usd`, tidak lagi melewati kebijakan secara diam-diam;
+  keduanya ditandai `RECONCILIATION_REQUIRED` dengan alasan eksplisit
+  (`TERMINAL_ORDER_BELOW_HEDGE_THRESHOLD` /
+  `TERMINAL_ORDER_BELOW_MIN_NOTIONAL`). `_finalize_entry_order` tidak lagi
+  me-reset state reconciliation menjadi `IDLE`.
+- `futures_target_hedge_ratio` kini diterapkan pada sizing:
+  `target_unhedged_delta = unhedged_delta * ratio`.
+
+### Tindak lanjut — lock pembacaan fill → perhitungan unhedged → hedge intent lintas instance
+
+`asyncio.Lock` per pair (`_pair_lock`) hanya berlaku dalam satu proses.
+PostgreSQL Global STOP fencing sudah melindungi boundary submit order,
+tetapi belum ada transaksi atomik lintas instance yang membungkus
+(pembacaan fill kumulatif → perhitungan unhedged → registrasi hedge intent)
+untuk dua executor yang memproses entry yang sama. Rencana: gunakan
+`pg_advisory_xact_lock` yang di-key oleh `spot exchange + order_id`
+(mengikuti pola `FENCE_LOCK_KEY` di `global_stop.py`) di awal
+`_handle_entry_fills`, dan tuliskan watermark `hedged_short_qty` dalam
+transaksi yang sama sebelum submit Futures. Perlu pengujian khusus
+two-executor pada entry yang sama.

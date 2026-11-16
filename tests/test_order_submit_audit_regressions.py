@@ -480,3 +480,100 @@ async def test_force_close_spot_ids_do_not_collide_after_one_billion_ms():
     assert len(client_ids) == 2
     assert client_ids[0] != client_ids[1]
     assert engine.client.submit_calls == 2
+
+
+class _RecordingFuturesVenue:
+    def __init__(self):
+        self.submitted = []
+
+    async def open_global_short_market(self, symbol, amount, client_order_id=None,
+                                       amount_spec=None, price=0.0, min_notional_usdt=0.0):
+        self.submitted.append(amount)
+        return {
+            "id": "hedge-1", "symbol": symbol, "status": "closed",
+            "filled": amount, "average": price or 50000.0,
+            "client_order_id": client_order_id,
+        }
+
+
+class _PolicyHarness(EntryHedgeMixin):
+    """Harness for sizing-policy tests without the fencing machinery."""
+
+    def __init__(self, hedging_cfg):
+        self.global_stop = None
+        self.config = SimpleNamespace(
+            mock_mode=True, futures_min_notional=0.0, hedging=hedging_cfg,
+        )
+        self.capabilities = None
+        self.client = _RecordingFuturesVenue()
+        self.intents = []
+
+    async def _register_order_intent(self, *args, **kwargs):
+        self.intents.append((args, kwargs))
+
+    async def _register_order(self, *args, **kwargs):
+        return kwargs.get("order", args[2] if len(args) > 2 else {})
+
+    def _next_order_seq(self):
+        return 7
+
+
+def _policy_order_info():
+    return {
+        "pending_hedge_client_order_id": "hedge-policy-1",
+        "global_exchange": "okx",
+        "global_symbol": "BTC/USDT:USDT",
+        "global_amount_spec": {
+            "unit": "BASE", "step": 0.0001, "min": 0.0001, "base_per_unit": 1
+        },
+        "local_exchange": "tokocrypto",
+        "order_id": "spot-order-1",
+        "client_order_id": "spot-client-1",
+        "futures_min_notional": 10.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_hedge_sizing_uses_hedging_min_order_policy_not_scale_to_min():
+    """wait_until_covered (default): sub-minimum delta must not scale up to min notional."""
+    from executor.config import HedgingConfig
+
+    harness = _PolicyHarness(HedgingConfig())
+    order_info = _policy_order_info()
+    # $2.50 notional delta, $10 min -> must raise, not scale to $10 short.
+    with pytest.raises(ValueError, match="below futures minimum"):
+        await harness._submit_entry_hedge_order(
+            "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.00005, 50000.0
+        )
+    assert harness.client.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_hedge_sizing_allows_min_notional_overhedge_when_policy_enables_it():
+    """allow_min_notional + overhedge=true restores the legacy scale_to_min behavior."""
+    from executor.config import HedgingConfig
+
+    cfg = HedgingConfig()
+    cfg.futures_min_order_policy = "allow_min_notional"
+    cfg.futures_allow_min_notional_overhedge = True
+    harness = _PolicyHarness(cfg)
+    order_info = _policy_order_info()
+    await harness._submit_entry_hedge_order(
+        "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.00005, 50000.0
+    )
+    assert harness.client.submitted == [pytest.approx(0.0002)]
+
+
+@pytest.mark.asyncio
+async def test_hedge_sizing_applies_target_hedge_ratio():
+    """futures_target_hedge_ratio scales the hedged quantity, not just spot fill."""
+    from executor.config import HedgingConfig
+
+    cfg = HedgingConfig()
+    cfg.futures_target_hedge_ratio = 0.5
+    harness = _PolicyHarness(cfg)
+    order_info = _policy_order_info()
+    await harness._submit_entry_hedge_order(
+        "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.001, 50000.0
+    )
+    assert harness.client.submitted == [pytest.approx(0.0005)]

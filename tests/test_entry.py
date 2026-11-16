@@ -259,7 +259,9 @@ async def test_entry_order_ttl_expiration(engine, fake_redis, mock_client):
 
 @pytest.mark.asyncio
 async def test_entry_order_ttl_cancels_remainder_and_hedges_partial_fill(engine, fake_redis, mock_client):
-    """An aged partially-filled maker order must cancel its remainder and hedge the final fill."""
+    """An aged partially-filled maker order must cancel its remainder; a partial
+    fill below the hedge threshold must NOT open a futures hedge (wait_until_covered
+    policy) — it is routed to reconciliation instead of silently bypassing policy."""
     pair_tag = "indodax:btc_idr"
     engine.config.max_order_ttl_seconds = 10
     order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
@@ -274,10 +276,35 @@ async def test_entry_order_ttl_cancels_remainder_and_hedges_partial_fill(engine,
     await engine._check_entry_orders()
 
     assert ("301", "btc_idr") in mock_client.cancelled_orders
+    # Fill is 0.48% (< 20% threshold) and $3 (< $10 min-notional): no hedge may
+    # be submitted under the configured hedging policy.
+    assert len(mock_client.global_short_sells) == 0
+    assert pair_tag not in engine.pending_entry_orders
+    assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_entry_order_ttl_cancels_remainder_and_hedges_fill_above_threshold(engine, fake_redis, mock_client):
+    """When the fill has crossed the hedge threshold, the TTL cancel must still
+    hedge the remaining delta normally."""
+    pair_tag = "indodax:btc_idr"
+    engine.config.max_order_ttl_seconds = 10
+    order_info = _entry_order_info(pair_tag, int(time.time() * 1000))
+    order_info["placed_time"] = time.time() - 15
+    order_info["qty"] = 0.01
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+    mock_client.orders["301"] = {
+        "id": "301", "symbol": "btc_idr", "status": "open", "filled": 0.005,
+    }
+
+    await engine._check_entry_orders()
+
+    assert ("301", "btc_idr") in mock_client.cancelled_orders
     assert len(mock_client.global_short_sells) == 1
-    assert mock_client.global_short_sells[0]["amount"] == pytest.approx(0.000048)
+    assert mock_client.global_short_sells[0]["amount"] == pytest.approx(0.005)
     assert pair_tag in engine.active_positions
-    assert engine.active_positions[pair_tag].qty == pytest.approx(0.000048)
+    assert engine.active_positions[pair_tag].qty == pytest.approx(0.005)
     assert pair_tag not in engine.pending_entry_orders
     assert engine.states[pair_tag] == PositionState.HEDGED_ACTIVE
 

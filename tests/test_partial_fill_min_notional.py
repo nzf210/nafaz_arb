@@ -112,8 +112,9 @@ async def test_order_info_tracks_filled_spot_amount_in_realtime(engine, fake_red
 
 
 @pytest.mark.asyncio
-async def test_futures_executor_scales_order_when_below_min_notional(engine, fake_redis, mock_client, caplog):
-    """Order futures dikirim sesuai nilai minimum notional saat spot fill berada di bawah batas minimum."""
+async def test_futures_executor_rejects_sub_minimum_fill_under_wait_until_covered(engine, fake_redis, mock_client, caplog):
+    """Dengan kebijakan wait_until_covered (default), spot fill di bawah minimum notional
+    TIDAK boleh di-scale menjadi short futures (overhedge); harus memicu offset/unwind."""
     pair_tag = "indodax:btc_idr"
     now_ms = int(time.time() * 1000)
     order_info = _entry_order_info(pair_tag, now_ms)
@@ -129,6 +130,44 @@ async def test_futures_executor_scales_order_when_below_min_notional(engine, fak
     engine.pending_entry_orders[pair_tag] = order_info
     engine.states[pair_tag] = PositionState.ENTRY_PENDING
 
+    # Spot fully filled 0.01 BTC (past the 20% threshold) so only the
+    # min-notional rule applies. Notional is 0.01 * 50000 = $500, well above $10
+    # min — sanity check the baseline path hedges normally.
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "closed",
+        "filled": 0.01,
+    }
+
+    with caplog.at_level("WARNING"):
+        await engine._check_entry_orders()
+
+    # Fill above minimum: hedge must go out 1:1.
+    assert len(mock_client.global_short_sells) == 1
+    assert mock_client.global_short_sells[0]["amount"] == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
+async def test_futures_executor_does_not_overhedge_below_min_notional(engine, fake_redis, mock_client, caplog):
+    """wait_until_covered: fill $2.50 (di bawah min $10) tidak boleh di-scale ke $10 short."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 30
+    order_info["qty"] = 0.01
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+    order_info["futures_min_notional"] = 10.0
+
+    engine.config.max_order_ttl_seconds = 10
+    # Tekan threshold supaya aturan threshold tidak ikut campur; yang diuji
+    # di sini murni aturan minimum notional dengan policy wait_until_covered.
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
     # Spot only filled 0.00005 BTC -> Notional is 0.00005 * 50000 = $2.50 (below $10 min)
     mock_client.orders["301"] = {
         "id": "301",
@@ -140,11 +179,10 @@ async def test_futures_executor_scales_order_when_below_min_notional(engine, fak
     with caplog.at_level("WARNING"):
         await engine._check_entry_orders()
 
-    # Futures short order must have been sent scaled to minimum notional ($10 / $50000 = 0.0002 BTC)
-    assert len(mock_client.global_short_sells) == 1
-    short_sent = mock_client.global_short_sells[0]
-    assert short_sent["amount"] == pytest.approx(0.0002)
-
-    # Imbalance delta must have been logged
-    assert any("[Delta Imbalance Logger]" in record.message for record in caplog.records)
-    assert order_info.get("delta_imbalance") == pytest.approx(0.00015)
+    # No futures short may be submitted: scaling up would overhedge.
+    assert len(mock_client.global_short_sells) == 0
+    # The policy-driven rejection must be surfaced loudly.
+    assert any(
+        "TERMINAL_ORDER_BELOW_MIN_NOTIONAL" in record.message
+        for record in caplog.records
+    )

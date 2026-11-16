@@ -35,7 +35,12 @@ class EntryHedgeMixin:
         order_info["filled"] = max(previous_filled, current_filled)
         order_info["filled_spot_amount"] = order_info["filled"]
         hedged_qty = float(order_info.get("hedged_short_qty", 0.0))
-        unhedged_delta = current_filled - hedged_qty
+        # Fill quantity must be monotonic: an exchange snapshot that regresses
+        # below a previously confirmed fill must never shrink the hedging
+        # obligation. Compute the unhedged delta from the validated cumulative
+        # value, not the raw snapshot.
+        cumulative_spot_filled = max(previous_filled, current_filled)
+        unhedged_delta = max(0.0, cumulative_spot_filled - hedged_qty)
 
         # Extend Redis TTL on partial fill so pending order record does not expire
         if current_filled > 0 and getattr(self, "redis", None):
@@ -91,7 +96,56 @@ class EntryHedgeMixin:
         # a submission still waits until the delta covers a min-notional order.
         hedgeable_delta = delta_val_usd >= self.config.min_partial_fill_usd
         if hedging_enabled:
-            should_hedge = (threshold_reached and hedgeable_delta) or is_complete
+            # A terminal order (closed/canceled/etc.) must not silently bypass
+            # the activation threshold: hedging below the agreed trigger would
+            # open a futures position outside policy. Route it to explicit
+            # reconciliation instead.
+            if is_complete and not threshold_reached:
+                self._mark_failed(
+                    pair_tag,
+                    "TERMINAL_ORDER_BELOW_HEDGE_THRESHOLD",
+                    (
+                        f"Spot order reached terminal state '{status}' with cumulative fill "
+                        f"{spot_fill_pct:.1f}% below the {threshold_pct:.1f}% hedge threshold; "
+                        "hedge policy violated — manual reconciliation required."
+                    ),
+                    detail={
+                        "order_id": order_info.get("order_id"),
+                        "cumulative_filled": cumulative_filled,
+                        "spot_target_qty": spot_target_qty,
+                        "spot_fill_pct": spot_fill_pct,
+                        "threshold_pct": threshold_pct,
+                        "unhedged_qty": unhedged_delta,
+                    },
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                await self._maybe_publish_status()
+                return
+            # A terminal order whose unhedged delta can never satisfy the
+            # min-notional rule will never become covered; hedging it would
+            # overhedge and leaving it would strand unhedged spot exposure.
+            if is_complete and not hedgeable_delta:
+                self._mark_failed(
+                    pair_tag,
+                    "TERMINAL_ORDER_BELOW_MIN_NOTIONAL",
+                    (
+                        f"Spot order terminal ('{status}') with unhedged delta ${delta_val_usd:.2f} "
+                        f"below the ${self.config.min_partial_fill_usd:.2f} min-notional rule "
+                        "and hedge policy 'wait_until_covered'; manual reconciliation required."
+                    ),
+                    detail={
+                        "order_id": order_info.get("order_id"),
+                        "unhedged_qty": unhedged_delta,
+                        "delta_val_usd": delta_val_usd,
+                        "min_partial_fill_usd": self.config.min_partial_fill_usd,
+                    },
+                    state=PositionState.RECONCILIATION_REQUIRED,
+                )
+                await self._maybe_publish_status()
+                return
+            should_hedge = (threshold_reached and hedgeable_delta) or (
+                is_complete and hedgeable_delta
+            )
         else:
             should_hedge = hedgeable_delta or is_complete
         if should_hedge:
@@ -270,13 +324,45 @@ class EntryHedgeMixin:
         amount_spec = AmountSpec.from_dict(
             order_info.get("global_amount_spec")
         )
-        safety_policy = str(
-            order_info.get("partial_fill_safety_policy")
-            or getattr(cfg, "partial_fill_safety_policy", "scale_to_min")
+        # Min-order policy is governed by the configured hedging policy
+        # (hedging.futures.min_order_policy), not a legacy partial-fill safety
+        # knob. "wait_until_covered" (the sanitized default) must never scale a
+        # sub-minimum delta up to the venue minimum, which would overhedge.
+        hedging_cfg = getattr(cfg, "hedging", None)
+        if hedging_cfg is not None and getattr(hedging_cfg, "futures_min_order_policy", ""):
+            min_order_policy = str(hedging_cfg.futures_min_order_policy)
+        elif getattr(cfg, "futures_min_order_policy", ""):
+            min_order_policy = str(cfg.futures_min_order_policy)
+        else:
+            min_order_policy = "wait_until_covered"
+        # Map the policy onto calculate_order_size's safety policy: strictly
+        # wait (return 0 → offset/unwind spot) unless explicit overhedge is allowed.
+        allow_overhedge = bool(getattr(hedging_cfg, "futures_allow_min_notional_overhedge", False)) if (
+            hedging_cfg is not None
+        ) else bool(getattr(cfg, "futures_allow_min_notional_overhedge", False))
+        max_overhedge_pct = (
+            float(getattr(hedging_cfg, "futures_max_overhedge_pct", 0.0))
+            if hedging_cfg is not None
+            else float(getattr(cfg, "futures_max_overhedge_pct", 0.0))
+        )
+        safety_policy = (
+            "scale_to_min"
+            if (min_order_policy == "allow_min_notional" and allow_overhedge)
+            else "offset_spot"
         )
 
+        hedge_ratio = 1.0
+        if hedging_cfg is not None:
+            try:
+                hedge_ratio = float(getattr(hedging_cfg, "futures_target_hedge_ratio", 1.0) or 1.0)
+            except (TypeError, ValueError):
+                hedge_ratio = 1.0
+        if not (hedge_ratio > 0):
+            hedge_ratio = 1.0
+        target_unhedged_delta = unhedged_delta * hedge_ratio
+
         futures_hedge_qty, target_notional, delta_imbalance = calculate_order_size(
-            filled_spot_amount=unhedged_delta,
+            filled_spot_amount=target_unhedged_delta,
             expected_price_usdt=expected_short_price,
             futures_amount_spec=amount_spec,
             futures_min_notional=futures_min_notional,
@@ -286,18 +372,18 @@ class EntryHedgeMixin:
         if futures_hedge_qty <= 0:
             logger.warning(
                 f"[Delta Imbalance Logger] Spot fill {unhedged_delta:.8f} (${unhedged_delta * expected_short_price:.2f}) "
-                f"below futures minimum (${futures_min_notional:.2f}) and safety policy is '{safety_policy}'; "
+                f"below futures minimum (${futures_min_notional:.2f}) and min-order policy is '{min_order_policy}'; "
                 "aborting hedge to trigger spot offset/unwind."
             )
             raise ValueError(
                 f"filled spot notional below futures minimum requirement ({futures_min_notional} USDT); "
-                f"safety policy '{safety_policy}' triggered spot offset"
+                f"min-order policy '{min_order_policy}' triggered spot offset"
             )
 
         if abs(delta_imbalance) > 1e-12:
             logger.warning(
-                f"[Delta Imbalance Logger] Imbalance detected on {pair_tag}: spot filled={unhedged_delta:.8f} "
-                f"(${unhedged_delta * expected_short_price:.2f}) vs futures min notional (${futures_min_notional:.2f}). "
+                f"[Delta Imbalance Logger] Imbalance detected on {pair_tag}: target hedge qty={target_unhedged_delta:.8f} "
+                f"(${target_unhedged_delta * expected_short_price:.2f}) vs futures min notional (${futures_min_notional:.2f}). "
                 f"Scaled futures short to {futures_hedge_qty:.8f} (${target_notional:.2f}). "
                 f"Delta imbalance: {delta_imbalance:+.8f}"
             )
@@ -946,6 +1032,12 @@ class EntryHedgeMixin:
 
         del self.pending_entry_orders[pair_tag]
         await self._clear_pending_entry(pair_tag)
+        if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+            # A reconciliation halt set while the order was terminal must not
+            # be silently reset by cleanup; manual intervention is pending.
+            self.pending_entry_orders.pop(pair_tag, None)
+            await self._clear_pending_entry(pair_tag)
+            return
         if pair_tag in self.active_positions and self.active_positions[pair_tag].qty > 0:
             self.states[pair_tag] = PositionState.HEDGED_ACTIVE
         else:

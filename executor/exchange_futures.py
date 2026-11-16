@@ -61,19 +61,23 @@ class ExchangeFuturesMixin:
         if amount <= 0:
             raise ValueError(f"invalid short amount: {amount}")
 
-        # Check futures min notional constraint dynamically
+        # Check futures min notional constraint dynamically. Sizing decisions
+        # were already made upstream under the configured min-order policy;
+        # this boundary strictly enforces them and never scales up to the
+        # venue minimum (which would silently overhedge).
         filled_spot_notional = amount * price if price > 0 else 0.0
         if min_notional_usdt > 0 and price > 0 and filled_spot_notional < min_notional_usdt:
-            target_futures_size = max(amount, min_notional_usdt / price)
-            delta_imbalance = target_futures_size - amount
             logger.warning(
-                f"[Delta Imbalance Logger] Filled spot notional (${filled_spot_notional:.2f}) < futures min notional (${min_notional_usdt:.2f}). "
-                f"Scaled futures short from {amount} to {target_futures_size} (delta imbalance: +{delta_imbalance:.8f})."
+                f"[Delta Imbalance Logger] Filled spot notional (${filled_spot_notional:.2f}) < futures min notional "
+                f"(${min_notional_usdt:.2f}); rejecting sub-minimum short of {amount}."
             )
-            amount = target_futures_size
+            raise ValueError(
+                f"short amount {amount} notional ${filled_spot_notional:.2f} is below "
+                f"futures minimum ${min_notional_usdt:.2f}; refusing to overhedge"
+            )
 
         spec = _require_amount_spec(amount_spec)
-        order_amount = base_to_order_amount(amount, spec, scale_to_min=True)
+        order_amount = base_to_order_amount(amount, spec)
         order_symbol = await self._resolve_symbol(self.global_fut, symbol, "futures")
         # Market Sell on Futures opens a Short position. CCXT accepts one
         # params mapping; merge the id and reduceOnly flag rather than passing
