@@ -478,3 +478,8 @@ Source/test CI: [GitHub Actions run 43825126487](https://github.com/nzf210/nafaz
 **Release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
 
 - [x] Restrict `ABORTED` transition to PREPARED only; SUBMITTING/UNKNOWN cannot be retired by a pre-submit abort path. Regression verifies the database rejects UPDATE 0 for an unresolved attempt.
+
+- [x] LIVE force-close spot uses a position-bound deterministic client ID, durable-required intent, and exact-ID adoption; a prior NOT_FOUND/partial/non-terminal order cannot be resubmitted with a new ID.
+- [x] Required LIVE order intents require the actual Supabase/outbox registry writer; local `postgres_dsn` alone is not treated as durable order-registry storage.
+- [x] Force-close cancellation requires final terminal venue status and reconciles racing entry/exit fills before force-close legs continue.
+- [ ] Decide/validate the operational policy for optional best-effort de-risk intents when Supabase is disabled and Redis is the only remaining registry store; do not claim restart-safe recovery in that configuration.
