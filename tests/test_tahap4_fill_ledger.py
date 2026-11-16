@@ -380,6 +380,12 @@ class FenceConn(FakeConn):
         super().__init__(pool.calls)
         self.pool = pool
 
+    async def fetchval(self, sql, *args):
+        self.store.append((sql, args))
+        if "pg_try_advisory_lock" in sql:
+            return True
+        raise AssertionError(f"unexpected fetchval query: {sql}")
+
     async def execute(self, sql, *args):
         # The advisory lock/unlock go through execute(), not fetchrow().
         self.store.append((sql, args))
