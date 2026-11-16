@@ -6,8 +6,9 @@ from executor.derisk_fence import derisk_fence
 from executor.entry_hedge import EntryHedgeMixin
 from executor.force_close_legs import ForceCloseLegMixin
 from executor.engine_order_intents import EngineOrderIntentMixin
+from executor.engine_signal import EngineSignalMixin
 from executor.global_stop import GlobalStopError, GlobalStopService
-from executor.helpers import is_transient_settlement_error
+from executor.helpers import PENDING_ENTRY_KEY_PREFIX, is_transient_settlement_error
 from executor.rollback import RollbackMixin
 
 
@@ -316,6 +317,33 @@ async def test_aborted_transition_cannot_retire_submitting_or_unknown_attempt():
 
     assert "status = 'PREPARED'" in conn.query
     assert "status in ('PREPARED','SUBMITTING','UNKNOWN')" not in conn.query
+
+
+class _PairAdmissionHarness(EngineSignalMixin):
+    def __init__(self, redis):
+        self.redis = redis
+        self.config = SimpleNamespace(mock_mode=False)
+        self.active_positions = {}
+        self.pending_entry_orders = {}
+
+
+@pytest.mark.asyncio
+async def test_shared_pending_entry_marker_blocks_cross_instance_pair_reentry(fake_redis):
+    harness = _PairAdmissionHarness(fake_redis)
+    pair_key = "tokocrypto:BTC_IDR"
+    await fake_redis.set(PENDING_ENTRY_KEY_PREFIX + pair_key, '{"client_order_id":"entry-a"}')
+
+    assert await harness._has_active_or_pending_position(pair_key) is True
+
+
+@pytest.mark.asyncio
+async def test_pair_admission_fails_closed_when_shared_redis_state_is_unavailable():
+    class _UnavailableRedis:
+        async def exists(self, _key):
+            raise ConnectionError("redis unavailable")
+
+    harness = _PairAdmissionHarness(_UnavailableRedis())
+    assert await harness._has_active_or_pending_position("tokocrypto:BTC_IDR") is True
 
 
 class _ForceCloseRegistry:
