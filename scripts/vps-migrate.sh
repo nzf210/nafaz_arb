@@ -18,7 +18,7 @@ if [[ -f "$ENV_FILE" ]]; then
     key="${key//[[:space:]]/}"
     [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
     case "$key" in
-      NAFAZ_MIGRATION_TARGET|MIGRATION_BACKUP_DIR|EXPECTED_SUPABASE_PROJECT_REF|PGHOST|PGPORT|PGDATABASE|PGUSER|PGPASSWORD|DATABASE_URL|POSTGRES_DSN|BACKUP_DATABASE_PROJECT_REF) ;;
+      NAFAZ_MIGRATION_TARGET|NAFAZ_PG_CONTAINER|MIGRATION_BACKUP_DIR|EXPECTED_SUPABASE_PROJECT_REF|PGHOST|PGPORT|PGDATABASE|PGUSER|PGPASSWORD|DATABASE_URL|POSTGRES_DSN|BACKUP_DATABASE_PROJECT_REF) ;;
       *) continue ;;
     esac
     if [[ ! -v "$key" ]]; then
@@ -90,12 +90,16 @@ done
 
 LOCK_KEY="local"
 if [[ "$TARGET" == local ]]; then
-  PGHOST="${PGHOST:-127.0.0.1}"
-  PGPORT="${PGPORT:-5432}"
+  PG_CONTAINER="${NAFAZ_PG_CONTAINER:-wch-stg-postgres}"
   PGDATABASE="${PGDATABASE:-nafaz}"
-  PGUSER="${PGUSER:-postgres}"
-  export PGHOST PGPORT PGDATABASE PGUSER
-  LOCK_KEY="$PGHOST-$PGPORT-$PGDATABASE"
+  command -v docker >/dev/null || die "docker CLI missing; local migrations require Docker access."
+  docker inspect "$PG_CONTAINER" >/dev/null 2>&1 || die "PostgreSQL container '$PG_CONTAINER' not found or inaccessible."
+  if [[ -z "${PGUSER:-}" ]]; then
+    PGUSER="$(docker exec "$PG_CONTAINER" sh -lc 'printf "%s" "${POSTGRES_USER:-postgres}"')"
+  fi
+  [[ -n "$PGUSER" ]] || die "Could not determine PostgreSQL user; set PGUSER explicitly."
+  export PGDATABASE PGUSER
+  LOCK_KEY="$(printf '%s' "$PG_CONTAINER-$PGDATABASE" | sha256sum | awk '{print $1}')"
 else
   command -v supabase >/dev/null || die "Supabase CLI missing."
   [[ -f supabase/config.toml && -f supabase/.temp/project-ref ]] || die "Supabase project is not linked."
@@ -109,26 +113,37 @@ exec 9>"${TMPDIR:-/tmp}/nafaz-migration-$LOCK_KEY.lock"
 flock -n 9 || die "Another migration runner is active for $LOCK_KEY."
 
 if [[ "$TARGET" == local ]]; then
-  command -v psql >/dev/null || die "psql missing."
-  command -v pg_isready >/dev/null || die "pg_isready missing."
-  log "Checking local PostgreSQL at $PGHOST:$PGPORT database=$PGDATABASE user=$PGUSER"
-  pg_isready -h "$PGHOST" -p "$PGPORT" -d "$PGDATABASE" -U "$PGUSER" >/dev/null || die "Local PostgreSQL is not accepting connections. No remote fallback is attempted."
-  psql -X -v ON_ERROR_STOP=1 -Atqc 'select current_database(), current_user, inet_server_addr(), inet_server_port()' |
-    while IFS='|' read -r db usr host port; do
-      log "Connected database=$db user=$usr server_addr=${host:-local-socket} port=${port:-local}"
-    done
+  # PostgreSQL client tools execute inside the selected Docker container.
+  # Migration SQL and backup archives remain on the VPS host.
+  db_exec() { docker exec -i "$PG_CONTAINER" "$@"; }
+  db_psql() { db_exec psql -X -U "$PGUSER" -d "$PGDATABASE" -v ON_ERROR_STOP=1 "$@"; }
 
-  # The migration set grants backend access to Supabase-compatible roles.
-  # Do not silently create or weaken database roles on an existing VPS.
+  running="$(docker inspect -f '{{.State.Running}}' "$PG_CONTAINER" 2>/dev/null || true)"
+  [[ "$running" == "true" ]] || die "PostgreSQL container '$PG_CONTAINER' is not running."
+  log "Checking Docker PostgreSQL container=$PG_CONTAINER database=$PGDATABASE user=$PGUSER"
+  db_exec pg_isready -h /var/run/postgresql -p 5432 -d "$PGDATABASE" -U "$PGUSER" >/dev/null ||
+    die "PostgreSQL in container '$PG_CONTAINER' is not accepting connections."
+
+  identity="$(db_psql -Atqc 'select current_database(), current_user, inet_server_addr(), inet_server_port()')"
+  IFS='|' read -r connected_db connected_user server_addr server_port <<< "$identity"
+  [[ "$connected_db" == "$PGDATABASE" ]] || die "Connected database mismatch: expected '$PGDATABASE', got '$connected_db'."
+  [[ "$connected_user" == "$PGUSER" ]] || die "Connected user mismatch: expected '$PGUSER', got '$connected_user'."
+  log "Connected database=$connected_db user=$connected_user server_addr=${server_addr:-container-local} port=${server_port:-5432}"
+
+  # Required application roles are checked, never created or weakened here.
   for role in anon authenticated service_role; do
-    exists="$(psql -X -v ON_ERROR_STOP=1 -Atqc "select count(*) from pg_roles where rolname='$role'")"
-    [[ "$exists" == "1" ]] || die "Required PostgreSQL role '$role' is missing. Create/review it explicitly before applying these migrations."
+    exists="$(db_psql -Atqc "select count(*) from pg_roles where rolname='$role'")"
+    [[ "$exists" == "1" ]] || die "Required PostgreSQL role '$role' is missing. Review/create it explicitly before applying migrations."
   done
 
-  ledger_exists="$(psql -X -v ON_ERROR_STOP=1 -Atqc "select to_regclass('public.nafaz_schema_migrations') is not null")"
+  ledger_exists="$(db_psql -Atqc "select to_regclass('public.nafaz_schema_migrations') is not null")"
+  fresh_database=false
   if [[ "$ledger_exists" != "t" ]]; then
-    legacy_tables="$(psql -X -v ON_ERROR_STOP=1 -Atqc "select count(*) from pg_tables where schemaname='public' and tablename in ('positions','orders','scanner_opportunities','executor_global_control')")"
-    [[ "$legacy_tables" == "0" ]] || die "Existing NAFAZ tables found but migration ledger is absent. Refusing to replay baseline automatically; inspect and baseline-adopt the current schema first."
+    existing_public_tables="$(db_psql -Atqc "select count(*) from pg_tables where schemaname='public'")"
+    [[ "$existing_public_tables" == "0" ]] ||
+      die "Existing public tables found but migration ledger is absent. Refusing to replay baseline automatically; inspect and baseline-adopt the existing schema first."
+    fresh_database=true
+    log "No migration ledger or public tables found; treating database as a fresh installation."
   fi
 
   pending=()
@@ -137,7 +152,10 @@ if [[ "$TARGET" == local ]]; then
     version="${base%%_*}"
     name="${base#${version}_}"
     checksum="$(sha256sum "$file" | awk '{print $1}')"
-    row="$(psql -X -v ON_ERROR_STOP=1 -Atqc "select sha256 from public.nafaz_schema_migrations where version='$version'")"
+    row=""
+    if [[ "$fresh_database" == false ]]; then
+      row="$(db_psql -Atqc "select sha256 from public.nafaz_schema_migrations where version='$version'")"
+    fi
     if [[ -n "$row" ]]; then
       [[ "$row" == "$checksum" ]] || die "Applied migration $version has changed checksum. Stop and investigate; no migration applied."
       log "Already applied: $base"
@@ -152,29 +170,28 @@ if [[ "$TARGET" == local ]]; then
     exit 0
   fi
   if [[ "$MODE" == dry-run ]]; then
-    log "DRY-RUN: ${#pending[@]} migration(s) would be applied to local PostgreSQL. No schema changes made."
+    log "DRY-RUN: ${#pending[@]} migration(s) would be applied to Docker PostgreSQL. No schema changes made."
     exit 0
   fi
 
-  command -v pg_dump >/dev/null || die "pg_dump missing."
-  command -v pg_restore >/dev/null || die "pg_restore missing."
   umask 077
   mkdir -p "$BACKUP_DIR"; chmod 700 "$BACKUP_DIR"
   stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
-  backup="$BACKUP_DIR/nafaz-local-$PGHOST-$PGPORT-$PGDATABASE-$stamp.dump"
+  backup_label="$(printf '%s-%s' "$PG_CONTAINER" "$PGDATABASE" | tr -c 'A-Za-z0-9_.-' '_')"
+  backup="$BACKUP_DIR/nafaz-$backup_label-$stamp.dump"
   tmp_backup="$backup.partial"
   tmp_sql="$(mktemp "${TMPDIR:-/tmp}/nafaz-migration.XXXXXX.sql")"
   cleanup(){ rm -f "$tmp_sql" "$tmp_backup"; }
   trap cleanup EXIT
 
-  log "Creating full backup of local PostgreSQL before migration."
-  pg_dump --format=custom --no-owner --no-acl --file="$tmp_backup"
+  log "Creating full backup of database=$PGDATABASE from container=$PG_CONTAINER."
+  db_exec pg_dump -U "$PGUSER" -d "$PGDATABASE" --format=custom --no-owner --no-acl > "$tmp_backup"
   [[ -s "$tmp_backup" ]] || die "Backup is empty."
-  pg_restore --list "$tmp_backup" >/dev/null || die "Backup archive verification failed."
+  db_exec pg_restore --list - < "$tmp_backup" >/dev/null || die "Backup archive verification failed."
   mv "$tmp_backup" "$backup"; chmod 600 "$backup"
-  log "Verified backup: $backup"
+  log "Verified backup on VPS host: $backup"
 
-  psql -X -v ON_ERROR_STOP=1 -c "
+  db_psql -c "
     create table if not exists public.nafaz_schema_migrations (
       version text primary key,
       name text not null,
@@ -193,14 +210,13 @@ if [[ "$TARGET" == local ]]; then
       printf '\nINSERT INTO public.nafaz_schema_migrations(version,name,sha256) VALUES (%s,%s,%s);\n' \
         "'$version'" "'${name%.sql}'" "'$checksum'"
     } > "$tmp_sql"
-    # Schema change and history record commit atomically for each migration.
-    psql -X -v ON_ERROR_STOP=1 --single-transaction --file="$tmp_sql"
+    db_psql --single-transaction --file=- < "$tmp_sql"
     : > "$tmp_sql"
   done
 
-  log "Verifying local migration ledger."
-  psql -X -v ON_ERROR_STOP=1 -c "select version,name,applied_at from public.nafaz_schema_migrations order by version;"
-  log "Local PostgreSQL migrations completed. No services were restarted."
+  log "Verifying migration ledger in database=$PGDATABASE."
+  db_psql -c "select version,name,applied_at from public.nafaz_schema_migrations order by version;"
+  log "Docker PostgreSQL migrations completed. No services were restarted."
   exit 0
 fi
 
