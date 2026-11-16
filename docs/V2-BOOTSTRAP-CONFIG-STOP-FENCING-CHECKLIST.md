@@ -445,7 +445,7 @@ Source head [b9716184e23c](https://github.com/nzf210/nafaz_arb/commit/b9716184e2
 ## 10. Exposure-path audit execution — 2026-11-16
 
 **Audited baseline:** `ea44caf051de4a435c5e40a8e36e288438c86063`  
-**Source/test remediation head:** `f113e79c1ef3997a872c1ebf6517f9b55eb475fe`
+**Source/test remediation head:** `838aac5baefd0f3f96f1763ec59293445078b32e`
 
 ### 10.1 Call-site coverage
 
@@ -465,7 +465,7 @@ Source head [b9716184e23c](https://github.com/nzf210/nafaz_arb/commit/b9716184e2
 - [x] De-risking proceeds under active Global STOP and treats unresolved entry as advisory. If PostgreSQL connectivity is unavailable before the de-risk POST, it can proceed without shared serialization with a CRITICAL log; LIVE entry remains fail-closed.
 - [x] Fake-venue/fault-boundary regressions cover rollback timeout single-submit, futures PREPARED failure, STOP-active de-risk, PostgreSQL-unavailable de-risk, venue timeout versus DB disconnect, and durable SUBMITTING preservation.
 
-Source/test CI: [GitHub Actions run 43825126487](https://github.com/nzf210/nafaz_arb/actions/runs/43825126487) completed successfully for `f113e79`. All four jobs passed. Python, Go/race/vet, disposable PostgreSQL schema/idempotency/RLS and multi-process disconnect integration, and Docker image jobs passed.
+Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz_arb/actions/runs/43825962830) completed successfully for `838aac5`. All four jobs passed. Python, Go/race/vet, disposable PostgreSQL schema/idempotency/RLS and multi-process disconnect integration, and Docker image jobs passed.
 
 ### 10.3 Still-open release gates
 
