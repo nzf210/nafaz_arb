@@ -21,13 +21,25 @@ class _FakeConn:
     def __init__(self, table):
         self.table = table
 
+    def transaction(self):
+        return _FakeTransaction()
+
     async def fetchrow(self, query, *args):
+        if "select claim_key, status" in query:
+            return next((
+                dict(row) for row in self.table.values()
+                if row.get("parent_spot_exchange") == args[0]
+                and row.get("parent_spot_order_id") == args[1]
+                and row.get("status") in ("CLAIMED", "SUBMITTED")
+            ), None)
         if "on conflict (claim_key) do nothing" in query:
             key = args[0]
             if key in self.table:
                 return None  # conflict: another worker holds the generation
             self.table[key] = {
                 "claim_key": key,
+                "parent_spot_exchange": args[1],
+                "parent_spot_order_id": args[2],
                 "hedge_client_order_id": args[10],
                 "version": 0,
                 "status": "CLAIMED",
@@ -37,6 +49,13 @@ class _FakeConn:
         raise AssertionError(f"unexpected query: {query[:80]}")
 
     async def execute(self, query, *args):
+        if "set status = 'ABANDONED'" in query:
+            row = self.table.get(args[0])
+            if row is None or row["status"] != "CLAIMED":
+                return "UPDATE 0"
+            row["status"] = "ABANDONED"
+            row["version"] = int(row["version"]) + 1
+            return "UPDATE 1"
         if "set status = 'CONFIRMED'" in query:
             row = self.table.get(args[0])
             if row is None or row["status"] not in ("CLAIMED", "SUBMITTED"):
@@ -55,6 +74,14 @@ class _FakeConn:
             row["version"] = int(row["version"]) + 1
             return "UPDATE 1"
         raise AssertionError(f"unexpected query: {query[:80]}")
+
+
+class _FakeTransaction:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
 
 
 class _FakePool:
@@ -124,16 +151,38 @@ async def test_only_one_instance_claims_same_generation():
 
 
 @pytest.mark.asyncio
-async def test_new_fill_level_is_a_distinct_generation():
+async def test_new_fill_generation_waits_for_previous_claim_resolution():
     table = {}
     worker = _service(table)
 
     first = await worker.claim_generation(**_claim_kwargs())
     assert first is not None
-    # A later cumulative fill level is a new generation and may be claimed.
-    second = await worker.claim_generation(**{**_claim_kwargs(), "cumulative_spot_filled": 0.006})
+    # A later cumulative fill cannot claim while the earlier generation is
+    # unresolved; otherwise both residuals could be submitted concurrently.
+    later_kwargs = {**_claim_kwargs(), "cumulative_spot_filled": 0.006}
+    assert await worker.claim_generation(**later_kwargs) is None
+
+    assert await worker.mark_confirmed(first["claim_key"], 0.004)
+    second = await worker.claim_generation(**later_kwargs)
     assert second is not None
     assert second["claim_key"] != first["claim_key"]
+
+
+@pytest.mark.asyncio
+async def test_abandoned_pre_submit_claim_allows_later_fill_generation():
+    table = {}
+    worker = _service(table)
+
+    first = await worker.claim_generation(**_claim_kwargs())
+    assert first is not None
+    assert await worker.mark_abandoned(first["claim_key"], "minimum notional")
+
+    second = await worker.claim_generation(**{
+        **_claim_kwargs(), "cumulative_spot_filled": 0.006,
+    })
+    assert second is not None
+    assert second["claim_key"] != first["claim_key"]
+    assert table[first["claim_key"]]["status"] == "ABANDONED"
 
 
 @pytest.mark.asyncio
