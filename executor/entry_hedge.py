@@ -991,9 +991,32 @@ class EntryHedgeMixin:
             if claim_key:
                 claims_service = getattr(self, "hedge_claims", None)
                 if claims_service is not None:
-                    await claims_service.mark_confirmed(
+                    claim_confirmed = await claims_service.mark_confirmed(
                         claim_key, actual_hedged_qty
                     )
+                    if not claim_confirmed:
+                        # The venue hedge is already filled. Do not undo it or
+                        # release the claim: retain the active position, block
+                        # further entry on this pair, and surface the durable
+                        # claim persistence failure for reconciliation.
+                        self._halt_exposure_scope(
+                            pair_tag, "confirmed futures hedge claim was not persisted"
+                        )
+                        self._refresh_entry_gate()
+                        self._mark_failed(
+                            pair_tag,
+                            "HEDGE_CLAIM_CONFIRMATION_PERSIST_FAILED",
+                            "Futures hedge is filled, but its durable hedge claim "
+                            "could not be marked CONFIRMED. The pair is blocked until "
+                            "the claim and position are reconciled.",
+                            detail={
+                                "hedge_claim_key": claim_key,
+                                "hedge_client_order_id": hedge_coid,
+                                "confirmed_futures_qty": actual_hedged_qty,
+                            },
+                            state=PositionState.RECONCILIATION_REQUIRED,
+                        )
+                        await self._maybe_publish_status()
         except Exception as he:
             logger.critical(
                 f"[State 2 CRITICAL] Failed to execute instant short hedge for {pair_tag}: {he}"
