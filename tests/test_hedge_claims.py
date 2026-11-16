@@ -188,6 +188,22 @@ async def test_abandoned_pre_submit_claim_allows_later_fill_generation():
 
 
 @pytest.mark.asyncio
+async def test_abandoned_generation_can_be_reclaimed_with_same_stable_client_id():
+    table = {}
+    worker = _service(table)
+
+    first = await worker.claim_generation(**_claim_kwargs())
+    assert first is not None
+    assert await worker.mark_abandoned(first["claim_key"], "pre-submit validation")
+
+    retry = await worker.claim_generation(**_claim_kwargs())
+    assert retry is not None
+    assert retry["claim_key"] == first["claim_key"]
+    assert retry["hedge_client_order_id"] == first["hedge_client_order_id"]
+    assert table[first["claim_key"]]["status"] == "CLAIMED"
+
+
+@pytest.mark.asyncio
 async def test_confirmed_claim_cannot_be_readvanced():
     table = {}
     worker = _service(table)
