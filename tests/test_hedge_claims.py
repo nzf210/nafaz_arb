@@ -49,6 +49,8 @@ class _FakeConn:
         raise AssertionError(f"unexpected query: {query[:80]}")
 
     async def execute(self, query, *args):
+        if "pg_advisory_xact_lock" in query:
+            return "SELECT 1"
         if "set status = 'ABANDONED'" in query:
             row = self.table.get(args[0])
             if row is None or row["status"] != "CLAIMED":
