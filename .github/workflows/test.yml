@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg15
         env:
           POSTGRES_USER: postgres
           POSTGRES_HOST_AUTH_METHOD: trust
@@ -125,7 +125,7 @@ jobs:
             --env POSTGRES_USER=postgres \
             --env POSTGRES_DB=nafaz \
             --env POSTGRES_HOST_AUTH_METHOD=trust \
-            postgres:16
+            pgvector/pgvector:pg15
           ready=false
           for attempt in $(seq 1 30); do
             if docker exec nafaz-migration-pg pg_isready -U postgres -d nafaz >/dev/null 2>&1; then
@@ -139,6 +139,18 @@ jobs:
             -c "CREATE ROLE anon NOLOGIN;" \
             -c "CREATE ROLE authenticated NOLOGIN;" \
             -c "CREATE ROLE service_role NOLOGIN BYPASSRLS;"
+      - name: Block accidental PostgreSQL client calls on the host
+        run: |
+          guard_dir="$(mktemp -d)"
+          for tool in psql pg_isready pg_dump pg_restore; do
+            cat > "$guard_dir/$tool" <<EOF
+          #!/bin/sh
+          echo "ERROR: $tool must run inside the selected PostgreSQL container, not on the host." >&2
+          exit 97
+          EOF
+            chmod 700 "$guard_dir/$tool"
+          done
+          echo "$guard_dir" >> "$GITHUB_PATH"
       - name: Dry-run a fresh database without host PostgreSQL tools
         env:
           NAFAZ_ENV_FILE: /dev/null
