@@ -339,7 +339,7 @@ Source head [b9716184e23c](https://github.com/nzf210/nafaz_arb/commit/b9716184e2
 ## Order-mutation and exposure-path audit — 2026-11-16
 
 **Audited source baseline:** `ea44caf051de4a435c5e40a8e36e288438c86063`  
-**Remediation/test head:** `f113e79c1ef3997a872c1ebf6517f9b55eb475fe`  
+**Remediation/test head:** `838aac5baefd0f3f96f1763ec59293445078b32e`  
 **Scope:** all 100 `executor/**/*.py` source files and all 69 Go source files at the audited baseline; focused review of the entry/hedge, adapter, recovery, STOP, rollback, exit, and force-close call chains.
 
 ### Call-site inventory and classification
