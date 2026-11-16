@@ -172,10 +172,16 @@ class HedgeIntentClaimService:
             )
             return None
 
-    async def mark_submitted(self, claim_key: str) -> bool:
-        return await self._advance(claim_key, "SUBMITTED")
+    async def mark_submitted(
+        self, claim_key: str, hedge_client_order_id: str
+    ) -> bool:
+        return await self._advance(
+            claim_key, "SUBMITTED", hedge_client_order_id
+        )
 
-    async def mark_confirmed(self, claim_key: str, confirmed_qty: float) -> bool:
+    async def mark_confirmed(
+        self, claim_key: str, confirmed_qty: float, hedge_client_order_id: str
+    ) -> bool:
         pool = await self._conn()
         if pool is None:
             return False
@@ -188,9 +194,11 @@ class HedgeIntentClaimService:
                         confirmed_qty = greatest(confirmed_qty, $2),
                         version = version + 1,
                         updated_at = now()
-                    where claim_key = $1 and status in ('CLAIMED', 'SUBMITTED')
+                    where claim_key = $1
+                      and hedge_client_order_id = $3
+                      and status in ('CLAIMED', 'SUBMITTED')
                     """,
-                    claim_key, float(confirmed_qty),
+                    claim_key, float(confirmed_qty), hedge_client_order_id,
                 )
                 if result.endswith("1"):
                     return True
@@ -200,9 +208,9 @@ class HedgeIntentClaimService:
                     """
                     select status, confirmed_qty
                     from public.executor_hedge_intent_claims
-                    where claim_key = $1
+                    where claim_key = $1 and hedge_client_order_id = $3
                     """,
-                    claim_key,
+                    claim_key, hedge_client_order_id,
                 )
                 return bool(
                     row
@@ -215,7 +223,9 @@ class HedgeIntentClaimService:
             )
             return False
 
-    async def mark_abandoned(self, claim_key: str, reason: str) -> bool:
+    async def mark_abandoned(
+        self, claim_key: str, hedge_client_order_id: str, reason: str
+    ) -> bool:
         """Release a claim only when no venue submission was started."""
         pool = await self._conn()
         if pool is None:
@@ -228,9 +238,11 @@ class HedgeIntentClaimService:
                     set status = 'ABANDONED',
                         version = version + 1,
                         updated_at = now()
-                    where claim_key = $1 and status = 'CLAIMED'
+                    where claim_key = $1
+                      and hedge_client_order_id = $2
+                      and status = 'CLAIMED'
                     """,
-                    claim_key,
+                    claim_key, hedge_client_order_id,
                 )
                 if not result.endswith("1"):
                     logger.error(
@@ -245,7 +257,9 @@ class HedgeIntentClaimService:
             )
             return False
 
-    async def mark_zero_fill_terminal(self, claim_key: str, reason: str) -> bool:
+    async def mark_zero_fill_terminal(
+        self, claim_key: str, hedge_client_order_id: str, reason: str
+    ) -> bool:
         """Release a submitted claim only after the venue confirms terminal zero fill."""
         pool = await self._conn()
         if pool is None:
@@ -255,7 +269,7 @@ class HedgeIntentClaimService:
                 async with conn.transaction():
                     row = await conn.fetchrow(
                         """
-                        select status, version
+                        select status, version, hedge_client_order_id
                         from public.executor_hedge_intent_claims
                         where claim_key = $1
                         for update
@@ -265,6 +279,12 @@ class HedgeIntentClaimService:
                     if row is None:
                         return False
                     status = str(row["status"])
+                    current_client_order_id = str(row["hedge_client_order_id"] or "")
+                    if current_client_order_id != str(hedge_client_order_id or ""):
+                        # The old venue attempt was already finalized and its
+                        # claim ID rotated. A replay must not abandon the newer
+                        # attempt that now owns this cumulative Spot generation.
+                        return True
                     if status == "ABANDONED":
                         return True
                     if status not in ("CLAIMED", "SUBMITTED"):
@@ -284,9 +304,11 @@ class HedgeIntentClaimService:
                             hedge_client_order_id = $2,
                             version = version + 1,
                             updated_at = now()
-                        where claim_key = $1 and status in ('CLAIMED', 'SUBMITTED')
+                        where claim_key = $1
+                          and hedge_client_order_id = $2
+                          and status in ('CLAIMED', 'SUBMITTED')
                         """,
-                        claim_key, retry_coid,
+                        claim_key, hedge_client_order_id, retry_coid,
                     )
                     return result.endswith("1")
         except Exception:
@@ -295,7 +317,9 @@ class HedgeIntentClaimService:
             )
             return False
 
-    async def _advance(self, claim_key: str, status: str) -> bool:
+    async def _advance(
+        self, claim_key: str, status: str, hedge_client_order_id: str
+    ) -> bool:
         pool = await self._conn()
         if pool is None:
             return False
@@ -305,9 +329,11 @@ class HedgeIntentClaimService:
                     """
                     update public.executor_hedge_intent_claims
                     set status = $2, version = version + 1, updated_at = now()
-                    where claim_key = $1 and status = 'CLAIMED'
+                    where claim_key = $1
+                      and hedge_client_order_id = $3
+                      and status = 'CLAIMED'
                     """,
-                    claim_key, status,
+                    claim_key, status, hedge_client_order_id,
                 )
                 return result.endswith("1")
         except Exception:
