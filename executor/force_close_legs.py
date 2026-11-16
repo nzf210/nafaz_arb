@@ -286,9 +286,11 @@ class ForceCloseLegMixin:
         force_seq = max(1, opened_at_ms) if not is_mock else self._next_order_seq()
         force_coid = build_client_order_id(pair_key, "force-close", force_seq)
 
-        # The order registry is the durable marker that this deterministic close
-        # id has crossed the submit boundary. If it exists, only exact-ID lookup
-        # may adopt it; a negative lookup is not permission to submit again.
+        # The shared de-risk fence now covers prior-intent lookup, intent
+        # persistence, venue submit, and ACK registration. Otherwise two
+        # replicas can both observe "no prior intent" before either reaches
+        # the lock and submit the same deterministic reduceOnly client ID.
+        registry = None
         if not is_mock:
             registry = getattr(self, "order_registry", None)
             if registry is None:
@@ -297,87 +299,90 @@ class ForceCloseLegMixin:
                     pair_key,
                 )
                 return False, 0.0
-            try:
-                prior_intent = await registry.find_by_client_id(
-                    pos.global_exchange, force_coid
-                )
-            except Exception:
-                logger.exception(
-                    "[Force Close] cannot inspect prior close intent %s; refusing resubmit",
-                    force_coid,
-                )
-                return False, 0.0
-            if prior_intent is not None:
-                return await self._adopt_existing_force_close(
-                    pair_key, pos, global_sym, force_coid
-                )
 
         await self._sync_force_close_market_price(pair_key, global_sym)
         try:
-            await self._register_order_intent(
-                pair_key, force_coid,
-                exchange=pos.global_exchange, market_type="perpetual",
-                symbol=global_sym, role=OrderRole.FORCE_CLOSE.value,
-                side="buy", order_type="market", price=0.0,
-                quantity=pos.qty, reduce_only=True,
-                global_amount_spec=pos.global_amount_spec,
-                required=not is_mock,
-            )
             async with derisk_fence(self, client_order_id=force_coid):
+                if not is_mock:
+                    try:
+                        prior_intent = await registry.find_by_client_id(
+                            pos.global_exchange, force_coid
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[Force Close] cannot inspect prior close intent %s; refusing resubmit",
+                            force_coid,
+                        )
+                        return False, 0.0
+                    if prior_intent is not None:
+                        return await self._adopt_existing_force_close(
+                            pair_key, pos, global_sym, force_coid
+                        )
+
+                await self._register_order_intent(
+                    pair_key, force_coid,
+                    exchange=pos.global_exchange, market_type="perpetual",
+                    symbol=global_sym, role=OrderRole.FORCE_CLOSE.value,
+                    side="buy", order_type="market", price=0.0,
+                    quantity=pos.qty, reduce_only=True,
+                    global_amount_spec=pos.global_amount_spec,
+                    required=not is_mock,
+                )
                 res = await self.client.close_global_short_market(
                     global_sym,
                     pos.qty,
                     client_order_id=force_coid,
                     amount_spec=pos.global_amount_spec,
                 )
-            if not isinstance(res, dict):
-                logger.critical(
-                    f"[Force Close] futures close returned no verifiable order for {pair_key}"
-                )
-                return False, 0.0
-            status = str(res.get("status", "")).lower()
-            if status not in ("closed", "filled"):
-                logger.error(
-                    f"[Force Close] futures close is not terminal (status={status}): {res}"
-                )
-                return False, 0.0
-            try:
-                filled_qty = float(res.get("filled") or 0.0)
-            except (TypeError, ValueError):
-                filled_qty = 0.0
-            qty_tolerance = max(1e-12, pos.qty * 1e-8)
-            if filled_qty + qty_tolerance < pos.qty:
-                logger.critical(
-                    f"[Force Close] futures close fill incomplete for {pair_key}: "
-                    f"requested={pos.qty}, filled={filled_qty}"
-                )
-                return False, 0.0
+                if not isinstance(res, dict):
+                    logger.critical(
+                        f"[Force Close] futures close returned no verifiable order for {pair_key}"
+                    )
+                    return False, 0.0
+                status = str(res.get("status", "")).lower()
+                if status not in ("closed", "filled"):
+                    logger.error(
+                        f"[Force Close] futures close is not terminal (status={status}): {res}"
+                    )
+                    return False, 0.0
+                try:
+                    filled_qty = float(res.get("filled") or 0.0)
+                except (TypeError, ValueError):
+                    filled_qty = 0.0
+                qty_tolerance = max(1e-12, pos.qty * 1e-8)
+                if filled_qty + qty_tolerance < pos.qty:
+                    logger.critical(
+                        f"[Force Close] futures close fill incomplete for {pair_key}: "
+                        f"requested={pos.qty}, filled={filled_qty}"
+                    )
+                    return False, 0.0
 
-            self.supabase.order(
-                pair_key,
-                "futures_exit",
-                pos.global_exchange,
-                "perpetual",
-                global_sym,
-                res,
-                client_order_id=force_coid,
-                reduce_only=True,
-                is_mock=bool(getattr(self.config, "mock_mode", False)),
-            )
-            await self._register_order(
-                pair_key,
-                force_coid,
-                res,
-                exchange=pos.global_exchange,
-                market_type="perpetual",
-                symbol=global_sym,
-                role=OrderRole.FORCE_CLOSE.value,
-                side="buy",
-                order_type="market",
-                price=helpers.extract_fill_price(res),
-                quantity=pos.qty,
-                reduce_only=True,
-            )
+                self.supabase.order(
+                    pair_key,
+                    "futures_exit",
+                    pos.global_exchange,
+                    "perpetual",
+                    global_sym,
+                    res,
+                    client_order_id=force_coid,
+                    reduce_only=True,
+                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                )
+                await self._register_order(
+                    pair_key,
+                    force_coid,
+                    res,
+                    exchange=pos.global_exchange,
+                    market_type="perpetual",
+                    symbol=global_sym,
+                    role=OrderRole.FORCE_CLOSE.value,
+                    side="buy",
+                    order_type="market",
+                    price=helpers.extract_fill_price(res),
+                    quantity=pos.qty,
+                    reduce_only=True,
+                )
+
             if not await self._verify_force_close_futures_flat(pair_key, global_sym):
                 return False, 0.0
 
@@ -542,41 +547,41 @@ class ForceCloseLegMixin:
         client_order_id = build_client_order_id(
             pair_key, "force-liq", force_seq
         )
-        if not is_mock:
-            try:
-                prior_intent = await registry.find_by_client_id(
-                    pos.local_exchange, client_order_id
-                )
-            except Exception:
-                logger.exception(
-                    "[Force Close] cannot inspect prior spot liquidation %s; refusing resubmit",
-                    client_order_id,
-                )
-                return 0.0
-            if prior_intent is not None:
-                return await self._adopt_existing_force_close_spot(
-                    pair_key, pos, client_order_id
-                )
-
         try:
-            await self._register_order_intent(
-                pair_key, client_order_id,
-                exchange=pos.local_exchange, market_type="spot",
-                symbol=pos.symbol, role=OrderRole.FORCE_CLOSE.value,
-                side="sell", order_type="market", price=0.0,
-                quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
-                recovery_context={
-                    "position_opened_at_ms": opened_at_ms,
-                    "force_close_leg": "spot",
-                },
-                required=not is_mock,
-            )
+            async with derisk_fence(self, client_order_id=client_order_id):
+                # Lookup and intent registration must be inside the same shared
+                # lock as the POST. A pre-lock lookup is a TOCTOU race across
+                # executor replicas even when the client ID is deterministic.
+                if not is_mock:
+                    try:
+                        prior_intent = await registry.find_by_client_id(
+                            pos.local_exchange, client_order_id
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[Force Close] cannot inspect prior spot liquidation %s; refusing resubmit",
+                            client_order_id,
+                        )
+                        return 0.0
+                    if prior_intent is not None:
+                        return await self._adopt_existing_force_close_spot(
+                            pair_key, pos, client_order_id
+                        )
 
-            async def _fenced_spot_sell():
-                # Each attempt takes the shared serialization lock when available.
-                # STOP never rejects de-risking; DB connectivity loss is an
-                # explicitly logged unfenced emergency-close fallback.
-                async with derisk_fence(self, client_order_id=client_order_id):
+                await self._register_order_intent(
+                    pair_key, client_order_id,
+                    exchange=pos.local_exchange, market_type="spot",
+                    symbol=pos.symbol, role=OrderRole.FORCE_CLOSE.value,
+                    side="sell", order_type="market", price=0.0,
+                    quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
+                    recovery_context={
+                        "position_opened_at_ms": opened_at_ms,
+                        "force_close_leg": "spot",
+                    },
+                    required=not is_mock,
+                )
+
+                async def _spot_sell():
                     return await self.client.place_local_market_sell(
                         pos.symbol,
                         pos.qty,
@@ -584,17 +589,19 @@ class ForceCloseLegMixin:
                         amount_spec=pos.local_amount_spec,
                     )
 
-            spot_order = await helpers.retry_with_backoff(
-                _fenced_spot_sell,
-                max_retries=4,
-                base_delay=0.5,
-                label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
-                retry_if=helpers.is_explicit_rate_limit_rejection,
-            )
-            if isinstance(spot_order, dict):
-                await self._record_force_close_spot_order(
-                    pair_key, pos, spot_order, client_order_id
+                # Keep the shared lock through all explicit-429 retries and the
+                # durable ACK registration. Ambiguous errors are never retried.
+                spot_order = await helpers.retry_with_backoff(
+                    _spot_sell,
+                    max_retries=4,
+                    base_delay=0.5,
+                    label=f"force-close spot liquidation {pos.symbol} for {pair_key}",
+                    retry_if=helpers.is_explicit_rate_limit_rejection,
                 )
+                if isinstance(spot_order, dict):
+                    await self._record_force_close_spot_order(
+                        pair_key, pos, spot_order, client_order_id
+                    )
                 status = str(spot_order.get("status") or "").lower()
                 filled_qty, exit_price = await self._verified_force_close_spot_fill(
                     pair_key, pos, spot_order
