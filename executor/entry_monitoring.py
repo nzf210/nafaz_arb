@@ -97,6 +97,11 @@ class EntryMonitoringMixin:
         )
         if recovery_blocked:
             return True
+        # A FAILED (incl. hedge-rollback) or CLOSED pair is out of the entry
+        # lifecycle: its spot may have been unwound, so re-running the fill
+        # handler could open a hedge for exposure that no longer exists.
+        if self.states.get(pair_tag) in (PositionState.FAILED, PositionState.CLOSED):
+            return True
         return await self._check_adverse_selection(pair_tag, order_info)
 
     async def _process_pending_entry_bound(self, pair_tag: str, order_info: dict) -> None:

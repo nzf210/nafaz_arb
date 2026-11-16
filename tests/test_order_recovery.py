@@ -2173,3 +2173,81 @@ async def test_periodic_recovery_clears_order_recovery_unverified_without_active
     await engine._run_order_recovery_lifecycle_with_lock()
     assert engine.states[pair_tag] == PositionState.IDLE
     assert pair_tag not in engine._recovery_scope_halts
+
+
+@pytest.mark.asyncio
+async def test_recovered_hedge_fill_is_not_double_counted(fake_redis):
+    """Two executors reconciling the same futures hedge must converge on the
+    same watermark: the second adoption sees the fill already journaled."""
+    engine = await _build(fake_redis, MockExchangeClient())
+    parent = _entry_record(hedged_quantity=0.0)
+    await engine.order_registry.register(parent)
+
+    hedge_record = OrderRecord(
+        local_order_id="hedge-local-1",
+        client_order_id="hedge-coid-1",
+        exchange_order_id="hedge-venue-1",
+        pair_key=PAIR_TAG,
+        exchange="binance",
+        symbol="BTCUSDT",
+        market_type="perpetual",
+        order_role=OrderRole.HEDGE.value,
+        side="sell",
+        order_type="market",
+        price=50000.0,
+        original_quantity=0.005,
+        filled_quantity=0.005,
+        remaining_quantity=0.0,
+        status="closed",
+        recovery_context={
+            "parent_spot_exchange": parent.exchange,
+            "parent_spot_order_id": parent.exchange_order_id,
+            "parent_spot_client_order_id": parent.client_order_id,
+        },
+    )
+    await engine.order_registry.register(hedge_record)
+
+    venue_order = {
+        "id": "hedge-venue-1",
+        "status": "closed",
+        "filled": 0.005,
+    }
+
+    assert await engine._reconcile_recovered_entry_hedge(
+        hedge_record, venue_order, PAIR_TAG
+    )
+    first = await engine.order_registry.load(parent.local_order_id)
+    assert first.hedged_quantity == pytest.approx(0.005)
+
+    # A second executor (or a replayed recovery) adopts the same hedge: the
+    # fill must NOT be added again.
+    replay = OrderRecord(
+        local_order_id="hedge-local-1",
+        client_order_id="hedge-coid-1",
+        exchange_order_id="hedge-venue-1",
+        pair_key=PAIR_TAG,
+        exchange="binance",
+        symbol="BTCUSDT",
+        market_type="perpetual",
+        order_role=OrderRole.HEDGE.value,
+        side="sell",
+        order_type="market",
+        price=50000.0,
+        original_quantity=0.005,
+        filled_quantity=0.005,
+        remaining_quantity=0.0,
+        status="closed",
+        recovery_context={
+            "parent_spot_exchange": parent.exchange,
+            "parent_spot_order_id": parent.exchange_order_id,
+            "parent_spot_client_order_id": parent.client_order_id,
+        },
+    )
+    await engine.order_registry.register(replay)
+    assert await engine._reconcile_recovered_entry_hedge(
+        replay, venue_order, PAIR_TAG
+    )
+    second = await engine.order_registry.load(parent.local_order_id)
+    assert second.hedged_quantity == pytest.approx(0.005), (
+        "reconciling the same hedge twice must not double the watermark"
+    )

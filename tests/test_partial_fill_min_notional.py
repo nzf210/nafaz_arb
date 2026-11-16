@@ -186,3 +186,109 @@ async def test_futures_executor_does_not_overhedge_below_min_notional(engine, fa
         "TERMINAL_ORDER_BELOW_MIN_NOTIONAL" in record.message
         for record in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_wait_until_covered_holds_unhedged_delta_for_next_fill(engine, fake_redis, mock_client, caplog):
+    """wait_until_covered: saat order spot MASIH OPEN dan delta di bawah minimum
+    Futures, sistem harus MENUNGGU (tidak rollback spot, tidak raise)."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["placed_time"] = time.time() - 1
+    order_info["qty"] = 0.01
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+    order_info["futures_min_notional"] = 10.0
+
+    engine.config.max_order_ttl_seconds = 120
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
+    # Spot partially filled $2.50 worth, order still OPEN: more fills may come.
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.00005,
+    }
+
+    with caplog.at_level("INFO"):
+        await engine._check_entry_orders()
+
+    # No futures short, no rollback sell.
+    assert len(mock_client.global_short_sells) == 0
+    assert len(mock_client.placed_sells) == 0
+    # Pair remains pending (not FAILED, not rolled back).
+    assert pair_tag in engine.pending_entry_orders
+    assert engine.states[pair_tag] in (PositionState.ENTRY_PENDING, PositionState.ENTRY_PARTIAL)
+    assert engine._failure_reasons.get(pair_tag) is None
+
+
+@pytest.mark.asyncio
+async def test_regressing_fill_snapshot_does_not_retrigger_hedge(engine, fake_redis, mock_client):
+    """Snapshot exchange yang mundur tidak boleh memicu hedge ulang untuk
+    quantity yang sudah ter-hedge."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["qty"] = 0.01
+    order_info["filled"] = 0.005
+    order_info["filled_spot_amount"] = 0.005
+    order_info["hedged_short_qty"] = 0.005
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
+    # Venue reports a LOWER fill than previously confirmed (snapshot regression).
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.001,
+    }
+
+    await engine._check_entry_orders()
+
+    # Cumulative stays monotonic; unhedged delta = 0 → no new hedge.
+    assert order_info["filled"] == pytest.approx(0.005)
+    assert len(mock_client.global_short_sells) == 0
+
+
+@pytest.mark.asyncio
+async def test_hedge_ratio_05_reaches_target_and_stops(engine, fake_redis, mock_client):
+    """ratio 0.5: setelah futures confirmed = spot * 0.5, delta harus 0 (konvergen)."""
+    pair_tag = "indodax:btc_idr"
+    now_ms = int(time.time() * 1000)
+    order_info = _entry_order_info(pair_tag, now_ms)
+    order_info["qty"] = 0.01
+    order_info["filled"] = 0.01
+    order_info["filled_spot_amount"] = 0.01
+    # ratio 0.5 → target hedge 0.005; sudah ter-hedge penuh.
+    order_info["hedged_short_qty"] = 0.005
+    order_info["global_ask_usdt"] = 50000.0
+    order_info["price"] = 800000000.0
+    order_info["usdt_idr_rate"] = 16000.0
+
+    engine.config.hedging.spot_fill_trigger_pct = 0.0
+    engine.config.hedging.futures_target_hedge_ratio = 0.5
+    engine.pending_entry_orders[pair_tag] = order_info
+    engine.states[pair_tag] = PositionState.ENTRY_PENDING
+
+    mock_client.orders["301"] = {
+        "id": "301",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.01,
+    }
+
+    await engine._check_entry_orders()
+
+    # Converged: no additional hedge may be submitted.
+    assert len(mock_client.global_short_sells) == 0

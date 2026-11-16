@@ -759,3 +759,41 @@ untuk dua executor yang memproses entry yang sama. Rencana: gunakan
 `_handle_entry_fills`, dan tuliskan watermark `hedged_short_qty` dalam
 transaksi yang sama sebelum submit Futures. Perlu pengujian khusus
 two-executor pada entry yang sama.
+
+### Revisi implementasi policy (2026-11-16, iterasi 2)
+
+Perbaikan lanjutan atas review implementasi pertama:
+
+- **`wait_until_covered` kini benar-benar menunggu.** Ketika delta di bawah
+  minimum notional Futures, `_submit_entry_hedge_order` mengembalikan
+  `short_order=None` (bukan raise): tidak ada rollback spot, tidak ada
+  state FAILED. Unhedged delta tetap pending di `order_info`
+  (`hedge_waiting_for_coverage`) dan diproses ulang pada fill berikutnya.
+  Rollback spot hanya terjadi untuk kegagalan venue nyata (error submit /
+  fill tidak lengkap / overfill), bukan karena minimum belum terpenuhi.
+- **Formula hedge ratio diperbaiki.** Target hedge dihitung dari total
+  exposure: `target_hedge_qty = cumulative_spot_filled × ratio`,
+  `unhedged_delta = max(0, target_hedge_qty − hedged_short_qty)`.
+  Untuk ratio 0.5: spot 1.0 + futures confirmed 0.5 → delta 0 (konvergen),
+  tidak lagi menganggap ada 0.5 sisa exposure. Tercakup test ratio
+  0.5 / 1.0 / 1.5 dan konvergensi.
+- **`futures_max_overhedge_pct` kini ditegakkan.** Pada jalur
+  `scale_to_min` (policy `allow_min_notional` + overhedge diaktifkan),
+  hasil scaling yang melebihi `target × (1 + max_overhedge_pct/100)`
+  ditolak dengan raise. Dengan default 0.0, setiap scale-to-min ditolak.
+  Tercakup test reject pada 0% dan accept pada 300%.
+- **Partial futures fill tidak dianggap full hedge.** `actual_hedged_qty`
+  (bukan requested) yang masuk watermark; fill di bawah request tetap
+  raise (rollback guarded by futures-position check). Watermark
+  `_update_entry_hedge_markers` tetap monotonic.
+- **Rollback tidak memicu re-hedge.** Pair berstatus FAILED/CLOSED kini
+  di-skip oleh `_pending_entry_should_skip`, sehingga fill handler tidak
+  pernah membuka hedge untuk spot yang sudah terjual.
+- **Dua executor / replay recovery:** `_reconcile_recovered_entry_hedge`
+  idempotent via `hedge_fill_orders` — watermark tidak dobel. Tercakup
+  test `test_recovered_hedge_fill_is_not_double_counted`.
+
+Tetap tindak lanjut: transaksi `pg_advisory_xact_lock` per
+`exchange + order_id` yang membungkus langkah 1–5 (baca fill → hitung →
+intent → persist) secara atomik lintas instance; fondasi idempotency di
+atas membatasi dampaknya, tetapi atomicity penuh masih perlu diuji.

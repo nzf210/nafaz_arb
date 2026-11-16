@@ -40,7 +40,22 @@ class EntryHedgeMixin:
         # obligation. Compute the unhedged delta from the validated cumulative
         # value, not the raw snapshot.
         cumulative_spot_filled = max(previous_filled, current_filled)
-        unhedged_delta = max(0.0, cumulative_spot_filled - hedged_qty)
+        # Target hedge quantity is derived from TOTAL cumulative spot exposure
+        # times the configured hedge ratio, minus confirmed futures fills. With
+        # ratio != 1.0, hedged_qty is measured in futures-target units, not
+        # spot units, so a plain (cumulative_spot_filled - hedged_qty) would
+        # never converge and would re-hedge indefinitely.
+        _hedging_cfg = getattr(getattr(self, "config", None), "hedging", None)
+        try:
+            _hedge_ratio = float(
+                getattr(_hedging_cfg, "futures_target_hedge_ratio", 1.0) or 1.0
+            )
+        except (TypeError, ValueError):
+            _hedge_ratio = 1.0
+        if not (_hedge_ratio > 0):
+            _hedge_ratio = 1.0
+        target_hedge_qty = cumulative_spot_filled * _hedge_ratio
+        unhedged_delta = max(0.0, target_hedge_qty - hedged_qty)
 
         # Extend Redis TTL on partial fill so pending order record does not expire
         if current_filled > 0 and getattr(self, "redis", None):
@@ -335,16 +350,12 @@ class EntryHedgeMixin:
             min_order_policy = str(cfg.futures_min_order_policy)
         else:
             min_order_policy = "wait_until_covered"
-        # Map the policy onto calculate_order_size's safety policy: strictly
-        # wait (return 0 → offset/unwind spot) unless explicit overhedge is allowed.
+        # Map the policy onto calculate_order_size's safety policy. Strictly
+        # wait (return 0 → caller keeps the unhedged delta pending) unless
+        # explicit overhedge is allowed.
         allow_overhedge = bool(getattr(hedging_cfg, "futures_allow_min_notional_overhedge", False)) if (
             hedging_cfg is not None
         ) else bool(getattr(cfg, "futures_allow_min_notional_overhedge", False))
-        max_overhedge_pct = (
-            float(getattr(hedging_cfg, "futures_max_overhedge_pct", 0.0))
-            if hedging_cfg is not None
-            else float(getattr(cfg, "futures_max_overhedge_pct", 0.0))
-        )
         safety_policy = (
             "scale_to_min"
             if (min_order_policy == "allow_min_notional" and allow_overhedge)
@@ -369,16 +380,39 @@ class EntryHedgeMixin:
             safety_policy=safety_policy,
         )
 
+        # Enforce the configured overhedge ceiling on the scale-to-min path:
+        # the scaled order must never exceed the target delta by more than
+        # futures_max_overhedge_pct.
+        if futures_hedge_qty > 0 and target_unhedged_delta > 0:
+            max_overhedge_pct = (
+                float(getattr(hedging_cfg, "futures_max_overhedge_pct", 0.0))
+                if hedging_cfg is not None
+                else float(getattr(cfg, "futures_max_overhedge_pct", 0.0))
+            )
+            max_allowed = target_unhedged_delta * (1.0 + max_overhedge_pct / 100.0)
+            if futures_hedge_qty > max_allowed:
+                logger.warning(
+                    f"[Overhedge Limit] {pair_tag}: scaled hedge {futures_hedge_qty:.8f} exceeds "
+                    f"{max_overhedge_pct:.1f}% overhedge ceiling ({max_allowed:.8f} max for target "
+                    f"{target_unhedged_delta:.8f}); rejecting hedge."
+                )
+                raise ValueError(
+                    f"scaled hedge {futures_hedge_qty} exceeds configured max overhedge "
+                    f"{max_overhedge_pct}% (allowed {max_allowed}); overhedge policy violated"
+                )
+
         if futures_hedge_qty <= 0:
-            logger.warning(
-                f"[Delta Imbalance Logger] Spot fill {unhedged_delta:.8f} (${unhedged_delta * expected_short_price:.2f}) "
-                f"below futures minimum (${futures_min_notional:.2f}) and min-order policy is '{min_order_policy}'; "
-                "aborting hedge to trigger spot offset/unwind."
+            # "wait_until_covered": the delta cannot cover a min-notional
+            # futures order yet. Keep the unhedged exposure pending so
+            # subsequent spot fills can accumulate — do NOT roll back the
+            # spot leg just because the minimum is not met.
+            logger.info(
+                f"[Wait Until Covered] {pair_tag}: unhedged delta {unhedged_delta:.8f} "
+                f"(${unhedged_delta * expected_short_price:.2f}) below futures minimum "
+                f"(${futures_min_notional:.2f}); holding unhedged delta for the next fill."
             )
-            raise ValueError(
-                f"filled spot notional below futures minimum requirement ({futures_min_notional} USDT); "
-                f"min-order policy '{min_order_policy}' triggered spot offset"
-            )
+            order_info["hedge_waiting_for_coverage"] = True
+            return None, recovery_context, None, 0.0
 
         if abs(delta_imbalance) > 1e-12:
             logger.warning(
@@ -789,6 +823,16 @@ class EntryHedgeMixin:
                     unhedged_delta, expected_short_price,
                 )
             )
+            if short_order is None:
+                # "wait_until_covered": delta is below the futures minimum, the
+                # hedge is intentionally deferred. Keep the pair pending so the
+                # next fill can accumulate coverage — no rollback, no failure.
+                logger.info(
+                    f"[Wait Until Covered] {pair_tag}: hedge deferred; "
+                    f"unhedged delta ${unhedged_delta * expected_short_price:.2f} "
+                    "remains pending."
+                )
+                return
             await self._persist_entry_hedge_success(
                 pair_tag, order_info, unhedged_delta, price_idr, usdt_rate,
                 hedge_coid, recovery_context, short_order, actual_hedged_qty,

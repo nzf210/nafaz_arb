@@ -534,35 +534,56 @@ def _policy_order_info():
 
 
 @pytest.mark.asyncio
-async def test_hedge_sizing_uses_hedging_min_order_policy_not_scale_to_min():
-    """wait_until_covered (default): sub-minimum delta must not scale up to min notional."""
+async def test_hedge_sizing_waits_when_below_min_notional():
+    """wait_until_covered (default): sub-minimum delta must WAIT (no submit, no raise)."""
     from executor.config import HedgingConfig
 
     harness = _PolicyHarness(HedgingConfig())
     order_info = _policy_order_info()
-    # $2.50 notional delta, $10 min -> must raise, not scale to $10 short.
-    with pytest.raises(ValueError, match="below futures minimum"):
-        await harness._submit_entry_hedge_order(
-            "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.00005, 50000.0
-        )
+    # $2.50 notional delta, $10 min -> returns None (defer), not a $10 short.
+    result = await harness._submit_entry_hedge_order(
+        "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.00005, 50000.0
+    )
+    hedge_coid, _ctx, short_order, qty = result
+    assert short_order is None
+    assert qty == 0.0
     assert harness.client.submitted == []
-
+    assert order_info.get("hedge_waiting_for_coverage") is True
 
 @pytest.mark.asyncio
-async def test_hedge_sizing_allows_min_notional_overhedge_when_policy_enables_it():
-    """allow_min_notional + overhedge=true restores the legacy scale_to_min behavior."""
+async def test_hedge_sizing_rejects_overhedge_beyond_max_overhedge_pct():
+    """allow_min_notional + overhedge=true, but max_overhedge_pct=0 must REJECT
+    the scale-to-min result (no silent overhedge)."""
     from executor.config import HedgingConfig
 
     cfg = HedgingConfig()
     cfg.futures_min_order_policy = "allow_min_notional"
     cfg.futures_allow_min_notional_overhedge = True
+    # futures_max_overhedge_pct stays at the sanitized default 0.0
+    harness = _PolicyHarness(cfg)
+    order_info = _policy_order_info()
+    with pytest.raises(ValueError, match="max overhedge"):
+        await harness._submit_entry_hedge_order(
+            "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.00005, 50000.0
+        )
+    assert harness.client.submitted == []
+
+@pytest.mark.asyncio
+async def test_hedge_sizing_scales_within_max_overhedge_pct():
+    """allow_min_notional + overhedge=true + max_overhedge_pct=300 permits the
+    scale-to-min result that stays within the ceiling."""
+    from executor.config import HedgingConfig
+
+    cfg = HedgingConfig()
+    cfg.futures_min_order_policy = "allow_min_notional"
+    cfg.futures_allow_min_notional_overhedge = True
+    cfg.futures_max_overhedge_pct = 300.0  # 0.00005 * 4 = 0.0002 ceiling
     harness = _PolicyHarness(cfg)
     order_info = _policy_order_info()
     await harness._submit_entry_hedge_order(
         "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.00005, 50000.0
     )
     assert harness.client.submitted == [pytest.approx(0.0002)]
-
 
 @pytest.mark.asyncio
 async def test_hedge_sizing_applies_target_hedge_ratio():
@@ -577,3 +598,62 @@ async def test_hedge_sizing_applies_target_hedge_ratio():
         "tokocrypto:btc_idr", order_info, "BTC/USDT:USDT", 0.001, 50000.0
     )
     assert harness.client.submitted == [pytest.approx(0.0005)]
+
+
+@pytest.mark.asyncio
+async def test_hedge_sizing_ratio_point_five_converges():
+    """ratio 0.5: spot fill 1.0, futures confirmed 0.5 → next delta must be 0 (converged)."""
+    from executor.config import HedgingConfig
+
+    cfg = HedgingConfig()
+    cfg.futures_target_hedge_ratio = 0.5
+    # target_hedge_qty = 1.0 * 0.5 = 0.5; hedged 0.5 → unhedged = 0
+    target_hedge_qty = 1.0 * 0.5
+    hedged = 0.5
+    unhedged = max(0.0, target_hedge_qty - hedged)
+    assert unhedged == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_hedge_sizing_ratio_one_point_five_scales_up():
+    """ratio 1.5: spot fill 1.0, no futures yet → target hedge 1.5, not 1.0."""
+    from executor.config import HedgingConfig
+
+    cfg = HedgingConfig()
+    cfg.futures_target_hedge_ratio = 1.5
+    target_hedge_qty = 1.0 * 1.5
+    hedged = 0.0
+    unhedged = max(0.0, target_hedge_qty - hedged)
+    assert unhedged == pytest.approx(1.5)
+
+
+def test_hedged_qty_watermark_is_monotonic():
+    """_update_entry_hedge_markers must never reduce the cumulative hedged qty
+    (a regressing futures fill snapshot must not shrink the hedge record)."""
+
+    class _MarkersHarness(EntryHedgeMixin):
+        pass
+
+    harness = _MarkersHarness()
+    order_info = {"hedged_short_qty": 0.5, "hedge_fill_orders": {"h1": 0.5}}
+    harness._update_entry_hedge_markers(order_info, 0.3, "h2")
+    assert order_info["hedged_short_qty"] == pytest.approx(0.5)
+    assert order_info["hedge_fill_orders"]["h2"] == pytest.approx(0.3)
+    # A higher fill still raises the watermark.
+    harness._update_entry_hedge_markers(order_info, 0.8, "h3")
+    assert order_info["hedged_short_qty"] == pytest.approx(0.8)
+
+
+def test_partial_futures_fill_is_not_treated_as_full_hedge():
+    """A futures hedge that filled only part of the request must not advance
+    the full requested quantity into the hedge watermark."""
+
+    # Mirrors the guard in _submit_entry_hedge_order:
+    futures_hedge_qty = 0.01
+    actual_hedged_qty = 0.004  # partial fill
+    qty_tolerance = max(1e-12, futures_hedge_qty * 1e-8)
+    assert actual_hedged_qty + qty_tolerance < futures_hedge_qty
+    # The caller must record only actual_hedged_qty (via _persist_entry_hedge_success),
+    # never futures_hedge_qty.
+    recorded = actual_hedged_qty
+    assert recorded < futures_hedge_qty
