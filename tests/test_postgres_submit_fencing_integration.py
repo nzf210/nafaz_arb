@@ -19,6 +19,7 @@ import uuid
 import pytest
 
 from executor.global_stop import GlobalStopError, GlobalStopService
+from executor.hedge_claims import HedgeIntentClaimService
 
 
 def _submitter(dsn, client_id, venue_active, venue_release, backend_queue):
@@ -233,21 +234,25 @@ def test_postgres_pair_guard_blocks_second_replica_after_first_entry_ack():
         target=_pair_guard_submitter,
         args=(dsn, second_id, pair_key, claims, ctx.Event(), ctx.Event(), second_queue),
     )
+    guard_retry = None
     try:
         first.start()
         assert first_entered.wait(15), "first replica never reached fake venue"
         assert first_queue.get(timeout=3) == "FAKE_VENUE_CREATE_ORDER"
 
+        # A second replica must fail fast while the first holds the global
+        # venue-submit fence; it must not sit on a blocking advisory lock until
+        # asyncpg's command timeout expires.
         second.start()
-        second.join(15)
+        second.join(5)
         if second.is_alive():
             second.terminate()
             second.join(5)
-            pytest.fail("second replica did not finish pair admission")
+            pytest.fail("second replica did not fail fast on the busy submit fence")
         assert second.exitcode == 0
-        outcome = second_queue.get(timeout=3)
-        assert outcome.startswith("BLOCKED:")
-        assert "pre-submit admission guard" in outcome
+        busy_outcome = second_queue.get(timeout=3)
+        assert busy_outcome.startswith("BLOCKED:")
+        assert "currently holds the global submit fence" in busy_outcome
 
         release_first.set()
         first.join(15)
@@ -257,6 +262,23 @@ def test_postgres_pair_guard_blocks_second_replica_after_first_entry_ack():
             pytest.fail("first replica did not leave fake venue boundary")
         assert first.exitcode == 0
         assert first_queue.get(timeout=3) == "FIRST_ACKNOWLEDGED"
+
+        # Once the first entry is acknowledged, a second attempt can acquire
+        # the global fence but must still be rejected by the pair-level guard.
+        guard_retry = ctx.Process(
+            target=_pair_guard_submitter,
+            args=(dsn, second_id, pair_key, claims, ctx.Event(), ctx.Event(), second_queue),
+        )
+        guard_retry.start()
+        guard_retry.join(15)
+        if guard_retry.is_alive():
+            guard_retry.terminate()
+            guard_retry.join(5)
+            pytest.fail("pair guard retry did not finish after first acknowledgement")
+        assert guard_retry.exitcode == 0
+        guard_outcome = second_queue.get(timeout=3)
+        assert guard_outcome.startswith("BLOCKED:")
+        assert "pre-submit admission guard" in guard_outcome
 
         async def statuses():
             import asyncpg
@@ -276,7 +298,7 @@ def test_postgres_pair_guard_blocks_second_replica_after_first_entry_ack():
         assert by_id[second_id] == "PREPARED"
     finally:
         release_first.set()
-        for process in (second, first):
+        for process in (guard_retry, second, first):
             if process.is_alive():
                 process.terminate()
                 process.join(5)
@@ -295,6 +317,85 @@ def test_postgres_pair_guard_blocks_second_replica_after_first_entry_ack():
         asyncio.run(cleanup())
         manager.shutdown()
 
+
+
+
+def _hedge_claim_worker(dsn, parent_order_id, barrier, result_queue):
+    async def run():
+        stop = GlobalStopService(dsn, min_size=1, max_size=1)
+        await stop.start()
+        try:
+            claims = HedgeIntentClaimService(global_stop=stop)
+            await asyncio.to_thread(barrier.wait, 10)
+            claim = await claims.claim_generation(
+                parent_spot_exchange="indodax",
+                parent_spot_order_id=parent_order_id,
+                parent_spot_client_order_id="spot-client-" + parent_order_id,
+                cumulative_spot_filled=0.004,
+                target_hedge_qty=0.004,
+                residual_qty=0.004,
+                hedge_ratio=1.0,
+                futures_exchange="okx",
+                futures_symbol="BTC/USDT:USDT",
+                claimed_by="postgres-integration-worker",
+            )
+            result_queue.put(claim["claim_key"] if claim else None)
+        finally:
+            await stop.close()
+    asyncio.run(run())
+
+
+@pytest.mark.integration
+def test_postgres_hedge_claim_is_atomic_across_processes():
+    """Two independent processes must not claim one Spot-fill generation."""
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    ctx = mp.get_context("fork")
+    parent_order_id = "pg-hedge-claim-" + uuid.uuid4().hex[:16]
+    barrier = ctx.Barrier(2)
+    results = ctx.Queue()
+    workers = [
+        ctx.Process(
+            target=_hedge_claim_worker,
+            args=(dsn, parent_order_id, barrier, results),
+        )
+        for _ in range(2)
+    ]
+    try:
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(15)
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(5)
+                pytest.fail("hedge claim worker did not finish")
+            assert worker.exitcode == 0
+
+        outcomes = [results.get(timeout=3), results.get(timeout=3)]
+        winners = [key for key in outcomes if key]
+        assert len(winners) == 1, f"exactly one PostgreSQL claim must win: {outcomes!r}"
+
+    finally:
+        for worker in workers:
+            if worker.is_alive():
+                worker.terminate()
+                worker.join(5)
+
+        async def cleanup():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                await conn.execute(
+                    "delete from public.executor_hedge_intent_claims "
+                    "where parent_spot_order_id=$1",
+                    parent_order_id,
+                )
+            finally:
+                await conn.close()
+        asyncio.run(cleanup())
 
 @pytest.mark.integration
 def test_signed_operator_resolution_requires_auth_and_independent_evidence():
