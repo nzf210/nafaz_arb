@@ -134,7 +134,15 @@ class HedgeIntentClaimService:
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                             'CLAIMED', $12
                         )
-                        on conflict (claim_key) do nothing
+                        on conflict (claim_key) do update
+                        set status = 'CLAIMED',
+                            target_hedge_qty = excluded.target_hedge_qty,
+                            residual_qty = excluded.residual_qty,
+                            hedge_ratio = excluded.hedge_ratio,
+                            claimed_by = excluded.claimed_by,
+                            version = executor_hedge_intent_claims.version + 1,
+                            updated_at = now()
+                        where executor_hedge_intent_claims.status = 'ABANDONED'
                         returning claim_key, hedge_client_order_id, version
                         """,
                         key,
