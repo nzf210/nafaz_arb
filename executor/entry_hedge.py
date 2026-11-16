@@ -719,6 +719,19 @@ class EntryHedgeMixin:
                 "futures hedge acknowledgement has no exchange order id; "
                 "reconciliation required"
             )
+        # Record the durable hedge claim transition only after the venue
+        # acknowledgement is known. If this write fails, keep the accepted
+        # order ambiguous and let reconciliation resolve it; never release or
+        # recreate the claim for a new Spot fill generation.
+        claim_key = str(order_info.get("hedge_claim_key") or "")
+        claims_service = getattr(self, "hedge_claims", None)
+        if claim_key and claims_service is not None:
+            marked_submitted = await claims_service.mark_submitted(claim_key)
+            if not marked_submitted:
+                raise AmbiguousOrderSubmission(
+                    "futures order was acknowledged but durable hedge claim "
+                    "could not transition to SUBMITTED; reconciliation required"
+                )
         hedge_status = str(short_order.get("status", "")).lower()
         if hedge_status not in ("closed", "filled"):
             raise ValueError(
