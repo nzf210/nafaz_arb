@@ -541,7 +541,8 @@ class EntryHedgeMixin:
             claims_service = getattr(self, "hedge_claims", None)
             if claim_key and claims_service is not None:
                 if not await claims_service.mark_abandoned(
-                    claim_key, "futures residual is below venue minimum; no submit started"
+                    claim_key, hedge_coid,
+                    "futures residual is below venue minimum; no submit started"
                 ):
                     logger.error(
                         "[Hedge Claim] %s: could not release deferred pre-submit claim %s",
@@ -743,7 +744,7 @@ class EntryHedgeMixin:
         claim_key = str(order_info.get("hedge_claim_key") or "")
         claims_service = getattr(self, "hedge_claims", None)
         if claim_key and claims_service is not None:
-            marked_submitted = await claims_service.mark_submitted(claim_key)
+            marked_submitted = await claims_service.mark_submitted(claim_key, hedge_coid)
             if not marked_submitted:
                 raise AmbiguousOrderSubmission(
                     "futures order was acknowledged but durable hedge claim "
@@ -994,7 +995,7 @@ class EntryHedgeMixin:
                 claims_service = getattr(self, "hedge_claims", None)
                 if claims_service is not None:
                     claim_confirmed = await claims_service.mark_confirmed(
-                        claim_key, actual_hedged_qty
+                        claim_key, actual_hedged_qty, hedge_coid
                     )
                     if not claim_confirmed:
                         # The venue hedge is already filled. Do not undo it or
@@ -1033,7 +1034,8 @@ class EntryHedgeMixin:
                 "hedge_submit_started"
             ):
                 await claims_service.mark_abandoned(
-                    claim_key, f"pre-submit hedge failure: {type(he).__name__}: {he}"
+                    claim_key, hedge_coid,
+                    f"pre-submit hedge failure: {type(he).__name__}: {he}"
                 )
             global_exchange = str(order_info.get("global_exchange", ""))
             if global_exchange:
