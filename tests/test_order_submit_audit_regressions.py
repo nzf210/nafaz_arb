@@ -4,6 +4,7 @@ import pytest
 
 from executor.derisk_fence import derisk_fence
 from executor.entry_hedge import EntryHedgeMixin
+from executor.force_close_legs import ForceCloseLegMixin
 from executor.global_stop import GlobalStopError, GlobalStopService
 from executor.helpers import is_transient_settlement_error
 from executor.rollback import RollbackMixin
@@ -314,9 +315,6 @@ async def test_aborted_transition_cannot_retire_submitting_or_unknown_attempt():
 
     assert "status = 'PREPARED'" in conn.query
     assert "status in ('PREPARED','SUBMITTING','UNKNOWN')" not in conn.query
-
-
-from executor.force_close_legs import ForceCloseLegMixin
 
 
 class _ForceCloseRegistry:
