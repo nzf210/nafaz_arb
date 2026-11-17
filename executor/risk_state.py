@@ -424,7 +424,7 @@ class RiskStateMixin:
             "ORDER_RECOVERY_UNVERIFIED", "RECOVERY_OPEN_ORDERS_UNAVAILABLE",
             "HEDGE_VENUE_PERMISSION_DENIED", "VENUE_RATE_LIMITED",
             "BALANCE_FEED_UNAVAILABLE", "DUAL_LEG_UNDERFUNDED",
-            "INSUFFICIENT_OR_UNBALANCED_BALANCE",
+            "INSUFFICIENT_OR_UNBALANCED_BALANCE", "ADAPTIVE_MAKER_QUOTE_UNSAFE",
         )
         if str(reason or "") in venue_wide:
             logger.info(

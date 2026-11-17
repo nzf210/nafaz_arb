@@ -388,6 +388,9 @@ class ExitExecutionMixin:
                 self.resume_pair(pair_tag, reason="EXIT_FINALIZED")
             if hasattr(self, "_record_pair_success"):
                 self._record_pair_success(pair_tag)
+            exp_rec = getattr(self, "exposure_reconciliation", None)
+            if hasattr(exp_rec, "prune_inactive_issues"):
+                exp_rec.prune_inactive_issues()
         else:
             pos.updated_at = int(time.time() * 1000)
             await self.redis.set(active_key, json.dumps(pos.to_dict()))

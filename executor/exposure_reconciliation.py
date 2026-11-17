@@ -401,6 +401,42 @@ class ExposureReconciliationWorker:
             self._previous_halts[exchange] = current
         self.engine._exchange_halted[exchange] = f"exposure reconciliation: {reason}"
 
+    def prune_inactive_issues(self) -> None:
+        """Immediately clear reported exposure mismatches for positions that are no longer active."""
+        active_spot_keys = set()
+        active_futures_keys = set()
+        for pair_key, position in (getattr(self.engine, "active_positions", {}) or {}).items():
+            pair_info = (getattr(self.engine, "_pair_infos", {}) or {}).get(pair_key)
+            local_name = str(
+                getattr(position, "local_exchange", "")
+                or getattr(pair_info, "local_exchange", "")
+            ).strip().lower()
+            global_name = str(
+                getattr(position, "global_exchange", "")
+                or getattr(pair_info, "global_exchange", "")
+            ).strip().lower()
+            base_asset = str(
+                getattr(position, "base_asset", "")
+                or getattr(pair_info, "base_asset", "")
+            ).strip().upper()
+            global_symbol = str(
+                getattr(position, "global_symbol", "")
+                or getattr(pair_info, "global_symbol", "")
+            ).strip()
+            if local_name and base_asset:
+                active_spot_keys.add((local_name, base_asset))
+            if global_name and global_symbol:
+                active_futures_keys.add((global_name, global_symbol))
+        for issue_key in list(self._reported):
+            reason, _, remainder = issue_key.partition(":")
+            exchange, _, identifier = remainder.partition(":")
+            if not exchange:
+                continue
+            if reason == "SPOT_BASE_BALANCE_DEFICIT" and (exchange, identifier) not in active_spot_keys:
+                self._clear_issue(issue_key, exchange)
+            elif reason == "FUTURES_POSITION_MISMATCH" and (exchange, identifier) not in active_futures_keys:
+                self._clear_issue(issue_key, exchange)
+
     def _clear_issue(self, issue_key: str, exchange: str) -> None:
         self._reported.pop(issue_key, None)
         still_mismatched = any(
