@@ -489,7 +489,7 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 **Audited baseline:** `b699ab279524a1fdecaa6325ef771e2d51c4195a`  
 **Source/test remediation:** `c2dfdd1`, `685bc8f`, `dc3971c`, `214bd3b`; regression test `3d32b4a`  
 **Documentation commits:** `5477201`, `bb10958`, this checklist update  
-**CI status for this remediation:** PENDING at documentation time; do not infer success from the earlier `b699ab2` run.
+**R-45 CI:** GitHub Actions [44044178958](https://github.com/nzf210/nafaz_arb/actions/runs/44044178958) SUCCESS for `a3b4e937`; Python 711 passed / 4 skipped, disposable PostgreSQL submit-fencing integration 4 passed, and migration/schema, Go/race/vet, Docker jobs passed.
 
 ### Revalidated order boundary inventory
 
@@ -512,7 +512,7 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 ### Test and CI evidence
 
 - Earlier head `b699ab2`: GitHub Actions [43986593318](https://github.com/nzf210/nafaz_arb/actions/runs/43986593318) SUCCESS; Python 710 passed / 4 skipped; disposable PostgreSQL submit-fencing integration 4 passed; migration runner, schema/idempotency/RLS, Go/race/vet and Docker jobs passed.
-- The R-45 code/test commits occurred after that run. Their targeted test, full Python suite, PostgreSQL integration, and CI are not yet verified at this point. Update this section only after the new head's workflow finishes.
+- R-45 targeted regression, full Python suite, disposable PostgreSQL integration, and all five CI jobs were subsequently verified by run `44044178958`.
 - No VPS PostgreSQL or real CEX sandbox contract test was performed.
 
 ### Release gates still open
@@ -522,5 +522,34 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 - [ ] Repeated real PostgreSQL multi-process disconnect/fault-injection and validation against the actual VPS topology; CI disposable PostgreSQL is not production-topology sign-off.
 - [ ] Approve the minimum-notional overhedge/delta-drift remediation policy.
 - [ ] Review the residual best-effort/Redis-only de-risk intent mode when Supabase order-registry persistence is disabled.
+
+**Overall release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+## Audit execution 2026-11-17 — R-46 recovery ACK requires order registry
+
+**Audited baseline:** `a3b4e9374288237b31a5905d6bdbd58afd615aea`  
+**Source remediation:** `c4b1012f298c77e99b215e0fe8c0ed8f2c634cd6`  
+**Regression test:** `9377aa7c310a501ba56c2e915cc28affd0d7a805`  
+**CI status:** pending for the R-46 source/test head at documentation time.
+
+### Finding and change
+
+- [x] R-46: exact-client-ID startup recovery previously treated a missing `order_registry` as a successful no-op, then marked the Global STOP submit attempt ACKNOWLEDGED.
+- [x] Missing registry now raises before ACK. The recovery handler leaves the durable attempt unresolved and retains the global entry fence.
+- [x] Positive exact-ID recovery test now supplies a fake registry and verifies lifecycle record persistence.
+- [x] New fake-venue regression verifies that a missing registry does not ACK the submit attempt and the entry gate remains halted.
+
+### Revalidated boundary inventory
+
+- [x] Spot BUY and futures short SELL remain the only active executor entry create paths found; both require durable PREPARED/SUBMITTING and shared PostgreSQL session advisory fence in LIVE mode.
+- [x] Indodax raw `POST /api/v2/order` remains a wrapper boundary whose exposure classification is inherited from the caller.
+- [x] Generic `MutationGateway.execute_create_order` is fenced and rejects missing Global STOP; no production caller found in inspected executor orchestration.
+- [x] Spot SELL, futures `reduceOnly=True` BUY, rollback, force-close and cancel remain de-risk/cancel paths; Global STOP does not reject de-risk submits. They are not reclassified as exposure-increasing entries.
+- [x] Exact-ID NOT_FOUND and lookup exceptions remain unresolved; no new client ID is allocated from a negative lookup.
+
+### Verification and release gates
+
+- R-45 prior head: run [44044178958](https://github.com/nzf210/nafaz_arb/actions/runs/44044178958) SUCCESS; Python 711 passed / 4 skipped; PostgreSQL integration 4 passed; all five jobs passed.
+- R-46 code/test commits: run pending at documentation time; do not infer success from R-45.
+- Real venue sandbox/paper contract tests, operator-authenticated manual-resolution governance, repeated PostgreSQL multi-process disconnect/fault injection against the actual VPS topology, and futures minimum-notional overhedge policy remain open.
 
 **Overall release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
