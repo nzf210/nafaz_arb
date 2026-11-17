@@ -690,14 +690,48 @@ async def test_startup_reconciliation_adopts_order_found_by_exact_client_id():
         "amount_spec": {"unit": "BASE"},
     }
     order = {"id": "venue-order-99", "status": "open"}
+    record = SimpleNamespace(
+        exchange_order_id="",
+        status="submitting",
+        filled_quantity=0.0,
+        original_quantity=0.01,
+        remaining_quantity=0.01,
+        average_fill_price=0.0,
+        venue_client_order_id="",
+    )
+    registry = _FakeIntentRegistry(record)
     venue = _VenueLookup(order)
     service = _SubmitLedger([attempt])
     engine = _RecoveryHarness(service, _BaseClient(venue))
+    engine.order_registry = registry
 
     assert await engine._reconcile_durable_submit_attempts() is True
     assert venue.calls == [("client-id-123", "BTC/USDT", {"unit": "BASE"})]
     assert engine._base_client.requested_exchange == "binance"
+    assert record.exchange_order_id == "venue-order-99"
+    assert record.status == "open"
+    assert registry.registered == [record]
     assert service.found == [("client-id-123", order)]
+
+
+@pytest.mark.asyncio
+async def test_submit_reconciliation_missing_registry_keeps_global_fence():
+    attempt = {
+        "client_order_id": "client-id-123",
+        "exchange": "binance",
+        "symbol": "BTC/USDT",
+        "amount_spec": {"unit": "BASE"},
+    }
+    order = {"id": "venue-order-99", "status": "closed"}
+    venue = _VenueLookup(order)
+    service = _SubmitLedger([attempt])
+    engine = _RecoveryHarness(service, _BaseClient(venue))
+
+    assert await engine._reconcile_durable_submit_attempts() is False
+    assert service.found == []
+    assert service.not_found and service.not_found[0][0] == "client-id-123"
+    assert engine.halts and engine.halts[0][0] == "*"
+    assert engine.gate_refreshed is True
 
 
 @pytest.mark.asyncio
