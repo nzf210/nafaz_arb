@@ -483,3 +483,44 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 - [x] Required LIVE order intents require the actual Supabase/outbox registry writer; local `postgres_dsn` alone is not treated as durable order-registry storage.
 - [x] Force-close cancellation requires final terminal venue status and reconciles racing entry/exit fills before force-close legs continue.
 - [ ] Decide/validate the operational policy for optional best-effort de-risk intents when Supabase is disabled and Redis is the only remaining registry store; do not claim restart-safe recovery in that configuration.
+
+## Audit execution 2026-11-17 — R-45 terminal entry recovery
+
+**Audited baseline:** `b699ab279524a1fdecaa6325ef771e2d51c4195a`  
+**Source/test remediation:** `c2dfdd1`, `685bc8f`, `dc3971c`, `214bd3b`; regression test `3d32b4a`  
+**Documentation commits:** `5477201`, `bb10958`, this checklist update  
+**CI status for this remediation:** PENDING at documentation time; do not infer success from the earlier `b699ab2` run.
+
+### Revalidated order boundary inventory
+
+- [x] Spot entry BUY: `_submit_entry_order` → `place_local_limit_buy` → CCXT `create_limit_buy_order`; LIVE requires durable PREPARED/SUBMITTING and shared PostgreSQL session advisory fence.
+- [x] Futures hedge SELL: `_submit_entry_hedge_order` → `open_global_short_market` → CCXT `create_market_sell_order` with `reduceOnly=False`; LIVE requires the same durable ledger/fence plus the parent-spot hedge-generation claim.
+- [x] Generic mutation gateway: dynamic `create_order_direct` / `create_order`; create is blocked without Global STOP and fenced when called; no active production caller found in inspected engine orchestration.
+- [x] Indodax TAPIv2: `create_limit_buy_order`, `create_limit_sell_order`, `create_market_sell_order` → `_create_order` → `POST /api/v2/order`; classification follows the caller lifecycle.
+- [x] Spot limit SELL / market SELL, futures reduceOnly BUY, rollback and force-close are de-risk operations; they use the separate de-risk fence and are not rejected merely because Global STOP is active.
+- [x] Cancel is not a create-order path. After cancel, the executor polls exact order state up to three times; non-terminal/not-found/unavailable results retain pending recovery and do not authorize a replacement order.
+- [x] Modular venue adapters and Go scanner/exchange code were rechecked; no additional private CEX create-order call was found in the inspected current tree.
+
+### Finding and remediation
+
+- [x] R-45: terminal ENTRY recovery could retire an older spot order before its lifecycle fill was reconciled when a newer pending order for the same pair existed.
+- [x] ENTRY records are retired only after lifecycle finalization succeeds.
+- [x] A mismatched older terminal entry, missing pair context, or failed fill reconciliation is explicitly retained as `open` + `UNVERIFIED` in the recovery index via `retain_for_reconciliation`; the reason is recorded and the pair is halted in `RECONCILIATION_REQUIRED`.
+- [x] The newer pending entry context is not overwritten and no hedge is submitted from the mismatched old-order context.
+- [x] Fake-venue regression covers older order `501` with a partial terminal fill while newer pending order `902` exists.
+
+### Test and CI evidence
+
+- Earlier head `b699ab2`: GitHub Actions [43986593318](https://github.com/nzf210/nafaz_arb/actions/runs/43986593318) SUCCESS; Python 710 passed / 4 skipped; disposable PostgreSQL submit-fencing integration 4 passed; migration runner, schema/idempotency/RLS, Go/race/vet and Docker jobs passed.
+- The R-45 code/test commits occurred after that run. Their targeted test, full Python suite, PostgreSQL integration, and CI are not yet verified at this point. Update this section only after the new head's workflow finishes.
+- No VPS PostgreSQL or real CEX sandbox contract test was performed.
+
+### Release gates still open
+
+- [ ] Per-venue sandbox/paper contract verification: client-ID idempotency/visibility, eventual consistency, pending/partial hedge, cancel/fill race, reduceOnly semantics.
+- [ ] Operator-authenticated manual resolution governance: operator identity, HMAC key custody/rotation, dual approval, audit retrieval, runbook.
+- [ ] Repeated real PostgreSQL multi-process disconnect/fault-injection and validation against the actual VPS topology; CI disposable PostgreSQL is not production-topology sign-off.
+- [ ] Approve the minimum-notional overhedge/delta-drift remediation policy.
+- [ ] Review the residual best-effort/Redis-only de-risk intent mode when Supabase order-registry persistence is disabled.
+
+**Overall release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
