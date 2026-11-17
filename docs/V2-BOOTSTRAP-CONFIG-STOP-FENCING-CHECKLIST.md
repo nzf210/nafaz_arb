@@ -554,3 +554,30 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 - Real venue sandbox/paper contract tests, operator-authenticated manual-resolution governance, repeated PostgreSQL multi-process disconnect/fault injection against the actual VPS topology, and futures minimum-notional overhedge policy remain open.
 
 **Overall release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+## Audit execution 2026-11-17 — R-47 lookup evidence classification
+
+**Audited baseline:** R-46 source/test head `77906cf1f650dc084ec01ab4a3ea65b6909994f8`  
+**Source remediation:** `3f8e2af319aebccf6cbfaa4251e233d658129c35`  
+**Regression tests:** `ff6466a353dcdaf223900b656c5b77ca3398fa69`  
+**Helper restoration after CI failure:** `8f2d309c7d85128c30fa041bc5efc4da261eec35`  
+**CI:** [44047469831](https://github.com/nzf210/nafaz_arb/actions/runs/44047469831) SUCCESS for `8f2d309c`.
+
+### Finding and remediation
+
+- [x] R-47: lookup exceptions and post-lookup persistence failures were incorrectly recorded through `reconcile_submit_attempt_not_found`, producing false `last_lookup_result=NOT_FOUND` evidence.
+- [x] Only a successful exact-ID lookup returning `None` now records NOT_FOUND; the attempt remains SUBMITTING/UNKNOWN and globally blocking.
+- [x] Lookup timeout, unsupported lookup, malformed response, missing registry/intent, registry write failure, and ACK persistence failure now remain UNKNOWN; if annotation itself fails, the committed SUBMITTING row remains unresolved.
+- [x] Fake-venue timeout and registry-writer failure regressions prove these cases are not labeled NOT_FOUND.
+- [x] Exact lookup returning `None` still records NOT_FOUND but does not release the global fence.
+
+### Verification
+
+- Python executor suite: **714 passed, 4 skipped, 111 warnings**.
+- Disposable PostgreSQL multi-process submit-fencing integration: **4 passed**.
+- All five CI jobs passed: Python, Go/race/vet, schema/idempotency/RLS + PostgreSQL integration, VPS migration runner, and Docker image builds.
+- An initial R-47 CI attempt caught an accidentally omitted `_group_recovered_positions` helper; it was restored in `8f2d309c` and the final run passed.
+- No VPS production PostgreSQL or live CEX contract test was performed.
+
+**Remaining gates:** per-venue sandbox/paper contracts; operator identity/HMAC governance, dual approval and runbook; repeated PostgreSQL multi-process fault injection on the actual VPS topology; and approval/remediation for futures minimum-notional overhedge/hard-drift behavior.
+
+**Overall release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
