@@ -253,7 +253,17 @@ class EngineRecoveryMixin:
         token = None
         try:
             token = self._bind_pair_client(self._pair_info_for_tag(items[0][0]))
-            positions = await self.client.fetch_positions(global_symbol)
+            positions = None
+            for attempt in range(1, 4):
+                try:
+                    positions = await self.client.fetch_positions(global_symbol)
+                    if positions is not None:
+                        break
+                except Exception:
+                    if attempt < 3:
+                        await asyncio.sleep(1.0 * attempt)
+                    else:
+                        raise
             if positions is None:
                 raise ValueError("fetch_positions returned None")
             actual_short_qty = 0.0
