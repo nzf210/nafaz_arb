@@ -95,7 +95,13 @@ class RiskExposureMixin:
             "usdt_idr_rate": float(usdt_idr_rate or 0.0),
         }
         result = await self._invoke_balance_getter(getter, balance_kwargs)
-        return self._validate_balance_snapshot(result)
+        validated = self._validate_balance_snapshot(result)
+        if validated and getattr(self, "redis", None) is not None:
+            try:
+                await self.redis.set("arb:balances", json.dumps(validated))
+            except Exception:
+                pass
+        return validated
 
     async def _halt_balance_feed_unavailable(
         self, pair_tag: Optional[str], local_name: str,
