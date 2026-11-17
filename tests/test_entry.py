@@ -1005,3 +1005,22 @@ async def test_independent_heartbeat_loop_publishes_status(engine, fake_redis):
         heartbeat_task.cancel()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
 
+
+@pytest.mark.asyncio
+async def test_slot_exhausted_does_not_increment_order_failures(engine):
+    """SlotExhaustedError must publish SPOT_SLOT_EXHAUSTED and NOT increment venue failure breaker."""
+    from unittest.mock import MagicMock
+    from executor.order_slots import SlotExhaustedError
+    pair_tag = "tokocrypto:toko:spx_idr__okx:spx_usdt_swap"
+    pair_info = MagicMock()
+    pair_info.local_exchange = "tokocrypto"
+    pair_info.local_symbol = "toko:spx_idr"
+
+    initial_failures = engine._consecutive_order_failures.get("tokocrypto", 0)
+    exc = SlotExhaustedError("All 1 spot slots occupied on tokocrypto:default (active: {0})")
+
+    await engine._handle_entry_submission_failure(pair_tag, pair_info, 10.0, exc)
+
+    assert engine._consecutive_order_failures.get("tokocrypto", 0) == initial_failures
+    assert "tokocrypto" not in engine._exchange_halted
+

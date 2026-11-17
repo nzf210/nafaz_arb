@@ -10,8 +10,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, Optional, Set, Tuple
 
 logger = logging.getLogger("executor.order_slots")
 
@@ -233,3 +233,74 @@ class OrderSlotManager:
                 1 for (v, acc, _), info in self._mem_slots.items()
                 if v == venue and acc == account and info.get("status") in ("RESERVED", "ACTIVE")
             )
+
+    async def reconcile_active_slots(
+        self,
+        active_client_order_ids: Set[str],
+        max_reserved_age_seconds: float = 60.0,
+    ) -> int:
+        """Release reservations whose client_order_id is not active or timed out.
+
+        Releases:
+        1. RESERVED slots older than max_reserved_age_seconds (never submitted/activated).
+        2. ACTIVE or RESERVED slots older than max_reserved_age_seconds whose client_order_id
+           is not in active_client_order_ids.
+
+        Returns total count of released slots.
+        """
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=float(max_reserved_age_seconds))
+        released_count = 0
+        active_ids = set(active_client_order_ids or set())
+
+        if self.pool is not None:
+            try:
+                async with self.pool.acquire() as conn:
+                    # 1. Release expired RESERVED slots (timed out before placement)
+                    res1 = await conn.execute(
+                        "UPDATE public.order_slot_reservations "
+                        "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
+                        "WHERE status = 'RESERVED' AND created_at < $2",
+                        now, cutoff,
+                    )
+                    # 2. Release ACTIVE or RESERVED slots not in active_ids (older than cutoff)
+                    active_ids_list = list(active_ids)
+                    if active_ids_list:
+                        res2 = await conn.execute(
+                            "UPDATE public.order_slot_reservations "
+                            "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
+                            "WHERE status IN ('RESERVED', 'ACTIVE') "
+                            "AND created_at < $2 "
+                            "AND client_order_id != ALL($3::text[])",
+                            now, cutoff, active_ids_list,
+                        )
+                    else:
+                        res2 = await conn.execute(
+                            "UPDATE public.order_slot_reservations "
+                            "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
+                            "WHERE status IN ('RESERVED', 'ACTIVE') "
+                            "AND created_at < $2",
+                            now, cutoff,
+                        )
+                    for res in (res1, res2):
+                        try:
+                            released_count += int(res.split(" ")[-1])
+                        except (ValueError, IndexError):
+                            pass
+                    if released_count > 0:
+                        logger.info("Reconciled %d orphaned spot order slot reservations", released_count)
+            except Exception as exc:
+                logger.error("Failed to reconcile spot order slots: %s", exc)
+
+        async with self._lock:
+            for key, info in list(self._mem_slots.items()):
+                if info.get("status") in ("RESERVED", "ACTIVE"):
+                    coid = info.get("client_order_id")
+                    created = info.get("created_at")
+                    age = (now - created).total_seconds() if created else 999999.0
+                    if age >= max_reserved_age_seconds and coid not in active_ids:
+                        info["status"] = "RELEASED"
+                        info["released_at"] = now
+                        released_count += 1
+
+        return released_count

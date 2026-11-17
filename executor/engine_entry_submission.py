@@ -192,6 +192,24 @@ class EngineEntrySubmissionMixin:
         ):
             self.client.unlock_funds(actual_cost_usdt, actual_cost_usdt)
         exchange_error, normalized_error = self._entry_error_text(exc)
+        if isinstance(exc, SlotExhaustedError):
+            logger.warning(
+                "[Order Slots] Spot slots exhausted on %s for %s: %s",
+                pair_info.local_exchange, pair_tag, exc,
+            )
+            await self._publish_execution_failure(
+                pair_tag,
+                "SPOT_SLOT_EXHAUSTED",
+                f"Kapasitas slot spot penuh di {pair_info.local_exchange}: {exc}. Menunggu order aktif selesai.",
+                detail={
+                    "exchange": pair_info.local_exchange,
+                    "symbol": pair_info.local_symbol,
+                    "error_type": type(exc).__name__,
+                    "exchange_error": exchange_error[:1000],
+                },
+            )
+            return
+
         if self._is_explicit_ip_ban(normalized_error):
             reason = "CEX_IP_BLOCK"
             stop_error = None

@@ -337,6 +337,16 @@ class ArbitrageEngine(
                 "*", "startup recovery or durable submit reconciliation is incomplete"
             )
             self._refresh_entry_gate()
+        if getattr(self, "slot_manager", None) is not None:
+            try:
+                active_coids = {
+                    str(o.get("client_order_id") or "")
+                    for o in self.pending_entry_orders.values()
+                    if o.get("client_order_id")
+                }
+                await self.slot_manager.reconcile_active_slots(active_coids)
+            except Exception:
+                logger.exception("failed to reconcile spot order slots on startup")
         logger.info(
             "[Recovery] startup reconciliation finished: ready=%s, pending=%d, orphans=%d",
             not self._entry_blocked, len(self._recovery_pending_orders), len(self._recovered_orphans),

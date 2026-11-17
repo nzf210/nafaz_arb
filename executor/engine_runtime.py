@@ -65,6 +65,16 @@ class EngineRuntimeMixin:
                             self._signal_queue_event.set()
                     else:
                         await self._run_order_recovery()
+                    if getattr(self, "slot_manager", None) is not None:
+                        try:
+                            active_coids = {
+                                str(o.get("client_order_id") or "")
+                                for o in self.pending_entry_orders.values()
+                                if o.get("client_order_id")
+                            }
+                            await self.slot_manager.reconcile_active_slots(active_coids)
+                        except Exception:
+                            logger.exception("failed to reconcile spot order slots")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

@@ -66,15 +66,34 @@ async def test_order_slot_reservation_cap_and_release():
 async def test_order_slot_custom_cap():
     manager = OrderSlotManager()
     await manager.set_max_slots("indodax", 3)
-
     assert await manager.get_max_slots("indodax") == 3
     s0 = await manager.reserve_slot("indodax", client_order_id="idx-1")
     s1 = await manager.reserve_slot("indodax", client_order_id="idx-2")
     s2 = await manager.reserve_slot("indodax", client_order_id="idx-3")
     assert {s0, s1, s2} == {0, 1, 2}
-
     with pytest.raises(SlotExhaustedError):
         await manager.reserve_slot("indodax", client_order_id="idx-4")
+
+
+@pytest.mark.asyncio
+async def test_order_slot_reconcile_active_slots():
+    manager = OrderSlotManager()
+    # Reserve 2 slots in memory
+    s0 = await manager.reserve_slot("tokocrypto", client_order_id="toko-1")
+    s1 = await manager.reserve_slot("tokocrypto", client_order_id="toko-2")
+    assert {s0, s1} == {0, 1}
+
+    # At capacity
+    with pytest.raises(SlotExhaustedError):
+        await manager.reserve_slot("tokocrypto", client_order_id="toko-3")
+
+    # Reconcile where toko-1 is active, toko-2 is orphaned (with max_reserved_age_seconds=0)
+    released = await manager.reconcile_active_slots({"toko-1"}, max_reserved_age_seconds=0.0)
+    assert released == 1
+
+    # toko-2 is released, so a new slot can be reserved
+    s_new = await manager.reserve_slot("tokocrypto", client_order_id="toko-3")
+    assert s_new == 1
 
 
 # =====================================================================
