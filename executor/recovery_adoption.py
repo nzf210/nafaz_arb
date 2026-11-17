@@ -288,12 +288,69 @@ class RecoveryAdoptionMixin:
             if res:
                 await self.order_registry.retire(record)
             return res
+        if record.order_role == OrderRole.EXIT_FUTURES.value:
+            await self._finalize_terminal_futures_exit(record, pair_tag)
         await self.order_registry.retire(record)
         if record.order_role in ACKNOWLEDGED_EXIT_ROLES:
             logger.info(
                 "[Recovery] terminal %s order %s for %s acknowledged",
                 record.order_role, record.exchange_order_id, pair_tag,
             )
+        return True
+
+    async def _finalize_terminal_futures_exit(
+        self, record: OrderRecord, pair_tag: str
+    ) -> bool:
+        pos = self.active_positions.get(pair_tag)
+        if pos is None:
+            return True
+        last_tracked = float(record.hedged_quantity or 0.0)
+        unapplied = max(0.0, float(record.filled_quantity or 0.0) - last_tracked)
+        if unapplied <= 0:
+            return True
+        total_qty_before = float(pos.qty or 0.0)
+        pos.qty = max(0.0, total_qty_before - unapplied)
+        pos.unhedged_exit_base_qty = max(
+            0.0, float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0) - unapplied
+        )
+        record.hedged_quantity = float(record.filled_quantity or 0.0)
+        await self.order_registry.register(record)
+        short_exit_usdt = float(
+            record.average_fill_price or record.price or pos.short_entry_usdt or 0.0
+        )
+        pending_exit = self.pending_exit_orders.get(pair_tag) or {}
+        exit_price_idr = float(
+            pending_exit.get("price") or getattr(pos, "current_spot_bid_idr", 0.0) or pos.entry_price_idr or 0.0
+        )
+        if (
+            short_exit_usdt > 0
+            and exit_price_idr > 0
+            and hasattr(self, "_build_closed_trade_record")
+            and hasattr(self, "_persist_closed_trade")
+        ):
+            from executor import helpers
+            import json as _json
+            usdt_rate = helpers.FALLBACK_USDT_IDR_RATE
+            live_price_raw = await self.redis.get(f"arb:live_price:{pair_tag}")
+            if live_price_raw:
+                try:
+                    snap = _json.loads(live_price_raw)
+                    usdt_rate = float(snap.get("usdt_idr_rate") or usdt_rate)
+                except Exception:
+                    pass
+            closed_trade, spot_cost, futures_margin, spot_pnl_usdt = (
+                self._build_closed_trade_record(
+                    pos, unapplied, exit_price_idr,
+                    float(pos.entry_price_idr), float(pos.short_entry_usdt),
+                    short_exit_usdt, usdt_rate, max(total_qty_before, unapplied),
+                )
+            )
+            await self._persist_closed_trade(
+                pair_tag, pos, closed_trade, spot_cost, futures_margin,
+                spot_pnl_usdt, usdt_rate,
+            )
+        elif hasattr(self, "_finalize_exit_position"):
+            await self._finalize_exit_position(pair_tag, pos)
         return True
 
     async def _persist_recovered_parent_hedge(

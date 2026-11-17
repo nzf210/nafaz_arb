@@ -1272,6 +1272,8 @@ class EntryHedgeMixin:
                 entry_price_idr=price_idr,
                 short_entry_usdt=short_entry_usdt,
                 qty=qty,
+                initial_qty=qty,
+                opened_at_ms=int(order_info.get("opened_at_ms") or time.time() * 1000),
                 accumulated_funding_usdt=0.0,
                 next_funding_time_ms=order_info["next_funding_time_ms"],
                 base_target_exit_spread_pct=order_info["base_target_exit_spread_pct"],

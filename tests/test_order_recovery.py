@@ -344,6 +344,10 @@ async def test_restart_reconciles_futures_buy_close(fake_redis):
     retired = await engine.order_registry.load(record.local_order_id)
     assert retired.status == "closed"
     assert retired.filled_quantity == pytest.approx(0.01)
+    assert retired.hedged_quantity == pytest.approx(0.01)
+    assert PAIR_TAG not in engine.active_positions
+    assert await fake_redis.get(f"arb:active_pos:{PAIR_TAG}") is None
+    assert engine.states[PAIR_TAG] == PositionState.CLOSED
 
 # --------------------------------------------------------------- partial fill
 

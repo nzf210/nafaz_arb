@@ -274,6 +274,10 @@ class ForceCloseLegMixin:
         logger.warning(f"[Force Close] Closing global short {pos.qty} on {global_sym}...")
         is_mock = bool(getattr(self.config, "mock_mode", False))
         opened_at_ms = int(getattr(pos, "opened_at_ms", 0) or 0)
+        if opened_at_ms <= 0:
+            opened_at_ms = int(getattr(pos, "updated_at", 0) or 0)
+            if opened_at_ms > 0:
+                pos.opened_at_ms = opened_at_ms
         if not is_mock and opened_at_ms <= 0:
             logger.critical(
                 "[Force Close] refusing a LIVE futures close without a stable position opened_at_ms "
@@ -512,15 +516,101 @@ class ForceCloseLegMixin:
             return 0.0
         return exit_price
 
-    async def _liquidate_spot_leg(self, pair_key: str, pos) -> float:
+    async def _check_retry_spot_balance(
+        self, pair_key: str, pos
+    ) -> Tuple[bool, Optional[float]]:
+        """Check local spot balance before retrying liquidation of a reconciled position.
+
+        Returns (already_flat, sell_qty_override).
+        """
+        balance_of = getattr(self.client, "fetch_spot_total_balance", None) or getattr(
+            self.client, "fetch_spot_free_balance", None
+        )
+        if not callable(balance_of):
+            return False, None
+        base_asset = str(getattr(pos, "base_asset", "") or "").strip().upper()
+        if not base_asset:
+            raw_sym = str(getattr(pos, "symbol", "") or "").upper()
+            for sep in ("/", "_", "-"):
+                if sep in raw_sym:
+                    base_asset = raw_sym.split(sep)[0].strip()
+                    break
+            if not base_asset:
+                for quote in ("IDR", "USDT", "USDC"):
+                    if raw_sym.endswith(quote) and len(raw_sym) > len(quote):
+                        base_asset = raw_sym[: -len(quote)].strip()
+                        break
+        if not base_asset:
+            return False, None
+        try:
+            actual = float(await balance_of(base_asset))
+        except NotImplementedError:
+            return False, None
+        except Exception:
+            logger.exception(
+                "[Force Close] cannot verify local spot %s balance for retry %s",
+                base_asset, pair_key,
+            )
+            return False, 0.0
+        if not math.isfinite(actual) or actual < 0:
+            return False, 0.0
+        spec = getattr(pos, "local_amount_spec", None)
+        if isinstance(spec, dict):
+            step = float(spec.get("step", 0.0) or 0.0)
+            min_qty = float(spec.get("min", spec.get("minimum", 0.0)) or 0.0)
+        else:
+            step = float(getattr(spec, "step", 0.0) or 0.0)
+            min_qty = float(getattr(spec, "minimum", 0.0) or 0.0)
+        flat_threshold = max(1e-10, float(pos.qty or 0.0) * 1e-4, step, min_qty)
+        if actual < flat_threshold:
+            logger.warning(
+                "[Force Close] spot leg for %s is already flat (balance=%s %s); "
+                "skipping duplicate spot market sell",
+                pair_key, actual, base_asset,
+            )
+            return True, 0.0
+        if actual + 1e-12 < float(pos.qty or 0.0):
+            sell_qty = (
+                math.floor((actual + 1e-12) / step) * step
+                if step > 0
+                else actual
+            )
+            logger.warning(
+                "[Force Close] partial spot balance for %s: expected=%s, available=%s %s; "
+                "liquidating available %s",
+                pair_key, pos.qty, actual, base_asset, sell_qty,
+            )
+            return False, sell_qty
+        return False, None
+
+    async def _liquidate_spot_leg(
+        self, pair_key: str, pos, allow_already_flat: bool = False
+    ) -> float:
         """
         Liquidates the local spot leg. Returns the realized exit price only after
-        a verified full fill. LIVE retries reuse a position-bound client ID and
-        adopt any prior intent before another create-order call.
+        a verified full fill, or -1.0 when allow_already_flat confirms zero balance.
+        LIVE retries reuse a position-bound client ID and adopt any prior intent
+        before another create-order call.
         """
-        logger.warning(f"[Force Close] Selling {pos.qty} {pos.symbol} spot leg...")
+        sell_qty = float(pos.qty)
+        if allow_already_flat:
+            already_flat, qty_override = await self._check_retry_spot_balance(
+                pair_key, pos
+            )
+            if already_flat:
+                return -1.0
+            if qty_override is not None:
+                if qty_override <= 0:
+                    return 0.0
+                sell_qty = qty_override
+
+        logger.warning(f"[Force Close] Selling {sell_qty} {pos.symbol} spot leg...")
         is_mock = bool(getattr(self.config, "mock_mode", False))
         opened_at_ms = int(getattr(pos, "opened_at_ms", 0) or 0)
+        if opened_at_ms <= 0:
+            opened_at_ms = int(getattr(pos, "updated_at", 0) or 0)
+            if opened_at_ms > 0:
+                pos.opened_at_ms = opened_at_ms
         if not is_mock and opened_at_ms <= 0:
             logger.critical(
                 "[Force Close] refusing LIVE spot liquidation without stable "
@@ -573,7 +663,7 @@ class ForceCloseLegMixin:
                     exchange=pos.local_exchange, market_type="spot",
                     symbol=pos.symbol, role=OrderRole.FORCE_CLOSE.value,
                     side="sell", order_type="market", price=0.0,
-                    quantity=pos.qty, local_amount_spec=pos.local_amount_spec,
+                    quantity=sell_qty, local_amount_spec=pos.local_amount_spec,
                     recovery_context={
                         "position_opened_at_ms": opened_at_ms,
                         "force_close_leg": "spot",
@@ -584,7 +674,7 @@ class ForceCloseLegMixin:
                 async def _spot_sell():
                     return await self.client.place_local_market_sell(
                         pos.symbol,
-                        pos.qty,
+                        sell_qty,
                         client_order_id=client_order_id,
                         amount_spec=pos.local_amount_spec,
                     )
@@ -608,17 +698,17 @@ class ForceCloseLegMixin:
                     )
                     if (
                         status in ("closed", "filled")
-                        and filled_qty + max(1e-12, pos.qty * 1e-8) >= pos.qty
+                        and filled_qty + max(1e-12, sell_qty * 1e-8) >= sell_qty
                         and exit_price > 0
                     ):
                         logger.info(
-                            f"[Force Close] Spot leg fully liquidated: {pos.qty} {pos.symbol} "
+                            f"[Force Close] Spot leg fully liquidated: {sell_qty} {pos.symbol} "
                             f"@ {exit_price} (filled={filled_qty})"
                         )
                         return exit_price
                     logger.critical(
                         f"[Force Close] partial/unverified spot liquidation for {pair_key}: "
-                        f"requested={pos.qty}, filled={filled_qty}; manual reconciliation required"
+                        f"requested={sell_qty}, filled={filled_qty}; manual reconciliation required"
                     )
 
             logger.critical(

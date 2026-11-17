@@ -124,6 +124,31 @@ class ForceCloseLifecycleMixin:
         pipe.publish(self.ARB_TRADE_EVENTS, json.dumps(event_msg))
         await pipe.execute()
 
+    def _resolve_force_close_pair_keys(self, pair_key: str) -> list[str]:
+        """Resolve a direct or local-only pair key (e.g. 'indodax:beatidr') to active pair tags."""
+        key = str(pair_key or "").strip()
+        if not key:
+            return []
+        known_maps = (
+            getattr(self, "active_positions", {}) or {},
+            getattr(self, "pending_exit_orders", {}) or {},
+            getattr(self, "pending_entry_orders", {}) or {},
+            getattr(self, "states", {}) or {},
+            getattr(self, "_pair_infos", {}) or {},
+        )
+        if any(key in m for m in known_maps):
+            return [key]
+        if "__" not in key:
+            prefix = f"{key.lower()}__"
+            matched = []
+            for m in known_maps:
+                for candidate in m.keys():
+                    if str(candidate).lower().startswith(prefix) and candidate not in matched:
+                        matched.append(candidate)
+            if matched:
+                return matched
+        return [key]
+
     async def handle_force_close(self, message_data: str):
         """
         Handles FORCE_CLOSE directive from Telegram or API:
@@ -137,11 +162,12 @@ class ForceCloseLifecycleMixin:
         if not pair_key:
             return
 
-        # Serialize against the entry/exit paths for this pair: cancelling
-        # pending orders and liquidating legs must not interleave with a
-        # hedge or exit fill processed on another task.
-        async with self._pair_lock(pair_key):
-            await self._force_close_locked(pair_key)
+        for resolved_key in self._resolve_force_close_pair_keys(pair_key):
+            # Serialize against the entry/exit paths for this pair: cancelling
+            # pending orders and liquidating legs must not interleave with a
+            # hedge or exit fill processed on another task.
+            async with self._pair_lock(resolved_key):
+                await self._force_close_locked(resolved_key)
 
 
     async def _execute_force_close_legs(
@@ -165,18 +191,26 @@ class ForceCloseLifecycleMixin:
         )
         spot_sell_failed = True
         spot_exit_price_idr = 0.0
+        spot_already_flat = False
 
         # Even when the futures close fill price is unavailable, a verified-flat
         # futures leg must not leave the spot leg exposed. Liquidate spot, but
         # mark the realized PnL as unverified instead of substituting a quote.
         if futures_closed:
-            spot_exit_price_idr = await self._liquidate_spot_leg(pair_key, pos)
-            spot_sell_failed = spot_exit_price_idr <= 0
+            spot_exit_price_idr = await self._liquidate_spot_leg(
+                pair_key, pos, allow_already_flat=allow_already_flat
+            )
+            if spot_exit_price_idr < 0:
+                spot_already_flat = True
+                spot_exit_price_idr = 0.0
+                spot_sell_failed = False
+            else:
+                spot_sell_failed = spot_exit_price_idr <= 0
 
         current_ask, usdt_rate, current_spot_bid = await self._resolve_force_close_prices(
             pair_key, pos, spot_exit_price_idr if futures_closed else 0.0
         )
-        if futures_closed and short_exit_price_usdt > 0:
+        if futures_closed and short_exit_price_usdt > 0 and not spot_already_flat:
             current_ask = short_exit_price_usdt
             pnl = self._compute_force_close_pnl(
                 pos, current_ask, usdt_rate, current_spot_bid
@@ -258,6 +292,10 @@ class ForceCloseLifecycleMixin:
         self._failure_reasons.pop(pair_key, None)
         self._persist_risk_state("position_failure", scope="position", pair_key=pair_key, resolved=True)
         self._clear_exposure_halt(pair_key, "verified force close completed")
+        if hasattr(self, "resume_pair"):
+            self.resume_pair(pair_key, reason="FORCE_CLOSE_SUCCESS")
+        if hasattr(self, "_record_pair_success"):
+            self._record_pair_success(pair_key)
         if pnl.get("pnl_unverified"):
             logger.critical(
                 f"[Force Close Complete] Exposure for {pair_key} is flat, but realized "
@@ -268,6 +306,15 @@ class ForceCloseLifecycleMixin:
 
     async def _force_close_locked(self, pair_key: str) -> None:
         """Bind emergency order routing to this position's exact venues."""
+        if (
+            not getattr(self.config, "mock_mode", False)
+            and pair_key not in (getattr(self, "_pair_infos", {}) or {})
+            and pair_key not in (getattr(self, "active_positions", {}) or {})
+            and pair_key not in (getattr(self, "pending_entry_orders", {}) or {})
+            and pair_key not in (getattr(self, "pending_exit_orders", {}) or {})
+        ):
+            await self._force_close_locked_bound(pair_key)
+            return
         await self._run_pair_bound(
             pair_key, self._force_close_locked_bound, pair_key
         )

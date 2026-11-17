@@ -22,6 +22,13 @@ class EngineStatusMixin:
         state: PositionState = PositionState.FAILED,
     ) -> None:
         """Puts a pair into a failure state and records why."""
+        existing_failure = self._failure_reasons.get(pair_tag)
+        is_repeat_reconciliation = (
+            self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED
+            and state == PositionState.RECONCILIATION_REQUIRED
+            and isinstance(existing_failure, dict)
+            and existing_failure.get("reason") == reason
+        )
         self.states[pair_tag] = state
         entry = {
             "reason": reason,
@@ -30,13 +37,14 @@ class EngineStatusMixin:
             "timestamp_ms": int(time.time() * 1000),
         }
         self._failure_reasons[pair_tag] = entry
-        self._record_pair_failure(pair_tag, reason)
+        if not is_repeat_reconciliation:
+            self._record_pair_failure(pair_tag, reason)
         self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, reason=reason, value={**entry, "state": state.value})
         if state == PositionState.RECONCILIATION_REQUIRED:
             self._persist_risk_state("reconciliation_halt", scope="pair", pair_key=pair_tag, reason=reason, value={"source": "position_failure"})
             self._recovery_scope_halts[pair_tag] = reason
         logger.critical(f"[{state.value}] {pair_tag}: {reason} - {message}")
-        if reason != "HEDGE_FAILED":
+        if reason != "HEDGE_FAILED" and not is_repeat_reconciliation:
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(

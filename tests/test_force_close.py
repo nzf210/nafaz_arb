@@ -465,6 +465,44 @@ def test_force_close_pnl_is_unverified_without_live_fx():
     pnl = ArbitrageEngine._compute_force_close_pnl(
         pos, current_ask=64_900.0, usdt_rate=0.0, current_spot_bid=1_010_000_000.0
     )
-
     assert pnl["pnl_complete"] is False
     assert pnl["pnl_unverified"] is True
+
+
+@pytest.mark.asyncio
+async def test_force_close_resolves_short_pair_key_and_clears_already_flat_legs(fake_redis):
+    """Telegram short pair_key ('indodax:beatidr') resolves to full pair tag and clears flat legs."""
+    client = MockExchangeClient()
+    client.set_spot_balance("BEAT", 0.0)
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=True),
+        client=client,
+        redis_client=fake_redis,
+    )
+    pair_tag = "indodax:beatidr__okx:beat_usdt_swap"
+    pos = ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="beatidr",
+        base_asset="BEAT",
+        global_symbol="BEAT-USDT-SWAP",
+        entry_price_idr=1413.0,
+        short_entry_usdt=0.07769,
+        qty=116.0,
+        opened_at_ms=0,
+        updated_at=1794920811269,
+        state="RECONCILIATION_REQUIRED",
+    )
+    engine.active_positions[pair_tag] = pos
+    engine.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+    engine._pair_halted[pair_tag] = "blacklisted"
+    await fake_redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+
+    await engine.handle_force_close(json.dumps({"action": "FORCE_CLOSE", "pair_key": "indodax:beatidr"}))
+
+    assert client.global_close_buys == []
+    assert client.placed_sells == []
+    assert pair_tag not in engine.active_positions
+    assert await fake_redis.get(f"arb:active_pos:{pair_tag}") is None
+    assert engine.states[pair_tag] == PositionState.CLOSED
+    assert pair_tag not in engine._pair_halted

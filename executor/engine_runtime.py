@@ -260,7 +260,10 @@ class EngineRuntimeMixin:
                     data = message.get("data")
                     if isinstance(data, bytes):
                         data = data.decode("utf-8")
-                    await self.handle_force_close(data)
+                    try:
+                        await self.handle_force_close(data)
+                    except Exception:
+                        logger.exception("failed to process force close directive")
                 await asyncio.sleep(0.01)
         finally:
             await pubsub.unsubscribe("arb:force_close")

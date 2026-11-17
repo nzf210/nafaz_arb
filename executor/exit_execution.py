@@ -279,11 +279,6 @@ class ExitExecutionMixin:
                 reduce_only=True,
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
             )
-            if rec is not None and self.order_registry is not None:
-                try:
-                    await self.order_registry.retire(rec)
-                except Exception:
-                    pass
 
             total_qty_before = pos.qty
             order_info["closed_short_qty"] += unclosed_delta
@@ -295,6 +290,8 @@ class ExitExecutionMixin:
             await self.redis.set(
                 f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict())
             )
+            if rec is not None:
+                rec.hedged_quantity = actual_closed_qty
             short_exit_usdt = helpers.extract_fill_price(close_order)
             if short_exit_usdt <= 0:
                 raise ValueError(
@@ -328,6 +325,11 @@ class ExitExecutionMixin:
                 pair_tag, pos, closed_trade, spot_cost, futures_margin,
                 spot_pnl_usdt, usdt_rate,
             )
+            if rec is not None and self.order_registry is not None:
+                try:
+                    await self.order_registry.retire(rec)
+                except Exception:
+                    pass
         except Exception as ee:
             pos.state = "RECONCILIATION_REQUIRED"
             pos.updated_at = int(time.time() * 1000)
@@ -372,11 +374,20 @@ class ExitExecutionMixin:
                 f"[State 4 Complete] Arbitrage position for {pair_tag} fully exited! Deleting active pos."
             )
             await self.redis.delete(active_key)
-            del self.active_positions[pair_tag]
-            del self.pending_exit_orders[pair_tag]
-            if pair_tag in self.last_pegged_global_ask:
-                del self.last_pegged_global_ask[pair_tag]
+            self.active_positions.pop(pair_tag, None)
+            self.pending_exit_orders.pop(pair_tag, None)
+            self.last_pegged_global_ask.pop(pair_tag, None)
             self.states[pair_tag] = PositionState.CLOSED
+            if hasattr(self, "_failure_reasons") and isinstance(self._failure_reasons, dict):
+                self._failure_reasons.pop(pair_tag, None)
+            if hasattr(self, "_persist_risk_state"):
+                self._persist_risk_state("position_failure", scope="position", pair_key=pair_tag, resolved=True)
+            if hasattr(self, "_clear_exposure_halt"):
+                self._clear_exposure_halt(pair_tag, "exit position finalized")
+            if hasattr(self, "resume_pair"):
+                self.resume_pair(pair_tag, reason="EXIT_FINALIZED")
+            if hasattr(self, "_record_pair_success"):
+                self._record_pair_success(pair_tag)
         else:
             pos.updated_at = int(time.time() * 1000)
             await self.redis.set(active_key, json.dumps(pos.to_dict()))
