@@ -71,11 +71,24 @@ class EngineRecoveryMixin:
         await registry.register(record)
 
     async def _reconcile_durable_submit_attempts(self) -> bool:
-        """Resolve exact client-id matches; keep negative/failed lookups fenced."""
+        """Resolve exact client-id matches without conflating lookup failure and NOT_FOUND."""
         service = getattr(self, "global_stop", None)
         if service is None:
             return True
         attempts = await service.list_unresolved_submit_attempts()
+
+        async def _keep_unknown(client_order_id: str, error: Exception) -> None:
+            try:
+                await service.mark_submit_unknown(
+                    client_order_id, f"submit recovery unresolved: {type(error).__name__}: {error}"
+                )
+            except Exception:
+                # The already-committed SUBMITTING row remains globally blocking.
+                logger.exception(
+                    "[Submit Recovery] could not annotate unresolved attempt %s",
+                    client_order_id,
+                )
+
         for attempt in attempts:
             client_order_id = str(attempt.get("client_order_id") or "")
             exchange = str(attempt.get("exchange") or "").lower()
@@ -100,40 +113,58 @@ class EngineRecoveryMixin:
                 order = await lookup(
                     client_order_id, symbol, attempt.get("amount_spec") or None
                 )
-                if isinstance(order, dict) and exchange_order_id_from(order):
-                    # Persist the exchange order ID against the original durable
-                    # intent before ACKing the global attempt. If this fails,
-                    # leave the attempt unresolved so the global fence remains.
-                    await self._persist_reconciled_submit_order(
-                        exchange, client_order_id, order
-                    )
-                    await service.reconcile_submit_attempt_found(client_order_id, order)
-                    logger.warning(
-                        "[Submit Recovery] found unresolved venue order %s on %s; "
-                        "durable ledger marked ACKNOWLEDGED",
-                        client_order_id, exchange,
-                    )
-                else:
+            except Exception as exc:
+                logger.exception(
+                    "[Submit Recovery] exact client-id lookup failed for %s on %s",
+                    client_order_id, exchange,
+                )
+                await _keep_unknown(client_order_id, exc)
+                continue
+
+            if order is None:
+                try:
                     await service.reconcile_submit_attempt_not_found(
                         client_order_id,
                         evidence="exact client-order-id lookup returned no order; "
                         "retained unresolved because absence is not proof of rejection",
                     )
-            except Exception as exc:
-                logger.exception(
-                    "[Submit Recovery] could not reconcile client order %s on %s",
+                except Exception as exc:
+                    logger.exception(
+                        "[Submit Recovery] could not persist NOT_FOUND lookup evidence for %s",
+                        client_order_id,
+                    )
+                    await _keep_unknown(client_order_id, exc)
+                continue
+
+            if not isinstance(order, dict) or not exchange_order_id_from(order):
+                malformed = RuntimeError(
+                    "exact client-order-id lookup returned a malformed order without an exchange order ID"
+                )
+                logger.error(
+                    "[Submit Recovery] malformed exact-ID result for %s on %s; retaining UNKNOWN",
                     client_order_id, exchange,
                 )
-                try:
-                    await service.reconcile_submit_attempt_not_found(
-                        client_order_id,
-                        evidence=f"lookup unavailable/failed: {type(exc).__name__}: {exc}",
-                    )
-                except Exception:
-                    logger.exception(
-                        "[Submit Recovery] could not persist lookup result for %s",
-                        client_order_id,
-                    )
+                await _keep_unknown(client_order_id, malformed)
+                continue
+
+            try:
+                # The venue order exists. Persist its lifecycle record before ACK;
+                # any local persistence failure is UNKNOWN, never NOT_FOUND.
+                await self._persist_reconciled_submit_order(
+                    exchange, client_order_id, order
+                )
+                await service.reconcile_submit_attempt_found(client_order_id, order)
+                logger.warning(
+                    "[Submit Recovery] found unresolved venue order %s on %s; "
+                    "durable ledger marked ACKNOWLEDGED",
+                    client_order_id, exchange,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[Submit Recovery] venue order %s was found on %s but durable adoption/ACK failed",
+                    client_order_id, exchange,
+                )
+                await _keep_unknown(client_order_id, exc)
 
         unresolved = await service.list_unresolved_submit_attempts()
         if unresolved:
@@ -155,14 +186,6 @@ class EngineRecoveryMixin:
             )
             return False
         return True
-
-    def _group_recovered_positions(self):
-        groups = {}
-        for pair_tag, pos in self.active_positions.items():
-            symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
-            groups.setdefault((pos.global_exchange, symbol), []).append((pair_tag, pos))
-        return groups
-
     async def _mark_recovered_group_unverified(self, global_symbol: str, items) -> None:
         reason = "Live futures position API is unavailable after restart."
         for pair_tag, pos in items:
