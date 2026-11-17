@@ -126,6 +126,13 @@ class RecoveryAdoptionMixin:
         self, record: OrderRecord, order: Dict[str, Any], pair_tag: str,
         amount_spec: Any,
     ) -> bool:
+        live = self.pending_entry_orders.get(pair_tag)
+        if live and live.get("order_id") and str(live.get("order_id")) != str(record.exchange_order_id):
+            logger.info(
+                "[Recovery] terminal entry %s belongs to older order; keeping active pending order %s",
+                record.exchange_order_id, live.get("order_id"),
+            )
+            return True
         info = self.pending_entry_orders.get(pair_tag) or (
             self._rebuild_entry_order_info(record, order, amount_spec)
         )

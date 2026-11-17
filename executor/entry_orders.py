@@ -152,9 +152,17 @@ class EntryOrderManagementMixin:
                     )
                     break
 
-        order = await self._fetch_entry_order_for_cancel_reconciliation(
-            pair_tag, order_info, reason, cancel_error
-        )
+        terminal = ("closed", "canceled", "cancelled", "rejected", "expired")
+        order = None
+        for attempt in range(1, 4):
+            order = await self._fetch_entry_order_for_cancel_reconciliation(
+                pair_tag, order_info, reason, cancel_error
+            )
+            if order is not None and str(order.get("status", "unknown")).lower() in terminal:
+                break
+            if attempt < 3:
+                await asyncio.sleep(0.5)
+
         if order is None:
             return False
 
@@ -175,7 +183,6 @@ class EntryOrderManagementMixin:
                 "remaining_qty": float(order.get("remaining", 0.0) or 0.0),
             },
         )
-        terminal = ("closed", "canceled", "cancelled", "rejected", "expired")
         if status not in terminal:
             logger.critical(
                 f"[{reason}] order {order_id} is not confirmed terminal "

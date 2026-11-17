@@ -17,6 +17,8 @@ class EngineEntrySizingMixin:
         # Target Limit Buy price in IDR
         buy_price_idr = directives.recommended_limit_buy_idr
         if buy_price_idr <= 0:
+            if isinstance(getattr(self, "_balance_snapshots", None), dict):
+                self._balance_snapshots.pop(pair_tag, None)
             return None
         sizing = await self._compute_entry_sizing(pair_tag, payload)
         if sizing is None:
@@ -32,6 +34,8 @@ class EngineEntrySizingMixin:
                 pair_info.global_amount_spec,
             )
         except ValueError as exc:
+            if isinstance(getattr(self, "_balance_snapshots", None), dict):
+                self._balance_snapshots.pop(pair_tag, None)
             self._mark_failed(
                 pair_tag,
                 "MARKET_AMOUNT_RULES_REJECT_SIZE",
@@ -41,6 +45,8 @@ class EngineEntrySizingMixin:
             await self.publish_status()
             return None
         if buy_qty <= 0:
+            if isinstance(getattr(self, "_balance_snapshots", None), dict):
+                self._balance_snapshots.pop(pair_tag, None)
             return None
         actual_cost_usdt = (buy_qty * buy_price_idr) / snapshot.usdt_idr_rate
 

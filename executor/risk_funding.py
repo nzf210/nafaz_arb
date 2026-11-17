@@ -40,17 +40,21 @@ class RiskFundingMixin:
     async def _reject_insufficient_entry_balance(
         self, pair_tag: str, spot_available: float,
         futures_available: float, min_cap: float,
+        spot_asset: str = "Spot", futures_asset: str = "Futures",
     ) -> None:
         logger.warning(
             "[State 1 Balance Check] insufficient balance for %s: "
-            "spot=$%.2f futures=$%.2f minimum=$%.2f",
-            pair_tag, spot_available, futures_available, min_cap,
+            "spot(%s)=$%.2f futures(%s)=$%.2f minimum=$%.2f",
+            pair_tag, spot_asset, spot_available, futures_asset, futures_available, min_cap,
         )
         await self._publish_execution_failure(
             pair_tag,
             "INSUFFICIENT_OR_UNBALANCED_BALANCE",
-            "Saldo Spot/Futures tidak mencukupi atau tidak seimbang untuk membuka posisi.",
+            f"Saldo Spot/Futures tidak mencukupi atau tidak seimbang untuk membuka posisi. "
+            f"Spot ({spot_asset}): ${spot_available:.2f}, Futures ({futures_asset}): ${futures_available:.2f}, Minimum: ${min_cap:.2f}.",
             detail={
+                "spot_quote_asset": spot_asset,
+                "futures_quote_asset": futures_asset,
                 "spot_available_usdt": spot_available,
                 "futures_available_usdt": futures_available,
                 "minimum_required_usdt": min_cap,
@@ -130,30 +134,37 @@ class RiskFundingMixin:
             mock_mode,
         )
         if balances is not None:
-            if isinstance(getattr(self, "_balance_snapshots", None), dict):
-                self._balance_snapshots[pair_tag] = dict(balances)
             avail_spot = float(balances["spot_available"])
             avail_fut = float(balances["futures_available"])
             usable_capital = min(avail_spot, avail_fut)
             if usable_capital < min_cap:
+                if isinstance(getattr(self, "_balance_snapshots", None), dict):
+                    self._balance_snapshots.pop(pair_tag, None)
                 await self._reject_insufficient_entry_balance(
-                    pair_tag, avail_spot, avail_fut, min_cap
+                    pair_tag, avail_spot, avail_fut, min_cap,
+                    spot_asset=str(balances.get("spot_quote_asset", "Spot")),
+                    futures_asset=str(balances.get("futures_quote_asset", "Futures")),
                 )
                 return None
             max_pos_usdt = min(max_pos_usdt, usable_capital)
-
-        if not mock_mode or balances is not None:
-            if not self._exposure_allows(pair_tag, pair_info, max_pos_usdt):
-                await self._reject_entry_exposure_limit(pair_tag, max_pos_usdt)
-                return None
+            if not mock_mode or balances is not None:
+                if not self._exposure_allows(pair_tag, pair_info, max_pos_usdt):
+                    if isinstance(getattr(self, "_balance_snapshots", None), dict):
+                        self._balance_snapshots.pop(pair_tag, None)
+                    await self._reject_entry_exposure_limit(pair_tag, max_pos_usdt)
+                    return None
             max_pos_usdt = self._reserve_entry_fee_buffer(
                 pair_tag, max_pos_usdt
             )
             if max_pos_usdt < min_cap:
+                if isinstance(getattr(self, "_balance_snapshots", None), dict):
+                    self._balance_snapshots.pop(pair_tag, None)
                 await self._reject_entry_below_minimum(
                     pair_tag, max_pos_usdt, min_cap
                 )
                 return None
+            if isinstance(getattr(self, "_balance_snapshots", None), dict):
+                self._balance_snapshots[pair_tag] = dict(balances)
         return max_pos_usdt, min_cap
 
     async def _verify_dual_leg_funding(
