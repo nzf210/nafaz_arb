@@ -96,6 +96,54 @@ async def test_order_slot_reconcile_active_slots():
     assert s_new == 1
 
 
+@pytest.mark.asyncio
+async def test_order_slot_per_quote_asset_limits():
+    """Verify slots are partitioned by venue + quote asset independently."""
+    manager = OrderSlotManager()
+    # Configure limits: indodax:idr=1, indodax:usdt=2, tokocrypto:idr=2, tokocrypto:usdt=1
+    await manager.set_max_slots("indodax:idr", 1)
+    await manager.set_max_slots("indodax:usdt", 2)
+    await manager.set_max_slots("tokocrypto:idr", 2)
+    await manager.set_max_slots("tokocrypto:usdt", 1)
+
+    assert await manager.get_max_slots("indodax", "idr") == 1
+    assert await manager.get_max_slots("indodax", "usdt") == 2
+    assert await manager.get_max_slots("tokocrypto", "idr") == 2
+    assert await manager.get_max_slots("tokocrypto", "usdt") == 1
+
+    # 1. Indodax IDR max 1
+    s_idx_idr_0 = await manager.reserve_slot("indodax", account="idr", client_order_id="idx-idr-1")
+    assert s_idx_idr_0 == 0
+    with pytest.raises(SlotExhaustedError):
+        await manager.reserve_slot("indodax", account="idr", client_order_id="idx-idr-2")
+
+    # 2. Indodax USDT is independent, can reserve 2
+    s_idx_usdt_0 = await manager.reserve_slot("indodax", account="usdt", client_order_id="idx-usdt-1")
+    s_idx_usdt_1 = await manager.reserve_slot("indodax", account="usdt", client_order_id="idx-usdt-2")
+    assert s_idx_usdt_0 == 0
+    assert s_idx_usdt_1 == 1
+    with pytest.raises(SlotExhaustedError):
+        await manager.reserve_slot("indodax", account="usdt", client_order_id="idx-usdt-3")
+
+    # 3. Tokocrypto IDR can reserve 2, USDT can reserve 1
+    s_toko_idr_0 = await manager.reserve_slot("tokocrypto", account="idr", client_order_id="toko-idr-1")
+    s_toko_idr_1 = await manager.reserve_slot("tokocrypto", account="idr", client_order_id="toko-idr-2")
+    assert s_toko_idr_0 == 0
+    assert s_toko_idr_1 == 1
+    with pytest.raises(SlotExhaustedError):
+        await manager.reserve_slot("tokocrypto", account="idr", client_order_id="toko-idr-3")
+
+    s_toko_usdt_0 = await manager.reserve_slot("tokocrypto", account="usdt", client_order_id="toko-usdt-1")
+    assert s_toko_usdt_0 == 0
+    with pytest.raises(SlotExhaustedError):
+        await manager.reserve_slot("tokocrypto", account="usdt", client_order_id="toko-usdt-2")
+
+    # 4. Release IDR slot, frees up IDR only
+    await manager.release_slot("indodax", client_order_id="idx-idr-1")
+    s_idx_idr_new = await manager.reserve_slot("indodax", account="idr", client_order_id="idx-idr-3")
+    assert s_idx_idr_new == 0
+
+
 # =====================================================================
 # 2. MutationGateway Tests
 # =====================================================================

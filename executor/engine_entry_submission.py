@@ -367,9 +367,11 @@ class EngineEntrySubmissionMixin:
                 global_amount_spec=pair_info.global_amount_spec,
                 recovery_context=recovery_context,
             )
+            quote_asset = (getattr(pair_info, "local_quote_asset", "") or "IDR").strip().lower()
             if getattr(self, "slot_manager", None) is not None:
                 await self.slot_manager.reserve_slot(
                     pair_info.local_exchange,
+                    account=quote_asset,
                     client_order_id=entry_coid,
                     market_type="spot",
                 )
@@ -577,8 +579,9 @@ class EngineEntrySubmissionMixin:
 
             order_id = str(order["id"])
             if getattr(self, "slot_manager", None) is not None:
+                quote_asset = (getattr(pair_info, "local_quote_asset", "") or "IDR").strip().lower()
                 await self.slot_manager.activate_slot(
-                    pair_info.local_exchange, client_order_id=entry_coid
+                    pair_info.local_exchange, client_order_id=entry_coid, account=quote_asset
                 )
             self._record_order_success(pair_info.local_exchange)
             self.supabase.order(

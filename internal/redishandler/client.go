@@ -477,7 +477,7 @@ func (c *Client) SetSpotOrderLimit(ctx context.Context, exchange string, limit i
 	if c == nil || c.rdb == nil { return errors.New("redis is not connected") }
 	exchange = strings.ToLower(strings.TrimSpace(exchange))
 	if exchange == "" || len(exchange) > 64 { return errors.New("exchange name is invalid") }
-	for _, r := range exchange { if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-') { return errors.New("exchange name may contain only letters, digits, '_' or '-'") } }
+	for _, r := range exchange { if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' || r == '-' || r == ':') { return errors.New("exchange name may contain only letters, digits, '_', '-' or ':'") } }
 	if limit < 1 || limit > 100 { return errors.New("max open spot orders must be between 1 and 100") }
 	if err := c.rdb.HSet(ctx, KeySpotOrderLimits, exchange, limit).Err(); err != nil { return fmt.Errorf("persist spot order limit: %w", err) }
 	payload, err := json.Marshal(map[string]interface{}{"exchange": exchange, "max_open_spot_orders": limit, "updated_at_ms": time.Now().UnixMilli()})

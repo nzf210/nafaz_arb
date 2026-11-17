@@ -34,12 +34,20 @@ class OrderSlotManager:
         self._lock = asyncio.Lock()
 
     async def get_max_slots(self, venue: str, account: str = "default") -> int:
-        """Fetch configured max open slots for a venue/account."""
+        """Fetch configured max open slots for a venue/account.
+        Falls back to (venue, 'default'), then DEFAULT_MAX_OPEN_SLOTS.
+        """
         venue = venue.lower().strip()
-        account = account.strip()
+        account = account.lower().strip() if account else "default"
+        if ":" in venue and account == "default":
+            venue, account = venue.split(":", 1)
+            venue = venue.lower().strip()
+            account = account.lower().strip()
+
         if self.pool is not None:
             try:
                 async with self.pool.acquire() as conn:
+                    # 1. Check specific (venue, account)
                     val = await conn.fetchval(
                         "SELECT max_open_slots FROM public.spot_order_slot_config "
                         "WHERE venue = $1 AND account = $2",
@@ -47,15 +55,32 @@ class OrderSlotManager:
                     )
                     if val is not None:
                         return int(val)
+                    # 2. Check fallback (venue, 'default') if account != 'default'
+                    if account != "default":
+                        val = await conn.fetchval(
+                            "SELECT max_open_slots FROM public.spot_order_slot_config "
+                            "WHERE venue = $1 AND account = 'default'",
+                            venue,
+                        )
+                        if val is not None:
+                            return int(val)
             except Exception as exc:
                 logger.warning("Failed to fetch slot config for %s:%s, using default %d: %s",
                                venue, account, DEFAULT_MAX_OPEN_SLOTS, exc)
-        return self._mem_max_slots.get((venue, account), DEFAULT_MAX_OPEN_SLOTS)
+        if (venue, account) in self._mem_max_slots:
+            return self._mem_max_slots[(venue, account)]
+        if account != "default" and (venue, "default") in self._mem_max_slots:
+            return self._mem_max_slots[(venue, "default")]
+        return DEFAULT_MAX_OPEN_SLOTS
 
     async def set_max_slots(self, venue: str, max_slots: int, account: str = "default") -> None:
         """Update max open slots for a venue/account."""
         venue = venue.lower().strip()
-        account = account.strip()
+        account = account.lower().strip() if account else "default"
+        if ":" in venue and account == "default":
+            venue, account = venue.split(":", 1)
+            venue = venue.lower().strip()
+            account = account.lower().strip()
         max_slots = max(1, int(max_slots))
         self._mem_max_slots[(venue, account)] = max_slots
         if self.pool is not None:
@@ -83,7 +108,11 @@ class OrderSlotManager:
         Returns reserved slot_index (0-based) or raises SlotExhaustedError.
         """
         venue = venue.lower().strip()
-        account = account.strip()
+        account = account.lower().strip() if account else "default"
+        if ":" in venue and account == "default":
+            venue, account = venue.split(":", 1)
+            venue = venue.lower().strip()
+            account = account.lower().strip()
         market_type = market_type.lower().strip()
 
         # Non-spot orders do not consume spot slots
@@ -127,8 +156,8 @@ class OrderSlotManager:
                         reservation_id, venue, account, market_type, available_slot,
                         session_id, client_order_id, now,
                     )
-                    logger.info("Reserved spot slot %d on %s for client_order_id=%s",
-                                available_slot, venue, client_order_id)
+                    logger.info("Reserved spot slot %d on %s:%s for client_order_id=%s",
+                                available_slot, venue, account, client_order_id)
                     return available_slot
 
         # In-memory reservation
@@ -155,51 +184,70 @@ class OrderSlotManager:
             }
             return available_slot
 
-    async def activate_slot(self, venue: str, client_order_id: str, account: str = "default") -> None:
+    async def activate_slot(self, venue: str, client_order_id: str, account: Optional[str] = None) -> None:
         """Mark reserved slot as ACTIVE once exchange confirms placement."""
         venue = venue.lower().strip()
-        account = account.strip()
+        account = account.lower().strip() if account else None
+        if account == "default":
+            account = None
         now = datetime.now(timezone.utc)
-
         if self.pool is not None:
             try:
                 async with self.pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE public.order_slot_reservations "
-                        "SET status = 'ACTIVE', updated_at = $1 "
-                        "WHERE venue = $2 AND account = $3 AND client_order_id = $4 AND status = 'RESERVED'",
-                        now, venue, account, client_order_id,
-                    )
+                    if account:
+                        await conn.execute(
+                            "UPDATE public.order_slot_reservations "
+                            "SET status = 'ACTIVE', updated_at = $1 "
+                            "WHERE venue = $2 AND account = $3 AND client_order_id = $4 AND status = 'RESERVED'",
+                            now, venue, account, client_order_id,
+                        )
+                    else:
+                        await conn.execute(
+                            "UPDATE public.order_slot_reservations "
+                            "SET status = 'ACTIVE', updated_at = $1 "
+                            "WHERE venue = $2 AND client_order_id = $3 AND status = 'RESERVED'",
+                            now, venue, client_order_id,
+                        )
             except Exception as exc:
                 logger.error("Failed to activate slot for %s %s: %s", venue, client_order_id, exc)
 
         async with self._lock:
             for (v, acc, slot_idx), info in self._mem_slots.items():
-                if v == venue and acc == account and info.get("client_order_id") == client_order_id:
-                    info["status"] = "ACTIVE"
-                    break
+                if v == venue and info.get("client_order_id") == client_order_id:
+                    if account is None or acc == account:
+                        info["status"] = "ACTIVE"
+                        break
 
     async def release_slot(
         self,
         venue: str,
         client_order_id: str,
-        account: str = "default",
+        account: Optional[str] = None,
         reason: str = "TERMINAL",
     ) -> None:
         """Release slot atomically once order reaches terminal state and reconciliation is complete."""
         venue = venue.lower().strip()
-        account = account.strip()
+        account = account.lower().strip() if account else None
+        if account == "default":
+            account = None
         now = datetime.now(timezone.utc)
-
         if self.pool is not None:
             try:
                 async with self.pool.acquire() as conn:
-                    res = await conn.execute(
-                        "UPDATE public.order_slot_reservations "
-                        "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
-                        "WHERE venue = $2 AND account = $3 AND client_order_id = $4 AND status IN ('RESERVED', 'ACTIVE')",
-                        now, venue, account, client_order_id,
-                    )
+                    if account:
+                        res = await conn.execute(
+                            "UPDATE public.order_slot_reservations "
+                            "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
+                            "WHERE venue = $2 AND account = $3 AND client_order_id = $4 AND status IN ('RESERVED', 'ACTIVE')",
+                            now, venue, account, client_order_id,
+                        )
+                    else:
+                        res = await conn.execute(
+                            "UPDATE public.order_slot_reservations "
+                            "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
+                            "WHERE venue = $2 AND client_order_id = $3 AND status IN ('RESERVED', 'ACTIVE')",
+                            now, venue, client_order_id,
+                        )
                     logger.info("Released slot for %s client_order_id=%s (%s): %s",
                                 venue, client_order_id, reason, res)
             except Exception as exc:
@@ -207,23 +255,31 @@ class OrderSlotManager:
 
         async with self._lock:
             for key, info in list(self._mem_slots.items()):
-                if key[0] == venue and key[1] == account and info.get("client_order_id") == client_order_id:
-                    info["status"] = "RELEASED"
-                    info["released_at"] = now
-                    break
+                if key[0] == venue and info.get("client_order_id") == client_order_id:
+                    if account is None or key[1] == account:
+                        info["status"] = "RELEASED"
+                        info["released_at"] = now
+                        break
 
-    async def get_active_slots_count(self, venue: str, account: str = "default") -> int:
-        """Return the count of currently occupied slots for a venue."""
+    async def get_active_slots_count(self, venue: str, account: Optional[str] = None) -> int:
+        """Return the count of currently occupied slots for a venue/account."""
         venue = venue.lower().strip()
-        account = account.strip()
+        account = account.lower().strip() if account else None
         if self.pool is not None:
             try:
                 async with self.pool.acquire() as conn:
-                    val = await conn.fetchval(
-                        "SELECT count(*) FROM public.order_slot_reservations "
-                        "WHERE venue = $1 AND account = $2 AND market_type = 'spot' AND status IN ('RESERVED', 'ACTIVE')",
-                        venue, account,
-                    )
+                    if account:
+                        val = await conn.fetchval(
+                            "SELECT count(*) FROM public.order_slot_reservations "
+                            "WHERE venue = $1 AND account = $2 AND market_type = 'spot' AND status IN ('RESERVED', 'ACTIVE')",
+                            venue, account,
+                        )
+                    else:
+                        val = await conn.fetchval(
+                            "SELECT count(*) FROM public.order_slot_reservations "
+                            "WHERE venue = $1 AND market_type = 'spot' AND status IN ('RESERVED', 'ACTIVE')",
+                            venue,
+                        )
                     return int(val or 0)
             except Exception as exc:
                 logger.error("Failed to query active slots for %s: %s", venue, exc)
@@ -231,7 +287,7 @@ class OrderSlotManager:
         async with self._lock:
             return sum(
                 1 for (v, acc, _), info in self._mem_slots.items()
-                if v == venue and acc == account and info.get("status") in ("RESERVED", "ACTIVE")
+                if v == venue and (account is None or acc == account) and info.get("status") in ("RESERVED", "ACTIVE")
             )
 
     async def reconcile_active_slots(

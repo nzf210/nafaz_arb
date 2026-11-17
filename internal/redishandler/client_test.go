@@ -365,5 +365,8 @@ func TestSpotOrderLimitPersistsAndBroadcasts(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("spot order limit update was not broadcast")
 	}
+	if err := client.SetSpotOrderLimit(ctx, "indodax:idr", 1); err != nil { t.Fatalf("SetSpotOrderLimit for indodax:idr: %v", err) }
+	limits, err = client.GetSpotOrderLimits(ctx)
+	if err != nil || limits["indodax:idr"] != 1 { t.Fatalf("expected indodax:idr=1, got %#v", limits) }
 	if err := client.SetSpotOrderLimit(ctx, "indodax", 0); err == nil { t.Fatal("expected invalid limit to be rejected") }
 }

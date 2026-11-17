@@ -628,45 +628,51 @@ class EngineRuntimeMixin:
         )
 
     async def _load_spot_order_limits(self) -> None:
-        """Restore Telegram-managed per-venue limits from durable Redis hash."""
-        if self.redis is None:
-            return
-        try:
-            stored = await self.redis.hgetall("arb:executor:spot_order_limits")
-            for raw_exchange, raw_limit in (stored or {}).items():
-                exchange = raw_exchange.decode() if isinstance(raw_exchange, bytes) else str(raw_exchange)
-                value = raw_limit.decode() if isinstance(raw_limit, bytes) else str(raw_limit)
-                self._apply_spot_order_limit(exchange, value)
-        except Exception:
-            logger.exception("failed to restore per-exchange spot order limits from Redis")
+        """Restore Telegram-managed per-venue/quote limits from durable Redis hash and config."""
+        limits_dict = dict(getattr(self.config, "max_open_spot_orders_per_exchange", {}) or {})
+        if self.redis is not None:
+            try:
+                stored = await self.redis.hgetall("arb:executor:spot_order_limits")
+                for raw_key, raw_limit in (stored or {}).items():
+                    k = raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
+                    v = raw_limit.decode() if isinstance(raw_limit, bytes) else str(raw_limit)
+                    limits_dict[k] = v
+            except Exception:
+                logger.exception("failed to restore per-exchange spot order limits from Redis")
+        for key, limit in limits_dict.items():
+            self._apply_spot_order_limit(key, limit)
 
     def _apply_spot_order_limit(self, exchange: str, raw_limit) -> bool:
-        venue = str(exchange or "").strip().lower()
-        if not venue or len(venue) > 64 or any(
-            not (char.isalnum() or char in "_-") for char in venue
+        key = str(exchange or "").strip().lower()
+        if not key or len(key) > 64 or any(
+            not (char.isalnum() or char in "_-:") for char in key
         ):
-            logger.warning("ignoring invalid spot order limit exchange %r", venue)
+            logger.warning("ignoring invalid spot order limit key %r", key)
             return False
         try:
             limit = int(raw_limit)
         except (TypeError, ValueError):
-            logger.warning("ignoring invalid spot order limit for %s: %r", venue, raw_limit)
+            logger.warning("ignoring invalid spot order limit for %s: %r", key, raw_limit)
             return False
         if limit < 1 or limit > 100:
-            logger.warning("ignoring out-of-range spot order limit for %s: %r", venue, raw_limit)
+            logger.warning("ignoring out-of-range spot order limit for %s: %r", key, raw_limit)
             return False
         limits = getattr(self.config, "max_open_spot_orders_per_exchange", None)
         if limits is None:
             limits = {}
             self.config.max_open_spot_orders_per_exchange = limits
-        limits[venue] = limit
+        limits[key] = limit
         if getattr(self, "slot_manager", None) is not None:
+            if ":" in key:
+                venue, account = key.split(":", 1)
+            else:
+                venue, account = key, "default"
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(self.slot_manager.set_max_slots(venue, limit))
+                loop.create_task(self.slot_manager.set_max_slots(venue, limit, account=account))
             except RuntimeError:
                 pass
-        logger.warning("[Risk Control] %s max open spot orders set to %d", venue, limit)
+        logger.warning("[Risk Control] %s max open spot orders set to %d", key, limit)
         return True
 
     async def _command_journal_loop(self):

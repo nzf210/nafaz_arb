@@ -740,10 +740,10 @@ func (b *Bot) handleSpotMaxCommand(ctx context.Context, msg *Message, parts []st
 			return
 		}
 		var out strings.Builder
-		out.WriteString("⚙️ <b>MAX OPEN SPOT ORDERS PER CEX</b>\n\nDefault untuk CEX tanpa override: <b>2</b>\n")
+		out.WriteString("⚙️ <b>MAX OPEN SPOT ORDERS PER CEX / PAIR</b>\n\nDefault untuk CEX tanpa override: <b>2</b>\n")
 		if len(limits) == 0 { out.WriteString("\nBelum ada override; semua CEX memakai default 2.\n") }
 		for exchange, limit := range limits { out.WriteString(fmt.Sprintf("\n• <b>%s</b>: <code>%d</code>", html.EscapeString(strings.ToUpper(exchange)), limit)) }
-		out.WriteString("\n\nAtur: <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>\nContoh: <code>/spotmax indodax 3</code>")
+		out.WriteString("\n\nAtur: <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>\nAtau per-quote: <code>/spotmax &lt;cex&gt; &lt;quote&gt; &lt;jumlah&gt;</code>\nContoh: <code>/spotmax indodax idr 1</code> atau <code>/spotmax tokocrypto usdt 1</code>")
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, out.String(), b.defaultKeyboard())
 		return
 	}
@@ -753,21 +753,31 @@ func (b *Bot) handleSpotMaxCommand(ctx context.Context, msg *Message, parts []st
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "⛔ <b>Akses ditolak:</b> hanya operator terotorisasi yang boleh mengubah batas order Spot.", b.defaultKeyboard())
 		return
 	}
-	if len(parts) != 3 {
-		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "ℹ️ Gunakan <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code>. Rentang jumlah 1–100; default 2.", b.defaultKeyboard())
+
+	var target string
+	var limitStr string
+	if len(parts) == 4 {
+		target = strings.ToLower(strings.TrimSpace(parts[1])) + ":" + strings.ToLower(strings.TrimSpace(parts[2]))
+		limitStr = parts[3]
+	} else if len(parts) == 3 {
+		target = strings.ToLower(strings.TrimSpace(parts[1]))
+		limitStr = parts[2]
+	} else {
+		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "ℹ️ Gunakan <code>/spotmax &lt;cex&gt; &lt;jumlah&gt;</code> atau <code>/spotmax &lt;cex&gt; &lt;quote&gt; &lt;jumlah&gt;</code>. Rentang 1–100; default 2.", b.defaultKeyboard())
 		return
 	}
-	limit, err := strconv.Atoi(parts[2])
+
+	limit, err := strconv.Atoi(limitStr)
 	if err != nil || limit < 1 || limit > 100 {
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Jumlah harus berupa bilangan bulat 1–100.", b.defaultKeyboard())
 		return
 	}
-	if err := rc.SetSpotOrderLimit(ctx, parts[1], limit); err != nil {
+	if err := rc.SetSpotOrderLimit(ctx, target, limit); err != nil {
 		b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID, "❌ Gagal mengubah batas: "+html.EscapeString(err.Error()), b.defaultKeyboard())
 		return
 	}
 	b.sendReplyWithMarkup(ctx, msg.Chat.ID, msg.MessageID,
-		fmt.Sprintf("✅ <b>BATAS OPEN SPOT ORDER DIPERBARUI</b>\n\n• CEX: <b>%s</b>\n• Maksimum: <b>%d</b> order/posisi Spot\n\nPerubahan disimpan di Redis dan dikirim ke Executor tanpa restart. Order/posisi yang sudah terbuka tidak dibatalkan; batas baru hanya mencegah entry baru sampai jumlah turun di bawah batas.", html.EscapeString(strings.ToUpper(parts[1])), limit), b.defaultKeyboard())
+		fmt.Sprintf("✅ <b>BATAS OPEN SPOT ORDER DIPERBARUI</b>\n\n• Target: <b>%s</b>\n• Maksimum: <b>%d</b> order/posisi Spot\n\nPerubahan disimpan di Redis dan dikirim ke Executor tanpa restart. Order/posisi yang sudah terbuka tidak dibatalkan; batas baru hanya mencegah entry baru sampai jumlah turun di bawah batas.", html.EscapeString(strings.ToUpper(target)), limit), b.defaultKeyboard())
 }
 
 func (b *Bot) handleKillSwitchCommand(ctx context.Context, chatID int64, userID int64, replyToID int64, parts []string) {
