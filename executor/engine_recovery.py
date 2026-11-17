@@ -30,7 +30,10 @@ class EngineRecoveryMixin:
         """
         registry = getattr(self, "order_registry", None)
         if registry is None:
-            return
+            raise RuntimeError(
+                "durable order registry is unavailable; refusing to acknowledge "
+                "a recovered venue order without persisting its lifecycle record"
+            )
         record = await registry.find_by_client_id(exchange, client_order_id)
         if record is None:
             raise RuntimeError(
