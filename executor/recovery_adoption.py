@@ -128,11 +128,28 @@ class RecoveryAdoptionMixin:
     ) -> bool:
         live = self.pending_entry_orders.get(pair_tag)
         if live and live.get("order_id") and str(live.get("order_id")) != str(record.exchange_order_id):
-            logger.info(
-                "[Recovery] terminal entry %s belongs to older order; keeping active pending order %s",
-                record.exchange_order_id, live.get("order_id"),
+            reason = (
+                f"terminal entry {record.exchange_order_id} has fill state that cannot be "
+                f"merged safely while newer entry {live.get('order_id')} is pending"
             )
-            return True
+            logger.critical(
+                "[Recovery] %s; retaining the older order for manual reconciliation",
+                reason,
+            )
+            # Do not retire this record or treat it as adopted: its terminal
+            # cumulative fill may not yet be hedged. Reusing the newer pending
+            # entry context would associate the old venue fill with the wrong
+            # exchange order and can silently leave spot exposure unhedged.
+            record.status = "open"
+            record.recovery_status = RecoveryStatus.UNVERIFIED.value
+            await self.order_registry.register(record)
+            await self.order_registry.mark_pending_recovery(
+                record.local_order_id, reason
+            )
+            self._halt_exposure_scope(pair_tag, reason)
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            self._refresh_entry_gate()
+            return False
         info = self.pending_entry_orders.get(pair_tag) or (
             self._rebuild_entry_order_info(record, order, amount_spec)
         )
@@ -203,11 +220,14 @@ class RecoveryAdoptionMixin:
                 record, order, pair_tag
             )
         await self.order_registry.register(record)
-        await self.order_registry.retire(record)
         if record.order_role == OrderRole.ENTRY.value:
-            return await self._finalize_terminal_entry(
+            finalized = await self._finalize_terminal_entry(
                 record, order, pair_tag, amount_spec
             )
+            if finalized:
+                await self.order_registry.retire(record)
+            return finalized
+        await self.order_registry.retire(record)
         if record.order_role == OrderRole.EXIT_SPOT.value:
             return await self._finalize_terminal_spot_exit(
                 record, pair_tag, amount_spec
