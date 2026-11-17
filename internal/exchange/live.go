@@ -61,14 +61,14 @@ type LiveAdapter struct {
 	okxWSMaxAge    time.Duration
 	okxBookCalls   map[string]*okxBookCall
 
-	indodaxLimiter         *venueLimiter
-	indodaxLimiterOnce     sync.Once
-	mexcSpotLimiter        *venueLimiter
-	mexcSpotLimiterOnce    sync.Once
-	tokocryptoLimiter      *venueLimiter
-	tokocryptoLimiterOnce  sync.Once
-	indodaxBooks           *IndodaxBookManager
-	indodaxWSMaxAge        time.Duration
+	indodaxLimiter        *venueLimiter
+	indodaxLimiterOnce    sync.Once
+	mexcSpotLimiter       *venueLimiter
+	mexcSpotLimiterOnce   sync.Once
+	tokocryptoLimiter     *venueLimiter
+	tokocryptoLimiterOnce sync.Once
+	indodaxBooks          *IndodaxBookManager
+	indodaxWSMaxAge       time.Duration
 
 	usdtIDRMu     sync.Mutex
 	usdtIDRFlight *usdtIDRCall
@@ -148,7 +148,6 @@ func (l *LiveAdapter) OKXMetrics() OKXMetricsSnapshot {
 	})
 	return l.okxLimiter.metrics.snapshot()
 }
-
 
 // SetBaseURLs allows overriding API base URLs for testing.
 func (l *LiveAdapter) SetBaseURLs(urls ...string) {
@@ -283,9 +282,14 @@ func (l *LiveAdapter) EnableWebSocketFeed(ctx context.Context, maxAge time.Durat
 // EnableOKXBookWebSocket starts the authoritative OKX books-channel feed.
 func (l *LiveAdapter) EnableOKXBookWebSocket(ctx context.Context, wsURL string, staleAfter, reconnect, maxBackoff time.Duration) {
 	l.mu.Lock()
-	if l.okxBooks != nil { l.mu.Unlock(); return }
+	if l.okxBooks != nil {
+		l.mu.Unlock()
+		return
+	}
 	l.okxWSMaxAge = staleAfter
-	if strings.TrimSpace(wsURL) == "" { wsURL = "wss://ws.okx.com/ws/v5/public" }
+	if strings.TrimSpace(wsURL) == "" {
+		wsURL = "wss://ws.okx.com/ws/v5/public"
+	}
 	manager := NewOKXBookManager(wsURL, nil, func(symbol string) float64 {
 		l.mu.RLock()
 		defer l.mu.RUnlock()
@@ -302,7 +306,9 @@ func (l *LiveAdapter) SubscribeOKXBooks(markets []domain.Market) {
 	l.mu.RLock()
 	manager := l.okxBooks
 	l.mu.RUnlock()
-	if manager == nil { return }
+	if manager == nil {
+		return
+	}
 	symbols := make([]string, 0, len(markets))
 	for _, market := range markets {
 		if strings.EqualFold(market.Exchange, "okx") && market.Active {
@@ -313,7 +319,9 @@ func (l *LiveAdapter) SubscribeOKXBooks(markets []domain.Market) {
 }
 
 func (l *LiveAdapter) OKXWebSocketConnected() bool {
-	l.mu.RLock(); manager := l.okxBooks; l.mu.RUnlock()
+	l.mu.RLock()
+	manager := l.okxBooks
+	l.mu.RUnlock()
 	return manager != nil && manager.IsConnected()
 }
 
@@ -403,6 +411,30 @@ func (l *LiveAdapter) SubscribeIndodaxBooks(pairs [][2]domain.Market) {
 		}
 	}
 	manager.SetPairs(symbols)
+}
+
+// SubscribeOKXMatchedBooks updates the active matched OKX perpetual contracts subscribed on WS.
+func (l *LiveAdapter) SubscribeOKXMatchedBooks(pairs [][2]domain.Market) {
+	l.mu.RLock()
+	manager := l.okxBooks
+	l.mu.RUnlock()
+	if manager == nil {
+		return
+	}
+	symbols := make([]string, 0, len(pairs))
+	seen := make(map[string]struct{}, len(pairs))
+	for _, pair := range pairs {
+		if strings.EqualFold(pair[1].Exchange, "okx") && pair[1].Active {
+			sym := strings.TrimSpace(pair[1].Symbol)
+			if sym != "" {
+				if _, ok := seen[sym]; !ok {
+					seen[sym] = struct{}{}
+					symbols = append(symbols, sym)
+				}
+			}
+		}
+	}
+	manager.SetInstruments(symbols)
 }
 
 func (l *LiveAdapter) IndodaxWebSocketConnected() bool {

@@ -105,7 +105,6 @@ func (l *LiveAdapter) PerpetualMarkets(ctx context.Context) ([]domain.Market, er
 		okxMarkets, err := l.okxVenue().FetchPerpMarkets(ctx)
 		if err == nil {
 			allMarkets = append(allMarkets, okxMarkets...)
-			l.SubscribeOKXBooks(okxMarkets)
 		} else {
 			errs = append(errs, fmt.Sprintf("okx: %v", err))
 		}

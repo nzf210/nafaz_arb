@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
@@ -354,5 +355,36 @@ func TestMatchMarketsMultiplePerpExchanges(t *testing.T) {
 	pairs := MatchMarkets(spot, perp, []string{"USDT"})
 	if len(pairs) != 4 {
 		t.Fatalf("expected 4 matched pairs (2 spot * 2 perp), got %d", len(pairs))
+	}
+}
+
+func TestLiveAdapterSubscribeOKXMatchedBooks(t *testing.T) {
+	adapter := NewLiveAdapter()
+	manager := NewOKXBookManager("ws://127.0.0.1:1/ws/v5/public", nil, nil, time.Millisecond, 10*time.Millisecond)
+	adapter.mu.Lock()
+	adapter.okxBooks = manager
+	adapter.mu.Unlock()
+
+	pairs := [][2]domain.Market{
+		{
+			{Exchange: "indodax", Symbol: "BTCIDR", Active: true},
+			{Exchange: "okx", Symbol: "BTC-USDT-SWAP", Active: true},
+		},
+		{
+			{Exchange: "tokocrypto", Symbol: "ETH_USDT", Active: true},
+			{Exchange: "okx", Symbol: "ETH-USDT-SWAP", Active: true},
+		},
+		{
+			{Exchange: "indodax", Symbol: "SOLIDR", Active: true},
+			{Exchange: "mexc", Symbol: "mexc:SOL_USDT", Active: true},
+		},
+	}
+	adapter.SubscribeOKXMatchedBooks(pairs)
+	instruments := manager.instrumentList()
+	if len(instruments) != 2 {
+		t.Fatalf("expected 2 OKX instruments, got %d (%v)", len(instruments), instruments)
+	}
+	if instruments[0] != "BTC-USDT-SWAP" || instruments[1] != "ETH-USDT-SWAP" {
+		t.Errorf("unexpected instruments: %v", instruments)
 	}
 }

@@ -73,14 +73,14 @@ type OpportunityPersister interface {
 }
 
 type Service struct {
-	cfg            config.Config
-	adapter        exchange.ReadOnlyAdapter
-	fundingWorker  *exchange.FundingWorker
-	redisClient    *redishandler.Client
-	supabaseClient OpportunityPersister
-	mu             sync.Mutex
-	emptyTrackers  map[string]emptyBookRecord
-	spikeTrackers  map[string]*spikeRecord
+	cfg              config.Config
+	adapter          exchange.ReadOnlyAdapter
+	fundingWorker    *exchange.FundingWorker
+	redisClient      *redishandler.Client
+	supabaseClient   OpportunityPersister
+	mu               sync.Mutex
+	emptyTrackers    map[string]emptyBookRecord
+	spikeTrackers    map[string]*spikeRecord
 	spreadTrackers   map[string]*SpreadTracker
 	turnoverTrackers map[string]*spotTurnoverTracker
 	lastLiveFXRate   float64
@@ -360,6 +360,9 @@ func (s *Service) Scan(ctx context.Context) (result domain.ScanResult, complete 
 	}
 	if sub, ok := s.adapter.(interface{ SubscribeIndodaxBooks([][2]domain.Market) }); ok {
 		sub.SubscribeIndodaxBooks(pairs)
+	}
+	if sub, ok := s.adapter.(interface{ SubscribeOKXMatchedBooks([][2]domain.Market) }); ok {
+		sub.SubscribeOKXMatchedBooks(pairs)
 	}
 	result.MatchedPairs = len(pairs)
 	result.MarketDiscoveryDurationMS = time.Since(marketDiscoveryStarted).Milliseconds()
@@ -1088,7 +1091,7 @@ func (s *Service) buildOpportunity(
 		BaseAsset:              sm.BaseAsset,
 		QuoteAsset:             targetQuote,
 		SpotSymbol:             sm.Symbol,
-		PerpSymbol:              pm.Symbol,
+		PerpSymbol:             pm.Symbol,
 		ExecutionMode:          execMode,
 		SpotEntryPrice:         prices.spotEntry.InexactFloat64(),
 		SpotExitPrice:          prices.spotExit.InexactFloat64(),
