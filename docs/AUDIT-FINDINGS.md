@@ -413,3 +413,58 @@ Force-close cancellation remains deliberately conservative: cancel acknowledgeme
 **Residual de-risk trade-off:** ordinary optional exit/taker intents may still be best-effort/Redis-backed when Supabase is disabled, because blocking all exits on the order-registry writer would strand exposure. Force-close spot is stricter because it can be invoked repeatedly after a lost ACK and now requires durable intent ownership. This asymmetry and venue client-ID contract tests remain release-review items.
 
 Latest source/test CI [43825962830](https://github.com/nzf210/nafaz_arb/actions/runs/43825962830) passed all four jobs for `838aac5`: Python, Go/race/vet, PostgreSQL schema plus multi-process disconnect integration, and Docker builds.
+
+## Exposure/recovery audit continuation — 2026-11-17
+
+**Audited branch baseline:** `b699ab279524a1fdecaa6325ef771e2d51c4195a`  
+**Current remediation commits:** `c2dfdd1`, `3d32b4a`, `685bc8f`, `dc3971c`, `214bd3b`  
+**Scope:** revalidation of spot BUY, futures short hedge, Indodax raw order adapter, generic mutation gateway, de-risk/exit/force-close/rollback wrappers, hedge-claim lifecycle, Global STOP signatures, and the latest cancel/recovery changes.
+
+### Call-site classification revalidated
+
+| Boundary | Classification | Required control |
+|---|---|---|
+| `place_local_limit_buy` → venue `create_limit_buy_order` | Spot entry BUY; opens exposure | Durable PREPARED/SUBMITTING + shared PostgreSQL session fence |
+| `open_global_short_market` → venue `create_market_sell_order`, `reduceOnly=False` | Futures hedge SELL; opens/adds short | Durable PREPARED/SUBMITTING + shared PostgreSQL session fence |
+| `MutationGateway.execute_create_order` → `create_order_direct/create_order` | Generic create boundary | Durable PREPARED/SUBMITTING + shared fence; no active production caller found |
+| `place_local_limit_sell` → `create_limit_sell_order` | Spot exit | De-risk fence; not entry STOP admission |
+| `place_local_market_sell` → `create_market_sell_order` | Rollback, taker exit, force-close | De-risk fence; exact-ID ambiguity handling |
+| `close_global_short_market` → `create_market_buy_order`, `reduceOnly=True` | Futures close | De-risk fence; mandatory reduceOnly |
+| Indodax create wrappers → `_create_order` → `POST /api/v2/order` | Raw venue boundary | Inherits the calling lifecycle classification |
+| Cancel wrappers | Cancel existing order | Not create exposure; retain final-fill reconciliation |
+
+No additional private CEX create-order endpoint was found in the modular `executor/venues/*` adapters or Go scanner/exchange code during this continuation. The direct order wrappers remain concentrated in the exchange facade and the Indodax TAPIv2 adapter. Paper-exchange create methods are simulation-only. The generic mutation gateway is initialized but has no active production call-site in the inspected executor orchestration.
+
+### New finding
+
+| ID | Finding | Remediation | Status |
+|---|---|---|---|
+| R-45 | Startup recovery could retire an older terminal spot-entry record before its lifecycle fill was reconciled. If a newer pending entry for the same pair already existed, the guard in `_finalize_terminal_entry` returned success and skipped the older order's cumulative fill. A late partial/full spot fill could therefore be dropped from hedge reconciliation. | Do not retire ENTRY records until lifecycle finalization succeeds. When a terminal entry conflicts with a newer pending entry, or fill finalization cannot complete, explicitly reopen the record as `UNVERIFIED`, keep it in the recovery index, record the pending-recovery reason, and halt new exposure for that pair. A dedicated registry transition bypasses terminal monotonic merge only for this explicit unresolved-recovery case. | FIX IMPLEMENTED; targeted regression added, CI pending |
+
+### Latest non-bypass changes reviewed
+
+- Cancel reconciliation now performs up to three short exact-order fetches after cancel, stopping only on a terminal status. A still-open, malformed, unavailable, or not-found result keeps the pending state; it does not authorize a replacement order.
+- Balance-snapshot cleanup removes stale snapshots on sizing/risk rejection paths. This is state hygiene, not an order-submit path.
+- Hedge claim transitions remain bound to the exact hedge client ID. Terminal zero-fill rotates the claim's venue ID; stale callbacks for an older ID cannot abandon or confirm a newer retry.
+- Futures hedge PREPARED/fence failure is distinct from the actual venue boundary via `hedge_submit_started`; LIVE no-service branches remain blocked by the explicit GlobalStop requirement.
+- Global STOP method signatures were rechecked against spot, futures, and gateway callers. NOT_FOUND and lookup exceptions leave submit attempts unresolved; they are not treated as definitive rejection.
+- De-risk paths use the separate de-risk fence and remain allowed under STOP. Rollback retry predicates are limited to explicit HTTP 429 and explicit venue settlement/balance rejections; timeout/reset/5xx are not retryable.
+
+### Verification
+
+Before R-45 changes, latest branch head `b699ab2` had GitHub Actions run [43986593318](https://github.com/nzf210/nafaz_arb/actions/runs/43986593318) **SUCCESS**:
+- Python: **710 passed, 4 skipped** (111 warnings, including unknown `integration` markers and deprecations).
+- Disposable PostgreSQL submit-fencing integration: **4 passed**.
+- PostgreSQL migration runner, schema/idempotency/RLS checks, Go tests/race/vet, and Docker builds: all job steps passed.
+
+Those results apply to `b699ab2`, **not** to the subsequent R-45 commits. The R-45 targeted regression and full suite must pass on the new head before this remediation is marked verified. No local VPS or live CEX test was performed.
+
+### Remaining release gates
+
+- Real per-venue sandbox/paper contracts: client-ID idempotency and exact-ID visibility, eventual consistency, pending/partial hedge, cancel/fill race, and reduceOnly semantics.
+- Operator-authenticated resolution operational controls: verified operator identity, HMAC secret custody/rotation, dual approval, audit retrieval, and runbook.
+- Repeated real PostgreSQL multi-process disconnect/fault-injection and validation against the actual VPS topology; disposable CI PostgreSQL is not VPS production sign-off.
+- Explicit approval/remediation for any futures minimum-notional overhedge policy and hard-drift handling.
+- Optional de-risk intents can remain Redis/best-effort when the Supabase order-registry writer is disabled; this is a documented restart-recovery trade-off.
+
+**Status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
