@@ -648,13 +648,18 @@ class _SubmitLedger:
 
 
 class _FakeIntentRegistry:
-    def __init__(self, record=None):
+    def __init__(
+        self, record=None, *, exchange="binance",
+        client_order_id="client-id-123",
+    ):
         self.record = record
+        self.exchange = exchange
+        self.client_order_id = client_order_id
         self.registered = []
 
     async def find_by_client_id(self, exchange, client_order_id):
-        assert exchange == "binance"
-        assert client_order_id == "client-id-123"
+        assert exchange == self.exchange
+        assert client_order_id == self.client_order_id
         return self.record
 
     async def register(self, record):
@@ -809,15 +814,32 @@ async def test_startup_reconciliation_routes_perpetual_attempt_to_futures_lookup
         "amount_spec": {"unit": "CONTRACTS", "contract_size": 0.001},
     }
     order = {"id": "futures-order-77", "status": "closed"}
+    record = SimpleNamespace(
+        exchange_order_id="",
+        status="submitting",
+        filled_quantity=0.0,
+        original_quantity=0.01,
+        remaining_quantity=0.01,
+        average_fill_price=0.0,
+        venue_client_order_id="",
+    )
+    registry = _FakeIntentRegistry(
+        record,
+        exchange="okx",
+        client_order_id="futures-client-id-456",
+    )
     venue = _VenueLookup(order)
     service = _SubmitLedger([attempt])
     engine = _RecoveryHarness(service, _BaseClient(venue))
+    engine.order_registry = registry
 
     assert await engine._reconcile_durable_submit_attempts() is True
     assert venue.calls == []
     assert venue.futures_calls == [
         ("futures-client-id-456", "BTC/USDT:USDT", attempt["amount_spec"])
     ]
+    assert record.exchange_order_id == "futures-order-77"
+    assert registry.registered == [record]
     assert service.found == [("futures-client-id-456", order)]
 
 
