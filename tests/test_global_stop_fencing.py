@@ -635,6 +635,7 @@ class _SubmitLedger:
         self.attempts = list(attempts)
         self.found = []
         self.not_found = []
+        self.unknown = []
 
     async def list_unresolved_submit_attempts(self, *, limit=100):
         return list(self.attempts)
@@ -645,6 +646,9 @@ class _SubmitLedger:
 
     async def reconcile_submit_attempt_not_found(self, client_order_id, *, evidence):
         self.not_found.append((client_order_id, evidence))
+
+    async def mark_submit_unknown(self, client_order_id, error):
+        self.unknown.append((client_order_id, error))
 
 
 class _FakeIntentRegistry:
@@ -734,7 +738,8 @@ async def test_submit_reconciliation_missing_registry_keeps_global_fence():
 
     assert await engine._reconcile_durable_submit_attempts() is False
     assert service.found == []
-    assert service.not_found and service.not_found[0][0] == "client-id-123"
+    assert service.not_found == []
+    assert service.unknown and service.unknown[0][0] == "client-id-123"
     assert engine.halts and engine.halts[0][0] == "*"
     assert engine.gate_refreshed is True
 
@@ -799,7 +804,8 @@ async def test_submit_reconciliation_missing_intent_keeps_global_fence():
 
     assert await engine._reconcile_durable_submit_attempts() is False
     assert service.found == []
-    assert service.not_found and service.not_found[0][0] == "client-id-123"
+    assert service.not_found == []
+    assert service.unknown and service.unknown[0][0] == "client-id-123"
     assert engine.halts and engine.halts[0][0] == "*"
     assert engine.gate_refreshed is True
 
@@ -841,6 +847,62 @@ async def test_startup_reconciliation_routes_perpetual_attempt_to_futures_lookup
     assert record.exchange_order_id == "futures-order-77"
     assert registry.registered == [record]
     assert service.found == [("futures-client-id-456", order)]
+
+
+@pytest.mark.asyncio
+async def test_submit_reconciliation_lookup_exception_is_unknown_not_not_found():
+    class _FailingVenue:
+        async def fetch_local_order_by_client_id(self, client_order_id, symbol, amount_spec):
+            raise TimeoutError("venue order history temporarily unavailable")
+
+    attempt = {
+        "client_order_id": "client-id-timeout",
+        "exchange": "binance",
+        "symbol": "BTC/USDT",
+        "amount_spec": {"unit": "BASE"},
+    }
+    service = _SubmitLedger([attempt])
+    engine = _RecoveryHarness(service, _BaseClient(_FailingVenue()))
+
+    assert await engine._reconcile_durable_submit_attempts() is False
+    assert service.found == []
+    assert service.not_found == []
+    assert service.unknown and service.unknown[0][0] == "client-id-timeout"
+    assert engine.halts and engine.halts[0][0] == "*"
+
+
+@pytest.mark.asyncio
+async def test_submit_reconciliation_registry_write_failure_is_unknown_not_not_found():
+    class _FailingRegistry(_FakeIntentRegistry):
+        async def register(self, record):
+            raise RuntimeError("durable registry writer unavailable")
+
+    attempt = {
+        "client_order_id": "client-id-write-failure",
+        "exchange": "binance",
+        "symbol": "BTC/USDT",
+        "amount_spec": {"unit": "BASE"},
+    }
+    order = {"id": "venue-order-101", "status": "open"}
+    record = SimpleNamespace(
+        exchange_order_id="",
+        status="submitting",
+        filled_quantity=0.0,
+        original_quantity=0.01,
+        remaining_quantity=0.01,
+        average_fill_price=0.0,
+        venue_client_order_id="",
+    )
+    registry = _FailingRegistry(record)
+    service = _SubmitLedger([attempt])
+    engine = _RecoveryHarness(service, _BaseClient(_VenueLookup(order)))
+    engine.order_registry = registry
+
+    assert await engine._reconcile_durable_submit_attempts() is False
+    assert service.found == []
+    assert service.not_found == []
+    assert service.unknown and service.unknown[0][0] == "client-id-write-failure"
+    assert engine.halts and engine.halts[0][0] == "*"
 
 
 @pytest.mark.asyncio
