@@ -24,11 +24,12 @@ def _record_accepted_client_ids(record: OrderRecord, owner: Any) -> set:
     venue reports, which for a broker-prefixed venue is the spelling it minted
     rather than the one submitted.
     """
-    # A facade exposes the spot leg as ``local``; a bare venue is its own.
-    venue = getattr(owner, "local", None) or owner
-    prefix = ""
     market = "futures" if getattr(record, "market_type", "") == "perpetual" else "spot"
-    if market == "spot":
+    if market == "futures":
+        venue = getattr(owner, "global_fut", None) or owner
+        prefix = str(getattr(owner, "_global_broker_prefix", "") or "")
+    else:
+        venue = getattr(owner, "local", None) or owner
         prefix = str(getattr(owner, "_local_broker_prefix", "") or "")
     accepted = _accepted_client_order_ids(
         venue,

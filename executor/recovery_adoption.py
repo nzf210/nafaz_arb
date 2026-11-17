@@ -52,17 +52,43 @@ class RecoveryAdoptionMixin:
             )
             return False
         previous = self.pending_exit_orders.get(pair_tag, {})
+        same_order = (
+            bool(previous)
+            and str(previous.get("order_id") or "") == str(record.exchange_order_id or "")
+        )
+        closed_short_qty = (
+            float(previous.get("closed_short_qty", 0.0) or 0.0) if same_order else 0.0
+        )
+        last_spot_fill = max(
+            float(previous.get("last_spot_fill", closed_short_qty) or 0.0)
+            if same_order
+            else 0.0,
+            float(record.hedged_quantity or 0.0),
+        )
+        now_s = time.time()
         self.pending_exit_orders[pair_tag] = {
+            **previous,
             "order_id": record.exchange_order_id,
             "client_order_id": record.client_order_id,
             "symbol": record.symbol,
             "price": record.price,
             "qty": record.original_quantity or pos.qty,
             "filled": record.filled_quantity,
-            "closed_short_qty": float(previous.get("closed_short_qty", 0.0) or 0.0),
+            "closed_short_qty": closed_short_qty,
+            "last_spot_fill": last_spot_fill,
             "tick_size": getattr(pos, "local_price_tick", 1.0),
             "local_exchange": pos.local_exchange,
             "local_amount_spec": _spec_dict(amount_spec),
+            "placed_at_ts": (
+                float(previous.get("placed_at_ts", now_s) or now_s)
+                if same_order
+                else now_s
+            ),
+            "last_repeg_ts": (
+                float(previous.get("last_repeg_ts", now_s) or now_s)
+                if same_order
+                else now_s
+            ),
         }
         if self.states.get(pair_tag) != PositionState.RECONCILIATION_REQUIRED:
             self.states[pair_tag] = PositionState.EXIT_PENDING
@@ -184,6 +210,29 @@ class RecoveryAdoptionMixin:
         pos = self.active_positions.get(pair_tag)
         if pos is None:
             return True
+        current_exit = self.pending_exit_orders.get(pair_tag)
+        if (
+            isinstance(current_exit, dict)
+            and current_exit.get("order_id")
+            and str(current_exit.get("order_id")) != str(record.exchange_order_id)
+        ):
+            last_tracked = float(record.hedged_quantity or 0.0)
+            new_fill = max(0.0, float(record.filled_quantity or 0.0) - last_tracked)
+            if new_fill > 0:
+                pos.unhedged_exit_base_qty = (
+                    float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0) + new_fill
+                )
+                record.hedged_quantity = float(record.filled_quantity or 0.0)
+                pos.updated_at = int(time.time() * 1000)
+                import json as _json
+                await self.redis.set(f"arb:active_pos:{pair_tag}", _json.dumps(pos.to_dict()))
+            return True
+        previous = current_exit if isinstance(current_exit, dict) else {}
+        closed_short_qty = float(previous.get("closed_short_qty", 0.0) or 0.0)
+        last_spot_fill = max(
+            float(previous.get("last_spot_fill", closed_short_qty) or 0.0),
+            float(record.hedged_quantity or 0.0),
+        )
         self.pending_exit_orders[pair_tag] = {
             "order_id": record.exchange_order_id,
             "client_order_id": record.client_order_id,
@@ -191,7 +240,8 @@ class RecoveryAdoptionMixin:
             "price": record.price,
             "qty": record.original_quantity,
             "filled": record.filled_quantity,
-            "closed_short_qty": 0.0,
+            "closed_short_qty": closed_short_qty,
+            "last_spot_fill": last_spot_fill,
             "tick_size": getattr(pos, "local_price_tick", 1.0),
             "local_exchange": getattr(pos, "local_exchange", ""),
             "local_amount_spec": _spec_dict(amount_spec),

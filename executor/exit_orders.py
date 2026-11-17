@@ -23,6 +23,39 @@ logger = logging.getLogger("executor.engine")
 class ExitOrderManagementMixin:
     """Focused exit pricing, order management, or execution responsibilities."""
 
+    async def _sync_exit_order_record(
+        self,
+        exchange: str,
+        order_id: str,
+        client_order_id: Optional[str],
+        filled: float,
+        status: Optional[str] = None,
+        retire: bool = False,
+    ) -> None:
+        registry = getattr(self, "order_registry", None)
+        if registry is None:
+            return
+        try:
+            record = None
+            if client_order_id:
+                record = await registry.find_by_client_id(exchange, str(client_order_id))
+            if record is None and order_id:
+                record = await registry.find_by_exchange_id(exchange, str(order_id))
+            if record is None:
+                return
+            record.filled_quantity = max(float(record.filled_quantity or 0.0), float(filled or 0.0))
+            record.hedged_quantity = max(float(record.hedged_quantity or 0.0), float(filled or 0.0))
+            record.remaining_quantity = max(
+                0.0, float(record.original_quantity or 0.0) - record.filled_quantity
+            )
+            if status:
+                record.status = str(status).lower()
+            await registry.register(record)
+            if retire:
+                await registry.retire(record)
+        except Exception:
+            logger.exception("[Exit] failed to sync exit order record %s", order_id or client_order_id)
+
     async def _fetch_terminal_exit_order(
         self, pair_tag: str, old_order_id: str, symbol: str
     ):
@@ -101,6 +134,14 @@ class ExitOrderManagementMixin:
                 await self._execute_exit_fill(pair_tag, old_order, pos, qty_to_close)
                 if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
                     return False
+        await self._sync_exit_order_record(
+            pos.local_exchange,
+            str(old_order.get("order_id") or ""),
+            old_order.get("client_order_id"),
+            final_filled,
+            status=str(final_order.get("status") or "canceled"),
+            retire=True,
+        )
         return pair_tag in self.active_positions
 
     async def _cancel_existing_exit_order(self, pair_tag: str, symbol: str) -> bool:
@@ -941,6 +982,14 @@ class ExitOrderManagementMixin:
                 ):
                     return
 
+                if (
+                    pair_tag in self.pending_exit_orders
+                    and abs(limit_sell_idr - float(self.pending_exit_orders[pair_tag].get("price", 0.0) or 0.0)) < 1e-8
+                ):
+                    self.pending_exit_orders[pair_tag]["last_repeg_ts"] = time.time()
+                    self.last_pegged_global_ask[pair_tag] = global_ask_usdt
+                    return
+
                 if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
                     return
 
@@ -967,6 +1016,14 @@ class ExitOrderManagementMixin:
             local_best_ask_idr=_local_best_ask,
             local_best_bid_idr=local_best_bid,
         )
+
+        if (
+            pair_tag in self.pending_exit_orders
+            and abs(limit_sell_idr - float(self.pending_exit_orders[pair_tag].get("price", 0.0) or 0.0)) < 1e-8
+        ):
+            self.pending_exit_orders[pair_tag]["last_repeg_ts"] = time.time()
+            self.last_pegged_global_ask[pair_tag] = global_ask_usdt
+            return
 
         if not await self._cancel_existing_exit_order(pair_tag, pos.symbol):
             return
@@ -1090,6 +1147,14 @@ class ExitOrderManagementMixin:
             order_info["last_spot_fill"] = current_filled
             pos.updated_at = int(time.time() * 1000)
             await self.redis.set(f"arb:active_pos:{pair_tag}", json.dumps(pos.to_dict()))
+            await self._sync_exit_order_record(
+                pos.local_exchange,
+                str(order_id or ""),
+                order_info.get("client_order_id"),
+                current_filled,
+                status=str(order.get("status") or "open"),
+                retire=False,
+            )
 
         if isinstance(order, dict):
             self.supabase.order(
@@ -1144,6 +1209,18 @@ class ExitOrderManagementMixin:
             if notional_usd >= min_threshold or is_spot_order_complete:
                 qty_to_close = min(unhedged_qty, pos.qty)
                 await self._execute_exit_fill(pair_tag, order_info, pos, qty_to_close)
+                if (
+                    is_spot_order_complete
+                    and self.states.get(pair_tag) != PositionState.RECONCILIATION_REQUIRED
+                ):
+                    await self._sync_exit_order_record(
+                        pos.local_exchange,
+                        str(order_id or ""),
+                        order_info.get("client_order_id"),
+                        current_filled,
+                        status=status or "closed",
+                        retire=True,
+                    )
             else:
                 logger.info(
                     f"[State 4 Partial Fill Exit] {pair_tag} unhedged exit qty {unhedged_qty} "

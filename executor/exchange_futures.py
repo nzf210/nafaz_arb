@@ -130,10 +130,22 @@ class ExchangeFuturesMixin:
         if wire_client_id:
             params["clientOrderId"] = wire_client_id
         order = await self.global_fut.create_market_buy_order(order_symbol, order_amount, params)
-        return acknowledged_order_result(
+        res = acknowledged_order_result(
             self.global_fut, order, spec, client_order_id,
             self._global_broker_prefix, self._global_scope,
         )
+        status = str(res.get("status") or "").lower()
+        if status not in ("closed", "filled") and res.get("id"):
+            try:
+                fetched = await self.global_fut.fetch_order(res["id"], order_symbol)
+                if isinstance(fetched, dict) and fetched.get("id"):
+                    res = acknowledged_order_result(
+                        self.global_fut, fetched, spec, client_order_id,
+                        self._global_broker_prefix, self._global_scope,
+                    )
+            except Exception:
+                pass
+        return res
 
     async def fetch_global_order(
         self, order_id: str, symbol: str, amount_spec: Any = None

@@ -220,10 +220,37 @@ class ExitExecutionMixin:
                 raise ValueError(
                     "futures close returned no verifiable order payload after spot exit fill"
                 )
-            close_status = str(close_order.get("status", "")).lower()
+            close_status = str(close_order.get("status") or "").lower()
+            if close_status not in ("closed", "filled") and close_order.get("id"):
+                fetch_fn = getattr(self.client, "fetch_global_order", None)
+                if callable(fetch_fn):
+                    try:
+                        fetched = await fetch_fn(
+                            str(close_order["id"]), global_sym, pos.global_amount_spec
+                        )
+                        if isinstance(fetched, dict) and fetched.get("id"):
+                            close_order = fetched
+                            close_status = str(close_order.get("status") or "").lower()
+                    except Exception:
+                        pass
+            rec = await self._register_order(
+                pair_tag,
+                unwind_coid,
+                close_order,
+                exchange=pos.global_exchange,
+                market_type="perpetual",
+                symbol=global_sym,
+                role=OrderRole.EXIT_FUTURES.value,
+                side="buy",
+                order_type="market",
+                price=helpers.extract_fill_price(close_order) or live_global_ask,
+                quantity=unclosed_delta,
+                reduce_only=True,
+                global_amount_spec=pos.global_amount_spec,
+            )
             if close_status not in ("closed", "filled"):
                 raise ValueError(
-                    f"futures close is not terminal after spot exit fill: {close_status}"
+                    f"futures close is not terminal after spot exit fill: {close_status or 'none'}"
                 )
             try:
                 actual_closed_qty = float(close_order.get("filled") or 0.0)
@@ -252,21 +279,11 @@ class ExitExecutionMixin:
                 reduce_only=True,
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
             )
-            await self._register_order(
-                pair_tag,
-                unwind_coid,
-                close_order,
-                exchange=pos.global_exchange,
-                market_type="perpetual",
-                symbol=global_sym,
-                role=OrderRole.EXIT_FUTURES.value,
-                side="buy",
-                order_type="market",
-                price=helpers.extract_fill_price(close_order),
-                quantity=unclosed_delta,
-                reduce_only=True,
-                global_amount_spec=pos.global_amount_spec,
-            )
+            if rec is not None and self.order_registry is not None:
+                try:
+                    await self.order_registry.retire(rec)
+                except Exception:
+                    pass
 
             total_qty_before = pos.qty
             order_info["closed_short_qty"] += unclosed_delta

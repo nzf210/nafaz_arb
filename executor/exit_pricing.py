@@ -282,12 +282,12 @@ class ExitPricingMixin:
                 info = info if isinstance(info, dict) else {}
                 next_rate_raw = (
                     rate_data.get("nextFundingRate")
-                    if rate_data.get("nextFundingRate") is not None
+                    if rate_data.get("nextFundingRate") not in (None, "")
                     else info.get("nextFundingRate")
                 )
-                if next_rate_raw is None:
+                if next_rate_raw in (None, ""):
                     next_rate_raw = rate_data.get("fundingRate")
-                if next_rate_raw is not None:
+                if next_rate_raw not in (None, ""):
                     next_rate = float(next_rate_raw)
                     if math.isfinite(next_rate):
                         rates = getattr(self, "_next_funding_rate_by_pair", {})

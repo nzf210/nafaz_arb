@@ -2357,3 +2357,74 @@ async def test_terminal_older_entry_with_newer_pending_order_is_retained_for_rec
     active = await engine.order_registry.active_records()
     assert older.local_order_id in active
     assert client.global_short_sells == []
+
+
+@pytest.mark.asyncio
+async def test_periodic_exit_adoption_does_not_double_count_partial_fill(fake_redis):
+    """Re-adopting a resting EXIT_SPOT order preserves last_spot_fill watermark."""
+    client = MockExchangeClient()
+    client.orders["15601553"] = _venue_order(
+        id="15601553", clientOrderId="beat-exit-1", side="sell",
+        price=1485.0, amount=116.0, filled=16.8, status="open",
+    )
+    engine = await _build(fake_redis, client)
+    pos = _position()
+    pos.qty = 116.0
+    pos.short_entry_usdt = 0.07769
+    engine.active_positions[PAIR_TAG] = pos
+    engine.states[PAIR_TAG] = PositionState.EXIT_PENDING
+
+    record = OrderRecord(
+        local_order_id=OrderRecord.local_id_for("indodax", "beat-exit-1", "15601553"),
+        client_order_id="beat-exit-1",
+        exchange_order_id="15601553",
+        pair_key=PAIR_TAG,
+        exchange="indodax",
+        market_type="spot",
+        symbol="btc_idr",
+        side="sell",
+        order_role=OrderRole.EXIT_SPOT.value,
+        price=1485.0,
+        original_quantity=116.0,
+        filled_quantity=16.8,
+        local_amount_spec=LOCAL_SPEC,
+    )
+    await engine.order_registry.register(record)
+
+    await engine._adopt_resting_exit_order(record, PAIR_TAG, LOCAL_SPEC)
+    await engine._process_pending_exit_bound(PAIR_TAG)
+    assert pos.unhedged_exit_base_qty == pytest.approx(16.8)
+
+    # Simulate periodic recovery sweep re-adopting the same resting order
+    reloaded = await engine.order_registry.load(record.local_order_id)
+    await engine._adopt_resting_exit_order(reloaded, PAIR_TAG, LOCAL_SPEC)
+    await engine._process_pending_exit_bound(PAIR_TAG)
+    assert pos.unhedged_exit_base_qty == pytest.approx(16.8)
+
+
+def test_record_accepted_client_ids_uses_global_fut_for_perpetual_orders():
+    """Perpetual orders on OKX must match OKX wire clientOrderId even when local leg is Indodax."""
+    from types import SimpleNamespace
+    from executor.recovery_registry import _record_accepted_client_ids
+    from executor.venues import get_venue
+
+    logical_id = "indodax-be-1ecf64a4-unwind-598886363"
+    okx_wire_id = get_venue("okx").format_client_order_id(logical_id)
+    owner = SimpleNamespace(
+        local=SimpleNamespace(id="indodax"),
+        global_fut=SimpleNamespace(id="okx"),
+        _local_broker_prefix="",
+        _global_broker_prefix="",
+    )
+    record = OrderRecord(
+        local_order_id="exit-fut-1",
+        client_order_id=logical_id,
+        exchange="okx",
+        market_type="perpetual",
+        symbol="BEAT/USDT:USDT",
+        side="buy",
+        order_role=OrderRole.EXIT_FUTURES.value,
+    )
+    accepted = _record_accepted_client_ids(record, owner)
+    assert okx_wire_id in accepted
+
