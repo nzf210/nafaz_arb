@@ -2251,3 +2251,62 @@ async def test_recovered_hedge_fill_is_not_double_counted(fake_redis):
     assert second.hedged_quantity == pytest.approx(0.005), (
         "reconciling the same hedge twice must not double the watermark"
     )
+
+
+@pytest.mark.asyncio
+async def test_terminal_older_entry_with_newer_pending_order_is_retained_for_reconciliation(fake_redis):
+    """A late terminal fill must not be retired or attached to a newer entry."""
+    client = MockExchangeClient()
+    client.orders["501"] = _venue_order(
+        id="501",
+        clientOrderId="btc-idr-entry-7",
+        filled=0.004,
+        status="closed",
+    )
+    engine = await _build(fake_redis, client)
+    older = _entry_record(
+        client_order_id="btc-idr-entry-7",
+        exchange_order_id="501",
+        status="open",
+        filled_quantity=0.0,
+        remaining_quantity=0.01,
+    )
+    await engine.order_registry.register(older)
+
+    newer_pending = {
+        "order_id": "902",
+        "client_order_id": "btc-idr-entry-8",
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "qty": 0.01,
+        "filled": 0.0,
+        "hedged_short_qty": 0.0,
+    }
+    engine.pending_entry_orders[PAIR_TAG] = newer_pending
+    engine.states[PAIR_TAG] = PositionState.ENTRY_PENDING
+
+    async def unexpected_hedge(*args, **kwargs):
+        pytest.fail("older terminal fill must not be merged into the newer pending entry")
+
+    engine._handle_entry_fills = unexpected_hedge
+
+    await engine._reconcile_registered_order(older, "indodax", "btc_idr")
+
+    assert engine.pending_entry_orders[PAIR_TAG] is newer_pending
+    assert engine.pending_entry_orders[PAIR_TAG]["order_id"] == "902"
+    assert engine.states[PAIR_TAG] == PositionState.RECONCILIATION_REQUIRED
+    assert PAIR_TAG in engine._recovery_scope_halts
+
+    pending_recovery = await engine.order_registry.pending_recovery_ids()
+    assert older.local_order_id in pending_recovery
+    stored = await engine.order_registry.find_by_client_id(
+        "indodax", "btc-idr-entry-7"
+    )
+    assert stored is not None
+    assert stored.status == "open"
+    assert stored.recovery_status == RecoveryStatus.UNVERIFIED.value
+    active = await engine.order_registry.active_records()
+    assert older.local_order_id in active
+    assert client.global_short_sells == []
