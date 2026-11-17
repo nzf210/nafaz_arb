@@ -186,6 +186,14 @@ class EngineRecoveryMixin:
             )
             return False
         return True
+
+    def _group_recovered_positions(self):
+        groups = {}
+        for pair_tag, pos in self.active_positions.items():
+            symbol = pos.global_symbol or self._resolve_global_symbol(pos.symbol)
+            groups.setdefault((pos.global_exchange, symbol), []).append((pair_tag, pos))
+        return groups
+
     async def _mark_recovered_group_unverified(self, global_symbol: str, items) -> None:
         reason = "Live futures position API is unavailable after restart."
         for pair_tag, pos in items:
