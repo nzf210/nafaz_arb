@@ -529,6 +529,7 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 **Audited baseline:** `a3b4e9374288237b31a5905d6bdbd58afd615aea`  
 **Source remediation:** `c4b1012f298c77e99b215e0fe8c0ed8f2c634cd6`  
 **Regression test:** `9377aa7c310a501ba56c2e915cc28affd0d7a805`  
+**Positive-fixture follow-up:** `77906cf1f650dc084ec01ab4a3ea65b6909994f8`  
 **R-46 CI:** GitHub Actions [44046589327](https://github.com/nzf210/nafaz_arb/actions/runs/44046589327) SUCCESS for source/test head `77906cf1`.
 
 ### Finding and change
