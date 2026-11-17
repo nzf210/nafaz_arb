@@ -449,7 +449,7 @@ func (m *OKXBookManager) consume(ctx context.Context) error {
 	}
 	readCtx, cancelRead := context.WithCancel(ctx)
 	defer cancelRead()
-	reads := make(chan okxWSRead, 1024)
+	reads := make(chan okxWSRead, 4096)
 	go func() {
 		for {
 			typ, data, err := conn.Read(readCtx)

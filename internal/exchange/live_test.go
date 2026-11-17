@@ -387,4 +387,11 @@ func TestLiveAdapterSubscribeOKXMatchedBooks(t *testing.T) {
 	if instruments[0] != "BTC-USDT-SWAP" || instruments[1] != "ETH-USDT-SWAP" {
 		t.Errorf("unexpected instruments: %v", instruments)
 	}
+
+	adapter.SetOKXWSMaxInstruments(1)
+	adapter.SubscribeOKXMatchedBooks(pairs)
+	instruments = manager.instrumentList()
+	if len(instruments) != 1 {
+		t.Fatalf("expected 1 OKX instrument after limit, got %d (%v)", len(instruments), instruments)
+	}
 }

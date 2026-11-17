@@ -55,11 +55,12 @@ type LiveAdapter struct {
 
 	// okxLimiter is the process-wide gate for OKX public REST.
 	okxLimiter     *okxLimiter
-	okxLimiterOnce sync.Once
-	okxLimiterCfg  OKXLimiterConfig
-	okxBooks       *OKXBookManager
-	okxWSMaxAge    time.Duration
-	okxBookCalls   map[string]*okxBookCall
+	okxLimiterOnce       sync.Once
+	okxLimiterCfg        OKXLimiterConfig
+	okxBooks             *OKXBookManager
+	okxWSMaxAge          time.Duration
+	okxWSMaxInstruments  int
+	okxBookCalls         map[string]*okxBookCall
 
 	indodaxLimiter        *venueLimiter
 	indodaxLimiterOnce    sync.Once
@@ -413,13 +414,25 @@ func (l *LiveAdapter) SubscribeIndodaxBooks(pairs [][2]domain.Market) {
 	manager.SetPairs(symbols)
 }
 
+// SetOKXWSMaxInstruments configures the maximum number of matched perpetual contracts
+// subscribed to the OKX WebSocket book feed simultaneously (default: 100).
+func (l *LiveAdapter) SetOKXWSMaxInstruments(n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.okxWSMaxInstruments = n
+}
+
 // SubscribeOKXMatchedBooks updates the active matched OKX perpetual contracts subscribed on WS.
 func (l *LiveAdapter) SubscribeOKXMatchedBooks(pairs [][2]domain.Market) {
 	l.mu.RLock()
 	manager := l.okxBooks
+	limit := l.okxWSMaxInstruments
 	l.mu.RUnlock()
 	if manager == nil {
 		return
+	}
+	if limit <= 0 {
+		limit = 100
 	}
 	symbols := make([]string, 0, len(pairs))
 	seen := make(map[string]struct{}, len(pairs))
@@ -430,6 +443,9 @@ func (l *LiveAdapter) SubscribeOKXMatchedBooks(pairs [][2]domain.Market) {
 				if _, ok := seen[sym]; !ok {
 					seen[sym] = struct{}{}
 					symbols = append(symbols, sym)
+					if len(symbols) >= limit {
+						break
+					}
 				}
 			}
 		}

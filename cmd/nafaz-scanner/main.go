@@ -49,6 +49,9 @@ func main(){
 			live.EnableWebSocketFeed(context.Background(), time.Duration(cfg.WebSocketBookMaxAgeSeconds)*time.Second)
 		}
 		if cfg.OKXWebSocketEnabled != nil && *cfg.OKXWebSocketEnabled {
+			if cfg.OKXWSMaxInstruments > 0 {
+				live.SetOKXWSMaxInstruments(cfg.OKXWSMaxInstruments)
+			}
 			staleAfter, _ := time.ParseDuration(cfg.OKXWSStaleAfter)
 			reconnect, _ := time.ParseDuration(cfg.OKXWSReconnectInterval)
 			maxBackoff, _ := time.ParseDuration(cfg.OKXWSMaxReconnectBackoff)

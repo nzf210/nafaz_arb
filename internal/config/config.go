@@ -121,6 +121,7 @@ type Config struct {
 	OKXWSStaleAfter               string         `json:"okx_ws_stale_after"`
 	OKXWSReconnectInterval        string         `json:"okx_ws_reconnect_interval"`
 	OKXWSMaxReconnectBackoff      string         `json:"okx_ws_max_reconnect_backoff"`
+	OKXWSMaxInstruments           int            `json:"okx_ws_max_instruments,omitempty"`
 	IndodaxWebSocketEnabled       *bool          `json:"indodax_ws_enabled,omitempty"`
 	IndodaxWSURL                  string         `json:"indodax_ws_url"`
 	IndodaxWSToken                string         `json:"indodax_ws_token"`
@@ -188,6 +189,9 @@ func (c *Config) setDefaults() {
 	c.OKXWSStaleAfter = defaultString(c.OKXWSStaleAfter, "65s")
 	c.OKXWSReconnectInterval = defaultString(c.OKXWSReconnectInterval, "1s")
 	c.OKXWSMaxReconnectBackoff = defaultString(c.OKXWSMaxReconnectBackoff, "30s")
+	if c.OKXWSMaxInstruments <= 0 {
+		c.OKXWSMaxInstruments = 100
+	}
 	c.IndodaxWSURL = defaultString(c.IndodaxWSURL, "wss://ws3.indodax.com/ws/")
 	c.IndodaxWSStaleAfter = defaultString(c.IndodaxWSStaleAfter, "65s")
 	// Require recent order books and tight cross-venue alignment by default.
@@ -444,6 +448,7 @@ func (c *Config) applyEnvOverrides() {
 	setEnvString(&c.OKXWSStaleAfter, "OKX_WS_STALE_AFTER")
 	setEnvString(&c.OKXWSReconnectInterval, "OKX_WS_RECONNECT_INTERVAL")
 	setEnvString(&c.OKXWSMaxReconnectBackoff, "OKX_WS_MAX_RECONNECT_BACKOFF")
+	setEnvInt(&c.OKXWSMaxInstruments, "OKX_WS_MAX_INSTRUMENTS")
 	if v := os.Getenv("INDODAX_WS_ENABLED"); v != "" {
 		enabled := strings.EqualFold(v, "true") || v == "1"
 		c.IndodaxWebSocketEnabled = &enabled

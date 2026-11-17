@@ -59,6 +59,7 @@
     "okx_ws_stale_after": "65s",
     "okx_ws_reconnect_interval": "1s",
     "okx_ws_max_reconnect_backoff": "30s",
+    "okx_ws_max_instruments": 100,
     "indodax_ws_enabled": false,
     "indodax_ws_url": "wss://ws3.indodax.com/ws/",
     "indodax_ws_token": "",
