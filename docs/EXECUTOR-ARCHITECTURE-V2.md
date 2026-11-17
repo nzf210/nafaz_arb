@@ -1704,6 +1704,15 @@ The current sequence is:
 
 A fake-venue regression exercises a late terminal fill (`order_id=501`, partial fill) while a newer pending entry (`order_id=902`) exists. It asserts that the newer pending order is unchanged, the older record remains `UNVERIFIED` and indexed, the pair is halted in `RECONCILIATION_REQUIRED`, and no hedge is submitted from the mismatched context.
 
-**Verification status:** regression committed; GitHub Actions for the R-45 head must be checked before calling this fix verified. Earlier head `b699ab2` CI passed 710 Python tests (4 skipped), 4 disposable-PostgreSQL submit-fencing integration tests, PostgreSQL migration checks, Go/race/vet and Docker builds. Those results do not cover the R-45 commits.
+**Verification status:** R-45 head `a3b4e937` passed GitHub Actions run [44044178958](https://github.com/nzf210/nafaz_arb/actions/runs/44044178958): Python 711 passed / 4 skipped, disposable PostgreSQL submit-fencing integration 4 passed, and migration/schema, Go/race/vet, and Docker jobs passed. This does not cover later commits.
 
 Overall status remains **PARTIAL / NOT LIVE-CERTIFIED**. Real venue contracts, operator-resolution governance, and repeated PostgreSQL multi-process fault injection against the VPS topology remain open.
+### 17.8 Recovered submit ACK requires a durable lifecycle record — R-46
+
+Startup exact-client-ID recovery has two persistence layers: the durable Global STOP submit-attempt ledger and the universal order registry that carries the order's Spot/Futures lifecycle context. A venue order found after a lost ACK must be written to the order registry before the submit attempt can transition to `ACKNOWLEDGED`.
+
+Previously, `_persist_reconciled_submit_order` returned silently if `order_registry` was absent. The caller then ACKed the Global STOP attempt, removing it from the unresolved-submit query even though no lifecycle record had been attached. This was an invariant gap, even though normal startup recovery should already require an order registry.
+
+The function now raises when the registry is missing. The surrounding recovery handler records the failed lookup evidence as `NOT_FOUND` without changing `SUBMITTING/UNKNOWN`; the global entry gate remains blocked. A fake-venue regression covers this boundary. The positive recovery test now supplies a fake durable registry and asserts it is written before the Global STOP attempt is ACKed.
+
+**Verification status:** code and regression are committed; check the latest GitHub Actions run before treating R-46 as verified. R-45 passed on run [44044178958](https://github.com/nzf210/nafaz_arb/actions/runs/44044178958). Overall status remains **PARTIAL / NOT LIVE-CERTIFIED**.
