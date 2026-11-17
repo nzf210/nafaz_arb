@@ -95,6 +95,8 @@ class ExchangeOrderMixin:
                 markets = await loader()
         if not isinstance(markets, dict) or not markets:
             return symbol
+        if symbol in markets:
+            return symbol
 
         exchange_id = str(getattr(exchange, "id", "") or "").lower()
         normalized_id = self._normalized_market_id(symbol, exchange_id)

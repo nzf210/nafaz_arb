@@ -362,7 +362,9 @@ class EngineRecoveryMixin:
         deficits: dict = {}
         if not self.active_positions:
             return deficits
-        balance_of = getattr(self.client, "fetch_spot_free_balance", None)
+        balance_of = getattr(self.client, "fetch_spot_total_balance", None) or getattr(
+            self.client, "fetch_spot_free_balance", None
+        )
         if not callable(balance_of):
             logger.warning(
                 "[Recovery] client cannot read local spot balances; "

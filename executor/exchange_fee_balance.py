@@ -273,3 +273,13 @@ class ExchangeFeeBalanceMixin:
         if not isinstance(raw, dict):
             raise ValueError("exchange returned an invalid balance payload")
         return self._balance_amount(raw, symbol, "free")
+
+    async def fetch_spot_total_balance(self, asset: str) -> float:
+        """Total (free + used) balance of one spot asset, in base units."""
+        symbol = str(asset or "").strip().upper()
+        if not symbol:
+            raise ValueError("asset is required to read a spot total balance")
+        raw = await self.local.fetch_balance()
+        if not isinstance(raw, dict):
+            raise ValueError("exchange returned an invalid balance payload")
+        return self._balance_amount(raw, symbol, "total")
