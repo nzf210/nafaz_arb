@@ -162,11 +162,19 @@ class ExitOrderManagementMixin:
 
             pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)
             if pair_info is None:
-                raw_symbol = str(pos.symbol or "").split(":")[-1]
+                raw_symbol = str(pos.symbol or "").split(":")[-1].upper()
                 if "/" in raw_symbol:
                     quote_asset = raw_symbol.rsplit("/", 1)[-1]
                 elif "_" in raw_symbol:
                     quote_asset = raw_symbol.rsplit("_", 1)[-1]
+                elif raw_symbol.endswith("IDR"):
+                    quote_asset = "IDR"
+                elif raw_symbol.endswith("USDT"):
+                    quote_asset = "USDT"
+                elif raw_symbol.endswith("USDC"):
+                    quote_asset = "USDC"
+                elif str(pos.local_exchange or "").lower() == "indodax":
+                    quote_asset = "IDR"
                 else:
                     raise ValueError(
                         f"cannot determine local quote asset for {pos.local_exchange}:{pos.symbol}"
