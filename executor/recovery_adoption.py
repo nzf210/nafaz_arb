@@ -140,11 +140,8 @@ class RecoveryAdoptionMixin:
             # cumulative fill may not yet be hedged. Reusing the newer pending
             # entry context would associate the old venue fill with the wrong
             # exchange order and can silently leave spot exposure unhedged.
-            record.status = "open"
-            record.recovery_status = RecoveryStatus.UNVERIFIED.value
-            await self.order_registry.register(record)
-            await self.order_registry.mark_pending_recovery(
-                record.local_order_id, reason
+            await self.order_registry.retain_for_reconciliation(
+                record, reason
             )
             self._halt_exposure_scope(pair_tag, reason)
             self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
