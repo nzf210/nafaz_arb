@@ -529,7 +529,7 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 **Audited baseline:** `a3b4e9374288237b31a5905d6bdbd58afd615aea`  
 **Source remediation:** `c4b1012f298c77e99b215e0fe8c0ed8f2c634cd6`  
 **Regression test:** `9377aa7c310a501ba56c2e915cc28affd0d7a805`  
-**CI status:** pending for the R-46 source/test head at documentation time.
+**R-46 CI:** GitHub Actions [44046589327](https://github.com/nzf210/nafaz_arb/actions/runs/44046589327) SUCCESS for source/test head `77906cf1`.
 
 ### Finding and change
 
@@ -549,7 +549,7 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 ### Verification and release gates
 
 - R-45 prior head: run [44044178958](https://github.com/nzf210/nafaz_arb/actions/runs/44044178958) SUCCESS; Python 711 passed / 4 skipped; PostgreSQL integration 4 passed; all five jobs passed.
-- R-46 code/test commits: run pending at documentation time; do not infer success from R-45.
+- R-46 final source/test head `77906cf1`: Python 712 passed / 4 skipped / 111 warnings; disposable PostgreSQL integration 4 passed; all five CI jobs passed. Initial runs failed on two positive recovery fixtures that lacked a registry; those fixtures were corrected and the final run passed.
 - Real venue sandbox/paper contract tests, operator-authenticated manual-resolution governance, repeated PostgreSQL multi-process disconnect/fault injection against the actual VPS topology, and futures minimum-notional overhedge policy remain open.
 
 **Overall release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
