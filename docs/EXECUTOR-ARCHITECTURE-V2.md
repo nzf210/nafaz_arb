@@ -1713,6 +1713,15 @@ Startup exact-client-ID recovery has two persistence layers: the durable Global 
 
 Previously, `_persist_reconciled_submit_order` returned silently if `order_registry` was absent. The caller then ACKed the Global STOP attempt, removing it from the unresolved-submit query even though no lifecycle record had been attached. This was an invariant gap, even though normal startup recovery should already require an order registry.
 
-The function now raises when the registry is missing. The surrounding recovery handler records the failed lookup evidence as `NOT_FOUND` without changing `SUBMITTING/UNKNOWN`; the global entry gate remains blocked. A fake-venue regression covers this boundary. The positive recovery test now supplies a fake durable registry and asserts it is written before the Global STOP attempt is ACKed.
+The function now raises when the registry is missing. Lookup/persistence exceptions are recorded as `UNKNOWN`; only a successful exact-ID lookup that returns `None` records `NOT_FOUND`. Both remain unresolved and keep the global entry gate blocked. A fake-venue regression covers the missing-registry boundary. The positive recovery test supplies a fake durable registry and asserts it is written before the Global STOP attempt is ACKed.
 
 **Verification status:** R-46 source/test head `77906cf1` passed GitHub Actions [44046589327](https://github.com/nzf210/nafaz_arb/actions/runs/44046589327): Python 712 passed / 4 skipped, disposable PostgreSQL submit-fencing integration 4 passed, and all five migration/schema, Go/race/vet, and Docker jobs passed. The initial fixture failures were corrected before this successful run. Overall status remains **PARTIAL / NOT LIVE-CERTIFIED**.
+### 17.9 Exact-ID recovery evidence must distinguish absence from failure — R-47
+
+`NOT_FOUND` is evidence that the exact-client-ID lookup completed successfully and returned no order. It is not a generic recovery-error bucket. A timeout, rate limit, venue-history failure, unsupported lookup, malformed response, missing durable order intent, order-registry write failure, or Global STOP ACK persistence failure does not prove absence.
+
+Startup recovery now records `NOT_FOUND` only when the lookup call successfully returns `None`. Lookup exceptions and all post-lookup adoption/persistence failures call `mark_submit_unknown`; if PostgreSQL is unavailable, the previously committed `SUBMITTING` row remains unresolved. A malformed non-None result without a verifiable exchange order ID is also `UNKNOWN`, not `NOT_FOUND`.
+
+Regression coverage includes a fake venue history timeout, a venue order found while the durable registry writer fails, a missing registry, a missing intent, and a successful exact-ID `None` lookup. The successful-not-found case remains globally blocking and is not treated as a definitive venue rejection.
+
+**Verification status:** R-47 source/test head `8f2d309c` passed GitHub Actions [44047469831](https://github.com/nzf210/nafaz_arb/actions/runs/44047469831): Python 714 passed / 4 skipped, disposable PostgreSQL submit-fencing integration 4 passed, and all five CI jobs passed. Overall status remains **PARTIAL / NOT LIVE-CERTIFIED**.
