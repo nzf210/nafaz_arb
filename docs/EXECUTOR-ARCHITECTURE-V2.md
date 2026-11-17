@@ -1685,3 +1685,25 @@ LIVE force-close spot liquidation uses a deterministic client ID derived from th
 The GlobalStop PostgreSQL DSN is not the universal order-registry writer. Required LIVE order intents now require the actual enabled Supabase/outbox writer; a local STOP database alone cannot make a Redis-only order record durable. Optional de-risk intents remain best-effort so ordinary exits are not globally blocked by the registry writer, but this is a documented residual recovery risk if Redis data is lost while Supabase is disabled.
 
 Force-close cancellation still waits for terminal venue status and reconciles racing entry/exit fills before closing legs. This can delay force close when a pending order cannot be verified; it is intentional because an unverified entry may fill after the close and reopen exposure.
+## 17.7 Terminal spot-entry recovery must not discard a late fill — R-45
+
+A terminal spot-entry order can still contain a cumulative fill that has not yet been propagated into the spot/futures lifecycle. Recovery must not retire that record merely because a newer pending entry for the same pair exists.
+
+The previous sequence registered and retired the terminal record before `_finalize_terminal_entry`. The latter detected a different live `order_id`, but returned success to avoid overwriting the newer pending record. That combination could remove the older order from recovery without proving its fill had been hedged.
+
+The current sequence is:
+
+1. Register the recovered venue state.
+2. Run terminal ENTRY lifecycle finalization.
+3. Retire the order only when finalization returns success.
+4. If the older terminal entry conflicts with a newer pending entry, pair context is missing, or fill reconciliation fails, call `retain_for_reconciliation`.
+5. That explicit registry transition persists the record as `open` + `UNVERIFIED`, restores it to the recovery index, records a pending-recovery reason, and halts new exposure for the pair.
+6. Keep the newer pending entry object untouched. Do not merge the older venue fill into the newer order's context and do not submit another hedge automatically.
+
+`retain_for_reconciliation` deliberately bypasses the registry's normal terminal-status monotonic merge only for this explicit unresolved lifecycle state. The venue's true status is fetched again during the next recovery pass; the local `open` status means “keep indexed for reconciliation,” not “the venue order is still open.”
+
+A fake-venue regression exercises a late terminal fill (`order_id=501`, partial fill) while a newer pending entry (`order_id=902`) exists. It asserts that the newer pending order is unchanged, the older record remains `UNVERIFIED` and indexed, the pair is halted in `RECONCILIATION_REQUIRED`, and no hedge is submitted from the mismatched context.
+
+**Verification status:** regression committed; GitHub Actions for the R-45 head must be checked before calling this fix verified. Earlier head `b699ab2` CI passed 710 Python tests (4 skipped), 4 disposable-PostgreSQL submit-fencing integration tests, PostgreSQL migration checks, Go/race/vet and Docker builds. Those results do not cover the R-45 commits.
+
+Overall status remains **PARTIAL / NOT LIVE-CERTIFIED**. Real venue contracts, operator-resolution governance, and repeated PostgreSQL multi-process fault injection against the VPS topology remain open.
