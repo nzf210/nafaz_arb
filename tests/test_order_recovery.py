@@ -13,6 +13,7 @@ bot orders:
 * duplicate/repeated recovery that must not create new orders or positions
 """
 
+import asyncio
 import json
 import time
 
@@ -2108,6 +2109,52 @@ def test_local_spot_limit_price_uses_the_market_quote_asset(fake_redis):
         engine._local_order_limit_price(
             SimpleNamespace(quote_asset="BTC"), snapshot, 16_000_000.0
         )
+
+
+@pytest.mark.asyncio
+async def test_hedge_may_be_open_respects_expected_short_qty(engine):
+    """Already-hedged exposure matching expected_short_qty is not flagged as unexpected."""
+    class ExistingPositionClient(MockExchangeClient):
+        async def fetch_positions(self, symbol):
+            return [
+                {"symbol": symbol, "contracts": 11.6, "contractSize": 10.0, "side": "short"},
+            ]
+
+    engine.client = ExistingPositionClient()
+    # Gross exposure 116.0 with expected_short_qty=116.0 -> not ambiguous
+    assert await engine._hedge_may_be_open(
+        PAIR_TAG, "BEAT-USDT-SWAP", RuntimeError("hedge failed"), expected_short_qty=116.0
+    ) is False
+
+    # Gross exposure 116.0 with expected_short_qty=0.0 -> ambiguous (unexpected exposure)
+    assert await engine._hedge_may_be_open(
+        PAIR_TAG, "BEAT-USDT-SWAP", RuntimeError("hedge failed"), expected_short_qty=0.0
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_finalize_adopted_terminal_preserves_unreconciled_entry(fake_redis):
+    """Entry record is not retired if _finalize_terminal_entry returns False."""
+    engine = _engine(fake_redis)
+    record = _entry_record(
+        local_order_id="indodax-test-entry",
+        exchange="indodax",
+        symbol="indodax:beatidr",
+        order_role=OrderRole.ENTRY.value,
+        status="closed",
+    )
+    await engine.order_registry.register(record)
+
+    # Force _finalize_terminal_entry to fail
+    engine._finalize_terminal_entry = lambda *args, **kwargs: asyncio.sleep(0, result=False)
+
+    success = await engine._finalize_adopted_terminal(
+        record, {"status": "closed", "filled": 181.0}, PAIR_TAG, AmountSpec("BASE", 1.0, 1.0, 1.0)
+    )
+    assert success is False
+
+    # Record must still be in recovery index (not retired)
+    assert await fake_redis.hexists("arb:order_recovery_idx", "indodax-test-entry")
 
 
 @pytest.mark.asyncio

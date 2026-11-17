@@ -784,6 +784,18 @@ class EntryHedgeMixin:
                 )
         hedge_status = str(short_order.get("status", "")).lower()
         if hedge_status not in ("closed", "filled"):
+            order_id = str(short_order.get("id") or "")
+            if order_id:
+                try:
+                    verified = await self.client.fetch_global_order(
+                        order_id, global_symbol, order_info.get("global_amount_spec")
+                    )
+                    if isinstance(verified, dict) and verified.get("id"):
+                        short_order = verified
+                        hedge_status = str(short_order.get("status", "")).lower()
+                except Exception as exc:
+                    logger.debug("[State 2] follow-up futures hedge verification failed for %s: %s", order_id, exc)
+        if hedge_status not in ("closed", "filled"):
             raise ValueError(
                 f"futures hedge is not terminal (status={hedge_status})"
             )
@@ -991,6 +1003,8 @@ class EntryHedgeMixin:
         hedge_ratio: float = 1.0,
     ) -> None:
         """Execute market short on global exchange and persist position state."""
+        order_info["hedge_submit_started"] = False
+        order_info.pop("pending_hedge_client_order_id", None)
         global_symbol = order_info["global_symbol"]
         try:
             expected_short_price = float(

@@ -231,11 +231,14 @@ class RecoveryAdoptionMixin:
             if finalized:
                 await self.order_registry.retire(record)
             return finalized
-        await self.order_registry.retire(record)
         if record.order_role == OrderRole.EXIT_SPOT.value:
-            return await self._finalize_terminal_spot_exit(
+            res = await self._finalize_terminal_spot_exit(
                 record, pair_tag, amount_spec
             )
+            if res:
+                await self.order_registry.retire(record)
+            return res
+        await self.order_registry.retire(record)
         if record.order_role in ACKNOWLEDGED_EXIT_ROLES:
             logger.info(
                 "[Recovery] terminal %s order %s for %s acknowledged",
@@ -273,6 +276,8 @@ class RecoveryAdoptionMixin:
             float(live.get("hedged_short_qty", 0.0) or 0.0),
             float(parent.hedged_quantity or 0.0),
         )
+        live["hedge_submit_started"] = False
+        live.pop("pending_hedge_client_order_id", None)
         await self._persist_pending_entry(pair_tag, live)
 
     async def _finalize_recovered_hedge_record(
@@ -346,6 +351,26 @@ class RecoveryAdoptionMixin:
             parent, hedge_record, filled
         )
         await self._sync_live_parent_hedge_watermark(pair_tag, parent)
+
+        order_info = self.pending_entry_orders.get(pair_tag) or (
+            self._rebuild_entry_order_info(parent, {}, None)
+        )
+        if order_info and hasattr(self, "_record_hedged_position"):
+            try:
+                price_idr = float(order_info.get("price", 0.0) or 0.0)
+                usdt_rate = float(order_info.get("usdt_idr_rate", 0.0) or 0.0)
+                if price_idr > 0 and usdt_rate > 0:
+                    self._record_hedged_position(
+                        pair_tag, order_info, filled,
+                        venue_order, price_idr, usdt_rate,
+                    )
+                    if getattr(self, "redis", None):
+                        await self.redis.set(
+                            f"arb:active_pos:{pair_tag}",
+                            json.dumps(self.active_positions[pair_tag].to_dict()),
+                        )
+            except Exception:
+                logger.exception("[Recovery] failed to update active position for recovered hedge %s", hedge_key)
 
         claim_key = str(context.get("hedge_claim_key") or "")
         if claim_key:

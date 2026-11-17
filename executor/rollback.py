@@ -244,7 +244,8 @@ class RollbackMixin:
         return qty
 
     async def _hedge_may_be_open(
-        self, pair_tag: str, global_symbol: str, error: Exception
+        self, pair_tag: str, global_symbol: str, error: Exception,
+        expected_short_qty: float = 0.0,
     ) -> bool:
         """
         Returns True when a futures short MIGHT be open after a hedge error.
@@ -321,11 +322,12 @@ class RollbackMixin:
                 return True
             # Binance-style positionAmt is signed: negative is short, positive long.
             exposure += abs(signed_amount)
-        if exposure > 1e-12:
+        tolerance = max(1e-12, expected_short_qty * 1e-4)
+        if exposure > expected_short_qty + tolerance:
             logger.critical(
-                f"[Hedge Ambiguity] {pair_tag}: venue reports non-flat futures exposure "
-                f"(gross exposure {exposure}) on {global_symbol} despite hedge error "
-                f"({error}) - spot NOT rolled back"
+                f"[Hedge Ambiguity] {pair_tag}: venue reports unexpected futures exposure "
+                f"(gross exposure {exposure} > expected {expected_short_qty}) on {global_symbol} "
+                f"despite hedge error ({error}) - spot NOT rolled back"
             )
             return True
         return False
@@ -361,7 +363,10 @@ class RollbackMixin:
             tolerance = max(1e-12, requested_quantity * 1e-8)
             if filled > tolerance:
                 return False, f"futures hedge order has fills ({filled}); rollback is unsafe"
-        if await self._hedge_may_be_open(pair_tag, global_symbol, error):
+        if await self._hedge_may_be_open(
+            pair_tag, global_symbol, error,
+            expected_short_qty=float(order_info.get("hedged_short_qty", 0.0) or 0.0),
+        ):
             return False, "futures position is non-flat or could not be verified"
         await self._resolve_zero_fill_hedge_intent(str(order_info.get("global_exchange") or ""), client_order_id)
         return True, "no hedge order/fill and futures position confirmed flat"
@@ -459,8 +464,9 @@ class RollbackMixin:
         # is actually open would leave the book net-short in the wrong direction.
         # Only proceed with the rollback when the venue confirms no open short.
         global_symbol = str(order_info.get("global_symbol", ""))
+        confirmed_hedged_qty = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
         hedge_error_is_ambiguous = await self._hedge_may_be_open(
-            pair_tag, global_symbol, error
+            pair_tag, global_symbol, error, expected_short_qty=confirmed_hedged_qty,
         )
         if hedge_error_is_ambiguous:
             self._mark_failed(
@@ -561,5 +567,8 @@ class RollbackMixin:
                 },
             )
         else:
-            self.states[pair_tag] = PositionState.CLOSED
+            if float(order_info.get("hedged_short_qty", 0.0) or 0.0) > 0:
+                self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+            else:
+                self.states[pair_tag] = PositionState.CLOSED
         await self.publish_status()
