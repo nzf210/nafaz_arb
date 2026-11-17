@@ -24,11 +24,17 @@ class RiskFundingMixin:
                 pair_info, usdt_idr_rate, pair_tag
             )
         try:
-            return await self._get_balance_snapshot(
+            bals = await self._get_balance_snapshot(
                 pair_tag=pair_tag,
                 pair_info=pair_info,
                 usdt_idr_rate=usdt_idr_rate,
             )
+            if bals is not None and getattr(self, "redis", None) is not None:
+                try:
+                    await self.redis.set("arb:balances", json.dumps(bals))
+                except Exception:
+                    pass
+            return bals
         except Exception as exc:
             logger.warning(
                 "[State 1 Balance Check] balance probe failed for %s; "

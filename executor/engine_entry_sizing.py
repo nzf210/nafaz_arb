@@ -74,12 +74,4 @@ class EngineEntrySizingMixin:
                     detail={"required_usdt_per_leg": actual_cost_usdt},
                 )
                 return None
-            # Sync balances to Redis
-            bals = await self._get_balance_snapshot(
-                pair_tag=pair_tag,
-                pair_info=pair_info,
-                usdt_idr_rate=snapshot.usdt_idr_rate,
-            )
-            if bals is not None:
-                await self.redis.set(BALANCES_KEY, json.dumps(bals))
         return buy_qty, actual_cost_usdt, buy_price_idr

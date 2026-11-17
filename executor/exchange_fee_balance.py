@@ -147,6 +147,30 @@ class ExchangeFeeBalanceMixin:
                 assets.append(row)
         return assets
 
+    async def _fetch_cached_exchange_balance(
+        self, exchange: Any, market: str, ttl: float = 4.0
+    ) -> Dict[str, Any]:
+        """Fetch balance with TTL cache and graceful rate-limit reuse."""
+        cache_map = getattr(self, "_balance_cache", None)
+        if cache_map is None:
+            cache_map = {}
+            self._balance_cache = cache_map
+        exchange_id = str(getattr(exchange, "id", "") or "local").lower()
+        key = (exchange_id, str(market).lower())
+        now = time.time()
+        cached = cache_map.get(key)
+        if cached and (now - cached[0] < ttl):
+            return cached[1]
+        try:
+            raw = await _fetch_exchange_balance(exchange, market)
+            cache_map[key] = (now, raw)
+            return raw
+        except Exception as exc:
+            err_msg = str(exc).lower()
+            if cached and any(sig in err_msg for sig in ("1008", "too many requests", "rate limit", "ratelimit")):
+                return cached[1]
+            raise
+
     async def _fetch_balance_report_for_exchange(
         self, name: str, entry: dict
     ) -> dict:
@@ -167,7 +191,7 @@ class ExchangeFeeBalanceMixin:
                 "assets": [],
             }
         try:
-            raw = await _fetch_exchange_balance(exchange, market)
+            raw = await self._fetch_cached_exchange_balance(exchange, market, ttl=4.0)
             assets = self._balance_report_assets(raw)
             return {
                 "name": name, "market": market, "status": "ok", "assets": assets
@@ -233,8 +257,9 @@ class ExchangeFeeBalanceMixin:
                 f"unsupported balance quote conversion: local={local_quote}, global={global_quote}"
             )
 
-        spot_raw = await self.local.fetch_balance()
-        futures_raw = await _fetch_exchange_balance(self.global_fut, "futures")
+        spot_raw = await self._fetch_cached_exchange_balance(self.local, "spot", ttl=4.0)
+        futures_raw = await self._fetch_cached_exchange_balance(self.global_fut, "futures", ttl=4.0)
+
         spot_free = self._balance_amount(spot_raw, local_quote, "free")
         spot_total = self._balance_amount(spot_raw, local_quote, "total")
         if local_quote == "IDR":
@@ -247,11 +272,15 @@ class ExchangeFeeBalanceMixin:
 
         futures_free = self._balance_amount(futures_raw, global_quote, "free")
         futures_total = self._balance_amount(futures_raw, global_quote, "total")
+
         return {
             "spot_available": spot_free,
             "futures_available": futures_free,
             "spot_total": spot_total,
             "futures_total": futures_total,
+            "spot_locked": max(0.0, spot_total - spot_free),
+            "futures_locked": max(0.0, futures_total - futures_free),
+            "total_equity": spot_total + futures_total,
             "spot_quote_asset": local_quote,
             "futures_quote_asset": global_quote,
             "stablecoin_peg_assumed": (
