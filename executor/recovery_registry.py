@@ -107,9 +107,10 @@ class RecoveryRegistryMixin:
             await self.trade_fill_reconciliation.reconcile_once()
             await self.exposure_reconciliation.reconcile_once()
         self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
-        for pair_tag in verified_positions:
-            await self._clear_resolved_pair_failure(pair_tag)
         if not self._recovery_pending_orders:
+            self._recovery_scope_halts.pop("unknown", None)
+            for pair_tag in verified_positions:
+                await self._clear_resolved_pair_failure(pair_tag)
             for pair_tag, state in list(self.states.items()):
                 if (
                     state == PositionState.RECONCILIATION_REQUIRED
