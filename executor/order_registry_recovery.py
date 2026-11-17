@@ -197,6 +197,25 @@ class OrderRegistryRecoveryMixin:
 
     # ---------------------------------------------- pending recovery / orphans
 
+    async def retain_for_reconciliation(
+        self, record: OrderRecord, reason: str
+    ) -> None:
+        """Re-open a venue-terminal record whose lifecycle fill is not yet reconciled.
+
+        This is an explicit recovery transition, not a venue-status assertion:
+        the next recovery pass must fetch the exact order again. It deliberately
+        bypasses register()'s terminal-status monotonic merge so a stale terminal
+        cache row cannot evict an unresolved fill from the recovery index.
+        """
+        if not record.local_order_id:
+            raise ValueError("local_order_id is required for recovery retention")
+        record.status = "open"
+        record.recovery_status = RecoveryStatus.UNVERIFIED.value
+        record.updated_at = int(time.time() * 1000)
+        await self._persist(record)
+        self.records[record.local_order_id] = record
+        await self.mark_pending_recovery(record.local_order_id, str(reason)[:1000])
+
     async def mark_pending_recovery(self, local_order_id: str, reason: str) -> None:
         await self.redis.hset(ORDER_PENDING_RECOVERY_KEY, local_order_id, reason)
 
