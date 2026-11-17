@@ -151,10 +151,11 @@ class RecoveryAdoptionMixin:
             self._rebuild_entry_order_info(record, order, amount_spec)
         )
         if info is None:
-            await self.order_registry.mark_pending_recovery(
-                record.local_order_id,
-                "terminal entry cannot be reconciled without its pair context",
-            )
+            reason = "terminal entry cannot be reconciled without its pair context"
+            await self.order_registry.retain_for_reconciliation(record, reason)
+            self._halt_exposure_scope(pair_tag, reason)
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            self._refresh_entry_gate()
             return False
         info["filled"] = record.filled_quantity
         self.pending_entry_orders[pair_tag] = info
@@ -163,10 +164,16 @@ class RecoveryAdoptionMixin:
         if self.states.get(pair_tag) in (
             PositionState.FAILED, PositionState.RECONCILIATION_REQUIRED
         ):
-            logger.critical(
-                "[Recovery] fill reconciliation failed for %s; pending record retained",
-                pair_tag,
+            reason = (
+                f"terminal entry {record.exchange_order_id} fill reconciliation failed; "
+                "the venue order must remain in the recovery index"
             )
+            logger.critical(
+                "[Recovery] %s", reason,
+            )
+            await self.order_registry.retain_for_reconciliation(record, reason)
+            self._halt_exposure_scope(pair_tag, reason)
+            self._refresh_entry_gate()
             return False
         await self._finalize_entry_order(pair_tag, record.status)
         return True
