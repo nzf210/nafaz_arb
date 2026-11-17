@@ -439,7 +439,7 @@ No additional private CEX create-order endpoint was found in the modular `execut
 
 | ID | Finding | Remediation | Status |
 |---|---|---|---|
-| R-45 | Startup recovery could retire an older terminal spot-entry record before its lifecycle fill was reconciled. If a newer pending entry for the same pair already existed, the guard in `_finalize_terminal_entry` returned success and skipped the older order's cumulative fill. A late partial/full spot fill could therefore be dropped from hedge reconciliation. | Do not retire ENTRY records until lifecycle finalization succeeds. When a terminal entry conflicts with a newer pending entry, or fill finalization cannot complete, explicitly reopen the record as `UNVERIFIED`, keep it in the recovery index, record the pending-recovery reason, and halt new exposure for that pair. A dedicated registry transition bypasses terminal monotonic merge only for this explicit unresolved-recovery case. | FIX IMPLEMENTED; targeted regression added, CI pending |
+| R-45 | Startup recovery could retire an older terminal spot-entry record before its lifecycle fill was reconciled. If a newer pending entry for the same pair already existed, the guard in `_finalize_terminal_entry` returned success and skipped the older order's cumulative fill. A late partial/full spot fill could therefore be dropped from hedge reconciliation. | Do not retire ENTRY records until lifecycle finalization succeeds. When a terminal entry conflicts with a newer pending entry, or fill finalization cannot complete, explicitly reopen the record as `UNVERIFIED`, keep it in the recovery index, record the pending-recovery reason, and halt new exposure for that pair. A dedicated registry transition bypasses terminal monotonic merge only for this explicit unresolved-recovery case. | FIXED; R-45 regression and current-head CI passed |
 
 ### Latest non-bypass changes reviewed
 
@@ -452,12 +452,13 @@ No additional private CEX create-order endpoint was found in the modular `execut
 
 ### Verification
 
-Before R-45 changes, latest branch head `b699ab2` had GitHub Actions run [43986593318](https://github.com/nzf210/nafaz_arb/actions/runs/43986593318) **SUCCESS**:
-- Python: **710 passed, 4 skipped** (111 warnings, including unknown `integration` markers and deprecations).
+GitHub Actions run [44044178958](https://github.com/nzf210/nafaz_arb/actions/runs/44044178958) completed **SUCCESS** for R-45 head `a3b4e937`:
+- Python executor suite: **711 passed, 4 skipped, 111 warnings**.
 - Disposable PostgreSQL submit-fencing integration: **4 passed**.
-- PostgreSQL migration runner, schema/idempotency/RLS checks, Go tests/race/vet, and Docker builds: all job steps passed.
+- VPS migration runner, schema/idempotency/RLS checks, Go tests/race/vet, and Docker builds: all five jobs passed.
+- The `integration` pytest marker remains unregistered and emits warnings; it did not fail the jobs.
 
-Those results apply to `b699ab2`, **not** to the subsequent R-45 commits. The R-45 targeted regression and full suite must pass on the new head before this remediation is marked verified. No local VPS or live CEX test was performed.
+These results verify the R-45 commits through `a3b4e937`, not the subsequent R-46 remediation. No local VPS or live CEX test was performed.
 
 ### Remaining release gates
 
@@ -468,3 +469,9 @@ Those results apply to `b699ab2`, **not** to the subsequent R-45 commits. The R-
 - Optional de-risk intents can remain Redis/best-effort when the Supabase order-registry writer is disabled; this is a documented restart-recovery trade-off.
 
 **Status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+### R-46 — Missing order registry must not ACK a recovered venue order
+
+| ID | Finding | Remediation | Status |
+|---|---|---|---|
+| R-46 | `_persist_reconciled_submit_order` returned successfully when `order_registry` was `None`. Its caller then marked the durable Global STOP submit attempt `ACKNOWLEDGED`, even though the exact-client-ID venue order had not been attached to a durable lifecycle record. This contradicted the required persist-before-ACK recovery ordering. | Missing registry now raises. The existing recovery exception path records the lookup evidence but leaves the submit attempt in `SUBMITTING/UNKNOWN`; startup remains globally fenced. The successful recovery regression now supplies a fake registry, and a new fake-venue test proves that a missing registry cannot ACK the attempt. | FIX IMPLEMENTED; CI pending |
