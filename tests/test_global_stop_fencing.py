@@ -82,9 +82,14 @@ class _FakeConnection:
             return dict(self.attempts[client_order_id])
         if "where status in ('SUBMITTING','UNKNOWN')" in query:
             current_id = args[0]
+            scope_ex = args[1] if len(args) > 1 else None
+            scope_sym = args[2] if len(args) > 2 else None
             return next(
                 (dict(row) for key, row in self.attempts.items()
-                 if key != current_id and row["status"] in ("SUBMITTING", "UNKNOWN")),
+                 if key != current_id
+                 and row["status"] in ("SUBMITTING", "UNKNOWN")
+                 and (scope_ex is None or str(row.get("exchange", "")).lower() == str(scope_ex).lower())
+                 and (scope_sym is None or str(row.get("symbol", "")).lower() == str(scope_sym).lower())),
                 None,
             )
         if "update public.executor_submit_attempts" in query and "returning client_order_id" in query:
@@ -116,17 +121,17 @@ class _FakePool:
         return _AsyncContext(self.conn)
 
 
-async def _prepare(service, client_order_id, recovery_context=None):
+async def _prepare(service, client_order_id, recovery_context=None, exchange="binance", symbol="BTC/USDT"):
     await service.prepare_submit_attempt(
         client_order_id=client_order_id,
-        exchange="binance",
+        exchange=exchange,
         market_type="spot",
-        symbol="BTC/USDT",
+        symbol=symbol,
         side="buy",
         order_type="limit",
         quantity=0.01,
         price=50000,
-        pair_key="binance__okx__btc",
+        pair_key=f"{exchange}__okx__btc",
         recovery_context=(
             recovery_context if recovery_context is not None else {"test": True}
         ),
@@ -242,6 +247,39 @@ async def test_lost_submit_connection_leaves_durable_row_blocking_next_entry():
 
 
 @pytest.mark.asyncio
+async def test_scoped_submit_fence_allows_different_venue_while_one_unresolved():
+    """Unresolved attempt on venue A does not block scoped entry on venue B."""
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+
+    # Prepare and leave UNKNOWN attempt on mexc:DODO_USDT
+    await _prepare(service, "mexc-dodo-order", exchange="mexc", symbol="DODO_USDT")
+    with pytest.raises(ConnectionError):
+        async with service.order_submit_fence(
+            client_order_id="mexc-dodo-order", scope_exchange="mexc", scope_symbol="DODO_USDT"
+        ):
+            raise ConnectionError("mexc timeout")
+    assert conn.attempts["mexc-dodo-order"]["status"] == "SUBMITTING"
+
+    # Scoped entry on okx:BTC_USDT succeeds despite MEXC unresolved
+    await _prepare(service, "okx-btc-order", exchange="okx", symbol="BTC_USDT")
+    async with service.order_submit_fence(
+        client_order_id="okx-btc-order", scope_exchange="okx", scope_symbol="BTC_USDT"
+    ):
+        pass
+    assert conn.attempts["okx-btc-order"]["status"] == "SUBMITTING"
+
+    # Same venue+symbol (mexc:DODO_USDT) is blocked
+    await _prepare(service, "mexc-dodo-retry", exchange="mexc", symbol="DODO_USDT")
+    with pytest.raises(GlobalStopError, match="unresolved in-flight submit"):
+        async with service.order_submit_fence(
+            client_order_id="mexc-dodo-retry", scope_exchange="mexc", scope_symbol="DODO_USDT"
+        ):
+            pytest.fail("same venue/symbol must be blocked by unresolved attempt")
+
+
+@pytest.mark.asyncio
 async def test_ip_ban_stop_can_be_written_inside_submit_fence():
     conn = _FakeConnection()
     service = GlobalStopService("postgresql://unused")
@@ -349,7 +387,7 @@ class _FakeSpotStop:
     async def prepare_submit_attempt(self, **kwargs):
         self.prepared.append(kwargs)
 
-    def order_submit_fence(self, *, client_order_id, pre_submit_guard=None):
+    def order_submit_fence(self, *, client_order_id, pre_submit_guard=None, **kwargs):
         return _AsyncContext(object())
 
     async def request_stop_in_transaction(self, conn, reason, *, source, metadata):
@@ -473,7 +511,7 @@ class _FakeHedgeStop:
     async def prepare_submit_attempt(self, **kwargs):
         self.prepared.append(kwargs)
 
-    def order_submit_fence(self, *, client_order_id):
+    def order_submit_fence(self, *, client_order_id, **kwargs):
         return _AsyncContext(self.conn)
 
     async def request_stop_in_transaction(self, conn, reason, *, source, metadata):

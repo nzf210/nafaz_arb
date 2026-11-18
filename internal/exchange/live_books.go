@@ -344,7 +344,7 @@ func (l *LiveAdapter) fetchMEXCOrderBook(ctx context.Context, symbol string) (do
 	}
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
 
-	resp, err := l.client.Do(req)
+	resp, err := l.mexcPerpDo(ctx, req)
 	if err != nil {
 		return domain.OrderBook{}, fmt.Errorf("mexc depth request: %w", err)
 	}
@@ -366,11 +366,13 @@ func (l *LiveAdapter) fetchMEXCOrderBook(ctx context.Context, symbol string) (do
 			Timestamp int64   `json:"timestamp"`
 		} `json:"data"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&mexcResp); err != nil {
 		return domain.OrderBook{}, fmt.Errorf("decode mexc depth: %w", err)
 	}
 	if !mexcResp.Success {
+		if mexcResp.Code == 510 || mexcResp.Code == 429 {
+			l.getMEXCPerpLimiter().recordCooldown(mexcPerpDefault510Cooldown, fmt.Sprintf("MEXC error %d", mexcResp.Code))
+		}
 		return domain.OrderBook{}, fmt.Errorf("mexc depth error code: %d", mexcResp.Code)
 	}
 

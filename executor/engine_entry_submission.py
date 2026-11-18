@@ -210,6 +210,24 @@ class EngineEntrySubmissionMixin:
             )
             return
 
+        if isinstance(exc, GlobalStopError):
+            logger.warning(
+                "[Global Stop Fence] Entry blocked for %s on %s: %s",
+                pair_tag, pair_info.local_exchange, exc,
+            )
+            await self._publish_execution_failure(
+                pair_tag,
+                "GLOBAL_STOP_FENCE_BLOCKED",
+                f"Entry ditolak oleh PostgreSQL submit fence: {exc}. Menunggu attempt in-flight selesai.",
+                detail={
+                    "exchange": pair_info.local_exchange,
+                    "symbol": pair_info.local_symbol,
+                    "error_type": type(exc).__name__,
+                    "exchange_error": exchange_error[:1000],
+                },
+            )
+            return
+
         if self._is_explicit_ip_ban(normalized_error):
             reason = "CEX_IP_BLOCK"
             stop_error = None
@@ -312,6 +330,9 @@ class EngineEntrySubmissionMixin:
             "min_notional", "minimum notional", "invalid symbol",
             "unknown symbol", "market is not available",
             "does not have trading permission", '"code":"50123"',
+            '"code":6002', '"code":"6002"', "code: 6002",
+            "position-opening has been restricted", "position opening has been restricted",
+            "trading has been restricted", "account is restricted",
             "http_418", "status code 418", "ip banned", "ip address banned", "banned until",
             "too many requests", "code\":1008", "code: 1008",
         )
@@ -423,6 +444,8 @@ class EngineEntrySubmissionMixin:
                         async with self.global_stop.order_submit_fence(
                             client_order_id=entry_coid,
                             pre_submit_guard=_pair_admission_guard,
+                            scope_exchange=pair_info.local_exchange,
+                            scope_symbol=pair_info.local_symbol,
                         ) as fence_conn:
                             submission_started = True
                             try:

@@ -166,7 +166,7 @@ class _PrepareFailureStop:
     async def prepare_submit_attempt(self, **kwargs):
         raise ConnectionError("PostgreSQL unavailable before futures POST")
 
-    def order_submit_fence(self, *, client_order_id):
+    def order_submit_fence(self, *, client_order_id, **kwargs):
         raise AssertionError("submit fence must not be entered after PREPARED failure")
 
 

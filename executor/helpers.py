@@ -127,6 +127,11 @@ def is_trading_permission_denied(exc: Exception) -> bool:
         for marker in (
             '"code":"50123"', "code: 50123", "does not have trading permission",
             '"code":"50101"', "code: 50101",
+            '"code":6002', '"code":"6002"', "code: 6002",
+            "position-opening has been restricted",
+            "position opening has been restricted",
+            "trading has been restricted",
+            "account is restricted",
             "api key does not have trading permission",
             "apikey does not match current environment",
             "invalid api key", "api key is invalid",

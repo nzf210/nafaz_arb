@@ -1024,3 +1024,35 @@ async def test_slot_exhausted_does_not_increment_order_failures(engine):
     assert engine._consecutive_order_failures.get("tokocrypto", 0) == initial_failures
     assert "tokocrypto" not in engine._exchange_halted
 
+
+@pytest.mark.asyncio
+async def test_global_stop_fence_does_not_increment_order_failures(engine):
+    """GlobalStopError from in-flight fence must NOT increment venue failure breaker."""
+    from unittest.mock import MagicMock
+    from executor.global_stop import GlobalStopError
+    pair_tag = "indodax:dodo_idr__okx:dodo_usdt_swap"
+    pair_info = MagicMock()
+    pair_info.local_exchange = "indodax"
+    pair_info.local_symbol = "dodo_idr"
+
+    initial_failures = engine._consecutive_order_failures.get("indodax", 0)
+    exc = GlobalStopError(
+        "unresolved in-flight submit blocks new entries: mexc:DODO_USDT client_order_id=xyz status=UNKNOWN"
+    )
+
+    await engine._handle_entry_submission_failure(pair_tag, pair_info, 10.0, exc)
+
+    assert engine._consecutive_order_failures.get("indodax", 0) == initial_failures
+    assert "indodax" not in engine._exchange_halted
+
+
+@pytest.mark.asyncio
+async def test_mexc_6002_classified_as_trading_permission_denied():
+    """MEXC code 6002 futures position-opening restriction must be recognized immediately."""
+    from executor.helpers import is_trading_permission_denied
+    exc = Exception(
+        'mexc {"success":false,"code":6002,"message":"Your futures position-opening has been restricted. Please check your email or in-app message for details."}'
+    )
+    assert is_trading_permission_denied(exc) is True
+
+

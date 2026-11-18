@@ -369,6 +369,17 @@ class RollbackMixin:
 
     async def _resolve_zero_fill_hedge_intent(self, exchange: str, client_order_id: str) -> None:
         """Close the durable submit intent after venue absence is independently proven."""
+        global_stop = getattr(self, "global_stop", None)
+        if global_stop is not None and client_order_id:
+            try:
+                await global_stop.mark_submit_rejected(
+                    client_order_id, "hedge absent and futures position flat"
+                )
+            except Exception:
+                logger.debug(
+                    "[Hedge Reconciliation] could not mark submit attempt rejected for %s",
+                    client_order_id,
+                )
         registry = getattr(self, "order_registry", None)
         if registry is None or not exchange or not client_order_id:
             return

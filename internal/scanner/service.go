@@ -1076,9 +1076,14 @@ func (s *Service) buildOpportunity(
 	if sizing.makerTaker {
 		spotEntryFeePct = fees.spotMakerPct
 	}
+	moduleID := "spot_" + strings.ToLower(strings.TrimSpace(sm.QuoteAsset))
+	if moduleID == "spot_" {
+		moduleID = "spot_default"
+	}
 	return domain.Opportunity{
-		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
-		SpotEntryFeePct:        spotEntryFeePct,
+		OpportunityKey:       fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
+		ModuleID:             moduleID,
+		SpotEntryFeePct:      spotEntryFeePct,
 		SpotExitFeePct:         fees.spotTakerPct,
 		PerpEntryFeePct:        fees.perpTakerPct,
 		PerpExitFeePct:         fees.perpTakerPct,

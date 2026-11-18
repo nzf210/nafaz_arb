@@ -284,7 +284,9 @@ class GlobalStopService:
 
     @asynccontextmanager
     async def order_submit_fence(
-        self, *, client_order_id: str, pre_submit_guard: Optional[Any] = None
+        self, *, client_order_id: str, pre_submit_guard: Optional[Any] = None,
+        scope_exchange: Optional[str] = None,
+        scope_symbol: Optional[str] = None,
     ) -> AsyncIterator[Any]:
         """Hold a session advisory lock across a durable SUBMITTING venue request.
 
@@ -295,6 +297,9 @@ class GlobalStopService:
         shared session lock but before changing the durable attempt to
         SUBMITTING. A false result or guard error fails closed while leaving the
         attempt PREPARED, so the caller can safely mark it ABORTED.
+        When ``scope_exchange`` and ``scope_symbol`` are provided, unresolved
+        in-flight attempts block only submissions sharing the same venue/symbol,
+        preventing an ambiguous submit on one exchange from freezing unrelated venues.
         """
         if not await self.ensure_pool():
             raise GlobalStopError("PostgreSQL STOP fencing is unavailable; create-order blocked")
@@ -341,12 +346,21 @@ class GlobalStopService:
                             raise GlobalStopError(
                                 f"global STOP active (epoch={control['epoch']} reason={control['reason'] or 'unspecified'})"
                             )
-                        unresolved = await conn.fetchrow(
-                            "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
-                            "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
-                            "order by created_at limit 1",
-                            client_order_id,
-                        )
+                        if scope_exchange and scope_symbol:
+                            unresolved = await conn.fetchrow(
+                                "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
+                                "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
+                                "and exchange = $2 and symbol = $3 "
+                                "order by created_at limit 1",
+                                client_order_id, str(scope_exchange).lower(), str(scope_symbol),
+                            )
+                        else:
+                            unresolved = await conn.fetchrow(
+                                "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
+                                "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
+                                "order by created_at limit 1",
+                                client_order_id,
+                            )
                         if unresolved is not None:
                             raise GlobalStopError(
                                 "unresolved in-flight submit blocks new entries: "

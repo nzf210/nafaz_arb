@@ -238,3 +238,28 @@ func TestTokocryptoLimiter429Cooldown(t *testing.T) {
 	}
 }
 
+func TestMEXCPerpLimiter510Cooldown(t *testing.T) {
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"success":false,"code":510,"message":"too many requests"}`))
+	}))
+	defer server.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", "", server.URL, "", "")
+
+	if _, err := adapter.PerpetualOrderBook(context.Background(), "mexc:BTC_USDT"); err == nil {
+		t.Fatal("expected 510 error")
+	}
+	if _, err := adapter.PerpetualOrderBook(context.Background(), "mexc:ETH_USDT"); err == nil || !strings.Contains(err.Error(), "cooldown active") {
+		t.Fatalf("expected cooldown active error on second call, got: %v", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("expected only 1 HTTP request before cooldown blocked follow-ups, got %d", got)
+	}
+}
+
+

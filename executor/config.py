@@ -1,7 +1,20 @@
 import os
 import json
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+
+
+@dataclass
+class ExecutionModuleConfig:
+    """Config for a currency/quote execution module (e.g. spot_idr, spot_usdt)."""
+    id: str
+    quote: str
+    spot_venues: List[str] = field(default_factory=list)
+    hedge_venues: List[str] = field(default_factory=list)
+    enabled: bool = True
+    capital_usdt: float = 0.0
+    max_position_usdt: float = 0.0
+    max_slots_per_venue: int = 1
 
 
 @dataclass
@@ -169,6 +182,24 @@ class ExecutorConfig:
     hedging: HedgingConfig = field(default_factory=HedgingConfig)
     # Direct PostgreSQL DSN for transactional global STOP and submit fencing.
     postgres_dsn: str = ""
+    # Execution modules keyed by module ID (e.g. "spot_idr", "spot_usdt").
+    modules: Dict[str, ExecutionModuleConfig] = field(default_factory=dict)
+
+    def module_for(self, spot_venue: str, quote: str) -> Optional[ExecutionModuleConfig]:
+        """Resolves the execution module configured for a (spot_venue, quote) pair."""
+        norm_venue = str(spot_venue or "").strip().lower()
+        norm_quote = str(quote or "").strip().upper()
+        for mod in self.modules.values():
+            if norm_quote == mod.quote.upper() and norm_venue in [v.lower() for v in mod.spot_venues]:
+                return mod
+        # Dynamic fallback module by quote when no explicit modules configured
+        fallback_id = f"spot_{norm_quote.lower()}"
+        return ExecutionModuleConfig(
+            id=fallback_id,
+            quote=norm_quote,
+            spot_venues=[norm_venue] if norm_venue else [],
+            enabled=True,
+        )
 
     def _apply_file(self, config_path: str) -> None:
         if not os.path.exists(config_path):
@@ -306,6 +337,21 @@ class ExecutorConfig:
                         attr, conv = spec
                         if top_key in hed:
                             setattr(self.hedging, attr, conv(hed[top_key]))
+
+            # Load execution modules dictionary if present
+            if "modules" in data and isinstance(data["modules"], dict):
+                for mod_id, mod_data in data["modules"].items():
+                    if isinstance(mod_data, dict):
+                        self.modules[str(mod_id)] = ExecutionModuleConfig(
+                            id=str(mod_id),
+                            quote=str(mod_data.get("quote", "USDT")).upper(),
+                            spot_venues=[str(v).lower() for v in mod_data.get("spot_venues", [])],
+                            hedge_venues=[str(v).lower() for v in mod_data.get("hedge_venues", [])],
+                            enabled=bool(mod_data.get("enabled", True)),
+                            capital_usdt=float(mod_data.get("capital_usdt", 0.0) or 0.0),
+                            max_position_usdt=float(mod_data.get("max_position_usdt", 0.0) or 0.0),
+                            max_slots_per_venue=int(mod_data.get("max_slots_per_venue", 1) or 1),
+                        )
         except Exception as e:
             print(f"warning: error loading config file: {e}")
 

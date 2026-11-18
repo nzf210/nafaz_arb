@@ -66,6 +66,8 @@ type LiveAdapter struct {
 	indodaxLimiterOnce    sync.Once
 	mexcSpotLimiter       *venueLimiter
 	mexcSpotLimiterOnce   sync.Once
+	mexcPerpLimiter       *venueLimiter
+	mexcPerpLimiterOnce   sync.Once
 	tokocryptoLimiter     *venueLimiter
 	tokocryptoLimiterOnce sync.Once
 	indodaxBooks          *IndodaxBookManager

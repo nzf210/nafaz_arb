@@ -23,7 +23,10 @@ const (
 	mexcSpotMaxConcurrent        = 4
 	mexcSpotDefaultRatePerSec    = 10.0
 	mexcSpotDefaultBurst         = 10
-
+	mexcPerpMaxConcurrent       = 4
+	mexcPerpDefaultRatePerSec   = 10.0
+	mexcPerpDefaultBurst        = 10
+	mexcPerpDefault510Cooldown  = 10 * time.Second
 	tokocryptoMaxConcurrent     = 6
 	tokocryptoDefaultRatePerSec = 15.0
 	tokocryptoDefaultBurst      = 15
@@ -78,6 +81,22 @@ func (l *venueLimiter) checkBlocked() error {
 	return nil
 }
 
+func (l *venueLimiter) recordCooldown(cooldown time.Duration, reason string) {
+	if cooldown <= 0 {
+		return
+	}
+	if cooldown > indodaxMaxCooldown {
+		cooldown = indodaxMaxCooldown
+	}
+	until := l.now().Add(cooldown)
+	l.mu.Lock()
+	if until.After(l.blockedUntil) {
+		l.blockedUntil = until
+		l.blockReason = reason
+	}
+	l.mu.Unlock()
+}
+
 func (l *venueLimiter) recordHTTPStatus(status int, retryAfter string) {
 	if status != http.StatusForbidden && status != http.StatusTooManyRequests {
 		return
@@ -90,16 +109,7 @@ func (l *venueLimiter) recordHTTPStatus(status int, retryAfter string) {
 			cooldown = indodaxDefault429Cooldown
 		}
 	}
-	if cooldown > indodaxMaxCooldown {
-		cooldown = indodaxMaxCooldown
-	}
-	until := l.now().Add(cooldown)
-	l.mu.Lock()
-	if until.After(l.blockedUntil) {
-		l.blockedUntil = until
-		l.blockReason = fmt.Sprintf("HTTP %d", status)
-	}
-	l.mu.Unlock()
+	l.recordCooldown(cooldown, fmt.Sprintf("HTTP %d", status))
 }
 
 func parseRetryAfterDuration(raw string, now time.Time) time.Duration {
@@ -185,6 +195,13 @@ func (l *LiveAdapter) getMEXCSpotLimiter() *venueLimiter {
 	return l.mexcSpotLimiter
 }
 
+func (l *LiveAdapter) getMEXCPerpLimiter() *venueLimiter {
+	l.mexcPerpLimiterOnce.Do(func() {
+		l.mexcPerpLimiter = newVenueLimiter("mexc_perp", mexcPerpMaxConcurrent, mexcPerpDefaultRatePerSec, mexcPerpDefaultBurst)
+	})
+	return l.mexcPerpLimiter
+}
+
 func (l *LiveAdapter) indodaxDo(ctx context.Context, req *http.Request) (*http.Response, error) {
 	lim := l.getIndodaxLimiter()
 	if err := lim.acquire(ctx); err != nil {
@@ -233,3 +250,18 @@ func (l *LiveAdapter) tokocryptoDo(ctx context.Context, req *http.Request) (*htt
 	lim.recordHTTPStatus(resp.StatusCode, resp.Header.Get("Retry-After"))
 	return resp, nil
 }
+
+func (l *LiveAdapter) mexcPerpDo(ctx context.Context, req *http.Request) (*http.Response, error) {
+	lim := l.getMEXCPerpLimiter()
+	if err := lim.acquire(ctx); err != nil {
+		return nil, err
+	}
+	resp, err := l.client.Do(req)
+	lim.release()
+	if err != nil {
+		return nil, err
+	}
+	lim.recordHTTPStatus(resp.StatusCode, resp.Header.Get("Retry-After"))
+	return resp, nil
+}
+

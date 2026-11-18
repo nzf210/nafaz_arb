@@ -177,7 +177,7 @@ class _FakeGatewayStop:
         self.prepared.append(kwargs)
         self.statuses[kwargs["client_order_id"]] = "PREPARED"
 
-    def order_submit_fence(self, *, client_order_id):
+    def order_submit_fence(self, *, client_order_id, **kwargs):
         return _GatewayFence(self, client_order_id)
 
     async def mark_submit_acknowledged(self, client_order_id, order):

@@ -128,6 +128,19 @@ class ExchangePairKey:
             f"__{self.global_exchange}:{self.global_symbol.replace('/', '_')}"
         )
 
+    @property
+    def quote_asset(self) -> str:
+        """The spot quote asset (e.g. IDR, USDT)."""
+        parts = self.local_symbol.split("/", 1)
+        return parts[1] if len(parts) > 1 else ""
+
+    @property
+    def module_id(self) -> str:
+        """Canonical execution module ID inferred from quote asset (e.g. spot_idr, spot_usdt)."""
+        quote = self.quote_asset.lower()
+        return f"spot_{quote}" if quote else "spot_default"
+
+
 
 class PairClientRegistry:
     """Resolves a client only for its exact local+global venue/symbol tuple."""

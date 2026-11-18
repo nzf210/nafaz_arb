@@ -371,6 +371,27 @@ class RiskStateMixin:
             return True
         return False
 
+    def pause_module(self, module_id: str, reason: str = "MANUAL") -> None:
+        """Pauses new entries for a specific quote module (e.g. spot_idr, spot_usdt)."""
+        mod = str(module_id or "").strip().lower()
+        if not mod:
+            return
+        halts = getattr(self, "_module_halted", None)
+        if halts is None:
+            self._module_halted = halts = {}
+        halts[mod] = reason
+        logger.warning(f"[Risk Control] Module {mod} PAUSED: {reason}")
+
+    def resume_module(self, module_id: str, reason: str = "MANUAL") -> bool:
+        """Resumes new entries for a specific quote module."""
+        mod = str(module_id or "").strip().lower()
+        halts = getattr(self, "_module_halted", None) or {}
+        if mod in halts:
+            del halts[mod]
+            logger.warning(f"[Risk Control] Module {mod} RESUMED ({reason})")
+            return True
+        return False
+
     def _pause_venue_for_cooldown(self, exchange: str, seconds: float) -> None:
         """Pauses new entries on a venue for a bounded cooldown, then auto-clears.
 

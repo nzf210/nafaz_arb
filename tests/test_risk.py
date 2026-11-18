@@ -38,7 +38,7 @@ class _RiskGlobalStop:
     async def prepare_submit_attempt(self, **kwargs):
         self.statuses[kwargs["client_order_id"]] = "PREPARED"
 
-    def order_submit_fence(self, *, client_order_id, pre_submit_guard=None):
+    def order_submit_fence(self, *, client_order_id, pre_submit_guard=None, **kwargs):
         # This fixture isolates venue-error classification; pair admission is
         # covered by the dedicated PostgreSQL submit-fence integration test.
         return _RiskFence(self, client_order_id)
@@ -749,3 +749,14 @@ async def test_venue_cooldown_task_propagates_cancellation(engine):
 
     # Cancellation must not accidentally clear the active venue halt.
     assert "indodax" in engine._exchange_halted
+
+
+def test_module_pause_and_resume_scoped_by_quote(engine):
+    """Pausing spot_idr module blocks IDR pairs while leaving USDT pairs unblocked."""
+    engine.pause_module("spot_idr", "maintenance")
+    assert "spot_idr: maintenance" in engine._venue_halted_reason("indodax:btc_idr")
+    assert engine._venue_halted_reason("tokocrypto:btc_usdt") == ""
+
+    assert engine.resume_module("spot_idr") is True
+    assert engine._venue_halted_reason("indodax:btc_idr") == ""
+

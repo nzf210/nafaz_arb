@@ -639,7 +639,9 @@ class EntryHedgeMixin:
                 ip_ban_state = None
                 try:
                     async with global_stop.order_submit_fence(
-                        client_order_id=hedge_coid
+                        client_order_id=hedge_coid,
+                        scope_exchange=str(order_info.get("global_exchange") or ""),
+                        scope_symbol=global_symbol,
                     ) as fence_conn:
                         order_info["hedge_submit_started"] = True
                         try:
@@ -1095,15 +1097,12 @@ class EntryHedgeMixin:
                     f"pre-submit hedge failure: {type(he).__name__}: {he}"
                 )
             global_exchange = str(order_info.get("global_exchange", ""))
-            if global_exchange:
-                self._record_order_failure(
-                    global_exchange, "hedge order placement failed"
-                )
-            # A key-permission refusal is a definitive venue response: the short
-            # was never created, so the spot leg must be unwound immediately and
+            # A key-permission refusal or trading restriction is a definitive venue response:
+            # the short was never created, so the spot leg must be unwound immediately and
             # the venue stopped rather than retried on the next signal.
             if is_trading_permission_denied(he):
-                self._halt_hedge_venue_permission(global_exchange, he)
+                if global_exchange:
+                    self._halt_hedge_venue_permission(global_exchange, he)
                 if order_info.get("hedge_submit_started"):
                     try:
                         await self._mark_order_submission_rejected(
@@ -1121,6 +1120,10 @@ class EntryHedgeMixin:
                     price_idr, usdt_rate, he,
                 )
                 return
+            if global_exchange:
+                self._record_order_failure(
+                    global_exchange, "hedge order placement failed"
+                )
             if order_info.get("hedge_submit_started"):
                 hedge_client_id = str(
                     order_info.get("pending_hedge_client_order_id") or ""
@@ -1144,6 +1147,15 @@ class EntryHedgeMixin:
                         pair_tag, verification_reason,
                     )
                     order_info["hedge_submit_started"] = False
+                    try:
+                        await self._mark_order_submission_rejected(
+                            global_exchange, hedge_client_id
+                        )
+                    except Exception:
+                        logger.debug(
+                            "[Hedge Rollback] could not retire rejected hedge intent for %s: %s",
+                            pair_tag, hedge_client_id,
+                        )
                     await self._rollback_hedge_failure(
                         pair_tag, order_info, unhedged_delta,
                         price_idr, usdt_rate, he,

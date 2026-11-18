@@ -367,4 +367,18 @@ class RiskExposureMixin:
             return f"{local_ex}: {self._exchange_halted[local_ex]}"
         if global_ex and global_ex in self._exchange_halted:
             return f"{global_ex}: {self._exchange_halted[global_ex]}"
+
+        # Module-scoped pause/halt (e.g. spot_idr, spot_usdt)
+        module_halts = getattr(self, "_module_halted", None) or {}
+        if module_halts:
+            pair_info = getattr(self, "_pair_infos", {}).get(pair_tag) if pair_tag else None
+            quote = ""
+            if pair_info is not None and getattr(pair_info, "quote_asset", None):
+                quote = str(pair_info.quote_asset).strip().lower()
+            elif pair_tag and "_" in pair_tag:
+                quote = pair_tag.split("__")[0].split("_")[-1].lower()
+            mod_id = f"spot_{quote}" if quote else ""
+            if mod_id and mod_id in module_halts:
+                return f"{mod_id}: {module_halts[mod_id]}"
+
         return ""
