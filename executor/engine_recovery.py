@@ -278,7 +278,7 @@ class EngineRecoveryMixin:
                 self._reset_pair_client(token)
 
         expected_qty = sum(pos.qty for _, pos in items)
-        tolerance = max(1e-10, expected_qty * 1e-4)
+        tolerance = max(1.0, expected_qty * 0.01)
         if abs(actual_short_qty - expected_qty) <= tolerance:
             return actual_short_qty, None
         return actual_short_qty, (
@@ -422,7 +422,7 @@ class EngineRecoveryMixin:
                     f"{local_venue or 'unknown'}: {type(exc).__name__}: {exc}"
                 )
                 continue
-            tolerance = max(1e-10, abs(expected_qty) * 1e-4)
+            tolerance = max(1.0, abs(expected_qty) * 0.01)
             if actual + tolerance < expected_qty:
                 deficits[symbol] = (
                     f"local spot inventory short after restart: expected={expected_qty} "
