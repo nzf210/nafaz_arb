@@ -288,27 +288,37 @@ class ExchangeFeeBalanceMixin:
             ),
         }
 
-    async def fetch_spot_free_balance(self, asset: str) -> float:
+    async def fetch_spot_free_balance(self, asset: str, venue: Optional[str] = None) -> float:
         """Free balance of one spot asset, in base units.
 
-        Used by the hedge rollback: the venue only lets us sell what is free
-        right now, so the emergency unwind must size to this rather than to the
-        theoretically unhedged delta.
+        Used by hedge rollback: the venue only lets us sell what is free
+        right now, so an emergency unwind must size to that rather than to
+        a theoretically unhedged delta.
         """
         symbol = str(asset or "").strip().upper()
         if not symbol:
-            raise ValueError("asset is required to read a spot free balance")
-        raw = await self.local.fetch_balance()
+            raise ValueError("asset is required to read spot free balance")
+        client = self.local
+        if venue:
+            v_entry = self.balance_exchanges.get(str(venue).lower())
+            if v_entry and v_entry.get("client"):
+                client = v_entry["client"]
+        raw = await client.fetch_balance()
         if not isinstance(raw, dict):
             raise ValueError("exchange returned an invalid balance payload")
         return self._balance_amount(raw, symbol, "free")
 
-    async def fetch_spot_total_balance(self, asset: str) -> float:
+    async def fetch_spot_total_balance(self, asset: str, venue: Optional[str] = None) -> float:
         """Total (free + used) balance of one spot asset, in base units."""
         symbol = str(asset or "").strip().upper()
         if not symbol:
-            raise ValueError("asset is required to read a spot total balance")
-        raw = await self.local.fetch_balance()
+            raise ValueError("asset is required to read spot total balance")
+        client = self.local
+        if venue:
+            v_entry = self.balance_exchanges.get(str(venue).lower())
+            if v_entry and v_entry.get("client"):
+                client = v_entry["client"]
+        raw = await client.fetch_balance()
         if not isinstance(raw, dict):
             raise ValueError("exchange returned an invalid balance payload")
         return self._balance_amount(raw, symbol, "total")

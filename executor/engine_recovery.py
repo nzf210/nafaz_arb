@@ -411,7 +411,10 @@ class EngineRecoveryMixin:
         for (local_venue, base_asset, pair_tag), expected_qty in expected.items():
             symbol = symbols_by_key[(local_venue, base_asset, pair_tag)]
             try:
-                actual = await balance_of(base_asset)
+                try:
+                    actual = await balance_of(base_asset, venue=local_venue)
+                except TypeError:
+                    actual = await balance_of(base_asset)
                 actual = float(actual)
             except Exception as exc:
                 deficits[symbol] = (
