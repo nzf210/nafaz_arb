@@ -132,7 +132,7 @@ class EngineEntryFlowMixin:
             value = int(limits.get(str(exchange).strip().lower(), 2))
         except (TypeError, ValueError):
             value = 2
-        return min(100, max(1, value))
+        return min(100, max(0, value))
 
     def _spot_open_order_count(self, exchange: str) -> int:
         """Count distinct spot pairs with an open position or pending entry."""
@@ -241,7 +241,17 @@ class EngineEntryFlowMixin:
             return
 
         exchange = str(payload.pair_info.local_exchange or "").strip().lower()
+        quote_asset = str(payload.pair_info.quote_asset or "").strip().lower()
+        if quote_asset in ("bidr", "idr"):
+            quote_key = "idr"
+        elif quote_asset in ("usdt", "usdc"):
+            quote_key = "usdt"
+        else:
+            quote_key = quote_asset
+        scoped_key = f"{exchange}:{quote_key}" if quote_key else exchange
+
         async with self._spot_exchange_entry_lock(exchange):
+            # Check venue-level limit
             current_open = self._spot_open_order_count(exchange)
             max_open = self._spot_order_limit(exchange)
             if current_open >= max_open:
@@ -250,6 +260,17 @@ class EngineEntryFlowMixin:
                     pair_tag, exchange, current_open, max_open,
                 )
                 return
+
+            # Check quote-scoped limit (e.g. indodax:idr, indodax:usdt)
+            if scoped_key != exchange:
+                current_scoped = self._spot_open_order_count(scoped_key)
+                max_scoped = self._spot_order_limit(scoped_key)
+                if current_scoped >= max_scoped:
+                    logger.info(
+                        "[Entry] skipping %s: %s already has %d/%d open spot positions or pending entries",
+                        pair_tag, scoped_key, current_scoped, max_scoped,
+                    )
+                    return
 
             if not await self._validate_entry_spread(pair_tag, payload):
                 return

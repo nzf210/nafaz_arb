@@ -656,7 +656,7 @@ class EngineRuntimeMixin:
         except (TypeError, ValueError):
             logger.warning("ignoring invalid spot order limit for %s: %r", key, raw_limit)
             return False
-        if limit < 1 or limit > 100:
+        if limit < 0 or limit > 100:
             logger.warning("ignoring out-of-range spot order limit for %s: %r", key, raw_limit)
             return False
         limits = getattr(self.config, "max_open_spot_orders_per_exchange", None)

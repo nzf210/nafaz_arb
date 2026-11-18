@@ -81,7 +81,7 @@ class OrderSlotManager:
             venue, account = venue.split(":", 1)
             venue = venue.lower().strip()
             account = account.lower().strip()
-        max_slots = max(1, int(max_slots))
+        max_slots = max(0, int(max_slots))
         self._mem_max_slots[(venue, account)] = max_slots
         if self.pool is not None:
             now = datetime.now(timezone.utc)
@@ -120,6 +120,10 @@ class OrderSlotManager:
             return -1
 
         max_slots = await self.get_max_slots(venue, account)
+        if max_slots <= 0:
+            raise SlotExhaustedError(
+                f"Spot order placement is disabled on {venue}:{account} (max_slots={max_slots})"
+            )
         reservation_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc)
 
