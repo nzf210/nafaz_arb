@@ -20,6 +20,8 @@ class EntryMonitoringMixin:
                 await self._check_entry_orders()
                 await self._check_dynamic_exits()
                 await self._check_exit_orders()
+                if getattr(self, "order_sync_worker", None) is not None:
+                    await self.order_sync_worker.maybe_sync()
                 await self._maybe_publish_status()
             except Exception:
                 logger.exception("error in monitoring loop")
@@ -168,7 +170,10 @@ class EntryMonitoringMixin:
                 submitted_at_ms=int(float(order_info.get("placed_time", 0.0) or 0.0) * 1000) or None,
             )
             observed_status = str(order.get("status", "")).lower()
-            if observed_status in ("closed", "canceled", "cancelled", "rejected", "expired"):
+            is_terminal_status = observed_status in (
+                "closed", "canceled", "cancelled", "rejected", "expired",
+            )
+            if is_terminal_status:
                 self.supabase.event(
                     "ENTRY_ORDER_TERMINAL_OBSERVED",
                     pair_key=pair_tag,
@@ -184,6 +189,16 @@ class EntryMonitoringMixin:
                         "cancel_requested_at_ms": order_info.get("cancel_requested_at_ms"),
                         "cancel_reason": order_info.get("last_cancel_reason"),
                     },
+                )
+            sync_entry = getattr(self, "_sync_entry_order_record", None)
+            if callable(sync_entry):
+                await sync_entry(
+                    str(order_info.get("local_exchange") or ""),
+                    str(order_id or ""),
+                    order_info.get("client_order_id"),
+                    float(order.get("filled", 0.0) or 0.0),
+                    status=observed_status or "open",
+                    retire=False,
                 )
             await self._handle_entry_fills(pair_tag, order_info, order)
             # Persist cumulative fill/hedge progress before the next poll or

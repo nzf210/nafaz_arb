@@ -63,10 +63,13 @@ class EntryHedgeMixin:
             cumulative_spot_filled, hedged_qty, _hedge_ratio
         )
 
-        # Extend Redis TTL on partial fill so pending order record does not expire
+        # Extend Redis TTL on partial fill so pending order record does not expire.
+        # Keep placed_time immutable so order age and status timestamps remain accurate.
         if current_filled > 0 and getattr(self, "redis", None):
             ttl = int(getattr(getattr(self, "config", None), "max_order_ttl_seconds", 120) or 120)
-            order_info["placed_time"] = time.time()
+            if not order_info.get("placed_time"):
+                order_info["placed_time"] = time.time()
+            order_info["last_fill_time"] = time.time()
             key = f"arb:pending_entry:{pair_tag}"
             payload = json.dumps(order_info)
             if hasattr(self.redis, "setex"):
@@ -1391,5 +1394,25 @@ class EntryHedgeMixin:
             # Only reached when residual == 0 and no UNKNOWN submission: the
             # hedge target is fully covered.
             self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+            sync_entry = getattr(self, "_sync_entry_order_record", None)
+            if callable(sync_entry):
+                await sync_entry(
+                    str(order_info.get("local_exchange") or ""),
+                    str(order_info.get("order_id") or ""),
+                    order_info.get("client_order_id"),
+                    cumulative_filled,
+                    status=status,
+                    retire=True,
+                )
             return
         self.states[pair_tag] = PositionState.IDLE
+        sync_entry = getattr(self, "_sync_entry_order_record", None)
+        if callable(sync_entry):
+            await sync_entry(
+                str(order_info.get("local_exchange") or ""),
+                str(order_info.get("order_id") or ""),
+                order_info.get("client_order_id"),
+                cumulative_filled,
+                status=status,
+                retire=True,
+            )

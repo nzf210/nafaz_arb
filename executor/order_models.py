@@ -38,6 +38,15 @@ class RecoveryStatus(Enum):
     ORPHAN_ORDER = "ORPHAN_ORDER"  # active on the venue, no bot position to attach to
     PHANTOM = "PHANTOM"            # recorded locally but absent at the venue
 
+
+class OrderLifecycleState(Enum):
+    """Internal bot processing state, separated from CEX venue_status."""
+
+    ACTIVE_TRACKING = "ACTIVE_TRACKING"
+    AWAITING_HEDGE = "AWAITING_HEDGE"
+    RECONCILED = "RECONCILED"
+    MANUAL_REQUIRED = "MANUAL_REQUIRED"
+
 # ccxt status vocabulary plus indodax v2 labels mapped by the adapter.
 TERMINAL_FILLED_STATUSES = ("closed", "filled")
 TERMINAL_CANCELED_STATUSES = ("canceled", "cancelled", "rejected", "expired")
@@ -134,6 +143,12 @@ class OrderRecord:
     # Quantity already hedged against this entry's fills. Without it, a restart
     # that re-reads the same fill would submit a second hedge for the same spot.
     hedged_quantity: float = 0.0
+    # Monotonic venue-level status ("open", "closed", "canceled", etc.) and
+    # internal processing lifecycle state ("ACTIVE_TRACKING", "AWAITING_HEDGE",
+    # "RECONCILED", "MANUAL_REQUIRED") so retaining a filled order for manual
+    # reconciliation never erases the fact that the CEX order is already terminal.
+    venue_status: str = ""
+    lifecycle_state: str = OrderLifecycleState.ACTIVE_TRACKING.value
     created_at: int = field(default_factory=lambda: int(time.time() * 1000))
     updated_at: int = field(default_factory=lambda: int(time.time() * 1000))
     last_reconciled_at: int = 0
@@ -147,6 +162,15 @@ class OrderRecord:
     @property
     def is_terminal(self) -> bool:
         return self.status in TERMINAL_FILLED_STATUSES + TERMINAL_CANCELED_STATUSES
+
+    @property
+    def is_venue_terminal(self) -> bool:
+        v_status = str(self.venue_status or self.status or "").strip().lower()
+        return v_status in TERMINAL_FILLED_STATUSES + TERMINAL_CANCELED_STATUSES
+
+    @property
+    def is_manual_required(self) -> bool:
+        return self.lifecycle_state == OrderLifecycleState.MANUAL_REQUIRED.value
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -168,6 +192,8 @@ class OrderRecord:
             "remaining_quantity": self.remaining_quantity,
             "average_fill_price": self.average_fill_price,
             "status": self.status,
+            "venue_status": self.venue_status or self.status,
+            "lifecycle_state": self.lifecycle_state,
             "reduce_only": self.reduce_only,
             "is_mock": self.is_mock,
             "recovery_status": self.recovery_status,
@@ -182,6 +208,7 @@ class OrderRecord:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "OrderRecord":
+        status_val = _record_string(d, "status", "open")
         record = cls(
             local_order_id=_record_string(d, "local_order_id"),
             client_order_id=_record_string(d, "client_order_id"),
@@ -200,7 +227,11 @@ class OrderRecord:
             filled_quantity=_record_float(d, "filled_quantity"),
             remaining_quantity=_record_float(d, "remaining_quantity"),
             average_fill_price=_record_float(d, "average_fill_price"),
-            status=_record_string(d, "status", "open"),
+            status=status_val,
+            venue_status=_record_string(d, "venue_status", status_val),
+            lifecycle_state=_record_string(
+                d, "lifecycle_state", OrderLifecycleState.ACTIVE_TRACKING.value
+            ),
             reduce_only=bool(d.get("reduce_only", False)),
             is_mock=bool(d.get("is_mock", True)),
             recovery_status=_record_string(

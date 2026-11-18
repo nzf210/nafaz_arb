@@ -2432,3 +2432,188 @@ def test_record_accepted_client_ids_uses_global_fut_for_perpetual_orders():
     accepted = _record_accepted_client_ids(record, owner)
     assert okx_wire_id in accepted
 
+
+@pytest.mark.asyncio
+async def test_zero_fill_older_terminal_entry_is_retired_without_halting_newer_entry(fake_redis):
+    """A canceled 0-fill older entry must be retired cleanly without halting a newer pending entry."""
+    client = MockExchangeClient()
+    client.orders["927718605"] = _venue_order(
+        id="927718605",
+        clientOrderId="toko-spx-entry-old",
+        filled=0.0,
+        status="canceled",
+    )
+    engine = await _build(fake_redis, client)
+    older = _entry_record(
+        client_order_id="toko-spx-entry-old",
+        exchange_order_id="927718605",
+        status="open",
+        filled_quantity=0.0,
+        remaining_quantity=38.0,
+    )
+    await engine.order_registry.register(older)
+
+    newer_pending = {
+        "order_id": "927718920",
+        "client_order_id": "toko-spx-entry-new",
+        "symbol": "toko:SPX_IDR",
+        "global_symbol": "SPX-USDT-SWAP",
+        "local_exchange": "tokocrypto",
+        "global_exchange": "okx",
+        "qty": 37.0,
+        "filled": 0.0,
+        "hedged_short_qty": 0.0,
+    }
+    engine.pending_entry_orders[PAIR_TAG] = newer_pending
+    engine.states[PAIR_TAG] = PositionState.ENTRY_PENDING
+
+    await engine._reconcile_registered_order(older, "indodax", "btc_idr")
+
+    assert engine.states[PAIR_TAG] == PositionState.ENTRY_PENDING
+    assert PAIR_TAG not in engine._recovery_scope_halts
+    assert older.local_order_id not in await engine.order_registry.pending_recovery_ids()
+    assert older.local_order_id not in await engine.order_registry.active_records()
+
+
+@pytest.mark.asyncio
+async def test_rollback_strips_toko_venue_prefix_and_no_ghost_intent_on_zero_balance(fake_redis):
+    """_sellable_spot_quantity strips 'toko:' prefix and 0-balance rollback leaves no ghost intent."""
+    client = MockExchangeClient()
+    client.set_spot_balance("SPX", 37.0)
+    engine = _engine(fake_redis, client=client, mock_mode=True)
+
+    sellable = await engine._sellable_spot_quantity(
+        "toko:SPX_IDR",
+        37.0,
+        AmountSpec("BASE", 0.01, 0.01, 1.0),
+        0.01,
+    )
+    assert sellable == pytest.approx(37.0)
+
+    # Now set SPX balance to 0 and verify no ghost ROLLBACK intent is registered
+    client.set_spot_balance("SPX", 0.0)
+    order, err = await engine._liquidate_unhedged_spot(
+        "tokocrypto:toko:spx_idr__okx:spx_usdt_swap",
+        "toko:SPX_IDR",
+        37.0,
+        amount_spec=AmountSpec("BASE", 0.01, 0.01, 1.0),
+        local_exchange="tokocrypto",
+    )
+    assert order is None
+    assert err is not None
+    assert await engine.order_registry.active_records() == {}
+
+
+@pytest.mark.asyncio
+async def test_manual_required_terminal_entry_does_not_loop_or_reset_placed_time(fake_redis):
+    """Once a filled terminal entry fails hedge/rollback, recovery must not re-run hedge/rollback or reset placed_time."""
+    client = MockExchangeClient()
+    client.orders["927718920"] = _venue_order(
+        id="927718920",
+        clientOrderId="toko-spx-entry-920",
+        filled=37.0,
+        amount=37.0,
+        status="closed",
+    )
+    engine = await _build(fake_redis, client)
+    original_placed = 1794959891.0
+    order_info = {
+        "order_id": "927718920",
+        "client_order_id": "toko-spx-entry-920",
+        "symbol": "toko:SPX_IDR",
+        "global_symbol": "SPX-USDT-SWAP",
+        "local_exchange": "tokocrypto",
+        "global_exchange": "okx",
+        "quote_asset": "IDR",
+        "price": 5871.0,
+        "qty": 37.0,
+        "filled": 37.0,
+        "hedged_short_qty": 0.0,
+        "placed_time": original_placed,
+        "usdt_idr_rate": 18314.5,
+    }
+    engine.pending_entry_orders[PAIR_TAG] = order_info
+    record = _entry_record(
+        client_order_id="toko-spx-entry-920",
+        exchange_order_id="927718920",
+        status="open",
+        original_quantity=37.0,
+        filled_quantity=37.0,
+        remaining_quantity=0.0,
+    )
+    await engine.order_registry.register(record)
+
+    hedge_attempts = 0
+
+    async def fail_hedge(pt, oi, o):
+        nonlocal hedge_attempts
+        hedge_attempts += 1
+        engine.states[pt] = PositionState.FAILED
+
+    engine._handle_entry_fills = fail_hedge
+
+    # First recovery pass runs _handle_entry_fills once and marks MANUAL_REQUIRED
+    await engine._reconcile_registered_order(record, "indodax", "btc_idr")
+    assert hedge_attempts == 1
+    stored = await engine.order_registry.load(record.local_order_id)
+    assert stored.is_manual_required is True
+    assert stored.venue_status == "closed"
+
+    # Second recovery pass must skip re-polling / re-hedging
+    await engine._reconcile_registered_order(stored, "indodax", "btc_idr")
+    assert hedge_attempts == 1
+    assert order_info["placed_time"] == pytest.approx(original_placed)
+
+    snap = engine.status_snapshot()
+    assert snap["pending_orders"][0]["status"] == "HEDGE_FAILED"
+    assert snap["pending_orders"][0]["created_at_ms"] == int(original_placed * 1000)
+
+
+@pytest.mark.asyncio
+async def test_order_sync_worker_syncs_and_retires_reconciled_records(fake_redis):
+    """OrderSyncWorker mirrors live fill watermarks to Redis and counts per-quote open orders."""
+    client = MockExchangeClient()
+    engine = await _build(fake_redis, client)
+    pair_tag = "tokocrypto:toko:spx_idr__okx:spx_usdt_swap"
+    rec = OrderRecord(
+        local_order_id=OrderRecord.local_id_for("tokocrypto", "toko-coid-1", "927718920"),
+        client_order_id="toko-coid-1",
+        exchange_order_id="927718920",
+        pair_key=pair_tag,
+        exchange="tokocrypto",
+        market_type="spot",
+        symbol="toko:SPX_IDR",
+        side="buy",
+        order_role=OrderRole.ENTRY.value,
+        price=5871.0,
+        original_quantity=37.0,
+        filled_quantity=0.0,
+        remaining_quantity=37.0,
+        status="open",
+    )
+    await engine.order_registry.register(rec)
+    engine.pending_entry_orders[pair_tag] = {
+        "order_id": "927718920",
+        "client_order_id": "toko-coid-1",
+        "symbol": "toko:SPX_IDR",
+        "quote_asset": "IDR",
+        "local_exchange": "tokocrypto",
+        "global_exchange": "okx",
+        "price": 5871.0,
+        "qty": 37.0,
+        "filled": 15.0,
+        "hedged_short_qty": 15.0,
+        "placed_time": time.time(),
+    }
+
+    assert engine._spot_open_order_count("tokocrypto") == 1
+    assert engine._spot_open_order_count("tokocrypto:idr") == 1
+    assert engine._spot_open_order_count("tokocrypto:usdt") == 0
+
+    res = await engine.order_sync_worker.sync_once()
+    assert res["synced"] == 1
+    updated = await engine.order_registry.load(rec.local_order_id)
+    assert updated.filled_quantity == pytest.approx(15.0)
+    assert updated.hedged_quantity == pytest.approx(15.0)
+
+

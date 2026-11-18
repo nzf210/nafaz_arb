@@ -105,6 +105,15 @@ class OrderRegistryStorageMixin:
         )
         if existing.is_terminal and not record.is_terminal:
             record.status = existing.status
+        if existing.is_venue_terminal and not record.is_venue_terminal:
+            record.venue_status = existing.venue_status or existing.status
+        elif record.is_terminal and not record.venue_status:
+            record.venue_status = record.status
+        if (
+            existing.is_manual_required
+            and record.lifecycle_state != "RECONCILED"
+        ):
+            record.lifecycle_state = existing.lifecycle_state
         if (
             existing.recovery_status == RecoveryStatus.UNVERIFIED.value
             and record.recovery_status == RecoveryStatus.MANAGED.value

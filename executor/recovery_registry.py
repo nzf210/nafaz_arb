@@ -406,6 +406,13 @@ class RecoveryRegistryMixin:
         if record.is_terminal:
             await self.order_registry.retire(record)
             return
+        if record.is_manual_required:
+            self._halt_exposure_scope(
+                record.pair_key or f"{exchange}:{symbol}",
+                f"terminal entry {record.exchange_order_id or record.client_order_id} fill reconciliation failed; "
+                "the venue order must remain in the recovery index",
+            )
+            return
         order_id = record.exchange_order_id
         try:
             for attempt in range(1, 4):
@@ -438,12 +445,16 @@ class RecoveryRegistryMixin:
                 except Exception as fetch_exc:
                     if is_explicit_rate_limit_rejection(fetch_exc) and attempt < 3:
                         delay = 5.0
-                        match = re.search(r"try again in (\d+)", str(fetch_exc))
-                        if match:
-                            delay = max(delay, float(match.group(1)) + 1.0)
+                        sync_worker = getattr(self, "order_sync_worker", None)
+                        if sync_worker is not None and hasattr(sync_worker, "record_venue_rate_limit"):
+                            delay = sync_worker.record_venue_rate_limit(exchange, fetch_exc, default_delay=5.0)
+                        else:
+                            match = re.search(r"try again in (\d+)", str(fetch_exc))
+                            if match:
+                                delay = max(delay, float(match.group(1)) + 1.0)
                         logger.warning(
                             "[Recovery] rate limited fetching order %s on %s (attempt %d/3); retrying in %.1fs",
-                            order_id, exchange, attempt, delay,
+                            order_id or record.client_order_id, exchange, attempt, delay,
                         )
                         await asyncio.sleep(delay)
                     else:
@@ -589,6 +600,7 @@ class RecoveryRegistryMixin:
         if client_id and not record.client_order_id:
             record.client_order_id = client_id
         record.status = str(order.get("status") or "unknown").lower()
+        record.venue_status = record.status
         record.filled_quantity = float(order.get("filled", 0.0) or 0.0)
         amount = float(
             order.get("amount", 0.0) or record.original_quantity or 0.0

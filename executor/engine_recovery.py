@@ -353,15 +353,10 @@ class EngineRecoveryMixin:
 
     @staticmethod
     def _base_asset_from_symbol(symbol: str) -> str:
-        """Best-effort base asset for a venue symbol ('btc_idr' -> 'BTC')."""
-        raw = str(symbol or "").upper().replace(":USDT", "")
-        for separator in ("/", "_", "-"):
-            if separator in raw:
-                return raw.split(separator)[0].strip()
-        for quote in ("IDR", "USDT", "USDC", "BTC", "ETH"):
-            if raw.endswith(quote) and len(raw) > len(quote):
-                return raw[: -len(quote)].strip()
-        return ""
+        """Best-effort base asset for a venue symbol ('toko:spx_idr' -> 'SPX')."""
+        from executor.helpers import extract_base_asset
+
+        return extract_base_asset(symbol)
 
     async def _verify_recovered_spot_legs(self) -> dict:
         """Return {global_symbol: reason} for pairs whose spot inventory is short.

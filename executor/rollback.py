@@ -45,26 +45,12 @@ class RollbackMixin:
         what went wrong.
         """
         max_retries = 4  # 5 total attempts
-        # One id for the whole retry sequence: every attempt is the same logical
-        # order, so the venue can reject duplicates rather than sell twice.
-        seq = self._next_order_seq()
-        rollback_coid = build_client_order_id(pair_tag, "rollback", seq)
         venue_exchange = local_exchange or getattr(self.config, "local_exchange_name", "")
-        await self._register_order_intent(
-            pair_tag, rollback_coid,
-            exchange=venue_exchange,
-            market_type="spot", symbol=symbol,
-            role=OrderRole.ROLLBACK.value, side="sell",
-            order_type="market", price=0.0, quantity=unhedged_delta,
-            local_amount_spec=amount_spec,
-            required=False,
-        )
 
         # Shrink the requested sell to the balance the venue actually lets us
-        # move. The hedge failure above is often caused by a venue-side ledger
-        # lag, so the requested delta can exceed the free base asset; asking for
-        # it verbatim fails with a permanent-looking "insufficient balance" and
-        # strands the exposure. Only skip the sale when nothing is transferable.
+        # move BEFORE registering a durable order intent. If nothing is
+        # sellable right now, no venue submission is attempted and no phantom
+        # ROLLBACK intent is left in the recovery index.
         sell_qty = await self._sellable_spot_quantity(
             symbol, unhedged_delta, amount_spec, legacy_amount_step
         )
@@ -84,6 +70,20 @@ class RollbackMixin:
                 "sellable venue balance",
                 pair_tag, unhedged_delta, sell_qty, symbol,
             )
+
+        # One id for the whole retry sequence: every attempt is the same logical
+        # order, so the venue can reject duplicates rather than sell twice.
+        seq = self._next_order_seq()
+        rollback_coid = build_client_order_id(pair_tag, "rollback", seq)
+        await self._register_order_intent(
+            pair_tag, rollback_coid,
+            exchange=venue_exchange,
+            market_type="spot", symbol=symbol,
+            role=OrderRole.ROLLBACK.value, side="sell",
+            order_type="market", price=0.0, quantity=unhedged_delta,
+            local_amount_spec=amount_spec,
+            required=False,
+        )
         try:
             async def _fenced_rollback_sell():
                 # Emergency unwind: STOP must never block removing exposure, but
@@ -203,11 +203,7 @@ class RollbackMixin:
         venue's step/minimum, so the caller can report an honest manual-action
         state instead of retrying an impossible order.
         """
-        base_asset = str(symbol or "").upper()
-        for separator in ("/", "_", "-"):
-            if separator in base_asset:
-                base_asset = base_asset.split(separator, 1)[0]
-                break
+        base_asset = helpers.extract_base_asset(symbol)
         fetch = getattr(self.client, "fetch_spot_free_balance", None)
         if not callable(fetch):
             return float(requested_qty)

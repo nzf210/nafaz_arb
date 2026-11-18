@@ -68,6 +68,7 @@ from executor.unwind_planner import UnwindPlanner
 from executor.system_readiness import SystemReadinessGate
 from executor.exposure_reconciliation import ExposureReconciliationWorker
 from executor.trade_fill_reconciliation import TradeFillReconciliationWorker
+from executor.order_sync_worker import OrderSyncWorker
 from executor.engine_order_intents import EngineOrderIntentMixin
 from executor.engine_recovery import EngineRecoveryMixin
 from executor.engine_runtime import EngineRuntimeMixin
@@ -235,6 +236,7 @@ class ArbitrageEngine(
         self._exchange_reconciliation_lock = asyncio.Lock()
         self.exposure_reconciliation = ExposureReconciliationWorker(self)
         self.trade_fill_reconciliation = TradeFillReconciliationWorker(self)
+        self.order_sync_worker = OrderSyncWorker(self)
 
     @property
     def client(self):

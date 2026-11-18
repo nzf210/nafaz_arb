@@ -16,6 +16,49 @@ from executor.entry_common import logger
 class EntryOrderManagementMixin:
     """Focused entry lifecycle responsibilities."""
 
+    async def _sync_entry_order_record(
+        self,
+        exchange: str,
+        order_id: str,
+        client_order_id: str | None,
+        filled: float,
+        status: str | None = None,
+        retire: bool = False,
+    ) -> None:
+        """Synchronize in-memory entry lifecycle state back to UniversalOrderRegistry."""
+        registry = getattr(self, "order_registry", None)
+        if registry is None or not exchange:
+            return
+        try:
+            record = None
+            if client_order_id:
+                record = await registry.find_by_client_id(exchange, str(client_order_id))
+            if record is None and order_id:
+                record = await registry.find_by_exchange_id(exchange, str(order_id))
+            if record is None:
+                return
+            record.filled_quantity = max(
+                float(record.filled_quantity or 0.0), float(filled or 0.0)
+            )
+            record.remaining_quantity = max(
+                0.0, float(record.original_quantity or 0.0) - record.filled_quantity
+            )
+            if status:
+                norm_status = str(status).lower()
+                record.status = norm_status
+                record.venue_status = norm_status
+            if retire:
+                record.lifecycle_state = "RECONCILED"
+            await registry.register(record)
+            if retire:
+                await registry.retire(record)
+                await registry.clear_pending_recovery(record.local_order_id)
+        except Exception:
+            logger.exception(
+                "[Entry] failed to sync entry order record %s",
+                order_id or client_order_id,
+            )
+
     async def _sync_live_price_for_client(
         self, pair_tag: str, local_symbol: str
     ) -> None:

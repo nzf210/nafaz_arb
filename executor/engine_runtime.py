@@ -65,6 +65,8 @@ class EngineRuntimeMixin:
                             self._signal_queue_event.set()
                     else:
                         await self._run_order_recovery()
+                        if getattr(self, "order_sync_worker", None) is not None:
+                            await self.order_sync_worker.sync_once()
                     if getattr(self, "slot_manager", None) is not None:
                         try:
                             active_coids = {

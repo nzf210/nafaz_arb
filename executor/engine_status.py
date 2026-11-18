@@ -202,9 +202,16 @@ class EngineStatusMixin:
         return normalized.split("/")[-1] if "/" in normalized else ""
 
     def _pending_order_status(self, pair_tag: str, order: dict) -> str:
-        if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+        state = self.states.get(pair_tag)
+        if state == PositionState.RECONCILIATION_REQUIRED:
             return "RECONCILIATION_REQUIRED"
+        if state == PositionState.FAILED:
+            return "HEDGE_FAILED"
+        quantity = max(0.0, float(order.get("qty", 0.0) or 0.0))
         filled = max(0.0, float(order.get("filled", 0.0) or 0.0))
+        if quantity > 0 and filled >= quantity - 1e-12:
+            hedged = max(0.0, float(order.get("hedged_short_qty", 0.0) or 0.0))
+            return "FILLED_UNHEDGED" if hedged + 1e-12 < quantity else "FILLED"
         return "PARTIALLY_FILLED" if filled > 0 else "OPEN"
 
     def _pending_order_snapshot(self, leg: str, pair_tag: str, order: dict) -> dict:

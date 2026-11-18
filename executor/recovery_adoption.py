@@ -154,6 +154,19 @@ class RecoveryAdoptionMixin:
     ) -> bool:
         live = self.pending_entry_orders.get(pair_tag)
         if live and live.get("order_id") and str(live.get("order_id")) != str(record.exchange_order_id):
+            unhedged_old_fill = max(
+                0.0,
+                float(record.filled_quantity or 0.0) - float(record.hedged_quantity or 0.0),
+            )
+            if unhedged_old_fill <= 1e-12:
+                record.lifecycle_state = "RECONCILED"
+                await self.order_registry.clear_pending_recovery(record.local_order_id)
+                logger.info(
+                    "[Recovery] retiring zero-unhedged-fill older terminal entry %s "
+                    "for %s while newer entry %s is pending",
+                    record.exchange_order_id, pair_tag, live.get("order_id"),
+                )
+                return True
             reason = (
                 f"terminal entry {record.exchange_order_id} has fill state that cannot be "
                 f"merged safely while newer entry {live.get('order_id')} is pending"
@@ -167,10 +180,21 @@ class RecoveryAdoptionMixin:
             # entry context would associate the old venue fill with the wrong
             # exchange order and can silently leave spot exposure unhedged.
             await self.order_registry.retain_for_reconciliation(
-                record, reason
+                record, reason, manual_required=True
             )
             self._halt_exposure_scope(pair_tag, reason)
             self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            self._refresh_entry_gate()
+            return False
+        if record.is_manual_required:
+            reason = (
+                f"terminal entry {record.exchange_order_id} fill reconciliation failed; "
+                "the venue order must remain in the recovery index"
+            )
+            await self.order_registry.retain_for_reconciliation(
+                record, reason, manual_required=True
+            )
+            self._halt_exposure_scope(pair_tag, reason)
             self._refresh_entry_gate()
             return False
         info = self.pending_entry_orders.get(pair_tag) or (
@@ -178,7 +202,9 @@ class RecoveryAdoptionMixin:
         )
         if info is None:
             reason = "terminal entry cannot be reconciled without its pair context"
-            await self.order_registry.retain_for_reconciliation(record, reason)
+            await self.order_registry.retain_for_reconciliation(
+                record, reason, manual_required=True
+            )
             self._halt_exposure_scope(pair_tag, reason)
             self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
             self._refresh_entry_gate()
@@ -197,7 +223,9 @@ class RecoveryAdoptionMixin:
             logger.critical(
                 "[Recovery] %s", reason,
             )
-            await self.order_registry.retain_for_reconciliation(record, reason)
+            await self.order_registry.retain_for_reconciliation(
+                record, reason, manual_required=True
+            )
             self._halt_exposure_scope(pair_tag, reason)
             self._refresh_entry_gate()
             return False

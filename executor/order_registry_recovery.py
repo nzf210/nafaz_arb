@@ -198,7 +198,7 @@ class OrderRegistryRecoveryMixin:
     # ---------------------------------------------- pending recovery / orphans
 
     async def retain_for_reconciliation(
-        self, record: OrderRecord, reason: str
+        self, record: OrderRecord, reason: str, *, manual_required: bool = False
     ) -> None:
         """Re-open a venue-terminal record whose lifecycle fill is not yet reconciled.
 
@@ -209,6 +209,11 @@ class OrderRegistryRecoveryMixin:
         """
         if not record.local_order_id:
             raise ValueError("local_order_id is required for recovery retention")
+        if record.is_venue_terminal:
+            record.venue_status = record.venue_status or record.status
+        record.lifecycle_state = (
+            "MANUAL_REQUIRED" if manual_required else "AWAITING_HEDGE"
+        )
         record.status = "open"
         record.recovery_status = RecoveryStatus.UNVERIFIED.value
         record.updated_at = int(time.time() * 1000)

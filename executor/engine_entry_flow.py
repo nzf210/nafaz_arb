@@ -136,7 +136,12 @@ class EngineEntryFlowMixin:
 
     def _spot_open_order_count(self, exchange: str) -> int:
         """Count distinct spot pairs with an open position or pending entry."""
-        venue = str(exchange or "").strip().lower()
+        raw_key = str(exchange or "").strip().lower()
+        if ":" in raw_key:
+            venue, target_quote = raw_key.split(":", 1)
+        else:
+            venue, target_quote = raw_key, ""
+
         def pair_exchange(pair, value=None):
             exchange_name = (
                 value.get("local_exchange", "") if isinstance(value, dict)
@@ -144,14 +149,39 @@ class EngineEntryFlowMixin:
             )
             return str(exchange_name or str(pair).split(":", 1)[0]).strip().lower()
 
+        def pair_matches(pair, value=None) -> bool:
+            if pair_exchange(pair, value) != venue:
+                return False
+            if not target_quote:
+                return True
+            quote = ""
+            if isinstance(value, dict):
+                quote = str(value.get("quote_asset") or "").strip().lower()
+            elif value is not None:
+                quote = str(getattr(value, "quote_asset", "") or "").strip().lower()
+            if not quote:
+                pinfo = getattr(self, "_pair_infos", {}).get(pair)
+                if pinfo is not None:
+                    quote = str(getattr(pinfo, "quote_asset", "") or "").strip().lower()
+            if not quote:
+                from executor.helpers import split_symbol_parts
+
+                sym = (
+                    value.get("symbol", "") if isinstance(value, dict)
+                    else getattr(value, "symbol", "") or str(pair).split("__", 1)[0]
+                )
+                _, quote = split_symbol_parts(str(sym))
+                quote = quote.lower()
+            return quote == target_quote
+
         active_pairs = {
             pair for pair, position in self.active_positions.items()
-            if pair_exchange(pair, position) == venue
+            if pair_matches(pair, position)
             and float(getattr(position, "qty", 0.0) or 0.0) > 0
         }
         pending_pairs = {
             pair for pair, order in self.pending_entry_orders.items()
-            if pair_exchange(pair, order) == venue
+            if pair_matches(pair, order)
         }
         # RECONCILIATION_REQUIRED is deliberately absent: a pair in that state
         # with no position and no pending order has nothing outstanding on the
@@ -164,7 +194,7 @@ class EngineEntryFlowMixin:
         lifecycle_pairs = {
             pair for pair, state in self.states.items()
             if getattr(state, "value", str(state)) in counted_states
-            and pair_exchange(pair, self._pair_infos.get(pair)) == venue
+            and pair_matches(pair, self._pair_infos.get(pair))
         }
         return len(active_pairs | pending_pairs | lifecycle_pairs)
 

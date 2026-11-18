@@ -356,7 +356,7 @@ class ExitExecutionMixin:
 
     def _resolve_global_symbol(self, symbol: str) -> str:
         """Convert local/pos symbol into global futures symbol format."""
-        global_sym = symbol.upper()
+        global_sym = helpers.strip_venue_prefix(symbol).upper()
         if "/" not in global_sym and "_" in global_sym:
             global_sym = global_sym.replace("_", "/")
         if "IDR" in global_sym:

@@ -455,19 +455,9 @@ class RecoveryDiscoveryMixin:
     @staticmethod
     def _symbol_parts(symbol: str) -> tuple:
         """Splits a venue symbol into (base, quote) using only known formats."""
-        cleaned = str(symbol or "").upper().split(":")[0]
-        if not cleaned:
-            return "", ""
-        for separator in ("/", "-", "_"):
-            if separator in cleaned:
-                base, _, quote = cleaned.partition(separator)
-                return base.strip(), quote.strip()
-        # Compact form, e.g. BTCIDR / BTCUSDT. Longest known quote wins so
-        # BTCUSDT is not read as BTCU + ST.
-        for quote in ("USDT", "USDC", "IDR", "BIDR", "BTC", "ETH"):
-            if cleaned.endswith(quote) and len(cleaned) > len(quote):
-                return cleaned[: -len(quote)], quote
-        return "", ""
+        from executor.helpers import split_symbol_parts
+
+        return split_symbol_parts(symbol)
 
     def _infer_role(self, pair_tag: str, market: str) -> str:
         """Classifies a discovered order from the state that already tracks it.

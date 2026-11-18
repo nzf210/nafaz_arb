@@ -5,6 +5,7 @@ from executor.order_models import (
     OrderRole,
     OrderTerminal,
     RecoveryStatus,
+    OrderLifecycleState,
     PositionState,
     OrderRecord,
 )
@@ -19,7 +20,8 @@ from executor.position_models import ActivePosition
 from executor.trade_models import ClosedTrade
 
 __all__ = [
-    "REGISTRY_NS", "OrderRole", "OrderTerminal", "RecoveryStatus", "PositionState",
+    "REGISTRY_NS", "OrderRole", "OrderTerminal", "RecoveryStatus",
+    "OrderLifecycleState", "PositionState",
     "OrderRecord", "PairInfo", "PricingSnapshot", "FundingMetrics",
     "ExecutionDirectives", "ExecutorPayload", "ActivePosition", "ClosedTrade",
 ]

@@ -276,7 +276,9 @@ class RecoveryOrphanMixin:
                 (r.pair_key == pk and r.local_order_id in self._recovery_pending_orders)
                 for r in remaining_records.values()
             )
-            if not has_other_pending and self.states.get(pk) == PositionState.RECONCILIATION_REQUIRED:
+            if not has_other_pending and self.states.get(pk) in (
+                PositionState.RECONCILIATION_REQUIRED, PositionState.FAILED
+            ):
                 self.states[pk] = PositionState.IDLE
             if not await self._scope_has_unresolved_recovery(pk):
                 self._clear_exposure_halt(pk, f"force cleaned orphan {tid} ({reason})")

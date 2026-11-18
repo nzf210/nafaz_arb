@@ -276,3 +276,43 @@ def extract_fill_price(order: dict, *fallbacks: float) -> float:
         if fallback and fallback > 0:
             return float(fallback)
     return 0.0
+
+
+_KNOWN_VENUE_PREFIXES = {
+    "toko", "tokocrypto", "indodax", "okx", "mexc",
+    "binance", "bybit", "gate", "bitget", "kucoin",
+}
+
+
+def strip_venue_prefix(symbol: str) -> str:
+    """Drop a scanner venue tag ('toko:SPX_IDR' -> 'SPX_IDR')."""
+    raw_id = str(symbol or "").strip()
+    if ":" in raw_id:
+        prefix, remainder = raw_id.split(":", 1)
+        if prefix.strip().lower() in _KNOWN_VENUE_PREFIXES:
+            return remainder.strip()
+    return raw_id
+
+
+def split_symbol_parts(symbol: str) -> tuple[str, str]:
+    """Split a venue/scanner symbol into (base, quote) after stripping venue prefix and settle suffix."""
+    cleaned = strip_venue_prefix(symbol).upper().split(":", 1)[0].strip()
+    if not cleaned:
+        return "", ""
+    for separator in ("/", "-", "_"):
+        if separator in cleaned:
+            base, _, quote = cleaned.partition(separator)
+            return base.strip(), quote.strip()
+    for quote in ("USDT", "USDC", "IDR", "BIDR", "BTC", "ETH"):
+        if cleaned.endswith(quote) and len(cleaned) > len(quote):
+            return cleaned[: -len(quote)].strip(), quote
+    return "", ""
+
+
+def extract_base_asset(symbol: str, explicit_base: str = "") -> str:
+    """Return canonical uppercase base asset ('toko:SPX_IDR' -> 'SPX')."""
+    if explicit_base and str(explicit_base).strip():
+        return strip_venue_prefix(str(explicit_base)).upper().split(":", 1)[0].strip()
+    base, _ = split_symbol_parts(symbol)
+    return base
+
