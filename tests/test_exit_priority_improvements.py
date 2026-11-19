@@ -273,29 +273,24 @@ async def test_run_order_recovery_for_pair_holds_pair_lock(engine):
 
 
 @pytest.mark.asyncio
-async def test_execute_entry_signal_locks_pair_and_spot_venue(engine):
-    """execute_entry_signal holds both pair_lock and spot_exchange_entry_lock."""
+async def test_execute_entry_signal_delegates_to_canonical_fenced_handler(engine, monkeypatch):
+    """Compatibility entry facade must not use an alternate leg-placement hook."""
+    from unittest.mock import AsyncMock
+
     pair_tag = "indodax:btc_idr"
-    spot_venue = "indodax"
-    p_lock = engine._pair_lock(pair_tag)
-    s_lock = engine._spot_exchange_entry_lock(spot_venue)
+    canonical = AsyncMock()
+    legacy_balance = AsyncMock(return_value=500.0)
+    legacy_legs = AsyncMock(return_value={"status": "SUBMITTED"})
+    monkeypatch.setattr(engine, "handle_signal_notification", canonical)
+    monkeypatch.setattr(engine, "_get_available_spot_quote_balance", legacy_balance)
+    monkeypatch.setattr(engine, "_place_and_monitor_entry_legs", legacy_legs, raising=False)
 
-    p_locked_during = False
-    s_locked_during = False
+    result = await engine.execute_entry_signal({"spot_venue": "indodax", "pair_tag": pair_tag})
 
-    async def fake_get_balance(venue):
-        nonlocal p_locked_during, s_locked_during
-        p_locked_during = p_lock.locked()
-        s_locked_during = s_lock.locked()
-        return 500.0
-
-    engine._get_available_spot_quote_balance = fake_get_balance
-    result = await engine.execute_entry_signal({"spot_venue": spot_venue, "pair_tag": pair_tag})
-    assert p_locked_during
-    assert s_locked_during
-    assert not p_lock.locked()
-    assert not s_lock.locked()
-    assert result.get("status") in ("SUCCESS", "SUBMITTED")
+    assert result == {"status": "PROCESSED", "pair_tag": pair_tag}
+    canonical.assert_awaited_once_with(pair_tag)
+    legacy_balance.assert_not_awaited()
+    legacy_legs.assert_not_awaited()
 
 
 @pytest.mark.asyncio
