@@ -608,3 +608,148 @@ def test_postgres_scoped_unresolved_submit_blocks_only_same_venue_symbol_after_d
             finally:
                 await conn.close()
         asyncio.run(cleanup())
+
+
+def test_spot_slot_advisory_key_is_stable_and_scope_specific():
+    from executor.order_slots import OrderSlotManager
+
+    first = OrderSlotManager._slot_lock_key("indodax", "idr")
+    second = OrderSlotManager._slot_lock_key("indodax", "idr")
+    other_account = OrderSlotManager._slot_lock_key("indodax", "usdt")
+    other_venue = OrderSlotManager._slot_lock_key("tokocrypto", "idr")
+
+    assert first == second
+    assert first != other_account
+    assert first != other_venue
+
+
+@pytest.mark.integration
+def test_postgres_module_slot_override_is_shared_between_independent_managers():
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    async def run():
+        import asyncpg
+        from executor.order_slots import OrderSlotManager, SlotExhaustedError
+
+        suffix = uuid.uuid4().hex[:12]
+        venue = "audit-slot-" + suffix
+        account = "idr"
+        client_ids = ["slot-a-" + suffix, "slot-b-" + suffix]
+        pool_a = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=1)
+        pool_b = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=1)
+        manager_a = OrderSlotManager(pool_a)
+        manager_b = OrderSlotManager(pool_b)
+
+        async def reserve(manager, client_id):
+            try:
+                slot = await manager.reserve_slot(
+                    venue,
+                    account=account,
+                    client_order_id=client_id,
+                    max_slots_override=1,
+                )
+                return ("RESERVED", slot)
+            except SlotExhaustedError:
+                return ("EXHAUSTED", None)
+
+        try:
+            outcomes = await asyncio.gather(
+                reserve(manager_a, client_ids[0]),
+                reserve(manager_b, client_ids[1]),
+            )
+            assert sorted(item[0] for item in outcomes) == ["EXHAUSTED", "RESERVED"]
+            assert next(item[1] for item in outcomes if item[0] == "RESERVED") == 0
+        finally:
+            try:
+                async with pool_a.acquire() as conn:
+                    await conn.execute(
+                        "delete from public.order_slot_reservations where client_order_id = any($1::text[])",
+                        client_ids,
+                    )
+            finally:
+                await pool_a.close()
+                await pool_b.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.integration
+def test_postgres_scoped_submit_rejects_scope_not_matching_durable_intent():
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    async def run():
+        import asyncpg
+
+        service = GlobalStopService(dsn, min_size=1, max_size=1)
+        await service.start()
+        suffix = uuid.uuid4().hex[:12]
+        unresolved_id = "pg-scope-intent-" + suffix
+        wrong_scope_id = "pg-scope-wrong-" + suffix
+        try:
+            await service.prepare_submit_attempt(
+                client_order_id=unresolved_id,
+                exchange="mexc",
+                market_type="spot",
+                symbol="DODO_USDT",
+                side="buy",
+                order_type="limit",
+                quantity=1.0,
+                price=0.1,
+                pair_key="mexc:DODO_USDT",
+            )
+            async with service.order_submit_fence(
+                client_order_id=unresolved_id,
+                scope_exchange="mexc",
+                scope_symbol="DODO_USDT",
+            ):
+                pass
+
+            await service.prepare_submit_attempt(
+                client_order_id=wrong_scope_id,
+                exchange="mexc",
+                market_type="spot",
+                symbol="DODO_USDT",
+                side="buy",
+                order_type="limit",
+                quantity=2.0,
+                price=0.1,
+                pair_key="mexc:DODO_USDT:second",
+            )
+            with pytest.raises(GlobalStopError, match="scope does not match"):
+                async with service.order_submit_fence(
+                    client_order_id=wrong_scope_id,
+                    scope_exchange="mexc",
+                    scope_symbol="BTC_USDT",
+                ):
+                    pytest.fail("mismatched scope must never reach the venue boundary")
+
+            conn = await asyncpg.connect(dsn)
+            try:
+                statuses = await conn.fetch(
+                    "select client_order_id, status from public.executor_submit_attempts "
+                    "where client_order_id = any($1::text[])",
+                    [unresolved_id, wrong_scope_id],
+                )
+                status_map = {row["client_order_id"]: row["status"] for row in statuses}
+                assert status_map[unresolved_id] == "SUBMITTING"
+                assert status_map[wrong_scope_id] == "PREPARED"
+            finally:
+                await conn.close()
+        finally:
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                await conn.execute(
+                    "delete from public.executor_submit_attempts "
+                    "where client_order_id = any($1::text[])",
+                    [unresolved_id, wrong_scope_id],
+                )
+            finally:
+                await conn.close()
+            await service.close()
+
+    asyncio.run(run())
