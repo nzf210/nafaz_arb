@@ -8,6 +8,7 @@ PARTIALLY_FILLED, and CANCEL_PENDING until reconciled terminal.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -94,6 +95,12 @@ class OrderSlotManager:
                 )
         logger.info("Updated spot order slot limit for %s:%s to %d", venue, account, max_slots)
 
+    @staticmethod
+    def _slot_lock_key(venue: str, account: str) -> int:
+        """Return a process-independent signed bigint advisory-lock key."""
+        payload = f"nafaz:spot-slot:{venue}:{account}".encode("utf-8")
+        return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big", signed=True)
+
     async def reserve_slot(
         self,
         venue: str,
@@ -102,6 +109,7 @@ class OrderSlotManager:
         session_id: Optional[str] = None,
         account: str = "default",
         market_type: str = "spot",
+        max_slots_override: Optional[int] = None,
     ) -> int:
         """Atomically reserve the next available slot index for the venue.
 
@@ -120,6 +128,14 @@ class OrderSlotManager:
             return -1
 
         max_slots = await self.get_max_slots(venue, account)
+        if max_slots_override is not None:
+            try:
+                override = int(max_slots_override)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("max_slots_override must be an integer") from exc
+            if override < 0 or override > 100:
+                raise ValueError("max_slots_override must be between 0 and 100")
+            max_slots = min(max_slots, override)
         if max_slots <= 0:
             raise SlotExhaustedError(
                 f"Spot order placement is disabled on {venue}:{account} (max_slots={max_slots})"
@@ -130,9 +146,10 @@ class OrderSlotManager:
         if self.pool is not None:
             async with self.pool.acquire() as conn:
                 async with conn.transaction():
-                    # Check active reservations under advisory lock for venue to prevent race
-                    venue_hash = hash(f"{venue}:{account}") & 0x7FFFFFFF
-                    await conn.execute("SELECT pg_advisory_xact_lock($1)", venue_hash)
+                    # Python's built-in hash is randomized per process; use a
+                    # stable key so every executor replica serializes this slot scope.
+                    venue_hash = self._slot_lock_key(venue, account)
+                    await conn.execute("SELECT pg_advisory_xact_lock($1::bigint)", venue_hash)
 
                     rows = await conn.fetch(
                         "SELECT slot_index FROM public.order_slot_reservations "
