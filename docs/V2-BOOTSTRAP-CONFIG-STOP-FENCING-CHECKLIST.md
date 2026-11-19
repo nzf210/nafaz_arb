@@ -581,3 +581,23 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 **Remaining gates:** per-venue sandbox/paper contracts; operator identity/HMAC governance, dual approval and runbook; repeated PostgreSQL multi-process fault injection on the actual VPS topology; and approval/remediation for futures minimum-notional overhedge/hard-drift behavior.
 
 **Overall release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+## Audit execution 2026-11-19 — R-50 spot slot reservation durability
+
+- [x] Commit Global STOP `PREPARED` before creating a LIVE spot slot reservation.
+- [x] Preserve stale slot reservations while the matching durable submit attempt is `PREPARED`, `SUBMITTING`, or `UNKNOWN`.
+- [x] Preserve active client IDs during the database stale-slot sweep.
+- [x] Release an aged reservation after an explicit pre-submit `ABORTED` transition or when no active ID/nonterminal submit attempt remains.
+- [x] Add fake-venue ordering regression: PREPARED → reserve slot → shared fence → venue create.
+- [x] Add disposable PostgreSQL regression for aged PREPARED/SUBMITTING reservations and safe ABORTED cleanup.
+- [x] Source/test head `868f568d8890a133a64c6ef72993b1f844a6f455`: workflow [44492169205](https://github.com/nzf210/nafaz_arb/actions/runs/44492169205), all five jobs passed; Python **746 passed / 10 skipped**, PostgreSQL schema/integration **11 passed**, Go/race/vet, migration runner, and Docker builds passed.
+
+### Revalidated but not closed
+
+- [ ] Fresh exhaustive clone-wide call-site grep on the latest branch head; this run reviewed all 33 commits since `deb503d` and revalidated changed execution paths, but clone/DNS access was unavailable.
+- [ ] Operator-authenticated manual resolution governance: operator identity, HMAC custody/rotation, dual approval, audit retrieval and runbook.
+- [ ] Repeated real PostgreSQL multi-process disconnect/fault injection against the actual VPS topology.
+- [ ] Per-venue sandbox/paper contract tests.
+- [ ] Futures minimum-notional overhedge/delta-drift policy and de-risk persistence review.
+
+**Release state remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
