@@ -308,6 +308,8 @@ class EngineEntryFlowMixin:
         else:
             quote_key = quote_asset
         scoped_key = f"{exchange}:{quote_key}" if quote_key else exchange
+        quote_slot_limit = None
+        venue_slot_limit = None
 
         async with self._spot_exchange_entry_lock(exchange):
             # Check venue-level limit
@@ -326,6 +328,7 @@ class EngineEntryFlowMixin:
             if scoped_key != exchange:
                 current_scoped = self._spot_open_order_count(scoped_key)
                 max_scoped = self._spot_order_limit(scoped_key)
+                quote_slot_limit = max_scoped
                 if current_scoped >= max_scoped:
                     logger.info(
                         "[Entry] skipping %s: %s already has %d/%d open spot positions or pending entries",
@@ -369,6 +372,7 @@ class EngineEntryFlowMixin:
             maximum = self._spot_order_limit(exchange)
             if module_slot_limit is not None:
                 maximum = min(maximum, module_slot_limit)
+            venue_slot_limit = maximum
             if current >= maximum:
                 self._mark_failed(
                     pair_tag,
@@ -383,6 +387,8 @@ class EngineEntryFlowMixin:
                 pair_tag, payload, pair_info, snapshot, directives,
                 buy_qty, actual_cost_usdt, buy_price_idr,
                 module_slot_limit=module_slot_limit,
+                venue_slot_limit=venue_slot_limit,
+                quote_slot_limit=quote_slot_limit,
             )
 
     async def _get_available_spot_quote_balance(self, spot_venue: str) -> float:
