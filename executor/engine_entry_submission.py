@@ -403,16 +403,9 @@ class EngineEntrySubmissionMixin:
                 global_amount_spec=pair_info.global_amount_spec,
                 recovery_context=recovery_context,
             )
-            quote_asset = self._spot_slot_account(pair_info)
-            if getattr(self, "slot_manager", None) is not None:
-                await self.slot_manager.reserve_slot(
-                    pair_info.local_exchange,
-                    account=quote_asset,
-                    client_order_id=entry_coid,
-                    market_type="spot",
-                    max_slots_override=quote_slot_limit,
-                    venue_max_slots_override=venue_slot_limit,
-                )
+            # Persist PREPARED before creating the slot reservation. The slot
+            # sweeper uses this ledger row to distinguish a genuinely abandoned
+            # reservation from a submit that is still being admitted or recovered.
             if self.global_stop is not None:
                 await self.global_stop.prepare_submit_attempt(
                     client_order_id=entry_coid,
@@ -426,6 +419,16 @@ class EngineEntrySubmissionMixin:
                     pair_key=pair_tag,
                     recovery_context=recovery_context,
                     amount_spec=pair_info.local_amount_spec.to_dict(),
+                )
+            quote_asset = self._spot_slot_account(pair_info)
+            if getattr(self, "slot_manager", None) is not None:
+                await self.slot_manager.reserve_slot(
+                    pair_info.local_exchange,
+                    account=quote_asset,
+                    client_order_id=entry_coid,
+                    market_type="spot",
+                    max_slots_override=quote_slot_limit,
+                    venue_max_slots_override=venue_slot_limit,
                 )
             ip_ban_stop_persistence_failed = False
 
