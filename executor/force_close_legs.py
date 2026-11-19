@@ -593,16 +593,15 @@ class ForceCloseLegMixin:
         before another create-order call.
         """
         sell_qty = float(pos.qty)
-        if allow_already_flat:
-            already_flat, qty_override = await self._check_retry_spot_balance(
-                pair_key, pos
-            )
-            if already_flat:
-                return -1.0
-            if qty_override is not None:
-                if qty_override <= 0:
-                    return 0.0
-                sell_qty = qty_override
+        already_flat, qty_override = await self._check_retry_spot_balance(
+            pair_key, pos
+        )
+        if allow_already_flat and already_flat:
+            return -1.0
+        if qty_override is not None:
+            if qty_override <= 0:
+                return 0.0
+            sell_qty = qty_override
 
         logger.warning(f"[Force Close] Selling {sell_qty} {pos.symbol} spot leg...")
         is_mock = bool(getattr(self.config, "mock_mode", False))
