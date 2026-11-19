@@ -1230,6 +1230,8 @@ async def test_module_slot_cap_is_forwarded_to_durable_reservation_boundary(
 
     submit.assert_awaited_once()
     assert submit.await_args.kwargs["module_slot_limit"] == 1
+    assert submit.await_args.kwargs["venue_slot_limit"] == 1
+    assert submit.await_args.kwargs["quote_slot_limit"] == 2
 
 
 @pytest.mark.asyncio
