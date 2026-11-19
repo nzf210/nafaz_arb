@@ -357,7 +357,7 @@ class EngineEntrySubmissionMixin:
     async def _submit_entry_order(
         self, pair_tag, payload, pair_info, snapshot, directives,
         buy_qty, actual_cost_usdt, buy_price_idr,
-        module_slot_limit=None,
+        module_slot_limit=None, venue_slot_limit=None, quote_slot_limit=None,
     ) -> None:
         if getattr(self, "global_stop", None) is None and not getattr(
             getattr(self, "config", None), "mock_mode", False
@@ -410,7 +410,8 @@ class EngineEntrySubmissionMixin:
                     account=quote_asset,
                     client_order_id=entry_coid,
                     market_type="spot",
-                    max_slots_override=module_slot_limit,
+                    max_slots_override=quote_slot_limit,
+                    venue_max_slots_override=venue_slot_limit,
                 )
             if self.global_stop is not None:
                 await self.global_stop.prepare_submit_attempt(
