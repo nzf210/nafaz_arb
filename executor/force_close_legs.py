@@ -605,7 +605,7 @@ class ForceCloseLegMixin:
         already_flat, qty_override = await self._check_retry_spot_balance(
             pair_key, pos
         )
-        if allow_already_flat and already_flat:
+        if already_flat:
             return -1.0
         if qty_override is not None:
             if qty_override <= 0:
