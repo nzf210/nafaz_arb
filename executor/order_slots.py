@@ -385,37 +385,30 @@ class OrderSlotManager:
         if self.pool is not None:
             try:
                 async with self.pool.acquire() as conn:
-                    # 1. Release expired RESERVED slots (timed out before placement)
-                    res1 = await conn.execute(
-                        "UPDATE public.order_slot_reservations "
-                        "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
-                        "WHERE status = 'RESERVED' AND created_at < $2",
-                        now, cutoff,
-                    )
-                    # 2. Release ACTIVE or RESERVED slots not in active_ids (older than cutoff)
+                    # A slot stays occupied while its durable submit attempt is
+                    # PREPARED/SUBMITTING/UNKNOWN, even if the venue request is
+                    # still in flight and no pending-entry Redis record exists yet.
+                    # Active in-memory IDs are also protected: the first version
+                    # of this sweep released stale RESERVED rows unconditionally,
+                    # including acknowledged orders waiting for activation.
                     active_ids_list = list(active_ids)
-                    if active_ids_list:
-                        res2 = await conn.execute(
-                            "UPDATE public.order_slot_reservations "
-                            "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
-                            "WHERE status IN ('RESERVED', 'ACTIVE') "
-                            "AND created_at < $2 "
-                            "AND client_order_id != ALL($3::text[])",
-                            now, cutoff, active_ids_list,
-                        )
-                    else:
-                        res2 = await conn.execute(
-                            "UPDATE public.order_slot_reservations "
-                            "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
-                            "WHERE status IN ('RESERVED', 'ACTIVE') "
-                            "AND created_at < $2",
-                            now, cutoff,
-                        )
-                    for res in (res1, res2):
-                        try:
-                            released_count += int(res.split(" ")[-1])
-                        except (ValueError, IndexError):
-                            pass
+                    result = await conn.execute(
+                        "UPDATE public.order_slot_reservations AS reservation "
+                        "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
+                        "WHERE reservation.status IN ('RESERVED', 'ACTIVE') "
+                        "AND reservation.created_at < $2 "
+                        "AND reservation.client_order_id != ALL($3::text[]) "
+                        "AND NOT EXISTS ("
+                        "  SELECT 1 FROM public.executor_submit_attempts AS attempt "
+                        "  WHERE attempt.client_order_id = reservation.client_order_id "
+                        "  AND attempt.status IN ('PREPARED', 'SUBMITTING', 'UNKNOWN')"
+                        ")",
+                        now, cutoff, active_ids_list,
+                    )
+                    try:
+                        released_count += int(result.split(" ")[-1])
+                    except (ValueError, IndexError):
+                        pass
                     if released_count > 0:
                         logger.info("Reconciled %d orphaned spot order slot reservations", released_count)
             except Exception as exc:
