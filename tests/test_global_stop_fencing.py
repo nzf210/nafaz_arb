@@ -960,3 +960,18 @@ async def test_startup_reconciliation_keeps_not_found_attempt_globally_blocking(
     assert engine.halts and engine.halts[0][0] == "*"
     assert engine.gate_refreshed is True
     assert engine.failures
+
+
+def test_spot_slot_account_uses_pair_quote_not_an_idr_fallback():
+    assert EngineEntrySubmissionMixin._spot_slot_account(
+        SimpleNamespace(quote_asset="USDT")
+    ) == "usdt"
+    assert EngineEntrySubmissionMixin._spot_slot_account(
+        SimpleNamespace(quote_asset="USDC")
+    ) == "usdt"
+    assert EngineEntrySubmissionMixin._spot_slot_account(
+        SimpleNamespace(quote_asset="BIDR")
+    ) == "idr"
+    assert EngineEntrySubmissionMixin._spot_slot_account(
+        SimpleNamespace(quote_asset="IDR")
+    ) == "idr"
