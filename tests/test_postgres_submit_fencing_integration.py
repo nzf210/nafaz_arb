@@ -882,8 +882,8 @@ def test_postgres_venue_slot_override_is_shared_across_quote_accounts():
 
 
 @pytest.mark.integration
-def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservations():
-    """A stale sweep must not free a slot while its durable submit is unresolved."""
+def test_postgres_slot_sweep_preserves_live_and_unresolved_reservations():
+    """The stale sweep cannot free a live submit slot or strand stale PREPARED slots."""
     dsn = os.getenv("TEST_POSTGRES_DSN")
     if not dsn:
         pytest.skip("TEST_POSTGRES_DSN is not configured")
@@ -891,18 +891,21 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
     async def run():
         import asyncpg
         from executor.order_slots import OrderSlotManager
-        from executor.global_stop import GlobalStopService
+        from executor.global_stop import FENCE_LOCK_KEY, GlobalStopService
 
         suffix = uuid.uuid4().hex[:12]
         venue = "audit-slot-ledger-" + suffix
         client_ids = [
             "slot-prepared-" + suffix,
             "slot-submitting-" + suffix,
+            "slot-active-" + suffix,
         ]
         service = GlobalStopService(dsn, min_size=1, max_size=2)
         await service.start()
         manager = OrderSlotManager(service.pool)
+        lock_conn = None
         try:
+            await manager.set_max_slots(venue, 3, account="default")
             for index, client_id in enumerate(client_ids[:2]):
                 await service.prepare_submit_attempt(
                     client_order_id=client_id,
@@ -939,9 +942,12 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
                     client_ids,
                 )
 
-            # PREPARED and SUBMITTING ledger rows protect their reservations.
+            # A PREPARED intent may still belong to a live admission that has
+            # acquired the shared fence but has not crossed into SUBMITTING yet.
+            lock_conn = await service.pool.acquire()
+            await lock_conn.execute("select pg_advisory_lock($1)", FENCE_LOCK_KEY)
             await manager.reconcile_active_slots(
-                set(), max_reserved_age_seconds=1
+                {client_ids[2]}, max_reserved_age_seconds=1
             )
             async with service.pool.acquire() as conn:
                 rows = await conn.fetch(
@@ -952,27 +958,14 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
             status = {row["client_order_id"]: row["status"] for row in rows}
             assert status == {client_id: "RESERVED" for client_id in client_ids}
 
-            # Once a PREPARED intent is definitively aborted, its stale slot can
-            # be released; an unresolved SUBMITTING attempt remains protected.
-            await service.mark_submit_aborted(
-                client_ids[0], "test proves no venue request was started"
-            )
-            # A caller-supplied active ID remains protected even after the
-            # submit ledger is definitively ABORTED.
-            await manager.reconcile_active_slots(
-                {client_ids[0]}, max_reserved_age_seconds=1
-            )
-            async with service.pool.acquire() as conn:
-                rows = await conn.fetch(
-                    "SELECT client_order_id, status FROM public.order_slot_reservations "
-                    "WHERE client_order_id = any($1::text[]) AND account = 'default'",
-                    client_ids,
-                )
-            status = {row["client_order_id"]: row["status"] for row in rows}
-            assert status == {client_id: "RESERVED" for client_id in client_ids}
+            await lock_conn.execute("select pg_advisory_unlock($1)", FENCE_LOCK_KEY)
+            await service.pool.release(lock_conn)
+            lock_conn = None
 
+            # With the submit fence free, stale PREPARED is provably pre-submit
+            # and may be aborted; SUBMITTING and active caller IDs stay reserved.
             await manager.reconcile_active_slots(
-                set(), max_reserved_age_seconds=1
+                {client_ids[2]}, max_reserved_age_seconds=1
             )
             async with service.pool.acquire() as conn:
                 rows = await conn.fetch(
@@ -980,10 +973,37 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
                     "WHERE client_order_id = any($1::text[]) AND account = 'default'",
                     client_ids,
                 )
+                attempts = await conn.fetch(
+                    "SELECT client_order_id, status FROM public.executor_submit_attempts "
+                    "WHERE client_order_id = any($1::text[])",
+                    client_ids[:2],
+                )
             status = {row["client_order_id"]: row["status"] for row in rows}
+            attempt_status = {row["client_order_id"]: row["status"] for row in attempts}
             assert status[client_ids[0]] == "RELEASED"
             assert status[client_ids[1]] == "RESERVED"
+            assert status[client_ids[2]] == "RESERVED"
+            assert attempt_status[client_ids[0]] == "ABORTED"
+            assert attempt_status[client_ids[1]] == "SUBMITTING"
+
+            # The third reservation has no ledger row; the active caller ID is
+            # its protection. Once the caller no longer owns it, it can expire.
+            await manager.reconcile_active_slots(set(), max_reserved_age_seconds=1)
+            async with service.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT client_order_id, status FROM public.order_slot_reservations "
+                    "WHERE client_order_id = any($1::text[]) AND account = 'default'",
+                    client_ids,
+                )
+            status = {row["client_order_id"]: row["status"] for row in rows}
+            assert status[client_ids[1]] == "RESERVED"
+            assert status[client_ids[2]] == "RELEASED"
         finally:
+            if lock_conn is not None:
+                try:
+                    await lock_conn.execute("select pg_advisory_unlock($1)", FENCE_LOCK_KEY)
+                finally:
+                    await service.pool.release(lock_conn)
             async with service.pool.acquire() as conn:
                 await conn.execute(
                     "DELETE FROM public.order_slot_reservations "
@@ -993,7 +1013,11 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
                 await conn.execute(
                     "DELETE FROM public.executor_submit_attempts "
                     "WHERE client_order_id = any($1::text[])",
-                    client_ids,
+                    client_ids[:2],
+                )
+                await conn.execute(
+                    "DELETE FROM public.spot_order_slot_config WHERE venue = $1",
+                    venue,
                 )
             await service.close()
 
