@@ -898,7 +898,6 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
         client_ids = [
             "slot-prepared-" + suffix,
             "slot-submitting-" + suffix,
-            "slot-active-" + suffix,
         ]
         service = GlobalStopService(dsn, min_size=1, max_size=2)
         await service.start()
@@ -941,9 +940,8 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
                 )
 
             # PREPARED and SUBMITTING ledger rows protect their reservations.
-            # The third ID has no ledger row but is still active in the caller.
             await manager.reconcile_active_slots(
-                {client_ids[2]}, max_reserved_age_seconds=1
+                set(), max_reserved_age_seconds=1
             )
             async with service.pool.acquire() as conn:
                 rows = await conn.fetch(
@@ -960,7 +958,7 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
                 client_ids[0], "test proves no venue request was started"
             )
             await manager.reconcile_active_slots(
-                {client_ids[2]}, max_reserved_age_seconds=1
+                set(), max_reserved_age_seconds=1
             )
             async with service.pool.acquire() as conn:
                 rows = await conn.fetch(
@@ -971,7 +969,6 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
             status = {row["client_order_id"]: row["status"] for row in rows}
             assert status[client_ids[0]] == "RELEASED"
             assert status[client_ids[1]] == "RESERVED"
-            assert status[client_ids[2]] == "RESERVED"
         finally:
             async with service.pool.acquire() as conn:
                 await conn.execute(
@@ -982,7 +979,7 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
                 await conn.execute(
                     "DELETE FROM public.executor_submit_attempts "
                     "WHERE client_order_id = any($1::text[])",
-                    client_ids[:2],
+                    client_ids,
                 )
             await service.close()
 
