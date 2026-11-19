@@ -1107,6 +1107,7 @@ async def test_zero_module_slot_cap_blocks_entry_before_market_preflight(
             id="spot_idr",
             quote="IDR",
             spot_venues=["indodax"],
+            hedge_venues=["okx"],
             enabled=True,
             max_slots_per_venue=0,
         )
@@ -1205,6 +1206,7 @@ async def test_module_slot_cap_is_forwarded_to_durable_reservation_boundary(
             id="spot_idr",
             quote="IDR",
             spot_venues=["indodax"],
+            hedge_venues=["okx"],
             enabled=True,
             max_slots_per_venue=1,
         )
