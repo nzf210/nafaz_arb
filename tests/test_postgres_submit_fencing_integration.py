@@ -831,3 +831,51 @@ def test_postgres_derisk_lane_is_not_blocked_by_active_entry_fence():
 
     assert entry.exitcode == 0
     assert derisk.exitcode == 0
+
+
+@pytest.mark.integration
+def test_postgres_venue_slot_override_is_shared_across_quote_accounts():
+    """A per-venue cap must span IDR and USDT reservations across managers."""
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    async def run():
+        import asyncpg
+        from executor.order_slots import OrderSlotManager, SlotExhaustedError
+
+        suffix = uuid.uuid4().hex[:12]
+        venue = "audit-venue-slot-" + suffix
+        client_ids = ["venue-slot-idr-" + suffix, "venue-slot-usdt-" + suffix]
+        pool_a = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=1)
+        pool_b = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=1)
+        manager_a = OrderSlotManager(pool_a)
+        manager_b = OrderSlotManager(pool_b)
+        try:
+            await manager_a.reserve_slot(
+                venue,
+                account="idr",
+                client_order_id=client_ids[0],
+                max_slots_override=2,
+                venue_max_slots_override=1,
+            )
+            with pytest.raises(SlotExhaustedError):
+                await manager_b.reserve_slot(
+                    venue,
+                    account="usdt",
+                    client_order_id=client_ids[1],
+                    max_slots_override=2,
+                    venue_max_slots_override=1,
+                )
+        finally:
+            try:
+                async with pool_a.acquire() as conn:
+                    await conn.execute(
+                        "delete from public.order_slot_reservations where client_order_id = any($1::text[])",
+                        client_ids,
+                    )
+            finally:
+                await pool_a.close()
+                await pool_b.close()
+
+    asyncio.run(run())
