@@ -243,6 +243,7 @@ class EngineEntryFlowMixin:
         exchange = str(payload.pair_info.local_exchange or "").strip().lower()
         quote_asset = str(payload.pair_info.quote_asset or "").strip().lower()
         configured_modules = getattr(self.config, "modules", None) or {}
+        module_slot_limit = None
         if configured_modules:
             module = self.config.module_for(exchange, payload.pair_info.quote_asset)
             if module is None:
@@ -263,6 +264,19 @@ class EngineEntryFlowMixin:
                 )
                 await self.publish_status()
                 return
+            try:
+                module_slot_limit = int(module.max_slots_per_venue)
+            except (TypeError, ValueError):
+                module_slot_limit = -1
+            if module_slot_limit < 0 or module_slot_limit > 100:
+                self._mark_failed(
+                    pair_tag,
+                    "EXECUTION_MODULE_CONFIG_INVALID",
+                    "Entry rejected because max_slots_per_venue must be between 0 and 100.",
+                    detail={"module_id": module.id, "max_slots_per_venue": module.max_slots_per_venue},
+                )
+                await self.publish_status()
+                return
         if quote_asset in ("bidr", "idr"):
             quote_key = "idr"
         elif quote_asset in ("usdt", "usdc"):
@@ -275,6 +289,8 @@ class EngineEntryFlowMixin:
             # Check venue-level limit
             current_open = self._spot_open_order_count(exchange)
             max_open = self._spot_order_limit(exchange)
+            if module_slot_limit is not None:
+                max_open = min(max_open, module_slot_limit)
             if current_open >= max_open:
                 logger.info(
                     "[Entry] skipping %s: %s already has %d/%d open spot positions or pending entries",
@@ -327,6 +343,8 @@ class EngineEntryFlowMixin:
 
             current = self._spot_open_order_count(exchange)
             maximum = self._spot_order_limit(exchange)
+            if module_slot_limit is not None:
+                maximum = min(maximum, module_slot_limit)
             if current >= maximum:
                 self._mark_failed(
                     pair_tag,

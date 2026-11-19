@@ -1090,3 +1090,64 @@ async def test_disabled_execution_module_blocks_entry_before_market_preflight(
     failure.assert_called_once()
     assert failure.call_args.args[1] == "EXECUTION_MODULE_DISABLED"
     spread_check.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_zero_module_slot_cap_blocks_entry_before_market_preflight(
+    engine, fake_redis, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from executor.config import ExecutionModuleConfig
+
+    pair_tag = "indodax:btc_idr"
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+    engine.config.modules = {
+        "spot_idr": ExecutionModuleConfig(
+            id="spot_idr",
+            quote="IDR",
+            spot_venues=["indodax"],
+            enabled=True,
+            max_slots_per_venue=0,
+        )
+    }
+    monkeypatch.setattr(
+        engine, "_is_stale_or_duplicate_signal", AsyncMock(return_value=False)
+    )
+    spread_check = AsyncMock()
+    monkeypatch.setattr(engine, "_validate_entry_spread", spread_check)
+
+    await engine._handle_signal_locked(pair_tag)
+
+    spread_check.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_module_max_position_cap_reduces_entry_sizing(engine, fake_redis, monkeypatch):
+    from unittest.mock import AsyncMock
+    from executor.config import ExecutionModuleConfig
+
+    pair_tag = "indodax:btc_idr"
+    payload_data = _fresh_signal_payload(int(time.time() * 1000))
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload_data))
+    payload = await engine._load_signal_payload(pair_tag)
+    engine.config.mock_mode = False
+    engine.config.modules = {
+        "spot_idr": ExecutionModuleConfig(
+            id="spot_idr",
+            quote="IDR",
+            spot_venues=["indodax"],
+            enabled=True,
+            max_position_usdt=10.0,
+        )
+    }
+    monkeypatch.setattr(engine, "_compute_entry_sizing", AsyncMock(return_value=(100.0, None)))
+    monkeypatch.setattr(engine, "_verify_dual_leg_funding", AsyncMock(return_value=True))
+
+    result = await engine._prepare_entry_sizing(
+        pair_tag, payload, payload.pair_info, payload.execution_directives
+    )
+
+    assert result is not None
+    _, actual_cost_usdt, _ = result
+    assert actual_cost_usdt <= 10.0 + 1e-8

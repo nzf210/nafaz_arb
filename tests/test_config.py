@@ -468,3 +468,21 @@ def test_execution_modules_are_an_explicit_allowlist_and_normalize_bidr():
 
     assert cfg.module_for("INDODAX", "BIDR") is disabled
     assert cfg.module_for("tokocrypto", "USDT") is None
+
+
+def test_execution_module_file_preserves_zero_slot_cap(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "modules": {
+            "spot_idr": {
+                "quote": "IDR",
+                "spot_venues": ["indodax"],
+                "enabled": True,
+                "max_slots_per_venue": 0,
+            }
+        }
+    }))
+    cfg = ExecutorConfig()
+    cfg._apply_file(str(config_path))
+
+    assert cfg.modules["spot_idr"].max_slots_per_venue == 0

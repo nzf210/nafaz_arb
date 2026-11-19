@@ -1,6 +1,7 @@
 """Entry sizing and dual-leg funding checks."""
 
 import json
+import math
 from decimal import Decimal
 
 from executor.models import PositionState
@@ -24,6 +25,37 @@ class EngineEntrySizingMixin:
         if sizing is None:
             return None
         max_pos_usdt, _ = sizing
+        if getattr(self.config, "modules", None):
+            module = self.config.module_for(
+                pair_info.local_exchange, pair_info.quote_asset
+            )
+            if module is None or not module.enabled:
+                self._mark_failed(
+                    pair_tag,
+                    "EXECUTION_MODULE_NOT_AVAILABLE",
+                    "Entry sizing rejected because its configured execution module is unavailable or disabled.",
+                    detail={
+                        "exchange": pair_info.local_exchange,
+                        "quote_asset": pair_info.quote_asset,
+                    },
+                )
+                await self.publish_status()
+                return None
+            try:
+                module_cap = float(module.max_position_usdt or 0.0)
+            except (TypeError, ValueError):
+                module_cap = float("nan")
+            if not math.isfinite(module_cap) or module_cap < 0:
+                self._mark_failed(
+                    pair_tag,
+                    "EXECUTION_MODULE_CONFIG_INVALID",
+                    "Entry sizing rejected because module max_position_usdt must be finite and non-negative.",
+                    detail={"module_id": module.id, "max_position_usdt": module.max_position_usdt},
+                )
+                await self.publish_status()
+                return None
+            if module_cap > 0:
+                max_pos_usdt = min(float(max_pos_usdt), module_cap)
 
         capital_idr = Decimal(str(max_pos_usdt)) * Decimal(str(snapshot.usdt_idr_rate))
         desired_qty = float(capital_idr / Decimal(str(buy_price_idr)))

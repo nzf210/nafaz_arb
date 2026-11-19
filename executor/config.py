@@ -359,7 +359,7 @@ class ExecutorConfig:
                             enabled=bool(mod_data.get("enabled", True)),
                             capital_usdt=float(mod_data.get("capital_usdt", 0.0) or 0.0),
                             max_position_usdt=float(mod_data.get("max_position_usdt", 0.0) or 0.0),
-                            max_slots_per_venue=int(mod_data.get("max_slots_per_venue", 1) or 1),
+                            max_slots_per_venue=int(mod_data.get("max_slots_per_venue", 1)),
                         )
         except Exception as e:
             print(f"warning: error loading config file: {e}")
