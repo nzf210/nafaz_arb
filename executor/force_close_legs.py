@@ -234,7 +234,16 @@ class ForceCloseLegMixin:
             )
             return False, 0.0
         try:
-            filled_qty = float(order.get("filled") or 0.0)
+            raw_filled = float(order.get("filled") or 0.0)
+            contract_size = float(
+                order.get("contractSize")
+                or (pos.global_amount_spec.get("base_per_unit") if isinstance(pos.global_amount_spec, dict) else getattr(pos.global_amount_spec, "base_per_unit", 1.0))
+                or 1.0
+            )
+            unit = str(
+                pos.global_amount_spec.get("unit") if isinstance(pos.global_amount_spec, dict) else getattr(pos.global_amount_spec, "unit", "")
+            ).upper()
+            filled_qty = raw_filled * contract_size if unit == "CONTRACT" and raw_filled <= pos.qty / contract_size + 1e-4 else raw_filled
         except (TypeError, ValueError):
             return False, 0.0
         if filled_qty + max(1e-12, pos.qty * 1e-8) < pos.qty:
