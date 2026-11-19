@@ -993,3 +993,97 @@ async def test_derisk_fence_uses_independent_session_lock_key():
     ]
     assert lock_calls == [DERISK_LOCK_KEY, DERISK_LOCK_KEY]
     assert DERISK_LOCK_KEY != FENCE_LOCK_KEY
+
+
+class _RecordingAsyncContext:
+    def __init__(self, events):
+        self.events = events
+
+    async def __aenter__(self):
+        self.events.append("fence_enter")
+        return object()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        self.events.append("fence_exit")
+        return False
+
+
+class _RecordingSpotStop(_FakeSpotStop):
+    def __init__(self, events):
+        super().__init__()
+        self.events = events
+
+    async def prepare_submit_attempt(self, **kwargs):
+        self.events.append("prepare")
+        self.prepared.append(kwargs)
+
+    def order_submit_fence(self, *, client_order_id, pre_submit_guard=None, **kwargs):
+        return _RecordingAsyncContext(self.events)
+
+    async def mark_submit_rejected(self, client_order_id, error):
+        self.events.append("ledger_rejected")
+
+
+class _RecordingSlotManager:
+    def __init__(self, events):
+        self.events = events
+
+    async def reserve_slot(self, *args, **kwargs):
+        self.events.append("reserve_slot")
+
+    async def release_slot(self, *args, **kwargs):
+        self.events.append("release_slot")
+
+
+class _DefinitiveRejectSpotVenue:
+    def __init__(self, events):
+        self.events = events
+        self.submit_calls = 0
+
+    async def place_local_limit_buy(self, *args, **kwargs):
+        self.submit_calls += 1
+        self.events.append("venue_create")
+        raise ValueError("definitive invalid order")
+
+
+class _SlotOrderingHarness(_SpotSubmissionHarness):
+    def __init__(self, stop, venue, slot_manager):
+        super().__init__(stop, venue)
+        self.slot_manager = slot_manager
+        self.config = SimpleNamespace(mock_mode=False)
+
+    def _spot_slot_account(self, pair_info):
+        return pair_info.quote_asset
+
+    def _is_definitive_order_rejection(self, error):
+        return True
+
+    async def _handle_entry_submission_failure(self, *args, **kwargs):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_spot_entry_persists_prepared_intent_before_reserving_slot():
+    events = []
+    stop = _RecordingSpotStop(events)
+    venue = _DefinitiveRejectSpotVenue(events)
+    slots = _RecordingSlotManager(events)
+    engine = _SlotOrderingHarness(stop, venue, slots)
+    pair_info = SimpleNamespace(
+        local_exchange="mexc",
+        local_symbol="BTC/USDT",
+        local_amount_spec=_FakeAmountSpec(),
+        global_amount_spec=_FakeAmountSpec(),
+        quote_asset="USDT",
+    )
+
+    await engine._submit_entry_order(
+        "mexc:BTC/USDT", {}, pair_info, {}, {}, 0.01, 500.0, 50000.0
+    )
+
+    assert events.index("prepare") < events.index("reserve_slot")
+    assert events.index("reserve_slot") < events.index("fence_enter")
+    assert events.index("fence_enter") < events.index("venue_create")
+    assert venue.submit_calls == 1
+    assert "ledger_rejected" in events
+    assert "release_slot" in events
