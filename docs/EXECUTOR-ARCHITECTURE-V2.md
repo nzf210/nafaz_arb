@@ -1725,3 +1725,20 @@ Startup recovery now records `NOT_FOUND` only when the lookup call successfully 
 Regression coverage includes a fake venue history timeout, a venue order found while the durable registry writer fails, a missing registry, a missing intent, and a successful exact-ID `None` lookup. The successful-not-found case remains globally blocking and is not treated as a definitive venue rejection.
 
 **Verification status:** R-47 source/test head `8f2d309c` passed GitHub Actions [44047469831](https://github.com/nzf210/nafaz_arb/actions/runs/44047469831): Python 714 passed / 4 skipped, disposable PostgreSQL submit-fencing integration 4 passed, and all five CI jobs passed. Overall status remains **PARTIAL / NOT LIVE-CERTIFIED**.
+
+## Spot slot reservation lifecycle (R-50)
+
+The LIVE spot entry ordering is:
+
+1. Build the stable client order ID and persist the universal order intent.
+2. Commit the Global STOP submit attempt as `PREPARED`.
+3. Atomically reserve both the venue-wide slot and the quote-account slot.
+4. Acquire the shared PostgreSQL session advisory fence; verify STOP, durable intent scope, and unresolved same-scope attempts; commit `SUBMITTING`.
+5. Submit the venue BUY while holding the session fence. Persist the pending-entry record before releasing the fence.
+6. Persist ACK and activate the slot. If the venue outcome or persistence is ambiguous, retain the unresolved attempt and its reservation.
+
+The stale slot sweeper must not equate an old `RESERVED` row with an order that was never submitted. The row can remain `RESERVED` while a venue POST is active. It is now retained if its client ID is active in the caller or its durable submit attempt is `PREPARED`, `SUBMITTING`, or `UNKNOWN`. Only an aged reservation without an active ID or nonterminal durable attempt may be released automatically. An explicit pre-submit `ABORTED` or definitive `REJECTED` transition makes cleanup safe.
+
+The PostgreSQL integration regression verifies that stale PREPARED and SUBMITTING reservations remain held and that an explicitly ABORTED PREPARED attempt can be released. The fake-venue regression verifies PREPARED is committed before slot reservation and the venue create boundary.
+
+**R-50 status:** fixed in source/test head `868f568d8890a133a64c6ef72993b1f844a6f455`; workflow [44492169205](https://github.com/nzf210/nafaz_arb/actions/runs/44492169205) passed all five jobs. This CI result is disposable-environment evidence, not validation of the production VPS database or a live CEX contract.
