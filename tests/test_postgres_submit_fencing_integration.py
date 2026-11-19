@@ -73,10 +73,11 @@ def _peer_submitter(
                 scope_exchange=scope_exchange,
                 scope_symbol=scope_symbol,
             ):
-                await service.mark_submit_acknowledged(
-                    client_id, {"id": "fake-peer-order", "status": "open"}
-                )
-                result_queue.put("ADMITTED")
+                pass
+            await service.mark_submit_acknowledged(
+                client_id, {"id": "fake-peer-order", "status": "open"}
+            )
+            result_queue.put("ADMITTED")
         except GlobalStopError as exc:
             result_queue.put("BLOCKED:" + str(exc))
         finally:
