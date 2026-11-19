@@ -29,9 +29,12 @@ def _json_mapping(value: Any) -> Optional[dict]:
             return None
     return value if isinstance(value, dict) else None
 
-# Stable, application-wide PostgreSQL advisory-lock key. Do not change without
-# coordinating every executor instance using this schema.
+# Stable, application-wide PostgreSQL advisory-lock keys. Do not change
+# without coordinating every executor instance using this schema.
 FENCE_LOCK_KEY = 731_904_221
+# Risk-reducing operations serialize with one another, but never wait behind
+# an entry/STOP critical section. A close must not be stranded by a slow entry.
+DERISK_LOCK_KEY = 731_904_222
 STOP_CHANNEL = "arb:global_stop"
 
 
@@ -220,9 +223,11 @@ class GlobalStopService:
     async def derisk_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
         """Serialize a risk-reducing submit without allowing STOP to block it.
 
-        STOP never rejects exits/unwinds/rollbacks/force-closes. An unresolved
-        entry is advisory only for de-risking: leaving known exposure open is
-        worse than allowing a bounded risk-reducing order to proceed.
+        STOP never rejects exits/unwinds/rollbacks/force-closes. De-risk uses a
+        separate session advisory key: it serializes other de-risk requests but
+        does not wait behind a slow entry/STOP fence. An unresolved entry is
+        advisory only for de-risking: leaving known exposure open is worse than
+        allowing a bounded risk-reducing order to proceed.
         """
         if not client_order_id or len(client_order_id) > 128:
             raise GlobalStopError("valid stable client_order_id is required before submit")
@@ -234,7 +239,7 @@ class GlobalStopService:
             async with self.pool.acquire() as conn:
                 locked = False
                 try:
-                    await conn.execute("select pg_advisory_lock($1)", FENCE_LOCK_KEY)
+                    await conn.execute("select pg_advisory_lock($1)", DERISK_LOCK_KEY)
                     locked = True
                     async with conn.transaction():
                         control = await conn.fetchrow(
@@ -266,7 +271,7 @@ class GlobalStopService:
                 finally:
                     if locked:
                         try:
-                            await conn.execute("select pg_advisory_unlock($1)", FENCE_LOCK_KEY)
+                            await conn.execute("select pg_advisory_unlock($1)", DERISK_LOCK_KEY)
                         except Exception as unlock_error:
                             self._demote_broken_pool(unlock_error)
                             logger.warning(
