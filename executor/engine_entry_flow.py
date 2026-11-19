@@ -264,6 +264,30 @@ class EngineEntryFlowMixin:
                 )
                 await self.publish_status()
                 return
+            # A non-empty hedge_venues list is an explicit allowlist. Enforce it
+            # before buying spot so a misrouted/alternative futures venue cannot
+            # create an unhedged spot leg outside the module's configured scope.
+            allowed_hedge_venues = {
+                str(venue or "").strip().lower()
+                for venue in (getattr(module, "hedge_venues", None) or [])
+                if str(venue or "").strip()
+            }
+            selected_hedge_venue = str(
+                payload.pair_info.global_exchange or ""
+            ).strip().lower()
+            if allowed_hedge_venues and selected_hedge_venue not in allowed_hedge_venues:
+                self._mark_failed(
+                    pair_tag,
+                    "EXECUTION_HEDGE_VENUE_NOT_CONFIGURED",
+                    "Entry rejected because the selected futures venue is outside the execution module hedge allowlist.",
+                    detail={
+                        "module_id": module.id,
+                        "hedge_exchange": selected_hedge_venue,
+                        "allowed_hedge_venues": sorted(allowed_hedge_venues),
+                    },
+                )
+                await self.publish_status()
+                return
             try:
                 module_slot_limit = int(module.max_slots_per_venue)
             except (TypeError, ValueError):
@@ -358,6 +382,7 @@ class EngineEntryFlowMixin:
             await self._submit_entry_order(
                 pair_tag, payload, pair_info, snapshot, directives,
                 buy_qty, actual_cost_usdt, buy_price_idr,
+                module_slot_limit=module_slot_limit,
             )
 
     async def _get_available_spot_quote_balance(self, spot_venue: str) -> float:
