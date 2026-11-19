@@ -1230,3 +1230,19 @@ async def test_module_slot_cap_is_forwarded_to_durable_reservation_boundary(
 
     submit.assert_awaited_once()
     assert submit.await_args.kwargs["module_slot_limit"] == 1
+
+
+@pytest.mark.asyncio
+async def test_compatibility_entry_facade_never_calls_legacy_order_hook(engine, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    canonical = AsyncMock()
+    legacy_order_hook = AsyncMock(return_value={"status": "SUBMITTED"})
+    monkeypatch.setattr(engine, "handle_signal_notification", canonical)
+    monkeypatch.setattr(engine, "_place_and_monitor_entry_legs", legacy_order_hook, raising=False)
+
+    result = await engine.execute_entry_signal({"pair_tag": "indodax:btc_idr"})
+
+    assert result == {"status": "PROCESSED", "pair_tag": "indodax:btc_idr"}
+    canonical.assert_awaited_once_with("indodax:btc_idr")
+    legacy_order_hook.assert_not_awaited()
