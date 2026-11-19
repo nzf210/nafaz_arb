@@ -1151,3 +1151,80 @@ async def test_module_max_position_cap_reduces_entry_sizing(engine, fake_redis, 
     assert result is not None
     _, actual_cost_usdt, _ = result
     assert actual_cost_usdt <= 10.0 + 1e-8
+
+
+@pytest.mark.asyncio
+async def test_execution_module_hedge_allowlist_blocks_unconfigured_venue_before_spot_preflight(
+    engine, fake_redis, monkeypatch
+):
+    from unittest.mock import AsyncMock, MagicMock
+    from executor.config import ExecutionModuleConfig
+
+    pair_tag = "indodax:btc_idr"
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    payload["pair_info"]["global_exchange"] = "mexc"
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+    engine.config.modules = {
+        "spot_idr": ExecutionModuleConfig(
+            id="spot_idr",
+            quote="IDR",
+            spot_venues=["indodax"],
+            hedge_venues=["okx"],
+            enabled=True,
+        )
+    }
+    monkeypatch.setattr(
+        engine, "_is_stale_or_duplicate_signal", AsyncMock(return_value=False)
+    )
+    failure = MagicMock()
+    monkeypatch.setattr(engine, "_mark_failed", failure)
+    monkeypatch.setattr(engine, "publish_status", AsyncMock())
+    spread_check = AsyncMock(return_value=True)
+    monkeypatch.setattr(engine, "_validate_entry_spread", spread_check)
+
+    await engine._handle_signal_locked(pair_tag)
+
+    failure.assert_called_once()
+    assert failure.call_args.args[1] == "EXECUTION_HEDGE_VENUE_NOT_CONFIGURED"
+    assert failure.call_args.kwargs["detail"]["hedge_exchange"] == "mexc"
+    spread_check.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_module_slot_cap_is_forwarded_to_durable_reservation_boundary(
+    engine, fake_redis, monkeypatch
+):
+    from unittest.mock import AsyncMock
+    from executor.config import ExecutionModuleConfig
+
+    pair_tag = "indodax:btc_idr"
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+    engine.config.modules = {
+        "spot_idr": ExecutionModuleConfig(
+            id="spot_idr",
+            quote="IDR",
+            spot_venues=["indodax"],
+            enabled=True,
+            max_slots_per_venue=1,
+        )
+    }
+    monkeypatch.setattr(
+        engine, "_is_stale_or_duplicate_signal", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(engine, "_validate_entry_spread", AsyncMock(return_value=True))
+    monkeypatch.setattr(engine, "_refresh_fee_snapshot", AsyncMock())
+    monkeypatch.setattr(engine, "_validate_dynamic_fee_edge", AsyncMock(return_value=True))
+    monkeypatch.setattr(engine, "_validate_entry_market_rules", AsyncMock(return_value=True))
+    monkeypatch.setattr(engine, "_validate_hedge_leg_tradable", AsyncMock(return_value=True))
+    monkeypatch.setattr(engine, "_apply_indodax_adaptive_maker_quote", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        engine, "_prepare_entry_sizing", AsyncMock(return_value=(0.001, 10.0, 100000.0))
+    )
+    submit = AsyncMock()
+    monkeypatch.setattr(engine, "_submit_entry_order", submit)
+
+    await engine._handle_signal_locked(pair_tag)
+
+    submit.assert_awaited_once()
+    assert submit.await_args.kwargs["module_slot_limit"] == 1
