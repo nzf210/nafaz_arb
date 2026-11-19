@@ -879,3 +879,111 @@ def test_postgres_venue_slot_override_is_shared_across_quote_accounts():
                 await pool_b.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.integration
+def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservations():
+    """A stale sweep must not free a slot while its durable submit is unresolved."""
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    async def run():
+        import asyncpg
+        from executor.order_slots import OrderSlotManager
+        from executor.global_stop import GlobalStopService
+
+        suffix = uuid.uuid4().hex[:12]
+        venue = "audit-slot-ledger-" + suffix
+        client_ids = [
+            "slot-prepared-" + suffix,
+            "slot-submitting-" + suffix,
+            "slot-active-" + suffix,
+        ]
+        service = GlobalStopService(dsn, min_size=1, max_size=2)
+        await service.start()
+        manager = OrderSlotManager(service.pool)
+        try:
+            for index, client_id in enumerate(client_ids[:2]):
+                await service.prepare_submit_attempt(
+                    client_order_id=client_id,
+                    exchange=venue,
+                    market_type="spot",
+                    symbol=f"COIN{index}/USDT",
+                    side="buy",
+                    order_type="limit",
+                    quantity=1.0,
+                    price=1.0,
+                    pair_key=f"{venue}:COIN{index}/USDT",
+                )
+            for client_id in client_ids:
+                await manager.reserve_slot(
+                    venue,
+                    account="idr",
+                    client_order_id=client_id,
+                    max_slots_override=4,
+                    venue_max_slots_override=4,
+                )
+
+            async with service.order_submit_fence(
+                client_order_id=client_ids[1],
+                scope_exchange=venue,
+                scope_symbol="COIN1/USDT",
+            ):
+                pass
+
+            async with service.pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE public.order_slot_reservations "
+                    "SET created_at = now() - interval '2 minutes' "
+                    "WHERE client_order_id = any($1::text[])",
+                    client_ids,
+                )
+
+            # PREPARED and SUBMITTING ledger rows protect their reservations.
+            # The third ID has no ledger row but is still active in the caller.
+            await manager.reconcile_active_slots(
+                {client_ids[2]}, max_reserved_age_seconds=1
+            )
+            async with service.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT client_order_id, status FROM public.order_slot_reservations "
+                    "WHERE client_order_id = any($1::text[]) AND account = 'default'",
+                    client_ids,
+                )
+            status = {row["client_order_id"]: row["status"] for row in rows}
+            assert status == {client_id: "RESERVED" for client_id in client_ids}
+
+            # Once a PREPARED intent is definitively aborted, its stale slot can
+            # be released; an unresolved SUBMITTING attempt remains protected.
+            await service.mark_submit_aborted(
+                client_ids[0], "test proves no venue request was started"
+            )
+            await manager.reconcile_active_slots(
+                {client_ids[2]}, max_reserved_age_seconds=1
+            )
+            async with service.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT client_order_id, status FROM public.order_slot_reservations "
+                    "WHERE client_order_id = any($1::text[]) AND account = 'default'",
+                    client_ids,
+                )
+            status = {row["client_order_id"]: row["status"] for row in rows}
+            assert status[client_ids[0]] == "RELEASED"
+            assert status[client_ids[1]] == "RESERVED"
+            assert status[client_ids[2]] == "RESERVED"
+        finally:
+            async with service.pool.acquire() as conn:
+                await conn.execute(
+                    "DELETE FROM public.order_slot_reservations "
+                    "WHERE client_order_id = any($1::text[])",
+                    client_ids,
+                )
+                await conn.execute(
+                    "DELETE FROM public.executor_submit_attempts "
+                    "WHERE client_order_id = any($1::text[])",
+                    client_ids[:2],
+                )
+            await service.close()
+
+    asyncio.run(run())
