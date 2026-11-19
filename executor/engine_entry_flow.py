@@ -399,26 +399,12 @@ class EngineEntryFlowMixin:
         return 0.0
 
     async def execute_entry_signal(self, signal: dict) -> dict:
-        """Entry execution facade with pair lock and advanced spot venue lock."""
-        spot_venue = str(signal.get("spot_venue") or signal.get("local_exchange") or "").lower()
-        pair_tag = str(signal.get("pair_tag") or signal.get("symbol") or "")
-
-        async with self._pair_lock(pair_tag):
-            # Ambil lock bursa Spot SEBELUM fetch balance dan dynamic sizing
-            async with self._spot_exchange_entry_lock(spot_venue):
-                free_spot_balance = await self._get_available_spot_quote_balance(spot_venue)
-                compute_sizing = getattr(self, "_compute_entry_sizing_from_balance", None)
-                if callable(compute_sizing):
-                    sized_order = await compute_sizing(signal, free_spot_balance)
-                    if hasattr(sized_order, "is_viable") and not sized_order.is_viable:
-                        return {"status": "SKIPPED_SIZING", "reason": getattr(sized_order, "reason", "not viable")}
-                place_legs = getattr(self, "_place_and_monitor_entry_legs", None)
-                if callable(place_legs):
-                    return await place_legs(signal, locals().get("sized_order"))
-                payload = getattr(self, "_signal_payloads", {}).get(pair_tag)
-                if payload is None and hasattr(self, "_load_signal_payload"):
-                    payload = await self._load_signal_payload(pair_tag)
-                if payload is not None:
-                    await self._handle_signal_locked(pair_tag, payload)
-                    return {"status": "SUBMITTED", "pair_tag": pair_tag}
-                return {"status": "SUCCESS", "pair_tag": pair_tag, "free_spot_balance": free_spot_balance}
+        """Compatibility facade that delegates only to the canonical fenced entry path."""
+        pair_tag = str(signal.get("pair_tag") or signal.get("symbol") or "").strip()
+        if not pair_tag:
+            return {"status": "REJECTED", "reason": "pair_tag is required"}
+        # Never dispatch to an injected/legacy leg-placement callback here.
+        # handle_signal_notification binds the configured venue pair, acquires
+        # the canonical locks, and runs the durable PREPARED/SUBMITTING lifecycle.
+        await self.handle_signal_notification(pair_tag)
+        return {"status": "PROCESSED", "pair_tag": pair_tag}
