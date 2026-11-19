@@ -16,6 +16,20 @@ class EngineEntrySubmissionMixin:
     """Submits the spot leg through the existing durable order lifecycle."""
 
     @staticmethod
+    def _spot_slot_account(pair_info) -> str:
+        """Use the same normalized quote scope as module admission."""
+        quote = str(
+            getattr(pair_info, "local_quote_asset", "")
+            or getattr(pair_info, "quote_asset", "")
+            or ""
+        ).strip().lower()
+        if quote in {"idr", "bidr"}:
+            return "idr"
+        if quote in {"usdt", "usdc"}:
+            return "usdt"
+        return quote or "default"
+
+    @staticmethod
     def _local_order_limit_price(pair_info, snapshot, buy_price_idr: float) -> float:
         """Convert the IDR-normalized strategy price to the venue quote unit."""
         quote_asset = str(getattr(pair_info, "quote_asset", "") or "").strip().upper()
@@ -389,7 +403,7 @@ class EngineEntrySubmissionMixin:
                 global_amount_spec=pair_info.global_amount_spec,
                 recovery_context=recovery_context,
             )
-            quote_asset = (getattr(pair_info, "local_quote_asset", "") or "IDR").strip().lower()
+            quote_asset = self._spot_slot_account(pair_info)
             if getattr(self, "slot_manager", None) is not None:
                 await self.slot_manager.reserve_slot(
                     pair_info.local_exchange,
@@ -604,7 +618,7 @@ class EngineEntrySubmissionMixin:
 
             order_id = str(order["id"])
             if getattr(self, "slot_manager", None) is not None:
-                quote_asset = (getattr(pair_info, "local_quote_asset", "") or "IDR").strip().lower()
+                quote_asset = self._spot_slot_account(pair_info)
                 await self.slot_manager.activate_slot(
                     pair_info.local_exchange, client_order_id=entry_coid, account=quote_asset
                 )
