@@ -532,3 +532,19 @@ The first R-47 CI attempt exposed two test/implementation follow-ups: the fake s
 - [ ] Approve the futures minimum-notional overhedge/delta-drift policy and close the Redis-only/best-effort de-risk persistence gap.
 
 **Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+
+### R-50 follow-up — safe retirement of stale PREPARED intents
+
+**Additional source fix:** `513d7f8eee066892ab665620f36121316e78d18b`  
+**Final regression head:** `4e169fb3f50e9ad9693da99d07081d203402b915`
+
+- [x] The new PREPARED-before-slot ordering exposed a second lifecycle requirement: a process can crash after PREPARED and slot reservation but before acquiring the submit fence. Such a row is provably pre-venue, but preserving PREPARED forever would strand its slot.
+- [x] The slot sweeper now attempts `pg_try_advisory_xact_lock(FENCE_LOCK_KEY)` before retiring stale PREPARED attempts. This is the same advisory key used by the session-level entry fence.
+- [x] If another entry currently owns the session fence, cleanup does not retire PREPARED; its slot remains reserved. If the fence is free and the PREPARED attempt is older than the slot cutoff, it is transitioned to ABORTED with a reason and resolution timestamp. A paused submitter that later resumes cannot cross the venue boundary because `order_submit_fence` requires status PREPARED.
+- [x] SUBMITTING and UNKNOWN are never automatically aborted by this cleanup. They remain durable and continue to protect their slots.
+- [x] PostgreSQL regression holds the shared session lock from a separate connection and verifies stale PREPARED stays reserved; after releasing the lock, stale PREPARED becomes ABORTED/released, SUBMITTING remains reserved, and an active caller ID remains reserved until it is no longer active.
+
+**CI history:** an initial run for the extended fixture failed because the test aged reservation rows but not the corresponding submit-attempt `created_at`; the implementation correctly uses the durable attempt age. The fixture was corrected to age both records. Final head `4e169fb3` passed workflow [44493239020](https://github.com/nzf210/nafaz_arb/actions/runs/44493239020): all five jobs successful; Python **746 passed, 10 skipped, 117 warnings**; PostgreSQL integration **11 passed**; Go tests/race/vet, VPS migration runner, and Docker builds passed.
+
+**R-50 status remains FIXED in source and regression tests.** Production VPS and real CEX validation remain open.
