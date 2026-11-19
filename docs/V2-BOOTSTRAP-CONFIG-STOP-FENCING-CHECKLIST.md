@@ -601,3 +601,15 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 - [ ] Futures minimum-notional overhedge/delta-drift policy and de-risk persistence review.
 
 **Release state remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+
+### R-50 follow-up — stale PREPARED retirement is lock-coordinated
+
+- [x] The stale slot sweeper uses `pg_try_advisory_xact_lock(FENCE_LOCK_KEY)` before automatically aborting aged PREPARED attempts.
+- [x] If an entry submit/admission owns the shared session fence, stale PREPARED and its slot remain untouched.
+- [x] If the fence is free, an aged PREPARED row is transitioned to ABORTED; a resumed submitter fails its PREPARED-state check before reaching the venue.
+- [x] SUBMITTING/UNKNOWN are not automatically retired; their reservations remain protected.
+- [x] PostgreSQL integration covers lock-held PREPARED, lock-free stale PREPARED cleanup, persistent SUBMITTING, and active caller ID protection.
+- [x] Final source/test head `4e169fb3f50e9ad9693da99d07081d203402b915`: workflow [44493239020](https://github.com/nzf210/nafaz_arb/actions/runs/44493239020) passed all five jobs; Python **746 passed / 10 skipped**, PostgreSQL integration **11 passed**, Go/race/vet, migration runner, and Docker builds passed.
+
+**Status:** R-50 source/test remediation verified in CI. Release state remains PARTIAL / NOT LIVE-CERTIFIED.
