@@ -54,6 +54,27 @@ def _submitter(
     asyncio.run(run())
 
 
+
+
+def _derisk_holder(dsn, active_event, release_event, result_queue):
+    async def run():
+        service = GlobalStopService(dsn, min_size=1, max_size=1)
+        await service.start()
+        try:
+            async with service.derisk_submit_fence(
+                client_order_id="pg-derisk-" + uuid.uuid4().hex[:12]
+            ):
+                result_queue.put("ACQUIRED")
+                active_event.set()
+                await asyncio.to_thread(release_event.wait, 30)
+        except Exception as exc:
+            result_queue.put("ERROR:" + type(exc).__name__ + ":" + str(exc))
+        finally:
+            await service.close()
+    asyncio.run(run())
+
+
+
 def _peer_submitter(
     dsn, client_id, result_queue, *,
     exchange="mexc", symbol="ETH/USDT",
@@ -753,3 +774,60 @@ def test_postgres_scoped_submit_rejects_scope_not_matching_durable_intent():
             await service.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.integration
+def test_postgres_derisk_lane_is_not_blocked_by_active_entry_fence():
+    """An open entry HTTP request must not hold up a risk-reducing submit lane."""
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    ctx = mp.get_context("fork")
+    suffix = uuid.uuid4().hex[:12]
+    entry_id = "pg-entry-held-" + suffix
+    venue_active = ctx.Event()
+    venue_release = ctx.Event()
+    derisk_active = ctx.Event()
+    derisk_release = ctx.Event()
+    backend_queue = ctx.Queue()
+    derisk_queue = ctx.Queue()
+    entry = ctx.Process(
+        target=_submitter,
+        args=(dsn, entry_id, venue_active, venue_release, backend_queue),
+        kwargs={"exchange": "mexc", "symbol": "DODO_USDT"},
+    )
+    derisk = ctx.Process(
+        target=_derisk_holder,
+        args=(dsn, derisk_active, derisk_release, derisk_queue),
+    )
+    try:
+        entry.start()
+        assert venue_active.wait(15), "entry process never entered its fake venue request"
+        derisk.start()
+        assert derisk_active.wait(5), "de-risk lane waited behind the active entry fence"
+        assert derisk_queue.get(timeout=3) == "ACQUIRED"
+    finally:
+        derisk_release.set()
+        venue_release.set()
+        for process in (derisk, entry):
+            if process.is_alive():
+                process.join(10)
+            if process.is_alive():
+                process.terminate()
+                process.join(5)
+
+        async def cleanup():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                await conn.execute(
+                    "delete from public.executor_submit_attempts where client_order_id=$1",
+                    entry_id,
+                )
+            finally:
+                await conn.close()
+        asyncio.run(cleanup())
+
+    assert entry.exitcode == 0
+    assert derisk.exitcode == 0
