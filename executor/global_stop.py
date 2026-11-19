@@ -297,9 +297,10 @@ class GlobalStopService:
         shared session lock but before changing the durable attempt to
         SUBMITTING. A false result or guard error fails closed while leaving the
         attempt PREPARED, so the caller can safely mark it ABORTED.
-        When ``scope_exchange`` and ``scope_symbol`` are provided, unresolved
-        in-flight attempts block only submissions sharing the same venue/symbol,
-        preventing an ambiguous submit on one exchange from freezing unrelated venues.
+        When ``scope_exchange`` and ``scope_symbol`` are provided, they
+        must exactly match the durable PREPARED intent; the unresolved query then
+        uses that stored identity rather than trusting caller-supplied scope values.
+        This prevents a wrong scope argument from bypassing an unresolved order.
         """
         if not await self.ensure_pool():
             raise GlobalStopError("PostgreSQL STOP fencing is unavailable; create-order blocked")
@@ -346,13 +347,36 @@ class GlobalStopService:
                             raise GlobalStopError(
                                 f"global STOP active (epoch={control['epoch']} reason={control['reason'] or 'unspecified'})"
                             )
-                        if scope_exchange and scope_symbol:
+                        scope_requested = scope_exchange is not None or scope_symbol is not None
+                        if scope_requested:
+                            if not str(scope_exchange or "").strip() or not str(scope_symbol or "").strip():
+                                raise GlobalStopError(
+                                    "both scope_exchange and scope_symbol are required for scoped submit fencing"
+                                )
+                            intent = await conn.fetchrow(
+                                "select exchange, symbol, status from public.executor_submit_attempts "
+                                "where client_order_id = $1 for update",
+                                client_order_id,
+                            )
+                            if intent is None or intent["status"] != "PREPARED":
+                                raise GlobalStopError(
+                                    f"scoped submit requires a durable PREPARED intent: {client_order_id}"
+                                )
+                            durable_exchange = str(intent["exchange"] or "").strip().lower()
+                            durable_symbol = str(intent["symbol"] or "").strip()
+                            if (
+                                str(scope_exchange).strip().lower() != durable_exchange
+                                or str(scope_symbol).strip() != durable_symbol
+                            ):
+                                raise GlobalStopError(
+                                    "provided submit fence scope does not match the durable PREPARED intent"
+                                )
                             unresolved = await conn.fetchrow(
                                 "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
                                 "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
                                 "and exchange = $2 and symbol = $3 "
                                 "order by created_at limit 1",
-                                client_order_id, str(scope_exchange).lower(), str(scope_symbol),
+                                client_order_id, durable_exchange, durable_symbol,
                             )
                         else:
                             unresolved = await conn.fetchrow(
