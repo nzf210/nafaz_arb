@@ -156,3 +156,71 @@ async def test_client_for_exchange_prefers_venue_neutral_for_venue_over_other_pa
 
     owner = Harness()._client_for_exchange("tokocrypto")
     assert await owner._resolve_symbol(owner.local, "toko:SOON_IDR", "spot") == "SOON/IDR"
+
+
+@pytest.mark.asyncio
+async def test_spot_balance_lookup_never_falls_back_to_another_venue():
+    from executor.exchange_client import ExchangeClient
+
+    class FakeBalanceVenue:
+        def __init__(self, venue_id, total):
+            self.id = venue_id
+            self.options = {}
+            self.total = total
+            self.calls = 0
+
+        async def fetch_balance(self):
+            self.calls += 1
+            return {"free": {"BTC": self.total}, "total": {"BTC": self.total}}
+
+    indodax = FakeBalanceVenue("indodax", 1.0)
+    tokocrypto = FakeBalanceVenue("tokocrypto", 0.005)
+    futures = FakeBalanceVenue("okx", 0.0)
+    client = ExchangeClient(
+        indodax,
+        futures,
+        balance_exchanges={
+            "indodax": {"market": "spot", "client": indodax},
+            "tokocrypto": {"market": "spot", "client": tokocrypto},
+            "okx": {"market": "futures", "client": futures},
+        },
+    )
+
+    assert await client.fetch_spot_total_balance("BTC", venue="tokocrypto") == pytest.approx(0.005)
+    assert await client.fetch_spot_free_balance("BTC", venue="tokocrypto") == pytest.approx(0.005)
+    assert tokocrypto.calls == 2
+    assert indodax.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_spot_balance_lookup_fails_closed_when_requested_venue_client_missing():
+    from executor.exchange_client import ExchangeClient
+
+    class FakeBalanceVenue:
+        id = "indodax"
+        options = {}
+
+        def __init__(self):
+            self.calls = 0
+
+        async def fetch_balance(self):
+            self.calls += 1
+            return {"free": {"BTC": 1.0}, "total": {"BTC": 1.0}}
+
+    indodax = FakeBalanceVenue()
+    client = ExchangeClient(
+        indodax,
+        object(),
+        balance_exchanges={
+            "indodax": {"market": "spot", "client": indodax},
+            "tokocrypto": {
+                "market": "spot",
+                "client": None,
+                "error": "API key/secret not configured",
+            },
+        },
+    )
+
+    with pytest.raises(LookupError, match="tokocrypto"):
+        await client.fetch_spot_total_balance("BTC", venue="tokocrypto")
+    assert indodax.calls == 0

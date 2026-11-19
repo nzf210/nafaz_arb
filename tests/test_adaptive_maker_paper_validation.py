@@ -167,5 +167,6 @@ def test_spot_order_limit_update_normalizes_exchange_and_rejects_invalid_values(
     assert engine._apply_spot_order_limit("new_cex-1", "4") is True
     assert engine.config.max_open_spot_orders_per_exchange["new_cex-1"] == 4
     assert engine._apply_spot_order_limit("bad cex", "4") is False
-    assert engine._apply_spot_order_limit("indodax", "0") is False
-    assert engine._spot_order_limit("indodax") == 2
+    # Zero is an explicit operator setting that disables new entries for this venue.
+    assert engine._apply_spot_order_limit("indodax", "0") is True
+    assert engine._spot_order_limit("indodax") == 0

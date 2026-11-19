@@ -288,6 +288,22 @@ class ExchangeFeeBalanceMixin:
             ),
         }
 
+    def _spot_balance_client(self, venue: Optional[str] = None):
+        """Resolve the exact requested spot venue; never fall back across accounts."""
+        if venue is None:
+            return self.local
+        name = str(venue or "").strip().lower()
+        if not name:
+            raise ValueError("spot venue is required for venue-scoped balance lookup")
+        entry = (getattr(self, "balance_exchanges", None) or {}).get(name)
+        if not entry or entry.get("market") != "spot":
+            raise LookupError(f"spot balance client is not registered for venue: {name}")
+        client = entry.get("client")
+        if client is None:
+            detail = entry.get("error") or "client unavailable"
+            raise LookupError(f"spot balance client unavailable for venue {name}: {detail}")
+        return client
+
     async def fetch_spot_free_balance(self, asset: str, venue: Optional[str] = None) -> float:
         """Free balance of one spot asset, in base units.
 
@@ -298,11 +314,7 @@ class ExchangeFeeBalanceMixin:
         symbol = str(asset or "").strip().upper()
         if not symbol:
             raise ValueError("asset is required to read spot free balance")
-        client = self.local
-        if venue:
-            v_entry = self.balance_exchanges.get(str(venue).lower())
-            if v_entry and v_entry.get("client"):
-                client = v_entry["client"]
+        client = self._spot_balance_client(venue)
         raw = await client.fetch_balance()
         if not isinstance(raw, dict):
             raise ValueError("exchange returned an invalid balance payload")
@@ -313,11 +325,7 @@ class ExchangeFeeBalanceMixin:
         symbol = str(asset or "").strip().upper()
         if not symbol:
             raise ValueError("asset is required to read spot total balance")
-        client = self.local
-        if venue:
-            v_entry = self.balance_exchanges.get(str(venue).lower())
-            if v_entry and v_entry.get("client"):
-                client = v_entry["client"]
+        client = self._spot_balance_client(venue)
         raw = await client.fetch_balance()
         if not isinstance(raw, dict):
             raise ValueError("exchange returned an invalid balance payload")

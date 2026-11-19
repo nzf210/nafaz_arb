@@ -614,3 +614,77 @@ def test_base_asset_derivation_from_venue_symbols():
     assert derive("BTC/IDR") == "BTC"
     assert derive("eth_usdt") == "ETH"
     assert derive("SOLUSDT") == "SOL"
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_tolerate_missing_small_futures_short():
+    """A one-base-unit tolerance must not hide a missing small-quantity hedge."""
+    client = MockExchangeClient()
+
+    async def no_short_positions(symbol):
+        return []
+
+    client.fetch_positions = no_short_positions
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=False),
+        client=client,
+        redis_client=None,
+    )
+    engine._pair_info_for_tag = lambda _pair_tag: None
+    engine._bind_pair_client = lambda _pair_info: None
+    position = __import__(
+        "executor.position_models", fromlist=["ActivePosition"]
+    ).ActivePosition(
+        local_exchange="indodax",
+        global_exchange="okx",
+        symbol="btc_idr",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+        base_asset="BTC",
+        global_symbol="BTC/USDT:USDT",
+    )
+
+    actual, reason = await engine._fetch_recovered_short_quantity(
+        "BTC/USDT:USDT",
+        [("indodax:btc_idr__okx:btc_usdt:usdt", position)],
+    )
+
+    assert actual == 0.0
+    assert reason is not None
+    assert "futures quantity mismatch" in reason
+
+
+@pytest.mark.asyncio
+async def test_recovery_does_not_fallback_to_default_spot_venue_for_alternate_venue():
+    """A legacy balance method without venue support cannot verify Tokocrypto via Indodax."""
+    client = MockExchangeClient()
+
+    async def default_venue_only_balance(asset):
+        return 1.0
+
+    client.fetch_spot_total_balance = default_venue_only_balance
+    engine = ArbitrageEngine(
+        config=ExecutorConfig(mock_mode=False),
+        client=client,
+        redis_client=None,
+    )
+    position = __import__(
+        "executor.position_models", fromlist=["ActivePosition"]
+    ).ActivePosition(
+        local_exchange="tokocrypto",
+        global_exchange="okx",
+        symbol="btc_usdt",
+        entry_price_idr=1_000_000_000.0,
+        short_entry_usdt=65_000.0,
+        qty=0.005,
+        base_asset="BTC",
+        global_symbol="BTC/USDT:USDT",
+    )
+    pair_tag = "tokocrypto:btc_usdt__okx:btc_usdt:usdt"
+    engine.active_positions = {pair_tag: position}
+
+    deficits = await engine._verify_recovered_spot_legs()
+
+    assert "BTC/USDT:USDT" in deficits
+    assert "does not support venue-scoped lookup for tokocrypto" in deficits["BTC/USDT:USDT"]

@@ -278,7 +278,7 @@ class EngineRecoveryMixin:
                 self._reset_pair_client(token)
 
         expected_qty = sum(pos.qty for _, pos in items)
-        tolerance = max(1.0, expected_qty * 0.01)
+        tolerance = max(1e-10, abs(expected_qty) * 0.01)
         if abs(actual_short_qty - expected_qty) <= tolerance:
             return actual_short_qty, None
         return actual_short_qty, (
@@ -411,9 +411,18 @@ class EngineRecoveryMixin:
         for (local_venue, base_asset, pair_tag), expected_qty in expected.items():
             symbol = symbols_by_key[(local_venue, base_asset, pair_tag)]
             try:
+                if not local_venue:
+                    raise ValueError("local spot venue is missing; venue-specific balance cannot be verified")
                 try:
                     actual = await balance_of(base_asset, venue=local_venue)
-                except TypeError:
+                except TypeError as exc:
+                    default_venue = str(
+                        getattr(getattr(self, "config", None), "local_exchange_name", "") or ""
+                    ).strip().lower()
+                    if local_venue != default_venue:
+                        raise RuntimeError(
+                            f"balance client does not support venue-scoped lookup for {local_venue}"
+                        ) from exc
                     actual = await balance_of(base_asset)
                 actual = float(actual)
             except Exception as exc:
@@ -422,7 +431,7 @@ class EngineRecoveryMixin:
                     f"{local_venue or 'unknown'}: {type(exc).__name__}: {exc}"
                 )
                 continue
-            tolerance = max(1.0, abs(expected_qty) * 0.01)
+            tolerance = max(1e-10, abs(expected_qty) * 0.01)
             if actual + tolerance < expected_qty:
                 deficits[symbol] = (
                     f"local spot inventory short after restart: expected={expected_qty} "
