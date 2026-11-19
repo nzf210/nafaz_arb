@@ -957,6 +957,20 @@ def test_postgres_slot_sweep_preserves_prepared_and_unresolved_submit_reservatio
             await service.mark_submit_aborted(
                 client_ids[0], "test proves no venue request was started"
             )
+            # A caller-supplied active ID remains protected even after the
+            # submit ledger is definitively ABORTED.
+            await manager.reconcile_active_slots(
+                {client_ids[0]}, max_reserved_age_seconds=1
+            )
+            async with service.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT client_order_id, status FROM public.order_slot_reservations "
+                    "WHERE client_order_id = any($1::text[]) AND account = 'default'",
+                    client_ids,
+                )
+            status = {row["client_order_id"]: row["status"] for row in rows}
+            assert status == {client_id: "RESERVED" for client_id in client_ids}
+
             await manager.reconcile_active_slots(
                 set(), max_reserved_age_seconds=1
             )
