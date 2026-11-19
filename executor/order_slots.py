@@ -11,6 +11,8 @@ import asyncio
 import hashlib
 import logging
 import uuid
+
+from executor.global_stop import FENCE_LOCK_KEY
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Optional, Set, Tuple
 
@@ -385,32 +387,53 @@ class OrderSlotManager:
         if self.pool is not None:
             try:
                 async with self.pool.acquire() as conn:
-                    # A slot stays occupied while its durable submit attempt is
-                    # PREPARED/SUBMITTING/UNKNOWN, even if the venue request is
-                    # still in flight and no pending-entry Redis record exists yet.
-                    # Active in-memory IDs are also protected: the first version
-                    # of this sweep released stale RESERVED rows unconditionally,
-                    # including acknowledged orders waiting for activation.
-                    active_ids_list = list(active_ids)
-                    result = await conn.execute(
-                        "UPDATE public.order_slot_reservations AS reservation "
-                        "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
-                        "WHERE reservation.status IN ('RESERVED', 'ACTIVE') "
-                        "AND reservation.created_at < $2 "
-                        "AND reservation.client_order_id != ALL($3::text[]) "
-                        "AND NOT EXISTS ("
-                        "  SELECT 1 FROM public.executor_submit_attempts AS attempt "
-                        "  WHERE attempt.client_order_id = reservation.client_order_id "
-                        "  AND attempt.status IN ('PREPARED', 'SUBMITTING', 'UNKNOWN')"
-                        ")",
-                        now, cutoff, active_ids_list,
-                    )
-                    try:
-                        released_count += int(result.split(" ")[-1])
-                    except (ValueError, IndexError):
-                        pass
-                    if released_count > 0:
-                        logger.info("Reconciled %d orphaned spot order slot reservations", released_count)
+                    async with conn.transaction():
+                        # PREPARED proves that the venue boundary has not been
+                        # crossed yet. Retire only stale PREPARED rows while
+                        # holding the same advisory key used by entry submits.
+                        # If an entry currently owns the session fence, leave
+                        # PREPARED untouched; it will become SUBMITTING before
+                        # the venue call or be reconsidered on the next sweep.
+                        lock_acquired = await conn.fetchval(
+                            "select pg_try_advisory_xact_lock($1)", FENCE_LOCK_KEY
+                        )
+                        if lock_acquired:
+                            await conn.execute(
+                                "UPDATE public.executor_submit_attempts "
+                                "SET status = 'ABORTED', "
+                                "last_error = 'stale PREPARED intent retired by slot reconciliation', "
+                                "resolved_at = now(), updated_at = now() "
+                                "WHERE status = 'PREPARED' AND created_at < $1",
+                                cutoff,
+                            )
+
+                        # A slot stays occupied while its durable submit attempt
+                        # is PREPARED/SUBMITTING/UNKNOWN, even if the venue request
+                        # is in flight and no pending-entry Redis record exists yet.
+                        # Active caller IDs are also protected.
+                        active_ids_list = list(active_ids)
+                        result = await conn.execute(
+                            "UPDATE public.order_slot_reservations AS reservation "
+                            "SET status = 'RELEASED', updated_at = $1, released_at = $1 "
+                            "WHERE reservation.status IN ('RESERVED', 'ACTIVE') "
+                            "AND reservation.created_at < $2 "
+                            "AND reservation.client_order_id != ALL($3::text[]) "
+                            "AND NOT EXISTS ("
+                            "  SELECT 1 FROM public.executor_submit_attempts AS attempt "
+                            "  WHERE attempt.client_order_id = reservation.client_order_id "
+                            "  AND attempt.status IN ('PREPARED', 'SUBMITTING', 'UNKNOWN')"
+                            ")",
+                            now, cutoff, active_ids_list,
+                        )
+                        try:
+                            released_count += int(result.split(" ")[-1])
+                        except (ValueError, IndexError):
+                            pass
+                        if released_count > 0:
+                            logger.info(
+                                "Reconciled %d orphaned spot order slot reservations",
+                                released_count,
+                            )
             except Exception as exc:
                 logger.error("Failed to reconcile spot order slots: %s", exc)
 
