@@ -22,17 +22,25 @@ from executor.global_stop import GlobalStopError, GlobalStopService
 from executor.hedge_claims import HedgeIntentClaimService
 
 
-def _submitter(dsn, client_id, venue_active, venue_release, backend_queue):
+def _submitter(
+    dsn, client_id, venue_active, venue_release, backend_queue,
+    *, exchange="mexc", symbol="BTC/USDT",
+    scope_exchange=None, scope_symbol=None,
+):
     async def run():
         service = GlobalStopService(dsn, min_size=1, max_size=1)
         await service.start()
         try:
             await service.prepare_submit_attempt(
-                client_order_id=client_id, exchange="mexc", market_type="spot",
-                symbol="BTC/USDT", side="buy", order_type="limit",
-                quantity=0.001, price=60000, pair_key="mexc:BTC_USDT",
+                client_order_id=client_id, exchange=exchange, market_type="spot",
+                symbol=symbol, side="buy", order_type="limit",
+                quantity=0.001, price=60000, pair_key=f"{exchange}:{symbol}",
             )
-            async with service.order_submit_fence(client_order_id=client_id) as conn:
+            async with service.order_submit_fence(
+                client_order_id=client_id,
+                scope_exchange=scope_exchange,
+                scope_symbol=scope_symbol,
+            ) as conn:
                 # The parent process acts as the fake venue and keeps this
                 # request open until after it terminates our PostgreSQL backend.
                 backend_queue.put(await conn.fetchval("select pg_backend_pid()"))
@@ -45,18 +53,30 @@ def _submitter(dsn, client_id, venue_active, venue_release, backend_queue):
             await service.close()
     asyncio.run(run())
 
-def _peer_submitter(dsn, client_id, result_queue):
+
+def _peer_submitter(
+    dsn, client_id, result_queue, *,
+    exchange="mexc", symbol="ETH/USDT",
+    scope_exchange=None, scope_symbol=None,
+):
     async def run():
         service = GlobalStopService(dsn, min_size=1, max_size=1)
         await service.start()
         await service.prepare_submit_attempt(
-            client_order_id=client_id, exchange="mexc", market_type="spot",
-            symbol="ETH/USDT", side="buy", order_type="limit",
-            quantity=0.01, price=3000, pair_key="mexc:ETH_USDT",
+            client_order_id=client_id, exchange=exchange, market_type="spot",
+            symbol=symbol, side="buy", order_type="limit",
+            quantity=0.01, price=3000, pair_key=f"{exchange}:{symbol}",
         )
         try:
-            async with service.order_submit_fence(client_order_id=client_id):
-                result_queue.put("UNEXPECTEDLY_ADMITTED")
+            async with service.order_submit_fence(
+                client_order_id=client_id,
+                scope_exchange=scope_exchange,
+                scope_symbol=scope_symbol,
+            ):
+                await service.mark_submit_acknowledged(
+                    client_id, {"id": "fake-peer-order", "status": "open"}
+                )
+                result_queue.put("ADMITTED")
         except GlobalStopError as exc:
             result_queue.put("BLOCKED:" + str(exc))
         finally:
@@ -457,3 +477,133 @@ def test_signed_operator_resolution_requires_auth_and_independent_evidence():
             await service.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.integration
+def test_postgres_scoped_unresolved_submit_blocks_only_same_venue_symbol_after_disconnect():
+    """A real PG disconnect preserves same-scope blocking without freezing unrelated scopes."""
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    ctx = mp.get_context("fork")
+    suffix = uuid.uuid4().hex[:12]
+    first_id = "pg-scoped-first-" + suffix
+    other_id = "pg-scoped-other-" + suffix
+    same_id = "pg-scoped-same-" + suffix
+    venue_active = ctx.Event()
+    venue_release = ctx.Event()
+    backend_queue = ctx.Queue()
+    other_queue = ctx.Queue()
+    same_queue = ctx.Queue()
+    submitter = ctx.Process(
+        target=_submitter,
+        args=(dsn, first_id, venue_active, venue_release, backend_queue),
+        kwargs={
+            "exchange": "mexc",
+            "symbol": "DODO_USDT",
+            "scope_exchange": "mexc",
+            "scope_symbol": "DODO_USDT",
+        },
+    )
+    other_peer = None
+    same_peer = None
+    try:
+        submitter.start()
+        assert venue_active.wait(15), "scoped executor never entered fake venue request"
+        backend_pid = backend_queue.get(timeout=5)
+
+        async def terminate_backend():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                return await conn.fetchval("select pg_terminate_backend($1)", backend_pid)
+            finally:
+                await conn.close()
+
+        assert asyncio.run(terminate_backend()) is True
+        assert submitter.is_alive(), "executor must remain inside fake venue request"
+
+        other_peer = ctx.Process(
+            target=_peer_submitter,
+            args=(dsn, other_id, other_queue),
+            kwargs={
+                "exchange": "okx",
+                "symbol": "BTC_USDT",
+                "scope_exchange": "okx",
+                "scope_symbol": "BTC_USDT",
+            },
+        )
+        other_peer.start()
+        other_peer.join(15)
+        if other_peer.is_alive():
+            other_peer.terminate()
+            other_peer.join(5)
+            pytest.fail("unrelated scoped peer did not finish")
+        assert other_peer.exitcode == 0
+        assert other_queue.get(timeout=3) == "ADMITTED"
+
+        same_peer = ctx.Process(
+            target=_peer_submitter,
+            args=(dsn, same_id, same_queue),
+            kwargs={
+                "exchange": "mexc",
+                "symbol": "DODO_USDT",
+                "scope_exchange": "mexc",
+                "scope_symbol": "DODO_USDT",
+            },
+        )
+        same_peer.start()
+        same_peer.join(15)
+        if same_peer.is_alive():
+            same_peer.terminate()
+            same_peer.join(5)
+            pytest.fail("same-scope peer did not finish")
+        assert same_peer.exitcode == 0
+        outcome = same_queue.get(timeout=3)
+        assert outcome.startswith("BLOCKED:")
+        assert "unresolved in-flight submit" in outcome
+
+        venue_release.set()
+        submitter.join(15)
+        if submitter.is_alive():
+            submitter.terminate()
+            submitter.join(5)
+            pytest.fail("scoped submitter did not leave fake venue request")
+        assert submitter.exitcode == 0
+
+        async def statuses():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                return await conn.fetch(
+                    "select client_order_id, status from public.executor_submit_attempts "
+                    "where client_order_id = any($1::text[])",
+                    [first_id, other_id, same_id],
+                )
+            finally:
+                await conn.close()
+
+        rows = {row["client_order_id"]: row["status"] for row in asyncio.run(statuses())}
+        assert rows[first_id] == "SUBMITTING"
+        assert rows[other_id] == "ACKNOWLEDGED"
+        assert rows[same_id] == "PREPARED"
+    finally:
+        venue_release.set()
+        for process in (same_peer, other_peer, submitter):
+            if process is not None and process.is_alive():
+                process.terminate()
+                process.join(5)
+
+        async def cleanup():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                await conn.execute(
+                    "delete from public.executor_submit_attempts "
+                    "where client_order_id = any($1::text[])",
+                    [first_id, other_id, same_id],
+                )
+            finally:
+                await conn.close()
+        asyncio.run(cleanup())
