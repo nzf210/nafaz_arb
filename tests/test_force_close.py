@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from unittest.mock import AsyncMock
 
 from executor.models import ActivePosition, PositionState
 
@@ -449,6 +450,15 @@ async def test_force_close_retry_does_not_resubmit_when_short_remains_open(fake_
     assert client.placed_sells == []
     assert pair_tag in engine.active_positions
     assert engine.states[pair_tag] == PositionState.RECONCILIATION_REQUIRED
+
+    # But with explicit force=True / manual=True flag, operator bypasses already_flat assumption
+    client.close_global_short_market = AsyncMock(return_value={"id": "c1", "status": "closed", "filled": 0.005, "price": 64900.0})
+    client.fetch_positions = AsyncMock(return_value=[])
+    await engine.handle_force_close(json.dumps({"pair_key": pair_tag, "force": True}))
+    assert client.close_global_short_market.await_count == 1
+    assert len(client.placed_sells) == 1
+    assert pair_tag not in engine.active_positions
+    assert engine.states[pair_tag] == PositionState.CLOSED
 
 
 def test_force_close_pnl_is_unverified_without_live_fx():

@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 
 from executor.models import PositionState
 from executor.helpers import ARB_TRADE_HISTORY_KEY, ARB_TRADE_HISTORY_MAX_LEN, BALANCES_KEY
@@ -14,17 +14,25 @@ ARB_STATS_KEY = "arb:stats"
 
 
 
-def _parse_force_close_directive_pair_key(message_data: str):
-    """Extract the pair key from a FORCE_CLOSE directive."""
+def _parse_force_close_directive(message_data: str) -> tuple[Optional[str], bool]:
+    """Extract pair_key and force flag from a FORCE_CLOSE directive."""
     if not message_data:
-        return None
+        return None, False
     try:
         parsed = json.loads(message_data)
     except Exception:
-        return message_data.strip() or None
+        return message_data.strip() or None, False
     if isinstance(parsed, dict):
-        return parsed.get("pair_key")
-    return None
+        key = parsed.get("pair_key") or parsed.get("pair_tag")
+        force = bool(parsed.get("force", False) or parsed.get("manual", False))
+        return (key.strip() if key else None), force
+    return None, False
+
+
+def _parse_force_close_directive_pair_key(message_data: str):
+    """Extract the pair key from a FORCE_CLOSE directive."""
+    pair_key, _ = _parse_force_close_directive(message_data)
+    return pair_key
 
 
 class ForceCloseLifecycleMixin:
@@ -158,7 +166,7 @@ class ForceCloseLifecycleMixin:
         4. Removes active position from Redis.
         """
         logger.warning(f"Received FORCE_CLOSE directive: {message_data}")
-        pair_key = _parse_force_close_directive_pair_key(message_data)
+        pair_key, is_manual = _parse_force_close_directive(message_data)
         if not pair_key:
             return
 
@@ -167,7 +175,7 @@ class ForceCloseLifecycleMixin:
             # pending orders and liquidating legs must not interleave with a
             # hedge or exit fill processed on another task.
             async with self._pair_lock(resolved_key):
-                await self._force_close_locked(resolved_key)
+                await self._force_close_locked(resolved_key, manual_force=is_manual)
 
 
     async def _execute_force_close_legs(
@@ -307,7 +315,7 @@ class ForceCloseLifecycleMixin:
         else:
             logger.info(f"[Force Close Complete] Position for {pair_key} successfully closed.")
 
-    async def _force_close_locked(self, pair_key: str) -> None:
+    async def _force_close_locked(self, pair_key: str, manual_force: bool = False) -> None:
         """Bind emergency order routing to this position's exact venues."""
         if (
             not getattr(self.config, "mock_mode", False)
@@ -316,13 +324,13 @@ class ForceCloseLifecycleMixin:
             and pair_key not in (getattr(self, "pending_entry_orders", {}) or {})
             and pair_key not in (getattr(self, "pending_exit_orders", {}) or {})
         ):
-            await self._force_close_locked_bound(pair_key)
+            await self._force_close_locked_bound(pair_key, manual_force=manual_force)
             return
         await self._run_pair_bound(
-            pair_key, self._force_close_locked_bound, pair_key
+            pair_key, self._force_close_locked_bound, pair_key, manual_force=manual_force
         )
 
-    async def _force_close_locked_bound(self, pair_key: str) -> None:
+    async def _force_close_locked_bound(self, pair_key: str, manual_force: bool = False) -> None:
         # A corrupted persisted position has no trustworthy quantity/symbol to
         # submit against the venue. Never treat it as an already-flat position.
         failure = self._failure_reasons.get(pair_key, {})
@@ -335,10 +343,11 @@ class ForceCloseLifecycleMixin:
             return
 
         # Remember whether this is a retry of an incomplete force close.
-        # The retry path checks actual futures exposure first so a previously
+        # The retry path checks actual futures exposure first so that a previously
         # closed futures leg is not submitted a second time.
         allow_already_flat = (
-            self.states.get(pair_key) == PositionState.RECONCILIATION_REQUIRED
+            not manual_force
+            and self.states.get(pair_key) == PositionState.RECONCILIATION_REQUIRED
         )
         # Guard concurrent exit-fill processing for this pair while force close runs.
         self.states[pair_key] = PositionState.RECONCILIATION_REQUIRED
