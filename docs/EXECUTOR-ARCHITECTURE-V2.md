@@ -1742,3 +1742,15 @@ The stale slot sweeper must not equate an old `RESERVED` row with an order that 
 The PostgreSQL integration regression verifies that stale PREPARED and SUBMITTING reservations remain held and that an explicitly ABORTED PREPARED attempt can be released. The fake-venue regression verifies PREPARED is committed before slot reservation and the venue create boundary.
 
 **R-50 status:** fixed in source/test head `868f568d8890a133a64c6ef72993b1f844a6f455`; workflow [44492169205](https://github.com/nzf210/nafaz_arb/actions/runs/44492169205) passed all five jobs. This CI result is disposable-environment evidence, not validation of the production VPS database or a live CEX contract.
+
+
+### Stale PREPARED cleanup under the shared submit lock
+
+A stale `PREPARED` row is safe to abort only because the state machine commits `SUBMITTING` before the venue create call. The slot sweeper therefore attempts the same advisory key as entry fencing with `pg_try_advisory_xact_lock(FENCE_LOCK_KEY)`:
+
+- If the key is busy, a submit/admission critical section is active. Do not abort PREPARED and do not release its slot.
+- If the key is available, PREPARED rows older than the configured slot cutoff can be transitioned to ABORTED. A paused submitter later fails the fence's PREPARED-state check before any venue call.
+- SUBMITTING/UNKNOWN are never aged out by the slot sweeper. Their slots remain held until exact-ID reconciliation or authorized resolution.
+- Active caller IDs remain protected even when no submit-ledger row is present.
+
+The PostgreSQL regression exercises the lock-held and lock-free cases using separate pooled sessions. Final test head `4e169fb3f50e9ad9693da99d07081d203402b915` passed workflow [44493239020](https://github.com/nzf210/nafaz_arb/actions/runs/44493239020).
