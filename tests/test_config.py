@@ -452,3 +452,19 @@ async def test_market_snapshot_fallback_for_dynamic_exit(mock_client):
     assert local_ask == 65010.0 * 16000.0
 
 
+
+
+def test_execution_modules_are_an_explicit_allowlist_and_normalize_bidr():
+    from executor.config import ExecutionModuleConfig
+
+    cfg = ExecutorConfig()
+    disabled = ExecutionModuleConfig(
+        id="spot_idr",
+        quote="IDR",
+        spot_venues=["indodax"],
+        enabled=False,
+    )
+    cfg.modules = {"spot_idr": disabled}
+
+    assert cfg.module_for("INDODAX", "BIDR") is disabled
+    assert cfg.module_for("tokocrypto", "USDT") is None

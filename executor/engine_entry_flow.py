@@ -242,6 +242,27 @@ class EngineEntryFlowMixin:
 
         exchange = str(payload.pair_info.local_exchange or "").strip().lower()
         quote_asset = str(payload.pair_info.quote_asset or "").strip().lower()
+        configured_modules = getattr(self.config, "modules", None) or {}
+        if configured_modules:
+            module = self.config.module_for(exchange, payload.pair_info.quote_asset)
+            if module is None:
+                self._mark_failed(
+                    pair_tag,
+                    "EXECUTION_MODULE_NOT_CONFIGURED",
+                    "Entry rejected because the spot venue/quote is not in the explicit execution-module allowlist.",
+                    detail={"exchange": exchange, "quote_asset": payload.pair_info.quote_asset},
+                )
+                await self.publish_status()
+                return
+            if not module.enabled:
+                self._mark_failed(
+                    pair_tag,
+                    "EXECUTION_MODULE_DISABLED",
+                    "Entry rejected because its configured execution module is disabled.",
+                    detail={"module_id": module.id, "exchange": exchange, "quote_asset": payload.pair_info.quote_asset},
+                )
+                await self.publish_status()
+                return
         if quote_asset in ("bidr", "idr"):
             quote_key = "idr"
         elif quote_asset in ("usdt", "usdc"):

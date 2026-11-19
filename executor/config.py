@@ -189,10 +189,19 @@ class ExecutorConfig:
         """Resolves the execution module configured for a (spot_venue, quote) pair."""
         norm_venue = str(spot_venue or "").strip().lower()
         norm_quote = str(quote or "").strip().upper()
+        if norm_quote == "BIDR":
+            norm_quote = "IDR"
         for mod in self.modules.values():
-            if norm_quote == mod.quote.upper() and norm_venue in [v.lower() for v in mod.spot_venues]:
+            mod_quote = str(mod.quote or "").strip().upper()
+            if mod_quote == "BIDR":
+                mod_quote = "IDR"
+            if norm_quote == mod_quote and norm_venue in [v.lower() for v in mod.spot_venues]:
                 return mod
-        # Dynamic fallback module by quote when no explicit modules configured
+        # An explicit module map is an allowlist. Do not silently create an
+        # enabled fallback for an unconfigured venue/quote combination.
+        if self.modules:
+            return None
+        # Dynamic fallback is retained only for legacy configs with no modules.
         fallback_id = f"spot_{norm_quote.lower()}"
         return ExecutionModuleConfig(
             id=fallback_id,

@@ -1056,3 +1056,37 @@ async def test_mexc_6002_classified_as_trading_permission_denied():
     assert is_trading_permission_denied(exc) is True
 
 
+
+
+@pytest.mark.asyncio
+async def test_disabled_execution_module_blocks_entry_before_market_preflight(
+    engine, fake_redis, monkeypatch
+):
+    from unittest.mock import AsyncMock, MagicMock
+    from executor.config import ExecutionModuleConfig
+
+    pair_tag = "indodax:btc_idr"
+    payload = _fresh_signal_payload(int(time.time() * 1000))
+    await fake_redis.set(f"arb:signal:{pair_tag}", json.dumps(payload))
+    engine.config.modules = {
+        "spot_idr": ExecutionModuleConfig(
+            id="spot_idr",
+            quote="IDR",
+            spot_venues=["indodax"],
+            enabled=False,
+        )
+    }
+    monkeypatch.setattr(
+        engine, "_is_stale_or_duplicate_signal", AsyncMock(return_value=False)
+    )
+    failure = MagicMock()
+    monkeypatch.setattr(engine, "_mark_failed", failure)
+    monkeypatch.setattr(engine, "publish_status", AsyncMock())
+    spread_check = AsyncMock()
+    monkeypatch.setattr(engine, "_validate_entry_spread", spread_check)
+
+    await engine._handle_signal_locked(pair_tag)
+
+    failure.assert_called_once()
+    assert failure.call_args.args[1] == "EXECUTION_MODULE_DISABLED"
+    spread_check.assert_not_awaited()
