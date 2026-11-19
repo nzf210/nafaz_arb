@@ -488,3 +488,47 @@ The first R-46 CI attempts failed because two positive recovery fixtures (includ
 **R-47 verification:** source/test head `8f2d309c7d85128c30fa041bc5efc4da261eec35` passed GitHub Actions [44047469831](https://github.com/nzf210/nafaz_arb/actions/runs/44047469831). Python: **714 passed, 4 skipped, 111 warnings**; disposable PostgreSQL submit-fencing integration: **4 passed**; all five CI jobs (Go/race/vet, VPS migration runner, schema/idempotency/RLS, Docker builds, Python) passed.
 
 The first R-47 CI attempt exposed two test/implementation follow-ups: the fake submit ledger needed an UNKNOWN transition method, and the recovery refactor had accidentally omitted `_group_recovered_positions`. Both were corrected; the final run above is green. The `integration` pytest marker and existing deprecation warnings remain non-fatal.
+
+## Audit execution 2026-11-19 — R-50 stale spot-slot retirement during an in-flight submit
+
+**Audited baseline:** `d3e5af62cafa03574ec46c2b631ee48543fa78e7`  
+**Source fixes:** `409c730d414bddded57b65de1f8d6c3d0e4036fd`, `57d1c2cf1d783cd9e4fd7fd2b8d9f296d6bb40a9`  
+**Regression tests:** `705e3751fcd8633daf81cace18be0330c432216c`, `e8b967dfa1bc9c225502c6676b1a2c9097cb0670`, `868f568d8890a133a64c6ef72993b1f844a6f455`
+
+### Finding
+
+- [x] R-50: `OrderSlotManager.reconcile_active_slots` released stale `RESERVED` rows unconditionally before considering active client IDs or the durable submit ledger. A spot slot remains `RESERVED` from admission until the venue acknowledgement is persisted and `activate_slot` runs.
+- [x] The exchange-reconciliation loop runs independently of the entry request. If a venue POST remains in flight beyond the reservation age threshold (default 60 seconds), the sweeper could mark its reservation `RELEASED`. `activate_slot` updates only `RESERVED`, so a later acknowledgement could not restore the released slot. A subsequent entry could then exceed the configured venue/quote slot cap.
+- [x] The old order also reserved a slot before committing the Global STOP `PREPARED` row, leaving a pre-submit interval in which the sweeper had no durable evidence that the reservation belonged to an admitted submit.
+
+### Remediation
+
+- [x] Spot entry now commits durable `PREPARED` before creating its slot reservation. If reservation/admission fails before the venue boundary, the existing exception path marks the attempt `ABORTED` and releases the reservation.
+- [x] The database sweeper now releases an old `RESERVED`/`ACTIVE` reservation only when its client ID is absent from the caller's active set and no durable submit attempt for that ID is in `PREPARED`, `SUBMITTING`, or `UNKNOWN`.
+- [x] A successful explicit `ABORTED`/definitive `REJECTED` transition permits stale reservation cleanup. Ambiguous attempts retain their slot.
+- [x] The in-memory sweeper continues to preserve caller-supplied active client IDs; LIVE uses the PostgreSQL ledger-backed branch.
+
+### Verification
+
+- [x] Fake-venue regression asserts ordering: PREPARED → slot reservation → shared fence → venue create; definitive rejection releases the slot.
+- [x] Disposable PostgreSQL integration ages reservations and verifies PREPARED and SUBMITTING rows remain reserved; after PREPARED is explicitly ABORTED, only that reservation is released.
+- [x] Source/test head `868f568d8890a133a64c6ef72993b1f844a6f455` completed GitHub Actions workflow [44492169205](https://github.com/nzf210/nafaz_arb/actions/runs/44492169205): all five jobs successful. Python suite: **746 passed, 10 skipped, 117 warnings**. PostgreSQL schema/integration job: **11 passed**. Go tests/race/vet, migration runner, and Docker builds passed.
+- [x] The branch head immediately before this execution, `d3e5af62`, also had all five CI jobs successful in workflow [44489672994](https://github.com/nzf210/nafaz_arb/actions/runs/44489672994).
+
+### Revalidated surrounding paths
+
+- [x] Spot BUY and futures short SELL remain the only active production entry create paths found in the previously enumerated executor/venue inventory; both require durable PREPARED/SUBMITTING and the shared PostgreSQL session advisory fence.
+- [x] Indodax TAPIv2 raw `POST /api/v2/order` remains a wrapper whose exposure classification follows its caller. Generic MutationGateway create remains fenced; no active production caller was found in the inspected orchestration.
+- [x] Spot SELL, futures `reduceOnly=True` BUY, rollback, force-close, and cancel remain de-risk/cancel paths. The separate de-risk lane still proceeds during Global STOP; no new entry fence was added to those operations.
+- [x] The 33 commits since baseline were reviewed for execution-path changes: execution-module and hedge-venue allowlists, shared module/venue/quote slot caps, durable-intent-bound scoped fence, compatibility entry routing, and independent de-risk lock lane. No new direct CEX create-order bypass was found in those diffs.
+- [x] `OrderSyncWorker.sync_once` currently has one production caller in `_exchange_reconciliation_loop`, which runs under `_exchange_reconciliation_lock`. Its `run()` worker is not scheduled by `start()`, and `maybe_sync()` has no production caller in the inspected engine. No concurrent OrderSyncWorker caller/race was established in this execution.
+
+### Remaining release gates
+
+- [ ] Finish a fresh, exhaustive branch-head call-site inventory across every Python/Go adapter and indirect wrapper; this execution revalidated the prior inventory and all changed execution paths, not a new local clone-wide grep (GitHub clone/DNS was unavailable).
+- [ ] Complete operator identity provisioning, HMAC secret custody/rotation, dual approval, audit retrieval, and manual-resolution runbook.
+- [ ] Repeat PostgreSQL multi-process disconnect/fault injection under stress and validate the actual VPS topology; disposable CI PostgreSQL is not VPS sign-off.
+- [ ] Complete real per-venue sandbox/paper contracts for exact client-ID visibility/idempotency, eventual consistency, pending/partial hedge, cancel/fill race, and reduceOnly behavior.
+- [ ] Approve the futures minimum-notional overhedge/delta-drift policy and close the Redis-only/best-effort de-risk persistence gap.
+
+**Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
