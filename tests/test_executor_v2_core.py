@@ -100,6 +100,10 @@ async def test_order_slot_reconcile_active_slots():
 async def test_order_slot_per_quote_asset_limits():
     """Verify slots are partitioned by venue + quote asset independently."""
     manager = OrderSlotManager()
+    # Venue-wide caps are distinct from quote-scoped caps; allow enough total
+    # slots here so the assertions below isolate the per-quote limits.
+    await manager.set_max_slots("indodax", 4)
+    await manager.set_max_slots("tokocrypto", 4)
     # Configure limits: indodax:idr=1, indodax:usdt=2, tokocrypto:idr=2, tokocrypto:usdt=1
     await manager.set_max_slots("indodax:idr", 1)
     await manager.set_max_slots("indodax:usdt", 2)
