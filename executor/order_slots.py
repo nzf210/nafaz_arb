@@ -175,21 +175,48 @@ class OrderSlotManager:
                         )
 
                     for scope_account in scopes:
-                        rows = await conn.fetch(
-                            "SELECT slot_index FROM public.order_slot_reservations "
-                            "WHERE venue = $1 AND account = $2 AND market_type = $3 "
-                            "AND status IN ('RESERVED', 'ACTIVE')",
-                            venue, scope_account, market_type,
-                        )
+                        if scope_account == "default":
+                            active_count = await conn.fetchval(
+                                "SELECT count(DISTINCT client_order_id) "
+                                "FROM public.order_slot_reservations "
+                                "WHERE venue = $1 AND market_type = $2 "
+                                "AND status IN ('RESERVED', 'ACTIVE')",
+                                venue, market_type,
+                            )
+                            rows = await conn.fetch(
+                                "SELECT slot_index FROM public.order_slot_reservations "
+                                "WHERE venue = $1 AND account = 'default' AND market_type = $2 "
+                                "AND status IN ('RESERVED', 'ACTIVE')",
+                                venue, market_type,
+                            )
+                        else:
+                            active_count = await conn.fetchval(
+                                "SELECT count(DISTINCT client_order_id) "
+                                "FROM public.order_slot_reservations "
+                                "WHERE venue = $1 AND account = $2 AND market_type = $3 "
+                                "AND status IN ('RESERVED', 'ACTIVE')",
+                                venue, scope_account, market_type,
+                            )
+                            rows = await conn.fetch(
+                                "SELECT slot_index FROM public.order_slot_reservations "
+                                "WHERE venue = $1 AND account = $2 AND market_type = $3 "
+                                "AND status IN ('RESERVED', 'ACTIVE')",
+                                venue, scope_account, market_type,
+                            )
                         used_slots = {int(row["slot_index"]) for row in rows}
+                        if int(active_count or 0) >= limits[scope_account]:
+                            raise SlotExhaustedError(
+                                f"All {limits[scope_account]} spot slots occupied on "
+                                f"{venue}:{scope_account} (active_count={active_count})"
+                            )
                         available_slot = next(
                             (idx for idx in range(limits[scope_account]) if idx not in used_slots),
                             None,
                         )
                         if available_slot is None:
                             raise SlotExhaustedError(
-                                f"All {limits[scope_account]} spot slots occupied on "
-                                f"{venue}:{scope_account} (active: {used_slots})"
+                                f"No free slot index remains on {venue}:{scope_account} "
+                                f"(active: {used_slots})"
                             )
                         reservations[scope_account] = available_slot
 
@@ -212,19 +239,30 @@ class OrderSlotManager:
         # In-memory mode mirrors both venue-wide and quote-scoped reservations.
         async with self._lock:
             for scope_account in scopes:
+                active_ids = {
+                    info.get("client_order_id")
+                    for (v, acc, _slot_idx), info in self._mem_slots.items()
+                    if v == venue
+                    and (scope_account == "default" or acc == scope_account)
+                    and info.get("status") in ("RESERVED", "ACTIVE")
+                }
                 used_slots = {
                     slot_idx for (v, acc, slot_idx), info in self._mem_slots.items()
                     if v == venue and acc == scope_account
                     and info.get("status") in ("RESERVED", "ACTIVE")
                 }
+                if len(active_ids) >= limits[scope_account]:
+                    raise SlotExhaustedError(
+                        f"All {limits[scope_account]} in-memory spot slots occupied on "
+                        f"{venue}:{scope_account} (active_count={len(active_ids)})"
+                    )
                 available_slot = next(
                     (idx for idx in range(limits[scope_account]) if idx not in used_slots),
                     None,
                 )
                 if available_slot is None:
                     raise SlotExhaustedError(
-                        f"All {limits[scope_account]} in-memory spot slots occupied on "
-                        f"{venue}:{scope_account}"
+                        f"No free in-memory slot index remains on {venue}:{scope_account}"
                     )
                 reservations[scope_account] = available_slot
 
@@ -309,8 +347,7 @@ class OrderSlotManager:
                     else:
                         val = await conn.fetchval(
                             "SELECT count(DISTINCT client_order_id) FROM public.order_slot_reservations "
-                            "WHERE venue = $1 AND account = 'default' AND market_type = 'spot' "
-                            "AND status IN ('RESERVED', 'ACTIVE')",
+                            "WHERE venue = $1 AND market_type = 'spot' AND status IN ('RESERVED', 'ACTIVE')",
                             venue,
                         )
                     return int(val or 0)
@@ -322,7 +359,7 @@ class OrderSlotManager:
                 info.get("client_order_id")
                 for (v, acc, _), info in self._mem_slots.items()
                 if v == venue
-                and (acc == account if account is not None else acc == "default")
+                and (account is None or acc == account)
                 and info.get("status") in ("RESERVED", "ACTIVE")
             })
 
