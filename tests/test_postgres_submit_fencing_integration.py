@@ -941,6 +941,12 @@ def test_postgres_slot_sweep_preserves_live_and_unresolved_reservations():
                     "WHERE client_order_id = any($1::text[])",
                     client_ids,
                 )
+                await conn.execute(
+                    "UPDATE public.executor_submit_attempts "
+                    "SET created_at = now() - interval '2 minutes' "
+                    "WHERE client_order_id = any($1::text[])",
+                    client_ids[:2],
+                )
 
             # A PREPARED intent may still belong to a live admission that has
             # acquired the shared fence but has not crossed into SUBMITTING yet.
