@@ -321,3 +321,31 @@ def extract_base_asset(symbol: str, explicit_base: str = "") -> str:
     base, _ = split_symbol_parts(symbol)
     return base
 
+
+def normalize_quote_asset(quote: str) -> str:
+    """Canonical quote asset code for market concurrency gating."""
+    q = str(quote or "").strip().lower()
+    if q in ("idr", "bidr"):
+        return "idr"
+    if q in ("usdt", "usdc"):
+        return "usdt"
+    return q
+
+
+def parse_pair_tag_local_market(pair_tag: str) -> tuple[str, str, str]:
+    """Parse (local_exchange, base_asset, normalized_quote) from pair_tag.
+
+    pair_tag format: {local_exchange}:{local_symbol}__{global_exchange}:{global_symbol}
+    Returns (local_exchange, base_asset, normalized_quote) in lowercase/uppercase/lowercase.
+    """
+    if not pair_tag or "__" not in pair_tag:
+        return "", "", ""
+    local_part = pair_tag.split("__", 1)[0].strip()
+    if ":" not in local_part:
+        return "", "", ""
+    local_exchange, local_symbol = local_part.split(":", 1)
+    local_exchange = local_exchange.strip().lower()
+    base, quote = split_symbol_parts(local_symbol)
+    return local_exchange, base.strip().upper(), normalize_quote_asset(quote)
+
+

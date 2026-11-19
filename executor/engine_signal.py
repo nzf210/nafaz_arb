@@ -6,7 +6,13 @@ from typing import Optional
 
 from executor.models import ExecutorPayload
 from executor.pair_registry import ExchangePairKey
-from executor.helpers import PENDING_ENTRY_KEY_PREFIX
+from executor.helpers import (
+    PENDING_ENTRY_KEY_PREFIX,
+    extract_base_asset,
+    normalize_quote_asset,
+    parse_pair_tag_local_market,
+    split_symbol_parts,
+)
 from executor.engine_common import logger
 
 
@@ -146,7 +152,116 @@ class EngineSignalMixin:
                 f"stale signal rejected for {pair_tag}: latency > {self.config.max_stale_latency_ms}ms"
             )
             return True
-        return await self._has_active_or_pending_position(pair_tag)
+        if await self._has_active_or_pending_position(pair_tag):
+            return True
+        pair_info = getattr(payload, "pair_info", None)
+        if pair_info is not None:
+            exchange = str(pair_info.local_exchange or "").strip().lower()
+            base_asset = extract_base_asset(pair_info.local_symbol, pair_info.base_asset).upper()
+            quote_asset = str(pair_info.quote_asset or "").strip().lower()
+            if await self._has_active_or_pending_market(exchange, base_asset, quote_asset, exclude_pair=pair_tag):
+                logger.info(
+                    "[Entry] rejecting duplicate market entry for %s: %s:%s:%s already active or pending",
+                    pair_tag, exchange, base_asset, normalize_quote_asset(quote_asset),
+                )
+                return True
+        return False
+
+    async def _has_active_or_pending_market(
+        self, local_exchange: str, base_asset: str, quote_asset: str, exclude_pair: str = ""
+    ) -> bool:
+        """True when the given (local_exchange, base_asset, quote_asset) is already being worked.
+
+        Enforces single-flight per local market: a local CEX cannot have multiple concurrent
+        positions or entries for the same coin with the same quote currency (e.g. Tokocrypto SPX/IDR).
+        Different quotes (e.g. USDT vs IDR) on the same CEX are permitted.
+        """
+        lex = str(local_exchange or "").strip().lower()
+        base = str(base_asset or "").strip().upper()
+        norm_q = normalize_quote_asset(quote_asset)
+        if not lex or not base or not norm_q:
+            return False
+
+        # 1. Check in-memory active positions
+        for p_tag, pos in getattr(self, "active_positions", {}).items():
+            if p_tag == exclude_pair:
+                continue
+            if float(getattr(pos, "qty", 0.0) or 0.0) <= 0:
+                continue
+            if getattr(pos, "state", "") in ("CLOSED", "FAILED", "IDLE"):
+                continue
+            p_lex = str(getattr(pos, "local_exchange", "") or "").strip().lower()
+            p_base = extract_base_asset(getattr(pos, "symbol", ""), getattr(pos, "base_asset", "")).upper()
+            _, sym_q = split_symbol_parts(getattr(pos, "symbol", ""))
+            p_quote = normalize_quote_asset(sym_q or getattr(getattr(self, "_pair_infos", {}).get(p_tag), "quote_asset", ""))
+            if not p_base or not p_quote:
+                tag_lex, tag_base, tag_q = parse_pair_tag_local_market(p_tag)
+                p_lex = p_lex or tag_lex
+                p_base = p_base or tag_base
+                p_quote = p_quote or tag_q
+            if p_lex == lex and p_base == base and p_quote == norm_q:
+                return True
+
+        # 2. Check in-memory pending entry orders
+        for p_tag, p_order in getattr(self, "pending_entry_orders", {}).items():
+            if p_tag == exclude_pair:
+                continue
+            p_lex = str(p_order.get("local_exchange") or "").strip().lower()
+            p_base = extract_base_asset(p_order.get("symbol", ""), p_order.get("base_asset", "")).upper()
+            p_quote = normalize_quote_asset(p_order.get("quote_asset") or split_symbol_parts(p_order.get("symbol", ""))[1])
+            if not p_base or not p_quote:
+                tag_lex, tag_base, tag_q = parse_pair_tag_local_market(p_tag)
+                p_lex = p_lex or tag_lex
+                p_base = p_base or tag_base
+                p_quote = p_quote or tag_q
+            if p_lex == lex and p_base == base and p_quote == norm_q:
+                return True
+
+        # 3. Check in-memory lifecycle states
+        active_states = {
+            "ENTRY_PENDING", "ENTRY_PARTIAL", "PARTIALLY_FILLED",
+            "HEDGE_PENDING", "HEDGED_ACTIVE", "EXIT_PENDING", "RECONCILIATION_REQUIRED",
+        }
+        for p_tag, state in getattr(self, "states", {}).items():
+            if p_tag == exclude_pair:
+                continue
+            st = getattr(state, "value", str(state))
+            if st in active_states:
+                tag_lex, tag_base, tag_q = parse_pair_tag_local_market(p_tag)
+                if tag_lex == lex and tag_base == base and tag_q == norm_q:
+                    return True
+
+        # 4. Check shared Redis state if available
+        if getattr(self, "redis", None) is not None:
+            try:
+                active_keys = await self.redis.keys("arb:active_pos:*")
+                for k in active_keys or []:
+                    k_str = k.decode("utf-8") if isinstance(k, bytes) else str(k)
+                    tag = k_str.replace("arb:active_pos:", "")
+                    if tag == exclude_pair:
+                        continue
+                    tag_lex, tag_base, tag_q = parse_pair_tag_local_market(tag)
+                    if tag_lex == lex and tag_base == base and tag_q == norm_q:
+                        return True
+
+                pending_keys = await self.redis.keys(PENDING_ENTRY_KEY_PREFIX + "*")
+                for k in pending_keys or []:
+                    k_str = k.decode("utf-8") if isinstance(k, bytes) else str(k)
+                    tag = k_str.replace(PENDING_ENTRY_KEY_PREFIX, "")
+                    if tag == exclude_pair:
+                        continue
+                    tag_lex, tag_base, tag_q = parse_pair_tag_local_market(tag)
+                    if tag_lex == lex and tag_base == base and tag_q == norm_q:
+                        return True
+            except Exception:
+                logger.exception(
+                    "[Entry] error checking shared Redis market state for %s:%s:%s",
+                    lex, base, norm_q,
+                )
+                if not bool(getattr(self.config, "mock_mode", False)):
+                    return True
+
+        return False
 
     async def _has_active_or_pending_position(self, pair_tag: str) -> bool:
         """True when shared Redis or local state already owns this pair's entry."""
