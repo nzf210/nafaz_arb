@@ -275,11 +275,11 @@ class EngineEntryFlowMixin:
             selected_hedge_venue = str(
                 payload.pair_info.global_exchange or ""
             ).strip().lower()
-            if allowed_hedge_venues and selected_hedge_venue not in allowed_hedge_venues:
+            if not allowed_hedge_venues or selected_hedge_venue not in allowed_hedge_venues:
                 self._mark_failed(
                     pair_tag,
                     "EXECUTION_HEDGE_VENUE_NOT_CONFIGURED",
-                    "Entry rejected because the selected futures venue is outside the execution module hedge allowlist.",
+                    "Entry rejected because the execution module has no matching futures venue in its explicit hedge allowlist.",
                     detail={
                         "module_id": module.id,
                         "hedge_exchange": selected_hedge_venue,
