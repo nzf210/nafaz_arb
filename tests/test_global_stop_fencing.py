@@ -2,7 +2,7 @@ import pytest
 from types import SimpleNamespace
 
 from executor.engine_entry_submission import EngineEntrySubmissionMixin
-from executor.global_stop import FENCE_LOCK_KEY, GlobalStopError, GlobalStopService
+from executor.global_stop import DERISK_LOCK_KEY, FENCE_LOCK_KEY, GlobalStopError, GlobalStopService
 from executor.helpers import RetryExhausted, is_explicit_rate_limit_rejection, retry_with_backoff
 from executor.indodax_v2 import IndodaxRateLimitError
 from executor.config import ExecutorConfig
@@ -975,3 +975,21 @@ def test_spot_slot_account_uses_pair_quote_not_an_idr_fallback():
     assert EngineEntrySubmissionMixin._spot_slot_account(
         SimpleNamespace(quote_asset="IDR")
     ) == "idr"
+
+
+@pytest.mark.asyncio
+async def test_derisk_fence_uses_independent_session_lock_key():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+
+    async with service.derisk_submit_fence(client_order_id="stable-exit-order") as fenced_conn:
+        assert fenced_conn is conn
+
+    lock_calls = [
+        args[0]
+        for query, args in conn.executed
+        if "pg_advisory_lock" in query or "pg_advisory_unlock" in query
+    ]
+    assert lock_calls == [DERISK_LOCK_KEY, DERISK_LOCK_KEY]
+    assert DERISK_LOCK_KEY != FENCE_LOCK_KEY
