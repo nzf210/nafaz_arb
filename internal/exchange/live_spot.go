@@ -53,6 +53,16 @@ func (l *LiveAdapter) USDTIDRRate(ctx context.Context) (float64, error) {
 	l.usdtIDRMu.Unlock()
 
 	rate, err := l.resolveLiveUSDTIDRRate(ctx)
+	if err != nil {
+		l.mu.RLock()
+		if l.lastUSDTIDRRate > 0 && time.Since(l.lastUSDTIDRTime) < 5*time.Minute {
+			rate = l.lastUSDTIDRRate
+			l.mu.RUnlock()
+			err = nil
+		} else {
+			l.mu.RUnlock()
+		}
+	}
 	flight.rate = rate
 	flight.err = err
 	close(flight.done)
@@ -154,7 +164,8 @@ func (l *LiveAdapter) fetchTokocryptoUSDTIDRRate(ctx context.Context) (float64, 
 	}
 
 	var raw struct {
-		Code int `json:"code"`
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
 		Data struct {
 			Bids [][]string `json:"bids"`
 			Asks [][]string `json:"asks"`
@@ -162,6 +173,12 @@ func (l *LiveAdapter) fetchTokocryptoUSDTIDRRate(ctx context.Context) (float64, 
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return 0, fmt.Errorf("decode tokocrypto usdtidr depth: %w", err)
+	}
+	if raw.Code != 0 {
+		if raw.Code == 1008 {
+			l.getTokocryptoLimiter().recordCooldown(3*time.Second, fmt.Sprintf("Tokocrypto error 1008: %s", raw.Msg))
+		}
+		return 0, fmt.Errorf("tokocrypto usdtidr depth error %d: %s", raw.Code, raw.Msg)
 	}
 	bids := parseStringLevels(raw.Data.Bids, 1.0)
 	asks := parseStringLevels(raw.Data.Asks, 1.0)
@@ -201,7 +218,10 @@ func (l *LiveAdapter) SpotMarkets(ctx context.Context) ([]domain.Market, error) 
 		l.recordScanError(msg)
 	}
 
-	if strings.TrimSpace(l.mexcSpotBaseURL) != "" {
+	l.mu.RLock()
+	enableMEXC := l.enableMEXCSpot && strings.TrimSpace(l.mexcSpotBaseURL) != ""
+	l.mu.RUnlock()
+	if enableMEXC {
 		mexcStart := time.Now()
 		mexcMarkets, err := l.mexcVenue().FetchSpotMarkets(ctx)
 		l.recordScanMetric("mexc", mexcStart, err)

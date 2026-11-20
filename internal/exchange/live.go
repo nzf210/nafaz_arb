@@ -80,6 +80,10 @@ type LiveAdapter struct {
 	scanTelemetryMetrics map[string]domain.ExchangeScanMetrics
 	scanTelemetryErrors  []string
 
+	fundingCache   map[string]cachedFunding
+	fundingCacheMu sync.RWMutex
+	enableMEXCSpot bool
+
 	venuesOnce    sync.Once
 	venueRegistry *VenueRegistry
 }
@@ -133,7 +137,16 @@ func NewLiveAdapter() *LiveAdapter {
 		mexcSpotBaseURL:   "https://api.mexc.com",
 		contractSizes:     make(map[string]float64),
 		okxBookCalls:      make(map[string]*okxBookCall),
+		fundingCache:      make(map[string]cachedFunding),
+		enableMEXCSpot:    false,
 	}
+}
+
+// SetEnableMEXCSpot enables or disables MEXC Spot discovery.
+func (l *LiveAdapter) SetEnableMEXCSpot(enable bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.enableMEXCSpot = enable
 }
 
 // SetOKXLimiterConfig installs shared-limiter settings. Call before the first
@@ -167,6 +180,7 @@ func (l *LiveAdapter) SetBaseURLs(urls ...string) {
 	}
 	if len(urls) > 3 && urls[3] != "" {
 		l.mexcSpotBaseURL = urls[3]
+		l.enableMEXCSpot = true
 	}
 	if len(urls) > 4 && urls[4] != "" {
 		l.tokocryptoBaseURL = urls[4]

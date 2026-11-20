@@ -19,7 +19,8 @@ const (
 	indodaxTickWait              = 50 * time.Millisecond
 	indodaxDefault429Cooldown    = 60 * time.Second
 	indodaxDefault403Cooldown    = 5 * time.Minute
-	indodaxMaxCooldown           = 24 * time.Hour
+	indodaxMaxCooldown        = 5 * time.Minute
+
 	mexcSpotMaxConcurrent        = 4
 	mexcSpotDefaultRatePerSec    = 10.0
 	mexcSpotDefaultBurst         = 10
@@ -27,9 +28,10 @@ const (
 	mexcPerpDefaultRatePerSec   = 10.0
 	mexcPerpDefaultBurst        = 10
 	mexcPerpDefault510Cooldown  = 10 * time.Second
-	tokocryptoMaxConcurrent     = 6
-	tokocryptoDefaultRatePerSec = 15.0
-	tokocryptoDefaultBurst      = 15
+
+	tokocryptoMaxConcurrent     = 3
+	tokocryptoDefaultRatePerSec = 4.0
+	tokocryptoDefaultBurst      = 4
 )
 
 // venueLimiter enforces concurrency, token-bucket pacing, and HTTP 403/429

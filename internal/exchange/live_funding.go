@@ -12,12 +12,40 @@ import (
 	"github.com/nafaz/spot-perp-scanner/internal/domain"
 )
 
-// FundingRate retrieves current funding rate from OKX or MEXC.
+type cachedFunding struct {
+	rate      domain.FundingRate
+	fetchedAt time.Time
+}
+
+const fundingRateCacheTTL = 10 * time.Minute
+
+// FundingRate retrieves current funding rate from OKX or MEXC with in-memory caching.
 func (l *LiveAdapter) FundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {
-	if isMEXCSymbol(symbol) {
-		return l.mexcVenue().FetchFundingRate(ctx, symbol)
+	cleanSym := cleanSymbol(symbol)
+	l.fundingCacheMu.RLock()
+	if item, ok := l.fundingCache[cleanSym]; ok && time.Since(item.fetchedAt) < fundingRateCacheTTL {
+		rate := item.rate
+		l.fundingCacheMu.RUnlock()
+		return rate, nil
 	}
-	return l.okxVenue().FetchFundingRate(ctx, symbol)
+	l.fundingCacheMu.RUnlock()
+
+	var rate domain.FundingRate
+	var err error
+	if isMEXCSymbol(symbol) {
+		rate, err = l.mexcVenue().FetchFundingRate(ctx, symbol)
+	} else {
+		rate, err = l.okxVenue().FetchFundingRate(ctx, symbol)
+	}
+	if err == nil {
+		l.fundingCacheMu.Lock()
+		if l.fundingCache == nil {
+			l.fundingCache = make(map[string]cachedFunding)
+		}
+		l.fundingCache[cleanSym] = cachedFunding{rate: rate, fetchedAt: time.Now().UTC()}
+		l.fundingCacheMu.Unlock()
+	}
+	return rate, err
 }
 
 func (l *LiveAdapter) fetchOKXFundingRate(ctx context.Context, symbol string) (domain.FundingRate, error) {

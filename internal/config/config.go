@@ -150,6 +150,7 @@ type Config struct {
 	LocalPriceTick                float64        `json:"local_price_tick"`
 	GlobalFuturesExchange         string         `json:"global_futures_exchange"`
 	EnableExecutorSignals         bool           `json:"enable_executor_signals"`
+	EnableMEXCSpot                *bool          `json:"enable_mexc_spot,omitempty"`
 	Telegram                      TelegramConfig `json:"telegram"`
 }
 
@@ -190,7 +191,11 @@ func (c *Config) setDefaults() {
 	c.OKXWSReconnectInterval = defaultString(c.OKXWSReconnectInterval, "1s")
 	c.OKXWSMaxReconnectBackoff = defaultString(c.OKXWSMaxReconnectBackoff, "30s")
 	if c.OKXWSMaxInstruments <= 0 {
-		c.OKXWSMaxInstruments = 100
+		c.OKXWSMaxInstruments = 300
+	}
+	if c.EnableMEXCSpot == nil {
+		f := false
+		c.EnableMEXCSpot = &f
 	}
 	c.IndodaxWSURL = defaultString(c.IndodaxWSURL, "wss://ws3.indodax.com/ws/")
 	c.IndodaxWSStaleAfter = defaultString(c.IndodaxWSStaleAfter, "65s")
@@ -418,6 +423,10 @@ func (c *Config) applyEnvOverrides() {
 	setEnvFloat(&c.MinAllocatedCapital, "MIN_ALLOCATED_CAPITAL")
 	setEnvInt(&c.EmptyBookFreezeMinutes, "EMPTY_BOOK_FREEZE_MINUTES")
 	setEnvBool(&c.EnableSyntheticIDR, "ENABLE_SYNTHETIC_IDR")
+	if v := os.Getenv("ENABLE_MEXC_SPOT"); v != "" {
+		b := v == "true" || v == "1"
+		c.EnableMEXCSpot = &b
+	}
 	setEnvFloat(&c.SyntheticUSDTIDRRate, "SYNTHETIC_USDT_IDR_RATE")
 	if tok := os.Getenv("TELEGRAM_BOT_TOKEN"); tok != "" {
 		c.Telegram.BotToken = tok

@@ -395,3 +395,146 @@ func TestLiveAdapterSubscribeOKXMatchedBooks(t *testing.T) {
 		t.Fatalf("expected 1 OKX instrument after limit, got %d (%v)", len(instruments), instruments)
 	}
 }
+
+func TestLiveAdapterFundingRateCache(t *testing.T) {
+	callCount := 0
+	okxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"code": "0",
+			"data": [{
+				"instId": "BTC-USDT-SWAP",
+				"fundingRate": "0.0001",
+				"fundingTime": "1690000000000",
+				"ts": "1690000000000"
+			}]
+		}`))
+	}))
+	defer okxServer.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", okxServer.URL)
+
+	fr1, err := adapter.FundingRate(context.Background(), "BTC-USDT-SWAP")
+	if err != nil {
+		t.Fatalf("first FundingRate: %v", err)
+	}
+	if fr1.Rate != 0.0001 {
+		t.Errorf("expected rate 0.0001, got %f", fr1.Rate)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 server call, got %d", callCount)
+	}
+
+	// Second call should hit in-memory cache
+	fr2, err := adapter.FundingRate(context.Background(), "BTC-USDT-SWAP")
+	if err != nil {
+		t.Fatalf("second FundingRate: %v", err)
+	}
+	if fr2.Rate != 0.0001 {
+		t.Errorf("expected cached rate 0.0001, got %f", fr2.Rate)
+	}
+	if callCount != 1 {
+		t.Errorf("expected still 1 server call (cache hit), got %d", callCount)
+	}
+}
+
+func TestTokocrypto1008RateLimit(t *testing.T) {
+	tokoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":1008,"msg":"You made too many requests, please try again in 3 second(s)."}`))
+	}))
+	defer tokoServer.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", "", "", "", tokoServer.URL)
+
+	_, err := adapter.SpotOrderBook(context.Background(), "toko:BTC_USDT")
+	if err == nil {
+		t.Fatal("expected error on tokocrypto code 1008, got nil")
+	}
+	if !strings.Contains(err.Error(), "1008") {
+		t.Errorf("expected error to mention 1008, got %v", err)
+	}
+	// Verify limiter was put in cooldown
+	lim := adapter.getTokocryptoLimiter()
+	if checkErr := lim.checkBlocked(); checkErr == nil {
+		t.Error("expected tokocrypto limiter to be blocked after 1008")
+	}
+}
+
+func TestUSDTIDRFallbackGracePeriod(t *testing.T) {
+	indodaxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "Access Denied", http.StatusForbidden)
+	}))
+	defer indodaxServer.Close()
+
+	tokoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":1008,"msg":"You made too many requests, please try again in 3 second(s)."}`))
+	}))
+	defer tokoServer.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs(indodaxServer.URL, "", "", "", tokoServer.URL)
+
+	// Simulate previously cached live rate within grace period
+	adapter.mu.Lock()
+	adapter.lastUSDTIDRRate = 18250.0
+	adapter.lastUSDTIDRTime = time.Now().UTC().Add(-2 * time.Minute)
+	adapter.mu.Unlock()
+
+	rate, err := adapter.USDTIDRRate(context.Background())
+	if err != nil {
+		t.Fatalf("expected fallback rate within grace period, got error: %v", err)
+	}
+	if rate != 18250.0 {
+		t.Errorf("expected 18250.0, got %f", rate)
+	}
+}
+
+func TestSpotMarketsEnableMEXCSpotToggle(t *testing.T) {
+	indodaxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[{"id":"btcusdt","symbol":"BTCUSDT","base_currency":"usdt","traded_currency":"btc","quantity_increment":0.00000001}]`))
+	}))
+	defer indodaxServer.Close()
+
+	mexcSpotCalls := 0
+	mexcSpotServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mexcSpotCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"code":200,"data":["BTCUSDT"]}`))
+	}))
+	defer mexcSpotServer.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs(indodaxServer.URL, "", "", mexcSpotServer.URL, "")
+	// Explicitly disable MEXC spot
+	adapter.SetEnableMEXCSpot(false)
+
+	mkts, err := adapter.SpotMarkets(context.Background())
+	if err != nil {
+		t.Fatalf("SpotMarkets: %v", err)
+	}
+	if mexcSpotCalls != 0 {
+		t.Errorf("expected 0 calls to mexc spot when disabled, got %d", mexcSpotCalls)
+	}
+	for _, m := range mkts {
+		if m.Exchange == "mexc" {
+			t.Errorf("unexpected mexc market when disabled: %+v", m)
+		}
+	}
+
+	// Now enable it and verify it's called
+	adapter.SetEnableMEXCSpot(true)
+	mkts, err = adapter.SpotMarkets(context.Background())
+	if err != nil {
+		t.Fatalf("SpotMarkets with mexc enabled: %v", err)
+	}
+	if mexcSpotCalls != 1 {
+		t.Errorf("expected 1 call to mexc spot when enabled, got %d", mexcSpotCalls)
+	}
+}
+

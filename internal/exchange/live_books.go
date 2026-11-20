@@ -135,7 +135,8 @@ func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol s
 	}
 
 	var raw struct {
-		Code int `json:"code"`
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
 		Data struct {
 			Bids [][]string `json:"bids"`
 			Asks [][]string `json:"asks"`
@@ -144,7 +145,12 @@ func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol s
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return domain.OrderBook{}, fmt.Errorf("decode tokocrypto depth: %w", err)
 	}
-
+	if raw.Code != 0 {
+		if raw.Code == 1008 {
+			l.getTokocryptoLimiter().recordCooldown(3*time.Second, fmt.Sprintf("Tokocrypto error 1008: %s", raw.Msg))
+		}
+		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth error %d: %s", raw.Code, raw.Msg)
+	}
 	bids := parseStringLevels(raw.Data.Bids, 1.0)
 	asks := parseStringLevels(raw.Data.Asks, 1.0)
 

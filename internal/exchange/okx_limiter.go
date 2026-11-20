@@ -28,7 +28,7 @@ const (
 	okxMaxRetries     = 3
 	okxBaseBackoff    = 500 * time.Millisecond
 	okxRequestTimeout = 15 * time.Second
-	okxSlotWait       = 2 * time.Second // max wait for an in-flight slot
+	okxSlotWait       = 5 * time.Second // max wait for an in-flight slot
 	okxTickWait       = 50 * time.Millisecond
 
 	okxMaxConcurrent = 3

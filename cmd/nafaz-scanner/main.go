@@ -40,6 +40,11 @@ func main(){
 		if cfg.GlobalFuturesExchange != "" {
 			live.SetTargetPerpExchange(cfg.GlobalFuturesExchange)
 		}
+		if cfg.EnableMEXCSpot != nil && *cfg.EnableMEXCSpot {
+			live.SetEnableMEXCSpot(true)
+		} else {
+			live.SetEnableMEXCSpot(false)
+		}
 		live.SetHealthPolicy(exchange.HealthPolicy{
 			Window:             time.Duration(cfg.ExchangeErrorWindowSeconds) * time.Second,
 			ErrorRateThreshold: cfg.ExchangeErrorRateThreshold,
