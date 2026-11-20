@@ -106,6 +106,8 @@ async def test_balance_constraint_and_realized_trade_updates(fake_redis):
     sig2["pair_info"] = dict(sig1["pair_info"])
     sig2["pair_info"]["local_symbol"] = "eth_idr"
     sig2["pair_info"]["global_symbol"] = "ETHUSDT"
+    sig2["pair_info"]["base_asset"] = "ETH"
+    sig2["pair_info"]["quote_asset"] = "IDR"
     sig2["execution_directives"] = dict(sig1["execution_directives"])
     sig2["execution_directives"]["recommended_limit_buy_idr"] = 50000000.0
     sig2["execution_directives"]["max_position_usdt"] = 50.0
@@ -124,6 +126,8 @@ async def test_balance_constraint_and_realized_trade_updates(fake_redis):
     sig3["pair_info"] = dict(sig1["pair_info"])
     sig3["pair_info"]["local_symbol"] = "sol_idr"
     sig3["pair_info"]["global_symbol"] = "SOLUSDT"
+    sig3["pair_info"]["base_asset"] = "SOL"
+    sig3["pair_info"]["quote_asset"] = "IDR"
 
     await fake_redis.set("arb:signal:indodax:sol_idr", json.dumps(sig3))
     await engine.handle_signal_notification("indodax:sol_idr")
