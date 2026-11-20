@@ -2617,3 +2617,47 @@ async def test_order_sync_worker_syncs_and_retires_reconciled_records(fake_redis
     assert updated.hedged_quantity == pytest.approx(15.0)
 
 
+
+
+@pytest.mark.parametrize(
+    ("age_ms", "restore_parent_position"),
+    [
+        (240_000, True),   # Age alone is not proof of venue rejection.
+        (10_000, False),   # Missing parent position is not proof either.
+    ],
+)
+@pytest.mark.asyncio
+async def test_unacknowledged_not_found_is_never_auto_retired(
+    fake_redis, age_ms, restore_parent_position
+):
+    """NOT_FOUND remains ambiguous regardless of age or missing parent state."""
+    client = MockExchangeClient()
+
+    async def missing_order(client_order_id, symbol, amount_spec=None):
+        return None
+
+    client.fetch_local_order_by_client_id = missing_order
+    engine = await _build(fake_redis, client)
+    if restore_parent_position:
+        engine.active_positions[PAIR_TAG] = _position()
+
+    intent = _entry_record(
+        client_order_id=f"btc-idr-entry-aged-{age_ms}",
+        exchange_order_id="",
+        status="submitting",
+        created_at=int(time.time() * 1000) - age_ms,
+    )
+    await engine.order_registry.register(intent)
+
+    await engine._reconcile_registered_order(intent, "indodax", "btc_idr")
+
+    pending = await engine.order_registry.pending_recovery_ids()
+    active = await engine.order_registry._redis_active_records()
+    stored = await engine.order_registry.find_by_client_id(
+        "indodax", intent.client_order_id
+    )
+    assert intent.local_order_id in pending
+    assert intent.local_order_id in active
+    assert stored is not None
+    assert stored.status == "submitting"
+    assert PAIR_TAG in engine._recovery_scope_halts
