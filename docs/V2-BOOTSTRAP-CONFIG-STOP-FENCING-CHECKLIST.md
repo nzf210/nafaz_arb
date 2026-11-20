@@ -613,3 +613,44 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 - [x] Final source/test head `4e169fb3f50e9ad9693da99d07081d203402b915`: workflow [44493239020](https://github.com/nzf210/nafaz_arb/actions/runs/44493239020) passed all five jobs; Python **746 passed / 10 skipped**, PostgreSQL integration **11 passed**, Go/race/vet, migration runner, and Docker builds passed.
 
 **Status:** R-50 source/test remediation verified in CI. Release state remains PARTIAL / NOT LIVE-CERTIFIED.
+
+
+## Audit execution 2026-11-20 — R-51 / R-52
+
+### Recovery must not infer rejection from age or missing parent
+
+- [x] Removed automatic retirement of unacknowledged `submitting`/`pending` order records based only on age greater than 180 seconds or absence of the parent position.
+- [x] Exact client-order-ID lookup returning `None` remains ambiguous; retain the order in pending recovery and halt the affected exposure scope.
+- [x] Added fake-venue regression cases for an aged intent with a restored parent position and a recent intent whose parent position is absent.
+- [ ] Do not add automatic age-based retirement unless a venue-specific contract proves the exact lookup is authoritative after a defined retention/consistency window.
+
+### Local market identity must be internally consistent
+
+- [x] Parse local symbol base/quote and compare with explicit signal metadata.
+- [x] Reject contradictory or incomplete incoming market identity before admission.
+- [x] Repeat the identity check inside the shared PostgreSQL submit fence immediately before the venue create request.
+- [x] Treat malformed active/pending market identity on the same local venue as a reason to block new exposure, not as an unmatched market.
+- [x] Corrected ETH/SOL test fixtures and added base/quote mismatch regression coverage.
+
+### Order-create boundary revalidation
+
+- [x] Spot BUY wrapper: `exchange_orders.py:create_limit_buy_order` — PREPARED/SUBMITTING + shared PostgreSQL session fence.
+- [x] Futures short wrapper: `exchange_futures.py:create_market_sell_order` with `reduceOnly=False` — PREPARED/SUBMITTING + shared fence.
+- [x] Spot limit SELL, spot market SELL, futures `reduceOnly=True` BUY remain de-risk paths and are not blocked by entry STOP.
+- [x] Indodax `_create_order` raw POST remains behind the public order wrappers; lifecycle classification follows the caller.
+- [x] Generic MutationGateway create rejects if Global STOP PostgreSQL fencing is unavailable; no active production caller was found in the inspected orchestration.
+- [x] Modular `executor/venues/*` adapters have no direct create-order call-site in the inspected files.
+- [x] LIVE engine startup and both LIVE entry submit methods reject missing PostgreSQL Global STOP service; un-fenced compatibility is limited to mock mode.
+
+### Verification
+
+- Source/test head: `43163e1580cd8c48a585ddeed94e81feb0202770`.
+- Workflow [44698742920](https://github.com/nzf210/nafaz_arb/actions/runs/44698742920): all five jobs passed.
+- Python: **754 passed, 10 skipped, 117 warnings**.
+- Disposable PostgreSQL schema/integration: **11 passed**.
+- Go tests/race/vet, VPS migration runner, and scanner/executor Docker builds passed.
+- No production VPS database, live venue, or CEX sandbox test was performed.
+
+**Still OPEN:** operator identity/HMAC custody and rotation, dual approval and manual-resolution runbook; repeated PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; per-venue sandbox/paper contract tests; minimum-notional overhedge/delta-drift policy; and durable de-risk persistence.
+
+**Release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover.
