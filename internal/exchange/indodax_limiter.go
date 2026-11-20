@@ -15,7 +15,7 @@ const (
 	indodaxDefaultRatePerSec     = 5.0
 	indodaxDefaultBurst          = 6
 	indodaxMaxConcurrent         = 3
-	indodaxSlotWait              = 5 * time.Second
+	indodaxSlotWait              = 20 * time.Second
 	indodaxTickWait              = 50 * time.Millisecond
 	indodaxDefault429Cooldown    = 60 * time.Second
 	indodaxDefault403Cooldown    = 5 * time.Minute
@@ -81,6 +81,41 @@ func (l *venueLimiter) checkBlocked() error {
 			ErrExchangeUnavailable, l.name, l.blockedUntil.UTC().Format(time.RFC3339), l.blockReason)
 	}
 	return nil
+}
+
+func (l *venueLimiter) waitOrCheckBlocked(ctx context.Context) error {
+	l.mu.Lock()
+	until := l.blockedUntil
+	reason := l.blockReason
+	l.mu.Unlock()
+
+	now := l.now()
+	if now.Before(until) {
+		remaining := until.Sub(now)
+		if remaining > time.Minute {
+			return fmt.Errorf("%w: %s cooldown active until %s (%s)",
+				ErrExchangeUnavailable, l.name, until.UTC().Format(time.RFC3339), reason)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(remaining):
+		}
+	}
+	return nil
+}
+
+func parseTokocryptoRetryAfter(msg string) time.Duration {
+	idx := strings.Index(msg, "please try again in ")
+	if idx >= 0 {
+		sub := msg[idx+len("please try again in "):]
+		if secIdx := strings.Index(sub, " second"); secIdx > 0 {
+			if secs, err := strconv.Atoi(strings.TrimSpace(sub[:secIdx])); err == nil && secs > 0 {
+				return time.Duration(secs+1) * time.Second
+			}
+		}
+	}
+	return 3 * time.Second
 }
 
 func (l *venueLimiter) recordCooldown(cooldown time.Duration, reason string) {

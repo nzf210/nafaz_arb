@@ -464,6 +464,34 @@ func TestTokocrypto1008RateLimit(t *testing.T) {
 	}
 }
 
+func TestTokocryptoRetrySuccess(t *testing.T) {
+	attempts := 0
+	tokoServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		if attempts == 1 {
+			w.Write([]byte(`{"code":1008,"msg":"You made too many requests, please try again in 1 second(s)."}`))
+			return
+		}
+		w.Write([]byte(`{"code":0,"data":{"bids":[["60000","1.0"]],"asks":[["60010","1.0"]]}}`))
+	}))
+	defer tokoServer.Close()
+
+	adapter := NewLiveAdapter()
+	adapter.SetBaseURLs("", "", "", "", tokoServer.URL)
+
+	book, err := adapter.SpotOrderBook(context.Background(), "toko:BTC_USDT")
+	if err != nil {
+		t.Fatalf("expected retry to succeed, got error: %v", err)
+	}
+	if len(book.Bids) != 1 || book.Bids[0].Price != 60000 {
+		t.Errorf("unexpected book bids: %+v", book.Bids)
+	}
+	if attempts != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempts)
+	}
+}
+
 func TestUSDTIDRFallbackGracePeriod(t *testing.T) {
 	indodaxServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Access Denied", http.StatusForbidden)

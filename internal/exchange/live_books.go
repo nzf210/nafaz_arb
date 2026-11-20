@@ -114,24 +114,43 @@ func (l *LiveAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.
 }
 
 func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		book, retry, cooldown, err := l.doFetchTokocryptoSpotOrderBook(ctx, symbol)
+		if !retry {
+			return book, err
+		}
+		lastErr = err
+		if attempt == 0 && cooldown > 0 {
+			select {
+			case <-ctx.Done():
+				return domain.OrderBook{}, ctx.Err()
+			case <-time.After(cooldown):
+			}
+		}
+	}
+	return domain.OrderBook{}, fmt.Errorf("tokocrypto depth %s: rate limited after retry: %w", symbol, lastErr)
+}
+
+func (l *LiveAdapter) doFetchTokocryptoSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, bool, time.Duration, error) {
 	rawSym := strings.TrimPrefix(symbol, "toko:")
 	endpoint := fmt.Sprintf("%s/open/v1/market/depth?symbol=%s&limit=20", l.tokocryptoBaseURL, url.QueryEscape(rawSym))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth req: %w", err)
+		return domain.OrderBook{}, false, 0, fmt.Errorf("tokocrypto depth req: %w", err)
 	}
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
 	resp, err := l.tokocryptoDo(ctx, req)
 	if err != nil {
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth request: %w", err)
+		return domain.OrderBook{}, false, 0, fmt.Errorf("tokocrypto depth request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		if classifyHTTPError(resp.StatusCode) {
-			return domain.OrderBook{}, fmt.Errorf("%w: tokocrypto depth status %d", ErrExchangeUnavailable, resp.StatusCode)
+			return domain.OrderBook{}, false, 0, fmt.Errorf("%w: tokocrypto depth status %d", ErrExchangeUnavailable, resp.StatusCode)
 		}
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth status: %d", resp.StatusCode)
+		return domain.OrderBook{}, false, 0, fmt.Errorf("tokocrypto depth status: %d", resp.StatusCode)
 	}
 
 	var raw struct {
@@ -143,13 +162,15 @@ func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol s
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return domain.OrderBook{}, fmt.Errorf("decode tokocrypto depth: %w", err)
+		return domain.OrderBook{}, false, 0, fmt.Errorf("decode tokocrypto depth: %w", err)
 	}
 	if raw.Code != 0 {
 		if raw.Code == 1008 {
-			l.getTokocryptoLimiter().recordCooldown(3*time.Second, fmt.Sprintf("Tokocrypto error 1008: %s", raw.Msg))
+			cooldown := parseTokocryptoRetryAfter(raw.Msg)
+			l.getTokocryptoLimiter().recordCooldown(cooldown, fmt.Sprintf("Tokocrypto error 1008: %s", raw.Msg))
+			return domain.OrderBook{}, true, cooldown, fmt.Errorf("tokocrypto depth error %d: %s", raw.Code, raw.Msg)
 		}
-		return domain.OrderBook{}, fmt.Errorf("tokocrypto depth error %d: %s", raw.Code, raw.Msg)
+		return domain.OrderBook{}, false, 0, fmt.Errorf("tokocrypto depth error %d: %s", raw.Code, raw.Msg)
 	}
 	bids := parseStringLevels(raw.Data.Bids, 1.0)
 	asks := parseStringLevels(raw.Data.Asks, 1.0)
@@ -163,7 +184,7 @@ func (l *LiveAdapter) fetchTokocryptoSpotOrderBook(ctx context.Context, symbol s
 		Timestamp:  receivedAt,
 		ReceivedAt: receivedAt,
 		Source:     "receive_time",
-	}, nil
+	}, false, 0, nil
 }
 
 func (l *LiveAdapter) fetchIndodaxSpotOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {

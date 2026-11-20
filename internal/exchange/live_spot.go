@@ -147,20 +147,39 @@ func (l *LiveAdapter) fetchTokocryptoUSDTIDRRate(ctx context.Context) (float64, 
 	if strings.TrimSpace(l.tokocryptoBaseURL) == "" {
 		return 0, fmt.Errorf("tokocrypto base URL not configured")
 	}
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		rate, retry, cooldown, err := l.doFetchTokocryptoUSDTIDRRate(ctx)
+		if !retry {
+			return rate, err
+		}
+		lastErr = err
+		if attempt == 0 && cooldown > 0 {
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(cooldown):
+			}
+		}
+	}
+	return 0, fmt.Errorf("tokocrypto usdtidr rate limited after retry: %w", lastErr)
+}
+
+func (l *LiveAdapter) doFetchTokocryptoUSDTIDRRate(ctx context.Context) (float64, bool, time.Duration, error) {
 	endpoint := l.tokocryptoBaseURL + "/open/v1/market/depth?symbol=USDT_IDR&limit=5"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return 0, fmt.Errorf("tokocrypto usdtidr depth req: %w", err)
+		return 0, false, 0, fmt.Errorf("tokocrypto usdtidr depth req: %w", err)
 	}
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
 	resp, err := l.tokocryptoDo(ctx, req)
 	if err != nil {
-		return 0, fmt.Errorf("tokocrypto usdtidr depth request: %w", err)
+		return 0, false, 0, fmt.Errorf("tokocrypto usdtidr depth request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("tokocrypto usdtidr depth status: %d", resp.StatusCode)
+		return 0, false, 0, fmt.Errorf("tokocrypto usdtidr depth status: %d", resp.StatusCode)
 	}
 
 	var raw struct {
@@ -172,20 +191,22 @@ func (l *LiveAdapter) fetchTokocryptoUSDTIDRRate(ctx context.Context) (float64, 
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
-		return 0, fmt.Errorf("decode tokocrypto usdtidr depth: %w", err)
+		return 0, false, 0, fmt.Errorf("decode tokocrypto usdtidr depth: %w", err)
 	}
 	if raw.Code != 0 {
 		if raw.Code == 1008 {
-			l.getTokocryptoLimiter().recordCooldown(3*time.Second, fmt.Sprintf("Tokocrypto error 1008: %s", raw.Msg))
+			cooldown := parseTokocryptoRetryAfter(raw.Msg)
+			l.getTokocryptoLimiter().recordCooldown(cooldown, fmt.Sprintf("Tokocrypto error 1008: %s", raw.Msg))
+			return 0, true, cooldown, fmt.Errorf("tokocrypto usdtidr depth error %d: %s", raw.Code, raw.Msg)
 		}
-		return 0, fmt.Errorf("tokocrypto usdtidr depth error %d: %s", raw.Code, raw.Msg)
+		return 0, false, 0, fmt.Errorf("tokocrypto usdtidr depth error %d: %s", raw.Code, raw.Msg)
 	}
 	bids := parseStringLevels(raw.Data.Bids, 1.0)
 	asks := parseStringLevels(raw.Data.Asks, 1.0)
 	if len(bids) == 0 || len(asks) == 0 || bids[0].Price <= 0 || asks[0].Price <= bids[0].Price {
-		return 0, fmt.Errorf("tokocrypto usdtidr book invalid or one-sided")
+		return 0, false, 0, fmt.Errorf("tokocrypto usdtidr book invalid or one-sided")
 	}
-	return (bids[0].Price + asks[0].Price) / 2, nil
+	return (bids[0].Price + asks[0].Price) / 2, false, 0, nil
 }
 
 // SpotMarkets discovers active spot pairs on Tokocrypto, Indodax, and MEXC Spot.
