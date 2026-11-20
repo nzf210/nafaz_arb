@@ -548,3 +548,52 @@ The first R-47 CI attempt exposed two test/implementation follow-ups: the fake s
 **CI history:** an initial run for the extended fixture failed because the test aged reservation rows but not the corresponding submit-attempt `created_at`; the implementation correctly uses the durable attempt age. The fixture was corrected to age both records. Final head `4e169fb3` passed workflow [44493239020](https://github.com/nzf210/nafaz_arb/actions/runs/44493239020): all five jobs successful; Python **746 passed, 10 skipped, 117 warnings**; PostgreSQL integration **11 passed**; Go tests/race/vet, VPS migration runner, and Docker builds passed.
 
 **R-50 status remains FIXED in source and regression tests.** Production VPS and real CEX validation remain open.
+
+
+## Audit execution 2026-11-20 — R-51 ambiguous submit retirement and R-52 market identity
+
+**Audited branch head before documentation:** `43163e1580cd8c48a585ddeed94e81feb0202770`
+
+### R-51 — aged unacknowledged orders must not be auto-retired
+
+- [x] Removed the recovery shortcut that marked a `submitting`/`pending` order `canceled/RECONCILED`, retired its registry record, and cleared pending recovery when the parent position was absent or the order was older than 180 seconds.
+- [x] A successful exact-client-ID lookup returning `None` remains ambiguous. Venue history retention, propagation delay, or eventual consistency can hide an accepted order; age and missing parent state are not proof of rejection.
+- [x] Recovery now retains the record in the pending-recovery index and halts the affected exposure scope. Only authoritative venue evidence or authorized operator resolution may release it.
+- [x] Added fake-venue regressions for both independent conditions: old intent with parent position restored, and recent intent with parent position absent.
+
+### R-52 — contradictory local market metadata must fail closed
+
+The single-flight market gate previously trusted `PairInfo.base_asset` before parsing the actual local symbol. A stale signal such as `ETH_IDR` with `base_asset=BTC` could be classified as BTC/IDR, allowing the same-market check to inspect the wrong market.
+
+- [x] Added `resolve_local_market_identity`, requiring parsed symbol base/quote to agree with explicit metadata when both are present.
+- [x] Signal admission and the in-fence pre-submit guard reject contradictory or incomplete market identity.
+- [x] Existing active/pending records with invalid identity on the same venue block new exposure rather than being silently skipped.
+- [x] Updated copied test fixtures to keep local symbol, base asset, and quote asset consistent; added base/quote mismatch regressions.
+
+### Revalidated order-create inventory
+
+| Boundary | Call-site | Classification |
+|---|---|---|
+| `executor/exchange_orders.py` | `create_limit_buy_order` | Spot entry BUY — durable PREPARED/SUBMITTING + shared PostgreSQL session fence |
+| `executor/exchange_futures.py` | `create_market_sell_order` with `reduceOnly=False` | Futures short entry/hedge — durable PREPARED/SUBMITTING + shared fence |
+| `executor/exchange_orders.py` | `create_limit_sell_order` | Spot exit — de-risk lane |
+| `executor/exchange_orders.py` | `create_market_sell_order` | Spot rollback/force-close — de-risk lane |
+| `executor/exchange_futures.py` | `create_market_buy_order` with `reduceOnly=True` | Futures close — de-risk lane |
+| `executor/indodax_v2.py` | `_create_order` → `POST /api/v2/order` | Raw venue wrapper; public BUY/SELL methods inherit caller classification |
+| `executor/mutation_gateway.py` | dynamic `create_order_direct` / `create_order` | Generic create is fenced and rejects when PostgreSQL fencing is unavailable; no active production caller found in inspected orchestration |
+| `executor/venues/*` | modular adapters | No direct create-order call-site found in the inspected adapters |
+
+Spot and futures LIVE entry methods explicitly reject a missing `GlobalStopService`; engine startup also refuses LIVE mode without `POSTGRES_DSN`. Mock mode is the only compatibility path without the PostgreSQL fence. Cancel and de-risk operations remain outside the entry STOP fence.
+
+### Verification
+
+- Source/test head: `43163e1580cd8c48a585ddeed94e81feb0202770`.
+- GitHub Actions workflow [44698742920](https://github.com/nzf210/nafaz_arb/actions/runs/44698742920): all five jobs passed.
+- Python suite: **754 passed, 10 skipped, 117 warnings**.
+- Disposable PostgreSQL schema/integration job: **11 passed**, including the existing multi-process submit-disconnect tests.
+- Go tests, race tests, vet, VPS migration-runner tests, and scanner/executor Docker builds passed.
+- Earlier intermediate runs exposed three stale test fixtures whose copied ETH/SOL symbols still carried BTC metadata. The fixtures were corrected and the final source/test head passed. This was not treated as a production test pass until the corrected head completed CI.
+
+**Remaining release gates:** operator identity and HMAC secret governance/rotation, dual approval and manual-resolution runbook; repeated PostgreSQL multi-process disconnect/fault injection against the actual VPS topology; real per-venue sandbox/paper contracts for exact client-ID visibility and eventual consistency; approved minimum-notional overhedge/delta-drift policy; and durable de-risk persistence when Redis/registry writers are unavailable.
+
+**Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
