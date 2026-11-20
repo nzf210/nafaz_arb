@@ -332,6 +332,33 @@ def normalize_quote_asset(quote: str) -> str:
     return q
 
 
+def resolve_local_market_identity(
+    symbol: str, explicit_base: str = "", explicit_quote: str = ""
+) -> Optional[tuple[str, str]]:
+    """Resolve a local market only when symbol and explicit metadata agree.
+
+    Entry de-duplication must not trust a stale base/quote field over the
+    exchange symbol: doing so can classify an ETH/IDR order as BTC/IDR and
+    bypass the same-market admission guard. Return None for incomplete or
+    contradictory identity so callers can reject new exposure.
+    """
+    symbol_base, symbol_quote = split_symbol_parts(symbol)
+    metadata_base = extract_base_asset("", explicit_base)
+    metadata_quote = normalize_quote_asset(explicit_quote)
+    parsed_quote = normalize_quote_asset(symbol_quote)
+
+    if symbol_base and metadata_base and symbol_base != metadata_base:
+        return None
+    if parsed_quote and metadata_quote and parsed_quote != metadata_quote:
+        return None
+
+    base = symbol_base or metadata_base
+    quote = parsed_quote or metadata_quote
+    if not base or not quote:
+        return None
+    return base, quote
+
+
 def parse_pair_tag_local_market(pair_tag: str) -> tuple[str, str, str]:
     """Parse (local_exchange, base_asset, normalized_quote) from pair_tag.
 
