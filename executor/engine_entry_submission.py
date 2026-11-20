@@ -9,8 +9,8 @@ from executor.models import OrderRole, PositionState
 from executor.global_stop import GlobalStopError
 from executor.helpers import (
     build_client_order_id,
-    extract_base_asset,
     is_explicit_rate_limit_rejection,
+    resolve_local_market_identity,
 )
 from executor.order_slots import SlotExhaustedError
 from executor.engine_common import logger
@@ -461,11 +461,19 @@ class EngineEntrySubmissionMixin:
             async def _pair_admission_guard():
                 if await self._has_active_or_pending_position(pair_tag):
                     return False
+                identity = resolve_local_market_identity(
+                    pair_info.local_symbol, pair_info.base_asset, pair_info.quote_asset
+                )
+                if identity is None:
+                    logger.warning(
+                        "[Entry] refusing submit with inconsistent local market identity: pair=%s symbol=%s base=%s quote=%s",
+                        pair_tag, pair_info.local_symbol, pair_info.base_asset, pair_info.quote_asset,
+                    )
+                    return False
                 check_market = getattr(self, "_has_active_or_pending_market", None)
                 if callable(check_market):
                     p_ex = str(pair_info.local_exchange or "").strip().lower()
-                    p_base = extract_base_asset(pair_info.local_symbol, pair_info.base_asset).upper()
-                    p_quote = str(pair_info.quote_asset or "").strip().lower()
+                    p_base, p_quote = identity
                     if await check_market(p_ex, p_base, p_quote, exclude_pair=pair_tag):
                         return False
                 return True
