@@ -39,7 +39,7 @@ class ExchangeOrderMixin:
         raw_id = str(symbol or "").strip()
         if ":" in raw_id:
             prefix, remainder = raw_id.split(":", 1)
-            if prefix.strip().lower() in {"toko", "okx", "mexc", "indodax"}:
+            if prefix.strip().lower() in {"toko", "okx", "mexc", "mexc_spot", "indodax"}:
                 return remainder
         return raw_id
 

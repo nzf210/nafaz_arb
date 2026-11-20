@@ -206,6 +206,8 @@ class ExchangeFeeBalanceMixin:
         """Fetch read-only balances for every configured venue independently."""
         reports = []
         for name, entry in sorted(self.balance_exchanges.items()):
+            if ":" in name:
+                continue
             reports.append(
                 await self._fetch_balance_report_for_exchange(name, entry)
             )
@@ -295,7 +297,9 @@ class ExchangeFeeBalanceMixin:
         name = str(venue or "").strip().lower()
         if not name:
             raise ValueError("spot venue is required for venue-scoped balance lookup")
-        entry = (getattr(self, "balance_exchanges", None) or {}).get(name)
+        entry = (getattr(self, "balance_exchanges", None) or {}).get(f"{name}:spot") or (
+            (getattr(self, "balance_exchanges", None) or {}).get(name)
+        )
         if not entry or entry.get("market") != "spot":
             raise LookupError(f"spot balance client is not registered for venue: {name}")
         client = entry.get("client")

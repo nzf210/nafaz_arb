@@ -5,6 +5,7 @@ import logging
 from typing import Optional, Dict, Any
 import ccxt.async_support as ccxt
 
+from executor.pair_registry import SUPPORTED_SPOT_VENUES, SUPPORTED_FUTURES_VENUES
 from executor.indodax_v2 import IndodaxTAPIv2
 from executor.helpers import _broker_prefix_for
 from executor.exchange_common import (
@@ -76,6 +77,8 @@ class ExchangeClient(
             return None
         entry = self.balance_exchanges.get(name)
         if not entry or entry.get("client") is None:
+            entry = self.balance_exchanges.get(f"{name}:spot") or self.balance_exchanges.get(f"{name}:futures")
+        if not entry or entry.get("client") is None:
             return None
         if entry.get("market") == "futures":
             return ExchangeClient(
@@ -89,8 +92,18 @@ class ExchangeClient(
         """Return an immutable facade bound to the exact spot/futures venue pair."""
         local_name = str(getattr(pair_info, "local_exchange", "") or "").strip().lower()
         global_name = str(getattr(pair_info, "global_exchange", "") or "").strip().lower()
-        local_entry = self.balance_exchanges.get(local_name)
-        global_entry = self.balance_exchanges.get(global_name)
+        if local_name == global_name:
+            raise ValueError(f"intra-exchange route not allowed (must be different CEX): {local_name}")
+        local_entry = self.balance_exchanges.get(f"{local_name}:spot") or (
+            self.balance_exchanges.get(local_name)
+            if (self.balance_exchanges.get(local_name) or {}).get("market") == "spot"
+            else None
+        )
+        global_entry = self.balance_exchanges.get(f"{global_name}:futures") or (
+            self.balance_exchanges.get(global_name)
+            if (self.balance_exchanges.get(global_name) or {}).get("market") == "futures"
+            else None
+        )
         if not local_entry or local_entry.get("market") != "spot" or local_entry.get("client") is None:
             raise LookupError(f"spot client unavailable for venue: {local_name or 'unknown'}")
         if not global_entry or global_entry.get("market") != "futures" or global_entry.get("client") is None:
@@ -232,14 +245,12 @@ def validate_runtime_venue_pair(local_name: str, global_name: str) -> None:
     """Reject unsupported or wrong-market venue combinations before LIVE clients start."""
     local_key = str(local_name or "").strip().lower()
     global_key = str(global_name or "").strip().lower()
-    if local_key not in BALANCE_MARKETS:
-        raise ValueError(f"unsupported local venue: {local_name!r}; supported venues: {sorted(BALANCE_MARKETS)}")
-    if global_key not in BALANCE_MARKETS:
-        raise ValueError(f"unsupported global venue: {global_name!r}; supported venues: {sorted(BALANCE_MARKETS)}")
-    if BALANCE_MARKETS[local_key] != "spot":
-        raise ValueError(f"local venue {local_key} is not configured for spot execution")
-    if BALANCE_MARKETS[global_key] != "futures":
-        raise ValueError(f"global venue {global_key} is not configured for futures execution")
+    if local_key == global_key:
+        raise ValueError(f"intra-exchange route not allowed (must be different CEX): {local_key}")
+    if local_key not in SUPPORTED_SPOT_VENUES:
+        raise ValueError(f"unsupported local venue: {local_name!r}; supported spot venues: {sorted(SUPPORTED_SPOT_VENUES)}")
+    if global_key not in SUPPORTED_FUTURES_VENUES:
+        raise ValueError(f"unsupported global venue: {global_name!r}; supported futures venues: {sorted(SUPPORTED_FUTURES_VENUES)}")
 
 
 def create_ccxt_client(local_name: str, global_name: str, local_creds, global_creds, configured_exchanges=None) -> ExchangeClient:
@@ -250,6 +261,8 @@ def create_ccxt_client(local_name: str, global_name: str, local_creds, global_cr
     balance_exchanges = {
         local_name.lower(): {"market": "spot", "client": local_ex},
         global_name.lower(): {"market": "futures", "client": global_ex},
+        f"{local_name.lower()}:spot": {"market": "spot", "client": local_ex},
+        f"{global_name.lower()}:futures": {"market": "futures", "client": global_ex},
     }
     credentials = configured_exchanges or {}
     for name, market in BALANCE_MARKETS.items():
@@ -267,6 +280,26 @@ def create_ccxt_client(local_name: str, global_name: str, local_creds, global_cr
         try:
             client = init_local_exchange(name, creds, default_type="spot") if market == "spot" else init_ccxt_exchange(name, creds, default_type="future")
             balance_exchanges[name] = {"market": market, "client": client}
+            balance_exchanges[f"{name}:{market}"] = {"market": market, "client": client}
         except Exception as exc:
             balance_exchanges[name] = {"market": market, "client": None, "error": f"balance client initialization failed: {exc}"}
+
+    # If mexc credentials exist, ensure BOTH mexc:spot and mexc:futures are initialized
+    mexc_creds = credentials.get("mexc")
+    if mexc_creds:
+        api_key = str(getattr(mexc_creds, "api_key", "") or "").strip()
+        api_secret = str(getattr(mexc_creds, "api_secret", "") or "").strip()
+        if api_key and api_secret:
+            if "mexc:spot" not in balance_exchanges or balance_exchanges["mexc:spot"].get("client") is None:
+                try:
+                    spot_client = init_ccxt_exchange("mexc", mexc_creds, default_type="spot")
+                    balance_exchanges["mexc:spot"] = {"market": "spot", "client": spot_client}
+                except Exception as exc:
+                    balance_exchanges["mexc:spot"] = {"market": "spot", "client": None, "error": str(exc)}
+            if "mexc:futures" not in balance_exchanges or balance_exchanges["mexc:futures"].get("client") is None:
+                try:
+                    fut_client = init_ccxt_exchange("mexc", mexc_creds, default_type="future")
+                    balance_exchanges["mexc:futures"] = {"market": "futures", "client": fut_client}
+                except Exception as exc:
+                    balance_exchanges["mexc:futures"] = {"market": "futures", "client": None, "error": str(exc)}
     return ExchangeClient(local_ex, global_ex, balance_exchanges)

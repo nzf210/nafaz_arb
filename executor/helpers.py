@@ -284,7 +284,7 @@ def extract_fill_price(order: dict, *fallbacks: float) -> float:
 
 
 _KNOWN_VENUE_PREFIXES = {
-    "toko", "tokocrypto", "indodax", "okx", "mexc",
+    "toko", "tokocrypto", "indodax", "okx", "mexc", "mexc_spot",
     "binance", "bybit", "gate", "bitget", "kucoin",
 }
 

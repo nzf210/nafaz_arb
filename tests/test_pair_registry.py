@@ -150,3 +150,21 @@ def test_pair_key_does_not_strip_unknown_namespace_as_asset_prefix():
         ExchangePairKey.create(
             "tokocrypto", "toko:BTC_USDT", "okx", "UNKNOWN:BTC-USDT-SWAP"
         )
+
+
+def test_pair_key_supports_mexc_spot_to_cross_cex_futures():
+    key = ExchangePairKey.create(
+        "mexc", "mexc_spot:BTCUSDT", "okx", "BTC-USDT-SWAP"
+    )
+    assert key.local_exchange == "mexc"
+    assert key.global_exchange == "okx"
+    assert key.local_symbol == "BTC/USDT"
+    assert key.global_symbol == "BTC/USDT"
+
+
+def test_pair_key_rejects_intra_exchange_mexc_spot_to_mexc_futures():
+    with pytest.raises(ValueError, match="intra-exchange route not allowed"):
+        ExchangePairKey.create(
+            "mexc", "mexc_spot:BTCUSDT", "mexc", "mexc:BTC_USDT"
+        )
+

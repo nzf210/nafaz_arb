@@ -567,6 +567,7 @@ func (l *LiveAdapter) fetchMEXCSpotMarkets(ctx context.Context) ([]domain.Market
 		if base == "" {
 			continue
 		}
+		lotSize := 0.000001
 		markets = append(markets, domain.Market{
 			Exchange:   "mexc",
 			Symbol:     MEXC_SPOT + sym,
@@ -574,6 +575,14 @@ func (l *LiveAdapter) fetchMEXCSpotMarkets(ctx context.Context) ([]domain.Market
 			QuoteAsset: strings.ToUpper(quote),
 			MarketType: "SPOT",
 			Active:     true,
+			LotSize:    lotSize,
+			MinOrder:   lotSize,
+			AmountSpec: &domain.AmountSpec{
+				Unit:        "BASE",
+				Step:        lotSize,
+				Min:         lotSize,
+				BasePerUnit: 1,
+			},
 		})
 	}
 	if len(markets) > 0 {

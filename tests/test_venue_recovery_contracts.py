@@ -155,7 +155,7 @@ def test_runtime_venue_factory_matrix_is_explicit_and_documented():
 
 @pytest.mark.parametrize(
     "local_name,global_name",
-    [("indodax", "okx"), ("tokocrypto", "mexc"), ("tokocrypto", "binance"), ("indodax", "bybit")],
+    [("indodax", "okx"), ("tokocrypto", "mexc"), ("tokocrypto", "binance"), ("indodax", "bybit"), ("mexc", "okx")],
 )
 def test_supported_runtime_venue_pairs_validate(local_name, global_name):
     validate_runtime_venue_pair(local_name, global_name)
@@ -163,7 +163,7 @@ def test_supported_runtime_venue_pairs_validate(local_name, global_name):
 
 @pytest.mark.parametrize(
     "local_name,global_name",
-    [("unknown", "okx"), ("okx", "mexc"), ("indodax", "tokocrypto"), ("binance", "bybit")],
+    [("unknown", "okx"), ("okx", "mexc"), ("indodax", "tokocrypto"), ("binance", "bybit"), ("mexc", "mexc")],
 )
 def test_unsupported_or_wrong_market_venue_pairs_fail_closed(local_name, global_name):
     with pytest.raises(ValueError):

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, Optional
 
 
-SUPPORTED_SPOT_VENUES = frozenset({"tokocrypto", "indodax"})
+SUPPORTED_SPOT_VENUES = frozenset({"tokocrypto", "indodax", "mexc"})
 SUPPORTED_FUTURES_VENUES = frozenset({"okx", "mexc", "binance", "bybit"})
 
 
@@ -24,7 +24,7 @@ def _normalize(value: str, field: str) -> str:
 # unambiguous. They are internal venue namespaces, not part of the asset code.
 _VENUE_SYMBOL_PREFIXES = {
     "tokocrypto": ("TOKO:",),
-    "mexc": ("MEXC:",),
+    "mexc": ("MEXC_SPOT:", "MEXC:"),
 }
 _SUPPORTED_QUOTES = (
     "USDT", "USDC", "BUSD", "FDUSD", "TUSD", "BIDR", "IDRT", "IDR",
@@ -94,6 +94,10 @@ class ExchangePairKey:
             raise ValueError(f"unsupported spot venue: {key.local_exchange}")
         if key.global_exchange not in SUPPORTED_FUTURES_VENUES:
             raise ValueError(f"unsupported futures venue: {key.global_exchange}")
+        if key.local_exchange == key.global_exchange:
+            raise ValueError(
+                f"intra-exchange route not allowed (must be different CEX): {key.local_exchange}"
+            )
         local_base = key.local_symbol.split("/", 1)[0]
         global_base = key.global_symbol.split("/", 1)[0]
         if local_base != global_base:
