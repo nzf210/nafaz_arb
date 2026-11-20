@@ -1754,3 +1754,22 @@ A stale `PREPARED` row is safe to abort only because the state machine commits `
 - Active caller IDs remain protected even when no submit-ledger row is present.
 
 The PostgreSQL regression exercises the lock-held and lock-free cases using separate pooled sessions. Final test head `4e169fb3f50e9ad9693da99d07081d203402b915` passed workflow [44493239020](https://github.com/nzf210/nafaz_arb/actions/runs/44493239020).
+
+
+## 17.10 Ambiguous unacknowledged submit retirement — R-51
+
+An exact client-order-ID lookup that completes successfully and returns `None` is not a definitive venue rejection. It may reflect venue-history retention, delayed propagation, or eventual consistency. The age of an intent and absence of its parent position are also not proof that the matching engine never accepted it.
+
+The recovery shortcut that auto-marked aged/missing-parent `submitting` or `pending` records as canceled, retired them from the recovery index, and cleared pending recovery has been removed. Recovery now retains the record, records pending-reconciliation evidence, and halts the affected exposure scope. The durable submit attempt remains subject to its own PREPARED/SUBMITTING/UNKNOWN state machine. Only authoritative venue evidence or authorized operator resolution may release the ambiguity.
+
+Regression coverage exercises both the aged-intent and missing-parent cases with a fake venue returning NOT_FOUND. Neither case may retire the order record or clear the pending-recovery marker.
+
+## 17.11 Local market identity consistency — R-52
+
+The local-market single-flight admission key is `(local_exchange, base_asset, normalized_quote_asset)`. The parsed local symbol is authoritative when compared with explicit signal metadata. If both are present and disagree, the identity is invalid; the executor must not choose one field and continue admission.
+
+`resolve_local_market_identity` now checks the symbol's parsed base/quote against `PairInfo.base_asset` and `PairInfo.quote_asset`. Both the early signal gate and the PostgreSQL-fenced pre-submit guard reject contradictory or incomplete identities. An active/pending record on the same venue whose identity cannot be safely resolved blocks new exposure on that venue until reconciliation repairs it. This is intentionally fail-closed; it does not affect exit, close, cancel, or de-risking.
+
+**Verification:** source/test head `43163e1580cd8c48a585ddeed94e81feb0202770` passed workflow [44698742920](https://github.com/nzf210/nafaz_arb/actions/runs/44698742920): Python 754 passed / 10 skipped, disposable PostgreSQL integration 11 passed, and all five CI jobs passed. This is CI evidence, not live CEX or production VPS validation.
+
+**Release state remains PARTIAL / NOT LIVE-CERTIFIED.** Operator-resolution governance, repeated fault injection on the actual VPS PostgreSQL topology, venue sandbox contracts, and minimum-notional overhedge/de-risk persistence decisions remain open.
