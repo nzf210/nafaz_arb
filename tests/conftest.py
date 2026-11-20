@@ -292,10 +292,17 @@ def _fresh_signal_payload(now_ms: int) -> dict:
     }
 
 def _half_budget_signal(local_symbol: str, global_symbol: str, now_ms: int) -> dict:
+    from executor.helpers import split_symbol_parts
+
     sig = _fresh_signal_payload(now_ms)
     sig["pair_info"] = dict(sig["pair_info"])
     sig["pair_info"]["local_symbol"] = local_symbol
     sig["pair_info"]["global_symbol"] = global_symbol
+    base_asset, quote_asset = split_symbol_parts(local_symbol)
+    if base_asset:
+        sig["pair_info"]["base_asset"] = base_asset
+    if quote_asset:
+        sig["pair_info"]["quote_asset"] = quote_asset
     sig["execution_directives"] = dict(sig["execution_directives"])
     sig["execution_directives"]["max_position_usdt"] = 50.0
     return sig
