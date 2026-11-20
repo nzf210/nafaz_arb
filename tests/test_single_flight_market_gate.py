@@ -9,7 +9,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from executor.engine_signal import EngineSignalMixin
-from executor.helpers import parse_pair_tag_local_market, normalize_quote_asset
+from executor.helpers import (
+    parse_pair_tag_local_market,
+    normalize_quote_asset,
+    resolve_local_market_identity,
+)
 from executor.models import ActivePosition, ExecutorPayload, PairInfo, PricingSnapshot, ExecutionDirectives
 
 
@@ -113,3 +117,51 @@ async def test_is_stale_or_duplicate_signal_blocks_same_market():
     tag_usdt = "tokocrypto:toko:spx_usdt__okx:spx_usdt_swap"
     is_blocked_usdt = await engine._is_stale_or_duplicate_signal(tag_usdt, payload_usdt)
     assert is_blocked_usdt is False
+
+
+def test_resolve_local_market_identity_rejects_contradictory_metadata():
+    assert resolve_local_market_identity("toko:SPX_IDR", "SPX", "IDR") == ("SPX", "idr")
+    assert resolve_local_market_identity("toko:SPX_IDR", "BTC", "IDR") is None
+    assert resolve_local_market_identity("toko:SPX_IDR", "SPX", "USDT") is None
+
+
+@pytest.mark.asyncio
+async def test_signal_with_mismatched_base_metadata_is_rejected():
+    engine = _DummyEngine()
+    pair_info = PairInfo(
+        local_exchange="tokocrypto",
+        local_symbol="toko:SPX_IDR",
+        global_exchange="okx",
+        global_symbol="SPXUSDT",
+        base_asset="BTC",  # Contradicts the actual local symbol.
+        quote_asset="IDR",
+        local_price_tick=1.0,
+        local_lot_size=1.0,
+    )
+    payload = SimpleNamespace(
+        pair_info=pair_info,
+        pricing_snapshot=SimpleNamespace(is_stale=lambda _: False),
+    )
+
+    assert await engine._is_stale_or_duplicate_signal(
+        "tokocrypto:toko:spx_idr__okx:spx_usdt_swap", payload
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_malformed_existing_position_blocks_new_market_on_same_venue():
+    engine = _DummyEngine()
+    engine.active_positions["tokocrypto:toko:spx_idr__okx:spx_usdt_swap"] = ActivePosition(
+        local_exchange="tokocrypto",
+        global_exchange="okx",
+        symbol="toko:SPX_IDR",
+        base_asset="BTC",  # Persisted metadata contradicts the venue symbol.
+        entry_price_idr=5800.0,
+        short_entry_usdt=0.38,
+        qty=100.0,
+    )
+
+    # The existing record cannot be safely scoped, so fail closed for this venue.
+    assert await engine._has_active_or_pending_market(
+        "tokocrypto", "ETH", "IDR"
+    ) is True
