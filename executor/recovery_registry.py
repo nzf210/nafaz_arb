@@ -422,34 +422,6 @@ class RecoveryRegistryMixin:
                     elif record.client_order_id:
                         order = await self._fetch_order_by_client_id(record)
                         if order is None:
-                            # Enterprise Best Practice: If an order was only in 'submitting' status,
-                            # has no exchange order id, and the parent position is already closed or
-                            # the order is aged (> 3 minutes), it was never accepted by the matching engine.
-                            # Safely retire it instead of halting trading indefinitely.
-                            now_ms = int(time.time() * 1000)
-                            order_age_ms = now_ms - int(record.created_at or now_ms)
-                            is_orphaned_intent = (
-                                record.status in ("submitting", "pending")
-                                and not record.exchange_order_id
-                                and (
-                                    record.pair_key not in getattr(self, "active_positions", {})
-                                    or order_age_ms > 180_000
-                                )
-                            )
-                            if is_orphaned_intent:
-                                logger.warning(
-                                    "[Recovery] unacknowledged submitting order %s (%s) not found on %s after %d ms; "
-                                    "retiring ghost order to prevent indefinite reconciliation halts",
-                                    record.client_order_id, record.pair_key, exchange, order_age_ms,
-                                )
-                                record.status = "canceled"
-                                record.lifecycle_state = "RECONCILED"
-                                record.recovery_status = RecoveryStatus.TERMINAL.value
-                                await self.order_registry.register(record)
-                                await self.order_registry.retire(record)
-                                await self.order_registry.clear_pending_recovery(record.local_order_id)
-                                return
-
                             await self.order_registry.mark_pending_recovery(
                                 record.local_order_id,
                                 "client order id not found in venue history; acceptance remains ambiguous",
