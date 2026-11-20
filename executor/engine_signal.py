@@ -11,6 +11,7 @@ from executor.helpers import (
     extract_base_asset,
     normalize_quote_asset,
     parse_pair_tag_local_market,
+    resolve_local_market_identity,
     split_symbol_parts,
 )
 from executor.engine_common import logger
@@ -157,12 +158,20 @@ class EngineSignalMixin:
         pair_info = getattr(payload, "pair_info", None)
         if pair_info is not None:
             exchange = str(pair_info.local_exchange or "").strip().lower()
-            base_asset = extract_base_asset(pair_info.local_symbol, pair_info.base_asset).upper()
-            quote_asset = str(pair_info.quote_asset or "").strip().lower()
+            identity = resolve_local_market_identity(
+                pair_info.local_symbol, pair_info.base_asset, pair_info.quote_asset
+            )
+            if identity is None:
+                logger.warning(
+                    "[Entry] rejecting signal with inconsistent local market identity: pair=%s symbol=%s base=%s quote=%s",
+                    pair_tag, pair_info.local_symbol, pair_info.base_asset, pair_info.quote_asset,
+                )
+                return True
+            base_asset, quote_asset = identity
             if await self._has_active_or_pending_market(exchange, base_asset, quote_asset, exclude_pair=pair_tag):
                 logger.info(
                     "[Entry] rejecting duplicate market entry for %s: %s:%s:%s already active or pending",
-                    pair_tag, exchange, base_asset, normalize_quote_asset(quote_asset),
+                    pair_tag, exchange, base_asset, quote_asset,
                 )
                 return True
         return False
@@ -190,32 +199,42 @@ class EngineSignalMixin:
                 continue
             if getattr(pos, "state", "") in ("CLOSED", "FAILED", "IDLE"):
                 continue
-            p_lex = str(getattr(pos, "local_exchange", "") or "").strip().lower()
-            p_base = extract_base_asset(getattr(pos, "symbol", ""), getattr(pos, "base_asset", "")).upper()
-            _, sym_q = split_symbol_parts(getattr(pos, "symbol", ""))
-            p_quote = normalize_quote_asset(sym_q or getattr(getattr(self, "_pair_infos", {}).get(p_tag), "quote_asset", ""))
-            if not p_base or not p_quote:
-                tag_lex, tag_base, tag_q = parse_pair_tag_local_market(p_tag)
-                p_lex = p_lex or tag_lex
-                p_base = p_base or tag_base
-                p_quote = p_quote or tag_q
-            if p_lex == lex and p_base == base and p_quote == norm_q:
-                return True
+            tag_lex, tag_base, tag_quote = parse_pair_tag_local_market(p_tag)
+            p_lex = str(getattr(pos, "local_exchange", "") or tag_lex or "").strip().lower()
+            pair_info = getattr(self, "_pair_infos", {}).get(p_tag)
+            explicit_quote = (
+                getattr(pos, "quote_asset", "")
+                or getattr(pair_info, "quote_asset", "")
+                or tag_quote
+            )
+            identity = resolve_local_market_identity(
+                getattr(pos, "symbol", ""), getattr(pos, "base_asset", ""), explicit_quote
+            )
+            if p_lex == lex:
+                if identity is None:
+                    # An active position on this venue with contradictory or
+                    # incomplete market identity must block new exposure.
+                    return True
+                if identity == (base, norm_q):
+                    return True
 
         # 2. Check in-memory pending entry orders
         for p_tag, p_order in getattr(self, "pending_entry_orders", {}).items():
             if p_tag == exclude_pair:
                 continue
-            p_lex = str(p_order.get("local_exchange") or "").strip().lower()
-            p_base = extract_base_asset(p_order.get("symbol", ""), p_order.get("base_asset", "")).upper()
-            p_quote = normalize_quote_asset(p_order.get("quote_asset") or split_symbol_parts(p_order.get("symbol", ""))[1])
-            if not p_base or not p_quote:
-                tag_lex, tag_base, tag_q = parse_pair_tag_local_market(p_tag)
-                p_lex = p_lex or tag_lex
-                p_base = p_base or tag_base
-                p_quote = p_quote or tag_q
-            if p_lex == lex and p_base == base and p_quote == norm_q:
-                return True
+            tag_lex, tag_base, tag_quote = parse_pair_tag_local_market(p_tag)
+            p_lex = str(p_order.get("local_exchange") or tag_lex or "").strip().lower()
+            pair_info = getattr(self, "_pair_infos", {}).get(p_tag)
+            identity = resolve_local_market_identity(
+                p_order.get("symbol", ""),
+                p_order.get("base_asset", ""),
+                p_order.get("quote_asset") or getattr(pair_info, "quote_asset", "") or tag_quote,
+            )
+            if p_lex == lex:
+                if identity is None:
+                    return True
+                if identity == (base, norm_q):
+                    return True
 
         # 3. Check in-memory lifecycle states
         active_states = {
@@ -228,8 +247,11 @@ class EngineSignalMixin:
             st = getattr(state, "value", str(state))
             if st in active_states:
                 tag_lex, tag_base, tag_q = parse_pair_tag_local_market(p_tag)
-                if tag_lex == lex and tag_base == base and tag_q == norm_q:
-                    return True
+                if tag_lex == lex:
+                    if not tag_base or not tag_q:
+                        return True
+                    if tag_base == base and tag_q == norm_q:
+                        return True
 
         # 4. Check shared Redis state if available
         if getattr(self, "redis", None) is not None:
@@ -241,8 +263,11 @@ class EngineSignalMixin:
                     if tag == exclude_pair:
                         continue
                     tag_lex, tag_base, tag_q = parse_pair_tag_local_market(tag)
-                    if tag_lex == lex and tag_base == base and tag_q == norm_q:
-                        return True
+                    if tag_lex == lex:
+                        if not tag_base or not tag_q:
+                            return True
+                        if tag_base == base and tag_q == norm_q:
+                            return True
 
                 pending_keys = await self.redis.keys(PENDING_ENTRY_KEY_PREFIX + "*")
                 for k in pending_keys or []:
@@ -251,8 +276,11 @@ class EngineSignalMixin:
                     if tag == exclude_pair:
                         continue
                     tag_lex, tag_base, tag_q = parse_pair_tag_local_market(tag)
-                    if tag_lex == lex and tag_base == base and tag_q == norm_q:
-                        return True
+                    if tag_lex == lex:
+                        if not tag_base or not tag_q:
+                            return True
+                        if tag_base == base and tag_q == norm_q:
+                            return True
             except Exception:
                 logger.exception(
                     "[Entry] error checking shared Redis market state for %s:%s:%s",
