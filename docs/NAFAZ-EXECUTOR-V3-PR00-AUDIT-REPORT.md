@@ -122,7 +122,7 @@ A position can continue through hedge/exit accounting while its primary executio
 - Block new exposure in the affected scope when critical fill evidence is missing; keep protective de-risk available.
 - Failure injection at every fill append boundary; restart must reconstruct exact exposure and accounting.
 
-### P1-01 — Execution state has multiple authorities; PostgreSQL is not yet canonical end-to-end
+### P1-02 — Execution state has multiple authorities; PostgreSQL is not yet canonical end-to-end
 
 **Evidence**
 - `engine.py` owns in-memory `active_positions`, `pending_entry_orders`, `pending_exit_orders`.
@@ -139,7 +139,7 @@ A Redis loss, partial outbox delivery, restart or concurrent worker can expose d
 **Required fix**
 Define authority by domain. V3 target: PostgreSQL transactional canonical session/leg/intent/order/fill/obligation/position/exit/risk state; Redis rebuildable cache/notification only; SQLite outbox only for downstream reporting. Prove that all active state can be rebuilt from PostgreSQL plus venue reconciliation before treating Redis as disposable.
 
-### P1-02 — Normal exit/rollback paths do not use the durable submit-attempt protocol
+### P1-03 — Normal exit/rollback paths do not use the durable submit-attempt protocol
 
 **Evidence**
 - Entry BUY and Futures hedge SELL persist `executor_submit_attempts` PREPARED, then transition to SUBMITTING under `order_submit_fence`.
@@ -152,7 +152,7 @@ Entry and hedge have a more complete unknown-submit ledger than the exit/rollbac
 **Required fix**
 Create a separate durable risk-reducing intent state machine that is allowed under STOP but is still idempotent, recoverable and serialized. Do not reuse entry STOP semantics to block exits.
 
-### P1-03 — Multi-instance exit ownership is not proven
+### P1-04 — Multi-instance exit ownership is not proven
 
 **Evidence**
 - `engine.py` uses in-process `asyncio.Lock` maps for pair/entry synchronization.
@@ -166,7 +166,7 @@ Two executor replicas can independently evaluate the same position and create se
 **Required fix**
 Durable session/position exit lease or CAS claim; deterministic exit intent identity; reservation of exact close quantity; stale-owner fencing; cross-process duplicate-exit tests.
 
-### P1-04 — De-risk DB-outage fallback trades availability for serialization
+### P1-05 — De-risk DB-outage fallback trades availability for serialization
 
 **Evidence**
 - `derisk_fence()` intentionally allows a protective order to proceed without shared PostgreSQL serialization when a database outage is detected.
@@ -178,7 +178,7 @@ If multiple replicas are alive during a PostgreSQL outage, each may attempt a ri
 **Required fix**
 Define a designated emergency owner/election or a single-instance emergency mode, stable idempotency IDs, bounded action rules and immediate post-recovery reconciliation. Preserve the ability to de-risk; do not solve this by simply blocking every close when PostgreSQL is down.
 
-### P1-05 — One global PostgreSQL advisory lock serializes all entry submissions
+### P1-06 — One global PostgreSQL advisory lock serializes all entry submissions
 
 **Evidence**
 - `FENCE_LOCK_KEY` is one stable application-wide advisory key.
@@ -191,7 +191,7 @@ A slow or rate-limited order on one venue/instrument can block unrelated venue/i
 **Required fix**
 Retain a globally ordered STOP epoch/admission barrier, but use scoped mutation locks for independent account/venue/instrument operations. Prove STOP-vs-submit linearizability and prevent stale fencing generations.
 
-### P1-06 — Durable command PROCESSING state has no lease/reclaim path
+### P1-07 — Durable command PROCESSING state has no lease/reclaim path
 
 **Evidence**
 - `command_journal` schema stores state/attempts/timestamps but no owner or lease expiry.
@@ -204,7 +204,7 @@ Emergency/operator commands can remain stuck indefinitely after a worker crash.
 **Required fix**
 Add owner, lease token, lease expiry, heartbeat/attempt metadata and safe reclaim. Side effects must be idempotent; command completion must be fenced by the current lease token.
 
-### P1-07 — EventInbox is not a durable, wired event-processing pipeline
+### P1-08 — EventInbox is not a durable, wired event-processing pipeline
 
 **Evidence**
 - `EventInbox` deduplicates in an in-memory set with bounded history.
@@ -217,7 +217,7 @@ The class name and architecture docs suggest a normalized event pipeline, but ac
 **Required fix**
 Persist normalized event identity and payload before acknowledgement; process idempotently; use WS as low-latency input and REST/trade-history reconciliation as completeness authority. Track actual per-venue stream capability and coverage.
 
-### P1-08 — Exit policy exists, but durable trailing state is absent
+### P1-09 — Exit policy exists, but durable trailing state is absent
 
 **Evidence**
 - `ExitDecisionEngine.evaluate_exit()` implements emergency unwind, stop loss, unhedged exposure repair, profit target, time decay, breakeven, capital recovery and time stop.
@@ -232,7 +232,7 @@ The current policy is not a blank slate and should be reused. However, it does n
 **Required fix**
 Keep the current evaluator as the decision authority. Add policy snapshot, persisted high-water mark, explicit exit intent/coordinator, quantity reservation and verified final flatness. Profit target remains based on combined net liquidation economics and total deployed capital; no universal hard-coded percentage should be introduced.
 
-### P1-09 — Fill/accounting pipelines need one declared source of truth
+### P1-10 — Fill/accounting pipelines need one declared source of truth
 
 **Evidence**
 - `ExecutionFillLedger` writes to PostgreSQL `execution_fill_ledger`.
@@ -246,7 +246,7 @@ The system has both order-snapshot-derived fill events and venue-trade-history-d
 **Required fix**
 Make venue trade ID the canonical execution identity. Keep order cumulative fills as progress snapshots only. Define a single canonical fill ledger and treat all other records as projections/reconciliation evidence. Add multi-fill/partial-fill replay tests.
 
-### P1-10 — Normal exit finalization is weaker than force-close flat verification
+### P1-11 — Normal exit finalization is weaker than force-close flat verification
 
 **Evidence**
 - Force-close futures path calls explicit position-flat verification.
@@ -304,7 +304,7 @@ The execution fill unique index is `(exchange_name, market_type, exchange_fill_i
 | Verify CEX sandbox/live contracts | NOT RUN | No exchange requests performed |
 | Runtime-instrumented multi-replica call graph | OPEN | Must be part of implementation/certification tests |
 
-**PR-00 disposition: STATIC AUDIT DELIVERABLE COMPLETE; implementation gate remains CONDITIONAL.** Resolve P0-01 and P0-02 with focused tests/design before PR-01. Keep all P1 findings in the V3 backlog and do not claim LIVE certification.
+**PR-00 disposition: STATIC AUDIT DELIVERABLE COMPLETE; implementation gate remains CONDITIONAL.** Resolve P0-01 with a focused regression before relying on the operator cancel path. Carry P1-01 and the remaining P1 findings into the V3 implementation backlog and acceptance tests. Keep all P1 findings in the V3 backlog and do not claim LIVE certification.
 
 ## 7. Immediate implementation order after PR-00
 
