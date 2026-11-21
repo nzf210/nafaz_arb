@@ -94,16 +94,31 @@ class EngineRecoveryMixin:
             exchange = str(attempt.get("exchange") or "").lower()
             symbol = str(attempt.get("symbol") or "")
             try:
-                resolver = getattr(self._base_client, "for_venue", None)
-                venue_client = resolver(exchange) if callable(resolver) else None
                 market_type = str(attempt.get("market_type") or "spot").lower()
                 if market_type in {"perpetual", "future", "futures", "swap"}:
+                    resolver_market = "futures"
                     lookup_name = "fetch_global_order_by_client_id"
                 elif market_type in {"spot", "local"}:
+                    resolver_market = "spot"
                     lookup_name = "fetch_local_order_by_client_id"
                 else:
                     raise RuntimeError(
                         f"unsupported market_type for submit reconciliation: {market_type}"
+                    )
+
+                # Venue names are not sufficient when one account exposes both
+                # spot and perpetual clients (notably MEXC). Resolve the exact
+                # market before selecting the lookup method; a one-argument
+                # resolver can silently return the configured/default market.
+                resolver = getattr(self._base_client, "for_venue", None)
+                if not callable(resolver):
+                    raise RuntimeError(
+                        "market-aware venue resolver is unavailable for submit reconciliation"
+                    )
+                venue_client = resolver(exchange, resolver_market)
+                if venue_client is None:
+                    raise RuntimeError(
+                        f"no {resolver_market} client configured for submit venue {exchange}"
                     )
                 lookup = getattr(venue_client, lookup_name, None)
                 if not callable(lookup):
