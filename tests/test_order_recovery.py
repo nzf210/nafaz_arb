@@ -2237,7 +2237,7 @@ async def test_recovery_catalogues_cover_every_configured_venue(fake_redis):
     }
     engine = _engine(fake_redis, client=client, mock_mode=False)
     available = {"indodax", "tokocrypto", "okx"}
-    engine._client_for_exchange = lambda exchange: client if exchange in available else None
+    engine._client_for_exchange = lambda exchange, market=None: client if exchange in available else None
 
     catalogues = engine._recovery_symbol_catalogues()
 
