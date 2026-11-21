@@ -41,8 +41,11 @@ class SpotVenue:
 async def test_cancel_requires_cancel_and_fetch_capabilities():
     slots = SlotManager()
     gateway = MutationGateway(slot_manager=slots)
+    class IdentifiedVenue:
+        id = "indodax"
+
     result = await gateway.execute_cancel_order(
-        object(), exchange="indodax", market_type="spot",
+        IdentifiedVenue(), exchange="indodax", market_type="spot",
         order_id="venue-order-123", symbol="BTC/IDR",
         client_order_id="logical-client-123",
     )
