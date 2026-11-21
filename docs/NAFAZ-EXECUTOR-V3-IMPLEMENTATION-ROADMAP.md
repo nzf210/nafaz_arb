@@ -1,8 +1,8 @@
 # NAFAZ Executor V3 — Enterprise Implementation Roadmap
 
 Repository: nzf210/nafaz_arb  
-Target branch: feat/v2-bootstrap-config-stop-fencing  
-Planning baseline: a041d1dddc74b0e92eccd9cf6b21545d22e457f9  
+Target branch: feat/executor-v3-enterprise  
+Planning baseline: 32d0fd75d2de31f5737975abf0c3d837a7cf8699  
 Status: PROPOSED — no implementation authorization implied  
 Scope: Executor V3 only; scanner behavior is frozen.
 
@@ -369,4 +369,4 @@ Every PR must include:
 
 ## 17. Immediate next action
 
-Execute PR-00 only: finish line-level call-graph review, record baseline test/CI status, and produce a signed-off mutation-path map. No trading code changes until PR-00 is accepted.
+PR-00 static mapping is documented in `docs/NAFAZ-EXECUTOR-V3-PR00-AUDIT-REPORT.md`. Before PR-01, close P0-01 operator cancellation false-success and P0-02 fill-ledger append failure semantics with focused tests. No trading code changes until these two controls are approved.
