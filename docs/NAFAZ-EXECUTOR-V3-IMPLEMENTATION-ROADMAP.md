@@ -369,4 +369,4 @@ Every PR must include:
 
 ## 17. Immediate next action
 
-PR-00 static mapping is documented in `docs/NAFAZ-EXECUTOR-V3-PR00-AUDIT-REPORT.md`. Before PR-01, close P0-01 operator cancellation false-success and P0-02 fill-ledger append failure semantics with focused tests. No trading code changes until these two controls are approved.
+PR-00 static mapping is documented in `docs/NAFAZ-EXECUTOR-V3-PR00-AUDIT-REPORT.md`. Before PR-01, close P0-01 operator cancellation false-success with a focused regression. Carry fill-ledger append failure semantics as P1-01 in the V3 backlog and acceptance tests. No trading code changes until these two controls are approved.
