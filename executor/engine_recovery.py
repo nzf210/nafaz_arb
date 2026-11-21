@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import re
 import time
 from typing import Optional, Any
@@ -399,10 +400,9 @@ class EngineRecoveryMixin:
                 )
             return deficits
 
-        # Aggregate per (local venue, base asset): several pairs can hold the
-        # same asset, and the venue reports one combined balance.
+        # Aggregate by (local venue, base asset), not by pair tag: several
+        # futures routes can consume the same spot inventory on one CEX.
         expected: dict = {}
-        symbols_by_key: dict = {}
         for pair_tag, pos in self.active_positions.items():
             base_asset = str(
                 getattr(pos, "base_asset", "")
@@ -419,12 +419,26 @@ class EngineRecoveryMixin:
                     "base asset is unknown; local spot leg cannot be verified"
                 )
                 continue
-            key = (str(getattr(pos, "local_exchange", "") or "").lower(), base_asset, pair_tag)
-            expected[key] = float(getattr(pos, "qty", 0.0) or 0.0)
-            symbols_by_key[key] = symbol
+            local_venue = str(getattr(pos, "local_exchange", "") or "").lower()
+            try:
+                quantity = float(getattr(pos, "qty", 0.0) or 0.0)
+                if not math.isfinite(quantity) or quantity < 0:
+                    raise ValueError("recovered spot quantity is invalid")
+            except (TypeError, ValueError) as exc:
+                deficits[symbol] = (
+                    f"cannot verify local spot {base_asset} quantity: {exc}"
+                )
+                continue
+            key = (local_venue, base_asset)
+            group = expected.setdefault(
+                key, {"quantity": 0.0, "symbols": set()}
+            )
+            group["quantity"] += quantity
+            group["symbols"].add(symbol)
 
-        for (local_venue, base_asset, pair_tag), expected_qty in expected.items():
-            symbol = symbols_by_key[(local_venue, base_asset, pair_tag)]
+        for (local_venue, base_asset), group in expected.items():
+            expected_qty = group["quantity"]
+            symbols = group["symbols"]
             try:
                 if not local_venue:
                     raise ValueError("local spot venue is missing; venue-specific balance cannot be verified")
@@ -440,22 +454,29 @@ class EngineRecoveryMixin:
                         ) from exc
                     actual = await balance_of(base_asset)
                 actual = float(actual)
+                if not math.isfinite(actual) or actual < 0:
+                    raise ValueError("venue returned an invalid spot balance")
             except Exception as exc:
-                deficits[symbol] = (
+                reason = (
                     f"cannot verify local spot {base_asset} balance on "
                     f"{local_venue or 'unknown'}: {type(exc).__name__}: {exc}"
                 )
+                for symbol in symbols:
+                    deficits[symbol] = reason
                 continue
             tolerance = max(1e-10, abs(expected_qty) * 0.01)
             if actual + tolerance < expected_qty:
-                deficits[symbol] = (
+                reason = (
                     f"local spot inventory short after restart: expected={expected_qty} "
                     f"{base_asset}, venue free balance={actual} on "
                     f"{local_venue or 'unknown'}"
                 )
+                for symbol in symbols:
+                    deficits[symbol] = reason
                 logger.critical(
-                    "[Recovery] %s: spot leg short %s %s on %s (expected %s)",
-                    symbol, expected_qty - actual, base_asset, local_venue, expected_qty,
+                    "[Recovery] %s: aggregate spot leg short %s %s on %s (expected %s)",
+                    ",".join(sorted(symbols)), expected_qty - actual,
+                    base_asset, local_venue, expected_qty,
                 )
         return deficits
 
