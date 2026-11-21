@@ -159,6 +159,135 @@ async def test_recovery_backfills_missing_exchange_id_from_tokocrypto_venue_orde
     assert recovery.order_registry.record.exchange_order_id == "T-RECOVERED-1"
 
 
+def test_mexc_logical_client_id_maps_to_stable_32_char_wire_id():
+    exchange = SimpleNamespace(id="mexc")
+    logical = "tokocrypto-spx-idr-spot-entry-12345678901234567890"
+    wire = venue_client_order_id(exchange, logical)
+
+    assert wire == venue_client_order_id(exchange, logical)
+    assert len(wire) <= 32
+    assert all(char.isalnum() or char in "-_" for char in wire)
+    assert wire != logical
+    assert wire in _accepted_client_order_ids(exchange, logical)
+    assert logical in _accepted_client_order_ids(exchange, logical)
+
+
+@pytest.mark.asyncio
+async def test_mexc_spot_entry_uses_venue_wire_client_order_id():
+    from executor.exchange_orders import ExchangeOrderMixin
+    from executor.quantity import AmountSpec
+
+    class FakeMEXCSpot:
+        id = "mexc"
+
+        def __init__(self):
+            self.params = None
+
+        async def create_limit_buy_order(self, symbol, amount, price, params):
+            self.params = dict(params)
+            return {
+                "id": "mexc-spot-order-1",
+                "clientOrderId": params["clientOrderId"],
+                "status": "open",
+                "amount": amount,
+                "filled": 0.0,
+                "price": price,
+            }
+
+    class Harness(ExchangeOrderMixin):
+        def __init__(self):
+            self.local = FakeMEXCSpot()
+            self._local_broker_prefix = ""
+
+        async def _resolve_symbol(self, exchange, symbol, market_kind):
+            return symbol
+
+    engine = Harness()
+    logical = "tokocrypto-spx-idr-spot-entry-12345678901234567890"
+    await engine.place_local_limit_buy(
+        "BTC/USDT", 0.002, 100.0,
+        client_order_id=logical,
+        amount_spec=AmountSpec("BASE", 0.001, 0.001, 1.0),
+    )
+
+    wire = engine.local.params["clientOrderId"]
+    assert wire == venue_client_order_id(SimpleNamespace(id="mexc"), logical)
+    assert len(wire) <= 32
+    assert all(char.isalnum() or char in "-_" for char in wire)
+
+
+@pytest.mark.asyncio
+async def test_mexc_futures_short_uses_venue_wire_client_order_id():
+    from executor.exchange_futures import ExchangeFuturesMixin
+    from executor.quantity import AmountSpec
+
+    class FakeMEXCFutures:
+        id = "mexc"
+
+        def __init__(self):
+            self.params = None
+
+        async def create_market_sell_order(self, symbol, amount, params):
+            self.params = dict(params)
+            return {
+                "id": "mexc-futures-order-1",
+                "clientOrderId": params["clientOrderId"],
+                "status": "open",
+                "amount": amount,
+                "filled": 0.0,
+            }
+
+    class Harness(ExchangeFuturesMixin):
+        def __init__(self):
+            self.global_fut = FakeMEXCFutures()
+            self._global_broker_prefix = ""
+            self._global_scope = "mexc"
+
+        async def _resolve_symbol(self, exchange, symbol, market_kind):
+            return symbol
+
+    engine = Harness()
+    logical = "tokocrypto-spx-idr-futures-hedge-12345678901234567890"
+    await engine.open_global_short_market(
+        "BTC/USDT:USDT",
+        0.001,
+        client_order_id=logical,
+        amount_spec=AmountSpec("CONTRACT", 1, 1, 0.001),
+    )
+
+    wire = engine.global_fut.params["clientOrderId"]
+    assert wire == venue_client_order_id(SimpleNamespace(id="mexc"), logical)
+    assert len(wire) <= 32
+    assert all(char.isalnum() or char in "-_" for char in wire)
+
+
+async def test_mexc_direct_recovery_tries_deterministic_wire_id_after_logical_id():
+    from executor.exchange_common import _find_order_by_client_id
+
+    logical = "tokocrypto-spx-idr-futures-hedge-12345678901234567890"
+    exchange = SimpleNamespace(id="mexc", calls=[])
+
+    async def fetch_order_by_client_id(client_order_id, symbol):
+        exchange.calls.append(client_order_id)
+        if client_order_id == venue_client_order_id(exchange, logical):
+            return {
+                "id": "mexc-direct-1",
+                "clientOrderId": client_order_id,
+                "symbol": symbol,
+                "status": "open",
+                "filled": 0.0,
+            }
+        return None
+
+    exchange.fetch_order_by_client_id = fetch_order_by_client_id
+    found = await _find_order_by_client_id(exchange, "BTC/USDT:USDT", logical)
+
+    wire = venue_client_order_id(exchange, logical)
+    assert exchange.calls == [logical, wire]
+    assert found is not None
+    assert found["id"] == "mexc-direct-1"
+
+
 def test_okx_logical_client_id_maps_to_recoverable_wire_id():
     exchange = SimpleNamespace(id="okx")
     logical = "btc-usdt-swap-futures-hedge-12345678901234567890"
