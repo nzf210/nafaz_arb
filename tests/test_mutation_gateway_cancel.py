@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from executor.mutation_gateway import MutationGateway, MutationResultType
