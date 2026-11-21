@@ -1,12 +1,12 @@
 # NAFAZ Executor V3 — Source Inventory and Rebuild Decision Register
 
 Repository: nzf210/nafaz_arb  
-Target branch: feat/v2-bootstrap-config-stop-fencing  
-Reviewed HEAD: a041d1dddc74b0e92eccd9cf6b21545d22e457f9  
+Target branch: feat/executor-v3-enterprise  
+Reviewed source HEAD: 32d0fd75d2de31f5737975abf0c3d837a7cf8699  
 Review date: 2026-11-21  
-Status: READ-ONLY INVENTORY; not a full code audit or LIVE certification.
+Status: READ-ONLY SOURCE INVENTORY + PR-00 static audit supplement; NOT LIVE certification.
 
-> This inventory is based on the target branch tree and selected source-file reads. File presence does not mean every line or runtime path has been audited. Function names are included where verified. Re-fetch HEAD and inspect complete call sites before implementation.
+> This inventory is paired with docs/NAFAZ-EXECUTOR-V3-PR00-AUDIT-REPORT.md, which records the full Executor Python-tree mutation scan, concrete findings, CI evidence and remaining limits. The report is the authoritative PR-00 disposition.
 
 ## 1. Executive findings
 
@@ -173,4 +173,9 @@ These are test files present in the branch, not tests run or certified during th
 
 ## 8. Review limitations
 
-This is a branch-specific source inventory based on tree inspection and selected source reads. It is not a complete line-by-line audit, test run, live exchange probe, production DB migration check, or LIVE safety certification.
+This is a branch-specific source inventory. The companion PR-00 report records the static source call-site audit. No local test suite was re-run, no production DB migration state was queried, no CEX sandbox/live request was made, and no LIVE safety certification was performed.
+
+
+## 9. PR-00 audit disposition
+
+See `docs/NAFAZ-EXECUTOR-V3-PR00-AUDIT-REPORT.md` for the complete mutation-path inventory and severity-ranked findings. Static mapping is complete for the Executor Python module tree. Implementation authorization remains conditional on closing P0-01 (operator CANCEL_ORDER false-success path) and P0-02 (best-effort fill-ledger append semantics) with focused regression tests. No code changes were made during PR-00.
