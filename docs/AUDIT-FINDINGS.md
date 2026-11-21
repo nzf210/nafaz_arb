@@ -597,3 +597,31 @@ Spot and futures LIVE entry methods explicitly reject a missing `GlobalStopServi
 **Remaining release gates:** operator identity and HMAC secret governance/rotation, dual approval and manual-resolution runbook; repeated PostgreSQL multi-process disconnect/fault injection against the actual VPS topology; real per-venue sandbox/paper contracts for exact client-ID visibility and eventual consistency; approved minimum-notional overhedge/delta-drift policy; and durable de-risk persistence when Redis/registry writers are unavailable.
 
 **Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover was performed.
+
+
+## 2026-11-21 follow-up — R-53 and R-54
+
+### R-53 — durable submit recovery must resolve the exact venue market
+
+EngineRecoveryMixin._reconcile_durable_submit_attempts previously called for_venue(exchange) without passing the durable attempt's market_type. This is incorrect for a venue such as MEXC that exposes both spot and futures clients. The base venue key can point to only one of those markets; a spot attempt could therefore query the configured/default client rather than the MEXC spot account (and vice versa). A wrong-client lookup could be recorded as NOT_FOUND. The attempt remained unresolved and the global entry gate stayed closed, so this was a recovery-routing defect rather than a demonstrated duplicate-entry bypass.
+
+Fix: normalize the durable market type before resolving the client (spot/local → spot; future/futures/perpetual/swap → futures), pass that market to for_venue(exchange, market), and fail closed as UNKNOWN if a market-aware resolver or exact client is unavailable. There is no fallback to the ambiguous one-argument resolver.
+
+### R-54 — startup spot-inventory verification undercounted shared asset requirements
+
+_verify_recovered_spot_legs claimed to aggregate by (local venue, base asset) but its key also included pair_tag. Consequently, two active positions on the same venue and base asset were checked independently against the same total venue balance. Example: two restored routes each require 1 BTC while the venue holds 1.5 BTC; each 1 BTC check passed even though aggregate backing is short by 0.5 BTC.
+
+Fix: aggregate required quantity by (local_exchange, base_asset), fetch the venue balance once per group, and apply a deficit to every affected global symbol. Non-finite/negative recovered quantities and non-finite/negative venue balances now fail closed.
+
+### Explicit de-risk-only script call-sites
+
+scripts/resolve_ai_position.py contains direct spot create_market_sell_order and futures create_market_buy_order calls. The former sells an existing spot holding; the latter sends reduceOnly=True to close an existing short. They are manual de-risk operations, not exposure-opening entry paths, and are intentionally not routed through the entry Global STOP fence. This script is not an executor production caller. Its static client IDs and lack of exact-client-ID recovery after an ambiguous submit remain a manual-operation limitation; reruns after a timeout must not be treated as safe/idempotent until venue behavior and an operator procedure are validated.
+
+### Verification
+
+- Source/test head: 817eec2bafac85f2b0f242b3681cc4e06574f46b.
+- Workflow [44881614430](https://github.com/nzf210/nafaz_arb/actions/runs/44881614430): all five jobs succeeded, including Python executor tests, disposable PostgreSQL integration/multi-process submit-disconnect, Go tests/race/vet, migration-runner tests, and scanner/executor image builds.
+- The two preceding intermediate commits had failed CI; the final source/test head above is the verified passing head.
+- This does not validate the production VPS PostgreSQL topology or live CEX contracts.
+
+Remaining gates: clone-wide/runtime-instrumented create-order inventory, operator identity and HMAC secret custody/rotation, dual approval and manual-resolution runbook, repeated PostgreSQL multi-process fault injection on the actual VPS topology, per-venue sandbox/paper exact-ID/eventual-consistency tests, minimum-notional overhedge policy, and durable de-risk persistence. Status remains PARTIAL / NOT LIVE-CERTIFIED.
