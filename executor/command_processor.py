@@ -120,7 +120,7 @@ class CommandProcessor:
                         venue_client,
                         exchange=exchange,
                         market_type="spot",
-                        order_id=ex_order_id or client_id,
+                        order_id=ex_order_id,
                         symbol=symbol,
                         client_order_id=client_id,
                     )
