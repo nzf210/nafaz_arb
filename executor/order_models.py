@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
+import math
 import time
 import uuid
 
@@ -171,6 +172,24 @@ class OrderRecord:
     @property
     def is_manual_required(self) -> bool:
         return self.lifecycle_state == OrderLifecycleState.MANUAL_REQUIRED.value
+
+    @property
+    def needs_lifecycle_reconciliation(self) -> bool:
+        """Keep terminal records indexed until filled quantity is lifecycle-safe."""
+        if not self.is_terminal:
+            return False
+        try:
+            filled = float(self.filled_quantity or 0.0)
+            hedged = float(self.hedged_quantity or 0.0)
+        except (TypeError, ValueError):
+            return True
+        if not math.isfinite(filled) or not math.isfinite(hedged) or filled < 0 or hedged < 0:
+            return True
+        if self.order_role == OrderRole.ENTRY.value and filled > hedged + 1e-12:
+            return True
+        if self.recovery_status == RecoveryStatus.UNVERIFIED.value:
+            return True
+        return filled > 1e-12 and self.lifecycle_state != OrderLifecycleState.RECONCILED.value
 
     def to_dict(self) -> Dict[str, Any]:
         return {

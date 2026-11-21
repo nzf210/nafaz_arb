@@ -62,32 +62,59 @@ class ExchangeClient(
         venue = getattr(self, "global_fut", None)
         return str(getattr(venue, "id", "") or "") if venue is not None else ""
 
-    def for_venue(self, exchange: str) -> Optional["ExchangeClient"]:
-        """Return a facade bound to one venue, independent of a registered pair.
+    def for_venue(
+        self, exchange: str, market: Optional[str] = None
+    ) -> Optional["ExchangeClient"]:
+        """Return a facade for the exact venue and market when requested.
 
-        Recovery reads an order back from the venue that owns it, and that venue
-        need not be the configured base pair or a pair bound earlier in this
-        process (``for_pair`` only covers pairs already seen). The balance
-        registry is built at startup from the configured credentials, so it can
-        always answer "who owns venue X" -- or say None when X is not configured,
-        which keeps a wrong-venue lookup from silently falling through.
+        Some CEX accounts expose both spot and perpetual APIs (MEXC). Recovery
+        must not infer the market from the first venue key: a spot sweep on a
+        futures facade, or vice versa, can silently inspect the wrong account.
+        When market is supplied, absence of that exact client is fail-closed.
         """
         name = str(exchange or "").strip().lower()
         if not name:
             return None
-        entry = self.balance_exchanges.get(name)
-        if not entry or entry.get("client") is None:
-            entry = self.balance_exchanges.get(f"{name}:spot") or self.balance_exchanges.get(f"{name}:futures")
+        market_key = str(market or "").strip().lower()
+        if market_key in {"future", "perpetual"}:
+            market_key = "futures"
+        if market_key:
+            entry = self.balance_exchanges.get(f"{name}:{market_key}")
+            if not entry or entry.get("client") is None:
+                candidate = self.balance_exchanges.get(name)
+                if (
+                    candidate
+                    and candidate.get("market") == market_key
+                    and candidate.get("client") is not None
+                ):
+                    entry = candidate
+                else:
+                    return None
+        else:
+            entry = self.balance_exchanges.get(name)
+            if not entry or entry.get("client") is None:
+                candidates = [
+                    self.balance_exchanges.get(f"{name}:spot"),
+                    self.balance_exchanges.get(f"{name}:futures"),
+                ]
+                candidates = [
+                    item for item in candidates
+                    if item and item.get("client") is not None
+                ]
+                if len(candidates) != 1:
+                    return None
+                entry = candidates[0]
         if not entry or entry.get("client") is None:
             return None
         if entry.get("market") == "futures":
             return ExchangeClient(
                 self.local, entry["client"], self.balance_exchanges
             )
-        return ExchangeClient(
-            entry["client"], self.global_fut, self.balance_exchanges
-        )
-
+        if entry.get("market") == "spot":
+            return ExchangeClient(
+                entry["client"], self.global_fut, self.balance_exchanges
+            )
+        return None
     def for_pair(self, pair_info: Any) -> "ExchangeClient":
         """Return an immutable facade bound to the exact spot/futures venue pair."""
         local_name = str(getattr(pair_info, "local_exchange", "") or "").strip().lower()

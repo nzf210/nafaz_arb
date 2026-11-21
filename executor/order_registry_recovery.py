@@ -103,8 +103,9 @@ class OrderRegistryRecoveryMixin:
             record = await self.load(local_id)
             if record is None:
                 continue
-            if record.is_terminal:
+            if record.is_terminal and not record.needs_lifecycle_reconciliation:
                 await self.retire(record)
+                await self.clear_pending_recovery(local_id)
                 continue
             records[local_id] = record
         return records
@@ -174,7 +175,7 @@ class OrderRegistryRecoveryMixin:
                 raise RuntimeError(
                     f"durable order registry contains an unreadable row: {row.get('local_order_id')}"
                 ) from exc
-            if record.is_terminal:
+            if record.is_terminal and not record.needs_lifecycle_reconciliation:
                 continue
             # Cache/index re-seeding happens after Redis and durable rows
             # have been merged in active_records(); never overwrite a richer

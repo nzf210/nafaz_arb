@@ -692,6 +692,24 @@ async def test_registry_retires_terminal_records_only(fake_redis):
     assert await registry.load(closed_record.local_order_id) is not None
 
 @pytest.mark.asyncio
+async def test_registry_retains_terminal_entry_with_unhedged_fill(fake_redis):
+    registry = UniversalOrderRegistry(fake_redis)
+    record = _entry_record(
+        client_order_id="terminal-filled-unhedged",
+        exchange_order_id="778",
+        status="closed",
+        filled_quantity=0.01,
+        hedged_quantity=0.0,
+    )
+    await registry.register(record)
+
+    active = await registry.active_records()
+
+    assert record.local_order_id in active
+    assert active[record.local_order_id].needs_lifecycle_reconciliation is True
+
+
+@pytest.mark.asyncio
 async def test_registry_records_survive_redis_flush_via_durable_store(fake_redis):
     """A flushed Redis re-seeds the registry from the durable rows."""
     class Durable:
@@ -1940,7 +1958,7 @@ async def test_recovery_looks_up_a_record_on_the_venue_that_owns_it(fake_redis):
     owner = RecordingClient()
     engine = _engine(fake_redis, client=owner)
 
-    def _client_for_exchange(exchange):
+    def _client_for_exchange(exchange, market=None):
         return owner if str(exchange).lower() == "tokocrypto" else None
 
     engine._client_for_exchange = _client_for_exchange
@@ -1955,6 +1973,30 @@ async def test_recovery_looks_up_a_record_on_the_venue_that_owns_it(fake_redis):
     assert result is None
     assert asked["symbol"] == "toko:ATH_USDT"
     assert asked["client_order_id"] == "tokocrypto-6aff40ba-entry-794411778"
+
+
+@pytest.mark.asyncio
+async def test_terminal_unhedged_entry_is_not_retired_by_recovery(fake_redis):
+    engine = await _build(fake_redis, MockExchangeClient())
+    record = _entry_record(
+        client_order_id="terminal-manual-unhedged",
+        exchange_order_id="779",
+        status="closed",
+        filled_quantity=0.01,
+        hedged_quantity=0.0,
+        lifecycle_state="MANUAL_REQUIRED",
+        recovery_status="UNVERIFIED",
+    )
+    await engine.order_registry.register(record)
+    await engine.order_registry.mark_pending_recovery(
+        record.local_order_id, "terminal fill still requires hedge reconciliation"
+    )
+
+    await engine._reconcile_registered_order(record, "indodax", "btc_idr")
+
+    assert record.local_order_id in await engine.order_registry.active_records()
+    assert record.local_order_id in await engine.order_registry.pending_recovery_ids()
+    assert PAIR_TAG in engine._recovery_scope_halts
 
 
 @pytest.mark.asyncio
@@ -1987,6 +2029,28 @@ async def test_venue_resolver_binds_configured_venue_without_a_registered_pair(f
     assert resolved.local is toko
     # An unconfigured venue resolves to nothing rather than to the base client.
     assert engine._client_for_exchange("bitmart") is None
+
+
+@pytest.mark.asyncio
+async def test_recovery_resolves_mexc_spot_and_futures_clients_separately(fake_redis):
+    from executor.exchange_client import ExchangeClient
+
+    engine = _engine(fake_redis, mock_mode=False)
+    default_spot, default_futures = object(), object()
+    mexc_spot, mexc_futures = object(), object()
+    engine._base_client = ExchangeClient(default_spot, default_futures, {
+        "tokocrypto": {"market": "spot", "client": default_spot},
+        "okx": {"market": "futures", "client": default_futures},
+        "mexc": {"market": "futures", "client": mexc_futures},
+        "mexc:futures": {"market": "futures", "client": mexc_futures},
+        "mexc:spot": {"market": "spot", "client": mexc_spot},
+    })
+
+    spot_owner = engine._client_for_exchange("mexc", "spot")
+    futures_owner = engine._client_for_exchange("mexc", "futures")
+
+    assert spot_owner is not None and spot_owner.local is mexc_spot
+    assert futures_owner is not None and futures_owner.global_fut is mexc_futures
 
 
 @pytest.mark.asyncio

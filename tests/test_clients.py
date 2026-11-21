@@ -647,6 +647,28 @@ def test_live_exchange_client_resolves_exact_pair_without_mutating_default_clien
     assert default.global_fut is okx
 
 
+def test_live_exchange_client_resolves_dual_market_venue_by_market():
+    from executor.exchange_client import ExchangeClient
+
+    default_spot, default_futures = object(), object()
+    mexc_spot, mexc_futures = object(), object()
+    client = ExchangeClient(default_spot, default_futures, {
+        "tokocrypto": {"market": "spot", "client": default_spot},
+        "okx": {"market": "futures", "client": default_futures},
+        "mexc": {"market": "futures", "client": mexc_futures},
+        "mexc:futures": {"market": "futures", "client": mexc_futures},
+        "mexc:spot": {"market": "spot", "client": mexc_spot},
+    })
+
+    spot = client.for_venue("mexc", market="spot")
+    futures = client.for_venue("mexc", market="futures")
+
+    assert spot is not None and spot.local is mexc_spot
+    assert futures is not None and futures.global_fut is mexc_futures
+    assert client.for_venue("mexc").global_fut is mexc_futures
+    assert client.for_venue("mexc", market="perpetual").global_fut is mexc_futures
+
+
 def test_live_exchange_client_rejects_unconfigured_pair_venue():
     from types import SimpleNamespace
     from executor.exchange_client import ExchangeClient

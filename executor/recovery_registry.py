@@ -410,8 +410,9 @@ class RecoveryRegistryMixin:
         resting must also be re-bound to its lifecycle, otherwise the bot would
         hold an exchange order that no monitoring loop knows about.
         """
-        if record.is_terminal:
+        if record.is_terminal and not record.needs_lifecycle_reconciliation:
             await self.order_registry.retire(record)
+            await self.order_registry.clear_pending_recovery(record.local_order_id)
             return
 
         # Terminal zero-fill entry orders must be retired immediately, even if
@@ -420,11 +421,8 @@ class RecoveryRegistryMixin:
             record.order_role == OrderRole.ENTRY.value
             and (record.is_terminal or record.is_venue_terminal)
         ):
-            unhedged_fill = max(
-                0.0,
-                float(record.filled_quantity or 0.0) - float(record.hedged_quantity or 0.0),
-            )
-            if unhedged_fill <= 1e-12:
+            filled_quantity = float(record.filled_quantity or 0.0)
+            if filled_quantity <= 1e-12:
                 record.status = "canceled"
                 record.venue_status = "canceled"
                 record.lifecycle_state = "RECONCILED"
@@ -550,7 +548,11 @@ class RecoveryRegistryMixin:
             # id, so the alias learnt from that same acknowledgement counts as
             # a match. Any other id still fails closed.
             accepted_ids = _record_accepted_client_ids(
-                record, self._client_for_exchange(exchange) or self.client
+                record,
+                self._client_for_exchange(
+                    exchange,
+                    "futures" if record.market_type == "perpetual" else "spot",
+                ) or self.client,
             )
             if (
                 observed_client_id != record.client_order_id
@@ -596,7 +598,10 @@ class RecoveryRegistryMixin:
         # the configured base pair (e.g. indodax/okx), so a record submitted on a
         # different spot venue (tokocrypto) would otherwise be looked up on the
         # wrong exchange and fail with that venue's "invalid symbol" error.
-        owner = self._client_for_exchange(getattr(record, "exchange", "") or "")
+        owner = self._client_for_exchange(
+            getattr(record, "exchange", "") or "",
+            "futures" if record.market_type == "perpetual" else "spot",
+        )
         if owner is None:
             owner = self.client
         if record.market_type == "perpetual":
@@ -626,7 +631,10 @@ class RecoveryRegistryMixin:
         same id would either miss it or, worse, return an unrelated spot order.
         """
         spec = record.global_amount_spec if record.market_type == "perpetual" else record.local_amount_spec
-        owner = self._client_for_exchange(getattr(record, "exchange", "") or "")
+        owner = self._client_for_exchange(
+            getattr(record, "exchange", "") or "",
+            "futures" if record.market_type == "perpetual" else "spot",
+        )
         if owner is None:
             owner = self.client
         if record.market_type == "perpetual":

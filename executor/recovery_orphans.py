@@ -85,7 +85,8 @@ class RecoveryOrphanMixin:
         market_type = str(orphan.get("market_type") or "spot").lower()
         order_id = str(orphan.get("exchange_order_id") or "")
         client_id = str(orphan.get("client_order_id") or "")
-        client = self._client_for_exchange(exchange)
+        market = "futures" if market_type in ("perpetual", "futures", "future") else "spot"
+        client = self._client_for_exchange(exchange, market)
         if client is None or not symbol or not (order_id or client_id):
             return False
         try:

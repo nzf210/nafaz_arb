@@ -110,7 +110,7 @@ class RecoveryDiscoveryMixin:
             market = str(entry.get("market") or "").strip().lower()
             if market not in ("spot", "futures") or entry.get("client") is None:
                 continue
-            if self._client_for_exchange(exchange) is None:
+            if self._client_for_exchange(exchange, market) is None:
                 continue
             key = (exchange, market)
             if key in seen:
@@ -132,9 +132,9 @@ class RecoveryDiscoveryMixin:
         ):
             if not exchange or (exchange, market) in seen:
                 continue
-            if self._client_for_exchange(exchange) is None:
+            if self._client_for_exchange(exchange, market) is None:
                 continue
-            seen.add((exchange, market))
+            seen.add((exchange, market)
             catalogues.append({
                 "exchange": exchange,
                 "market": market,
@@ -147,9 +147,11 @@ class RecoveryDiscoveryMixin:
         self, exchange: str, symbol: str, market: str, amount_spec: Any
     ) -> list:
         """Reads resting orders for one venue leg, resolving its own client."""
-        client = self._client_for_exchange(exchange)
+        client = self._client_for_exchange(exchange, market)
         if client is None:
-            raise NotImplementedError(f"no client is bound to exchange {exchange}")
+            raise NotImplementedError(
+                f"no {market} client is bound to exchange {exchange}"
+            )
         spec = amount_spec
         if spec is None:
             spec = self._default_amount_spec_for(exchange, market)
@@ -171,44 +173,76 @@ class RecoveryDiscoveryMixin:
             )
         return await fetch(symbol or None, spec)
 
-    def _client_for_exchange(self, exchange: str) -> Any:
-        """Resolves the exchange client that owns a venue, or None when unbound."""
-        exchange = str(exchange or "").lower()
+    def _client_for_exchange(self, exchange: str, market: str = "") -> Any:
+        """Resolve the exact exchange/market owner; never borrow the other market."""
+        exchange = str(exchange or "").strip().lower()
         if not exchange:
+            return None
+        requested_market = str(market or "").strip().lower()
+        if requested_market in {"future", "perpetual"}:
+            requested_market = "futures"
+        if requested_market not in {"", "spot", "futures"}:
             return None
         configured_local = str(getattr(self.config, "local_exchange_name", "")).lower()
         configured_global = str(getattr(self.config, "global_exchange_name", "")).lower()
         if getattr(self.config, "mock_mode", False):
-            if exchange in (configured_local, configured_global):
+            if (
+                not requested_market and exchange in (configured_local, configured_global)
+            ) or (requested_market == "spot" and exchange == configured_local) or (
+                requested_market == "futures" and exchange == configured_global
+            ):
                 return self._base_client
             return None
-        # Prefer a venue-neutral adapter (pair_info=None) over borrowing an
-        # arbitrary pair's facade from the registry, whose quote_asset can
-        # reject unrelated markets on the same venue during recovery.
+
+        # Prefer the venue-neutral resolver, but qualify it by market. A TypeError
+        # from an older one-argument resolver is not permission to borrow a market.
         resolver = getattr(self._base_client, "for_venue", None)
         if callable(resolver):
             try:
-                resolved = resolver(exchange)
+                resolved = (
+                    resolver(exchange, market=requested_market)
+                    if requested_market else resolver(exchange)
+                )
                 if resolved is not None:
                     return resolved
+            except TypeError:
+                if not requested_market:
+                    try:
+                        resolved = resolver(exchange)
+                        if resolved is not None:
+                            return resolved
+                    except Exception:
+                        logger.exception(
+                            "[Recovery] could not resolve a client for venue %s", exchange
+                        )
             except Exception:
                 logger.exception(
-                    "[Recovery] could not resolve a client for venue %s", exchange
+                    "[Recovery] could not resolve %s client for venue %s",
+                    requested_market or "default", exchange,
                 )
+
         registry = self._pair_client_registry
         keys_fn = getattr(registry, "keys", None)
         for key in (keys_fn() if callable(keys_fn) else ()):
             local_name = str(getattr(key, "local_exchange", "")).lower()
             global_name = str(getattr(key, "global_exchange", "")).lower()
-            if exchange in (local_name, global_name):
+            matches_market = (
+                not requested_market
+                or (requested_market == "spot" and exchange == local_name)
+                or (requested_market == "futures" and exchange == global_name)
+            )
+            if matches_market and exchange in (local_name, global_name):
                 try:
                     return registry.resolve(key)
                 except Exception:
                     continue
-        if exchange in (configured_local, configured_global):
+        if (
+            not requested_market and exchange in (configured_local, configured_global)
+        ) or (requested_market == "spot" and exchange == configured_local) or (
+            requested_market == "futures" and exchange == configured_global
+        ):
             return self._base_client
         return None
-
     @staticmethod
     def _default_amount_spec_for(exchange: str, market: str) -> Optional[dict]:
         """Fractional step used only when nothing better is known.
