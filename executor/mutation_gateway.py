@@ -365,41 +365,173 @@ class MutationGateway:
         symbol: str,
         client_order_id: Optional[str] = None,
     ) -> MutationResult:
-        """Cancel order through Mutation Gateway with state reconciliation."""
-        exchange = exchange.lower().strip()
-        market_type = market_type.lower().strip()
+        """Cancel an exact venue order and confirm its terminal state.
+
+        A cancel acknowledgement is not proof of cancellation: the order may
+        still be open, or may have filled while the cancel raced the venue.
+        Never release a reserved slot until a follow-up order read proves a
+        terminal state. Unknown/malformed reads remain unresolved.
+        """
+        exchange = str(exchange or "").lower().strip()
+        market_type = str(market_type or "").lower().strip()
+        order_id = str(order_id or "").strip()
+        symbol = str(symbol or "").strip()
+        cid = str(client_order_id or "").strip() or order_id
+
+        def result(status: MutationResultType, detail: str, **kwargs: Any) -> MutationResult:
+            return MutationResult(
+                status=status,
+                client_order_id=cid,
+                exchange_order_id=order_id or None,
+                error_message=detail,
+                **kwargs,
+            )
+
+        if not exchange or not order_id or not symbol:
+            return result(
+                MutationResultType.REJECTED,
+                "exchange, exchange order ID, and symbol are required for cancellation",
+            )
+        if market_type not in {"spot", "futures"}:
+            return result(
+                MutationResultType.REJECTED,
+                f"unsupported cancellation market type: {market_type or 'missing'}",
+            )
+
+        # Resolve a venue-bound facade whenever the caller provides one. This
+        # prevents an operator command for one venue from canceling on whichever
+        # exchange happens to be the engine's default local client.
+        venue_client = client
+        resolver = getattr(client, "for_venue", None)
+        if callable(resolver):
+            try:
+                venue_client = resolver(exchange, market_type)
+            except Exception as exc:
+                return result(
+                    MutationResultType.REJECTED,
+                    f"cannot resolve {exchange}/{market_type} cancellation client: {exc}",
+                )
+            if venue_client is None:
+                return result(
+                    MutationResultType.REJECTED,
+                    f"no configured client for {exchange}/{market_type}",
+                )
+
+        if market_type == "spot":
+            venue = getattr(venue_client, "local", venue_client)
+            cancel = getattr(venue_client, "cancel_local_order", None)
+            fetch = getattr(venue_client, "fetch_local_order", None)
+        else:
+            venue = getattr(venue_client, "global_fut", venue_client)
+            cancel = getattr(venue_client, "cancel_global_order", None)
+            fetch = getattr(venue_client, "fetch_global_order", None)
+
+        actual_exchange = str(getattr(venue, "id", "") or "").lower().strip()
+        if not actual_exchange or actual_exchange != exchange:
+            return result(
+                MutationResultType.REJECTED,
+                f"venue identity mismatch: requested {exchange}/{market_type}, "
+                f"resolved {actual_exchange or 'unknown'}/{market_type}",
+            )
+        if not callable(cancel) or not callable(fetch):
+            return result(
+                MutationResultType.REJECTED,
+                f"{exchange}/{market_type} client lacks cancel and order-fetch capabilities",
+            )
 
         try:
-            raw = None
-            if hasattr(client, "cancel_order"):
-                raw = await client.cancel_order(order_id, symbol=symbol)
-            elif hasattr(client, "cancel_order_direct"):
-                raw = await client.cancel_order_direct(order_id, symbol=symbol)
-
-            # Release slot if confirmed canceled
-            cid = client_order_id or str(order_id)
-            if market_type == "spot":
-                await self.slot_manager.release_slot(exchange, cid, reason="CANCELED")
-
-            return MutationResult(
-                status=MutationResultType.CONFIRMED,
-                client_order_id=cid,
-                exchange_order_id=str(order_id),
-                raw_response=raw if isinstance(raw, dict) else {},
+            await cancel(order_id, symbol)
+        except (asyncio.TimeoutError, TimeoutError) as exc:
+            logger.warning(
+                "Cancel outcome unknown on %s/%s (%s): %s",
+                exchange, order_id, symbol, exc,
             )
-        except (asyncio.TimeoutError, TimeoutError) as t_err:
-            logger.warning("Cancel order timed out on %s (%s); reconciliation required", exchange, order_id)
-            return MutationResult(
-                status=MutationResultType.SUBMISSION_UNKNOWN,
-                client_order_id=client_order_id or str(order_id),
-                exchange_order_id=str(order_id),
-                error_message=f"Cancel timeout: {t_err}",
+            return result(
+                MutationResultType.SUBMISSION_UNKNOWN,
+                f"cancel request timed out; venue state requires reconciliation: {exc}",
             )
         except Exception as exc:
-            logger.error("Cancel failed on %s (%s): %s", exchange, order_id, exc)
-            return MutationResult(
-                status=MutationResultType.REJECTED,
-                client_order_id=client_order_id or str(order_id),
-                exchange_order_id=str(order_id),
-                error_message=str(exc),
+            # A transport/adapter exception can occur after the venue accepted
+            # the cancel. Do not label it rejected or retry blindly.
+            logger.warning(
+                "Cancel outcome uncertain on %s/%s (%s): %s",
+                exchange, order_id, symbol, exc,
             )
+            return result(
+                MutationResultType.SUBMISSION_UNKNOWN,
+                f"cancel request outcome is uncertain: {type(exc).__name__}: {exc}",
+            )
+
+        try:
+            order = await fetch(order_id, symbol)
+        except Exception as exc:
+            logger.warning(
+                "Post-cancel order fetch failed on %s/%s: %s",
+                exchange, order_id, exc,
+            )
+            return result(
+                MutationResultType.SUBMISSION_UNKNOWN,
+                f"cancel acknowledgement received but terminal state could not be fetched: {exc}",
+            )
+
+        if not isinstance(order, dict):
+            return result(
+                MutationResultType.SUBMISSION_UNKNOWN,
+                "post-cancel order fetch returned a malformed payload",
+            )
+        observed_id = str(order.get("id") or order.get("orderId") or "").strip()
+        if not observed_id or observed_id != order_id:
+            return result(
+                MutationResultType.SUBMISSION_UNKNOWN,
+                "post-cancel order fetch did not confirm the requested exchange order ID",
+            )
+
+        state = str(order.get("status") or "").lower().strip()
+        terminal_states = {"canceled", "cancelled", "closed", "filled", "expired", "rejected"}
+        if state not in terminal_states:
+            return result(
+                MutationResultType.SUBMISSION_UNKNOWN,
+                f"cancel acknowledgement received but order is not terminal (status={state or 'unknown'})",
+                raw_response=order,
+            )
+
+        try:
+            filled_qty = float(order.get("filled") or order.get("executedQty") or 0.0)
+        except (TypeError, ValueError):
+            return result(
+                MutationResultType.SUBMISSION_UNKNOWN,
+                "terminal order response contains an invalid filled quantity",
+                raw_response=order,
+            )
+        try:
+            average_price = float(order.get("average") or order.get("avgPrice") or 0.0)
+        except (TypeError, ValueError):
+            average_price = 0.0
+
+        if market_type == "spot" and client_order_id:
+            try:
+                await self.slot_manager.release_slot(
+                    exchange, client_order_id, reason=f"TERMINAL_{state.upper()}"
+                )
+            except Exception as exc:
+                # Venue state is terminal, but a slot leak must be visible and
+                # recoverable. Do not downgrade the exchange confirmation.
+                logger.exception(
+                    "Order %s is terminal but spot slot release failed: %s",
+                    order_id, exc,
+                )
+                return result(
+                    MutationResultType.SUBMISSION_UNKNOWN,
+                    f"order is terminal ({state}) but slot release failed: {exc}",
+                    filled_qty=filled_qty,
+                    average_price=average_price,
+                    raw_response=order,
+                )
+
+        return result(
+            MutationResultType.CONFIRMED,
+            f"venue confirmed terminal order state: {state}",
+            filled_qty=filled_qty,
+            average_price=average_price,
+            raw_response=order,
+        )
