@@ -1773,3 +1773,18 @@ The local-market single-flight admission key is `(local_exchange, base_asset, no
 **Verification:** source/test head `43163e1580cd8c48a585ddeed94e81feb0202770` passed workflow [44698742920](https://github.com/nzf210/nafaz_arb/actions/runs/44698742920): Python 754 passed / 10 skipped, disposable PostgreSQL integration 11 passed, and all five CI jobs passed. This is CI evidence, not live CEX or production VPS validation.
 
 **Release state remains PARTIAL / NOT LIVE-CERTIFIED.** Operator-resolution governance, repeated fault injection on the actual VPS PostgreSQL topology, venue sandbox contracts, and minimum-notional overhedge/de-risk persistence decisions remain open.
+
+
+## 17.12 Market-scoped durable submit recovery — R-53
+
+A durable submit attempt stores both exchange and market type. Recovery must resolve the exact (exchange, market) client before selecting the spot or futures client-order-ID lookup. This is mandatory for dual-market venues such as MEXC. Calling for_venue(exchange) without market scope can return the base/default client and query the wrong account. The recovery path now maps spot/local to spot and future/futures/perpetual/swap to futures, calls the market-aware resolver, and treats a missing resolver/client as UNKNOWN. It must never downgrade to an ambiguous one-argument lookup. A wrong-market lookup previously could produce a false NOT_FOUND observation; the durable attempt still remained unresolved and globally blocked entry.
+
+## 17.13 Aggregate restored spot backing — R-54
+
+Startup verification must compare the aggregate required spot quantity for each (local_exchange, base_asset) with the venue's single reported balance. It must not compare each pair independently against the same aggregate balance. For example, two restored routes requiring 1 BTC each cannot both be considered backed by a 1.5 BTC venue balance. The recovery verifier now sums all quantities in that venue/base group, fetches the balance once, and marks every affected global symbol reconciliation-required when the aggregate is short. Invalid/non-finite quantities or balances fail closed.
+
+## 17.14 Manual de-risk utility is not an entry path
+
+scripts/resolve_ai_position.py contains direct spot market SELL and futures market BUY with reduceOnly=True. These are explicitly de-risk-only operations and are not subject to the entry Global STOP fence. The utility is operator-invoked, not an executor production caller. It currently uses fixed client IDs and does not perform exact-client-ID recovery after a lost/ambiguous create acknowledgement; operators must not rerun it after an ambiguous result without first verifying venue state. This is a separate idempotency/runbook limitation, not justification to block risk-reducing operations with the entry STOP.
+
+Verification: source/test head 817eec2bafac85f2b0f242b3681cc4e06574f46b passed workflow [44881614430](https://github.com/nzf210/nafaz_arb/actions/runs/44881614430), all five jobs. The PostgreSQL job exercised a disposable real PostgreSQL multi-process submit-disconnect test. Actual VPS topology fault injection and real venue sandbox contracts remain open. Overall status remains PARTIAL / NOT LIVE-CERTIFIED.
