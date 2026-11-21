@@ -950,3 +950,249 @@ Do not begin broad code changes until artifacts 2–4 are reviewed against the a
 7. Implement one vertical slice at a time; do not change scanner behavior.
 
 **Final rule:** V3 is not successful because it submits more orders or opens more positions. It is successful when every accepted execution can be explained, reconstructed, hedged, exited, reconciled, and accounted for without duplicate exposure or lost state.
+
+
+---
+
+# Enterprise Scale Architecture Addendum — 2026-11-21
+
+This addendum extends the original blueprint after inspecting the current branch source. It reuses existing V2 components and does not authorize a code rewrite or imply LIVE certification.
+
+## 1. Target operating model
+
+NAFAZ V3 is a modular execution platform with a logical Control Plane and scalable execution workers. It is not an early microservice migration.
+
+- One active logical coordinator and one standby coordinator.
+- Multiple session workers may process independent sessions concurrently.
+- Mutations are serialized by venue account, market/instrument and ownership scope, not by one global queue.
+- PostgreSQL is canonical for session, intent, order, fill, hedge, position, exit, risk and audit state.
+- Redis is disposable acceleration: cache, wake-up, notification and ephemeral queue.
+- Private WebSocket is a low-latency event source; REST/history reconciliation remains mandatory.
+- Go scanner and its opportunity contract are frozen.
+
+## 2. Logical architecture
+
+    GO SCANNER (FROZEN)
+      opportunity payload / source opportunity ID
+                  |
+                  v
+    OPPORTUNITY ADMISSION GATE
+      freshness / pair identity / venue capability / balance / fees / limits
+                  |
+                  v
+    EXECUTION CONTROL PLANE
+      session coordinator | ownership + fencing | policy snapshots
+      independent risk control | durable command journal
+                  |
+                  v
+    EXECUTION DOMAIN
+      Spot leg | Futures leg | Fill ledger | Hedge obligations
+      pooled hedge allocator | liquidity scheduler
+      position accounting | PnL | Exit Decision Engine
+      Exit Coordinator | recovery + reconciliation
+                  |
+                  v
+    MUTATION GATEWAY (ONLY PRIVATE WRITE BOUNDARY)
+                  |
+                  v
+    TOKOCRYPTO SPOT | INDODAX SPOT | OKX SWAP | MEXC CONTRACT
+                  |
+                  v
+    POSTGRESQL CANONICAL STATE
+      Redis cache/notifications are rebuildable projections
+
+Observability and incident management consume durable lifecycle events and expose read-only projections. Operator mutations enter through a durable command journal, not direct dashboard writes.
+
+## 3. Ownership and delivery guarantees
+
+1. One authoritative writer owns a session transition at a time.
+2. One mutation owner is authorized for a venue account/instrument scope at a time.
+3. Every write carries session ID, intent ID, stable client order ID, fencing generation, policy version and idempotency key.
+4. Mutation Gateway validates current fencing at the write boundary.
+5. A stale worker may continue running but cannot mutate after losing ownership.
+6. Risk-reducing operations remain possible under STOP. If PostgreSQL serialization is unavailable, use a designated emergency owner, stable client ID and immediate reconciliation; do not permit uncontrolled multi-worker emergency writes.
+7. Do not promise exactly-once exchange delivery. The contract is durable intent, at-least-once event delivery, idempotent processing and exact-ID reconciliation.
+
+## 4. Independent Risk Control Plane
+
+Risk control is a separate logical authority from strategy and execution orchestration. It can deny new exposure while allowing recovery, hedge repair and protective exit.
+
+### Risk dimensions
+
+- Global portfolio gross/net exposure and deployed capital.
+- Venue/account exposure and available balance.
+- Pair/instrument exposure.
+- Per-session unhedged notional and duration.
+- Outstanding entry/hedge/exit order count and notional.
+- Daily realized loss and drawdown.
+- Slippage budget and execution quality.
+- Funding cost and projected holding cost.
+- Market-data freshness and exchange health.
+- Database/fencing health and reconciliation completeness.
+
+### Risk decisions
+
+ALLOW_ENTRY, DEFER_ENTRY, BLOCK_ENTRY, ALLOW_HEDGE, ALLOW_EXIT, REQUIRE_DE_RISK, HALT_SCOPE and REQUIRE_OPERATOR.
+
+Risk control fails closed for new exposure when canonical state, balances, policy, market data or ownership cannot be verified. It must not disable safe risk-reducing operations merely because global entry STOP is active.
+
+Persist each decision's input snapshot, result, reason code and timestamp. Risk limits remain policy inputs; do not hard-code new production values in architecture work.
+
+## 5. Immutable policy snapshots
+
+Each session stores immutable versions or snapshots for:
+
+- strategy parameters and hedge ratio;
+- Spot/Futures minimum notional policy;
+- exchange market metadata version;
+- risk limits and account scope;
+- maker/taker fee schedule and verification state;
+- exit target, stop, trailing and time-decay policy;
+- FX rate/source/time and reporting currency;
+- position mode, leverage and contract multiplier.
+
+Existing internal defaults remain USD 10 equivalent minimum Spot, USD 5 equivalent minimum Futures hedge, 1:1 base-equivalent hedge ratio and no overhedge by default. Stricter exchange minimums and precision rules always win. This is a policy design statement, not a LIVE configuration change.
+
+## 6. Exit Decision and Position Lifecycle — mandatory core domain
+
+The repository already contains:
+- executor/exit_decision_engine.py
+- executor/pair_pnl_engine.py
+- executor/exit_pricing.py
+- executor/exit_orders.py
+- executor/exit_execution.py
+- executor/force_close.py and related leg/lifecycle modules
+
+V3 must extend this path, not create a second exit engine.
+
+### Separation of responsibilities
+
+- Position Monitor: builds a fresh, verified position and market snapshot.
+- Pair PnL Engine: computes estimated net liquidation economics for the complete pair.
+- Exit Decision Engine: pure policy evaluator; returns action and reason; never calls an exchange.
+- Exit Coordinator: owns exit session, quantity reservation, per-leg progress and state transitions.
+- Mutation Gateway: submits cancel/close/rollback writes.
+- Exit Reconciliation: verifies terminal orders, fills, allocated hedge and actual exchange exposure before CLOSED.
+
+### Required decision inputs
+
+- Verified Spot quantity and cost basis.
+- Verified Futures base-equivalent quantity and contract metadata.
+- Executable Spot bid VWAP and Futures ask VWAP for intended close quantity.
+- Entry and expected exit fees, actual fee currency and verification status.
+- Accrued/estimated funding and funding settlement provenance.
+- FX conversion rates with source and timestamp.
+- Deployed capital and actual Futures margin.
+- Executable entry/exit spread and spread convergence.
+- Position age, policy snapshot and durable trailing high-water mark.
+- Book freshness, sequence validity, depth, slippage and venue health.
+- Hedge drift, pending orders and unknown reconciliation state.
+
+If a critical input is unknown or stale, do not treat it as zero cost or a healthy/flat state. Return WAIT_FOR_RECONCILIATION or a risk-directed action based on verified exposure.
+
+### PnL and ROI contract
+
+Primary profit trigger is estimated net liquidation PnL in one reporting currency:
+
+    NetLiquidationPnL =
+      SpotLiquidationPnL + FuturesLiquidationPnL + NetFunding
+      - EntryFees - EstimatedExitFees - Taxes
+      - ConversionCosts - OtherKnownCosts
+
+Spot close uses executable bid depth. Closing a Futures short uses executable ask depth. Estimated liquidation PnL must be distinguished from realized PnL.
+
+Report at least two ROI measures:
+- Strategy/spread ROI against an explicitly defined Spot notional basis.
+- Return on total deployed capital, including Spot capital, actual Futures margin and allocated fee reserve.
+
+Never calculate pair ROI using Futures margin alone. Do not mix a margin-only ROI with full-pair PnL.
+
+### Exit trigger priority
+
+1. Emergency risk: verified exposure mismatch, unhedged risk-budget breach, inability to protect exposure, or critical state uncertainty.
+2. Protective stop: net liquidation loss reaches session stop policy or strategy thesis is invalidated.
+3. Profit target: net liquidation PnL and/or deployed-capital ROI reaches configured threshold after exit costs and safety buffer.
+4. Trailing profit: activate after configured profit threshold; persist high-water mark and exit when peak-to-current retracement exceeds configured bound.
+5. Spread convergence/edge decay: executable close spread reaches target or remaining edge no longer covers cost and risk.
+6. Funding/time stop: funding drag or time-decayed required return makes continued holding inferior.
+7. Otherwise HOLD.
+
+Thresholds are pair/policy inputs, not universal hard-coded percentages. A profit target must exceed estimated full exit costs plus a safety buffer.
+
+### Partial and two-leg exit
+
+Partial exit is a quantity operation, not a boolean. The coordinator reserves close quantity against verified exposure and allocated pooled hedge. It must:
+- reduce Spot and Futures consistently with hedge ratio and contract size;
+- honor reduceOnly and position-side semantics for Futures;
+- preserve remaining session exposure;
+- allocate pooled hedge reduction only to the originating session;
+- recalculate residual hedge after each confirmed exit fill;
+- survive cancel/fill races and worker restarts.
+
+Session is CLOSED only when managed Spot/Futures exposure is verified zero, relevant orders are terminal, no hedge obligation/allocation remains, and final accounting is reconciled.
+
+### Exit state model
+
+    MONITORING
+      -> EXIT_DECIDED
+      -> EXIT_INTENT_DURABLE
+      -> EXIT_SUBMITTING
+      -> EXIT_SUBMISSION_UNKNOWN / EXIT_WORKING
+      -> EXIT_PARTIAL
+      -> EXIT_RECONCILING
+      -> CLOSED
+
+Any ambiguous result moves to reconciliation, not blind retry. Emergency de-risk may close one leg before the other, but residual exposure remains an active risk incident until flat.
+
+## 7. Pooled hedge allocation accounting
+
+The existing hedge claim table protects one parent Spot order/fill generation. It does not by itself prove cross-session pooled hedge allocation.
+
+Aggregation is allowed only when Futures account, venue/contract, position mode, side, hedge ratio, quote/settlement asset, risk policy and lifecycle semantics are compatible.
+
+For each pool:
+- source obligations remain individually durable;
+- pooled Futures order has its own intent/order/fill identity;
+- every fill is allocated deterministically to source obligations;
+- allocated quantity plus unallocated residual equals verified Futures fill quantity;
+- fee, funding and realized PnL are apportioned by documented deterministic rules;
+- a session may exit only its allocated share;
+- adjustments and orphan fills remain auditable.
+
+Never aggregate incompatible accounts, contracts, margin modes, sides or policy snapshots.
+
+## 8. Exchange failure isolation
+
+Each venue/account/endpoint has explicit health, rate budget, circuit breaker and capability state. An outage must not stop unrelated venues, but sessions depending on the failed venue for hedge/exit are escalated to Risk Control.
+
+Unknown or incomplete endpoint inventory is never interpreted as empty. No blind create-order retry. Recovery first uses exact client ID, exchange order ID and complete venue history.
+
+## 9. Persistence and accounting authority
+
+- PostgreSQL native transactions: canonical session/order intent/fencing/claims/fill/position/exit/risk/audit state.
+- Redis: cache, notification and wake-up only.
+- SQLite outbox: durable delivery of non-critical reporting projections; not a substitute for canonical fills or positions.
+- Supabase REST: reporting/read projection where applicable; never a competing writer for the same canonical row.
+
+Critical canonical write failure blocks new exposure. Protective de-risk remains available under explicit emergency ownership/fencing policy. A fill that cannot be persisted creates an accounting-debt incident and triggers reconciliation; it is not silently ignored.
+
+## 10. Enterprise operations and disaster recovery
+
+Required capabilities:
+- Correlation ID from opportunity through final PnL.
+- Metrics for submit latency, fill-to-hedge latency, hedge backlog/age, unhedged notional, exit latency, unknown orders, reconciliation drift, fee/funding drift, fencing rejects and exchange circuit state.
+- Structured session/order event timeline.
+- Durable operator commands and audited manual resolution.
+- Database backup/PITR and restore drills.
+- Secret isolation and credential rotation.
+- Incident severity, owner, recovery action and resolution.
+- Dashboard as read-only projection; mutations go through durable commands.
+
+## 11. Updated delivery gates
+
+Follow NAFAZ-EXECUTOR-V3-IMPLEMENTATION-ROADMAP.md. No implementation starts before PR-00 inventory and mutation-path mapping are accepted. No LIVE cutover occurs without end-to-end failure injection, multi-process fencing tests, reconciliation proof, operational runbooks and explicit operator approval.
+
+## 12. Companion documents
+
+- docs/NAFAZ-EXECUTOR-V3-SOURCE-INVENTORY.md — verified existing files, functions, schema, tests and reuse/rebuild decisions.
+- docs/NAFAZ-EXECUTOR-V3-IMPLEMENTATION-ROADMAP.md — PR dependencies, source ownership, tasks, acceptance and release gates.
