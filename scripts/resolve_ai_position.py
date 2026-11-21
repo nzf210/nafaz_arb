@@ -101,7 +101,7 @@ async def resolve_ai():
                 order = await toko.create_market_sell_order(
                     "AI/USDT",
                     sell_qty,
-                    {"clientOrderId": "resolveai-spot-v1"},
+                    {"clientOrderId": "resolveaispotv1"},
                 )
                 if not _order_fully_filled(order, sell_qty):
                     order_id = str((order or {}).get("id") or "")
@@ -146,7 +146,7 @@ async def resolve_ai():
                 order = await okx.create_market_buy_order(
                     "AI/USDT:USDT",
                     short_contracts,
-                    {**params, "clientOrderId": "resolveai-futures-v1"},
+                    {**params, "clientOrderId": "resolveaifuturesv1"},
                 )
                 if not _order_fully_filled(order, short_contracts):
                     order_id = str((order or {}).get("id") or "")
