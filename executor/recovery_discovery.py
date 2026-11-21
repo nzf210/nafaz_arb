@@ -134,7 +134,7 @@ class RecoveryDiscoveryMixin:
                 continue
             if self._client_for_exchange(exchange, market) is None:
                 continue
-            seen.add((exchange, market)
+            seen.add((exchange, market))
             catalogues.append({
                 "exchange": exchange,
                 "market": market,
