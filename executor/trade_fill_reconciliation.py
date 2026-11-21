@@ -520,7 +520,7 @@ class TradeFillReconciliationWorker:
             return
         writer = getattr(self.engine, "supabase", None)
         if writer is None or not getattr(writer, "enabled", False):
-            logger.warning(
+            logger.debug(
                 "trade-fill reconciliation skipped: durable fill writer is disabled"
             )
             return

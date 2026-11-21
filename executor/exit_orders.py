@@ -256,6 +256,20 @@ class ExitOrderManagementMixin:
                 rejection_check = getattr(self, "_is_definitive_order_rejection", None)
                 if callable(rejection_check) and rejection_check(submit_err):
                     await self._mark_order_submission_rejected(pos.local_exchange, exit_coid)
+                    err_str = str(submit_err).lower()
+                    if ("insufficient" in err_str or "-2010" in err_str) and hasattr(self.client, "local"):
+                        try:
+                            bal = await self.client.local.fetch_balance()
+                            base_asset = str(getattr(pos, "base_asset", "") or "").upper()
+                            free_bal = float((bal.get("free") or {}).get(base_asset, 0.0) or 0.0)
+                            if 0 < free_bal < qty_to_sell:
+                                logger.warning(
+                                    "[State 3] Adjusting exit qty for %s from %s to actual free balance %s (entry fee deduction)",
+                                    pair_tag, qty_to_sell, free_bal,
+                                )
+                                pos.qty = free_bal + unhedged
+                        except Exception:
+                            pass
                     raise
                 # An exit SELL is risk-reducing, so it is not gated by Global
                 # STOP. But an ambiguous acknowledgement must not cause the

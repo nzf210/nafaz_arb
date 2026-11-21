@@ -2661,3 +2661,31 @@ async def test_unacknowledged_not_found_is_never_auto_retired(
     assert stored is not None
     assert stored.status == "submitting"
     assert PAIR_TAG in engine._recovery_scope_halts
+
+
+async def test_zero_fill_terminal_entry_without_context_retires_cleanly(fake_redis):
+    engine = _engine(fake_redis)
+    record = OrderRecord(
+        local_order_id=OrderRecord.local_id_for("indodax", "entry-test-zero", "12345"),
+        client_order_id="entry-test-zero",
+        exchange="indodax",
+        symbol="btcidr",
+        pair_key=PAIR_TAG,
+        order_role="ENTRY",
+        side="buy",
+        original_quantity=10.0,
+        filled_quantity=0.0,
+        hedged_quantity=0.0,
+        status="canceled",
+        venue_status="canceled",
+        exchange_order_id="12345",
+        recovery_context=None,
+    )
+    await engine.order_registry.register(record)
+    res = await engine._finalize_terminal_entry(record, {"status": "canceled", "filled": 0.0}, PAIR_TAG, None)
+    assert res is True
+    assert record.lifecycle_state == "RECONCILED"
+    assert record.local_order_id not in await engine.order_registry.pending_recovery_ids()
+    assert PAIR_TAG not in engine.states
+
+

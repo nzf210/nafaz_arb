@@ -186,6 +186,20 @@ class RecoveryAdoptionMixin:
             self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
             self._refresh_entry_gate()
             return False
+        unhedged_fill = max(
+            0.0,
+            float(record.filled_quantity or 0.0) - float(record.hedged_quantity or 0.0),
+        )
+        if unhedged_fill <= 1e-12:
+            record.lifecycle_state = "RECONCILED"
+            await self.order_registry.clear_pending_recovery(record.local_order_id)
+            if pair_tag in self.pending_entry_orders:
+                self.pending_entry_orders.pop(pair_tag, None)
+            logger.info(
+                "[Recovery] retiring terminal entry %s for %s with zero unhedged fill",
+                record.exchange_order_id, pair_tag,
+            )
+            return True
         if record.is_manual_required:
             reason = (
                 f"terminal entry {record.exchange_order_id} fill reconciliation failed; "

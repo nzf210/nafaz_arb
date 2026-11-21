@@ -422,6 +422,21 @@ class RecoveryRegistryMixin:
                     elif record.client_order_id:
                         order = await self._fetch_order_by_client_id(record)
                         if order is None:
+                            if (
+                                record.order_role in ("FORCE_CLOSE", "EXIT_SPOT", "EXIT_FUTURES")
+                                and record.pair_key not in getattr(self, "active_positions", {})
+                            ):
+                                record.status = "canceled"
+                                record.venue_status = "canceled"
+                                record.lifecycle_state = "RECONCILED"
+                                record.recovery_status = "RECONCILED"
+                                await self.order_registry.register(record)
+                                await self.order_registry.clear_pending_recovery(record.local_order_id)
+                                logger.info(
+                                    "[Recovery] retiring unaccepted close/exit order %s for inactive position %s",
+                                    record.local_order_id, record.pair_key,
+                                )
+                                return
                             await self.order_registry.mark_pending_recovery(
                                 record.local_order_id,
                                 "client order id not found in venue history; acceptance remains ambiguous",
