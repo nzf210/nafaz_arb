@@ -124,7 +124,13 @@ class CommandProcessor:
                         symbol=symbol,
                         client_order_id=client_id,
                     )
-                    result = {"success": res.status.value == "CONFIRMED", "status": res.status.value}
+                    result = {
+                        "success": res.status.value == "CONFIRMED",
+                        "status": res.status.value,
+                        "detail": res.error_message or "Cancel outcome verified by venue reconciliation",
+                        "exchange_order_id": res.exchange_order_id,
+                        "client_order_id": res.client_order_id,
+                    }
                 else:
                     result = {"success": False, "detail": "Gateway or client not initialized"}
 
