@@ -654,3 +654,30 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 **Still OPEN:** operator identity/HMAC custody and rotation, dual approval and manual-resolution runbook; repeated PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; per-venue sandbox/paper contract tests; minimum-notional overhedge/delta-drift policy; and durable de-risk persistence.
 
 **Release state: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover.
+
+
+## 13. Follow-up audit — 2026-11-21 (R-53/R-54)
+
+### Recovery venue routing
+- [x] Durable submit recovery resolves the exact (exchange, market) client before exact client-order-ID lookup.
+- [x] spot/local maps to the spot client; future/futures/perpetual/swap maps to the futures client.
+- [x] Missing market-aware resolver/client remains UNKNOWN and keeps the global entry gate closed; no ambiguous one-argument fallback.
+- [x] MEXC dual-market fake-venue regression tests cover spot and futures recovery routing.
+- [x] A legacy resolver that accepts only the exchange name fails closed.
+
+### Restored spot inventory
+- [x] Required quantities are aggregated by (local_exchange, base_asset) before comparison with the venue's aggregate balance.
+- [x] An insufficient aggregate balance marks all affected global symbols reconciliation-required.
+- [x] Different local venues are checked independently.
+- [x] Invalid/non-finite/negative quantity or balance values fail closed.
+
+### Explicit manual de-risk exception
+- [x] scripts/resolve_ai_position.py direct spot market SELL and futures market BUY (reduceOnly=True) are classified as manual de-risk only; they are not exposure-opening entry paths and are not blocked by entry Global STOP.
+- [ ] Add an operator runbook and exact-client-ID recovery for ambiguous results before rerunning this one-off script. Its fixed client IDs do not by themselves prove venue idempotency.
+
+### Latest verified CI
+- Source/test head: 817eec2bafac85f2b0f242b3681cc4e06574f46b.
+- Workflow [44881614430](https://github.com/nzf210/nafaz_arb/actions/runs/44881614430): all five jobs succeeded, including Python, disposable PostgreSQL integration/multi-process disconnect, Go tests/race/vet, migration-runner checks, and scanner/executor Docker builds.
+- This is CI evidence only. It is not a test of the VPS production PostgreSQL topology or any live CEX contract.
+
+Still OPEN: full clone-wide/runtime-instrumented call-site inventory; operator identity, HMAC secret custody/rotation, dual approval and runbook; repeated PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; per-venue sandbox/paper exact-ID and eventual-consistency validation; minimum-notional overhedge/delta-drift policy; and durable de-risk persistence. Release status remains PARTIAL / NOT LIVE-CERTIFIED. No merge, deployment, production migration, or cutover.
