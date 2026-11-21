@@ -193,7 +193,7 @@ func (l *LiveAdapter) fetchMEXCPerpetualMarkets(ctx context.Context) ([]domain.M
 	}
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
 
-	resp, err := l.client.Do(req)
+	resp, err := l.mexcPerpDo(ctx, req)
 	if err != nil {
 		return nil, err
 	}

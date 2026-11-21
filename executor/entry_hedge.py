@@ -1120,7 +1120,8 @@ class EntryHedgeMixin:
                     price_idr, usdt_rate, he,
                 )
                 return
-            if global_exchange:
+            is_slippage_err = isinstance(he, HedgeSlippageExceeded)
+            if global_exchange and not is_slippage_err:
                 self._record_order_failure(
                     global_exchange, "hedge order placement failed"
                 )
@@ -1342,6 +1343,7 @@ class EntryHedgeMixin:
 
         awaiting_coverage = bool(order_info.get("hedge_waiting_for_coverage"))
         hedged_qty = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
+        rolled_back_qty = float(order_info.get("rolled_back_qty", 0.0) or 0.0)
         cumulative_filled = float(order_info.get("filled", 0.0) or 0.0)
         # Canonical residual check: existence of active_positions alone is not
         # proof the hedge target is complete.
@@ -1353,7 +1355,7 @@ class EntryHedgeMixin:
         if not (_ratio > 0):
             _ratio = 1.0
         _target, residual, _ = canonical_hedge_target(
-            cumulative_filled, hedged_qty, _ratio
+            cumulative_filled, hedged_qty + rolled_back_qty, _ratio
         )
         # Any unresolved (UNKNOWN) hedge submission for this entry also blocks
         # a clean finalize: the hedge may exist on the venue.

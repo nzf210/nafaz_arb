@@ -125,7 +125,7 @@ func (l *LiveAdapter) fetchMEXCFundingRate(ctx context.Context, symbol string) (
 	}
 	req.Header.Set(USER_AGENT, USER_AGENT_VALUE)
 
-	resp, err := l.client.Do(req)
+	resp, err := l.mexcPerpDo(ctx, req)
 	if err != nil {
 		return domain.FundingRate{}, fmt.Errorf("mexc funding request: %w", err)
 	}

@@ -102,9 +102,11 @@ class RecoveryDiscoveryMixin:
         # resting orders on those venues after a crash.
         venue_inventory = getattr(self._base_client, "balance_exchanges", {}) or {}
         for raw_exchange, entry in venue_inventory.items():
-            exchange = str(raw_exchange or "").strip().lower()
-            if not exchange or not isinstance(entry, dict):
+            raw_name = str(raw_exchange or "").strip().lower()
+            if not raw_name or not isinstance(entry, dict):
                 continue
+            # Strip duplicate ':spot' / ':futures' suffix so each physical venue is swept once
+            exchange = raw_name.split(":", 1)[0]
             market = str(entry.get("market") or "").strip().lower()
             if market not in ("spot", "futures") or entry.get("client") is None:
                 continue
@@ -380,6 +382,9 @@ class RecoveryDiscoveryMixin:
         if not exchange_order_id and not client_order_id:
             return None
         for pair_tag, order_info in self.pending_entry_orders.items():
+            stored_exchange = str(order_info.get("local_exchange") or "").strip().lower()
+            if stored_exchange and stored_exchange != str(exchange).strip().lower():
+                continue
             stored_id = str(order_info.get("order_id") or "")
             stored_coid = str(order_info.get("client_order_id") or "")
             matches_exchange_id = bool(

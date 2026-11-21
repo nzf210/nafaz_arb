@@ -174,7 +174,19 @@ class RollbackMixin:
             return None, RuntimeError(
                 f"spot rollback fill incomplete: requested={sell_qty}, filled={filled}"
             )
+        # Check if the shortfall is purely due to spot entry fee deduction on base asset
+        fee_tolerance = max(1e-8, unhedged_delta * 0.01)
+        if amount_spec:
+            step_val = float(getattr(amount_spec, "step", 0.0) or (amount_spec.get("step") if isinstance(amount_spec, dict) else 0.0) or 0.0)
+            fee_tolerance = max(fee_tolerance, step_val * 2)
+
         if filled + tolerance < unhedged_delta:
+            if (unhedged_delta - filled) <= fee_tolerance:
+                logger.info(
+                    "[Hedge Rollback] %s: spot rollback sold %s of %s (shortfall %s is within base fee deduction tolerance); fully unwound",
+                    pair_tag, filled, unhedged_delta, unhedged_delta - filled,
+                )
+                return emergency_order, None
             # The sellable balance was smaller than the unhedged exposure: the
             # remainder is still unhedged and must reach the operator, but the
             # order we could place did fill, so it is not an ambiguous failure.
@@ -219,6 +231,11 @@ class RollbackMixin:
         if not math.isfinite(free) or free <= 0:
             return 0.0
         spec = amount_spec
+        if isinstance(spec, dict):
+            try:
+                spec = AmountSpec.from_dict(spec)
+            except Exception:
+                spec = None
         if spec is None and legacy_amount_step > 0:
             spec = AmountSpec(
                 unit="BASE", step=legacy_amount_step,
@@ -228,8 +245,8 @@ class RollbackMixin:
         minimum = 0.0
         if spec is not None:
             try:
-                step = float(getattr(spec, "step", 0.0) or 0.0)
-                minimum = float(getattr(spec, "minimum", 0.0) or 0.0)
+                step = float(getattr(spec, "step", 0.0) or (spec.get("step") if isinstance(spec, dict) else 0.0) or 0.0)
+                minimum = float(getattr(spec, "minimum", 0.0) or (spec.get("min") if isinstance(spec, dict) else 0.0) or 0.0)
             except (TypeError, ValueError):
                 step = minimum = 0.0
         qty = min(float(requested_qty), free)
@@ -531,6 +548,7 @@ class RollbackMixin:
         # Release reserved capital only after the exchange confirms a full,
         # terminal rollback fill. An ambiguous/partial sell must remain blocked.
         if emergency_error is None:
+            order_info["rolled_back_qty"] = unhedged_delta
             await self._settle_rolled_back_entry_record(order_info, unhedged_delta)
             await self._release_unhedged_reserve(
                 pair_tag, order_info, unhedged_delta, price_idr, usdt_rate

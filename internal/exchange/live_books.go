@@ -60,7 +60,9 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 	var err error
 	if exchangeName == "okx" {
 		book, err = l.fetchOKXBookSingleflight(symbol, fetch)
-		if err != nil { err = fmt.Errorf("okx REST order-book fallback failed for %s: %w", symbol, err) }
+		if err != nil {
+			err = fmt.Errorf("okx REST order-book fallback failed for %s: %w", symbol, err)
+		}
 	} else {
 		book, err = fetch()
 	}
@@ -71,13 +73,15 @@ func (l *LiveAdapter) trackedBookForSymbol(exchangeName, symbol string, fetch fu
 type okxBookCall struct {
 	done chan struct{}
 	book domain.OrderBook
-	err error
+	err  error
 }
 
 // fetchOKXBookSingleflight collapses concurrent cache misses for one instrument
 // into one REST recovery request. Every caller observes the same result.
 func (l *LiveAdapter) fetchOKXBookSingleflight(symbol string, fetch func() (domain.OrderBook, error)) (domain.OrderBook, error) {
-	if symbol == "" { return fetch() }
+	if symbol == "" {
+		return fetch()
+	}
 	l.mu.Lock()
 	if call := l.okxBookCalls[symbol]; call != nil {
 		l.mu.Unlock()
@@ -104,7 +108,7 @@ func (l *LiveAdapter) SpotOrderBook(ctx context.Context, symbol string) (domain.
 		})
 	}
 	if strings.HasPrefix(symbol, MEXC_SPOT) || strings.HasPrefix(symbol, "mexc:") {
-		return l.trackedBookForSymbol("mexc", symbol, func() (domain.OrderBook, error) {
+		return l.trackedBookForSymbol("mexc_spot", symbol, func() (domain.OrderBook, error) {
 			return l.mexcVenue().FetchSpotOrderBook(ctx, symbol)
 		})
 	}
@@ -279,7 +283,7 @@ func (l *LiveAdapter) fetchMEXCSpotOrderBook(ctx context.Context, symbol string)
 // PerpetualOrderBook fetches live order book from OKX or MEXC with contract size normalization.
 func (l *LiveAdapter) PerpetualOrderBook(ctx context.Context, symbol string) (domain.OrderBook, error) {
 	if isMEXCSymbol(symbol) {
-		return l.trackedBookForSymbol("mexc", symbol, func() (domain.OrderBook, error) {
+		return l.trackedBookForSymbol("mexc_perp", symbol, func() (domain.OrderBook, error) {
 			return l.mexcVenue().FetchPerpOrderBook(ctx, symbol)
 		})
 	}

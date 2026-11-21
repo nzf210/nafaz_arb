@@ -209,6 +209,8 @@ def venue_client_order_id(
     exchange_id = str(getattr(exchange, "id", "") or "").lower()
     if exchange_id == "okx":
         return get_venue("okx").format_client_order_id(client_order_id)
+    if exchange_id == "mexc":
+        return get_venue("mexc").format_client_order_id(client_order_id)
     if exchange_id != "tokocrypto":
         return client_order_id
     already_charset_safe = all(c.isalnum() for c in client_order_id)

@@ -392,6 +392,7 @@ class RecoveryOrphanMixin:
         if (
             not getattr(self.config, "mock_mode", False)
             and not getattr(getattr(self, "supabase", None), "enabled", False)
+            and not getattr(getattr(self, "fill_ledger", None), "enabled", False)
         ):
             # Without the durable fill ledger, an empty worker error set does
             # not mean exchange fills were verified.

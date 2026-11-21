@@ -572,8 +572,10 @@ func (s *Service) pairPositionReason(sm, pm domain.Market, exposures []domain.Op
 }
 
 func (s *Service) fetchMarketData(ctx context.Context, sm, pm domain.Market) (domain.OrderBook, domain.OrderBook, domain.FundingRate, []domain.ExchangeScanMetrics, error) {
+	var mu sync.Mutex
 	metrics := make(map[string]domain.ExchangeScanMetrics, 2)
 	measure := func(exchangeName string, started time.Time, err error) {
+		mu.Lock()
 		metric := metrics[exchangeName]
 		metric.Exchange = exchangeName
 		metric.Requests++
@@ -582,14 +584,11 @@ func (s *Service) fetchMarketData(ctx context.Context, sm, pm domain.Market) (do
 		}
 		metric.DurationMicros += time.Since(started).Microseconds()
 		metrics[exchangeName] = metric
+		mu.Unlock()
 	}
+
+	// 1. Fetch funding rate first (usually cached in memory)
 	requestStarted := time.Now()
-	sb, e1 := s.adapter.SpotOrderBook(ctx, sm.Symbol)
-	measure(sm.Exchange, requestStarted, e1)
-	requestStarted = time.Now()
-	pb, e2 := s.adapter.PerpetualOrderBook(ctx, pm.Symbol)
-	measure(pm.Exchange, requestStarted, e2)
-	requestStarted = time.Now()
 	var fr domain.FundingRate
 	var e3 error
 	s.mu.Lock()
@@ -610,6 +609,32 @@ func (s *Service) fetchMarketData(ctx context.Context, sm, pm domain.Market) (do
 		fr, e3 = s.adapter.FundingRate(ctx, pm.Symbol)
 	}
 	measure(pm.Exchange, requestStarted, e3)
+
+	// 2. Fetch Spot and Perp order books in parallel to prevent skew > 3s
+	var sb domain.OrderBook
+	var e1 error
+	var pb domain.OrderBook
+	var e2 error
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		t0 := time.Now()
+		sb, e1 = s.adapter.SpotOrderBook(ctx, sm.Symbol)
+		measure(sm.Exchange, t0, e1)
+	}()
+
+	go func() {
+		defer wg.Done()
+		t0 := time.Now()
+		pb, e2 = s.adapter.PerpetualOrderBook(ctx, pm.Symbol)
+		measure(pm.Exchange, t0, e2)
+	}()
+
+	wg.Wait()
+
 	exchangeMetrics := make([]domain.ExchangeScanMetrics, 0, len(metrics))
 	for _, metric := range metrics {
 		exchangeMetrics = append(exchangeMetrics, metric)
@@ -1081,9 +1106,9 @@ func (s *Service) buildOpportunity(
 		moduleID = "spot_default"
 	}
 	return domain.Opportunity{
-		OpportunityKey:       fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
-		ModuleID:             moduleID,
-		SpotEntryFeePct:      spotEntryFeePct,
+		OpportunityKey:         fmt.Sprintf("%s/%s:%s:%s", sm.BaseAsset, targetQuote, sm.Symbol, pm.Symbol),
+		ModuleID:               moduleID,
+		SpotEntryFeePct:        spotEntryFeePct,
 		SpotExitFeePct:         fees.spotTakerPct,
 		PerpEntryFeePct:        fees.perpTakerPct,
 		PerpExitFeePct:         fees.perpTakerPct,

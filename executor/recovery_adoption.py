@@ -315,23 +315,30 @@ class RecoveryAdoptionMixin:
             return await self._reconcile_recovered_entry_hedge(
                 record, order, pair_tag
             )
-        await self.order_registry.register(record)
         if record.order_role == OrderRole.ENTRY.value:
             finalized = await self._finalize_terminal_entry(
                 record, order, pair_tag, amount_spec
             )
             if finalized:
+                record.lifecycle_state = "RECONCILED"
+                await self.order_registry.register(record)
                 await self.order_registry.retire(record)
+            else:
+                await self.order_registry.register(record)
             return finalized
         if record.order_role == OrderRole.EXIT_SPOT.value:
             res = await self._finalize_terminal_spot_exit(
                 record, pair_tag, amount_spec
             )
+            record.lifecycle_state = "RECONCILED" if res else record.lifecycle_state
+            await self.order_registry.register(record)
             if res:
                 await self.order_registry.retire(record)
             return res
         if record.order_role == OrderRole.EXIT_FUTURES.value:
             await self._finalize_terminal_futures_exit(record, pair_tag)
+        record.lifecycle_state = "RECONCILED"
+        await self.order_registry.register(record)
         await self.order_registry.retire(record)
         if record.order_role in ACKNOWLEDGED_EXIT_ROLES:
             logger.info(

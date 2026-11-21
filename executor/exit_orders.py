@@ -194,11 +194,29 @@ class ExitOrderManagementMixin:
     ) -> None:
         try:
             unhedged = float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0)
-            qty_to_sell = max(0.0, pos.qty - unhedged)
-            if qty_to_sell <= 1e-8:
+            nominal_to_sell = max(0.0, pos.qty - unhedged)
+            if nominal_to_sell <= 1e-8:
                 logger.info(
                     f"[State 3] Spot qty for {pair_tag} already sold ({unhedged} unhedged); skipping new limit sell"
                 )
+                return
+
+            # Probe actual sellable balance on spot venue to respect base-asset fee deduction
+            qty_to_sell = nominal_to_sell
+            sellable_fn = getattr(self, "_sellable_spot_quantity", None)
+            if callable(sellable_fn):
+                try:
+                    free_sellable = await sellable_fn(
+                        pos.symbol,
+                        nominal_to_sell,
+                        pos.local_amount_spec,
+                    )
+                    if 0 < free_sellable <= nominal_to_sell:
+                        qty_to_sell = free_sellable
+                except Exception:
+                    pass
+
+            if qty_to_sell <= 1e-8:
                 return
 
             pair_info = getattr(self, "_pair_infos", {}).get(pair_tag)

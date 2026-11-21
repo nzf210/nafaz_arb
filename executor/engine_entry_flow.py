@@ -112,18 +112,18 @@ class EngineEntryFlowMixin:
             )
             return True
         except Exception as exc:
-            logger.warning(
+            logger.info(
                 "[Adaptive Maker] rejecting %s: fresh book/profit validation failed: %s",
                 pair_tag, exc,
             )
-            self._mark_failed(
-                pair_tag,
-                "ADAPTIVE_MAKER_QUOTE_UNSAFE",
-                "Indodax IDR entry rejected because a fresh maker-only quote "
-                "could not retain the dynamic net-profit floor.",
-                detail={"error": str(exc)[:500]},
-            )
-            await self.publish_status()
+            # Preflight reject before order placement: do not pollute risk_state with FAILED state
+            self.states[pair_tag] = PositionState.IDLE
+            self._failure_reasons[pair_tag] = {
+                "reason": "ADAPTIVE_MAKER_QUOTE_UNSAFE",
+                "message": f"Preflight rejected: {exc}",
+                "detail": {"error": str(exc)[:500]},
+                "timestamp_ms": int(time.time() * 1000),
+            }
             return False
 
     def _spot_order_limit(self, exchange: str) -> int:

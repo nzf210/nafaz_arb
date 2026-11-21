@@ -239,7 +239,19 @@ func (s *Server) finishScan(r domain.ScanResult, complete bool, scanErr error) {
 	if scanErr != nil {
 		log.Printf("scanner scan failed: %v", scanErr)
 	} else if !complete && len(r.Errors) > 0 {
-		log.Printf("scanner scan incomplete: %s", strings.Join(r.Errors, "; "))
+		var sample []string
+		maxSamples := 5
+		for i, errStr := range r.Errors {
+			if i >= maxSamples {
+				break
+			}
+			sample = append(sample, errStr)
+		}
+		if len(r.Errors) > maxSamples {
+			log.Printf("scanner scan incomplete (%d errors, e.g.: %s ...)", len(r.Errors), strings.Join(sample, "; "))
+		} else {
+			log.Printf("scanner scan incomplete: %s", strings.Join(sample, "; "))
+		}
 	}
 	if s.activeScans > 0 {
 		s.activeScans--
@@ -250,7 +262,11 @@ func (s *Server) finishScan(r domain.ScanResult, complete bool, scanErr error) {
 		case scanErr != nil:
 			s.lastScanError = scanErr.Error()
 		case !complete:
-			s.lastScanError = strings.Join(r.Errors, "; ")
+			if len(r.Errors) > 5 {
+				s.lastScanError = fmt.Sprintf("%s ... (+%d more)", strings.Join(r.Errors[:5], "; "), len(r.Errors)-5)
+			} else {
+				s.lastScanError = strings.Join(r.Errors, "; ")
+			}
 			if s.lastScanError == "" {
 				s.lastScanError = "scan incomplete"
 			}

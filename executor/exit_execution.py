@@ -200,19 +200,25 @@ class ExitExecutionMixin:
             unwind_coid = build_client_order_id(
                 pair_tag, "unwind", self._next_order_seq()
             )
+            # If the spot exit sold all remaining spot (accounting for base fee deduction shortfall),
+            # close the full remaining futures position to keep delta neutral and prevent contract residue.
+            futures_close_qty = unclosed_delta
+            if pos.qty > 0 and (pos.qty - unclosed_delta) <= max(1e-8, pos.qty * 0.015):
+                futures_close_qty = pos.qty
+
             await self._register_order_intent(
                 pair_tag, unwind_coid,
                 exchange=pos.global_exchange, market_type="perpetual",
                 symbol=global_sym, role=OrderRole.EXIT_FUTURES.value,
                 side="buy", order_type="market", price=live_global_ask,
-                quantity=unclosed_delta, reduce_only=True,
+                quantity=futures_close_qty, reduce_only=True,
                 global_amount_spec=pos.global_amount_spec,
                 required=False,
             )
             async with derisk_fence(self, client_order_id=unwind_coid):
                 close_order = await self.client.close_global_short_market(
                     global_sym,
-                    unclosed_delta,
+                    futures_close_qty,
                     client_order_id=unwind_coid,
                     amount_spec=pos.global_amount_spec,
                 )
@@ -244,7 +250,7 @@ class ExitExecutionMixin:
                 side="buy",
                 order_type="market",
                 price=helpers.extract_fill_price(close_order) or live_global_ask,
-                quantity=unclosed_delta,
+                quantity=futures_close_qty,
                 reduce_only=True,
                 global_amount_spec=pos.global_amount_spec,
             )
@@ -256,15 +262,15 @@ class ExitExecutionMixin:
                 actual_closed_qty = float(close_order.get("filled") or 0.0)
             except (TypeError, ValueError):
                 actual_closed_qty = 0.0
-            qty_tolerance = max(1e-12, unclosed_delta * 1e-8)
-            if actual_closed_qty + qty_tolerance < unclosed_delta:
+            qty_tolerance = max(1e-12, futures_close_qty * 1e-8)
+            if actual_closed_qty + qty_tolerance < futures_close_qty:
                 raise ValueError(
                     f"futures close fill incomplete after spot sold: "
-                    f"requested={unclosed_delta}, filled={actual_closed_qty}"
+                    f"requested={futures_close_qty}, filled={actual_closed_qty}"
                 )
-            if actual_closed_qty > unclosed_delta + qty_tolerance:
+            if actual_closed_qty > futures_close_qty + qty_tolerance:
                 raise ValueError(
-                    f"futures close overfilled: requested={unclosed_delta}, "
+                    f"futures close overfilled: requested={futures_close_qty}, "
                     f"filled={actual_closed_qty}"
                 )
 
@@ -281,8 +287,8 @@ class ExitExecutionMixin:
             )
 
             total_qty_before = pos.qty
-            order_info["closed_short_qty"] += unclosed_delta
-            pos.qty -= unclosed_delta
+            order_info["closed_short_qty"] += actual_closed_qty
+            pos.qty = max(0.0, pos.qty - actual_closed_qty)
             pos.unhedged_exit_base_qty = max(
                 0.0, float(getattr(pos, "unhedged_exit_base_qty", 0.0) or 0.0) - unclosed_delta
             )
@@ -300,7 +306,7 @@ class ExitExecutionMixin:
                 )
             closed_trade, spot_cost, futures_margin, spot_pnl_usdt = (
                 self._build_closed_trade_record(
-                    pos, unclosed_delta, exit_price_idr,
+                    pos, actual_closed_qty, exit_price_idr,
                     entry_price_idr, short_entry_usdt, short_exit_usdt,
                     usdt_rate, total_qty_before,
                 )

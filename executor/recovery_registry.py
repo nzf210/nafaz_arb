@@ -11,7 +11,7 @@ from redis.exceptions import WatchError
 
 from executor.exchange_common import _accepted_client_order_ids
 from executor.helpers import is_explicit_rate_limit_rejection
-from executor.models import OrderRecord, PositionState, RecoveryStatus
+from executor.models import OrderRecord, OrderRole, PositionState, RecoveryStatus
 
 logger = logging.getLogger("executor.order_recovery")
 
@@ -325,8 +325,15 @@ class RecoveryRegistryMixin:
             )
         self._recovered_order_records = records
         self._recovered_orphans = await self.order_registry.orphans()
-        for orphan in self._recovered_orphans.values():
+        for oid, orphan in list(self._recovered_orphans.items()):
             scope = str(orphan.get("scope") or "")
+            if await self._orphan_is_terminal_zero_fill(orphan):
+                await self.order_registry.remove_orphan(oid)
+                self._recovered_orphans.pop(oid, None)
+                if scope and not await self._scope_has_unresolved_recovery(scope):
+                    self._clear_exposure_halt(scope, "orphan verified terminal zero fill")
+                logger.info("[Recovery] auto-retired terminal zero-fill orphan %s (%s)", oid, scope)
+                continue
             if scope:
                 self._halt_exposure_scope(scope, "unresolved orphan order")
 
@@ -406,6 +413,33 @@ class RecoveryRegistryMixin:
         if record.is_terminal:
             await self.order_registry.retire(record)
             return
+
+        # Terminal zero-fill entry orders must be retired immediately, even if
+        # marked MANUAL_REQUIRED in a previous buggy pass, to avoid persistent halt deadlocks.
+        if (
+            record.order_role == OrderRole.ENTRY.value
+            and (record.is_terminal or record.is_venue_terminal)
+        ):
+            unhedged_fill = max(
+                0.0,
+                float(record.filled_quantity or 0.0) - float(record.hedged_quantity or 0.0),
+            )
+            if unhedged_fill <= 1e-12:
+                record.status = "canceled"
+                record.venue_status = "canceled"
+                record.lifecycle_state = "RECONCILED"
+                record.recovery_status = "RECONCILED"
+                await self.order_registry.register(record)
+                await self.order_registry.retire(record)
+                await self.order_registry.clear_pending_recovery(record.local_order_id)
+                pair_key = record.pair_key or f"{exchange}:{symbol}"
+                self._clear_exposure_halt(pair_key, "terminal entry zero fill retired")
+                logger.info(
+                    "[Recovery] retired terminal zero-fill entry %s for %s",
+                    record.local_order_id, pair_key,
+                )
+                return
+
         if record.is_manual_required:
             self._halt_exposure_scope(
                 record.pair_key or f"{exchange}:{symbol}",

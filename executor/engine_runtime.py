@@ -621,13 +621,22 @@ class EngineRuntimeMixin:
             except Exception:
                 pass
 
-        logger.info(
-            "Dynamic config reloaded from Redis: max_pos=%.2f, alloc=%.4f, min_cap=%.2f, mock=%s",
-            getattr(self.config, "max_position_usdt", 0.0),
-            getattr(self.config, "allocation_per_pair", 0.0),
-            getattr(self.config, "min_allocated_capital", 0.0),
-            getattr(self.config, "mock_mode", False),
+        cfg_fingerprint = (
+            round(float(getattr(self.config, "max_position_usdt", 0.0) or 0.0), 2),
+            round(float(getattr(self.config, "allocation_per_pair", 0.0) or 0.0), 4),
+            round(float(getattr(self.config, "min_allocated_capital", 0.0) or 0.0), 2),
+            bool(getattr(self.config, "mock_mode", False)),
         )
+        last_fp = getattr(self, "_last_logged_cfg_fp", None)
+        if last_fp != cfg_fingerprint:
+            self._last_logged_cfg_fp = cfg_fingerprint
+            logger.info(
+                "Dynamic config reloaded from Redis: max_pos=%.2f, alloc=%.4f, min_cap=%.2f, mock=%s",
+                cfg_fingerprint[0],
+                cfg_fingerprint[1],
+                cfg_fingerprint[2],
+                cfg_fingerprint[3],
+            )
 
     async def _load_spot_order_limits(self) -> None:
         """Restore Telegram-managed per-venue/quote limits from durable Redis hash and config."""
@@ -849,6 +858,23 @@ class EngineRuntimeMixin:
                 "base_asset": pending.get("base_asset", ""),
                 "quote_asset": pending.get("quote_asset", "IDR"),
             })()
+        if "__" in pair_tag and ":" in pair_tag:
+            try:
+                spot_part, fut_part = pair_tag.split("__", 1)
+                lex, lsym = spot_part.split(":", 1)
+                gex, gsym = fut_part.split(":", 1)
+                base = lsym.split("/")[0] if "/" in lsym else (lsym.split("_")[0] if "_" in lsym else lsym)
+                quote = lsym.split("/")[-1] if "/" in lsym else (lsym.split("_")[-1] if "_" in lsym else "IDR")
+                return type("ParsedPairInfo", (), {
+                    "local_exchange": lex,
+                    "global_exchange": gex,
+                    "local_symbol": lsym,
+                    "global_symbol": gsym,
+                    "base_asset": base.upper(),
+                    "quote_asset": quote.upper(),
+                })()
+            except Exception:
+                pass
         raise LookupError(f"exchange pair metadata unavailable for {pair_tag}")
 
     async def _run_pair_bound(self, pair_tag: str, operation, *args, **kwargs):

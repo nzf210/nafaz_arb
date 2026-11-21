@@ -12,22 +12,22 @@ import (
 )
 
 const (
-	indodaxDefaultRatePerSec     = 5.0
-	indodaxDefaultBurst          = 6
-	indodaxMaxConcurrent         = 3
-	indodaxSlotWait              = 20 * time.Second
-	indodaxTickWait              = 50 * time.Millisecond
-	indodaxDefault429Cooldown    = 60 * time.Second
-	indodaxDefault403Cooldown    = 5 * time.Minute
+	indodaxDefaultRatePerSec  = 5.0
+	indodaxDefaultBurst       = 6
+	indodaxMaxConcurrent      = 3
+	indodaxSlotWait           = 20 * time.Second
+	indodaxTickWait           = 50 * time.Millisecond
+	indodaxDefault429Cooldown = 60 * time.Second
+	indodaxDefault403Cooldown = 5 * time.Minute
 	indodaxMaxCooldown        = 5 * time.Minute
 
-	mexcSpotMaxConcurrent        = 4
-	mexcSpotDefaultRatePerSec    = 10.0
-	mexcSpotDefaultBurst         = 10
-	mexcPerpMaxConcurrent       = 4
-	mexcPerpDefaultRatePerSec   = 10.0
-	mexcPerpDefaultBurst        = 10
-	mexcPerpDefault510Cooldown  = 10 * time.Second
+	mexcSpotMaxConcurrent      = 2
+	mexcSpotDefaultRatePerSec  = 4.0
+	mexcSpotDefaultBurst       = 4
+	mexcPerpMaxConcurrent      = 4
+	mexcPerpDefaultRatePerSec  = 10.0
+	mexcPerpDefaultBurst       = 10
+	mexcPerpDefault510Cooldown = 10 * time.Second
 
 	tokocryptoMaxConcurrent     = 3
 	tokocryptoDefaultRatePerSec = 4.0
@@ -38,16 +38,16 @@ const (
 // Retry-After cooldowns for public REST endpoints so 15 scanner workers
 // do not trigger exchange or Cloudflare WAF bans.
 type venueLimiter struct {
-	name          string
-	slots         chan struct{}
-	ratePerSec    float64
-	capacity      int
-	mu            sync.Mutex
-	tokens        float64
-	lastRefill    time.Time
-	blockedUntil  time.Time
-	blockReason   string
-	now           func() time.Time
+	name         string
+	slots        chan struct{}
+	ratePerSec   float64
+	capacity     int
+	mu           sync.Mutex
+	tokens       float64
+	lastRefill   time.Time
+	blockedUntil time.Time
+	blockReason  string
+	now          func() time.Time
 }
 
 func newVenueLimiter(name string, maxConcurrent int, ratePerSec float64, burst int) *venueLimiter {
@@ -301,4 +301,3 @@ func (l *LiveAdapter) mexcPerpDo(ctx context.Context, req *http.Request) (*http.
 	lim.recordHTTPStatus(resp.StatusCode, resp.Header.Get("Retry-After"))
 	return resp, nil
 }
-
