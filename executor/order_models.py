@@ -189,6 +189,14 @@ class OrderRecord:
             return True
         if self.recovery_status == RecoveryStatus.UNVERIFIED.value:
             return True
+        if self.order_role == OrderRole.HEDGE.value:
+            # Legacy hedge records without parent context are already reflected
+            # in the restored position; only unresolved/context-linked hedges
+            # need another lifecycle pass.
+            return bool(self.recovery_context) and (
+                filled > 1e-12
+                and self.lifecycle_state != OrderLifecycleState.RECONCILED.value
+            )
         return filled > 1e-12 and self.lifecycle_state != OrderLifecycleState.RECONCILED.value
 
     def to_dict(self) -> Dict[str, Any]:
