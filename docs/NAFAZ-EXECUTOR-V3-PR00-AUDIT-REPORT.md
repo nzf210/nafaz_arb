@@ -104,7 +104,7 @@ A durable operator cancel command may be marked COMPLETED even though no venue c
 - Fetch final order state and reconcile fills before slot release or replacement.
 - Regression: facade exposing only `cancel_local_order` must call the correct adapter or fail closed; it must never return CONFIRMED without a venue call and terminal proof.
 
-### P0-02 — Fill-ledger append is explicitly best-effort and callers ignore failure
+### P1-01 — Fill-ledger append is explicitly best-effort and callers ignore failure
 
 **Evidence**
 - `executor/ledger_hooks.py` documents ledger helpers as best-effort.
