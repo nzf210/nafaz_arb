@@ -135,7 +135,7 @@ async def resolve_ai():
             if not futures_entry or futures_entry.get("market") != "futures" or not futures_entry.get("client"):
                 raise RuntimeError("OKX futures client is not configured")
             okx = futures_entry["client"]
-            positions = await okx.fetch_positions(["AI-USDT-SWAP"])
+            positions = await okx.fetch_positions(["AI/USDT:USDT"])
             long_contracts, short_contracts = _position_contracts(positions)
             print(
                 f"Current OKX AI contracts: long={long_contracts}, short={short_contracts}"
@@ -156,7 +156,7 @@ async def resolve_ai():
                     raise RuntimeError(
                         f"OKX reduceOnly BUY is not confirmed fully filled: {order}"
                     )
-                positions = await okx.fetch_positions(["AI-USDT-SWAP"])
+                positions = await okx.fetch_positions(["AI/USDT:USDT"])
                 long_contracts, short_contracts = _position_contracts(positions)
             futures_flat = long_contracts <= 1e-12 and short_contracts <= 1e-12
             if not futures_flat:
