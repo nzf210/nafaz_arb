@@ -1,10 +1,10 @@
 # NAFAZ Executor V3 — Implementation Blueprint
 
 - Repository: nzf210/nafaz_arb
-- Target branch: feat/v2-bootstrap-config-stop-fencing
+- Target branch: feat/executor-v3-enterprise
 - Status: PROPOSED — source inventory and design approval required before implementation
 - Scope: Executor rebuild only; scanner behavior is frozen and out of scope
-- Reviewed branch baseline: 267f60f09f19aa6f1abcb76bc18a7181908e37ef (re-check HEAD before coding)
+- Reviewed branch baseline: 32d0fd75d2de31f5737975abf0c3d837a7cf8699 (source baseline; documentation updates follow)
 - Language: English
 
 > This is an implementation plan, not proof that the design is implemented or LIVE-certified. Creating this document does not change trading code, runtime configuration, database state, or production resources.
@@ -1196,3 +1196,8 @@ Follow NAFAZ-EXECUTOR-V3-IMPLEMENTATION-ROADMAP.md. No implementation starts bef
 
 - docs/NAFAZ-EXECUTOR-V3-SOURCE-INVENTORY.md — verified existing files, functions, schema, tests and reuse/rebuild decisions.
 - docs/NAFAZ-EXECUTOR-V3-IMPLEMENTATION-ROADMAP.md — PR dependencies, source ownership, tasks, acceptance and release gates.
+
+
+## PR-00 audit status
+
+The detailed static audit and mutation-path map are recorded in `docs/NAFAZ-EXECUTOR-V3-PR00-AUDIT-REPORT.md`. Do not begin PR-01 until the two P0 findings in that report have an agreed remediation and regression coverage. The report does not certify production DB state or LIVE CEX behavior.
