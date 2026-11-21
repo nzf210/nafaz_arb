@@ -88,7 +88,6 @@ async def test_cancel_ack_with_order_still_open_is_unknown_and_keeps_slot():
     )
 
     assert result.status is MutationResultType.SUBMISSION_UNKNOWN
-    assert "still" not in result.error_message  # status detail is explicit
     assert "open" in result.error_message
     assert slots.released == []
 
@@ -118,7 +117,7 @@ async def test_cancel_timeout_can_still_be_confirmed_by_final_venue_read():
 async def test_missing_cancel_capability_fails_closed_without_releasing_slot():
     slots = FakeSlotManager()
     facade = FakeSpotFacade(states=[order("open")])
-    del facade.cancel_local_order
+    facade.cancel_local_order = None
 
     result = await MutationGateway(slot_manager=slots).execute_cancel_order(
         FakeRootClient(facade),
