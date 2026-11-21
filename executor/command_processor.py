@@ -120,11 +120,17 @@ class CommandProcessor:
                         venue_client,
                         exchange=exchange,
                         market_type="spot",
-                        order_id=ex_order_id or client_id,
+                        order_id=ex_order_id,
                         symbol=symbol,
                         client_order_id=client_id,
                     )
-                    result = {"success": res.status.value == "CONFIRMED", "status": res.status.value}
+                    result = {
+                        "success": res.status.value == "CONFIRMED",
+                        "status": res.status.value,
+                        "detail": res.error_message or "Cancel outcome verified by venue reconciliation",
+                        "exchange_order_id": res.exchange_order_id,
+                        "client_order_id": res.client_order_id,
+                    }
                 else:
                     result = {"success": False, "detail": "Gateway or client not initialized"}
 
