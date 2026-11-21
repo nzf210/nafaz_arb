@@ -261,6 +261,7 @@ async def test_mexc_futures_short_uses_venue_wire_client_order_id():
     assert all(char.isalnum() or char in "-_" for char in wire)
 
 
+@pytest.mark.asyncio
 async def test_mexc_direct_recovery_tries_deterministic_wire_id_after_logical_id():
     from executor.exchange_common import _find_order_by_client_id
 
