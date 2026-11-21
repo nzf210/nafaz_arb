@@ -352,11 +352,20 @@ async def test_mutation_gateway_cancel():
     await slot_mgr.reserve_slot("tokocrypto", client_order_id=cid)
     assert await slot_mgr.get_active_slots_count("tokocrypto") == 1
 
-    client_mock = AsyncMock()
-    client_mock.cancel_order.return_value = {"id": "ex-101", "status": "canceled"}
+    class Venue:
+        id = "tokocrypto"
+
+        async def cancel_local_order(self, order_id, symbol):
+            return {"id": order_id, "status": "canceled"}
+
+        async def fetch_local_order(self, order_id, symbol):
+            return {
+                "id": order_id, "symbol": symbol,
+                "status": "canceled", "filled": 0.0,
+            }
 
     res = await gateway.execute_cancel_order(
-        client_mock,
+        Venue(),
         exchange="tokocrypto",
         market_type="spot",
         order_id="ex-101",
