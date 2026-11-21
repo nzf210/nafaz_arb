@@ -109,41 +109,24 @@ class CommandProcessor:
                 result = {"success": True, "detail": f"Resumed scope: {scope}"}
 
             elif cmd_type == CommandType.CANCEL_ORDER:
-                client_id = str(payload.get("client_order_id") or "").strip()
-                ex_order_id = str(payload.get("exchange_order_id") or "").strip()
-                symbol = str(payload.get("symbol") or "").strip()
-                exchange = str(payload.get("exchange") or scope or "").strip().lower()
-                market_type = str(payload.get("market_type") or "spot").strip().lower()
+                client_id = payload.get("client_order_id", "")
+                ex_order_id = payload.get("exchange_order_id", "")
+                symbol = payload.get("symbol", "")
+                exchange = payload.get("exchange", scope).lower()
                 gateway = getattr(self.engine, "mutation_gateway", None)
                 venue_client = getattr(self.engine, "client", None)
-                if not ex_order_id:
-                    result = {
-                        "success": False,
-                        "status": "REJECTED",
-                        "detail": "exchange_order_id is required; client_order_id is not an exchange order ID",
-                    }
-                elif gateway and venue_client:
+                if gateway and venue_client:
                     res = await gateway.execute_cancel_order(
                         venue_client,
                         exchange=exchange,
-                        market_type=market_type,
-                        order_id=ex_order_id,
+                        market_type="spot",
+                        order_id=ex_order_id or client_id,
                         symbol=symbol,
-                        client_order_id=client_id or None,
+                        client_order_id=client_id,
                     )
-                    result = {
-                        "success": res.status.value == "CONFIRMED",
-                        "status": res.status.value,
-                        "detail": res.error_message,
-                        "exchange_order_id": res.exchange_order_id,
-                        "filled_qty": res.filled_qty,
-                    }
+                    result = {"success": res.status.value == "CONFIRMED", "status": res.status.value}
                 else:
-                    result = {
-                        "success": False,
-                        "status": "REJECTED",
-                        "detail": "Gateway or client not initialized",
-                    }
+                    result = {"success": False, "detail": "Gateway or client not initialized"}
 
             elif cmd_type == CommandType.SET_SPOT_SLOT_LIMIT:
                 venue = payload.get("venue", scope).lower()
