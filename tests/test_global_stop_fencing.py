@@ -662,10 +662,22 @@ class _BaseClient:
     def __init__(self, venue):
         self.venue = venue
         self.requested_exchange = None
+        self.requested_market = None
 
-    def for_venue(self, exchange):
+    def for_venue(self, exchange, market=None):
         self.requested_exchange = exchange
+        self.requested_market = market
         return self.venue
+
+
+class _MarketAwareBaseClient:
+    def __init__(self, venues):
+        self.venues = venues
+        self.requests = []
+
+    def for_venue(self, exchange, market=None):
+        self.requests.append((exchange, market))
+        return self.venues.get((exchange, market))
 
 
 class _SubmitLedger:
@@ -885,6 +897,137 @@ async def test_startup_reconciliation_routes_perpetual_attempt_to_futures_lookup
     assert record.exchange_order_id == "futures-order-77"
     assert registry.registered == [record]
     assert service.found == [("futures-client-id-456", order)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("market_type", "expected_market", "lookup_side"),
+    [
+        ("spot", "spot", "spot"),
+        ("swap", "futures", "futures"),
+    ],
+)
+async def test_startup_submit_recovery_resolves_exact_mexc_market(
+    market_type, expected_market, lookup_side
+):
+    attempt = {
+        "client_order_id": f"mexc-{expected_market}-client-id",
+        "exchange": "mexc",
+        "market_type": market_type,
+        "symbol": "BTC/USDT" if expected_market == "spot" else "BTC/USDT:USDT",
+        "amount_spec": {"unit": "BASE" if expected_market == "spot" else "CONTRACTS"},
+    }
+    order = {"id": f"mexc-{expected_market}-order", "status": "open"}
+    spot_venue = _VenueLookup(order)
+    futures_venue = _VenueLookup(order)
+    base = _MarketAwareBaseClient({
+        ("mexc", "spot"): spot_venue,
+        ("mexc", "futures"): futures_venue,
+    })
+    record = SimpleNamespace(
+        exchange_order_id="",
+        status="submitting",
+        filled_quantity=0.0,
+        original_quantity=0.01,
+        remaining_quantity=0.01,
+        average_fill_price=0.0,
+        venue_client_order_id="",
+    )
+    registry = _FakeIntentRegistry(
+        record, exchange="mexc", client_order_id=attempt["client_order_id"]
+    )
+    service = _SubmitLedger([attempt])
+    engine = _RecoveryHarness(service, base)
+    engine.order_registry = registry
+
+    assert await engine._reconcile_durable_submit_attempts() is True
+    assert base.requests == [("mexc", expected_market)]
+    selected = spot_venue if lookup_side == "spot" else futures_venue
+    other = futures_venue if lookup_side == "spot" else spot_venue
+    assert len(selected.calls if lookup_side == "spot" else selected.futures_calls) == 1
+    assert other.calls == []
+    assert other.futures_calls == []
+    assert service.found == [(attempt["client_order_id"], order)]
+
+
+@pytest.mark.asyncio
+async def test_submit_recovery_rejects_legacy_venue_resolver_without_market_scope():
+    class _LegacyResolver:
+        def for_venue(self, exchange):
+            raise AssertionError("ambiguous one-argument resolver must not be used")
+
+    attempt = {
+        "client_order_id": "mexc-spot-legacy-resolver",
+        "exchange": "mexc",
+        "market_type": "spot",
+        "symbol": "BTC/USDT",
+        "amount_spec": {"unit": "BASE"},
+    }
+    service = _SubmitLedger([attempt])
+    engine = _RecoveryHarness(service, _LegacyResolver())
+
+    assert await engine._reconcile_durable_submit_attempts() is False
+    assert service.not_found == []
+    assert service.unknown and service.unknown[0][0] == attempt["client_order_id"]
+    assert engine.halts and engine.halts[0][0] == "*"
+
+
+class _SpotBalanceRecoveryHarness(EngineRecoveryMixin):
+    def __init__(self, positions, balance):
+        self.active_positions = positions
+        self._pair_infos = {}
+        self.client = self
+        self.balance = balance
+        self.config = SimpleNamespace(local_exchange_name="indodax")
+
+    async def fetch_spot_total_balance(self, asset, *, venue):
+        assert asset == "BTC"
+        return self.balance
+
+    def _resolve_global_symbol(self, symbol):
+        return symbol
+
+
+@pytest.mark.asyncio
+async def test_recovered_spot_balance_is_aggregated_per_venue_and_base_asset():
+    positions = {
+        "pair-a": SimpleNamespace(
+            base_asset="BTC", local_exchange="mexc", qty=1.0,
+            global_symbol="BTC/USDT:USDT", symbol="BTC/USDT",
+        ),
+        "pair-b": SimpleNamespace(
+            base_asset="BTC", local_exchange="mexc", qty=1.0,
+            global_symbol="BTC/USDC:USDC", symbol="BTC/USDC",
+        ),
+    }
+    engine = _SpotBalanceRecoveryHarness(positions, balance=1.5)
+
+    deficits = await engine._verify_recovered_spot_legs()
+
+    assert set(deficits) == {"BTC/USDT:USDT", "BTC/USDC:USDC"}
+    assert all("expected=2.0 BTC" in reason for reason in deficits.values())
+
+
+@pytest.mark.asyncio
+async def test_recovered_spot_balance_is_not_aggregated_across_venues():
+    positions = {
+        "pair-a": SimpleNamespace(
+            base_asset="BTC", local_exchange="mexc", qty=1.0,
+            global_symbol="BTC/USDT:USDT", symbol="BTC/USDT",
+        ),
+        "pair-b": SimpleNamespace(
+            base_asset="BTC", local_exchange="tokocrypto", qty=1.0,
+            global_symbol="BTC/USDC:USDC", symbol="BTC/USDC",
+        ),
+    }
+
+    class _PerVenueBalance(_SpotBalanceRecoveryHarness):
+        async def fetch_spot_total_balance(self, asset, *, venue):
+            return {"mexc": 1.0, "tokocrypto": 1.0}[venue]
+
+    engine = _PerVenueBalance(positions, balance=0.0)
+
+    assert await engine._verify_recovered_spot_legs() == {}
 
 
 @pytest.mark.asyncio
