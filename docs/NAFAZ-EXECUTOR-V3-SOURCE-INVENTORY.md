@@ -178,4 +178,4 @@ This is a branch-specific source inventory. The companion PR-00 report records t
 
 ## 9. PR-00 audit disposition
 
-See `docs/NAFAZ-EXECUTOR-V3-PR00-AUDIT-REPORT.md` for the complete mutation-path inventory and severity-ranked findings. Static mapping is complete for the Executor Python module tree. Implementation authorization remains conditional on closing P0-01 (operator CANCEL_ORDER false-success path) and P0-02 (best-effort fill-ledger append semantics) with focused regression tests. No code changes were made during PR-00.
+See `docs/NAFAZ-EXECUTOR-V3-PR00-AUDIT-REPORT.md` for the complete mutation-path inventory and severity-ranked findings. Static mapping is complete for the Executor Python module tree. Implementation authorization remains conditional on closing P0-01 (operator CANCEL_ORDER false-success path) with a focused regression test; fill-ledger append failure semantics are tracked as P1-01 in the V3 backlog. No code changes were made during PR-00.
