@@ -5,7 +5,8 @@
 ALTER TABLE public.executor_submit_attempts
     ADD COLUMN IF NOT EXISTS account_scope_id TEXT,
     ADD COLUMN IF NOT EXISTS owner_scope_key TEXT,
-    ADD COLUMN IF NOT EXISTS owner_generation BIGINT;
+    ADD COLUMN IF NOT EXISTS owner_generation BIGINT,
+    ADD COLUMN IF NOT EXISTS risk_control_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE INDEX IF NOT EXISTS idx_executor_submit_attempts_owner_scope
     ON public.executor_submit_attempts (owner_scope_key, owner_generation, created_at DESC)
