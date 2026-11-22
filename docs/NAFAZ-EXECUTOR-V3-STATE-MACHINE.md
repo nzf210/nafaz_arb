@@ -187,7 +187,7 @@ They must be mapped explicitly to V3 session/leg projections; do not rename enum
 
 ## 12. PR-01B schema/runtime boundary
 
-The schema migration now provides the durable columns and append-only event table described by PR-01. It does not itself implement state transitions. Runtime writers must still perform entity CAS, aggregate cursor increment and event insertion in one PostgreSQL transaction, checking the current fencing generation. No runtime path may write the session projection and event journal in separate transactions.
+The schema migration provides the durable columns and append-only event table described by PR-01. `executor/execution_repository.py` implements transactional admission and session/leg transitions: it locks the aggregate, checks entity and aggregate versions plus the current fencing generation, updates the projection, increments the aggregate cursor and inserts the event in one transaction. It is not yet wired into the existing V2 coordinator; this PR therefore does not claim that production execution is using V3 state.
 
 The migration deliberately leaves legacy provenance and fencing generation NULL. A V3 writer must provide explicit account scope, source dispatch, immutable policy snapshot/hash, typed market identity and a verified ownership generation before allowing a new exposure mutation.
 
