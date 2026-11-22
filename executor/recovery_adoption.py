@@ -541,7 +541,9 @@ class RecoveryAdoptionMixin:
         except (TypeError, ValueError):
             requested_qty = confirmed_qty = 0.0
         if (
-            requested_qty <= 0
+            not math.isfinite(requested_qty)
+            or not math.isfinite(confirmed_qty)
+            or requested_qty <= 0
             or confirmed_qty < 0
             or confirmed_qty > requested_qty + max(1e-12, requested_qty * 1e-8)
             or confirmed_qty + max(1e-12, requested_qty * 1e-8) < requested_qty
