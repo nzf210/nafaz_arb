@@ -681,3 +681,34 @@ Source/test CI: [GitHub Actions run 43825962830](https://github.com/nzf210/nafaz
 - This is CI evidence only. It is not a test of the VPS production PostgreSQL topology or any live CEX contract.
 
 Still OPEN: full clone-wide/runtime-instrumented call-site inventory; operator identity, HMAC secret custody/rotation, dual approval and runbook; repeated PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; per-venue sandbox/paper exact-ID and eventual-consistency validation; minimum-notional overhedge/delta-drift policy; and durable de-risk persistence. Release status remains PARTIAL / NOT LIVE-CERTIFIED. No merge, deployment, production migration, or cutover.
+
+
+## 2026-11-22 follow-up audit — durable intent and generic mutation boundary
+
+Reviewed branch head before this follow-up: `8167cefe153e5c950e4732c9120bf2c8a0f56fa8`.
+
+### Findings closed in this follow-up
+
+- [x] Required LIVE order intents no longer treat an enabled GlobalStop PostgreSQL service as a substitute for the separate durable universal order-registry/outbox writer. If `supabase.enabled` is false, `_register_order_intent(required=True)` fails before the venue boundary even when `GlobalStopService.enabled` is true. Source: `203d74480ee6b4c3e984ccab1a48ebc7b9b843b4`; regression: `1e68e26f3462a4550c69e8532e9e6bc139931124`.
+- [x] Generic `MutationGateway.execute_create_order` resolves the requested venue + market client and verifies its exact venue ID before creating a durable intent. Wrong venue/client routing fails before slot reservation or venue call. Source: `b69d82cfe8b354c7fc71506a74661b0c23cad6e1`; fake-client regressions: `b10ae10a910eb9f7851ca26c88847496d2698802` and `e83fa8ec1ed7fa6c057e740919732455a528ee74`.
+- [x] The generic create method is explicitly entry-only. Spot SELL and futures `reduceOnly=True` are not sent through the entry STOP fence; existing production de-risk wrappers remain unchanged.
+
+### Remaining blockers — do not mark release-ready
+
+- [ ] Full clone-wide and runtime-instrumented inventory of every direct create-order call, CCXT wrapper, adapter, retry and recovery caller.
+- [ ] Replace the generic gateway's loose no-argument `pre_submit_guard` callback with a scoped, auditable contract bound to exchange, market type, symbol, pair key and durable intent. A callable/no-op returning true is not proof of active-market admission.
+- [ ] Make active-market single-flight admission durable across executor processes and resilient to Redis eviction/flush. Current spot guard uses process memory + Redis keys; PostgreSQL submit fencing serializes requests but does not represent an already ACKNOWLEDGED open position.
+- [ ] Wire MutationGateway into production lifecycle only after order-registry registration, parent/position linkage, exact-ID startup recovery, and post-ACK persistence are complete. It currently has no production create caller in the inspected paths.
+- [ ] Operator-authenticated manual resolution: operator identity/provisioning, HMAC secret custody and rotation, dual approval, evidence retrieval, and runbook.
+- [ ] Repeated real PostgreSQL multi-process disconnect/fault injection on the actual VPS topology. Disposable PostgreSQL CI evidence does not close this requirement.
+- [ ] Per-venue sandbox/paper tests for exact client-ID visibility, delayed/eventually-consistent lookup, partial/pending futures hedge, cancel/fill race, and reduceOnly close.
+- [ ] Resolve minimum-notional overhedge/delta-drift policy and durable de-risk persistence under Redis/registry-writer outage.
+
+### Test and CI evidence
+
+- Regression tests were added for the LIVE registry gate, wrong venue rejection, exact futures-client resolution, and de-risk lane isolation.
+- No local test suite was run in this connector-only execution.
+- The prior branch head `8167cefe` had no combined-status entries and the available workflow-run lookup returned no PR-triggered runs. CI for the follow-up commits is therefore **PENDING / NOT VERIFIED** until a check run is observed on the final updated branch head. Do not mark tests or CI passed based only on source commits.
+- No merge, deployment, production migration, cutover, or live order was performed.
+
+**Overall status: PARTIAL / NOT LIVE-CERTIFIED.**
