@@ -9,6 +9,7 @@ import pytest
 
 from executor.order_intent_service import (
     OrderIntentConflict,
+    OrderIntentError,
     OrderIntentReservationConflict,
     OrderIntentService,
     OrderIntentStaleOwner,
@@ -147,12 +148,12 @@ async def test_cancel_intent_requires_terminal_fetch_and_fill_reconciliation(pos
     )
     assert acknowledged["status"] == "ACKNOWLEDGED"
 
-    with pytest.raises(Exception, match="fresh order state"):
+    with pytest.raises(OrderIntentError, match="fresh order state"):
         await service.mark_cancel_confirmed(
             intent["intent_id"], lease=lease, actor_id="cancel-test",
             final_status="canceled", fresh_fetch=False, fills_reconciled=True,
         )
-    with pytest.raises(Exception, match="reconciled racing fills"):
+    with pytest.raises(OrderIntentError, match="reconciled racing fills"):
         await service.mark_cancel_confirmed(
             intent["intent_id"], lease=lease, actor_id="cancel-test",
             final_status="canceled", fresh_fetch=True, fills_reconciled=False,
