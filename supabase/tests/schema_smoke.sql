@@ -293,7 +293,7 @@ drop table pg_temp._smoke_constants;
 
 -- Durable executor V3 schema: legacy provenance remains unknown, transition
 -- events are append-only for service_role, and session evidence cannot cascade.
-DO $
+DO $$
 DECLARE
     tbl TEXT;
     fk_delete_action "char";
@@ -342,9 +342,9 @@ BEGIN
     IF fk_delete_action IS NULL OR fk_delete_action NOT IN ('r', 'a') THEN
         RAISE EXCEPTION 'execution_legs session FK is missing or still cascading';
     END IF;
-END $;
+END $$;
 
-DO $
+DO $$
 DECLARE
     missing_columns TEXT[];
 BEGIN
@@ -372,7 +372,7 @@ BEGIN
     IF missing_columns IS NOT NULL THEN
         RAISE EXCEPTION 'V3 execution columns missing: %', missing_columns;
     END IF;
-END $;
+END $$;
 
 -- A legacy session/leg must not receive fabricated account, policy, venue or
 -- quantity provenance merely because the additive migration was applied.
@@ -387,7 +387,7 @@ INSERT INTO public.execution_legs (
     'SPOT', 'legacy-unknown', 'spot', 'LEGACY/UNKNOWN'
 );
 
-DO $
+DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM public.execution_sessions
@@ -408,7 +408,7 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'legacy leg received fabricated V3 identity or quantity units';
     END IF;
-END $;
+END $$;
 
 INSERT INTO public.execution_session_events (
     session_id, aggregate_version, entity_type, entity_id, entity_version,
@@ -419,7 +419,7 @@ INSERT INTO public.execution_session_events (
     'CREATED', 'SCHEMA_SMOKE', 'schema-smoke-v3-event-1', '{}'::jsonb
 );
 
-DO $
+DO $$
 BEGIN
     BEGIN
         DELETE FROM public.execution_sessions
@@ -428,7 +428,7 @@ BEGIN
     EXCEPTION WHEN foreign_key_violation THEN
         NULL;
     END;
-END $;
+END $$;
 
 DELETE FROM public.execution_session_events
 WHERE session_id = 'schema-smoke-v3-legacy-session';
