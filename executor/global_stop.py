@@ -15,11 +15,15 @@ from executor.ownership import OwnershipLeaseService
 from executor.risk_control import RiskControlPlane
 
 class GlobalStopService(GlobalStopSubmitMixin, GlobalStopAttemptMixin):
-    def __init__(self, dsn: str, redis: Any = None, *, min_size: int = 1, max_size: int = 5):
+    def __init__(
+        self, dsn: str, redis: Any = None, *, min_size: int = 1, max_size: int = 5,
+        require_scoped_submits: bool = False,
+    ):
         self.dsn = str(dsn or "").strip()
         self.redis = redis
         self.min_size = min_size
         self.max_size = max_size
+        self.require_scoped_submits = bool(require_scoped_submits)
         self.pool = None
         # Set only when the driver is missing or the DSN is unusable: retrying
         # such a configuration on every order would add latency for nothing.
