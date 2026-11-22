@@ -371,7 +371,7 @@ class ExecutionFillService:
                         confirmed_filled_quantity=$5, confirmed_quote_quantity=$6,
                         confirmed_price_quantity=$7, confirmed_exposure_quantity=$8,
                         average_fill_price=$9, last_fill_at=$10, updated_at=clock_timestamp()
-                    WHERE session_id=$1 AND leg_id=$2 AND state_version=$9
+                    WHERE session_id=$1 AND leg_id=$2 AND state_version=$11
                     """,
                     facts["session_id"], facts["leg_id"], leg_target, new_leg_version,
                     new_leg_qty, new_leg_quote, new_price_quantity,
