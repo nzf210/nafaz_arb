@@ -317,7 +317,6 @@ class ExecutionDomainRepository:
         if fencing_generation <= 0:
             raise StaleExecutionFence("V3 transitions require an acquired positive fencing generation")
         payload = dict(evidence or {})
-        _validate_transition_evidence(kind, next_state, payload)
         if reason:
             payload["reason"] = reason
 
@@ -374,6 +373,7 @@ class ExecutionDomainRepository:
                     raise InvalidExecutionTransition(
                         f"transition {expected_state} -> {next_state} is not allowed"
                     )
+                _validate_transition_evidence(kind, next_state, payload)
 
                 if int(session["aggregate_version"]) != expected_aggregate_version:
                     raise StaleExecutionVersion(
