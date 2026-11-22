@@ -428,6 +428,7 @@ async def test_manual_global_stop_waits_for_active_shared_submit_and_blocks_next
     entered = asyncio.Event()
     release = asyncio.Event()
     stop_task = None
+    active_task = None
 
     async def hold_submit():
         async with service_a.order_submit_fence(
@@ -493,6 +494,11 @@ async def test_manual_global_stop_waits_for_active_shared_submit_and_blocks_next
                 pytest.fail("new entry must be blocked after STOP commits")
     finally:
         release.set()
+        if active_task is not None and not active_task.done():
+            try:
+                await asyncio.wait_for(active_task, timeout=5)
+            except Exception:
+                active_task.cancel()
         if stop_task is not None and not stop_task.done():
             try:
                 await asyncio.wait_for(stop_task, timeout=5)
