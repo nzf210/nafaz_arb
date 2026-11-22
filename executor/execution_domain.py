@@ -341,19 +341,23 @@ class ExecutionDomainRepository:
                 prior = await conn.fetchrow(
                     """
                     SELECT event_id, entity_type, entity_id, from_state, to_state,
-                           event_type, entity_version, aggregate_version
+                           event_type, entity_version, aggregate_version, event_payload
                     FROM public.execution_session_events
                     WHERE session_id = $1 AND idempotency_key = $2
                     """,
                     session_id, idempotency_key,
                 )
                 if prior is not None:
+                    prior_payload = prior["event_payload"]
+                    if isinstance(prior_payload, str):
+                        prior_payload = json.loads(prior_payload)
                     if (
                         prior["entity_type"] != kind
                         or prior["entity_id"] != entity_id
                         or prior["from_state"] != expected_state
                         or prior["to_state"] != next_state
                         or prior["event_type"] != event_type
+                        or (prior_payload or {}) != payload
                     ):
                         raise ExecutionIdempotencyConflict(idempotency_key)
                     return TransitionResult(
