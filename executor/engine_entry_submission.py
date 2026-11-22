@@ -427,7 +427,15 @@ class EngineEntrySubmissionMixin:
                 proposed_notional_usdt=actual_cost_usdt,
                 planned_hedge_notional_usdt=max(
                     actual_cost_usdt,
-                    float(getattr(getattr(self, "config", None), "futures_min_notional", 0.0) or 0.0),
+                    (
+                        float(pair_info.global_amount_spec.minimum or 0.0)
+                        * float(pair_info.global_amount_spec.base_per_unit or 1.0)
+                        * float(snapshot.global_best_ask_usdt or 0.0)
+                        if (
+                            bool(getattr(getattr(self, "config", None), "futures_allow_min_notional_overhedge", False))
+                            and pair_info.global_amount_spec is not None
+                        ) else 0.0
+                    ),
                 ),
                 related_venues=[pair_info.global_exchange],
                 slippage_bps=slippage_bps,
