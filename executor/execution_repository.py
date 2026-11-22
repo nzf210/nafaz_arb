@@ -77,6 +77,12 @@ class ExecutionSessionRepository:
         risk_json = _canonical_json(risk_policy_snapshot or {})
         exit_json = _canonical_json(exit_policy_snapshot or {})
         event_key = f"admission:{admission_key}"
+        coordinator_scope_key = (
+            str(coordinator_lease.scope_key) if coordinator_lease is not None else None
+        )
+        coordinator_owner_id = (
+            str(coordinator_lease.owner_id) if coordinator_lease is not None else None
+        )
 
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -95,10 +101,10 @@ class ExecutionSessionRepository:
                         state_version, aggregate_version, fencing_generation,
                         strategy_snapshot, policy_snapshot, policy_snapshot_hash,
                         execution_policy_snapshot, risk_policy_snapshot,
-                        exit_policy_snapshot
+                        exit_policy_snapshot, coordinator_scope_key, coordinator_owner_id
                     ) VALUES (
                         $1,$2,$3,'CREATED',$4,$5,$6,1,3,$7,
-                        $8::jsonb,$9::jsonb,$10,$11::jsonb,$12::jsonb,$13::jsonb
+                        $8::jsonb,$9::jsonb,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15
                     )
                     ON CONFLICT (admission_key) WHERE admission_key IS NOT NULL
                     DO NOTHING
@@ -108,6 +114,7 @@ class ExecutionSessionRepository:
                     source_dispatch_id, account_scope_id, generation,
                     policy_json, policy_json, policy_hash,
                     execution_json, risk_json, exit_json,
+                    coordinator_scope_key, coordinator_owner_id,
                 )
                 if row is None:
                     existing = await conn.fetchrow(
@@ -116,7 +123,7 @@ class ExecutionSessionRepository:
                                account_scope_id, pair_key, policy_snapshot_hash,
                                execution_policy_snapshot, risk_policy_snapshot,
                                exit_policy_snapshot, state_version, aggregate_version,
-                               fencing_generation
+                               fencing_generation, coordinator_scope_key, coordinator_owner_id
                         FROM public.execution_sessions
                         WHERE admission_key=$1
                         FOR UPDATE
@@ -169,6 +176,8 @@ class ExecutionSessionRepository:
                     existing_generation = existing["fencing_generation"]
                     if coordinator_lease is not None and (
                         existing_generation is None or int(existing_generation) != generation
+                        or str(existing["coordinator_scope_key"] or "") != coordinator_scope_key
+                        or str(existing["coordinator_owner_id"] or "") != coordinator_owner_id
                     ):
                         raise StaleAggregate(
                             "existing session has a different coordinator generation; use recovery reclaim"
@@ -319,7 +328,8 @@ class ExecutionSessionRepository:
             async with conn.transaction():
                 current = await conn.fetchrow(
                     """
-                    SELECT status, state_version, aggregate_version, fencing_generation, account_scope_id
+                    SELECT status, state_version, aggregate_version, fencing_generation, account_scope_id,
+                           coordinator_scope_key, coordinator_owner_id
                     FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
                     """,
                     session_id,
@@ -331,6 +341,8 @@ class ExecutionSessionRepository:
                         conn, coordinator_lease, session_id=session_id,
                         account_scope_id=str(current["account_scope_id"]),
                         expected_generation=fencing_generation,
+                        session_scope_key=current["coordinator_scope_key"],
+                        session_owner_id=current["coordinator_owner_id"],
                     )
                 duplicate = await self._existing_event(
                     conn, session_id=session_id, idempotency_key=key,
@@ -398,7 +410,8 @@ class ExecutionSessionRepository:
             async with conn.transaction():
                 session = await conn.fetchrow(
                     """
-                    SELECT aggregate_version, fencing_generation, account_scope_id
+                    SELECT aggregate_version, fencing_generation, account_scope_id,
+                           coordinator_scope_key, coordinator_owner_id
                     FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
                     """,
                     session_id,
@@ -408,6 +421,8 @@ class ExecutionSessionRepository:
                         conn, coordinator_lease, session_id=session_id,
                         account_scope_id=str(session["account_scope_id"]),
                         expected_generation=fencing_generation,
+                        session_scope_key=session["coordinator_scope_key"],
+                        session_owner_id=session["coordinator_owner_id"],
                     )
                 duplicate = await self._existing_event(
                     conn, session_id=session_id, idempotency_key=key,
