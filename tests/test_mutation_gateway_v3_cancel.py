@@ -117,6 +117,26 @@ async def test_cancel_gateway_is_allowed_under_global_stop_and_requires_fill_evi
 
 
 @pytest.mark.asyncio
+async def test_terminal_cancel_without_fill_reconciliation_stays_unknown(postgres_pool):
+    suffix = uuid.uuid4().hex
+    intents, intent = await _prepare_cancel(postgres_pool, suffix)
+    global_stop = GlobalStopService("unused", require_scoped_submits=True)
+    global_stop.pool = postgres_pool
+    gateway = MutationGateway(global_stop=global_stop, order_intent_service=intents)
+    venue = _CancelVenue(final_status="canceled")
+
+    result = await gateway.execute_cancel_intent(
+        venue, intent_id=intent["intent_id"], actor_id="cancel-gateway-test",
+    )
+    assert result.status == MutationResultType.SUBMISSION_UNKNOWN
+    assert venue.cancel_calls == 1
+    current = await intents.get_intent(intent["intent_id"])
+    assert current["status"] == "UNKNOWN"
+    async with postgres_pool.acquire() as conn:
+        await global_stop.ownership.release_all(conn)
+
+
+@pytest.mark.asyncio
 async def test_cancel_gateway_keeps_timeout_unknown_and_never_retries(postgres_pool):
     suffix = uuid.uuid4().hex
     intents, intent = await _prepare_cancel(postgres_pool, suffix)
