@@ -258,7 +258,7 @@ class ExecutionSessionRepository:
                 for aggregate_version, leg in enumerate(
                     sorted(validated_legs, key=lambda item: item["leg_type"]), start=2
                 ):
-                    await self._insert_event(
+                    await insert_session_event(
                         conn, session_id=session_id, aggregate_version=aggregate_version,
                         entity_type="LEG", entity_id=leg["leg_id"],
                         entity_version=1, event_type=f"{leg['leg_type']}_LEG_CREATED",
@@ -434,7 +434,7 @@ class ExecutionSessionRepository:
                 )
                 if duplicate:
                     return duplicate
-                self._assert_versions(
+                assert_aggregate_versions(
                     session, None, expected_aggregate_version, fencing_generation,
                     entity_version_check=False,
                 )
