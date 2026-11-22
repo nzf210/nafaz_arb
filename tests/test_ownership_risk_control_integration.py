@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from executor.global_stop import GlobalStopError, GlobalStopService
+from executor.global_stop import FENCE_LOCK_KEY, GlobalStopError, GlobalStopService
 from executor.ownership import (
     OwnershipHeld,
     OwnershipLeaseService,
@@ -411,3 +411,105 @@ async def test_global_stop_blocks_entry_but_allows_approved_protective_hedge():
             )
             assert current["version"] == control_version + 1
         await service.close()
+
+@pytest.mark.asyncio
+async def test_manual_global_stop_waits_for_active_shared_submit_and_blocks_next_entry():
+    dsn = os.getenv("TEST_POSTGRES_DSN", "").strip()
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+    suffix = uuid.uuid4().hex
+    account = "stop-linearization-account-" + suffix
+    service_a = GlobalStopService(dsn, min_size=1, max_size=3)
+    service_b = GlobalStopService(dsn, min_size=1, max_size=3)
+    await service_a.start()
+    await service_b.start()
+    active_id = "stop-active-" + suffix
+    blocked_id = "stop-blocked-" + suffix
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    stop_task = None
+
+    async def hold_submit():
+        async with service_a.order_submit_fence(
+            client_order_id=active_id,
+            scope_exchange="binance",
+            scope_market_type="spot",
+            scope_symbol="BTC/USDT",
+            account_scope_id=account,
+            action_class="ENTRY",
+        ):
+            entered.set()
+            await release.wait()
+
+    try:
+        await _prepare_submit(
+            service_a, client_id=active_id, account_scope_id=account,
+            symbol="BTC/USDT", pair_key="stop-pair-" + suffix,
+        )
+        active_task = asyncio.create_task(hold_submit())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        stop_task = asyncio.create_task(
+            service_b.request_stop("TEST_STOP", source="integration-test")
+        )
+
+        async with service_b.pool.acquire() as conn:
+            deadline = asyncio.get_running_loop().time() + 5
+            waiting = False
+            while asyncio.get_running_loop().time() < deadline:
+                waiting = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_locks
+                        WHERE locktype='advisory' AND NOT granted
+                          AND classid=0 AND objid=$1::oid AND objsubid=1
+                    )
+                    """,
+                    FENCE_LOCK_KEY,
+                )
+                if waiting:
+                    break
+                await asyncio.sleep(0.05)
+        assert waiting, "manual STOP did not queue for the exclusive global advisory lock"
+        assert not stop_task.done(), "manual STOP must wait for the active shared submit"
+
+        release.set()
+        await asyncio.wait_for(active_task, timeout=5)
+        stopped = await asyncio.wait_for(stop_task, timeout=5)
+        assert stopped["is_stopped"] is True
+
+        await _prepare_submit(
+            service_b, client_id=blocked_id, account_scope_id=account,
+            symbol="ETH/USDT", pair_key="stop-blocked-pair-" + suffix,
+        )
+        with pytest.raises(GlobalStopError, match="global STOP active"):
+            async with service_b.order_submit_fence(
+                client_order_id=blocked_id,
+                scope_exchange="binance",
+                scope_market_type="spot",
+                scope_symbol="ETH/USDT",
+                account_scope_id=account,
+                action_class="ENTRY",
+            ):
+                pytest.fail("new entry must be blocked after STOP commits")
+    finally:
+        release.set()
+        if stop_task is not None and not stop_task.done():
+            try:
+                await asyncio.wait_for(stop_task, timeout=5)
+            except Exception:
+                stop_task.cancel()
+        async with service_b.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE public.executor_global_control
+                SET is_stopped=false, reason=null, source='integration-test-reset',
+                    updated_at=now()
+                WHERE singleton_id=1
+                """
+            )
+            await conn.execute(
+                "DELETE FROM public.executor_submit_attempts WHERE client_order_id = any($1::text[])",
+                [active_id, blocked_id],
+            )
+        await service_a.close()
+        await service_b.close()
