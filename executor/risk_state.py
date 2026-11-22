@@ -58,12 +58,12 @@ class RiskStateMixin:
 
     async def _flush_risk_state_persistence(self) -> bool:
         tasks = list(getattr(self, "_risk_persistence_tasks", set()))
+        results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
             await asyncio.sleep(0)
         return (
             not bool(getattr(self, "_risk_persistence_pending", False))
-            and not bool(getattr(self, "_risk_persistence_failed", False))
+            and all(result is True for result in results)
         )
 
     def _persist_risk_state(
