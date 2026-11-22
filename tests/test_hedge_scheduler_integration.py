@@ -226,3 +226,9 @@ async def test_postgres_scheduler_persists_deferral_and_wait_expiry(postgres_poo
     assert state["status"] == "BLOCKED"
     assert state["de_risk_required"] is True
     assert state["next_evaluate_at"] is None
+    async with postgres_pool.acquire() as conn:
+        session_status = await conn.fetchval(
+            "SELECT status FROM public.execution_sessions WHERE session_id=$1",
+            admitted["session_id"],
+        )
+    assert session_status == "BLOCKED"
