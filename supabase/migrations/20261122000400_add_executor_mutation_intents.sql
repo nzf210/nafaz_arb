@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS public.executor_mutation_intents (
 );
 
 
-DO $
+DO $body$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
@@ -98,7 +98,7 @@ BEGIN
             REFERENCES public.executor_ownership_leases(scope_key)
             ON DELETE RESTRICT NOT VALID;
     END IF;
-END $;
+END $body$;
 
 ALTER TABLE public.executor_mutation_intents
     VALIDATE CONSTRAINT executor_mutation_intent_owner_scope_fkey;
