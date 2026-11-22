@@ -167,7 +167,8 @@ class EngineStatusMixin:
         self._manual_resume_day = self._loss_day
         resume_saved = self._persist_risk_state("trading_resume", scope="global", reason=reason, value={"loss_day": self._loss_day})
         persistence_flushed = await self._flush_risk_state_persistence()
-        if halt_saved and resume_saved and persistence_flushed:
+        latch_cleared = self._clear_risk_persistence_latch()
+        if halt_saved and resume_saved and persistence_flushed and latch_cleared:
             pg_risk = getattr(self, "postgres_risk", None)
             if pg_risk is not None:
                 pg_risk.clear_risk_persistence_failure()
