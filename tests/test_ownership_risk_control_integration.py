@@ -236,6 +236,10 @@ async def test_independent_instruments_submit_in_parallel_but_same_scope_is_excl
             entered_a.set()
             await release_a.wait()
 
+    await _prepare_submit(
+        service_a, client_id=first_id, account_scope_id=account,
+        symbol="BTC/USDT", pair_key="pair-btc-" + suffix,
+    )
     task_a = asyncio.create_task(hold_first_scope())
     try:
         await asyncio.wait_for(entered_a.wait(), timeout=5)
