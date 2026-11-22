@@ -33,6 +33,7 @@ class HedgeScheduler(HedgeServiceBase):
             "executable_vwap": str(decision.executable_vwap) if decision.executable_vwap is not None else None,
             "executable_notional_quote": str(decision.executable_notional_quote),
             "executable_notional_usd": str(decision.executable_notional_usd),
+            "unhedged_notional_usd": str(decision.unhedged_notional_usd),
             "slippage_bps": str(decision.slippage_bps) if decision.slippage_bps is not None else None,
             "estimated_fee_bps": str(decision.estimated_fee_bps),
             "estimated_total_cost_bps": str(decision.estimated_total_cost_bps) if decision.estimated_total_cost_bps is not None else None,
@@ -45,9 +46,6 @@ class HedgeScheduler(HedgeServiceBase):
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         book_at = datetime.fromtimestamp(
             decision.book_observed_at_ms / 1000, timezone.utc
-        )
-        evaluated_at = datetime.fromtimestamp(
-            decision.evaluated_at_ms / 1000, timezone.utc
         )
         next_at = (
             datetime.fromtimestamp(decision.next_evaluate_at_ms / 1000, timezone.utc)
