@@ -271,3 +271,117 @@ async def test_independent_instruments_submit_in_parallel_but_same_scope_is_excl
             )
         await service_a.close()
         await service_b.close()
+
+@pytest.mark.asyncio
+async def test_global_stop_blocks_entry_but_allows_approved_protective_hedge():
+    dsn = os.getenv("TEST_POSTGRES_DSN", "").strip()
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+    suffix = uuid.uuid4().hex
+    account = "risk-gate-account-" + suffix
+    service = GlobalStopService(dsn, min_size=1, max_size=3)
+    await service.start()
+    entry_id = "risk-entry-" + suffix
+    hedge_id = "risk-hedge-" + suffix
+    controls = RiskControlPlane()
+    control_version = None
+    try:
+        control = await controls.set_control(
+            service.pool,
+            scope_key="global",
+            scope_type="GLOBAL",
+            entry_blocked=True,
+            derisk_allowed=True,
+            actor_id="integration-test",
+            event_type="ENTRY_BLOCKED",
+            event_idempotency_key="risk-gate-" + suffix,
+            state={"reason": "integration entry gate"},
+        )
+        control_version = control["version"]
+        async with service.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE public.executor_global_control
+                SET is_stopped=true, epoch=epoch+1, reason='TEST_GLOBAL_STOP',
+                    source='integration-test', updated_at=now()
+                WHERE singleton_id=1
+                """
+            )
+
+        await _prepare_submit(
+            service, client_id=entry_id, account_scope_id=account,
+            symbol="BTC/IDR", pair_key="risk-entry-pair-" + suffix,
+        )
+        with pytest.raises(GlobalStopError, match="ENTRY_BLOCKED"):
+            async with service.order_submit_fence(
+                client_order_id=entry_id,
+                scope_exchange="indodax",
+                scope_market_type="spot",
+                scope_symbol="BTC/IDR",
+                account_scope_id=account,
+                action_class="ENTRY",
+                scope_pair_key="risk-entry-pair-" + suffix,
+            ):
+                pytest.fail("new entry must remain blocked")
+
+        await service.prepare_submit_attempt(
+            client_order_id=hedge_id,
+            exchange="okx",
+            market_type="perpetual",
+            symbol="BTC-USDT-SWAP",
+            side="sell",
+            order_type="market",
+            quantity=1.0,
+            price=50000.0,
+            pair_key="risk-hedge-pair-" + suffix,
+            account_scope_id=account,
+        )
+        async with service.order_submit_fence(
+            client_order_id=hedge_id,
+            scope_exchange="okx",
+            scope_market_type="perpetual",
+            scope_symbol="BTC-USDT-SWAP",
+            account_scope_id=account,
+            action_class="HEDGE",
+            scope_pair_key="risk-hedge-pair-" + suffix,
+        ):
+            pass
+
+        async with service.pool.acquire() as conn:
+            statuses = await conn.fetch(
+                """
+                SELECT client_order_id, status FROM public.executor_submit_attempts
+                WHERE client_order_id = any($1::text[])
+                """,
+                [entry_id, hedge_id],
+            )
+        by_id = {row["client_order_id"]: row["status"] for row in statuses}
+        assert by_id == {entry_id: "PREPARED", hedge_id: "SUBMITTING"}
+    finally:
+        async with service.pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE public.executor_global_control
+                SET is_stopped=false, reason=null, source='integration-test-reset',
+                    updated_at=now()
+                WHERE singleton_id=1
+                """
+            )
+            await conn.execute(
+                "DELETE FROM public.executor_submit_attempts WHERE client_order_id = any($1::text[])",
+                [entry_id, hedge_id],
+            )
+        if control_version is not None:
+            current = await controls.set_control(
+                service.pool,
+                scope_key="global",
+                scope_type="GLOBAL",
+                entry_blocked=False,
+                derisk_allowed=True,
+                actor_id="integration-test",
+                event_type="TEST_RESET",
+                event_idempotency_key="risk-gate-reset-" + suffix,
+                expected_version=control_version,
+            )
+            assert current["version"] == control_version + 1
+        await service.close()
