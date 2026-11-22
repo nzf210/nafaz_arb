@@ -377,7 +377,7 @@ class ExecutionSessionRepository:
                 )
                 if updated is None:
                     raise StaleAggregate("session compare-and-swap lost")
-                await self._insert_event(
+                await insert_session_event(
                     conn, session_id=session_id, aggregate_version=new_aggregate_version,
                     entity_type="SESSION", entity_id=session_id,
                     entity_version=new_state_version, event_type=event_type,
@@ -477,7 +477,7 @@ class ExecutionSessionRepository:
                 )
                 if updated_session is None:
                     raise StaleAggregate("session aggregate compare-and-swap lost")
-                await self._insert_event(
+                await insert_session_event(
                     conn, session_id=session_id, aggregate_version=new_aggregate_version,
                     entity_type="LEG", entity_id=leg_id,
                     entity_version=new_leg_version, event_type=event_type,
