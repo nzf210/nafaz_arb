@@ -337,7 +337,7 @@ async def test_postgres_coordinator_admission_and_transition_are_fenced(postgres
     assert binding["coordinator_scope_key"] == replay["coordinator_lease"].scope_key
     assert binding["coordinator_owner_id"] == replay["coordinator_lease"].owner_id
     assert binding["fencing_generation"] == replacement.generation
-    await recovered.release(replay["coordinator_lease"])
+    assert await recovered.release(replay["coordinator_lease"]) is False
 
 
 @pytest.mark.asyncio
@@ -375,7 +375,7 @@ async def test_postgres_concurrent_same_dispatch_creates_one_session(postgres_po
         )
     assert count == 1
     assert event_count == 3
-    await coordinator.release(first["coordinator_lease"])
+    assert await coordinator.release(first["coordinator_lease"]) is False
 
 
 @pytest.mark.asyncio
