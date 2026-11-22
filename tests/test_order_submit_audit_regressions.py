@@ -298,7 +298,7 @@ async def test_derisking_is_allowed_while_global_stop_is_active_and_submit_is_un
     ) as fenced:
         assert fenced is conn
 
-    assert any("pg_advisory_lock" in query for query in conn.statements)
+    assert any("pg_try_advisory_lock" in query for query in conn.statements)
     assert any("pg_advisory_unlock" in query for query in conn.statements)
 
 
