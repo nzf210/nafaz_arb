@@ -11,6 +11,30 @@ CREATE INDEX IF NOT EXISTS idx_executor_submit_attempts_owner_scope
     ON public.executor_submit_attempts (owner_scope_key, owner_generation, created_at DESC)
     WHERE owner_scope_key IS NOT NULL;
 
+DO $
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.executor_submit_attempts'::regclass
+          AND conname='executor_submit_owner_generation_pair'
+    ) THEN
+        ALTER TABLE public.executor_submit_attempts
+            ADD CONSTRAINT executor_submit_owner_generation_pair
+            CHECK (
+                (owner_scope_key IS NULL AND owner_generation IS NULL)
+                OR (
+                    owner_scope_key IS NOT NULL
+                    AND owner_generation IS NOT NULL
+                    AND owner_generation > 0
+                    AND account_scope_id IS NOT NULL
+                )
+            ) NOT VALID;
+    END IF;
+END $;
+
+ALTER TABLE public.executor_submit_attempts
+    VALIDATE CONSTRAINT executor_submit_owner_generation_pair;
+
 CREATE TABLE IF NOT EXISTS public.executor_ownership_leases (
     scope_key TEXT PRIMARY KEY,
     account_scope_id TEXT NOT NULL,
@@ -28,6 +52,12 @@ CREATE TABLE IF NOT EXISTS public.executor_ownership_leases (
 
 CREATE INDEX IF NOT EXISTS idx_executor_ownership_leases_expiry
     ON public.executor_ownership_leases (lease_expires_at);
+
+DROP TRIGGER IF EXISTS trg_executor_ownership_leases_updated_at
+    ON public.executor_ownership_leases;
+CREATE TRIGGER trg_executor_ownership_leases_updated_at
+    BEFORE UPDATE ON public.executor_ownership_leases
+    FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 CREATE TABLE IF NOT EXISTS public.executor_ownership_events (
     event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -79,6 +109,12 @@ CREATE INDEX IF NOT EXISTS idx_executor_risk_controls_account
     ON public.executor_risk_controls (account_scope_id, scope_type);
 CREATE INDEX IF NOT EXISTS idx_executor_risk_controls_venue
     ON public.executor_risk_controls (venue, market_type, instrument);
+
+DROP TRIGGER IF EXISTS trg_executor_risk_controls_updated_at
+    ON public.executor_risk_controls;
+CREATE TRIGGER trg_executor_risk_controls_updated_at
+    BEFORE UPDATE ON public.executor_risk_controls
+    FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
 CREATE TABLE IF NOT EXISTS public.executor_risk_control_events (
     event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
