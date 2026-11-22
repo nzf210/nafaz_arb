@@ -205,6 +205,7 @@ class GlobalStopSubmitMixin:
         self, conn: Any, *, intent: Optional[Any],
         account_scope_id: Optional[str], action_class: str,
         scope_pair_key: Optional[str], scope_session_id: Optional[str],
+        risk_metrics: Optional[dict], risk_limits: Optional[dict],
     ) -> tuple[Optional[Any], dict]:
         if not account_scope_id:
             return None, {}
@@ -233,7 +234,8 @@ class GlobalStopSubmitMixin:
         )
         try:
             snapshot = await self.risk_control_plane.assert_allowed(
-                conn, scope_keys=keys, action_class=action_class
+                conn, scope_keys=keys, action_class=action_class,
+                risk_metrics=risk_metrics, risk_limits=risk_limits,
             )
         except RiskPermissionDenied as risk_error:
             raise GlobalStopError(str(risk_error)) from risk_error
@@ -311,6 +313,8 @@ class GlobalStopSubmitMixin:
         action_class: str = "ENTRY",
         scope_pair_key: Optional[str] = None,
         scope_session_id: Optional[str] = None,
+        risk_metrics: Optional[dict] = None,
+        risk_limits: Optional[dict] = None,
     ) -> AsyncIterator[Any]:
         """Fence a venue mutation with shared global STOP and exclusive instrument ownership.
 
@@ -393,6 +397,8 @@ class GlobalStopSubmitMixin:
                             action_class=action,
                             scope_pair_key=scope_pair_key,
                             scope_session_id=scope_session_id,
+                            risk_metrics=risk_metrics,
+                            risk_limits=risk_limits,
                         )
                         unresolved = await self._find_unresolved_submit(
                             conn,
