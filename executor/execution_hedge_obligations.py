@@ -120,6 +120,7 @@ class ExecutionHedgeObligationService:
                            futures.venue AS futures_venue,
                            futures.market_type AS futures_market_type,
                            futures.symbol AS futures_symbol,
+                           futures.base_asset AS futures_base_asset,
                            futures.contract_type, futures.contract_size,
                            futures.position_side, futures.quantity_unit,
                            futures.base_per_unit AS futures_base_per_unit
@@ -135,19 +136,15 @@ class ExecutionHedgeObligationService:
                 )
                 if fill is None:
                     raise HedgeObligationError("confirmed Spot fill or paired Futures leg does not exist")
-                if (
-                    str(fill["account_scope_id"]) != str(session["account_scope_id"])
-                    or str(fill["spot_leg_type"]) != "SPOT"
-                    or str(fill["venue"]).lower() != "indodax" and str(fill["market_type"]).lower() != "spot"
-                ):
-                    if str(fill["spot_leg_type"]) != "SPOT" or str(fill["market_type"]).lower() != "spot":
-                        raise HedgeObligationError("source fill is not bound to a Spot leg")
+                if str(fill["account_scope_id"]) != str(session["account_scope_id"]):
                     raise HedgeObligationError("source fill account scope does not match session")
+                if str(fill["spot_leg_type"]) != "SPOT" or str(fill["market_type"]).lower() != "spot":
+                    raise HedgeObligationError("source fill is not bound to a Spot leg")
                 if str(fill["side"]).lower() != "buy":
                     raise HedgeObligationError("only confirmed Spot entry buys create hedge obligations")
                 if str(fill["position_side"] or "").upper() != "SHORT":
                     raise HedgeObligationError("paired Futures leg is not configured as SHORT")
-                if str(fill["base_asset"]).upper() != str(fill["base_asset"]).upper():
+                if str(fill["base_asset"]).upper() != str(fill["futures_base_asset"]).upper():
                     raise HedgeObligationError("Spot/Futures base asset identity mismatch")
 
                 spot_unit = _qty(fill["spot_base_per_unit"], "spot_base_per_unit")
@@ -463,7 +460,8 @@ class ExecutionHedgeObligationService:
                     """
                     SELECT f.*, l.leg_type, l.venue AS leg_venue,
                            l.market_type AS leg_market_type, l.symbol AS leg_symbol,
-                           l.base_asset, l.base_per_unit, l.position_side
+                           l.base_asset, l.base_per_unit, l.position_side,
+                           l.contract_type, l.contract_size, l.quantity_unit
                     FROM public.execution_fills f
                     JOIN public.execution_legs l
                       ON l.session_id=f.session_id AND l.leg_id=f.leg_id
@@ -481,9 +479,16 @@ class ExecutionHedgeObligationService:
                     or str(fill["symbol"]) != str(reservation["futures_symbol"])
                     or str(fill["base_asset"]).upper() != str(reservation["base_asset"])
                     or str(fill["position_side"]).upper() != str(reservation["position_side"])
+                    or str(fill["contract_type"] or "") != str(reservation["contract_type"] or "")
+                    or (Decimal(str(fill["contract_size"])) if fill["contract_size"] is not None else None)
+                       != (Decimal(str(reservation["contract_size"])) if reservation["contract_size"] is not None else None)
+                    or str(fill["quantity_unit"]).upper() != str(reservation["quantity_unit"]).upper()
                     or Decimal(str(fill["base_per_unit"])) != Decimal(str(reservation["base_per_unit"]))
                 ):
                     raise HedgeObligationError("Futures fill route/contract identity does not match reservation")
+                expected_side = "sell" if str(reservation["position_side"]).upper() == "SHORT" else "buy"
+                if str(fill["side"]).lower() != expected_side:
+                    raise HedgeObligationError("Futures fill side does not increase the configured hedge position")
                 base_quantity = Decimal(str(fill["quantity"])) * Decimal(str(fill["base_per_unit"]))
                 prior = await conn.fetch(
                     """
@@ -509,8 +514,11 @@ class ExecutionHedgeObligationService:
 
                 items = await conn.fetch(
                     """
-                    SELECT i.*, o.target_base_quantity, o.confirmed_base_quantity,
-                           o.reserved_base_quantity, o.remaining_base_quantity
+                    SELECT i.reservation_id, i.obligation_id,
+                           i.reserved_base_quantity AS item_reserved_base_quantity,
+                           i.allocated_base_quantity AS item_allocated_base_quantity,
+                           o.target_base_quantity, o.confirmed_base_quantity,
+                           o.reserved_base_quantity AS obligation_reserved_base_quantity
                     FROM public.execution_hedge_reservation_items i
                     JOIN public.execution_hedge_obligations o USING (obligation_id)
                     WHERE i.reservation_id=$1::uuid
@@ -524,20 +532,14 @@ class ExecutionHedgeObligationService:
                 allocation_rows = []
                 for item in items:
                     available = (
-                        Decimal(str(item["reserved_base_quantity"]))
-                        - Decimal(str(item["allocated_base_quantity"]))
+                        Decimal(str(item["item_reserved_base_quantity"]))
+                        - Decimal(str(item["item_allocated_base_quantity"]))
                     )
                     take = min(remaining_fill, available)
                     if take <= 0:
                         continue
-                    new_item_allocated = Decimal(str(item["allocated_base_quantity"])) + take
+                    new_item_allocated = Decimal(str(item["item_allocated_base_quantity"])) + take
                     new_confirmed = Decimal(str(item["confirmed_base_quantity"])) + take
-                    new_reserved = Decimal(str(item["reserved_base_quantity"]))  # reservation item total
-                    obligation_reserved = Decimal(str(item["reserved_base_quantity"]))
-                    obligation_total_reserved = Decimal(str(item["reserved_base_quantity"]))
-                    # The obligation reservation counter is decremented only by
-                    # the actual Futures fill, while the item retains its audit total.
-                    current_obligation_reserved = Decimal(str(item["reserved_base_quantity"]))
                     await conn.execute(
                         """
                         UPDATE public.execution_hedge_reservation_items
@@ -647,7 +649,11 @@ class ExecutionHedgeObligationService:
                     raise HedgeObligationError("submitted reservation release requires terminal order and fill proof")
                 items = await conn.fetch(
                     """
-                    SELECT i.*, o.confirmed_base_quantity, o.reserved_base_quantity,
+                    SELECT i.reservation_id, i.obligation_id,
+                           i.reserved_base_quantity AS item_reserved_base_quantity,
+                           i.allocated_base_quantity AS item_allocated_base_quantity,
+                           o.confirmed_base_quantity,
+                           o.reserved_base_quantity AS obligation_reserved_base_quantity,
                            o.target_base_quantity
                     FROM public.execution_hedge_reservation_items i
                     JOIN public.execution_hedge_obligations o USING (obligation_id)
@@ -659,13 +665,11 @@ class ExecutionHedgeObligationService:
                 released_total = Decimal("0")
                 for item in items:
                     unfilled = (
-                        Decimal(str(item["reserved_base_quantity"]))
-                        - Decimal(str(item["allocated_base_quantity"]))
+                        Decimal(str(item["item_reserved_base_quantity"]))
+                        - Decimal(str(item["item_allocated_base_quantity"]))
                     )
                     if unfilled <= 0:
                         continue
-                    if Decimal(str(item["reserved_base_quantity"])) > Decimal(str(item["reserved_base_quantity"])):
-                        raise HedgeObligationError("invalid reservation item")
                     await conn.execute(
                         """
                         UPDATE public.execution_hedge_obligations
