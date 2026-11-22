@@ -22,6 +22,7 @@ class GlobalStopSubmitMixin:
         price: float, pair_key: str, recovery_context: Optional[dict] = None,
         amount_spec: Optional[dict] = None,
         account_scope_id: Optional[str] = None,
+        mutation_intent_id: Optional[str] = None,
     ) -> dict:
         """Commit a durable PREPARED intent before any venue HTTP request."""
         self._require_pool()
@@ -35,22 +36,23 @@ class GlobalStopSubmitMixin:
             json.dumps(recovery_context or {}, separators=(",", ":"), default=str),
             json.dumps(amount_spec or {}, separators=(",", ":"), sort_keys=True, default=str),
             str(account_scope_id or "").strip() or None,
+            str(mutation_intent_id or "").strip() or None,
         )
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 "insert into public.executor_submit_attempts "
                 "(client_order_id, exchange, market_type, symbol, side, order_type, "
-                "quantity, price, pair_key, recovery_context, amount_spec, status, account_scope_id) "
-                "values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,'PREPARED',$12) "
+                "quantity, price, pair_key, recovery_context, amount_spec, status, account_scope_id, mutation_intent_id) "
+                "values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,'PREPARED',$12,$13) "
                 "on conflict (client_order_id) do nothing "
-                "returning client_order_id, status, created_at, account_scope_id",
+                "returning client_order_id, status, created_at, account_scope_id, mutation_intent_id",
                 *values,
             )
             if row is None:
                 existing = await conn.fetchrow(
                     "select client_order_id, status, created_at, exchange, market_type, symbol, "
                     "side, order_type, quantity, price, pair_key, amount_spec, recovery_context, "
-                    "account_scope_id from public.executor_submit_attempts "
+                    "account_scope_id, mutation_intent_id from public.executor_submit_attempts "
                     "where client_order_id = $1",
                     client_order_id,
                 )
@@ -63,6 +65,7 @@ class GlobalStopSubmitMixin:
                     "side": values[4], "order_type": values[5], "quantity": values[6],
                     "price": values[7], "pair_key": values[8],
                     "account_scope_id": values[11],
+                    "mutation_intent_id": values[12],
                 }
                 stored_amount_spec = _json_mapping(existing.get("amount_spec"))
                 stored_recovery_context = _json_mapping(existing.get("recovery_context"))
