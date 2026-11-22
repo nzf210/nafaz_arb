@@ -107,7 +107,7 @@ async def test_derisk_fence_uses_redis_only_when_postgres_fence_is_unavailable()
 
     class _UnavailableService:
         @asynccontextmanager
-        async def derisk_submit_fence(self, *, client_order_id):
+        async def derisk_submit_fence(self, *, client_order_id, **kwargs):
             raise GlobalStopError(
                 "PostgreSQL STOP serialization is unavailable; de-risking may proceed unfenced"
             )
