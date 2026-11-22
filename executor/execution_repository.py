@@ -350,7 +350,7 @@ class ExecutionSessionRepository:
             async with conn.transaction():
                 current = await conn.fetchrow(
                     """
-                    SELECT status, state_version, aggregate_version, fencing_generation
+                    SELECT status, state_version, aggregate_version, fencing_generation, account_scope_id
                     FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
                     """,
                     session_id,
