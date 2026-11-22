@@ -195,6 +195,11 @@ class ExecutionFillService:
             "filled_at": _timestamp(filled_at),
             "fee_amount": _decimal(fee_amount, "fee_amount", positive=False),
             "fee_asset": str(fee_asset or "").strip().upper(),
+            "fee_verified": bool(fee_verified),
+            "fee_source": str(fee_source or "UNVERIFIED")[:60],
+            "exchange_order_id": str(exchange_order_id or ""),
+            "client_order_id": str(client_order_id or ""),
+            "source_event_id": str(source_event_id or ""),
         }
         if not all(facts[k] for k in (
             "session_id", "leg_id", "account_scope_id", "venue",
