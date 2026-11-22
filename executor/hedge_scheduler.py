@@ -163,6 +163,14 @@ class HedgeScheduler(HedgeServiceBase):
                     decision.wait_elapsed_ms, decision.wait_remaining_ms,
                     next_at, payload_json,
                 )
+                current_session_state = str(session["status"]).upper()
+                if action == "DE_RISK_REQUIRED" and current_session_state in {
+                    "ENTRY_IN_PROGRESS", "HEDGE_PENDING", "PARTIALLY_HEDGED",
+                    "HEDGED", "BLOCKED",
+                }:
+                    target_session_state = "BLOCKED"
+                else:
+                    target_session_state = current_session_state
                 event_type = {
                     "SUBMIT": "HEDGE_LIQUIDITY_ELIGIBLE",
                     "PARTIAL_SUBMIT": "HEDGE_LIQUIDITY_PARTIAL_ELIGIBLE",
@@ -177,8 +185,10 @@ class HedgeScheduler(HedgeServiceBase):
                     payload={
                         "scheduler_event_id": str(event["scheduler_event_id"]),
                         "obligation_id": obligation_id,
+                        "session_state": target_session_state,
                         **payload,
                     },
+                    target_state=target_session_state,
                 )
                 return {
                     "duplicate": False,
