@@ -245,10 +245,10 @@ class ExecutionSessionRepository:
                         correlation_id=source_dispatch_id,
                         payload={"session_id": session_id, **leg},
                     )
-        return {
-            "session_id": session_id, "created": True, "aggregate_version": 3,
-            "risk_decision": risk_decision,
-        }
+        result = {"session_id": session_id, "created": True, "aggregate_version": 3}
+        if risk_decision is not None:
+            result["risk_decision"] = risk_decision
+        return result
 
     async def _existing_event(
         self, conn: Any, *, session_id: str, idempotency_key: str,
