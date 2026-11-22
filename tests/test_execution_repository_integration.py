@@ -132,7 +132,8 @@ async def test_admission_is_idempotent_and_preserves_native_venue_symbols(reposi
     assert by_type["SPOT"]["quote_asset"] == "IDR"
     assert by_type["FUTURES"]["symbol"] == "BTC-USDT-SWAP"
     assert by_type["FUTURES"]["settlement_asset"] == "USDT"
-    assert str(by_type["FUTURES"]["exposure_quantity"]) == "0.001"
+    from decimal import Decimal
+    assert by_type["FUTURES"]["exposure_quantity"] == Decimal("0.001")
 
 
 async def test_admission_key_cannot_be_reused_for_a_different_route(repository):
