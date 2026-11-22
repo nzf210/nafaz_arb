@@ -332,59 +332,76 @@ class RiskBudgetEvaluator:
         limits: Optional[Mapping[str, Any]], action_class: str,
     ) -> dict:
         action = str(action_class or "ENTRY").strip().upper()
-        configured = {
-            str(key): value for key, value in dict(limits or {}).items()
-            if key in cls.LIMIT_TO_METRIC or key == "min_venue_health_score"
-        }
+        configured = cls._configured_limits(limits)
         if action in {"HEDGE", "DERISK"} or not configured:
-            return {
-                "action_class": action,
-                "limits": configured,
-                "metrics": dict(metrics or {}),
-                "violations": [],
-            }
+            return cls._snapshot(action, configured, metrics, [])
         if metrics is None:
             raise RiskBudgetViolation(
                 "risk metrics are unavailable while quantitative budgets are configured"
             )
-
-        violations = []
-        for limit_key, metric_key in cls.LIMIT_TO_METRIC.items():
-            if limit_key not in configured:
-                continue
-            limit = cls._finite_number(configured[limit_key], limit_key)
-            if limit <= 0:
-                continue
-            if metric_key not in metrics or metrics[metric_key] is None:
-                violations.append(f"{metric_key}=UNAVAILABLE (limit {limit_key}={limit})")
-                continue
-            value = cls._finite_number(metrics[metric_key], metric_key)
-            if value > limit:
-                violations.append(f"{metric_key}={value:.8g} exceeds {limit_key}={limit:.8g}")
-
-        if "min_venue_health_score" in configured:
-            minimum = cls._finite_number(
-                configured["min_venue_health_score"], "min_venue_health_score"
-            )
-            if minimum > 0:
-                if metrics.get("venue_health_score") is None:
-                    violations.append("venue_health_score=UNAVAILABLE")
-                else:
-                    score = cls._finite_number(metrics["venue_health_score"], "venue_health_score")
-                    if score < minimum:
-                        violations.append(
-                            f"venue_health_score={score:.8g} below min_venue_health_score={minimum:.8g}"
-                        )
-
-        snapshot = {
-            "action_class": action,
-            "limits": configured,
-            "metrics": dict(metrics),
-            "violations": violations,
-        }
+        violations = cls._upper_limit_violations(metrics, configured)
+        violations.extend(cls._health_violations(metrics, configured))
         if violations:
             raise RiskBudgetViolation("; ".join(violations))
-        return snapshot
+        return cls._snapshot(action, configured, metrics, violations)
+
+    @classmethod
+    def _configured_limits(cls, limits: Optional[Mapping[str, Any]]) -> dict:
+        return {
+            str(key): value for key, value in dict(limits or {}).items()
+            if key in cls.LIMIT_TO_METRIC or key == "min_venue_health_score"
+        }
+
+    @classmethod
+    def _upper_limit_violations(cls, metrics: Mapping[str, Any], limits: Mapping[str, Any]) -> list:
+        violations = []
+        for limit_key, metric_key in cls.LIMIT_TO_METRIC.items():
+            if limit_key not in limits:
+                continue
+            limit = cls._finite_number(limits[limit_key], limit_key)
+            if limit <= 0:
+                continue
+            value = metrics.get(metric_key)
+            if value is None:
+                violations.append(f"{metric_key}=UNAVAILABLE (limit {limit_key}={limit})")
+                continue
+            actual = cls._finite_number(value, metric_key)
+            if actual > limit:
+                violations.append(
+                    f"{metric_key}={actual:.8g} exceeds {limit_key}={limit:.8g}"
+                )
+        return violations
+
+    @classmethod
+    def _health_violations(cls, metrics: Mapping[str, Any], limits: Mapping[str, Any]) -> list:
+        if "min_venue_health_score" not in limits:
+            return []
+        minimum = cls._finite_number(
+            limits["min_venue_health_score"], "min_venue_health_score"
+        )
+        if minimum <= 0:
+            return []
+        score = metrics.get("venue_health_score")
+        if score is None:
+            return ["venue_health_score=UNAVAILABLE"]
+        actual = cls._finite_number(score, "venue_health_score")
+        if actual < minimum:
+            return [
+                f"venue_health_score={actual:.8g} below min_venue_health_score={minimum:.8g}"
+            ]
+        return []
+
+    @staticmethod
+    def _snapshot(
+        action: str, limits: Mapping[str, Any],
+        metrics: Optional[Mapping[str, Any]], violations: list,
+    ) -> dict:
+        return {
+            "action_class": action,
+            "limits": dict(limits),
+            "metrics": dict(metrics or {}),
+            "violations": list(violations),
+        }
 
     @staticmethod
     def _finite_number(value: Any, field: str) -> float:
