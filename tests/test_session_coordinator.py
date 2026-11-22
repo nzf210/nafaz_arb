@@ -4,12 +4,11 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 
-from executor.execution_repository import ExecutionSessionRepository, StaleAggregate
+from executor.execution_repository import StaleAggregate
 from executor.ownership import OwnershipLeaseService
 from executor.risk_control import RiskControlPlane, RiskPermissionDenied
 from executor.session_coordinator import (
