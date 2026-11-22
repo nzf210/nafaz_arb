@@ -333,34 +333,51 @@ class OrderIntentLifecycleMixin:
     async def mark_acknowledged(
         self, intent_id: str, *, lease: Any, actor_id: str,
         exchange_order_id: str, venue_response: Mapping[str, Any],
+        event_idempotency_key: str | None = None,
     ) -> dict:
         order_id = required(exchange_order_id, "exchange_order_id")
         return await self._transition(
             intent_id=intent_id, target_status="ACKNOWLEDGED",
             allowed_from=("SUBMITTING", "UNKNOWN"), event_type="INTENT_ACKNOWLEDGED",
-            actor_id=actor_id, payload={"exchange_order_id": order_id},
+            actor_id=actor_id,
+            payload={
+                "exchange_order_id": order_id,
+                **({"event_idempotency_key": event_idempotency_key} if event_idempotency_key else {}),
+            },
             lease=lease, exchange_order_id=order_id, venue_response=venue_response,
         )
 
     async def mark_unknown(
         self, intent_id: str, *, lease: Any, actor_id: str, error: str,
+        event_idempotency_key: str | None = None,
     ) -> dict:
         return await self._transition(
             intent_id=intent_id, target_status="UNKNOWN",
             allowed_from=("SUBMITTING", "ACKNOWLEDGED"), event_type="INTENT_SUBMISSION_UNKNOWN",
-            actor_id=actor_id, payload={"error": str(error)[:2000]}, lease=lease, error=error,
+            actor_id=actor_id,
+            payload={
+                "error": str(error)[:2000],
+                **({"event_idempotency_key": event_idempotency_key} if event_idempotency_key else {}),
+            },
+            lease=lease, error=error,
         )
 
     async def mark_rejected(
         self, intent_id: str, *, lease: Any, actor_id: str,
         error: str, definitive: bool,
+        event_idempotency_key: str | None = None,
     ) -> dict:
         if not definitive:
             raise OrderIntentError("only a definitive venue rejection may resolve an intent")
         return await self._transition(
             intent_id=intent_id, target_status="REJECTED",
-            allowed_from=("SUBMITTING", "UNKNOWN"), event_type="INTENT_REJECTED",
-            actor_id=actor_id, payload={"error": str(error)[:2000]}, lease=lease, error=error,
+            allowed_from=("SUBMITTING", "UNKNOWN", "ACKNOWLEDGED"), event_type="INTENT_REJECTED",
+            actor_id=actor_id,
+            payload={
+                "error": str(error)[:2000],
+                **({"event_idempotency_key": event_idempotency_key} if event_idempotency_key else {}),
+            },
+            lease=lease, error=error,
             release_reservation=True,
         )
 
@@ -379,6 +396,7 @@ class OrderIntentLifecycleMixin:
         final_status: str, fresh_fetch: bool, fills_reconciled: bool,
         exchange_order_id: str | None = None,
         venue_response: Mapping[str, Any] | None = None,
+        event_idempotency_key: str | None = None,
     ) -> dict:
         status = str(final_status or "").strip().lower()
         if status not in {"canceled", "cancelled", "closed", "filled", "rejected", "expired"}:
@@ -389,7 +407,10 @@ class OrderIntentLifecycleMixin:
             intent_id=intent_id, target_status="CANCEL_CONFIRMED",
             allowed_from=("SUBMITTING", "UNKNOWN", "ACKNOWLEDGED"),
             event_type="INTENT_CANCEL_CONFIRMED", actor_id=actor_id,
-            payload={"final_status": status, "fresh_fetch": True, "fills_reconciled": True},
+            payload={
+                "final_status": status, "fresh_fetch": True, "fills_reconciled": True,
+                **({"event_idempotency_key": event_idempotency_key} if event_idempotency_key else {}),
+            },
             lease=lease, release_reservation=True,
             exchange_order_id=exchange_order_id, venue_response=venue_response,
         )
@@ -397,6 +418,7 @@ class OrderIntentLifecycleMixin:
     async def mark_completed(
         self, intent_id: str, *, lease: Any, actor_id: str,
         terminal_status: str, fills_reconciled: bool,
+        event_idempotency_key: str | None = None,
     ) -> dict:
         status = str(terminal_status or "").strip().lower()
         if status not in {"canceled", "cancelled", "closed", "filled", "rejected", "expired"}:
@@ -406,7 +428,11 @@ class OrderIntentLifecycleMixin:
         return await self._transition(
             intent_id=intent_id, target_status="COMPLETED",
             allowed_from=("ACKNOWLEDGED",), event_type="INTENT_COMPLETED",
-            actor_id=actor_id, payload={"terminal_status": status, "fills_reconciled": True},
+            actor_id=actor_id,
+            payload={
+                "terminal_status": status, "fills_reconciled": True,
+                **({"event_idempotency_key": event_idempotency_key} if event_idempotency_key else {}),
+            },
             lease=lease, release_reservation=True,
         )
 
