@@ -130,12 +130,16 @@ class GlobalStopService(GlobalStopSubmitMixin, GlobalStopAttemptMixin):
                     """
                     SELECT count(*) FROM information_schema.columns
                     WHERE table_schema='public' AND table_name='executor_submit_attempts'
-                      AND column_name IN ('account_scope_id','owner_scope_key','owner_generation')
+                      AND column_name IN (
+                          'account_scope_id','owner_scope_key','owner_generation',
+                          'risk_control_snapshot'
+                      )
                     """
                 )
-                if int(owner_columns or 0) != 3:
+                if int(owner_columns or 0) != 4:
                     raise GlobalStopError(
-                        "Executor V3 submit ownership columns are missing; apply the V3 ownership migration"
+                        "Executor V3 submit ownership/risk snapshot columns are missing; "
+                        "apply the V3 ownership migration"
                     )
         except Exception:
             await self.close()
