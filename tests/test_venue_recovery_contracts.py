@@ -114,6 +114,7 @@ class ForceCloseHarness(ForceCloseLegMixin):
             exchanges={"okx": SimpleNamespace(api_key="test-okx-key")},
             executor_instance_id="test-worker",
             emergency_derisk_owner_id="test-worker",
+            emergency_derisk_allowed=True,
             emergency_derisk_lease_ttl_ms=120000,
         )
         self.redis = EmergencyRedis()
