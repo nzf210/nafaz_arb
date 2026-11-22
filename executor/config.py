@@ -297,6 +297,7 @@ class ExecutorConfig:
                             api_secret=str(ex_data.get("api_secret", "")),
                             passphrase=ex_data.get("passphrase"),
                             testnet=bool(ex_data.get("testnet", False)),
+                            account_scope_id=str(ex_data.get("account_scope_id", "") or ""),
                             options=dict(ex_data.get("options", {})),
                         )
 
