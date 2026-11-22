@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
 from executor.global_stop_common import (
-    DERISK_LOCK_KEY, FENCE_LOCK_KEY, GlobalStopError, logger, _json_mapping,
+    FENCE_LOCK_KEY, GlobalStopError, logger, _json_mapping,
 )
 from executor.ownership import (
     OwnershipError, advisory_scope_lock_key, build_scope_key,
@@ -80,69 +80,119 @@ class GlobalStopSubmitMixin:
         return dict(row)
 
     @asynccontextmanager
-    async def derisk_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
-        """Serialize a risk-reducing submit without allowing STOP to block it.
+    async def derisk_submit_fence(
+        self, *, client_order_id: str, account_scope_id: str,
+        venue: str, market_type: str, instrument: str,
+    ) -> AsyncIterator[Any]:
+        """Fence one exact de-risk scope without serializing unrelated instruments.
 
-        STOP never rejects exits/unwinds/rollbacks/force-closes. De-risk uses a
-        separate session advisory key: it serializes other de-risk requests but
-        does not wait behind a slow entry/STOP fence. An unresolved entry is
-        advisory only for de-risking: leaving known exposure open is worse than
-        allowing a bounded risk-reducing order to proceed.
+        Global STOP does not reject protective actions. The hierarchical durable
+        DE_RISK_ALLOWED control and the account/venue/market/instrument lease do.
         """
         if not client_order_id or len(client_order_id) > 128:
             raise GlobalStopError("valid stable client_order_id is required before submit")
+        try:
+            scope_key = build_scope_key(
+                account_scope_id, venue, market_type, instrument
+            )
+        except ValueError as exc:
+            raise GlobalStopError(
+                "complete account/venue/market/instrument scope is required for de-risk"
+            ) from exc
         if not await self.ensure_pool():
-            raise GlobalStopError("PostgreSQL STOP serialization is unavailable; de-risking may proceed unfenced")
+            raise GlobalStopError(
+                "PostgreSQL STOP serialization is unavailable; Redis emergency lease required"
+            )
 
+        lock_key = advisory_scope_lock_key(scope_key)
         yielded_to_caller = False
         try:
             async with self.pool.acquire() as conn:
                 locked = False
                 try:
-                    await conn.execute("select pg_advisory_lock($1)", DERISK_LOCK_KEY)
-                    locked = True
+                    locked = bool(
+                        await conn.fetchval("select pg_try_advisory_lock($1)", lock_key)
+                    )
+                    if not locked:
+                        raise GlobalStopError(
+                            f"another de-risk mutation already owns scope {scope_key[:12]}"
+                        )
                     async with conn.transaction():
                         control = await conn.fetchrow(
-                            "select is_stopped, epoch, reason from public.executor_global_control "
-                            "where singleton_id = 1 for update"
+                            "select is_stopped, epoch, reason "
+                            "from public.executor_global_control where singleton_id = 1"
                         )
                         if control is None:
                             raise GlobalStopError("global control row is missing")
                         if control["is_stopped"]:
                             logger.warning(
-                                "de-risking submit %s proceeds under global STOP (epoch=%s reason=%s)",
-                                client_order_id, control["epoch"], control["reason"] or "unspecified",
+                                "de-risking submit %s proceeds under global STOP "
+                                "(epoch=%s reason=%s)",
+                                client_order_id, control["epoch"],
+                                control["reason"] or "unspecified",
                             )
+                        risk_snapshot = await self.risk_control_plane.assert_allowed(
+                            conn,
+                            scope_keys=risk_scope_keys(
+                                account_scope_id=account_scope_id,
+                                venue=venue,
+                                market_type=market_type,
+                                instrument=instrument,
+                            ),
+                            action_class="DERISK",
+                        )
+                        lease = await self.ownership.acquire(
+                            conn,
+                            account_scope_id=account_scope_id,
+                            venue=venue,
+                            market_type=market_type,
+                            instrument=instrument,
+                        )
+                        await self.ownership.validate(conn, lease)
                         unresolved = await conn.fetchrow(
-                            "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
-                            "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
-                            "order by created_at limit 1",
+                            """
+                            SELECT client_order_id, exchange, symbol, status
+                            FROM public.executor_submit_attempts
+                            WHERE account_scope_id=$1 AND exchange=$2
+                              AND market_type=$3 AND symbol=$4
+                              AND status IN ('SUBMITTING','UNKNOWN')
+                              AND client_order_id <> $5
+                            ORDER BY created_at LIMIT 1
+                            """,
+                            account_scope_id, venue, market_type, instrument,
                             client_order_id,
                         )
                         if unresolved is not None:
                             logger.warning(
-                                "de-risking submit %s proceeds while an unresolved submit exists "
-                                "(%s:%s client_order_id=%s status=%s)",
-                                client_order_id, unresolved["exchange"], unresolved["symbol"],
-                                unresolved["client_order_id"], unresolved["status"],
+                                "de-risking submit %s proceeds while scoped unresolved "
+                                "submit exists (client_order_id=%s status=%s)",
+                                client_order_id, unresolved["client_order_id"],
+                                unresolved["status"],
                             )
+                        logger.debug(
+                            "de-risk scope %s admitted with ownership generation %s and risk snapshot %s",
+                            scope_key[:12], lease.generation,
+                            risk_snapshot.get("action_class"),
+                        )
                     yielded_to_caller = True
                     yield conn
                 finally:
                     if locked:
                         try:
-                            await conn.execute("select pg_advisory_unlock($1)", DERISK_LOCK_KEY)
+                            await conn.execute(
+                                "select pg_advisory_unlock($1)", lock_key
+                            )
                         except Exception as unlock_error:
                             self._demote_broken_pool(unlock_error)
                             logger.warning(
-                                "could not release PostgreSQL de-risking session lock; "
-                                "connection loss must be treated as ambiguous"
+                                "could not release scoped PostgreSQL de-risk lock for %s; "
+                                "venue result requires reconciliation",
+                                client_order_id,
                             )
         except GlobalStopError:
             raise
         except Exception as exc:
-            # Do not demote the PostgreSQL pool for a venue TimeoutError or
-            # ConnectionResetError raised by the caller inside the yielded scope.
+            # Do not demote the pool for venue errors raised after yielding.
             if not yielded_to_caller:
                 self._demote_broken_pool(exc)
             raise
