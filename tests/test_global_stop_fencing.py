@@ -1163,12 +1163,15 @@ async def test_derisk_fence_uses_independent_session_lock_key():
         assert fenced_conn is conn
 
     lock_calls = [
-        args[0]
-        for query, args in conn.executed
-        if "pg_advisory_lock" in query or "pg_advisory_unlock" in query
+        args[0] for query, args in conn.executed
+        if "pg_try_advisory_lock" in query
     ]
-    assert len(lock_calls) == 2
-    assert lock_calls[0] == lock_calls[1]
+    unlock_calls = [
+        args[0] for query, args in conn.executed
+        if "pg_advisory_unlock" in query
+    ]
+    assert len(lock_calls) == len(unlock_calls) == 1
+    assert lock_calls == unlock_calls
     assert lock_calls[0] != FENCE_LOCK_KEY
 
 
