@@ -294,8 +294,17 @@ class RiskStateMixin:
         elif kind == "position_failure" and pair_key:
             self._restore_position_failure_record(pair_key, reason, value)
 
-    def _restore_risk_persistence_failure(self, writer) -> None:
-        if not getattr(writer, "risk_persistence_failed", lambda: False)():
+    def _restore_risk_persistence_failure(self, writer=None) -> None:
+        backends = (
+            getattr(self, "postgres_risk", None),
+            getattr(self, "supabase", None),
+            writer,
+        )
+        failed = any(
+            bool(getattr(backend, "risk_persistence_failed", lambda: False)())
+            for backend in backends if backend is not None
+        )
+        if not failed:
             return
         self._risk_persistence_failed = True
         self._trading_halted = True
