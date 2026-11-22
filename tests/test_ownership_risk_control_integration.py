@@ -615,3 +615,59 @@ async def test_graceful_shutdown_releases_only_the_current_workers_leases(postgr
         )
         assert await owner_b.release(conn, lease_b) is True
 
+@pytest.mark.asyncio
+async def test_risk_block_update_linearizes_against_submit_admission(postgres_pool):
+    controls = RiskControlPlane()
+    suffix = uuid.uuid4().hex
+    account = "risk-admission-race-" + suffix
+    key = "account:" + account
+    admitted = asyncio.Event()
+    allow_control_update = asyncio.Event()
+
+    async def admit_entry():
+        async with postgres_pool.acquire() as conn:
+            async with conn.transaction():
+                snapshot = await controls.assert_allowed(
+                    conn, scope_keys=[key], action_class="ENTRY"
+                )
+                assert snapshot["action_class"] == "ENTRY"
+                admitted.set()
+                await allow_control_update.wait()
+
+    async def block_entries():
+        await admitted.wait()
+        return await controls.set_control(
+            postgres_pool,
+            scope_key=key,
+            scope_type="ACCOUNT",
+            account_scope_id=account,
+            entry_blocked=True,
+            derisk_allowed=True,
+            actor_id="risk-admission-race-test",
+            event_type="ENTRY_BLOCKED",
+            event_idempotency_key="block-" + suffix,
+            expected_version=0,
+        )
+
+    admission_task = asyncio.create_task(admit_entry())
+    update_task = asyncio.create_task(block_entries())
+    try:
+        await asyncio.wait_for(admitted.wait(), timeout=5)
+        await asyncio.sleep(0.1)
+        assert not update_task.done(), (
+            "risk-control writer must wait for the in-flight admission transaction"
+        )
+    finally:
+        allow_control_update.set()
+    await admission_task
+    await update_task
+
+    async with postgres_pool.acquire() as conn:
+        with pytest.raises(RiskPermissionDenied, match="ENTRY_BLOCKED"):
+            await controls.assert_allowed(
+                conn, scope_keys=[key], action_class="ENTRY"
+            )
+        await controls.assert_allowed(
+            conn, scope_keys=[key], action_class="DERISK"
+        )
+
