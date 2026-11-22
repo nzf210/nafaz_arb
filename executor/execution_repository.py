@@ -15,6 +15,8 @@ from executor.execution_leg_validation import validate_execution_legs
 from executor.execution_serialization import (
     _canonical_json, _required_text, _same_json, _same_value,
 )
+from executor.risk_control import RiskControlPlane, risk_scope_keys
+from executor.ownership import build_scope_key
 
 
 class ExecutionRepositoryError(RuntimeError):
@@ -51,6 +53,8 @@ class ExecutionSessionRepository:
         execution_policy_snapshot: Optional[Mapping[str, Any]] = None,
         risk_policy_snapshot: Optional[Mapping[str, Any]] = None,
         exit_policy_snapshot: Optional[Mapping[str, Any]] = None,
+        coordinator_lease: Any = None, risk_metrics: Optional[Mapping[str, Any]] = None,
+        risk_limits: Optional[Mapping[str, Any]] = None,
     ) -> dict:
         """Create one durable session and its two legs, idempotently by admission key."""
         session_id = _required_text(session_id, "session_id")
@@ -75,6 +79,30 @@ class ExecutionSessionRepository:
 
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                risk_decision = None
+                if coordinator_lease is not None:
+                    await self._validate_coordinator_lease(
+                        conn, coordinator_lease, session_id=session_id,
+                        account_scope_id=account_scope_id,
+                        expected_generation=generation,
+                    )
+                    scopes = self._admission_risk_scopes(
+                        account_scope_id=account_scope_id, pair_key=pair_key,
+                        session_id=session_id, legs=validated_legs,
+                    )
+                    for scope_key in sorted(scopes):
+                        await conn.execute(
+                            "select pg_advisory_xact_lock(hashtextextended('nafaz:risk-control:' || $1, 0))",
+                            scope_key,
+                        )
+                    risk_decision = await RiskControlPlane.assert_allowed(
+                        conn, scope_keys=scopes, action_class="ENTRY",
+                        risk_metrics=risk_metrics, risk_limits=risk_limits,
+                    )
+                    risk_json = _canonical_json({
+                        **dict(risk_policy_snapshot or {}),
+                        "admission_decision": risk_decision,
+                    })
                 row = await conn.fetchrow(
                     """
                     INSERT INTO public.execution_sessions (
@@ -203,7 +231,51 @@ class ExecutionSessionRepository:
                         correlation_id=source_dispatch_id,
                         payload={"session_id": session_id, **leg},
                     )
-        return {"session_id": session_id, "created": True, "aggregate_version": 3}
+        return {
+            "session_id": session_id, "created": True, "aggregate_version": 3,
+            "risk_decision": risk_decision,
+        }
+
+    @staticmethod
+    def _admission_risk_scopes(*, account_scope_id: str, pair_key: str,
+                               session_id: str, legs: list[Mapping[str, Any]]) -> list[str]:
+        scopes = {"global", f"account:{account_scope_id}", f"pair:{pair_key}", f"session:{session_id}"}
+        for leg in legs:
+            scopes.update(risk_scope_keys(
+                account_scope_id=account_scope_id, venue=str(leg["venue"]),
+                market_type=str(leg["market_type"]), instrument=str(leg["symbol"]),
+            ))
+        return sorted(scopes)
+
+    @staticmethod
+    async def _validate_coordinator_lease(
+        conn: Any, lease: Any, *, session_id: str,
+        account_scope_id: str, expected_generation: int,
+    ) -> None:
+        def value(name: str) -> Any:
+            return lease.get(name) if isinstance(lease, Mapping) else getattr(lease, name, None)
+        owner_id = str(value("owner_id") or "").strip()
+        scope_key = str(value("scope_key") or "").strip()
+        generation = int(value("generation") or 0)
+        expected_key = build_scope_key(account_scope_id, "coordinator", "session", session_id)
+        if (
+            not owner_id or scope_key != expected_key or generation <= 0
+            or generation != int(expected_generation)
+        ):
+            raise StaleAggregate("coordinator lease identity or generation is invalid")
+        row = await conn.fetchrow(
+            """
+            SELECT 1 FROM public.executor_ownership_leases
+            WHERE scope_key=$1 AND account_scope_id=$2
+              AND venue='coordinator' AND market_type='session'
+              AND instrument=$3 AND owner_id=$4 AND generation=$5
+              AND lease_expires_at > clock_timestamp()
+            FOR UPDATE
+            """,
+            scope_key, account_scope_id, session_id, owner_id, generation,
+        )
+        if row is None:
+            raise StaleAggregate("coordinator lease is expired, missing or superseded")
 
     async def _existing_event(
         self, conn: Any, *, session_id: str, idempotency_key: str,
@@ -240,6 +312,7 @@ class ExecutionSessionRepository:
         actor_id: str, reason: str = "", payload: Optional[Mapping[str, Any]] = None,
         correlation_id: Optional[str] = None,
         completion_evidence: Optional[Mapping[str, bool]] = None,
+        coordinator_lease: Any = None,
     ) -> dict:
         target = _required_text(target_state, "target_state").upper()
         key = _required_text(event_idempotency_key, "event_idempotency_key")
@@ -279,6 +352,16 @@ class ExecutionSessionRepository:
                     current, expected_state_version, expected_aggregate_version,
                     fencing_generation,
                 )
+                if coordinator_lease is not None:
+                    session_identity = await conn.fetchrow(
+                        "SELECT account_scope_id FROM public.execution_sessions WHERE session_id=$1",
+                        session_id,
+                    )
+                    await self._validate_coordinator_lease(
+                        conn, coordinator_lease, session_id=session_id,
+                        account_scope_id=str(session_identity["account_scope_id"]),
+                        expected_generation=fencing_generation,
+                    )
                 old_state = str(current["status"]).upper()
                 if target not in SESSION_TRANSITIONS.get(old_state, set()):
                     raise InvalidTransition(f"session transition {old_state}->{target} is not allowed")
@@ -318,6 +401,7 @@ class ExecutionSessionRepository:
         fencing_generation: int, event_type: str, event_idempotency_key: str,
         actor_id: str, reason: str = "", payload: Optional[Mapping[str, Any]] = None,
         correlation_id: Optional[str] = None,
+        coordinator_lease: Any = None,
     ) -> dict:
         target = _required_text(target_state, "target_state").upper()
         key = _required_text(event_idempotency_key, "event_idempotency_key")
@@ -349,6 +433,16 @@ class ExecutionSessionRepository:
                     session, None, expected_aggregate_version, fencing_generation,
                     entity_version_check=False,
                 )
+                if coordinator_lease is not None:
+                    session_identity = await conn.fetchrow(
+                        "SELECT account_scope_id FROM public.execution_sessions WHERE session_id=$1",
+                        session_id,
+                    )
+                    await self._validate_coordinator_lease(
+                        conn, coordinator_lease, session_id=session_id,
+                        account_scope_id=str(session_identity["account_scope_id"]),
+                        expected_generation=fencing_generation,
+                    )
                 leg = await conn.fetchrow(
                     """
                     SELECT status, state_version FROM public.execution_legs
