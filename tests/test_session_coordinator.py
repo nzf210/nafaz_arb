@@ -298,6 +298,44 @@ async def test_postgres_coordinator_admission_and_transition_are_fenced(postgres
 
 
 @pytest.mark.asyncio
+async def test_postgres_concurrent_same_dispatch_creates_one_session(postgres_pool):
+    import asyncio
+
+    suffix = uuid.uuid4().hex
+    coordinator = SessionCoordinator(
+        pool=postgres_pool,
+        ownership=OwnershipLeaseService(owner_id="concurrent-worker-" + suffix),
+    )
+    request = {
+        "opportunity_id": "opp-" + suffix,
+        "source_dispatch_id": "dispatch-" + suffix,
+        "account_scope_id": "concurrent-account-" + suffix,
+        "pair_key": "indodax:btc_idr->okx:btc-usdt-swap",
+        "legs": _legs(suffix),
+        "actor_id": "integration-test",
+        **_snapshots(),
+    }
+    first, second = await asyncio.gather(
+        coordinator.admit(**request),
+        coordinator.admit(**request),
+    )
+    assert first["session_id"] == second["session_id"]
+    assert {first["created"], second["created"]} == {True, False}
+    async with postgres_pool.acquire() as conn:
+        count = await conn.fetchval(
+            "SELECT count(*) FROM public.execution_sessions WHERE admission_key=$1",
+            first["admission_key"],
+        )
+        event_count = await conn.fetchval(
+            "SELECT count(*) FROM public.execution_session_events WHERE session_id=$1",
+            first["session_id"],
+        )
+    assert count == 1
+    assert event_count == 3
+    await coordinator.release(first["coordinator_lease"])
+
+
+@pytest.mark.asyncio
 async def test_postgres_admission_serializes_against_entry_stop(postgres_pool):
     suffix = uuid.uuid4().hex
     account = "coordinator-stop-account-" + suffix
