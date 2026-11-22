@@ -8,6 +8,7 @@ committed in the same PostgreSQL transaction.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any, Mapping, Optional
 
 from executor.execution_states import LEG_TRANSITIONS, SESSION_TRANSITIONS
@@ -121,6 +122,13 @@ class ExecutionSessionRepository:
                         """,
                         admission_key,
                     )
+                    existing_risk_snapshot = (
+                        existing["risk_policy_snapshot"] if existing is not None else {}
+                    )
+                    if isinstance(existing_risk_snapshot, str):
+                        existing_risk_snapshot = json.loads(existing_risk_snapshot)
+                    existing_risk_snapshot = dict(existing_risk_snapshot or {})
+                    existing_risk_snapshot.pop("admission_decision", None)
                     if existing is None or (
                         str(existing["opportunity_id"]) != opportunity_id
                         or str(existing["source_dispatch_id"]) != source_dispatch_id
@@ -128,7 +136,7 @@ class ExecutionSessionRepository:
                         or str(existing["pair_key"]) != pair_key
                         or str(existing["policy_snapshot_hash"]) != policy_hash
                         or not _same_json(existing["execution_policy_snapshot"], execution_json)
-                        or not _same_json(existing["risk_policy_snapshot"], risk_json)
+                        or not _same_json(existing_risk_snapshot, _canonical_json(risk_policy_snapshot or {}))
                         or not _same_json(existing["exit_policy_snapshot"], exit_json)
                     ):
                         raise AdmissionConflict("admission_key is already bound to a different request")
