@@ -68,8 +68,9 @@ class _CreateVenue:
         self.events.append("venue_create")
         return {"id": "venue-order-1", "filled": 0.0, "average": 10.0}
 
-    def __init__(self, events):
+    def __init__(self, events, venue_id="tokocrypto"):
         self.events = events
+        self.id = venue_id
 
 
 def _create_args():
@@ -286,4 +287,100 @@ async def test_generic_create_rejects_missing_active_market_admission_guard():
 
     assert result.status == MutationResultType.REJECTED
     assert "pre-submit active-market admission guard" in result.error_message
+    assert events == []
+
+
+
+class _ExchangeFacade:
+    def __init__(self, spot, futures):
+        self.local = spot
+        self.global_fut = futures
+        self.resolutions = []
+
+    def for_venue(self, exchange, market):
+        self.resolutions.append((exchange, market))
+        return self
+
+
+@pytest.mark.asyncio
+async def test_generic_create_rejects_mismatched_direct_venue_before_preparing():
+    events = []
+    stop = _FakeGlobalStop(events)
+    slots = _RecordingSlots(events)
+    venue = _CreateVenue(events, venue_id="tokocrypto")
+    gateway = MutationGateway(stop, slots)
+    args = _create_args()
+    args["exchange"] = "okx"
+
+    result = await gateway.execute_create_order(venue, **args)
+
+    assert result.status == MutationResultType.REJECTED
+    assert "venue mismatch" in result.error_message
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_generic_create_resolves_exact_futures_client_from_exchange_facade():
+    events = []
+    stop = _FakeGlobalStop(events)
+    slots = _RecordingSlots(events)
+    spot = _CreateVenue(events, venue_id="tokocrypto")
+    futures = _CreateVenue(events, venue_id="okx")
+    facade = _ExchangeFacade(spot, futures)
+    gateway = MutationGateway(stop, slots)
+    args = _create_args()
+    args.update(
+        exchange="okx",
+        market_type="perpetual",
+        symbol="BTC/USDT:USDT",
+        side="sell",
+        order_type="market",
+        pair_key="tokocrypto__okx__btc",
+    )
+
+    result = await gateway.execute_create_order(facade, **args)
+
+    assert result.status == MutationResultType.CONFIRMED
+    assert facade.resolutions == [("okx", "futures")]
+    assert events.count("venue_create") == 1
+    assert "reserve_slot" not in events
+
+
+@pytest.mark.asyncio
+async def test_generic_entry_gateway_does_not_route_spot_sell_through_global_stop():
+    events = []
+    stop = _FakeGlobalStop(events)
+    venue = _CreateVenue(events, venue_id="tokocrypto")
+    gateway = MutationGateway(stop, _RecordingSlots(events))
+    args = _create_args()
+    args["side"] = "sell"
+
+    result = await gateway.execute_create_order(venue, **args)
+
+    assert result.status == MutationResultType.REJECTED
+    assert "dedicated de-risk path" in result.error_message
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_generic_entry_gateway_does_not_route_reduce_only_futures_through_global_stop():
+    events = []
+    stop = _FakeGlobalStop(events)
+    venue = _CreateVenue(events, venue_id="okx")
+    gateway = MutationGateway(stop, _RecordingSlots(events))
+    args = _create_args()
+    args.update(
+        exchange="okx",
+        market_type="perpetual",
+        symbol="BTC/USDT:USDT",
+        side="buy",
+        order_type="market",
+        pair_key="tokocrypto__okx__btc",
+        extra_params={"reduceOnly": True},
+    )
+
+    result = await gateway.execute_create_order(venue, **args)
+
+    assert result.status == MutationResultType.REJECTED
+    assert "dedicated de-risk path" in result.error_message
     assert events == []
