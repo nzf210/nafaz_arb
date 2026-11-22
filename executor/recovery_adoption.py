@@ -1,6 +1,7 @@
 """recovery adoption helpers for the universal order lifecycle."""
 
 import logging
+import math
 import time
 from typing import Any, Dict, Optional
 
@@ -527,6 +528,44 @@ class RecoveryAdoptionMixin:
                         )
             except Exception:
                 logger.exception("[Recovery] failed to update active position for recovered hedge %s", hedge_key)
+
+        # A terminal Futures order can still be only partially filled. Its
+        # confirmed quantity is real exposure and has already been applied to
+        # the parent watermark above, but it must not close the generation's
+        # durable claim: doing so would let a later worker mistake this attempt
+        # for a fully covered hedge. Until the attempt ledger can issue a fresh
+        # client order id for the residual, retain the order for reconciliation
+        # and keep the parent exposure fenced.
+        try:
+            requested_qty = float(hedge_record.original_quantity or 0.0)
+            confirmed_qty = float(filled)
+        except (TypeError, ValueError):
+            requested_qty = confirmed_qty = 0.0
+        if (
+            not math.isfinite(requested_qty)
+            or not math.isfinite(confirmed_qty)
+            or requested_qty <= 0
+            or confirmed_qty < 0
+            or confirmed_qty > requested_qty + max(1e-12, requested_qty * 1e-8)
+            or confirmed_qty + max(1e-12, requested_qty * 1e-8) < requested_qty
+        ):
+            reason = (
+                "terminal Futures hedge is partial or has invalid quantity "
+                f"(requested={requested_qty}, confirmed={confirmed_qty}); "
+                "residual attempt requires durable attempt-ledger support"
+            )
+            await self.order_registry.mark_pending_recovery(
+                hedge_record.local_order_id, reason
+            )
+            self._halt_exposure_scope(pair_tag or parent_exchange, reason)
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            self._refresh_entry_gate()
+            logger.critical(
+                "[Recovery] %s; confirmed fill was retained exactly once and "
+                "the hedge claim remains unresolved",
+                reason,
+            )
+            return False
 
         claim_key = str(context.get("hedge_claim_key") or "")
         if claim_key:

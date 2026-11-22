@@ -820,3 +820,169 @@ async def test_paper_balance_report_is_explicitly_simulated():
     assert len(reports) == 2
     assert all(report["status"] == "ok" for report in reports)
     assert all(report["assets"][0]["asset"] == "USDT" for report in reports)
+
+@pytest.mark.asyncio
+async def test_recovery_open_order_never_regresses_persisted_spot_fill(
+    engine, fake_redis, mock_client
+):
+    """A lagging open-order snapshot cannot lower a persisted Spot fill watermark."""
+    order_info = {
+        "order_id": "recovery-monotonic-open",
+        "client_order_id": "spot-recovery-monotonic-open",
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "qty": 0.01,
+        "filled": 0.004,
+        "hedged_short_qty": 0.0,
+        "price": 1_000_000_000.0,
+        "placed_time": time.time(),
+    }
+    await fake_redis.set(
+        "arb:pending_entry:indodax:btc_idr", json.dumps(order_info)
+    )
+    mock_client.orders["recovery-monotonic-open"] = {
+        "id": "recovery-monotonic-open",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.002,
+    }
+
+    await engine._recover_pending_entry_orders()
+
+    pair_tag = "indodax:btc_idr__binance:btc_usdt"
+    assert engine.pending_entry_orders[pair_tag]["filled"] == pytest.approx(0.004)
+    assert engine.pending_entry_orders[pair_tag]["filled_spot_amount"] == pytest.approx(0.004)
+    persisted = json.loads(
+        await fake_redis.get("arb:pending_entry:" + pair_tag)
+    )
+    assert persisted["filled"] == pytest.approx(0.004)
+
+
+@pytest.mark.asyncio
+async def test_recovery_terminal_order_never_regresses_persisted_spot_fill(
+    engine, fake_redis, mock_client, monkeypatch
+):
+    """A terminal venue snapshot cannot erase a newer persisted Spot fill."""
+    order_info = {
+        "order_id": "recovery-monotonic-terminal",
+        "client_order_id": "spot-recovery-monotonic-terminal",
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "qty": 0.01,
+        "filled": 0.004,
+        "hedged_short_qty": 0.0,
+        "price": 1_000_000_000.0,
+        "placed_time": time.time(),
+    }
+    await fake_redis.set(
+        "arb:pending_entry:indodax:btc_idr", json.dumps(order_info)
+    )
+    mock_client.orders["recovery-monotonic-terminal"] = {
+        "id": "recovery-monotonic-terminal",
+        "symbol": "btc_idr",
+        "status": "canceled",
+        "filled": 0.002,
+    }
+    captured = {}
+
+    async def capture_terminal(pair_tag, info, order_id, symbol, status):
+        captured.update(
+            pair_tag=pair_tag,
+            filled=info["filled"],
+            filled_spot_amount=info.get("filled_spot_amount"),
+            status=status,
+        )
+
+    monkeypatch.setattr(
+        engine, "_reconcile_terminal_pending_entry", capture_terminal
+    )
+    await engine._recover_pending_entry_orders()
+
+    assert captured["filled"] == pytest.approx(0.004)
+    assert captured["filled_spot_amount"] == pytest.approx(0.004)
+    assert captured["status"] == "canceled"
+
+@pytest.mark.asyncio
+async def test_recovered_partial_hedge_remains_fenced_until_attempt_ledger(
+    engine, monkeypatch
+):
+    """A terminal partial Futures fill must not mark its Spot generation complete."""
+    from executor.models import OrderRecord, OrderRole
+
+    pair_tag = "indodax:btc_idr"
+    parent = OrderRecord(
+        local_order_id="spot-parent-local",
+        client_order_id="spot-parent-client",
+        exchange_order_id="spot-parent-id",
+        exchange="indodax",
+        order_role=OrderRole.ENTRY.value,
+        original_quantity=0.02,
+        filled_quantity=0.01,
+        hedged_quantity=0.0,
+        recovery_context={},
+    )
+    hedge = OrderRecord(
+        local_order_id="hedge-partial-local",
+        client_order_id="hedge-partial-client",
+        exchange_order_id="hedge-partial-id",
+        exchange="binance",
+        order_role=OrderRole.HEDGE.value,
+        original_quantity=0.01,
+        filled_quantity=0.004,
+        recovery_context={
+            "parent_spot_exchange": "indodax",
+            "parent_spot_order_id": "spot-parent-id",
+            "hedge_claim_key": "indodax:spot-parent-id:10000000",
+        },
+    )
+    pending_recovery = []
+    confirmed_claims = []
+    halted = []
+
+    class Claims:
+        async def mark_confirmed(self, *args):
+            confirmed_claims.append(args)
+            return True
+
+    async def mark_pending_recovery(local_id, reason):
+        pending_recovery.append((local_id, reason))
+
+    async def find_parent(*args):
+        return parent
+
+    async def persist_parent(*args):
+        return "hedge-partial-client"
+
+    async def sync_parent(*args):
+        return None
+
+    async def rebuild(*args):
+        return None
+
+    monkeypatch.setattr(engine, "_find_parent_spot_order", find_parent)
+    monkeypatch.setattr(engine, "_persist_recovered_parent_hedge", persist_parent)
+    monkeypatch.setattr(engine, "_sync_live_parent_hedge_watermark", sync_parent)
+    monkeypatch.setattr(engine, "_rebuild_entry_order_info", rebuild)
+    monkeypatch.setattr(engine.order_registry, "mark_pending_recovery", mark_pending_recovery)
+    monkeypatch.setattr(
+        engine, "_halt_exposure_scope",
+        lambda scope, reason: halted.append((scope, reason)),
+    )
+    monkeypatch.setattr(engine, "_refresh_entry_gate", lambda: None)
+    engine.hedge_claims = Claims()
+
+    result = await engine._reconcile_recovered_entry_hedge(
+        hedge,
+        {"id": "hedge-partial-id", "status": "canceled", "filled": 0.004},
+        pair_tag,
+    )
+
+    assert result is False
+    assert pending_recovery and pending_recovery[0][0] == hedge.local_order_id
+    assert halted and halted[0][0] == pair_tag
+    assert confirmed_claims == [], "partial venue fill must not close the durable claim"
+

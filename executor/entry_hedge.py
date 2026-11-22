@@ -450,7 +450,18 @@ class EntryHedgeMixin:
                 )
                 order_info["hedge_waiting_for_coverage"] = True
                 return None, {}, None, 0.0
+            # The claim service recomputes the residual while holding the
+            # per-parent PostgreSQL lock. Replace the local snapshot before
+            # sizing; never submit from a stale worker-local hedge watermark.
             order_info["hedge_claim_key"] = claim["claim_key"]
+            order_info["hedged_short_qty"] = max(
+                float(order_info.get("hedged_short_qty", 0.0) or 0.0),
+                float(claim.get("confirmed_qty", 0.0) or 0.0),
+            )
+            unhedged_delta = float(claim["residual_qty"])
+            if unhedged_delta <= 0:
+                order_info["hedge_waiting_for_coverage"] = False
+                return None, {}, None, 0.0
         # A fresh durable claim owns its deterministic client id. Never
         # reuse the previous generation's pending id after a deferred fill;
         # doing so would make the claim row point at a different venue order.
