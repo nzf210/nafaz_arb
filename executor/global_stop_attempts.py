@@ -7,7 +7,7 @@ import json
 import time
 from typing import Optional
 
-from executor.global_stop_common import GlobalStopError, logger, _json_mapping
+from executor.global_stop_common import GlobalStopError, FENCE_LOCK_KEY, logger, _json_mapping
 
 
 class GlobalStopAttemptMixin:
