@@ -108,6 +108,10 @@ class OwnershipLeaseService:
         native_instrument = str(instrument or "").strip()
         scope_key = build_scope_key(account, exchange, market, native_instrument)
         async with conn.transaction():
+            await conn.execute(
+                "select pg_advisory_xact_lock(hashtextextended('nafaz:ownership:' || $1, 0))",
+                scope_key,
+            )
             current = await conn.fetchrow(
                 """
                 SELECT owner_id, generation, lease_expires_at,
