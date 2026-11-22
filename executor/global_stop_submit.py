@@ -10,9 +10,9 @@ from executor.global_stop_common import (
     DERISK_LOCK_KEY, FENCE_LOCK_KEY, GlobalStopError, logger, _json_mapping,
 )
 from executor.ownership import (
-    OwnershipError, OwnershipLeaseService, advisory_scope_lock_key, build_scope_key,
+    OwnershipError, advisory_scope_lock_key, build_scope_key,
 )
-from executor.risk_control import RiskControlPlane, RiskPermissionDenied, risk_scope_keys
+from executor.risk_control import RiskPermissionDenied, risk_scope_keys
 
 
 class GlobalStopSubmitMixin:
