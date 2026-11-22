@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping, Optional
 
+from executor.risk_budget import RiskBudgetEvaluator, RiskBudgetViolation
+
 
 class RiskControlError(RuntimeError):
     """Base risk-control error."""
@@ -48,14 +50,16 @@ class RiskControlPlane:
 
     @staticmethod
     async def assert_allowed(
-        conn: Any, *, scope_keys: list[str], action_class: str
+        conn: Any, *, scope_keys: list[str], action_class: str,
+        risk_metrics: Optional[Mapping[str, Any]] = None,
+        risk_limits: Optional[Mapping[str, Any]] = None,
     ) -> dict:
         action = str(action_class or "ENTRY").strip().upper()
         if action not in {"ENTRY", "HEDGE", "DERISK"}:
             raise ValueError("action_class must be ENTRY, HEDGE or DERISK")
         rows = await conn.fetch(
             """
-            SELECT scope_key, entry_blocked, derisk_allowed, version
+            SELECT scope_key, entry_blocked, derisk_allowed, version, limits
             FROM public.executor_risk_controls
             WHERE scope_key = ANY($1::text[])
             """,
@@ -64,20 +68,54 @@ class RiskControlPlane:
         blocked = []
         derisk_denied = []
         snapshot = []
+        evaluated_scopes = set()
         for row in rows:
             entry_blocked = bool(row["entry_blocked"])
             derisk_allowed = bool(row["derisk_allowed"])
             scope_key = str(row["scope_key"])
+            raw_limits = row["limits"]
+            if isinstance(raw_limits, str):
+                try:
+                    raw_limits = json.loads(raw_limits)
+                except (TypeError, ValueError):
+                    raw_limits = {}
+            scope_limits = dict(risk_limits or {})
+            if isinstance(raw_limits, Mapping):
+                scope_limits.update(dict(raw_limits))
+            try:
+                budget = RiskBudgetEvaluator.evaluate(
+                    metrics=risk_metrics, limits=scope_limits, action_class=action
+                )
+            except RiskBudgetViolation as budget_error:
+                raise RiskPermissionDenied(
+                    f"RISK_BUDGET_BLOCKED at {scope_key}: {budget_error}"
+                ) from budget_error
+            evaluated_scopes.add(scope_key)
             snapshot.append({
                 "scope_key": scope_key,
                 "version": int(row["version"]),
                 "entry_blocked": entry_blocked,
                 "derisk_allowed": derisk_allowed,
+                "risk_budget": budget,
             })
             if action == "ENTRY" and entry_blocked:
                 blocked.append(scope_key)
             if action in {"HEDGE", "DERISK"} and not derisk_allowed:
                 derisk_denied.append(scope_key)
+        if not rows:
+            try:
+                budget = RiskBudgetEvaluator.evaluate(
+                    metrics=risk_metrics, limits=risk_limits, action_class=action
+                )
+            except RiskBudgetViolation as budget_error:
+                raise RiskPermissionDenied(f"RISK_BUDGET_BLOCKED: {budget_error}") from budget_error
+            snapshot.append({
+                "scope_key": "engine-default",
+                "version": 0,
+                "entry_blocked": False,
+                "derisk_allowed": True,
+                "risk_budget": budget,
+            })
         if blocked:
             raise RiskPermissionDenied(
                 "ENTRY_BLOCKED by durable risk scopes: " + ", ".join(sorted(blocked))
