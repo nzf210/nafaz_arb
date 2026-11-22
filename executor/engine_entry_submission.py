@@ -425,6 +425,7 @@ class EngineEntrySubmissionMixin:
                 venue=pair_info.local_exchange,
                 action_class="ENTRY",
                 proposed_notional_usdt=actual_cost_usdt,
+                planned_hedge_notional_usdt=actual_cost_usdt,
                 slippage_bps=slippage_bps,
                 funding_cost_pct=funding_cost_pct,
                 market_data_age_ms=market_data_age_ms,
