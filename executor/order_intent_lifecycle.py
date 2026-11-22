@@ -162,79 +162,86 @@ class OrderIntentLifecycleMixin:
                 )
         return dict(updated)
 
+    async def reclaim_for_reconciliation_in_transaction(
+        self, conn: Any, intent_id: str, *, lease: Any, actor_id: str,
+    ) -> dict:
+        actor = required(actor_id, "actor_id")
+        row = await conn.fetchrow(
+            "SELECT * FROM public.executor_mutation_intents WHERE intent_id=$1 FOR UPDATE",
+            intent_id,
+        )
+        if row is None:
+            raise OrderIntentError("mutation intent does not exist")
+        status = str(row["status"]).upper()
+        if status not in {"SUBMITTING", "UNKNOWN", "ACKNOWLEDGED"}:
+            raise OrderIntentConflict("only unresolved or acknowledged intents may be reclaimed")
+        scope_key, generation = await self._validate_mutation_lease(
+            conn, row, lease, require_persisted_owner=False,
+        )
+        previous_generation = int(row["owner_generation"] or 0)
+        previous_owner = str(row["owner_id"] or "")
+        owner_id = str(getattr(lease, "owner_id", "") or "")
+        if not previous_generation or not previous_owner:
+            raise OrderIntentStaleOwner("intent has no prior owner provenance")
+        if generation < previous_generation:
+            raise OrderIntentStaleOwner("recovery lease generation is stale")
+        if generation == previous_generation:
+            if owner_id != previous_owner:
+                raise OrderIntentStaleOwner("owner changed without a generation increment")
+            return dict(row)
+        event_key = f"{intent_id}:owner-reclaimed:{generation}"
+        existing = await conn.fetchrow(
+            """
+            SELECT event_type, payload FROM public.executor_mutation_intent_events
+            WHERE intent_id=$1 AND event_idempotency_key=$2
+            """,
+            intent_id, event_key,
+        )
+        if existing is not None:
+            if str(existing["event_type"]) != "INTENT_OWNER_RECLAIMED":
+                raise OrderIntentConflict("recovery event key was reused")
+            return dict(row)
+        next_version = int(row["state_version"]) + 1
+        updated = await conn.fetchrow(
+            """
+            UPDATE public.executor_mutation_intents
+            SET owner_scope_key=$2, owner_id=$3, owner_generation=$4,
+                state_version=$5, updated_at=clock_timestamp()
+            WHERE intent_id=$1 AND state_version=$6
+            RETURNING *
+            """,
+            intent_id, scope_key, owner_id, generation,
+            next_version, int(row["state_version"]),
+        )
+        if updated is None:
+            raise OrderIntentStaleOwner("intent owner reclaim compare-and-swap lost")
+        await conn.execute(
+            """
+            INSERT INTO public.executor_mutation_intent_events (
+                intent_id, event_version, event_type, event_idempotency_key,
+                actor_id, owner_scope_key, owner_id, owner_generation, payload
+            ) VALUES ($1,$2,'INTENT_OWNER_RECLAIMED',$3,$4,$5,$6,$7,$8::jsonb)
+            """,
+            intent_id, next_version, event_key, actor, scope_key,
+            owner_id, generation,
+            json.dumps({
+                "previous_owner_id": previous_owner,
+                "previous_generation": previous_generation,
+                "current_owner_id": owner_id,
+                "current_generation": generation,
+                "status": status,
+            }, sort_keys=True, separators=(",", ":")),
+        )
+        return dict(updated)
+
     async def reclaim_for_reconciliation(
         self, intent_id: str, *, lease: Any, actor_id: str,
     ) -> dict:
-        actor = required(actor_id, "actor_id")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                row = await conn.fetchrow(
-                    "SELECT * FROM public.executor_mutation_intents WHERE intent_id=$1 FOR UPDATE",
-                    intent_id,
+                return await self.reclaim_for_reconciliation_in_transaction(
+                    conn, intent_id, lease=lease, actor_id=actor_id,
                 )
-                if row is None:
-                    raise OrderIntentError("mutation intent does not exist")
-                status = str(row["status"]).upper()
-                if status not in {"SUBMITTING", "UNKNOWN", "ACKNOWLEDGED"}:
-                    raise OrderIntentConflict("only unresolved or acknowledged intents may be reclaimed")
-                scope_key, generation = await self._validate_mutation_lease(
-                    conn, row, lease, require_persisted_owner=False,
-                )
-                previous_generation = int(row["owner_generation"] or 0)
-                previous_owner = str(row["owner_id"] or "")
-                owner_id = str(getattr(lease, "owner_id", "") or "")
-                if not previous_generation or not previous_owner:
-                    raise OrderIntentStaleOwner("intent has no prior owner provenance")
-                if generation < previous_generation:
-                    raise OrderIntentStaleOwner("recovery lease generation is stale")
-                if generation == previous_generation:
-                    if owner_id != previous_owner:
-                        raise OrderIntentStaleOwner("owner changed without a generation increment")
-                    return dict(row)
-                event_key = f"{intent_id}:owner-reclaimed:{generation}"
-                existing = await conn.fetchrow(
-                    """
-                    SELECT event_type, payload FROM public.executor_mutation_intent_events
-                    WHERE intent_id=$1 AND event_idempotency_key=$2
-                    """,
-                    intent_id, event_key,
-                )
-                if existing is not None:
-                    if str(existing["event_type"]) != "INTENT_OWNER_RECLAIMED":
-                        raise OrderIntentConflict("recovery event key was reused")
-                    return dict(row)
-                next_version = int(row["state_version"]) + 1
-                updated = await conn.fetchrow(
-                    """
-                    UPDATE public.executor_mutation_intents
-                    SET owner_scope_key=$2, owner_id=$3, owner_generation=$4,
-                        state_version=$5, updated_at=clock_timestamp()
-                    WHERE intent_id=$1 AND state_version=$6
-                    RETURNING *
-                    """,
-                    intent_id, scope_key, owner_id, generation,
-                    next_version, int(row["state_version"]),
-                )
-                if updated is None:
-                    raise OrderIntentStaleOwner("intent owner reclaim compare-and-swap lost")
-                await conn.execute(
-                    """
-                    INSERT INTO public.executor_mutation_intent_events (
-                        intent_id, event_version, event_type, event_idempotency_key,
-                        actor_id, owner_scope_key, owner_id, owner_generation, payload
-                    ) VALUES ($1,$2,'INTENT_OWNER_RECLAIMED',$3,$4,$5,$6,$7,$8::jsonb)
-                    """,
-                    intent_id, next_version, event_key, actor, scope_key,
-                    owner_id, generation,
-                    json.dumps({
-                        "previous_owner_id": previous_owner,
-                        "previous_generation": previous_generation,
-                        "current_owner_id": owner_id,
-                        "current_generation": generation,
-                        "status": status,
-                    }, sort_keys=True, separators=(",", ":")),
-                )
-        return dict(updated)
 
     async def mark_submitting_in_transaction(
         self, conn: Any, intent_id: str, *, lease: Any,
