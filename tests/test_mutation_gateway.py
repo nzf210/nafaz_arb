@@ -221,3 +221,27 @@ async def test_cancel_with_terminal_partial_fill_retains_slot_for_lifecycle_reco
     assert result.filled_qty == 0.25
     assert "slot retained" in result.error_message
     assert "release_slot" not in events
+
+
+@pytest.mark.asyncio
+async def test_spot_cancel_without_logical_client_id_does_not_release_slot():
+    events = []
+    slots = _RecordingSlots(events)
+    client = _CancelFacade(
+        events,
+        [{"id": "venue-order-5", "status": "canceled", "filled": 0.0}],
+    )
+    gateway = MutationGateway(slot_manager=slots)
+
+    result = await gateway.execute_cancel_order(
+        client,
+        exchange="tokocrypto",
+        market_type="spot",
+        order_id="venue-order-5",
+        symbol="BTC/USDT",
+        client_order_id=None,
+    )
+
+    assert result.status == MutationResultType.SUBMISSION_UNKNOWN
+    assert "logical client order ID is missing" in result.error_message
+    assert "release_slot" not in events

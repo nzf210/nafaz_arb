@@ -603,6 +603,18 @@ class MutationGateway:
                 raw_response=final_order,
             )
 
+        if is_spot and not client_order_id:
+            return MutationResult(
+                status=MutationResultType.SUBMISSION_UNKNOWN,
+                client_order_id=cid,
+                exchange_order_id=resolved_order_id,
+                error_message=(
+                    "Cancel is terminal with zero fill, but the logical client order ID "
+                    "is missing; slot cannot be safely correlated or released"
+                ),
+                raw_response=final_order,
+            )
+
         if is_spot:
             try:
                 await self.slot_manager.release_slot(
