@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 
-from executor.execution_fill_service import ExecutionFillService
+from executor.execution_fill_service import ExecutionFillService, FillConflict
 from executor.execution_hedge_obligations import (
     ExecutionHedgeObligationService, HedgeObligationError,
 )
@@ -204,7 +204,7 @@ async def test_postgres_partial_spot_fills_reserve_and_allocate_hedge_exactly_on
         coordinator_lease=lease, fencing_generation=lease.generation,
     )
     assert replay_reservation["duplicate"] is True
-    with pytest.raises(Exception, match="idempotency key was reused"):
+    with pytest.raises(FillConflict, match="idempotency key was reused"):
         await service.reserve(
             session_id=admitted["session_id"],
             futures_venue="okx", futures_market_type="swap",
