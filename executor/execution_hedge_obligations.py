@@ -72,24 +72,33 @@ class ExecutionHedgeObligationService:
         self, conn: Any, *, session_id: str, session: Any,
         event_type: str, idempotency_key: str, actor_id: str,
         generation: int, payload: dict, reason: str = "",
+        target_state: str | None = None,
     ) -> int:
         version = int(session["aggregate_version"]) + 1
+        current_state = str(session["status"]).upper()
+        next_state = str(target_state or current_state).upper()
+        next_state_version = int(session["state_version"]) + (
+            1 if next_state != current_state else 0
+        )
         updated = await conn.fetchrow(
             """
             UPDATE public.execution_sessions
-            SET aggregate_version=$2, updated_at=clock_timestamp()
-            WHERE session_id=$1 AND aggregate_version=$3
-              AND fencing_generation=$4
+            SET status=$2, state_version=$3, aggregate_version=$4,
+                updated_at=clock_timestamp()
+            WHERE session_id=$1 AND aggregate_version=$5
+              AND state_version=$6 AND fencing_generation=$7
             RETURNING aggregate_version
             """,
-            session_id, version, int(session["aggregate_version"]), generation,
+            session_id, next_state, next_state_version, version,
+            int(session["aggregate_version"]), int(session["state_version"]),
+            generation,
         )
         if updated is None:
             raise HedgeObligationError("session aggregate cursor compare-and-swap lost")
         await insert_session_event(
             conn, session_id=session_id, aggregate_version=version,
             entity_type="SESSION", entity_id=session_id,
-            entity_version=int(session["state_version"]),
+            entity_version=next_state_version,
             event_type=event_type, idempotency_key=idempotency_key,
             actor_id=actor_id, fencing_generation=generation,
             reason=reason, correlation_id=session_id, payload=payload,
@@ -188,6 +197,17 @@ class ExecutionHedgeObligationService:
                     fill["contract_type"], fill["contract_size"], fill["position_side"],
                     fill["quantity_unit"], future_unit, ratio, target,
                 )
+                current_state = str(session["status"]).upper()
+                if current_state == "ENTRY_IN_PROGRESS":
+                    target_state = "HEDGE_PENDING"
+                elif current_state == "HEDGED":
+                    target_state = "RECONCILIATION_REQUIRED"
+                elif current_state in {"COMPLETED", "FAILED", "ABORTED", "REJECTED", "EXIT_IN_PROGRESS", "EXIT_PARTIAL"}:
+                    target_state = "RECONCILIATION_REQUIRED"
+                elif current_state in {"HEDGE_PENDING", "PARTIALLY_HEDGED", "BLOCKED", "RECONCILIATION_REQUIRED"}:
+                    target_state = current_state
+                else:
+                    raise HedgeObligationError(f"cannot create a hedge obligation while session is {current_state}")
                 version = await self._append_event(
                     conn, session_id=session_id, session=session,
                     event_type="HEDGE_OBLIGATION_CREATED",
@@ -199,7 +219,9 @@ class ExecutionHedgeObligationService:
                         "target_base_quantity": _fmt(target),
                         "hedge_ratio": _fmt(ratio),
                         "futures_symbol": str(fill["futures_symbol"]),
+                        "session_state": target_state,
                     },
+                    target_state=target_state,
                 )
                 return {
                     "duplicate": False, "obligation_id": str(inserted["obligation_id"]),
