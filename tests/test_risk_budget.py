@@ -254,3 +254,32 @@ async def test_durable_derisk_permission_is_separate_from_entry_block():
         risk_limits=_limits(),
     )
     assert snapshot["action_class"] == "DERISK"
+
+def test_pending_hedge_is_not_assumed_filled_when_projecting_unhedged_risk():
+    position = SimpleNamespace(
+        qty=1.0,
+        state="HEDGE_PENDING",
+        spot_cost_usdt=100.0,
+        short_entry_usdt=0.0,
+        futures_margin_usdt=0.0,
+        net_unrealized_pnl_usdt=0.0,
+        unhedged_exit_base_qty=0.0,
+        current_perp_ask_usdt=100.0,
+        opened_at_ms=0,
+    )
+    engine = SimpleNamespace(
+        config=SimpleNamespace(futures_leverage=2.0),
+        active_positions={"pair": position},
+        pending_entry_orders={},
+        pending_exit_orders={},
+        pending_hedge_orders={"pair": {"notional_usdt": 100.0}},
+        _daily_realized_loss_usdt=0.0,
+        _exchange_halted={},
+        _consecutive_order_failures={},
+    )
+    metrics = RiskBudgetMetricsBuilder.build(
+        engine, venue="okx", action_class="ENTRY"
+    )
+    assert metrics["gross_exposure_usdt"] == 200.0
+    assert metrics["net_exposure_usdt"] == 100.0
+    assert metrics["unhedged_notional_usdt"] == 100.0
