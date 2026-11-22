@@ -29,6 +29,7 @@ class RiskBudgetMetricsBuilder:
     ) -> dict:
         now_ms = int(time.time() * 1000)
         gross = deployed = net = unhedged = unrealized_loss = 0.0
+        gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = False
         unhedged_duration = 0
         positions = getattr(engine, "active_positions", {}) or {}
         position_values = positions.values() if isinstance(positions, Mapping) else positions
@@ -36,6 +37,11 @@ class RiskBudgetMetricsBuilder:
             spot_cost = max(0.0, float(cls._value(position, "spot_cost_usdt", 0.0) or 0.0))
             future_notional = max(0.0, float(cls._value(position, "short_entry_usdt", 0.0) or 0.0))
             future_margin = max(0.0, float(cls._value(position, "futures_margin_usdt", 0.0) or 0.0))
+            qty = abs(float(cls._value(position, "qty", 0.0) or 0.0))
+            if qty > 0 and spot_cost <= 0 and future_notional <= 0:
+                gross_unpriced = deployed_unpriced = net_unpriced = True
+            if future_notional > 0 and future_margin <= 0:
+                deployed_unpriced = True
             gross += spot_cost + future_notional
             deployed += spot_cost + future_margin
             net += spot_cost - future_notional
@@ -46,8 +52,11 @@ class RiskBudgetMetricsBuilder:
             if unhedged_qty <= 0 and state not in {"HEDGED_ACTIVE", "CLOSED", "FLAT"}:
                 unhedged_qty = abs(float(cls._value(position, "qty", 0.0) or 0.0))
             mark_price = max(0.0, float(cls._value(position, "current_perp_ask_usdt", 0.0) or 0.0))
-            if unhedged_qty > 0 and mark_price > 0:
-                unhedged += unhedged_qty * mark_price
+            if unhedged_qty > 0:
+                if mark_price > 0:
+                    unhedged += unhedged_qty * mark_price
+                else:
+                    unhedged_unpriced = True
                 opened_at = int(cls._value(position, "opened_at_ms", 0) or 0)
                 if opened_at > 0:
                     unhedged_duration = max(unhedged_duration, max(0, now_ms - opened_at))
@@ -61,6 +70,8 @@ class RiskBudgetMetricsBuilder:
         )
         for pending in (pending_entries.values() if isinstance(pending_entries, Mapping) else []):
             notional = cls._pending_notional(pending)
+            if notional <= 0:
+                gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = True
             gross += notional
             deployed += notional
             net += notional
@@ -101,10 +112,10 @@ class RiskBudgetMetricsBuilder:
         return {
             "snapshot_at_ms": now_ms,
             "target_venue": venue_key,
-            "gross_exposure_usdt": gross,
-            "net_exposure_usdt": abs(net),
-            "deployed_capital_usdt": deployed,
-            "unhedged_notional_usdt": unhedged,
+            "gross_exposure_usdt": None if gross_unpriced else gross,
+            "net_exposure_usdt": None if net_unpriced else abs(net),
+            "deployed_capital_usdt": None if deployed_unpriced else deployed,
+            "unhedged_notional_usdt": None if unhedged_unpriced else unhedged,
             "unhedged_duration_ms": unhedged_duration,
             "open_order_count": open_order_count,
             "daily_loss_usdt": daily_loss,
