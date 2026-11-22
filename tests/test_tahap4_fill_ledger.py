@@ -467,7 +467,7 @@ async def test_derisk_fence_still_serializes_on_advisory_lock():
     ):
         pass
     sqls = [sql for sql, _ in pool.calls]
-    assert any("pg_advisory_lock" in sql for sql in sqls)
+    assert any("pg_try_advisory_lock" in sql for sql in sqls)
     assert any("pg_advisory_unlock" in sql for sql in sqls)
 
 
