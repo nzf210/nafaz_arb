@@ -193,5 +193,5 @@ Implemented in `supabase/migrations/20261122000100_add_executor_v3_durable_sessi
 - Append-only `execution_session_events`, unique aggregate cursor and per-session idempotency key, RLS and service-role INSERT/SELECT-only grants.
 - Positive typed-quantity checks without changing V2 target/filled/exposure semantics.
 
-The migration and schema smoke test are code artifacts only. They have not been applied to a production database. Runtime repository/CAS behavior, transactional event emission, admission idempotency and restart hydration remain implementation work and are not claimed complete by this migration.
+The migration and schema smoke test are code artifacts only and have not been applied to a production database. `executor/execution_repository.py` now implements atomic session/leg admission and transition writes, entity/aggregate CAS, fencing-generation checks, event idempotency, and a verified-flatness gate before COMPLETED. PostgreSQL integration tests cover those contracts in CI. Runtime wiring into the live V2 coordinator, ownership acquisition, restart hydration and order/fill/hedge/exit lifecycle integration remain subsequent roadmap work.
 
