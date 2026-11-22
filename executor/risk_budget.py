@@ -63,6 +63,7 @@ class RiskBudgetMetricsBuilder:
             notional = cls._pending_notional(pending)
             gross += notional
             deployed += notional
+            net += notional
             unhedged += notional
 
         proposed = max(0.0, float(proposed_notional_usdt or 0.0))
