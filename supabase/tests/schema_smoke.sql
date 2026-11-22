@@ -290,3 +290,108 @@ delete from public.reconciliation_audit
 where event_id = 'schema-smoke-reconcile-1';
 
 drop table pg_temp._smoke_constants;
+
+-- Executor V3 durable session schema: additive legacy-safe identity, ordered
+-- aggregate events, append-only evidence and non-cascading session deletion.
+do $$
+declare
+    delete_action "char";
+begin
+    if not exists (
+        select 1 from information_schema.columns
+        where table_schema='public' and table_name='execution_sessions'
+          and column_name='aggregate_version'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema='public' and table_name='execution_sessions'
+          and column_name='admission_key'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema='public' and table_name='execution_legs'
+          and column_name='quantity_unit'
+    ) then
+        raise exception 'Executor V3 session/leg contract columns are missing';
+    end if;
+
+    select c.confdeltype into delete_action
+    from pg_constraint c
+    where c.conrelid='public.execution_legs'::regclass
+      and c.confrelid='public.execution_sessions'::regclass
+      and c.contype='f'
+    limit 1;
+    if delete_action is distinct from 'r' then
+        raise exception 'execution_legs session FK must use ON DELETE RESTRICT';
+    end if;
+
+    if not exists (
+        select 1 from pg_class
+        where oid='public.execution_session_events'::regclass and relrowsecurity
+    ) then
+        raise exception 'execution_session_events RLS is not enabled';
+    end if;
+    if has_table_privilege('anon','public.execution_session_events','select')
+       or has_table_privilege('authenticated','public.execution_session_events','select') then
+        raise exception 'client roles must not read execution session events';
+    end if;
+    if not has_table_privilege('service_role','public.execution_session_events','select')
+       or not has_table_privilege('service_role','public.execution_session_events','insert')
+       or has_table_privilege('service_role','public.execution_session_events','update')
+       or has_table_privilege('service_role','public.execution_session_events','delete') then
+        raise exception 'execution session event grants are not append-only';
+    end if;
+end $$;
+
+insert into public.execution_sessions (
+    session_id, opportunity_id, pair_key, status, admission_key,
+    source_dispatch_id, account_scope_id, fencing_generation
+) values (
+    'schema-smoke-v3-session', 'schema-smoke-v3-opportunity',
+    'indodax:btc_idr->okx:btc/usdt', 'CREATED',
+    'schema-smoke-v3-admission', 'schema-smoke-v3-dispatch',
+    'schema-smoke-v3-account', 1
+);
+
+insert into public.execution_legs (
+    leg_id, session_id, leg_type, venue, market_type, symbol,
+    normalized_symbol, base_asset, quote_asset, quantity_unit,
+    order_quantity, exposure_quantity
+) values (
+    'schema-smoke-v3-spot', 'schema-smoke-v3-session', 'SPOT',
+    'indodax', 'spot', 'btc_idr', 'BTC/IDR', 'BTC', 'IDR',
+    'BASE', 0.001, 0.001
+);
+
+insert into public.execution_session_events (
+    session_id, aggregate_version, entity_type, entity_id,
+    entity_version, event_type, event_idempotency_key, actor_id,
+    fencing_generation, payload
+) values (
+    'schema-smoke-v3-session', 1, 'SESSION', 'schema-smoke-v3-session',
+    1, 'SESSION_CREATED', 'schema-smoke-v3-event-1', 'schema-smoke',
+    1, '{"status":"CREATED"}'::jsonb
+);
+
+do $$
+begin
+    begin
+        update public.execution_session_events
+        set payload='{"tampered":true}'::jsonb
+        where session_id='schema-smoke-v3-session' and aggregate_version=1;
+        raise exception 'append-only event update unexpectedly succeeded';
+    exception
+        when raise_exception then
+            if SQLERRM <> 'execution_session_events is append-only' then
+                raise;
+            end if;
+    end;
+
+    begin
+        delete from public.execution_sessions
+        where session_id='schema-smoke-v3-session';
+        raise exception 'session deletion unexpectedly cascaded into execution evidence';
+    exception
+        when foreign_key_violation then
+            null;
+    end;
+end $$;
+

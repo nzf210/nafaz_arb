@@ -1,6 +1,6 @@
 # NAFAZ Executor V3 — Durable Data Model
 
-Status: PR-01 design artifact — review required before migration implementation.
+Status: PR-01 design contract — additive schema and repository implementation staged in PR-01B; runtime coordinator integration remains pending.
 Repository: nzf210/nafaz_arb
 Scope: Executor only. The Go scanner and its opportunity contract are frozen.
 
@@ -180,4 +180,18 @@ The following clarifications are normative and supersede any ambiguous wording a
 5. **Event table integrity.** `execution_session_events.session_id` references sessions with `ON DELETE RESTRICT`; aggregate_version is positive/monotonic after the first event; event rows are append-only for application roles. Any retention/purge is a separate audited operation with explicit dependency handling.
 6. **No silent quantity conversion.** Existing V2 quantity columns remain unchanged and retain their legacy semantics. New typed quantity fields are nullable for legacy rows. A V3-ready leg requires an explicit quantity_unit and evidenced conversion metadata before it can participate in hedge or completion calculations.
 
-PR-02 must implement these rules and include catalog assertions that verify the real pre-migration FK, indexes, RLS and grants before changing them.
+PR-01B implements the session/leg FK and event-journal protections with catalog assertions and schema smoke coverage. PR-02 must extend the same fail-closed ownership model to scoped leases, risk control and mutation-boundary fencing.
+
+## 11. PR-01B schema implementation
+
+Implemented in `supabase/migrations/20261122000100_add_executor_v3_durable_sessions.sql`:
+
+- Additive nullable provenance, policy, venue identity and typed-quantity columns; legacy values are not synthesized.
+- Separate session entity version and aggregate event cursor.
+- Partial unique admission-key index, preserving multiple legacy NULL values.
+- Catalog-discovered replacement of the execution-leg session FK with `ON DELETE RESTRICT`.
+- Append-only `execution_session_events`, unique aggregate cursor and per-session idempotency key, RLS and service-role INSERT/SELECT-only grants.
+- Positive typed-quantity checks without changing V2 target/filled/exposure semantics.
+
+The migration and schema smoke test are code artifacts only and have not been applied to a production database. `executor/execution_repository.py` now implements atomic session/leg admission and transition writes, entity/aggregate CAS, fencing-generation checks, event idempotency, and a verified-flatness gate before COMPLETED. PostgreSQL integration tests cover those contracts in CI. Runtime wiring into the live V2 coordinator, ownership acquisition, restart hydration and order/fill/hedge/exit lifecycle integration remain subsequent roadmap work.
+

@@ -1,6 +1,6 @@
 # NAFAZ Executor V3 — Session and Leg State Machine
 
-Status: PR-01 design artifact — review required before runtime wiring.
+Status: PR-01 design contract — durable repository implemented in PR-01B; runtime coordinator wiring remains pending.
 Repository: nzf210/nafaz_arb
 Scope: Executor only. Scanner contract remains frozen.
 
@@ -184,3 +184,10 @@ They must be mapped explicitly to V3 session/leg projections; do not rename enum
 - Legacy rows with unknown ownership must not be assigned a trusted fencing generation by default. Keep generation NULL/unknown until a V3 ownership acquisition establishes a real generation. Preserve V2 owner_fencing during compatibility.
 - The transition transaction must verify the expected aggregate_version in addition to entity version and fencing generation. A failed compare-and-swap changes no row and appends no event.
 - Session deletion must not cascade to legs, events, orders, fills, obligations, positions or exit records. Use RESTRICT/non-cascading relationships and a separate audited retention process.
+
+## 12. PR-01B schema/runtime boundary
+
+The schema migration provides the durable columns and append-only event table described by PR-01. `executor/execution_repository.py` implements transactional admission and session/leg transitions: it locks the aggregate, checks entity and aggregate versions plus the current fencing generation, updates the projection, increments the aggregate cursor and inserts the event in one transaction. It is not yet wired into the existing V2 coordinator; this PR therefore does not claim that production execution is using V3 state.
+
+The migration deliberately leaves legacy provenance and fencing generation NULL. A V3 writer must provide explicit account scope, source dispatch, immutable policy snapshot/hash, typed market identity and a verified ownership generation before allowing a new exposure mutation.
+
