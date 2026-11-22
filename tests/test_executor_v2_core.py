@@ -352,11 +352,36 @@ async def test_mutation_gateway_cancel():
     await slot_mgr.reserve_slot("tokocrypto", client_order_id=cid)
     assert await slot_mgr.get_active_slots_count("tokocrypto") == 1
 
-    client_mock = AsyncMock()
-    client_mock.cancel_order.return_value = {"id": "ex-101", "status": "canceled"}
+    class SpotCancelFacade:
+        local = type("Venue", (), {"id": "tokocrypto"})()
 
+        def __init__(self):
+            self.states = [
+                {"id": "ex-101", "status": "open"},
+                {"id": "ex-101", "status": "canceled"},
+            ]
+            self.cancel_calls = []
+
+        async def fetch_local_order(self, order_id, symbol):
+            assert order_id == "ex-101"
+            assert symbol == "BTC/BIDR"
+            return self.states.pop(0)
+
+        async def cancel_local_order(self, order_id, symbol):
+            self.cancel_calls.append((order_id, symbol))
+            return {"id": order_id}
+
+    class RootClient:
+        def __init__(self, facade):
+            self.facade = facade
+
+        def for_venue(self, exchange, market_type):
+            assert (exchange, market_type) == ("tokocrypto", "spot")
+            return self.facade
+
+    facade = SpotCancelFacade()
     res = await gateway.execute_cancel_order(
-        client_mock,
+        RootClient(facade),
         exchange="tokocrypto",
         market_type="spot",
         order_id="ex-101",
@@ -364,7 +389,8 @@ async def test_mutation_gateway_cancel():
         client_order_id=cid,
     )
     assert res.status == MutationResultType.CONFIRMED
-    # Slot released
+    assert facade.cancel_calls == [("ex-101", "BTC/BIDR")]
+    # Slot is released only after a fresh venue read confirms terminal state.
     assert await slot_mgr.get_active_slots_count("tokocrypto") == 0
 
 
