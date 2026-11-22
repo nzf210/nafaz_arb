@@ -74,36 +74,47 @@ class HedgeIntentClaimService:
         target_hedge_qty: float, residual_qty: float, hedge_ratio: float,
         futures_exchange: str, futures_symbol: str, claimed_by: str,
     ) -> Optional[dict]:
-        """Atomically claim one hedge generation.
+        """Claim the current residual using durable parent-level fill totals.
 
-        Returns the claim row (dict) when this worker won the generation, or
-        None when another worker already holds it (or the DB is unavailable —
-        callers must then fail closed for LIVE submissions).
+        Caller snapshots are advisory only. Under the per-parent transaction
+        lock, the database is authoritative for maximum Spot cumulative fill
+        and the sum of confirmed Futures base-equivalent fills. This prevents
+        a worker with stale local hedge state from submitting a duplicate.
         """
-        if residual_qty <= 0:
+        import math
+
+        try:
+            requested_spot_filled = float(cumulative_spot_filled)
+            ratio = float(hedge_ratio)
+            requested_target = float(target_hedge_qty)
+            requested_residual = float(residual_qty)
+        except (TypeError, ValueError):
             return None
+        if (
+            not all(math.isfinite(value) for value in (
+                requested_spot_filled, ratio, requested_target, requested_residual
+            ))
+            or requested_spot_filled <= 0
+            or ratio <= 0
+            or requested_target < 0
+            or requested_residual < 0
+        ):
+            return None
+
         pool = await self._conn()
         if pool is None:
             return None
-        # Fill version: monotonic micro-units of the cumulative spot fill so
-        # every new cumulative level is a distinct, replay-safe generation.
-        fill_version = int(round(float(cumulative_spot_filled) * 1e9))
-        key = hedge_claim_key(
-            parent_spot_exchange, parent_order_id_or_empty(parent_spot_order_id),
-            fill_version,
-        )
-        coid = hedge_client_order_id_for_claim(key)
+
+        parent_exchange = str(parent_spot_exchange or "").lower()
+        parent_order_id = str(parent_spot_order_id or "")
+        if not parent_exchange or not parent_order_id:
+            return None
+
         try:
             async with pool.acquire() as conn:
-                parent_exchange = str(parent_spot_exchange or "").lower()
-                parent_order_id = str(parent_spot_order_id or "")
-                # Serialize all generations for one parent Spot order. A later
-                # cumulative fill must not create a second hedge while an older
-                # generation is still CLAIMED/SUBMITTED and its venue outcome
-                # has not been confirmed. The lock and lookup share one DB
-                # transaction, so independent executor processes observe one
-                # linearizable claim lifecycle.
                 async with conn.transaction():
+                    # Serialize all generations for one Spot parent across
+                    # processes. The lock covers aggregate reads and claim insert.
                     await conn.execute(
                         "select pg_advisory_xact_lock(hashtextextended($1, 0))",
                         f"{parent_exchange}:{parent_order_id}",
@@ -122,6 +133,49 @@ class HedgeIntentClaimService:
                     )
                     if unresolved is not None:
                         return None
+
+                    totals = await conn.fetchrow(
+                        """
+                        select
+                            coalesce(max(cumulative_spot_filled), 0) as max_spot_filled,
+                            coalesce(
+                                sum(confirmed_qty) filter (where status = 'CONFIRMED'),
+                                0
+                            ) as confirmed_futures_qty
+                        from public.executor_hedge_intent_claims
+                        where parent_spot_exchange = $1
+                          and parent_spot_order_id = $2
+                        """,
+                        parent_exchange, parent_order_id,
+                    )
+                    durable_spot_filled = float(totals["max_spot_filled"] or 0.0)
+                    durable_confirmed = float(totals["confirmed_futures_qty"] or 0.0)
+
+                    effective_spot_filled = max(
+                        requested_spot_filled, durable_spot_filled
+                    )
+                    effective_target = max(
+                        requested_target, effective_spot_filled * ratio
+                    )
+                    # Infer the caller's confirmed watermark from its target
+                    # and residual. A higher durable DB aggregate always wins.
+                    caller_confirmed = max(
+                        0.0, requested_target - requested_residual
+                    )
+                    effective_confirmed = max(
+                        durable_confirmed, caller_confirmed
+                    )
+                    effective_residual = max(
+                        0.0, effective_target - effective_confirmed
+                    )
+                    if effective_residual <= 0:
+                        return None
+
+                    fill_version = int(round(effective_spot_filled * 1e9))
+                    key = hedge_claim_key(
+                        parent_exchange, parent_order_id, fill_version
+                    )
+                    coid = hedge_client_order_id_for_claim(key)
                     row = await conn.fetchrow(
                         """
                         insert into public.executor_hedge_intent_claims (
@@ -149,26 +203,30 @@ class HedgeIntentClaimService:
                         parent_exchange,
                         parent_order_id,
                         str(parent_spot_client_order_id or "") or None,
-                        float(cumulative_spot_filled),
-                        float(target_hedge_qty),
-                        float(residual_qty),
-                        float(hedge_ratio),
+                        effective_spot_filled,
+                        effective_target,
+                        effective_residual,
+                        ratio,
                         str(futures_exchange or ""),
                         str(futures_symbol or ""),
                         coid,
                         str(claimed_by or ""),
                     )
                     if row is None:
-                        # This exact generation was already claimed.
                         return None
                     return {
                         "claim_key": row["claim_key"],
                         "hedge_client_order_id": row["hedge_client_order_id"],
                         "version": int(row["version"]),
+                        "cumulative_spot_filled": effective_spot_filled,
+                        "target_hedge_qty": effective_target,
+                        "confirmed_qty": effective_confirmed,
+                        "residual_qty": effective_residual,
                     }
         except Exception:
             logger.exception(
-                "[Hedge Claim] claim insert failed for %s; failing closed", key
+                "[Hedge Claim] claim failed for parent %s:%s; failing closed",
+                parent_exchange, parent_order_id,
             )
             return None
 
