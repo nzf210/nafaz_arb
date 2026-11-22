@@ -219,6 +219,7 @@ async def test_mutation_gateway_create_and_timeout():
         client_mock, exchange="tokocrypto", market_type="spot",
         symbol="BTC/BIDR", side="buy", order_type="limit",
         quantity=1.5, price=100.0, pair_key="tokocrypto:BTC_BIDR",
+        account_scope_id="test-account-tokocrypto",
     )
     assert res.status == MutationResultType.CONFIRMED
     assert res.exchange_order_id == "ex-101"
@@ -234,6 +235,7 @@ async def test_mutation_gateway_create_and_timeout():
         slow_client, exchange="tokocrypto", market_type="spot",
         symbol="ETH/BIDR", side="buy", order_type="limit",
         quantity=0.5, price=2000.0, pair_key="tokocrypto:ETH_BIDR",
+        account_scope_id="test-account-tokocrypto",
     )
     assert res_timeout.status == MutationResultType.SUBMISSION_UNKNOWN
     assert stop.statuses[res_timeout.client_order_id] == "UNKNOWN"
@@ -248,6 +250,7 @@ async def test_mutation_gateway_create_fails_closed_without_initialized_global_s
         client_mock, exchange="tokocrypto", market_type="spot",
         symbol="BTC/BIDR", side="buy", order_type="limit",
         quantity=1.0, price=100.0, pair_key="tokocrypto:BTC_BIDR",
+        account_scope_id="test-account-tokocrypto",
     )
     assert result.status == MutationResultType.REJECTED
     assert "fencing is not initialized" in result.error_message
@@ -265,6 +268,7 @@ async def test_mutation_gateway_connection_reset_is_unknown_and_keeps_slot():
         client_mock, exchange="okx", market_type="perpetual",
         symbol="BTC/USDT:USDT", side="sell", order_type="market",
         quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
+        account_scope_id="test-account-okx",
     )
     assert result.status == MutationResultType.SUBMISSION_UNKNOWN
     assert stop.statuses[result.client_order_id] == "UNKNOWN"
@@ -301,6 +305,7 @@ async def test_mutation_gateway_missing_order_id_remains_unknown():
         client_mock, exchange="mexc", market_type="perpetual",
         symbol="BTC/USDT:USDT", side="sell", order_type="market",
         quantity=0.01, price=50000.0, pair_key="tokocrypto__mexc__btc",
+        account_scope_id="test-account-mexc",
     )
     assert result.status == MutationResultType.SUBMISSION_UNKNOWN
     assert stop.statuses[result.client_order_id] == "UNKNOWN"
