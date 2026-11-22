@@ -286,18 +286,16 @@ async def test_postgres_coordinator_admission_and_transition_are_fenced(postgres
         pool=postgres_pool,
         ownership=OwnershipLeaseService(owner_id=replacement.owner_id),
     )
-    replay = await recovered.admit(
-        opportunity_id="opp-" + suffix,
-        source_dispatch_id="dispatch-" + suffix,
+    replay = await recovered.recover(
+        session_id=result["session_id"],
         account_scope_id=account,
-        pair_key="indodax:btc_idr->okx:btc-usdt-swap",
-        legs=_legs(suffix),
         actor_id="recovery-test",
-        **_snapshots(),
     )
-    assert replay["created"] is False
+    assert replay["reclaimed"] is True
     assert replay["session_id"] == result["session_id"]
-    assert replay["coordinator_generation"] == replacement.generation
+    assert replay["fencing_generation"] == replacement.generation
+    assert replay["state_version"] == 3
+    assert replay["aggregate_version"] == 5
 
     with pytest.raises(StaleAggregate, match="coordinator lease"):
         await coordinator.transition(
