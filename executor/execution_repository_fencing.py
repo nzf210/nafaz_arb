@@ -28,6 +28,8 @@ def admission_risk_scopes(
 async def validate_coordinator_lease(
     conn: Any, lease: Any, *, session_id: str,
     account_scope_id: str, expected_generation: int,
+    session_scope_key: str | None = None,
+    session_owner_id: str | None = None,
 ) -> None:
     def value(name: str) -> Any:
         return lease.get(name) if isinstance(lease, Mapping) else getattr(lease, name, None)
@@ -41,6 +43,8 @@ async def validate_coordinator_lease(
     if (
         not owner_id or scope_key != expected_key or generation <= 0
         or generation != int(expected_generation)
+        or (session_scope_key is not None and str(session_scope_key) != scope_key)
+        or (session_owner_id is not None and str(session_owner_id) != owner_id)
     ):
         from executor.execution_repository import StaleAggregate
         raise StaleAggregate("coordinator lease identity or generation is invalid")
