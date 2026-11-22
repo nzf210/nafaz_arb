@@ -625,3 +625,33 @@ scripts/resolve_ai_position.py contains direct spot create_market_sell_order and
 - This does not validate the production VPS PostgreSQL topology or live CEX contracts.
 
 Remaining gates: clone-wide/runtime-instrumented create-order inventory, operator identity and HMAC secret custody/rotation, dual approval and manual-resolution runbook, repeated PostgreSQL multi-process fault injection on the actual VPS topology, per-venue sandbox/paper exact-ID/eventual-consistency tests, minimum-notional overhedge policy, and durable de-risk persistence. Status remains PARTIAL / NOT LIVE-CERTIFIED.
+
+
+## Follow-up order-path audit — 2026-11-22
+
+Reviewed target branch head before this follow-up: `8167cefe153e5c950e4732c9120bf2c8a0f56fa8`. The follow-up source/test commits are listed below. This is a focused audit of the new generic MutationGateway path and the LIVE order-intent durability gate, not a claim that the entire repository has completed a runtime-instrumented call-site audit.
+
+| ID | Finding | Status / evidence |
+|---|---|---|
+| R-55 | `EngineOrderIntentMixin._register_order_intent` treated an enabled `GlobalStopService` / `POSTGRES_DSN` as proof that the separate universal order registry was durable. When the Supabase/outbox writer was disabled, `OrderRegistryStorage._persist` could succeed from Redis alone, allowing a required LIVE order intent to pass despite the lifecycle registry not being durable. The code comment already stated that the STOP database is not the order-registry writer, but the condition contradicted it. | **FIXED** in `203d74480ee6b4c3e984ccab1a48ebc7b9b843b4`: required LIVE intents now require `supabase.enabled`; a GlobalStop connection alone no longer satisfies the registry gate. Regression test added in `1e68e26f3462a4550c69e8532e9e6bc139931124` proves Redis-only registry mode is rejected before `_register_order` is called. |
+| R-56 | `MutationGateway.execute_create_order` previously submitted through the caller-supplied client without verifying that the client belonged to the exchange and market recorded in the durable intent. A mismatched client could therefore send to venue B while the ledger claimed venue A. The same entry method also accepted risk-reducing spot SELL / futures `reduceOnly` mutations, which would put exits behind the entry STOP lane. | **FIXED** in `b69d82cfe8b354c7fc71506a74661b0c23cad6e1`: resolve `for_venue(exchange, market)` when available, require the resolved client's exact `.id`, and fail before PREPARED/slot reservation on mismatch. The generic create method is now explicitly exposure-increasing only: spot SELL and futures reduceOnly are rejected from this lane and must continue through the independent de-risk path. Fake-client regressions are in `b10ae10a910eb9f7851ca26c88847496d2698802` and `e83fa8ec1ed7fa6c057e740919732455a528ee74`. |
+| R-57 | The generic gateway's `pre_submit_guard` is still a caller-supplied no-argument callable. Requiring `callable()` does not prove that the callback checks the correct durable market scope; a no-op callback can return true. No production caller for `execute_create_order` was found in the inspected branch paths (CommandProcessor uses cancel; current spot/futures LIVE paths still submit through their dedicated fenced wrappers), so this is not recorded as an active production bypass, but it is a production-wiring blocker. | **OPEN** — replace the loose callback contract with a scoped, auditable admission interface and test its actual implementation before wiring the generic gateway to LIVE entry. |
+| R-58 | The current spot single-market admission guard reads process-local state plus shared Redis active/pending keys. It does not query a canonical PostgreSQL active-market reservation. If Redis returns an empty keyspace after eviction/flush while another executor still owns an active position, a peer with empty local memory has no durable active-market proof. The global submit lock serializes requests but does not by itself reject a previously ACKNOWLEDGED order/position. | **OPEN / RESILIENCE NOT PROVEN** — add a durable cross-instance market-exposure reservation or an equivalent transactionally checked canonical gate before claiming Redis-loss safety. Do not solve this by blocking de-risking. |
+
+### Current order-path classification
+
+- Spot BUY and futures SELL with `reduceOnly=False` remain exposure-increasing and require durable PREPARED/SUBMITTING plus the shared PostgreSQL session advisory fence.
+- Futures hedge submission remains tied to the parent spot fill and durable hedge-generation claim; it must not be treated as an unrelated new market entry or blocked by a duplicate-position guard for the parent pair.
+- Spot SELL exits/rollback/force-close and futures BUY `reduceOnly=True` remain de-risking operations outside the entry STOP fence. This follow-up did not change those production paths.
+- `MutationGateway.execute_create_order` has no production caller in the inspected branch paths and is not yet the sole mutation boundary. The architecture's intended gateway centralization must not be represented as completed wiring.
+- Indodax TAPIv2 continues to funnel its raw order POST through `_create_order`; production entry still reaches it through the spot wrapper. No new adapter create-order caller was introduced by this follow-up.
+
+### Verification status for this follow-up
+
+- Source fixes: `203d7448` (LIVE registry gate) and `b69d82cf` (generic venue/risk-lane binding).
+- Regression tests: `1e68e26f`, `b10ae10a`, and `e83fa8ec`.
+- GitHub combined status for the earlier branch head `8167cefe` returned no status entries, and the available commit-workflow lookup returned no PR-triggered runs. Therefore no CI result is claimed for these follow-up commits until a check run is observed on the resulting branch head.
+- No local test execution was performed in this connector-only run.
+- No merge, deployment, production migration, cutover, or live order was performed.
+
+Remaining gates: clone-wide/runtime-instrumented create-order inventory; scoped durable active-market admission resilient to Redis loss; production wiring and lifecycle registration for MutationGateway; operator identity and HMAC secret custody/rotation; dual approval and manual-resolution runbook; repeated PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; and per-venue sandbox/paper exact-ID/eventual-consistency tests. Status remains PARTIAL / NOT LIVE-CERTIFIED.
