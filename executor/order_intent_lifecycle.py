@@ -51,6 +51,7 @@ class OrderIntentLifecycleMixin:
         lease: Any = None, require_lease: bool = True,
         exchange_order_id: str | None = None, venue_response: Mapping[str, Any] | None = None,
         error: str | None = None, release_reservation: bool = False,
+        risk_snapshot: Mapping[str, Any] | None = None,
     ) -> dict:
         actor = required(actor_id, "actor_id")
         async with self.pool.acquire() as conn:
@@ -125,11 +126,13 @@ class OrderIntentLifecycleMixin:
                         exchange_order_id=COALESCE($8, exchange_order_id),
                         venue_response=COALESCE($9::jsonb, venue_response),
                         last_error=$10, reserved_base_qty=$11, reserved_notional=$12,
+                        risk_control_snapshot=CASE WHEN $13::jsonb IS NULL
+                            THEN risk_control_snapshot ELSE $13::jsonb END,
                         resolved_at=CASE WHEN $2 IN (
                             'REJECTED','CANCEL_CONFIRMED','ABORTED','COMPLETED'
                         ) THEN clock_timestamp() ELSE NULL END,
                         updated_at=clock_timestamp()
-                    WHERE intent_id=$1 AND state_version=$13
+                    WHERE intent_id=$1 AND state_version=$14
                     RETURNING *
                     """,
                     intent_id, target_status, next_version, attempt_count,
@@ -138,7 +141,10 @@ class OrderIntentLifecycleMixin:
                     json.dumps(dict(venue_response), separators=(",", ":"), default=str)
                     if venue_response is not None else None,
                     str(error)[:2000] if error else None,
-                    reservation_base, reservation_notional, int(row["state_version"]),
+                    reservation_base, reservation_notional,
+                    json.dumps(dict(risk_snapshot), sort_keys=True, separators=(",", ":"), default=str)
+                    if risk_snapshot is not None else None,
+                    int(row["state_version"]),
                 )
                 if updated is None:
                     raise OrderIntentStaleOwner("mutation intent compare-and-swap lost")
@@ -232,11 +238,16 @@ class OrderIntentLifecycleMixin:
 
     async def mark_submitting(
         self, intent_id: str, *, lease: Any, actor_id: str,
+        risk_snapshot: Mapping[str, Any],
     ) -> dict:
+        if not isinstance(risk_snapshot, Mapping) or not risk_snapshot:
+            raise OrderIntentError("SUBMITTING requires a durable risk-control snapshot")
         return await self._transition(
             intent_id=intent_id, target_status="SUBMITTING",
             allowed_from=("PREPARED",), event_type="INTENT_SUBMITTING",
-            actor_id=actor_id, payload={}, lease=lease,
+            actor_id=actor_id,
+            payload={"risk_control_snapshot": dict(risk_snapshot)},
+            lease=lease, risk_snapshot=risk_snapshot,
         )
 
     async def mark_acknowledged(
