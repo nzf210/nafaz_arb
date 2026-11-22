@@ -21,13 +21,14 @@ from executor.exchange_common import venue_client_order_id
 from executor.order_intent_service import OrderIntentService
 from executor.mutation_gateway_intents import MutationGatewayIntentMixin
 from executor.mutation_gateway_cancel import MutationGatewayCancelMixin
+from executor.mutation_gateway_cancel_intents import MutationGatewayCancelIntentMixin
 from executor.mutation_gateway_types import MutationResult, MutationResultType
 from types import SimpleNamespace
 
 logger = logging.getLogger("executor.mutation_gateway")
 
 
-class MutationGateway(MutationGatewayIntentMixin, MutationGatewayCancelMixin):
+class MutationGateway(MutationGatewayIntentMixin, MutationGatewayCancelMixin, MutationGatewayCancelIntentMixin):
     """Gateway orchestrating safe order mutations across exchanges."""
 
     def __init__(

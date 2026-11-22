@@ -114,6 +114,118 @@ class GlobalStopSubmitMixin:
         return dict(row)
 
     @asynccontextmanager
+    async def cancel_submit_fence(
+        self, *, intent_id: str, intent_service: Any, actor_id: str,
+    ) -> AsyncIterator[Any]:
+        """Serialize a protective CANCEL without allowing global STOP to block it."""
+        key = str(intent_id or "").strip()
+        if not key or intent_service is None:
+            raise GlobalStopError("durable cancel intent and repository are required")
+        if not await self.ensure_pool():
+            raise GlobalStopError("PostgreSQL cancellation fencing is unavailable")
+
+        global_locked = False
+        scope_locked = False
+        yielded_to_caller = False
+        scope_key = ""
+        try:
+            async with self.pool.acquire() as conn:
+                try:
+                    global_locked = bool(await conn.fetchval(
+                        "select pg_try_advisory_lock_shared($1)", FENCE_LOCK_KEY
+                    ))
+                    if not global_locked:
+                        raise GlobalStopError("global STOP transition is in progress")
+                    async with conn.transaction():
+                        intent = await conn.fetchrow(
+                            """
+                            SELECT operation, status, account_scope_id, venue,
+                                   market_type, instrument, pair_key
+                            FROM public.executor_mutation_intents
+                            WHERE intent_id=$1 FOR UPDATE
+                            """,
+                            key,
+                        )
+                        if intent is None or intent["operation"] != "CANCEL" or intent["status"] != "PREPARED":
+                            raise GlobalStopError("cancel requires an exact PREPARED logical intent")
+                        scope_key = build_scope_key(
+                            str(intent["account_scope_id"]), str(intent["venue"]),
+                            str(intent["market_type"]), str(intent["instrument"]),
+                        )
+                    lock_key = advisory_scope_lock_key(scope_key)
+                    scope_locked = bool(await conn.fetchval(
+                        "select pg_try_advisory_lock($1)", lock_key
+                    ))
+                    if not scope_locked:
+                        raise GlobalStopError(
+                            f"another mutation already owns cancel scope {scope_key[:12]}"
+                        )
+                    async with conn.transaction():
+                        intent = await conn.fetchrow(
+                            """
+                            SELECT operation, status, account_scope_id, venue,
+                                   market_type, instrument, pair_key
+                            FROM public.executor_mutation_intents
+                            WHERE intent_id=$1 FOR UPDATE
+                            """,
+                            key,
+                        )
+                        if intent is None or intent["operation"] != "CANCEL" or intent["status"] != "PREPARED":
+                            raise GlobalStopError("cancel intent changed before mutation fence")
+                        control = await conn.fetchrow(
+                            "SELECT is_stopped, epoch, reason FROM public.executor_global_control WHERE singleton_id=1"
+                        )
+                        if control is None:
+                            raise GlobalStopError("global control row is missing")
+                        lease = await self.ownership.acquire(
+                            conn,
+                            account_scope_id=str(intent["account_scope_id"]),
+                            venue=str(intent["venue"]),
+                            market_type=str(intent["market_type"]),
+                            instrument=str(intent["instrument"]),
+                        )
+                        await self.ownership.validate(conn, lease)
+                        await intent_service.mark_submitting_in_transaction(
+                            conn, key, lease=lease, actor_id=actor_id,
+                            risk_snapshot={
+                                "action_class": "CANCEL",
+                                "allowed": True,
+                                "global_stop_active": bool(control["is_stopped"]),
+                                "global_control_epoch": int(control["epoch"]),
+                            },
+                        )
+                        if control["is_stopped"]:
+                            logger.warning(
+                                "protective cancel %s admitted while global STOP is active (epoch=%s)",
+                                key, control["epoch"],
+                            )
+                    yielded_to_caller = True
+                    yield conn, lease
+                finally:
+                    if scope_locked:
+                        try:
+                            await conn.execute(
+                                "select pg_advisory_unlock($1)", advisory_scope_lock_key(scope_key)
+                            )
+                        except Exception as exc:
+                            self._demote_broken_pool(exc)
+                            logger.warning("failed to release protective cancel scope lock")
+                    if global_locked:
+                        try:
+                            await conn.execute(
+                                "select pg_advisory_unlock_shared($1)", FENCE_LOCK_KEY
+                            )
+                        except Exception as exc:
+                            self._demote_broken_pool(exc)
+                            logger.warning("failed to release protective cancel global lock")
+        except GlobalStopError:
+            raise
+        except Exception as exc:
+            if not yielded_to_caller:
+                self._demote_broken_pool(exc)
+            raise
+
+    @asynccontextmanager
     async def derisk_submit_fence(
         self, *, client_order_id: str, account_scope_id: str,
         venue: str, market_type: str, instrument: str,
@@ -429,7 +541,7 @@ class GlobalStopSubmitMixin:
             raise GlobalStopError("V3 mutation intents require an account-scoped venue lease")
         if (
             not client_order_id or len(client_order_id) > 128
-            or action not in {"ENTRY", "HEDGE"}
+            or action not in {"ENTRY", "HEDGE", "DERISK"}
             or (
                 bool(getattr(self, "require_scoped_submits", False))
                 and (
@@ -439,10 +551,10 @@ class GlobalStopSubmitMixin:
                     or not str(scope_market_type or "").strip()
                 )
             )
-            or (action == "HEDGE" and not account_scope_id)
+            or (action in {"HEDGE", "DERISK"} and not account_scope_id)
         ):
             raise GlobalStopError(
-                "valid client order id and scoped ENTRY/HEDGE action are required"
+                "valid client order id and scoped ENTRY/HEDGE action (including DERISK) are required"
             )
 
         yielded_to_caller = False

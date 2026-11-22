@@ -76,7 +76,7 @@ class MutationGatewayIntentMixin:
             request = json.loads(request)
         metadata = request.get("request_metadata") or {}
         action_class = str(metadata.get("action_class") or "ENTRY").upper()
-        if action_class not in {"ENTRY", "HEDGE"}:
+        if action_class not in {"ENTRY", "HEDGE", "DERISK"}:
             await self.order_intent_service.mark_aborted(
                 intent_id, actor_id=actor_id,
                 reason=f"unsupported action class for create-intent gateway: {action_class}",
