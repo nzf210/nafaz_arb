@@ -1,6 +1,6 @@
 # NAFAZ Executor V3 — Durable Data Model
 
-Status: PR-01 design artifact — review required before migration implementation.
+Status: PR-01 design contract — additive schema and repository implementation staged in PR-01B; runtime coordinator integration remains pending.
 Repository: nzf210/nafaz_arb
 Scope: Executor only. The Go scanner and its opportunity contract are frozen.
 
@@ -180,7 +180,7 @@ The following clarifications are normative and supersede any ambiguous wording a
 5. **Event table integrity.** `execution_session_events.session_id` references sessions with `ON DELETE RESTRICT`; aggregate_version is positive/monotonic after the first event; event rows are append-only for application roles. Any retention/purge is a separate audited operation with explicit dependency handling.
 6. **No silent quantity conversion.** Existing V2 quantity columns remain unchanged and retain their legacy semantics. New typed quantity fields are nullable for legacy rows. A V3-ready leg requires an explicit quantity_unit and evidenced conversion metadata before it can participate in hedge or completion calculations.
 
-PR-02 must implement these rules and include catalog assertions that verify the real pre-migration FK, indexes, RLS and grants before changing them.
+PR-01B implements the session/leg FK and event-journal protections with catalog assertions and schema smoke coverage. PR-02 must extend the same fail-closed ownership model to scoped leases, risk control and mutation-boundary fencing.
 
 ## 11. PR-01B schema implementation
 
