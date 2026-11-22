@@ -707,7 +707,7 @@ Reviewed branch head before this follow-up: `8167cefe153e5c950e4732c9120bf2c8a0f
 ### Test and CI evidence
 
 - Regression tests were added for the LIVE registry gate, wrong venue rejection, exact futures-client resolution, and de-risk lane isolation.
-- No local test suite was run in this connector-only execution.
+- A local clone attempt failed with `Could not resolve host: github.com`; no local test suite could be run in this execution.
 - The prior branch head `8167cefe` had no combined-status entries and the available workflow-run lookup returned no PR-triggered runs. CI for the follow-up commits is therefore **PENDING / NOT VERIFIED** until a check run is observed on the final updated branch head. Do not mark tests or CI passed based only on source commits.
 - No merge, deployment, production migration, cutover, or live order was performed.
 
