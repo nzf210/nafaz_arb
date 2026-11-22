@@ -78,18 +78,23 @@ class _FakeConnection:
                 "status": "PREPARED",
                 "recovery_context": args[9],
                 "amount_spec": args[10],
+                "account_scope_id": args[11] if len(args) > 11 else None,
             }
             return dict(self.attempts[client_order_id])
         if "where status in ('SUBMITTING','UNKNOWN')" in query:
             current_id = args[0]
             scope_ex = args[1] if len(args) > 1 else None
-            scope_sym = args[2] if len(args) > 2 else None
+            scope_market = args[2] if len(args) > 2 else None
+            scope_sym = args[3] if len(args) > 3 else None
+            account_scope = args[4] if len(args) > 4 else None
             return next(
                 (dict(row) for key, row in self.attempts.items()
                  if key != current_id
                  and row["status"] in ("SUBMITTING", "UNKNOWN")
                  and (scope_ex is None or str(row.get("exchange", "")).lower() == str(scope_ex).lower())
-                 and (scope_sym is None or str(row.get("symbol", "")).lower() == str(scope_sym).lower())),
+                 and (scope_market is None or str(row.get("market_type", "")).lower() == str(scope_market).lower())
+                 and (scope_sym is None or str(row.get("symbol", "")).lower() == str(scope_sym).lower())
+                 and (account_scope is None or row.get("account_scope_id") == account_scope)),
                 None,
             )
         if "update public.executor_submit_attempts" in query and "returning client_order_id" in query:
@@ -97,6 +102,8 @@ class _FakeConnection:
             if row and row["status"] == "PREPARED":
                 row["status"] = "SUBMITTING"
                 row["fence_epoch"] = args[1]
+                row["owner_scope_key"] = args[2]
+                row["owner_generation"] = args[3]
                 return {"client_order_id": args[0]}
             return None
         if "where client_order_id = $1" in query:
