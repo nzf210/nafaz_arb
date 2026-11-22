@@ -611,8 +611,12 @@ class EntryHedgeMixin:
             required=True,
         )
         global_stop = getattr(self, "global_stop", None)
-        hedge_account_scope_id = account_scope_id_for(
-            self.config, str(order_info.get("global_exchange") or "")
+        hedge_account_scope_id = (
+            account_scope_id_for(
+                self.config, str(order_info.get("global_exchange") or "")
+            )
+            if global_stop is not None and not getattr(self.config, "mock_mode", False)
+            else None
         )
         if global_stop is not None:
             await global_stop.prepare_submit_attempt(
@@ -649,7 +653,7 @@ class EntryHedgeMixin:
                         scope_symbol=global_symbol,
                         scope_market_type="perpetual",
                         account_scope_id=hedge_account_scope_id,
-                        action_class="HEDGE",
+                        action_class=("HEDGE" if hedge_account_scope_id else "ENTRY"),
                         scope_pair_key=pair_tag,
                     ) as fence_conn:
                         order_info["hedge_submit_started"] = True
