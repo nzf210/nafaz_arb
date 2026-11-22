@@ -92,8 +92,11 @@ class RiskControlPlane:
         actor = str(actor_id or "").strip()
         event_key = str(event_idempotency_key or "").strip()
         kind = str(scope_type or "").strip().upper()
-        if not key or not actor or not event_key or not kind:
-            raise ValueError("scope_key, scope_type, actor_id and event_idempotency_key are required")
+        event_name = str(event_type or "").strip()
+        if not key or not actor or not event_key or not kind or not event_name:
+            raise ValueError(
+                "scope_key, scope_type, event_type, actor_id and event_idempotency_key are required"
+            )
         payload = {
             "entry_blocked": bool(entry_blocked),
             "derisk_allowed": bool(derisk_allowed),
@@ -116,7 +119,7 @@ class RiskControlPlane:
                     if isinstance(prior_payload, str):
                         prior_payload = json.loads(prior_payload)
                     if (
-                        str(prior_event["event_type"]) != str(event_type)
+                        str(prior_event["event_type"]) != event_name
                         or bool(prior_event["entry_blocked"]) != bool(entry_blocked)
                         or bool(prior_event["derisk_allowed"]) != bool(derisk_allowed)
                         or prior_payload != payload
@@ -174,7 +177,7 @@ class RiskControlPlane:
                         actor_id, entry_blocked, derisk_allowed, payload
                     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
                     """,
-                    key, next_version, str(event_type), event_key, actor,
+                    key, next_version, event_name, event_key, actor,
                     bool(entry_blocked), bool(derisk_allowed), payload_json,
                 )
         return {"scope_key": key, "version": next_version, "duplicate": False}
