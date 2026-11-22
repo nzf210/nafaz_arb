@@ -84,7 +84,7 @@ class MutationIntentRecoveryWorker:
 
                 if not isinstance(order, Mapping) or not (order.get("id") or order.get("orderId")):
                     if str(current["status"]).upper() != "UNKNOWN":
-                        await self.intent_service.mark_unknown(
+                        current = await self.intent_service.mark_unknown(
                             intent_id, lease=lease, actor_id=self.actor_id,
                             error="exact venue lookup returned NOT_FOUND; absence is not proof of rejection",
                             event_idempotency_key=self._event_key(current, lease, "not-found"),
@@ -94,12 +94,12 @@ class MutationIntentRecoveryWorker:
                 observed_id = str(order.get("id") or order.get("orderId") or "")
                 observed_client_id = str(order.get("clientOrderId") or order.get("client_order_id") or "")
                 if order_id and observed_id != order_id:
-                    await self._mark_unknown_if_needed(
+                    current = await self._mark_unknown_if_needed(
                         current, lease, "venue lookup returned a different exchange order ID",
                     )
                     return self._result(current, "UNRESOLVED", "venue order ID mismatch")
                 if client_order_id and observed_client_id and observed_client_id != client_order_id:
-                    await self._mark_unknown_if_needed(
+                    current = await self._mark_unknown_if_needed(
                         current, lease, "venue lookup returned a different client order ID",
                     )
                     return self._result(current, "UNRESOLVED", "venue client order ID mismatch")
@@ -189,10 +189,10 @@ class MutationIntentRecoveryWorker:
         except Exception:
             return False
 
-    async def _mark_unknown_if_needed(self, intent: Mapping[str, Any], lease: Any, reason: str) -> None:
+    async def _mark_unknown_if_needed(self, intent: Mapping[str, Any], lease: Any, reason: str) -> dict:
         if str(intent["status"]).upper() == "UNKNOWN":
-            return
-        await self.intent_service.mark_unknown(
+            return dict(intent)
+        return await self.intent_service.mark_unknown(
             str(intent["intent_id"]), lease=lease, actor_id=self.actor_id,
             error=reason, event_idempotency_key=self._event_key(intent, lease, "unknown"),
         )
