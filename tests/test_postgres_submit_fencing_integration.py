@@ -1040,3 +1040,83 @@ def test_postgres_slot_sweep_preserves_live_and_unresolved_reservations():
             await service.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.integration
+def test_postgres_new_hedge_generation_uses_durable_confirmed_parent_fill():
+    """A stale worker must size only the residual left by prior confirmed claims."""
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    parent_order_id = "pg-hedge-residual-" + uuid.uuid4().hex[:16]
+
+    async def run():
+        stop = GlobalStopService(dsn, min_size=1, max_size=2)
+        await stop.start()
+        try:
+            claims = HedgeIntentClaimService(global_stop=stop)
+            first = await claims.claim_generation(
+                parent_spot_exchange="indodax",
+                parent_spot_order_id=parent_order_id,
+                parent_spot_client_order_id="spot-client-" + parent_order_id,
+                cumulative_spot_filled=0.004,
+                target_hedge_qty=0.004,
+                residual_qty=0.004,
+                hedge_ratio=1.0,
+                futures_exchange="okx",
+                futures_symbol="BTC/USDT:USDT",
+                claimed_by="worker-a",
+            )
+            assert first is not None
+            assert await claims.mark_submitted(
+                first["claim_key"], first["hedge_client_order_id"]
+            )
+            assert await claims.mark_confirmed(
+                first["claim_key"], 0.003, first["hedge_client_order_id"]
+            )
+
+            # Worker B has a newer Spot fill but a stale local
+            # hedged_short_qty=0, so its supplied residual is deliberately
+            # overstated. The DB aggregate must reduce it to 0.003.
+            second = await claims.claim_generation(
+                parent_spot_exchange="indodax",
+                parent_spot_order_id=parent_order_id,
+                parent_spot_client_order_id="spot-client-" + parent_order_id,
+                cumulative_spot_filled=0.006,
+                target_hedge_qty=0.006,
+                residual_qty=0.006,
+                hedge_ratio=1.0,
+                futures_exchange="okx",
+                futures_symbol="BTC/USDT:USDT",
+                claimed_by="worker-b-stale",
+            )
+            assert second is not None
+            assert second["confirmed_qty"] == pytest.approx(0.003)
+            assert second["target_hedge_qty"] == pytest.approx(0.006)
+            assert second["residual_qty"] == pytest.approx(0.003)
+
+            async with stop.pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    select cumulative_spot_filled, target_hedge_qty,
+                           residual_qty, status
+                    from public.executor_hedge_intent_claims
+                    where claim_key = $1
+                    """,
+                    second["claim_key"],
+                )
+            assert float(row["cumulative_spot_filled"]) == pytest.approx(0.006)
+            assert float(row["target_hedge_qty"]) == pytest.approx(0.006)
+            assert float(row["residual_qty"]) == pytest.approx(0.003)
+            assert row["status"] == "CLAIMED"
+        finally:
+            async with stop.pool.acquire() as conn:
+                await conn.execute(
+                    "delete from public.executor_hedge_intent_claims "
+                    "where parent_spot_order_id = $1",
+                    parent_order_id,
+                )
+            await stop.close()
+
+    asyncio.run(run())
