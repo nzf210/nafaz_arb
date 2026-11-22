@@ -6,7 +6,9 @@ from typing import Any
 from executor.execution_repository import (
     ExecutionRepositoryError, StaleAggregate, ExecutionSessionRepository,
 )
-from executor.execution_repository_fencing import validate_coordinator_lease
+from executor.execution_repository_fencing import (
+    validate_coordinator_lease, insert_session_event,
+)
 
 
 class ExecutionSessionRecovery:
@@ -85,7 +87,7 @@ class ExecutionSessionRecovery:
                     )
                     if updated is None:
                         raise StaleAggregate("session recovery compare-and-swap lost")
-                    await self.repository._insert_event(
+                    await insert_session_event(
                         conn, session_id=session_id,
                         aggregate_version=next_aggregate_version,
                         entity_type="SESSION", entity_id=session_id,
