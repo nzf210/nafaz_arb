@@ -340,7 +340,7 @@ class OrderIntentLifecycleMixin:
     ) -> dict:
         return await self._transition(
             intent_id=intent_id, target_status="UNKNOWN",
-            allowed_from=("SUBMITTING",), event_type="INTENT_SUBMISSION_UNKNOWN",
+            allowed_from=("SUBMITTING", "ACKNOWLEDGED"), event_type="INTENT_SUBMISSION_UNKNOWN",
             actor_id=actor_id, payload={"error": str(error)[:2000]}, lease=lease, error=error,
         )
 
@@ -370,6 +370,8 @@ class OrderIntentLifecycleMixin:
     async def mark_cancel_confirmed(
         self, intent_id: str, *, lease: Any, actor_id: str,
         final_status: str, fresh_fetch: bool, fills_reconciled: bool,
+        exchange_order_id: str | None = None,
+        venue_response: Mapping[str, Any] | None = None,
     ) -> dict:
         status = str(final_status or "").strip().lower()
         if status not in {"canceled", "cancelled", "closed", "filled", "rejected", "expired"}:
@@ -382,6 +384,7 @@ class OrderIntentLifecycleMixin:
             event_type="INTENT_CANCEL_CONFIRMED", actor_id=actor_id,
             payload={"final_status": status, "fresh_fetch": True, "fills_reconciled": True},
             lease=lease, release_reservation=True,
+            exchange_order_id=exchange_order_id, venue_response=venue_response,
         )
 
     async def mark_completed(
