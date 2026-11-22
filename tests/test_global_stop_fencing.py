@@ -1241,3 +1241,15 @@ async def test_spot_entry_persists_prepared_intent_before_reserving_slot():
     assert venue.submit_calls == 1
     assert "ledger_rejected" in events
     assert "release_slot" in events
+
+@pytest.mark.asyncio
+async def test_live_global_stop_requires_complete_scope_before_submit():
+    service = GlobalStopService(
+        "postgresql://unused", require_scoped_submits=True
+    )
+    service.pool = object()
+    with pytest.raises(GlobalStopError, match="complete account/venue/market/instrument scope"):
+        async with service.order_submit_fence(
+            client_order_id="live-unscoped-order"
+        ):
+            pytest.fail("unscoped live submit must not enter the venue mutation section")
