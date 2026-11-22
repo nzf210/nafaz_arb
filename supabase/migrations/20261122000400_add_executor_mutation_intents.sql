@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS public.executor_mutation_intents (
         )
     ),
     state_version BIGINT NOT NULL DEFAULT 1 CHECK (state_version > 0),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    exchange_order_id TEXT,
+    venue_response JSONB,
     owner_scope_key TEXT,
     owner_generation BIGINT,
     last_error TEXT,
