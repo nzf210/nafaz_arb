@@ -139,6 +139,7 @@ async def test_cancel_intent_requires_terminal_fetch_and_fill_reconciliation(pos
     assert submitting["status"] == "SUBMITTING"
     replay = await service.mark_submitting(
         intent["intent_id"], lease=lease, actor_id="cancel-test",
+        risk_snapshot={"action_class": "CANCEL", "allowed": True},
     )
     assert replay["attempt_count"] == 1
 
