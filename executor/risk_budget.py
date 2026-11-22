@@ -28,6 +28,8 @@ class RiskBudgetMetricsBuilder:
         market_data_age_ms: Optional[float] = None,
     ) -> dict:
         now_ms = int(time.time() * 1000)
+        config = getattr(engine, "config", None)
+        leverage = max(1.0, float(getattr(config, "futures_leverage", 1.0) or 1.0))
         gross = deployed = net = unhedged = unrealized_loss = 0.0
         gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = False
         unhedged_duration = 0
@@ -76,10 +78,17 @@ class RiskBudgetMetricsBuilder:
             deployed += notional
             net += notional
             unhedged += notional
+        for pending in (pending_hedges.values() if isinstance(pending_hedges, Mapping) else []):
+            notional = cls._pending_notional(pending)
+            if notional <= 0:
+                gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = True
+            gross += notional
+            deployed += notional / leverage
+            net = max(0.0, abs(net) - notional)
+            unhedged = max(0.0, unhedged - notional)
 
         proposed = max(0.0, float(proposed_notional_usdt or 0.0))
         action = str(action_class or "ENTRY").strip().upper()
-        leverage = max(1.0, float(getattr(getattr(engine, "config", None), "futures_leverage", 1.0) or 1.0))
         if action == "ENTRY":
             gross += proposed
             deployed += proposed
@@ -93,7 +102,6 @@ class RiskBudgetMetricsBuilder:
             unhedged = max(0.0, unhedged - proposed)
             open_order_count += 1
 
-        config = getattr(engine, "config", None)
         capital = max(0.0, float(getattr(config, "capital_total", 0.0) or 0.0))
         daily_loss = max(
             0.0, float(getattr(engine, "_daily_realized_loss_usdt", 0.0) or 0.0)
