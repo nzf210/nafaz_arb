@@ -379,6 +379,9 @@ class RiskStateMixin:
             logger.critical(
                 "Primary daily-loss ledger unavailable; restoring from durable fallback"
             )
+            self._mark_risk_persistence_failed(
+                "daily_loss_restore", RuntimeError("primary daily-loss ledger unavailable")
+            )
             self._risk_persistence_failed = True
             self._trading_halted = True
             self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
@@ -449,6 +452,7 @@ class RiskStateMixin:
                     is_mock=bool(getattr(self.config, "mock_mode", False))
                 )
             except Exception as pg_error:
+                self._mark_risk_persistence_failed("risk_state_restore", pg_error)
                 self._risk_persistence_failed = True
                 self._trading_halted = True
                 self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
@@ -497,14 +501,21 @@ class RiskStateMixin:
                                     is_mock=bool(getattr(self.config, "mock_mode", False)),
                                 )
                                 if not persisted:
+                                    self._mark_risk_persistence_failed(
+                                        "risk_state_reconcile",
+                                        RuntimeError(f"could not persist restored risk state {state_id}"),
+                                    )
                                     self._risk_persistence_failed = True
                                     self._trading_halted = True
                                     self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
                                     self._entry_blocked = True
                         rows = list(merged.values())
-                    except Exception:
+                    except Exception as reconcile_error:
                         logger.exception(
                             "Could not reconcile Supabase risk-state fallback into PostgreSQL"
+                        )
+                        self._mark_risk_persistence_failed(
+                            "risk_state_reconcile", reconcile_error
                         )
                         self._risk_persistence_failed = True
                         self._trading_halted = True
