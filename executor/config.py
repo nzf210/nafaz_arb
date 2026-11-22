@@ -152,6 +152,9 @@ class ExecutorConfig:
     # proven path. When on, stale or missing entries still fall back to REST.
     private_stream_enabled: bool = False
     private_stream_max_age_seconds: float = 5.0
+    executor_instance_id: str = ""
+    emergency_derisk_owner_id: str = ""
+    emergency_derisk_lease_ttl_ms: int = 120000
     # Fraction of accumulated funding retained for realized PnL; only the
     # complementary fraction may decay the target exit spread.
     funding_decay_retention_ratio: float = 0.60
@@ -494,6 +497,16 @@ class ExecutorConfig:
                 except ValueError:
                     pass
 
+        if instance_id := os.getenv("EXECUTOR_INSTANCE_ID"):
+            self.executor_instance_id = instance_id.strip()
+        if emergency_owner := os.getenv("EMERGENCY_DERISK_OWNER_ID"):
+            self.emergency_derisk_owner_id = emergency_owner.strip()
+        if emergency_ttl := os.getenv("EMERGENCY_DERISK_LEASE_TTL_MS"):
+            try:
+                self.emergency_derisk_lease_ttl_ms = int(emergency_ttl)
+            except ValueError:
+                pass
+
         if slippage_env := os.getenv("MAX_ENTRY_SLIPPAGE_PCT"):
             try:
                 self.max_entry_slippage_pct = float(slippage_env)
@@ -625,6 +638,7 @@ class ExecutorConfig:
         "max_funding_cost_pct": (0.0, 10.0, 0.0),
         "max_unhedged_duration_ms": (0, 86400000, 0),
         "min_venue_health_score": (0.0, 1.0, 0.2),
+        "emergency_derisk_lease_ttl_ms": (1000, 300000, 120000),
         "max_entry_slippage_pct": (0.0, 1.0, 0.003),
         "entry_revalidation_min_spread_pct": (0.0, 100.0, 0.0),
         "max_exposure_per_exchange_usdt": (0.0, None, 0.0),
@@ -715,6 +729,9 @@ class ExecutorConfig:
                 "max_funding_cost_pct": getattr(self, "max_funding_cost_pct", 0.0),
                 "max_unhedged_duration_ms": getattr(self, "max_unhedged_duration_ms", 0),
                 "min_venue_health_score": getattr(self, "min_venue_health_score", 0.2),
+                "executor_instance_id": getattr(self, "executor_instance_id", ""),
+                "emergency_derisk_owner_id": getattr(self, "emergency_derisk_owner_id", ""),
+                "emergency_derisk_lease_ttl_ms": getattr(self, "emergency_derisk_lease_ttl_ms", 120000),
                 "mock_mode": getattr(self, "mock_mode", False),
                 "execution_mode": getattr(self, "execution_mode", "TAKER_TAKER"),
             })
