@@ -304,6 +304,15 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         ):
             raise OrderIntentReservationConflict("notional in-flight reservation budget exceeded")
 
+    async def get_intent(self, intent_id: str) -> dict | None:
+        key = required(intent_id, "intent_id")
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM public.executor_mutation_intents WHERE intent_id=$1",
+                key,
+            )
+        return dict(row) if row is not None else None
+
     async def list_unresolved(
         self, *, account_scope_id: str | None = None, limit: int = 100,
     ) -> list[dict]:
