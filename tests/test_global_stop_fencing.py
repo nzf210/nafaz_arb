@@ -1200,7 +1200,10 @@ class _SlotOrderingHarness(_SpotSubmissionHarness):
     def __init__(self, stop, venue, slot_manager):
         super().__init__(stop, venue)
         self.slot_manager = slot_manager
-        self.config = SimpleNamespace(mock_mode=False)
+        self.config = SimpleNamespace(
+            mock_mode=False,
+            exchanges={"mexc": SimpleNamespace(account_scope_id="test-mexc-account")},
+        )
 
     def _spot_slot_account(self, pair_info):
         return pair_info.quote_asset
