@@ -150,6 +150,16 @@ class MutationGateway:
             nonlocal mutation_lease
             mutation_lease = lease
 
+        async def _mark_intent_unknown(error: Exception) -> None:
+            if mutation_intent_id and intent_service is not None and mutation_lease is not None:
+                try:
+                    await intent_service.mark_unknown(
+                        mutation_intent_id, lease=mutation_lease,
+                        actor_id=intent_actor_id, error=str(error),
+                    )
+                except Exception:
+                    logger.exception("failed to persist V3 mutation intent UNKNOWN state")
+
         # Cancellation may use this gateway without entry admission; creates may
         # never degrade to an unfenced compatibility path.
         if self.global_stop is None or not getattr(self.global_stop, "enabled", False):
@@ -282,6 +292,7 @@ class MutationGateway:
                                 "CRITICAL: failed to persist CEX_IP_BLOCK inside submit fence"
                             )
                             await self._mark_unknown_best_effort(client_order_id, exc)
+                            await _mark_intent_unknown(exc)
                             return MutationResult(
                                 status=MutationResultType.SUBMISSION_UNKNOWN,
                                 client_order_id=client_order_id,
@@ -298,6 +309,19 @@ class MutationGateway:
                                 client_order_id=client_order_id,
                                 error_message="explicit venue rejection but durable rejection persistence failed",
                             )
+                        if mutation_intent_id and intent_service is not None and mutation_lease is not None:
+                            try:
+                                await intent_service.mark_rejected(
+                                    mutation_intent_id, lease=mutation_lease,
+                                    actor_id=intent_actor_id, error=str(exc), definitive=True,
+                                )
+                            except Exception:
+                                logger.exception("failed to persist definitive V3 intent rejection")
+                                return MutationResult(
+                                    status=MutationResultType.SUBMISSION_UNKNOWN,
+                                    client_order_id=client_order_id,
+                                    error_message="venue rejection persisted on attempt but logical intent remains unresolved",
+                                )
                         if slot_reserved:
                             await self.slot_manager.release_slot(
                                 exchange, client_order_id, reason="REJECTED"
@@ -309,6 +333,7 @@ class MutationGateway:
                         )
 
                     await self._mark_unknown_best_effort(client_order_id, exc)
+                    await _mark_intent_unknown(exc)
                     return MutationResult(
                         status=MutationResultType.SUBMISSION_UNKNOWN,
                         client_order_id=client_order_id,
@@ -318,6 +343,7 @@ class MutationGateway:
                 if not isinstance(raw, dict):
                     malformed = RuntimeError("venue create-order acknowledgement is not an object")
                     await self._mark_unknown_best_effort(client_order_id, malformed)
+                    await _mark_intent_unknown(malformed)
                     return MutationResult(
                         status=MutationResultType.SUBMISSION_UNKNOWN,
                         client_order_id=client_order_id,
@@ -328,6 +354,7 @@ class MutationGateway:
                 if not exchange_order_id:
                     malformed = RuntimeError("venue create-order acknowledgement has no exchange order ID")
                     await self._mark_unknown_best_effort(client_order_id, malformed)
+                    await _mark_intent_unknown(malformed)
                     return MutationResult(
                         status=MutationResultType.SUBMISSION_UNKNOWN,
                         client_order_id=client_order_id,
@@ -339,6 +366,7 @@ class MutationGateway:
                     await self.global_stop.mark_submit_acknowledged(client_order_id, raw)
                 except Exception as exc:
                     await self._mark_unknown_best_effort(client_order_id, exc)
+                    await _mark_intent_unknown(exc)
                     return MutationResult(
                         status=MutationResultType.SUBMISSION_UNKNOWN,
                         client_order_id=client_order_id,
@@ -346,6 +374,23 @@ class MutationGateway:
                         error_message="venue ACK received but durable ACK persistence failed; no retry permitted",
                         raw_response=raw,
                     )
+
+                if mutation_intent_id and intent_service is not None and mutation_lease is not None:
+                    try:
+                        await intent_service.mark_acknowledged(
+                            mutation_intent_id, lease=mutation_lease,
+                            actor_id=intent_actor_id, exchange_order_id=exchange_order_id,
+                            venue_response=raw,
+                        )
+                    except Exception as exc:
+                        await _mark_intent_unknown(exc)
+                        return MutationResult(
+                            status=MutationResultType.SUBMISSION_UNKNOWN,
+                            client_order_id=client_order_id,
+                            exchange_order_id=exchange_order_id,
+                            error_message="venue ACK and submit attempt are durable but logical intent acknowledgement failed",
+                            raw_response=raw,
+                        )
 
                 try:
                     filled_qty = float(raw.get("filled") or raw.get("executedQty") or 0.0)
@@ -369,6 +414,16 @@ class MutationGateway:
                     raw_response=raw,
                 )
         except GlobalStopError as exc:
+            if mutation_intent_id and intent_service is not None:
+                try:
+                    current_intent = await intent_service.get_intent(mutation_intent_id)
+                    if current_intent and current_intent["status"] == "PREPARED":
+                        await intent_service.mark_aborted(
+                            mutation_intent_id, actor_id=intent_actor_id,
+                            reason=f"global stop blocked before venue boundary: {exc}",
+                        )
+                except Exception:
+                    logger.exception("failed to abort pre-submit V3 mutation intent")
             if slot_reserved:
                 await self.slot_manager.release_slot(
                     exchange, client_order_id, reason="GLOBAL_STOP_BLOCKED"
@@ -382,6 +437,7 @@ class MutationGateway:
             # A disconnect around fence entry can happen after SUBMITTING commits.
             # Keep slot + unresolved ledger; never infer that the venue was not called.
             await self._mark_unknown_best_effort(client_order_id, exc)
+            await _mark_intent_unknown(exc)
             return MutationResult(
                 status=MutationResultType.SUBMISSION_UNKNOWN,
                 client_order_id=client_order_id,
