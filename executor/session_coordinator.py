@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from executor.execution_repository import ExecutionSessionRepository
 from executor.ownership import OwnershipLeaseService
+from executor.execution_session_recovery import ExecutionSessionRecovery
 
 
 class SessionAdmissionError(RuntimeError):
@@ -97,6 +98,7 @@ class SessionCoordinator:
         self.pool = pool
         self.repository = repository or ExecutionSessionRepository(pool)
         self.ownership = ownership or OwnershipLeaseService()
+        self.recovery = ExecutionSessionRecovery(pool, self.repository)
 
     async def admit(
         self, *, opportunity_id: str, source_dispatch_id: str,
@@ -167,6 +169,29 @@ class SessionCoordinator:
                 "coordinator_lease": lease,
                 "coordinator_generation": lease.generation,
             }
+        except Exception:
+            if lease is not None:
+                async with self.pool.acquire() as conn:
+                    await self.ownership.release(conn, lease)
+            raise
+
+    async def recover(
+        self, *, session_id: str, account_scope_id: str, actor_id: str,
+    ) -> dict:
+        """Acquire a newer coordinator generation and durably fence the session."""
+        lease = None
+        try:
+            async with self.pool.acquire() as conn:
+                lease = await self.ownership.acquire(
+                    conn, account_scope_id=account_scope_id,
+                    venue="coordinator", market_type="session",
+                    instrument=session_id,
+                )
+            result = await self.recovery.reclaim(
+                session_id=session_id, account_scope_id=account_scope_id,
+                coordinator_lease=lease, actor_id=actor_id,
+            )
+            return {**result, "coordinator_lease": lease}
         except Exception:
             if lease is not None:
                 async with self.pool.acquire() as conn:
