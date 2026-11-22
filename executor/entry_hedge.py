@@ -615,7 +615,11 @@ class EntryHedgeMixin:
             account_scope_id_for(
                 self.config, str(order_info.get("global_exchange") or "")
             )
-            if global_stop is not None and not getattr(self.config, "mock_mode", False)
+            if (
+                global_stop is not None
+                and getattr(self, "config", None) is not None
+                and not getattr(self.config, "mock_mode", False)
+            )
             else None
         )
         if global_stop is not None:
