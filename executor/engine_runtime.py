@@ -768,8 +768,10 @@ class EngineRuntimeMixin:
             value={"loss_day": self._loss_day},
         )
         persistence_flushed = await self._flush_risk_state_persistence()
-        latch_cleared = self._clear_risk_persistence_latch()
-        if halt_saved and resume_saved and persistence_flushed and latch_cleared:
+        if halt_saved and resume_saved and persistence_flushed:
+            latch_cleared = self._clear_risk_persistence_latch()
+            if not latch_cleared:
+                return False
             pg_risk = getattr(self, "postgres_risk", None)
             if pg_risk is not None:
                 pg_risk.clear_risk_persistence_failure()
