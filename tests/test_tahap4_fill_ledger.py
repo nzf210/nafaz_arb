@@ -4,6 +4,7 @@ import json
 import math
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
