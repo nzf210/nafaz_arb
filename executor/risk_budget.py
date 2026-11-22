@@ -24,6 +24,7 @@ class RiskBudgetMetricsBuilder:
         cls, engine: Any, *, venue: str, action_class: str,
         proposed_notional_usdt: float = 0.0,
         planned_hedge_notional_usdt: float = 0.0,
+        related_venues: Optional[list[str]] = None,
         slippage_bps: Optional[float] = None,
         funding_cost_pct: Optional[float] = None,
         market_data_age_ms: Optional[float] = None,
@@ -112,16 +113,29 @@ class RiskBudgetMetricsBuilder:
             ((daily_loss + unrealized_loss) / capital) * 100.0 if capital > 0 else 0.0
         )
         venue_key = str(venue or "").strip().lower()
+        venue_keys = list(dict.fromkeys(
+            key for key in [venue_key, *[
+                str(item or "").strip().lower() for item in (related_venues or [])
+            ]] if key
+        ))
         halted = getattr(engine, "_exchange_halted", {}) or {}
         failures = getattr(engine, "_consecutive_order_failures", {}) or {}
         max_failures = max(1, int(getattr(config, "max_consecutive_order_failures", 50) or 50))
-        failure_count = int(failures.get(venue_key, 0) or 0) if isinstance(failures, Mapping) else 0
-        health_score = 0.0 if bool(halted.get(venue_key, False)) else max(
-            0.0, min(1.0, 1.0 - failure_count / max_failures)
-        )
+        health_scores = []
+        for venue_name in venue_keys:
+            failure_count = (
+                int(failures.get(venue_name, 0) or 0)
+                if isinstance(failures, Mapping) else 0
+            )
+            score = 0.0 if bool(halted.get(venue_name, False)) else max(
+                0.0, min(1.0, 1.0 - failure_count / max_failures)
+            )
+            health_scores.append(score)
+        health_score = min(health_scores, default=1.0)
         return {
             "snapshot_at_ms": now_ms,
             "target_venue": venue_key,
+            "target_venues": venue_keys,
             "gross_exposure_usdt": None if gross_unpriced else gross,
             "net_exposure_usdt": None if net_unpriced else abs(net),
             "deployed_capital_usdt": None if deployed_unpriced else deployed,
