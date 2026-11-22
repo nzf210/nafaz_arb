@@ -70,7 +70,7 @@ class RiskBudgetMetricsBuilder:
             len(value) if hasattr(value, "__len__") else 0
             for value in (pending_entries, pending_exits, pending_hedges)
         )
-        for pending in (pending_entries.values() if isinstance(pending_entries, Mapping) else []):
+        for pending in cls._iter_pending_orders(pending_entries):
             notional = cls._pending_notional(pending, engine=engine)
             if notional <= 0:
                 gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = True
@@ -78,8 +78,8 @@ class RiskBudgetMetricsBuilder:
             deployed += notional
             net += notional
             unhedged += notional
-        for pending in (pending_hedges.values() if isinstance(pending_hedges, Mapping) else []):
-            notional = cls._pending_notional(pending)
+        for pending in cls._iter_pending_orders(pending_hedges):
+            notional = cls._pending_notional(pending, engine=engine)
             if notional <= 0:
                 gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = True
             gross += notional
@@ -133,6 +133,14 @@ class RiskBudgetMetricsBuilder:
             "market_data_age_ms": market_data_age_ms,
             "venue_health_score": health_score,
         }
+
+    @staticmethod
+    def _iter_pending_orders(value: Any) -> list:
+        if isinstance(value, Mapping):
+            return list(value.values())
+        if isinstance(value, (list, tuple, set)):
+            return list(value)
+        return []
 
     @staticmethod
     def _pending_notional(pending: Any, *, engine: Any = None) -> float:
