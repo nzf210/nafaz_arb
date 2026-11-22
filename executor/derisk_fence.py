@@ -96,8 +96,23 @@ async def derisk_fence(
         yield None
         return
 
+    resolved_scope = None
+    if service is not None or not bool(getattr(config, "mock_mode", False)):
+        try:
+            resolved_scope = account_scope_id or account_scope_id_for(config, venue)
+        except Exception as exc:
+            raise GlobalStopError(
+                f"cannot establish de-risk account scope for {venue}: {exc}"
+            ) from exc
+
     if service is not None:
-        fence = service.derisk_submit_fence(client_order_id=client_order_id)
+        fence = service.derisk_submit_fence(
+            client_order_id=client_order_id,
+            account_scope_id=resolved_scope,
+            venue=venue,
+            market_type=market_type,
+            instrument=instrument,
+        )
         try:
             conn = await fence.__aenter__()
         except Exception as exc:
@@ -131,7 +146,7 @@ async def derisk_fence(
     lease = await _acquire_emergency_lease(
         engine,
         client_order_id=client_order_id,
-        account_scope_id=account_scope_id,
+        account_scope_id=resolved_scope or account_scope_id,
         venue=venue,
         market_type=market_type,
         instrument=instrument,
