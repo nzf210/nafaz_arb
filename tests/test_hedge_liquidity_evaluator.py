@@ -140,3 +140,11 @@ def test_invalid_position_or_nonfinite_book_values_fail_closed():
         _evaluate(position_side="SIDEWAYS")
     with pytest.raises(LiquidityInputError, match="finite decimal"):
         BookLevel.make("NaN", "1")
+
+def test_all_in_fee_and_buffer_cost_ceiling_is_enforced():
+    result = _evaluate(
+        policy=_policy(taker_fee_bps=Decimal("30"), safety_buffer_bps=Decimal("25"),
+                       max_total_cost_bps=Decimal("50")),
+    )
+    assert result.action == "DEFER"
+    assert result.reason == "TOTAL_COST_LIMIT_EXCEEDED"
