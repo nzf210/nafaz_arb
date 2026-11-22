@@ -153,6 +153,7 @@ class _RollbackHarness(RollbackMixin):
             exchanges={"tokocrypto": SimpleNamespace(api_key="test-tokocrypto-key")},
             executor_instance_id="test-worker",
             emergency_derisk_owner_id="test-worker",
+            emergency_derisk_allowed=True,
             emergency_derisk_lease_ttl_ms=120000,
         )
         self.client = venue
