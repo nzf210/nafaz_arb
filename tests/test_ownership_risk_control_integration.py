@@ -575,3 +575,43 @@ async def test_concurrent_lease_acquisition_has_one_owner(postgres_pool):
     owner, lease = granted[0]
     async with postgres_pool.acquire() as conn:
         assert await owner.release(conn, lease) is True
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_releases_only_the_current_workers_leases(postgres_pool):
+    suffix = uuid.uuid4().hex
+    owner_a = OwnershipLeaseService(owner_id="shutdown-owner-a-" + suffix, lease_seconds=60)
+    owner_b = OwnershipLeaseService(owner_id="shutdown-owner-b-" + suffix, lease_seconds=60)
+    scope_a = {
+        "account_scope_id": "shutdown-account-a-" + suffix,
+        "venue": "okx", "market_type": "swap", "instrument": "BTC-USDT-SWAP",
+    }
+    scope_b = {
+        "account_scope_id": "shutdown-account-b-" + suffix,
+        "venue": "mexc", "market_type": "perpetual", "instrument": "ETH_USDT",
+    }
+    async with postgres_pool.acquire() as conn:
+        lease_a = await owner_a.acquire(conn, **scope_a)
+        lease_b = await owner_b.acquire(conn, **scope_b)
+        released = await owner_a.release_all(conn)
+        assert released == 1
+        with pytest.raises(StaleOwnership):
+            await owner_a.validate(conn, lease_a)
+        await owner_b.validate(conn, lease_b)
+        event_rows = await conn.fetch(
+            """
+            SELECT owner_id, event_type
+            FROM public.executor_ownership_events
+            WHERE scope_key = ANY($1::text[])
+            """,
+            [lease_a.scope_key, lease_b.scope_key],
+        )
+        assert (owner_a.owner_id, "RELEASED") in {
+            (str(row["owner_id"]), str(row["event_type"])) for row in event_rows
+        }
+        assert not any(
+            str(row["owner_id"]) == owner_b.owner_id
+            and str(row["event_type"]) == "RELEASED"
+            for row in event_rows
+        )
+        assert await owner_b.release(conn, lease_b) is True
+
