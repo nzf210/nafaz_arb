@@ -280,6 +280,25 @@ async def test_postgres_coordinator_admission_and_transition_are_fenced(postgres
             conn, account_scope_id=account, venue="coordinator",
             market_type="session", instrument=result["session_id"],
         )
+    assert replacement.generation == lease.generation + 1
+
+    recovered = SessionCoordinator(
+        pool=postgres_pool,
+        ownership=OwnershipLeaseService(owner_id=replacement.owner_id),
+    )
+    replay = await recovered.admit(
+        opportunity_id="opp-" + suffix,
+        source_dispatch_id="dispatch-" + suffix,
+        account_scope_id=account,
+        pair_key="indodax:btc_idr->okx:btc-usdt-swap",
+        legs=_legs(suffix),
+        actor_id="recovery-test",
+        **_snapshots(),
+    )
+    assert replay["created"] is False
+    assert replay["session_id"] == result["session_id"]
+    assert replay["coordinator_generation"] == replacement.generation
+
     with pytest.raises(StaleAggregate, match="coordinator lease"):
         await coordinator.transition(
             coordinator_lease=lease,
@@ -289,12 +308,28 @@ async def test_postgres_coordinator_admission_and_transition_are_fenced(postgres
             expected_aggregate_version=4,
             fencing_generation=lease.generation,
             event_type="SESSION_ADMITTED",
-            event_idempotency_key=result["admission_key"] + ":admitted",
+            event_idempotency_key=result["admission_key"] + ":admitted-stale",
             actor_id="stale-worker",
         )
-    assert replacement.generation == lease.generation + 1
+    admitted = await recovered.transition(
+        coordinator_lease=replay["coordinator_lease"],
+        session_id=result["session_id"],
+        target_state="ADMITTED",
+        expected_state_version=3,
+        expected_aggregate_version=5,
+        fencing_generation=replacement.generation,
+        event_type="SESSION_ADMITTED",
+        event_idempotency_key=result["admission_key"] + ":admitted",
+        actor_id="recovery-worker",
+    )
+    assert admitted["state"] == "ADMITTED"
     async with postgres_pool.acquire() as conn:
-        await OwnershipLeaseService(owner_id=replacement.owner_id).release(conn, replacement)
+        event_types = await conn.fetch(
+            "SELECT event_type FROM public.execution_session_events WHERE session_id=$1 ORDER BY aggregate_version",
+            result["session_id"],
+        )
+    assert event_types[-2]["event_type"] == "COORDINATOR_LEASE_RECLAIMED"
+    await recovered.release(replay["coordinator_lease"])
 
 
 @pytest.mark.asyncio
