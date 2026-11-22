@@ -204,6 +204,18 @@ async def test_postgres_partial_spot_fills_reserve_and_allocate_hedge_exactly_on
         coordinator_lease=lease, fencing_generation=lease.generation,
     )
     assert replay_reservation["duplicate"] is True
+    with pytest.raises(Exception, match="idempotency key was reused"):
+        await service.reserve(
+            session_id=admitted["session_id"],
+            futures_venue="okx", futures_market_type="swap",
+            futures_symbol="BTC-USDT-SWAP", base_asset="BTC",
+            position_side="SHORT", contract_type="LINEAR_PERPETUAL",
+            contract_size="0.001", quantity_unit="CONTRACTS",
+            base_per_unit="0.001", requested_base_quantity="0.0004",
+            minimum_base_quantity="0.0003",
+            idempotency_key="reserve-" + suffix, actor_id="hedge-integration-test",
+            coordinator_lease=lease, fencing_generation=lease.generation,
+        )
 
     submitted = await service.mark_submitted(
         session_id=admitted["session_id"], reservation_id=reservation["reservation_id"],
