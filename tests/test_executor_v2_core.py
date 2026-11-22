@@ -211,6 +211,7 @@ async def test_mutation_gateway_create_and_timeout():
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
     client_mock = AsyncMock()
+    client_mock.id = "tokocrypto"
     client_mock.create_order_direct.return_value = {
         "id": "ex-101", "filled": 1.5, "price": 100.0,
     }
@@ -229,6 +230,7 @@ async def test_mutation_gateway_create_and_timeout():
     assert await slot_mgr.get_active_slots_count("tokocrypto") == 1
 
     slow_client = AsyncMock()
+    slow_client.id = "tokocrypto"
     slow_client.create_order_direct.side_effect = asyncio.TimeoutError("gateway timeout")
     res_timeout = await gateway.execute_create_order(
         slow_client, exchange="tokocrypto", market_type="spot",
@@ -260,6 +262,7 @@ async def test_mutation_gateway_connection_reset_is_unknown_and_keeps_slot():
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
     client_mock = AsyncMock()
+    client_mock.id = "okx"
     client_mock.create_order_direct.side_effect = ConnectionResetError("socket reset")
     result = await gateway.execute_create_order(
         client_mock, exchange="okx", market_type="perpetual",
@@ -280,6 +283,7 @@ async def test_mutation_gateway_definitive_rejection_releases_slot_after_ledger_
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
     client_mock = AsyncMock()
+    client_mock.id = "tokocrypto"
     client_mock.create_order_direct.side_effect = InvalidOrder("invalid order")
     result = await gateway.execute_create_order(
         client_mock, exchange="tokocrypto", market_type="spot",
@@ -296,6 +300,7 @@ async def test_mutation_gateway_missing_order_id_remains_unknown():
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=OrderSlotManager())
     client_mock = AsyncMock()
+    client_mock.id = "mexc"
     client_mock.create_order_direct.return_value = {"status": "open"}
     result = await gateway.execute_create_order(
         client_mock, exchange="mexc", market_type="perpetual",
@@ -312,6 +317,7 @@ async def test_mutation_gateway_ack_persistence_failure_keeps_unresolved_slot():
     slot_mgr = OrderSlotManager()
     gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
     client_mock = AsyncMock()
+    client_mock.id = "okx"
     client_mock.create_order_direct.return_value = {"id": "accepted-but-unpersisted"}
     result = await gateway.execute_create_order(
         client_mock, exchange="okx", market_type="perpetual",
@@ -327,6 +333,7 @@ async def test_mutation_gateway_explicit_ip_ban_persists_global_stop():
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=OrderSlotManager())
     client_mock = AsyncMock()
+    client_mock.id = "okx"
     client_mock.create_order_direct.side_effect = RuntimeError(
         "HTTP_418: IP address banned until reset"
     )
