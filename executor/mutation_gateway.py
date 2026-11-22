@@ -116,6 +116,54 @@ class MutationGateway:
                 client_order_id,
             )
 
+    @staticmethod
+    def _resolve_create_target(client: Any, exchange: str, market_type: str):
+        """Resolve the exact venue + market client before persisting or submitting."""
+        if market_type in {"spot", "local"}:
+            market_scope = "spot"
+        elif market_type in {"future", "futures", "perpetual", "swap"}:
+            market_scope = "futures"
+        else:
+            raise ValueError(f"unsupported create-order market type: {market_type or 'empty'}")
+
+        target = client
+        resolver = getattr(client, "for_venue", None)
+        if callable(resolver):
+            facade = resolver(exchange, market_scope)
+            if facade is None:
+                raise ValueError(
+                    f"no configured {market_scope} client for venue {exchange}"
+                )
+            facade_id = str(getattr(facade, "id", "") or "").strip().lower()
+            if facade_id == exchange:
+                target = facade
+            else:
+                target_attr = "local" if market_scope == "spot" else "global_fut"
+                target = getattr(facade, target_attr, None)
+
+        actual_exchange = str(getattr(target, "id", "") or "").strip().lower()
+        if not actual_exchange:
+            raise ValueError(
+                "resolved create-order client does not expose a verifiable venue id"
+            )
+        if actual_exchange != exchange:
+            raise ValueError(
+                f"create-order venue mismatch: requested {exchange}, resolved {actual_exchange}"
+            )
+        return target, market_scope
+
+    @staticmethod
+    def _is_reduce_only(params: dict) -> bool:
+        value = params.get("reduceOnly", params.get("reduce_only", False))
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes"}:
+                return True
+            if normalized in {"false", "0", "no", ""}:
+                return False
+            raise ValueError("reduceOnly must be a boolean value")
+        return bool(value)
+
     async def execute_create_order(
         self,
         client: Any,
@@ -134,10 +182,43 @@ class MutationGateway:
     ) -> MutationResult:
         """Create through the durable PREPARED/SUBMITTING + shared session fence."""
         exchange = exchange.lower().strip()
-        market_type = market_type.lower().strip()
+        requested_market_type = market_type.lower().strip()
         side = side.lower().strip()
         order_type = order_type.lower().strip()
         params = dict(extra_params or {})
+
+        # This method is deliberately the exposure-increasing lane. Spot SELL
+        # and futures reduceOnly orders must use the independent de-risk path so
+        # a global entry STOP can never strand an exit/close.
+        if side not in {"buy", "sell"}:
+            return MutationResult(
+                status=MutationResultType.REJECTED,
+                client_order_id="",
+                error_message="create-order side must be buy or sell",
+            )
+        try:
+            reduce_only = self._is_reduce_only(params)
+            venue_client, market_scope = self._resolve_create_target(
+                client, exchange, requested_market_type
+            )
+        except Exception as exc:
+            return MutationResult(
+                status=MutationResultType.REJECTED,
+                client_order_id="",
+                error_message=f"create-order venue/market validation failed: {exc}",
+            )
+        if (market_scope == "spot" and side == "sell") or (
+            market_scope == "futures" and reduce_only
+        ):
+            return MutationResult(
+                status=MutationResultType.REJECTED,
+                client_order_id="",
+                error_message=(
+                    "risk-reducing create-order must use the dedicated de-risk path; "
+                    "it is not subject to the entry Global STOP fence"
+                ),
+            )
+        market_type = "spot" if market_scope == "spot" else "perpetual"
 
         # Cancellation may use this gateway without entry admission; creates may
         # never degrade to an unfenced compatibility path.
@@ -171,8 +252,8 @@ class MutationGateway:
                 ),
             )
 
-        if not callable(getattr(client, "create_order_direct", None)) and not callable(
-            getattr(client, "create_order", None)
+        if not callable(getattr(venue_client, "create_order_direct", None)) and not callable(
+            getattr(venue_client, "create_order", None)
         ):
             return MutationResult(
                 status=MutationResultType.REJECTED,
@@ -250,12 +331,12 @@ class MutationGateway:
             )
 
         async def _call_venue():
-            if callable(getattr(client, "create_order_direct", None)):
-                return await client.create_order_direct(
+            if callable(getattr(venue_client, "create_order_direct", None)):
+                return await venue_client.create_order_direct(
                     symbol=symbol, order_type=order_type, side=side,
                     amount=quantity, price=price, params=params,
                 )
-            return await client.create_order(
+            return await venue_client.create_order(
                 symbol=symbol, type=order_type, side=side,
                 amount=quantity, price=price, params=params,
             )
