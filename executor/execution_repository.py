@@ -17,7 +17,7 @@ from executor.execution_serialization import (
     _canonical_json, _required_text, _same_json, _same_value,
 )
 from executor.risk_control import RiskControlPlane, risk_scope_keys
-from executor.ownership import build_scope_key
+from executor.execution_repository_fencing import admission_risk_scopes, validate_coordinator_lease
 
 
 class ExecutionRepositoryError(RuntimeError):
@@ -82,7 +82,7 @@ class ExecutionSessionRepository:
             async with conn.transaction():
                 risk_decision = None
                 if coordinator_lease is not None:
-                    await self._validate_coordinator_lease(
+                    await validate_coordinator_lease(
                         conn, coordinator_lease, session_id=session_id,
                         account_scope_id=account_scope_id,
                         expected_generation=generation,
@@ -172,7 +172,7 @@ class ExecutionSessionRepository:
                     }
 
                 if coordinator_lease is not None:
-                    scopes = self._admission_risk_scopes(
+                    scopes = admission_risk_scopes(
                         account_scope_id=account_scope_id, pair_key=pair_key,
                         session_id=session_id, legs=validated_legs,
                     )
@@ -249,47 +249,6 @@ class ExecutionSessionRepository:
             "session_id": session_id, "created": True, "aggregate_version": 3,
             "risk_decision": risk_decision,
         }
-
-    @staticmethod
-    def _admission_risk_scopes(*, account_scope_id: str, pair_key: str,
-                               session_id: str, legs: list[Mapping[str, Any]]) -> list[str]:
-        scopes = {"global", f"account:{account_scope_id}", f"pair:{pair_key}", f"session:{session_id}"}
-        for leg in legs:
-            scopes.update(risk_scope_keys(
-                account_scope_id=account_scope_id, venue=str(leg["venue"]),
-                market_type=str(leg["market_type"]), instrument=str(leg["symbol"]),
-            ))
-        return sorted(scopes)
-
-    @staticmethod
-    async def _validate_coordinator_lease(
-        conn: Any, lease: Any, *, session_id: str,
-        account_scope_id: str, expected_generation: int,
-    ) -> None:
-        def value(name: str) -> Any:
-            return lease.get(name) if isinstance(lease, Mapping) else getattr(lease, name, None)
-        owner_id = str(value("owner_id") or "").strip()
-        scope_key = str(value("scope_key") or "").strip()
-        generation = int(value("generation") or 0)
-        expected_key = build_scope_key(account_scope_id, "coordinator", "session", session_id)
-        if (
-            not owner_id or scope_key != expected_key or generation <= 0
-            or generation != int(expected_generation)
-        ):
-            raise StaleAggregate("coordinator lease identity or generation is invalid")
-        row = await conn.fetchrow(
-            """
-            SELECT 1 FROM public.executor_ownership_leases
-            WHERE scope_key=$1 AND account_scope_id=$2
-              AND venue='coordinator' AND market_type='session'
-              AND instrument=$3 AND owner_id=$4 AND generation=$5
-              AND lease_expires_at > clock_timestamp()
-            FOR UPDATE
-            """,
-            scope_key, account_scope_id, session_id, owner_id, generation,
-        )
-        if row is None:
-            raise StaleAggregate("coordinator lease is expired, missing or superseded")
 
     async def _existing_event(
         self, conn: Any, *, session_id: str, idempotency_key: str,
