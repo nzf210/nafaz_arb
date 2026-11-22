@@ -55,7 +55,17 @@ async def _prepare_intent(pool, suffix):
         quantity="0.002", price="65000",
         reserved_base_qty="0.002", reserved_notional="130",
         reservation_asset="USDT", actor_id="gateway-test",
-        request_metadata={"action_class": "ENTRY"},
+        request_metadata={
+            "action_class": "ENTRY",
+            "risk_metrics": {
+                "gross_exposure_usdt": 0, "net_exposure_usdt": 0,
+                "deployed_capital_usdt": 0, "unhedged_notional_usdt": 0,
+                "unhedged_duration_ms": 0, "open_order_count": 0,
+                "daily_loss_usdt": 0, "drawdown_pct": 0,
+                "slippage_bps": 0, "funding_cost_pct": 0,
+                "market_data_age_ms": 0, "venue_health_score": 1,
+            },
+        },
     )
     return intents, intent
 
