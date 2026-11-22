@@ -253,6 +253,44 @@ class ExecutionFillService:
                 ):
                     raise FillValidationError("venue-bound fill identity does not match its leg")
 
+                prior_event = await conn.fetchrow(
+                    """
+                    SELECT event_type, payload
+                    FROM public.execution_session_events
+                    WHERE session_id=$1 AND event_idempotency_key=$2
+                    """,
+                    facts["session_id"], idem,
+                )
+                if prior_event is not None:
+                    prior_payload = (
+                        json.loads(prior_event["payload"])
+                        if isinstance(prior_event["payload"], str)
+                        else prior_event["payload"]
+                    )
+                    if (
+                        str(prior_event["event_type"]) not in {
+                            "LEG_FILL_RECORDED", "LEG_LATE_FILL_REQUIRES_RECONCILIATION"
+                        }
+                        or str(prior_payload.get("exchange_trade_id") or "")
+                        != facts["exchange_trade_id"]
+                    ):
+                        raise FillConflict("fill event idempotency key was reused for another trade")
+                    prior_fill = await conn.fetchrow(
+                        """
+                        SELECT fill_id FROM public.execution_fills
+                        WHERE account_scope_id=$1 AND venue=$2 AND market_type=$3
+                          AND symbol=$4 AND exchange_trade_id=$5
+                        """,
+                        facts["account_scope_id"], facts["venue"], facts["market_type"],
+                        facts["symbol"], facts["exchange_trade_id"],
+                    )
+                    if prior_fill is None:
+                        raise FillConflict("fill event exists without its immutable fill record")
+                    return {
+                        "duplicate": True, "fill_id": str(prior_fill["fill_id"]),
+                        "aggregate_version": int(session["aggregate_version"]),
+                    }
+
                 inserted = await conn.fetchrow(
                     """
                     INSERT INTO public.execution_fills (
