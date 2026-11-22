@@ -184,3 +184,10 @@ They must be mapped explicitly to V3 session/leg projections; do not rename enum
 - Legacy rows with unknown ownership must not be assigned a trusted fencing generation by default. Keep generation NULL/unknown until a V3 ownership acquisition establishes a real generation. Preserve V2 owner_fencing during compatibility.
 - The transition transaction must verify the expected aggregate_version in addition to entity version and fencing generation. A failed compare-and-swap changes no row and appends no event.
 - Session deletion must not cascade to legs, events, orders, fills, obligations, positions or exit records. Use RESTRICT/non-cascading relationships and a separate audited retention process.
+
+## 12. PR-01B schema/runtime boundary
+
+The schema migration now provides the durable columns and append-only event table described by PR-01. It does not itself implement state transitions. Runtime writers must still perform entity CAS, aggregate cursor increment and event insertion in one PostgreSQL transaction, checking the current fencing generation. No runtime path may write the session projection and event journal in separate transactions.
+
+The migration deliberately leaves legacy provenance and fencing generation NULL. A V3 writer must provide explicit account scope, source dispatch, immutable policy snapshot/hash, typed market identity and a verified ownership generation before allowing a new exposure mutation.
+
