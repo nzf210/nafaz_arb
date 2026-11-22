@@ -57,13 +57,23 @@ class RiskControlPlane:
         action = str(action_class or "ENTRY").strip().upper()
         if action not in {"ENTRY", "HEDGE", "DERISK"}:
             raise ValueError("action_class must be ENTRY, HEDGE or DERISK")
+        # Admission and control updates share the same transaction-scoped
+        # advisory locks. This gives a clear linearization point: either the
+        # block commits before admission reads the control, or admission marks
+        # its durable submit attempt before the block can commit.
+        ordered_scope_keys = sorted(set(str(key) for key in scope_keys if str(key)))
+        for scope_key in ordered_scope_keys:
+            await conn.execute(
+                "select pg_advisory_xact_lock(hashtextextended('nafaz:risk-control:' || $1, 0))",
+                scope_key,
+            )
         rows = await conn.fetch(
             """
             SELECT scope_key, entry_blocked, derisk_allowed, version, limits
             FROM public.executor_risk_controls
             WHERE scope_key = ANY($1::text[])
             """,
-            list(dict.fromkeys(scope_keys)),
+            ordered_scope_keys,
         )
         blocked = []
         derisk_denied = []
