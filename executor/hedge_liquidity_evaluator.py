@@ -99,6 +99,9 @@ class HedgeLiquidityDecision:
     estimated_fee_bps: Decimal
     estimated_total_cost_bps: Decimal | None
     book_age_ms: int | None
+    book_observed_at_ms: int
+    evaluated_at_ms: int
+    unhedged_notional_usd: Decimal
     wait_elapsed_ms: int
     wait_remaining_ms: int
     book_sequence: str
@@ -130,6 +133,9 @@ def _defer_or_derisk(
         estimated_fee_bps=taker_fee,
         estimated_total_cost_bps=None,
         book_age_ms=max(0, now_ms - book.observed_at_ms),
+        book_observed_at_ms=int(book.observed_at_ms),
+        evaluated_at_ms=int(now_ms),
+        unhedged_notional_usd=unhedged_notional_usd,
         wait_elapsed_ms=elapsed, wait_remaining_ms=remaining,
         book_sequence=book.sequence,
         next_evaluate_at_ms=now_ms + delay,
@@ -182,6 +188,9 @@ def evaluate_hedge_liquidity(
             slippage_bps=None, estimated_fee_bps=policy.taker_fee_bps,
             estimated_total_cost_bps=None,
             book_age_ms=max(0, now_ms - book.observed_at_ms),
+            book_observed_at_ms=int(book.observed_at_ms),
+            evaluated_at_ms=int(now_ms),
+            unhedged_notional_usd=unhedged_usd,
             wait_elapsed_ms=max(0, now_ms - unhedged_since_ms),
             wait_remaining_ms=max(0, policy.max_unhedged_wait_ms - max(0, now_ms - unhedged_since_ms)),
             book_sequence=book.sequence, next_evaluate_at_ms=now_ms + 500,
@@ -301,7 +310,9 @@ def evaluate_hedge_liquidity(
         executable_notional_usd=notional_usd,
         slippage_bps=slippage, estimated_fee_bps=policy.taker_fee_bps,
         estimated_total_cost_bps=total_cost,
-        book_age_ms=max(0, age), wait_elapsed_ms=elapsed,
+        book_age_ms=max(0, age), book_observed_at_ms=int(book.observed_at_ms),
+        evaluated_at_ms=int(now_ms), unhedged_notional_usd=unhedged_usd,
+        wait_elapsed_ms=elapsed,
         wait_remaining_ms=wait_remaining, book_sequence=book.sequence,
         next_evaluate_at_ms=now_ms,
     )
