@@ -49,6 +49,7 @@ def _create_args(suffix, **overrides):
         "venue": "okx",
         "market_type": "swap",
         "instrument": "BTC-USDT-SWAP",
+        "pair_key": "indodax:btc_idr->okx:btc-usdt-swap",
         "side": "sell",
         "order_type": "limit",
         "quantity": "0.002",
