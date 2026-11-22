@@ -316,10 +316,6 @@ class ExecutionDomainRepository:
             raise ValueError("event_type is required")
         if fencing_generation <= 0:
             raise StaleExecutionFence("V3 transitions require an acquired positive fencing generation")
-        transitions = _SESSION_TRANSITIONS if kind == "SESSION" else _LEG_TRANSITIONS
-        if next_state not in transitions.get(expected_state, set()):
-            raise InvalidExecutionTransition(f"transition {expected_state} -> {next_state} is not allowed")
-
         payload = dict(evidence or {})
         _validate_transition_evidence(kind, next_state, payload)
         if reason:
@@ -367,6 +363,12 @@ class ExecutionDomainRepository:
                         entity_version=int(prior["entity_version"]),
                         aggregate_version=int(prior["aggregate_version"]),
                         event_id=str(prior["event_id"]), duplicate=True,
+                    )
+
+                transitions = _SESSION_TRANSITIONS if kind == "SESSION" else _LEG_TRANSITIONS
+                if next_state not in transitions.get(expected_state, set()):
+                    raise InvalidExecutionTransition(
+                        f"transition {expected_state} -> {next_state} is not allowed"
                     )
 
                 if int(session["aggregate_version"]) != expected_aggregate_version:
