@@ -189,7 +189,7 @@ async def test_coordinator_admission_acquires_session_scope_and_passes_fence():
 
 
 @pytest.mark.asyncio
-async def test_coordinator_releases_lease_when_durable_admission_fails():
+async def test_coordinator_retains_lease_when_admission_outcome_is_ambiguous():
     ownership = _FakeOwnership()
     repository = _FakeRepository(error=RuntimeError("database unavailable"))
     coordinator = SessionCoordinator(
@@ -201,7 +201,7 @@ async def test_coordinator_releases_lease_when_durable_admission_fails():
             account_scope_id="account-a", pair_key="route-a", legs=_legs(),
             actor_id="unit-test", **_snapshots(),
         )
-    assert ownership.released == [ownership.lease]
+    assert ownership.released == []
 
 
 @pytest.mark.asyncio
