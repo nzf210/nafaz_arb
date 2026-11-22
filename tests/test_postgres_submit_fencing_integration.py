@@ -794,7 +794,12 @@ def test_postgres_derisk_lane_is_not_blocked_by_active_entry_fence():
     entry = ctx.Process(
         target=_submitter,
         args=(dsn, entry_id, venue_active, venue_release, backend_queue),
-        kwargs={"exchange": "mexc", "symbol": "DODO_USDT_" + suffix},
+        kwargs={
+            "exchange": "mexc",
+            "symbol": "DODO_USDT_" + suffix,
+            "scope_exchange": "mexc",
+            "scope_symbol": "DODO_USDT_" + suffix,
+        },
     )
     derisk = ctx.Process(
         target=_derisk_holder,
