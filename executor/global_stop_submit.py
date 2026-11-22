@@ -224,6 +224,7 @@ class GlobalStopSubmitMixin:
         self, conn: Any, *, client_order_id: str, scope_requested: bool,
         scope_exchange: Optional[str], scope_symbol: Optional[str],
         scope_market_type: Optional[str],
+        expected_mutation_intent_id: Optional[str] = None,
     ) -> Optional[Any]:
         if not scope_requested:
             return None
@@ -232,7 +233,7 @@ class GlobalStopSubmitMixin:
                 "both scope_exchange and scope_symbol are required for scoped submit fencing"
             )
         intent = await conn.fetchrow(
-            "select exchange, market_type, symbol, status, account_scope_id, pair_key "
+            "select exchange, market_type, symbol, status, account_scope_id, pair_key, mutation_intent_id "
             "from public.executor_submit_attempts "
             "where client_order_id = $1 for update",
             client_order_id,
@@ -241,6 +242,10 @@ class GlobalStopSubmitMixin:
             raise GlobalStopError(
                 f"scoped submit requires a durable PREPARED intent: {client_order_id}"
             )
+        stored_mutation_intent_id = str(intent["mutation_intent_id"] or "").strip() or None
+        expected_intent_id = str(expected_mutation_intent_id or "").strip() or None
+        if stored_mutation_intent_id != expected_intent_id:
+            raise GlobalStopError("submit attempt mutation intent linkage does not match")
         durable_exchange = str(intent["exchange"] or "").strip().lower()
         durable_market = str(intent["market_type"] or "").strip().lower()
         durable_symbol = str(intent["symbol"] or "").strip()
@@ -373,6 +378,10 @@ class GlobalStopSubmitMixin:
         scope_session_id: Optional[str] = None,
         risk_metrics: Optional[dict] = None,
         risk_limits: Optional[dict] = None,
+        mutation_intent_id: Optional[str] = None,
+        mutation_intent_service: Optional[Any] = None,
+        mutation_intent_actor_id: Optional[str] = None,
+        mutation_intent_lease_callback: Optional[Any] = None,
     ) -> AsyncIterator[Any]:
         """Fence a venue mutation with shared global STOP and exclusive instrument ownership.
 
@@ -458,6 +467,7 @@ class GlobalStopSubmitMixin:
                             scope_exchange=scope_exchange,
                             scope_symbol=scope_symbol,
                             scope_market_type=scope_market_type,
+                            expected_mutation_intent_id=mutation_intent_id,
                         )
                         lease, risk_snapshot = await self._acquire_submit_ownership(
                             conn,
@@ -491,6 +501,18 @@ class GlobalStopSubmitMixin:
                             lease=lease,
                             risk_snapshot=risk_snapshot,
                         )
+                        if mutation_intent_id:
+                            if mutation_intent_service is None or lease is None:
+                                raise GlobalStopError(
+                                    "V3 submit requires the durable mutation intent service and scoped lease"
+                                )
+                            await mutation_intent_service.mark_submitting_in_transaction(
+                                conn, mutation_intent_id, lease=lease,
+                                actor_id=str(mutation_intent_actor_id or "executor"),
+                                risk_snapshot=risk_snapshot,
+                            )
+                    if mutation_intent_lease_callback is not None:
+                        mutation_intent_lease_callback(lease)
                     yielded_to_caller = True
                     yield conn
                 finally:
