@@ -1,6 +1,9 @@
+import json
 from types import SimpleNamespace
 
 import pytest
+
+from executor.config import ExecutorConfig
 
 from executor.risk_budget import (
     RiskBudgetEvaluator,
@@ -188,3 +191,21 @@ def test_config_limits_derive_safe_budgets_from_existing_executor_settings():
     assert limits["max_drawdown_pct"] == 2.5
     assert limits["max_slippage_bps"] == 30.0
     assert limits["max_market_data_age_ms"] == 2500.0
+
+def test_new_quantitative_risk_budget_fields_load_from_executor_config(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({
+        "executor": {
+            "max_drawdown_pct": 4.5,
+            "max_funding_cost_pct": 0.08,
+            "max_unhedged_duration_ms": 90000,
+            "min_venue_health_score": 0.35,
+        }
+    }), encoding="utf-8")
+    config = ExecutorConfig()
+    config._apply_file(str(path))
+
+    assert config.max_drawdown_pct == 4.5
+    assert config.max_funding_cost_pct == 0.08
+    assert config.max_unhedged_duration_ms == 90000
+    assert config.min_venue_health_score == 0.35
