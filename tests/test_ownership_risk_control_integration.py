@@ -382,6 +382,7 @@ async def test_global_stop_blocks_entry_but_allows_approved_protective_hedge():
         )
         assert global_control["entry_blocked"] is True
         assert global_control["derisk_allowed"] is True
+        assert global_control["version"] == control_version
     finally:
         async with service.pool.acquire() as conn:
             await conn.execute(
