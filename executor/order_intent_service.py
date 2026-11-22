@@ -19,6 +19,11 @@ from executor.order_intent_common import (
 )
 from executor.order_intent_lifecycle import OrderIntentLifecycleMixin
 
+__all__ = [
+    "OrderIntentError", "OrderIntentConflict", "OrderIntentReservationConflict",
+    "OrderIntentStaleOwner", "OrderIntentService",
+]
+
 
 def _canonical(value: Mapping[str, Any]) -> str:
     try:
