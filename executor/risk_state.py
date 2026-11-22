@@ -2,6 +2,9 @@
 
 import asyncio
 import json
+import os
+import tempfile
+import json
 import logging
 import time
 
@@ -13,10 +16,63 @@ logger = logging.getLogger("executor.engine")
 class RiskStateMixin:
     """Persistence and lifecycle controls for durable risk state."""
 
+    def _risk_persistence_latch_path(self) -> str:
+        configured = str(
+            getattr(self.config, "risk_persistence_latch_path", "") or ""
+        ).strip()
+        return configured or os.path.join(
+            "data", "executor", "risk-persistence-failed.json"
+        )
+
+    def _write_risk_persistence_latch(self, state_type: str, exc: BaseException) -> bool:
+        path = self._risk_persistence_latch_path()
+        directory = os.path.dirname(os.path.abspath(path))
+        try:
+            os.makedirs(directory, exist_ok=True)
+            payload = {
+                "state_type": str(state_type),
+                "error": f"{type(exc).__name__}: {exc}",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=directory,
+                prefix=".risk-persistence-", suffix=".tmp", delete=False,
+            ) as handle:
+                json.dump(payload, handle, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temporary = handle.name
+            os.replace(temporary, path)
+            directory_fd = os.open(directory, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            return True
+        except Exception:
+            logger.exception("Could not write durable local risk persistence latch")
+            return False
+
+    def _clear_risk_persistence_latch(self) -> bool:
+        path = self._risk_persistence_latch_path()
+        try:
+            if os.path.exists(path):
+                os.unlink(path)
+                directory_fd = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            return True
+        except Exception:
+            logger.exception("Could not clear durable local risk persistence latch")
+            return False
+
     def _mark_risk_persistence_failed(self, state_type: str, exc: BaseException) -> None:
         if bool(getattr(self.config, "mock_mode", False)):
             logger.warning("Mock risk-state persistence failed for %s: %s", state_type, exc)
             return
+        self._write_risk_persistence_latch(state_type, exc)
         writer = getattr(self, "supabase", None)
         pg_risk = getattr(self, "postgres_risk", None)
         if writer is not None and getattr(writer, "enabled", False):
@@ -304,6 +360,7 @@ class RiskStateMixin:
             bool(getattr(backend, "risk_persistence_failed", lambda: False)())
             for backend in backends if backend is not None
         )
+        failed = failed or os.path.exists(self._risk_persistence_latch_path())
         if not failed:
             return
         self._risk_persistence_failed = True
