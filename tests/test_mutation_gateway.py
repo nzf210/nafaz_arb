@@ -245,3 +245,27 @@ async def test_spot_cancel_without_logical_client_id_does_not_release_slot():
     assert result.status == MutationResultType.SUBMISSION_UNKNOWN
     assert "logical client order ID is missing" in result.error_message
     assert "release_slot" not in events
+
+
+@pytest.mark.asyncio
+async def test_closed_zero_fill_is_not_treated_as_cancelled_for_slot_release():
+    events = []
+    slots = _RecordingSlots(events)
+    client = _CancelFacade(
+        events,
+        [{"id": "venue-order-6", "status": "closed", "filled": 0.0}],
+    )
+    gateway = MutationGateway(slot_manager=slots)
+
+    result = await gateway.execute_cancel_order(
+        client,
+        exchange="tokocrypto",
+        market_type="spot",
+        order_id="venue-order-6",
+        symbol="BTC/USDT",
+        client_order_id="stable-entry-client-id",
+    )
+
+    assert result.status == MutationResultType.SUBMISSION_UNKNOWN
+    assert "does not prove a zero-fill cancel" in result.error_message
+    assert "release_slot" not in events

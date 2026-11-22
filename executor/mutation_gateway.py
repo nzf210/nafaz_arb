@@ -602,6 +602,17 @@ class MutationGateway:
                 ),
                 raw_response=final_order,
             )
+        if final_status not in {"canceled", "cancelled", "rejected", "expired"}:
+            return MutationResult(
+                status=MutationResultType.SUBMISSION_UNKNOWN,
+                client_order_id=cid,
+                exchange_order_id=resolved_order_id,
+                error_message=(
+                    f"Terminal order status {final_status!r} does not prove a zero-fill cancel; "
+                    "slot retained for lifecycle reconciliation"
+                ),
+                raw_response=final_order,
+            )
 
         if is_spot and not client_order_id:
             return MutationResult(
