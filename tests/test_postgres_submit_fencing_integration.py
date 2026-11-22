@@ -18,7 +18,7 @@ import uuid
 
 import pytest
 
-from executor.global_stop import GlobalStopError, GlobalStopService
+from executor.global_stop import FENCE_LOCK_KEY, GlobalStopError, GlobalStopService
 from executor.hedge_claims import HedgeIntentClaimService
 
 
@@ -282,9 +282,8 @@ def test_postgres_pair_guard_blocks_second_replica_after_first_entry_ack():
         assert first_entered.wait(15), "first replica never reached fake venue"
         assert first_queue.get(timeout=3) == "FAKE_VENUE_CREATE_ORDER"
 
-        # A second replica must fail fast while the first holds the global
-        # venue-submit fence; it must not sit on a blocking advisory lock until
-        # asyncpg's command timeout expires.
+        # A second replica on the same pair may share the global STOP lock,
+        # but the durable pair admission guard must reject duplicate exposure.
         second.start()
         second.join(5)
         if second.is_alive():
@@ -294,7 +293,7 @@ def test_postgres_pair_guard_blocks_second_replica_after_first_entry_ack():
         assert second.exitcode == 0
         busy_outcome = second_queue.get(timeout=3)
         assert busy_outcome.startswith("BLOCKED:")
-        assert "currently holds the global submit fence" in busy_outcome
+        assert "pre-submit admission guard" in busy_outcome
 
         release_first.set()
         first.join(15)
@@ -795,7 +794,7 @@ def test_postgres_derisk_lane_is_not_blocked_by_active_entry_fence():
     entry = ctx.Process(
         target=_submitter,
         args=(dsn, entry_id, venue_active, venue_release, backend_queue),
-        kwargs={"exchange": "mexc", "symbol": "DODO_USDT"},
+        kwargs={"exchange": "mexc", "symbol": "DODO_USDT_" + suffix},
     )
     derisk = ctx.Process(
         target=_derisk_holder,
