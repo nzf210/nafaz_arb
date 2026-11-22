@@ -5,6 +5,7 @@ import pytest
 
 from executor.config import ExecutorConfig
 
+from executor.risk_control import RiskControlPlane, RiskPermissionDenied
 from executor.risk_budget import (
     RiskBudgetEvaluator,
     RiskBudgetMetricsBuilder,
@@ -209,3 +210,46 @@ def test_new_quantitative_risk_budget_fields_load_from_executor_config(tmp_path)
     assert config.max_funding_cost_pct == 0.08
     assert config.max_unhedged_duration_ms == 90000
     assert config.min_venue_health_score == 0.35
+
+@pytest.mark.asyncio
+async def test_durable_scope_limits_override_config_budget_defaults():
+    class _Connection:
+        async def fetch(self, query, scope_keys):
+            return [{
+                "scope_key": "global",
+                "entry_blocked": False,
+                "derisk_allowed": True,
+                "version": 7,
+                "limits": {"max_gross_exposure_usdt": 50.0},
+            }]
+
+    with pytest.raises(RiskPermissionDenied, match="RISK_BUDGET_BLOCKED"):
+        await RiskControlPlane.assert_allowed(
+            _Connection(),
+            scope_keys=["global"],
+            action_class="ENTRY",
+            risk_metrics=_metrics(gross_exposure_usdt=100.0),
+            risk_limits=_limits(max_gross_exposure_usdt=200.0),
+        )
+
+
+@pytest.mark.asyncio
+async def test_durable_derisk_permission_is_separate_from_entry_block():
+    class _Connection:
+        async def fetch(self, query, scope_keys):
+            return [{
+                "scope_key": "global",
+                "entry_blocked": True,
+                "derisk_allowed": True,
+                "version": 8,
+                "limits": {"max_gross_exposure_usdt": 1.0},
+            }]
+
+    snapshot = await RiskControlPlane.assert_allowed(
+        _Connection(),
+        scope_keys=["global"],
+        action_class="DERISK",
+        risk_metrics=_metrics(gross_exposure_usdt=1e9),
+        risk_limits=_limits(),
+    )
+    assert snapshot["action_class"] == "DERISK"
