@@ -193,11 +193,13 @@ class OrderIntentService(OrderIntentLifecycleMixin):
                 )
                 if session_id:
                     session = await conn.fetchrow(
-                        "SELECT account_scope_id FROM public.execution_sessions WHERE session_id=$1 FOR KEY SHARE",
+                        "SELECT account_scope_id, pair_key FROM public.execution_sessions WHERE session_id=$1 FOR KEY SHARE",
                         session_id,
                     )
                     if session is None or str(session["account_scope_id"] or "") != account_scope_id:
                         raise OrderIntentError("session is missing or belongs to a different account scope")
+                    if str(session["pair_key"] or "") != pair_key:
+                        raise OrderIntentError("mutation intent pair_key does not match its durable session route")
                 if leg_id:
                     leg = await conn.fetchrow(
                         "SELECT session_id, account_scope_id FROM public.execution_legs WHERE leg_id=$1 FOR KEY SHARE",
