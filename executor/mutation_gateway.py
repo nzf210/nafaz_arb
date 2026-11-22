@@ -20,6 +20,7 @@ from executor.global_stop import GlobalStopError, GlobalStopService
 from executor.helpers import is_explicit_rate_limit_rejection
 from executor.order_slots import OrderSlotManager, SlotExhaustedError
 from executor.exchange_common import venue_client_order_id
+from executor.order_intent_service import OrderIntentService
 from types import SimpleNamespace
 
 logger = logging.getLogger("executor.mutation_gateway")
@@ -52,10 +53,12 @@ class MutationGateway:
         slot_manager: Optional[OrderSlotManager] = None,
         *,
         client_id_prefix: str = "nfz",
+        order_intent_service: Optional[OrderIntentService] = None,
     ):
         self.global_stop = global_stop
         self.slot_manager = slot_manager or OrderSlotManager()
         self.client_id_prefix = client_id_prefix
+        self.order_intent_service = order_intent_service
 
     def generate_client_order_id(self, exchange: str, market_type: str = "spot") -> str:
         """Generate unique, structured client order ID conforming to venue limits."""
@@ -130,6 +133,7 @@ class MutationGateway:
         extra_params: Optional[dict] = None,
         account_scope_id: Optional[str] = None,
         action_class: str = "ENTRY",
+        mutation_intent_id: Optional[str] = None,
     ) -> MutationResult:
         """Create through the durable PREPARED/SUBMITTING + shared session fence."""
         exchange = exchange.lower().strip()
@@ -137,6 +141,15 @@ class MutationGateway:
         side = side.lower().strip()
         order_type = order_type.lower().strip()
         params = dict(extra_params or {})
+        mutation_intent_id = str(mutation_intent_id or params.get("mutation_intent_id") or "").strip() or None
+        intent_service = self.order_intent_service if mutation_intent_id else None
+        intent_actor_id = str(params.get("intent_actor_id") or "executor").strip()
+        mutation_lease = None
+
+        def _capture_mutation_lease(lease: Any) -> None:
+            nonlocal mutation_lease
+            mutation_lease = lease
+
         # Cancellation may use this gateway without entry admission; creates may
         # never degrade to an unfenced compatibility path.
         if self.global_stop is None or not getattr(self.global_stop, "enabled", False):
@@ -209,6 +222,7 @@ class MutationGateway:
                 recovery_context=params.get("recovery_context"),
                 amount_spec=params.get("amount_spec"),
                 account_scope_id=account_scope_id,
+                mutation_intent_id=mutation_intent_id,
             )
         except Exception as exc:
             if slot_reserved:
@@ -244,6 +258,10 @@ class MutationGateway:
                 action_class=action_class,
                 scope_pair_key=pair_key,
                 scope_session_id=session_id,
+                mutation_intent_id=mutation_intent_id,
+                mutation_intent_service=intent_service,
+                mutation_intent_actor_id=intent_actor_id,
+                mutation_intent_lease_callback=_capture_mutation_lease if mutation_intent_id else None,
             ) as fence_conn:
                 try:
                     raw = await _call_venue()
