@@ -49,7 +49,7 @@ class RiskControlPlane:
     @staticmethod
     async def assert_allowed(
         conn: Any, *, scope_keys: list[str], action_class: str
-    ) -> None:
+    ) -> dict:
         action = str(action_class or "ENTRY").strip().upper()
         if action not in {"ENTRY", "HEDGE", "DERISK"}:
             raise ValueError("action_class must be ENTRY, HEDGE or DERISK")
@@ -63,11 +63,21 @@ class RiskControlPlane:
         )
         blocked = []
         derisk_denied = []
+        snapshot = []
         for row in rows:
-            if action == "ENTRY" and bool(row["entry_blocked"]):
-                blocked.append(str(row["scope_key"]))
-            if action in {"HEDGE", "DERISK"} and not bool(row["derisk_allowed"]):
-                derisk_denied.append(str(row["scope_key"]))
+            entry_blocked = bool(row["entry_blocked"])
+            derisk_allowed = bool(row["derisk_allowed"])
+            scope_key = str(row["scope_key"])
+            snapshot.append({
+                "scope_key": scope_key,
+                "version": int(row["version"]),
+                "entry_blocked": entry_blocked,
+                "derisk_allowed": derisk_allowed,
+            })
+            if action == "ENTRY" and entry_blocked:
+                blocked.append(scope_key)
+            if action in {"HEDGE", "DERISK"} and not derisk_allowed:
+                derisk_denied.append(scope_key)
         if blocked:
             raise RiskPermissionDenied(
                 "ENTRY_BLOCKED by durable risk scopes: " + ", ".join(sorted(blocked))
@@ -76,6 +86,10 @@ class RiskControlPlane:
             raise RiskPermissionDenied(
                 "DE_RISK_NOT_ALLOWED by durable risk scopes: " + ", ".join(sorted(derisk_denied))
             )
+        return {
+            "action_class": action,
+            "controls": sorted(snapshot, key=lambda item: item["scope_key"]),
+        }
 
     async def set_control(
         self, pool: Any, *, scope_key: str, scope_type: str,
