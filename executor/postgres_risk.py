@@ -36,6 +36,9 @@ class PostgresRiskStateService:
     def mark_risk_persistence_failure(self) -> None:
         self._persistence_failed = True
 
+    def clear_risk_persistence_failure(self) -> None:
+        self._persistence_failed = False
+
     async def start(self) -> None:
         if self.pool is not None:
             return
