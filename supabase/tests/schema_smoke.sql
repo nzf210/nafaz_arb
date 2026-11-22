@@ -299,7 +299,7 @@ DECLARE
     fk_delete_action "char";
 BEGIN
     FOREACH tbl IN ARRAY ARRAY[
-        'execution_sessions', 'execution_legs', 'execution_session_events'
+        'execution_sessions', 'execution_legs', 'execution_session_events', 'execution_outbox'
     ] LOOP
         IF NOT EXISTS (
             SELECT 1 FROM pg_class c
@@ -419,6 +419,14 @@ INSERT INTO public.execution_session_events (
     'CREATED', 'SCHEMA_SMOKE', 'schema-smoke-v3-event-1', '{}'::jsonb
 );
 
+INSERT INTO public.execution_outbox (
+    event_id, session_id, aggregate_version, topic, payload
+)
+SELECT event_id, session_id, aggregate_version, 'schema-smoke', '{}'::jsonb
+FROM public.execution_session_events
+WHERE session_id = 'schema-smoke-v3-legacy-session'
+  AND aggregate_version = 1;
+
 DO $$
 BEGIN
     BEGIN
@@ -430,6 +438,8 @@ BEGIN
     END;
 END $$;
 
+DELETE FROM public.execution_outbox
+WHERE session_id = 'schema-smoke-v3-legacy-session';
 DELETE FROM public.execution_session_events
 WHERE session_id = 'schema-smoke-v3-legacy-session';
 DELETE FROM public.execution_legs
