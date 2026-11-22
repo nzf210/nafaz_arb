@@ -32,116 +32,40 @@ class RiskBudgetMetricsBuilder:
         now_ms = int(time.time() * 1000)
         config = getattr(engine, "config", None)
         leverage = max(1.0, float(getattr(config, "futures_leverage", 1.0) or 1.0))
-        gross = deployed = net = unhedged = unrealized_loss = 0.0
-        gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = False
-        unhedged_duration = 0
-        positions = getattr(engine, "active_positions", {}) or {}
-        position_values = positions.values() if isinstance(positions, Mapping) else positions
-        for position in position_values:
-            spot_cost = max(0.0, float(cls._value(position, "spot_cost_usdt", 0.0) or 0.0))
-            future_notional = max(0.0, float(cls._value(position, "short_entry_usdt", 0.0) or 0.0))
-            future_margin = max(0.0, float(cls._value(position, "futures_margin_usdt", 0.0) or 0.0))
-            qty = abs(float(cls._value(position, "qty", 0.0) or 0.0))
-            if qty > 0 and spot_cost <= 0 and future_notional <= 0:
-                gross_unpriced = deployed_unpriced = net_unpriced = True
-            if future_notional > 0 and future_margin <= 0:
-                deployed_unpriced = True
-            gross += spot_cost + future_notional
-            deployed += spot_cost + future_margin
-            net += spot_cost - future_notional
-            unrealized = float(cls._value(position, "net_unrealized_pnl_usdt", 0.0) or 0.0)
-            unrealized_loss += max(0.0, -unrealized)
-            unhedged_qty = abs(float(cls._value(position, "unhedged_exit_base_qty", 0.0) or 0.0))
-            state = str(cls._value(position, "state", "HEDGED_ACTIVE") or "HEDGED_ACTIVE").upper()
-            if unhedged_qty <= 0 and state not in {"HEDGED_ACTIVE", "CLOSED", "FLAT"}:
-                unhedged_qty = abs(float(cls._value(position, "qty", 0.0) or 0.0))
-            mark_price = max(0.0, float(cls._value(position, "current_perp_ask_usdt", 0.0) or 0.0))
-            if unhedged_qty > 0:
-                if mark_price > 0:
-                    unhedged += unhedged_qty * mark_price
-                else:
-                    unhedged_unpriced = True
-                opened_at = int(cls._value(position, "opened_at_ms", 0) or 0)
-                if opened_at > 0:
-                    unhedged_duration = max(unhedged_duration, max(0, now_ms - opened_at))
-
-        pending_entries = getattr(engine, "pending_entry_orders", {}) or {}
-        pending_exits = getattr(engine, "pending_exit_orders", {}) or {}
-        pending_hedges = getattr(engine, "pending_hedge_orders", {}) or {}
-        open_order_count = sum(
-            len(value) if hasattr(value, "__len__") else 0
-            for value in (pending_entries, pending_exits, pending_hedges)
+        positions = cls._position_metrics(engine, now_ms)
+        pending = cls._pending_metrics(engine, leverage)
+        projected = cls._project_action(
+            positions, pending, action_class,
+            proposed_notional_usdt, planned_hedge_notional_usdt, leverage,
         )
-        for pending in cls._iter_pending_orders(pending_entries):
-            notional = cls._pending_notional(pending, engine=engine)
-            if notional <= 0:
-                gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = True
-            gross += notional
-            deployed += notional
-            net += notional
-            unhedged += notional
-        for pending in cls._iter_pending_orders(pending_hedges):
-            notional = cls._pending_notional(pending, engine=engine)
-            if notional <= 0:
-                gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = True
-            gross += notional
-            deployed += notional / leverage
-            # A pending hedge is not evidence of a filled hedge. Keep net and
-            # unhedged exposure unchanged until venue reconciliation confirms fills.
-
-        proposed = max(0.0, float(proposed_notional_usdt or 0.0))
-        action = str(action_class or "ENTRY").strip().upper()
-        if action == "ENTRY":
-            planned_hedge = max(0.0, float(planned_hedge_notional_usdt or 0.0))
-            gross += proposed + planned_hedge
-            deployed += proposed + planned_hedge / leverage
-            net += proposed - planned_hedge
-            unhedged += proposed
-            open_order_count += 1
-        elif action == "HEDGE":
-            gross += proposed
-            deployed += proposed / leverage
-            net = max(0.0, abs(net) - proposed)
-            unhedged = max(0.0, unhedged - proposed)
-            open_order_count += 1
-
         capital = max(0.0, float(getattr(config, "capital_total", 0.0) or 0.0))
         daily_loss = max(
             0.0, float(getattr(engine, "_daily_realized_loss_usdt", 0.0) or 0.0)
         )
-        drawdown_pct = (
-            ((daily_loss + unrealized_loss) / capital) * 100.0 if capital > 0 else 0.0
+        drawdown_pct = cls._drawdown_pct(
+            capital, daily_loss, positions["unrealized_loss_usdt"]
         )
-        venue_key = str(venue or "").strip().lower()
-        venue_keys = list(dict.fromkeys(
-            key for key in [venue_key, *[
-                str(item or "").strip().lower() for item in (related_venues or [])
-            ]] if key
-        ))
-        halted = getattr(engine, "_exchange_halted", {}) or {}
-        failures = getattr(engine, "_consecutive_order_failures", {}) or {}
-        max_failures = max(1, int(getattr(config, "max_consecutive_order_failures", 50) or 50))
-        health_scores = []
-        for venue_name in venue_keys:
-            failure_count = (
-                int(failures.get(venue_name, 0) or 0)
-                if isinstance(failures, Mapping) else 0
-            )
-            score = 0.0 if bool(halted.get(venue_name, False)) else max(
-                0.0, min(1.0, 1.0 - failure_count / max_failures)
-            )
-            health_scores.append(score)
-        health_score = min(health_scores, default=1.0)
+        venue_key, venue_keys, health_score = cls._venue_health(
+            engine, venue, related_venues
+        )
         return {
             "snapshot_at_ms": now_ms,
             "target_venue": venue_key,
             "target_venues": venue_keys,
-            "gross_exposure_usdt": None if gross_unpriced else gross,
-            "net_exposure_usdt": None if net_unpriced else abs(net),
-            "deployed_capital_usdt": None if deployed_unpriced else deployed,
-            "unhedged_notional_usdt": None if unhedged_unpriced else unhedged,
-            "unhedged_duration_ms": unhedged_duration,
-            "open_order_count": open_order_count,
+            "gross_exposure_usdt": (
+                None if projected["gross_unpriced"] else projected["gross"]
+            ),
+            "net_exposure_usdt": (
+                None if projected["net_unpriced"] else abs(projected["net"])
+            ),
+            "deployed_capital_usdt": (
+                None if projected["deployed_unpriced"] else projected["deployed"]
+            ),
+            "unhedged_notional_usdt": (
+                None if projected["unhedged_unpriced"] else projected["unhedged"]
+            ),
+            "unhedged_duration_ms": positions["unhedged_duration_ms"],
+            "open_order_count": pending["open_order_count"] + projected["additional_orders"],
             "daily_loss_usdt": daily_loss,
             "drawdown_pct": drawdown_pct,
             "slippage_bps": slippage_bps,
@@ -149,6 +73,149 @@ class RiskBudgetMetricsBuilder:
             "market_data_age_ms": market_data_age_ms,
             "venue_health_score": health_score,
         }
+
+    @classmethod
+    def _position_metrics(cls, engine: Any, now_ms: int) -> dict:
+        totals = {
+            "gross": 0.0, "deployed": 0.0, "net": 0.0, "unhedged": 0.0,
+            "unrealized_loss_usdt": 0.0, "unhedged_duration_ms": 0,
+            "gross_unpriced": False, "deployed_unpriced": False,
+            "net_unpriced": False, "unhedged_unpriced": False,
+        }
+        positions = getattr(engine, "active_positions", {}) or {}
+        values = positions.values() if isinstance(positions, Mapping) else positions
+        for position in values:
+            item = cls._single_position_metrics(position, now_ms)
+            for key in ("gross", "deployed", "net", "unhedged", "unrealized_loss_usdt"):
+                totals[key] += item[key]
+            totals["unhedged_duration_ms"] = max(
+                totals["unhedged_duration_ms"], item["unhedged_duration_ms"]
+            )
+            for key in ("gross_unpriced", "deployed_unpriced", "net_unpriced", "unhedged_unpriced"):
+                totals[key] = totals[key] or item[key]
+        return totals
+
+    @classmethod
+    def _single_position_metrics(cls, position: Any, now_ms: int) -> dict:
+        spot = max(0.0, float(cls._value(position, "spot_cost_usdt", 0.0) or 0.0))
+        future = max(0.0, float(cls._value(position, "short_entry_usdt", 0.0) or 0.0))
+        margin = max(0.0, float(cls._value(position, "futures_margin_usdt", 0.0) or 0.0))
+        qty = abs(float(cls._value(position, "qty", 0.0) or 0.0))
+        state = str(cls._value(position, "state", "HEDGED_ACTIVE") or "HEDGED_ACTIVE").upper()
+        unhedged_qty = abs(float(cls._value(position, "unhedged_exit_base_qty", 0.0) or 0.0))
+        if unhedged_qty <= 0 and state not in {"HEDGED_ACTIVE", "CLOSED", "FLAT"}:
+            unhedged_qty = qty
+        mark = max(0.0, float(cls._value(position, "current_perp_ask_usdt", 0.0) or 0.0))
+        opened_at = int(cls._value(position, "opened_at_ms", 0) or 0)
+        unhedged_value = unhedged_qty * mark
+        return {
+            "gross": spot + future,
+            "deployed": spot + margin,
+            "net": spot - future,
+            "unhedged": unhedged_value,
+            "unrealized_loss_usdt": max(
+                0.0, -float(cls._value(position, "net_unrealized_pnl_usdt", 0.0) or 0.0)
+            ),
+            "unhedged_duration_ms": (
+                max(0, now_ms - opened_at) if unhedged_qty > 0 and opened_at > 0 else 0
+            ),
+            "gross_unpriced": qty > 0 and spot <= 0 and future <= 0,
+            "deployed_unpriced": future > 0 and margin <= 0,
+            "net_unpriced": qty > 0 and spot <= 0 and future <= 0,
+            "unhedged_unpriced": unhedged_qty > 0 and mark <= 0,
+        }
+
+    @classmethod
+    def _pending_metrics(cls, engine: Any, leverage: float) -> dict:
+        entries = getattr(engine, "pending_entry_orders", {}) or {}
+        exits = getattr(engine, "pending_exit_orders", {}) or {}
+        hedges = getattr(engine, "pending_hedge_orders", {}) or {}
+        totals = {
+            "gross": 0.0, "deployed": 0.0, "net": 0.0, "unhedged": 0.0,
+            "open_order_count": sum(
+                len(value) if hasattr(value, "__len__") else 0
+                for value in (entries, exits, hedges)
+            ),
+            "gross_unpriced": False, "deployed_unpriced": False,
+            "net_unpriced": False, "unhedged_unpriced": False,
+        }
+        for pending in cls._iter_pending_orders(entries):
+            notional = cls._pending_notional(pending, engine=engine)
+            totals["gross"] += notional
+            totals["deployed"] += notional
+            totals["net"] += notional
+            totals["unhedged"] += notional
+            if notional <= 0:
+                cls._mark_unpriced(totals)
+        for pending in cls._iter_pending_orders(hedges):
+            notional = cls._pending_notional(pending, engine=engine)
+            totals["gross"] += notional
+            totals["deployed"] += notional / leverage
+            if notional <= 0:
+                cls._mark_unpriced(totals)
+        return totals
+
+    @staticmethod
+    def _mark_unpriced(metrics: dict) -> None:
+        for key in ("gross_unpriced", "deployed_unpriced", "net_unpriced", "unhedged_unpriced"):
+            metrics[key] = True
+
+    @staticmethod
+    def _project_action(
+        positions: dict, pending: dict, action_class: str,
+        proposed_notional_usdt: float, planned_hedge_notional_usdt: float,
+        leverage: float,
+    ) -> dict:
+        projected = {
+            key: positions[key] + pending[key]
+            for key in ("gross", "deployed", "net", "unhedged")
+        }
+        for key in ("gross_unpriced", "deployed_unpriced", "net_unpriced", "unhedged_unpriced"):
+            projected[key] = positions[key] or pending[key]
+        projected["additional_orders"] = 0
+        action = str(action_class or "ENTRY").strip().upper()
+        proposed = max(0.0, float(proposed_notional_usdt or 0.0))
+        if action == "ENTRY":
+            hedge = max(0.0, float(planned_hedge_notional_usdt or 0.0))
+            projected["gross"] += proposed + hedge
+            projected["deployed"] += proposed + hedge / leverage
+            projected["net"] += proposed - hedge
+            projected["unhedged"] += proposed
+            projected["additional_orders"] = 1
+        elif action == "HEDGE":
+            projected["gross"] += proposed
+            projected["deployed"] += proposed / leverage
+            projected["net"] = max(0.0, abs(projected["net"]) - proposed)
+            projected["unhedged"] = max(0.0, projected["unhedged"] - proposed)
+            projected["additional_orders"] = 1
+        return projected
+
+    @staticmethod
+    def _drawdown_pct(capital: float, daily_loss: float, unrealized_loss: float) -> float:
+        if capital <= 0:
+            return 0.0
+        return ((daily_loss + unrealized_loss) / capital) * 100.0
+
+    @staticmethod
+    def _venue_health(engine: Any, venue: str, related_venues: Optional[list[str]]) -> tuple:
+        venue_key = str(venue or "").strip().lower()
+        venue_keys = list(dict.fromkeys(
+            key for key in [venue_key, *[
+                str(item or "").strip().lower() for item in (related_venues or [])
+            ]] if key
+        ))
+        config = getattr(engine, "config", None)
+        halted = getattr(engine, "_exchange_halted", {}) or {}
+        failures = getattr(engine, "_consecutive_order_failures", {}) or {}
+        max_failures = max(1, int(getattr(config, "max_consecutive_order_failures", 50) or 50))
+        scores = []
+        for venue_name in venue_keys:
+            failure_count = int(failures.get(venue_name, 0) or 0) if isinstance(failures, Mapping) else 0
+            score = 0.0 if bool(halted.get(venue_name, False)) else max(
+                0.0, min(1.0, 1.0 - failure_count / max_failures)
+            )
+            scores.append(score)
+        return venue_key, venue_keys, min(scores, default=1.0)
 
     @staticmethod
     def _iter_pending_orders(value: Any) -> list:
