@@ -20,7 +20,13 @@ class MutationGatewayIntentMixin:
                     error_message="durable order intent repository is unavailable",
                 )
             self.order_intent_service = OrderIntentService(self.global_stop.pool)
-        intent = await self.order_intent_service.get_intent(intent_id)
+        try:
+            intent = await self.order_intent_service.get_intent(intent_id)
+        except Exception as exc:
+            return MutationResult(
+                status=MutationResultType.REJECTED, client_order_id="",
+                error_message=f"durable mutation intent lookup failed: {exc}",
+            )
         if intent is None or str(intent["operation"]).upper() != "CREATE":
             return MutationResult(
                 status=MutationResultType.REJECTED, client_order_id="",
@@ -104,7 +110,16 @@ class MutationGatewayIntentMixin:
                 "recovery_context": metadata.get("recovery_context") or {},
             },
         )
-        current = await self.order_intent_service.get_intent(intent_id)
+        try:
+            current = await self.order_intent_service.get_intent(intent_id)
+        except Exception as exc:
+            return MutationResult(
+                status=MutationResultType.SUBMISSION_UNKNOWN,
+                client_order_id=client_order_id,
+                exchange_order_id=result.exchange_order_id,
+                error_message=f"venue mutation may have occurred but intent state lookup failed: {exc}",
+                raw_response=result.raw_response,
+            )
         current_status = str(current["status"]).upper() if current else "MISSING"
         if result.status == MutationResultType.REJECTED and current_status == "PREPARED":
             try:
