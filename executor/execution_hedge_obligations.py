@@ -636,7 +636,17 @@ class ExecutionHedgeObligationService:
                         "futures_fill_id": futures_fill_id,
                         "allocated_base_quantity": _fmt(base_quantity),
                         "allocations": allocation_rows,
+                        "session_state": (
+                            "PARTIALLY_HEDGED"
+                            if str(session["status"]).upper() == "HEDGE_PENDING"
+                            else str(session["status"]).upper()
+                        ),
                     },
+                    target_state=(
+                        "PARTIALLY_HEDGED"
+                        if str(session["status"]).upper() == "HEDGE_PENDING"
+                        else str(session["status"]).upper()
+                    ),
                 )
                 return {
                     "duplicate": False, "allocated_base_quantity": _fmt(base_quantity),
