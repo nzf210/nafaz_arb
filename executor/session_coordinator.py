@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from executor.execution_repository import ExecutionSessionRepository
@@ -55,8 +56,32 @@ def build_admission_identity(
 def _require_snapshot(name: str, value: Mapping[str, Any]) -> dict:
     if not isinstance(value, Mapping) or not value:
         raise SessionAdmissionError(f"{name} must be a non-empty immutable mapping")
-    # Round-trip once to reject unsupported mutable/runtime objects and NaN.
     return json.loads(_canonical(value))
+
+
+def _validate_policy_evidence(snapshot: Mapping[str, Any]) -> None:
+    evidence = snapshot.get("evidence")
+    required = ("market_metadata", "fee_schedule", "fx_conversion")
+    if not isinstance(evidence, Mapping):
+        raise SessionAdmissionError("policy_snapshot.evidence is required")
+    now = datetime.now(timezone.utc)
+    for name in required:
+        item = evidence.get(name)
+        if not isinstance(item, Mapping):
+            raise SessionAdmissionError(f"policy evidence {name} is missing")
+        status = str(item.get("status") or "").upper()
+        allowed = {"VERIFIED", "NOT_REQUIRED"} if name == "fx_conversion" else {"VERIFIED"}
+        if status not in allowed:
+            raise SessionAdmissionError(f"policy evidence {name} is not verified")
+        try:
+            observed = datetime.fromisoformat(str(item["observed_at"]).replace("Z", "+00:00"))
+            valid_until = datetime.fromisoformat(str(item["valid_until"]).replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SessionAdmissionError(f"policy evidence {name} has invalid timestamps") from exc
+        if observed.tzinfo is None or valid_until.tzinfo is None:
+            raise SessionAdmissionError(f"policy evidence {name} timestamps must include timezone")
+        if observed > now or valid_until <= now or valid_until <= observed:
+            raise SessionAdmissionError(f"policy evidence {name} is stale or from the future")
 
 
 class SessionCoordinator:
@@ -104,6 +129,7 @@ class SessionCoordinator:
                 "exit_policy_snapshot", exit_policy_snapshot
             ),
         }
+        _validate_policy_evidence(snapshots["policy_snapshot"])
         if not isinstance(legs, list) or len(legs) != 2:
             raise SessionAdmissionError("exactly two venue-bound legs are required")
 
