@@ -5,6 +5,8 @@
 ALTER TABLE public.execution_legs
     ADD COLUMN IF NOT EXISTS confirmed_filled_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS confirmed_quote_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS confirmed_price_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS confirmed_exposure_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS average_fill_price NUMERIC(38,18),
     ADD COLUMN IF NOT EXISTS last_fill_at TIMESTAMPTZ;
 
@@ -20,6 +22,8 @@ BEGIN
             CHECK (
                 confirmed_filled_quantity >= 0
                 AND confirmed_quote_quantity >= 0
+                AND confirmed_price_quantity >= 0
+                AND confirmed_exposure_quantity >= 0
                 AND (average_fill_price IS NULL OR average_fill_price >= 0)
             ) NOT VALID;
     END IF;
