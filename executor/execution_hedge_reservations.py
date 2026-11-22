@@ -216,6 +216,9 @@ class HedgeReservationMixin(HedgeServiceBase):
         coordinator_lease: Any, fencing_generation: int,
     ) -> dict:
         """Keep in-flight hedge quantity reserved when submission outcome is ambiguous."""
+        actor = _text(actor_id, "actor_id")
+        key = _text(event_idempotency_key, "event_idempotency_key")
+        reason = _text(reason, "reason")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 session = await self._lock_session(
@@ -240,8 +243,8 @@ class HedgeReservationMixin(HedgeServiceBase):
                 version = await self._append_event(
                     conn, session_id=session_id, session=session,
                     event_type="HEDGE_RESERVATION_UNKNOWN",
-                    idempotency_key=event_idempotency_key,
-                    actor_id=actor_id, generation=fencing_generation,
+                    idempotency_key=key,
+                    actor_id=actor, generation=fencing_generation,
                     reason=reason,
                     payload={"reservation_id": reservation_id, "status": "UNKNOWN"},
                 )
