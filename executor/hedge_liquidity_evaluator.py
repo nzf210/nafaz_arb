@@ -33,6 +33,10 @@ class BookLevel:
     price: Decimal
     quantity: Decimal
 
+    def __post_init__(self):
+        object.__setattr__(self, "price", _d(self.price, "book.price"))
+        object.__setattr__(self, "quantity", _d(self.quantity, "book.quantity"))
+
     @classmethod
     def make(cls, price, quantity) -> "BookLevel":
         return cls(_d(price, "book.price"), _d(quantity, "book.quantity"))
@@ -54,6 +58,9 @@ class FXSnapshot:
     observed_at_ms: int
     source: str
 
+    def __post_init__(self):
+        object.__setattr__(self, "quote_to_usd_rate", _d(self.quote_to_usd_rate, "fx.quote_to_usd_rate"))
+
 
 @dataclass(frozen=True)
 class HedgeLiquidityPolicy:
@@ -67,6 +74,16 @@ class HedgeLiquidityPolicy:
     max_unhedged_notional_usd: Decimal = Decimal("25")
     max_unhedged_wait_ms: int = 5000
     max_adverse_move_bps: Decimal = Decimal("100")
+
+    def __post_init__(self):
+        for name in ("internal_min_notional_usd", "max_unhedged_notional_usd"):
+            object.__setattr__(self, name, _d(getattr(self, name), name))
+        for name in ("max_slippage_bps", "taker_fee_bps", "safety_buffer_bps", "max_adverse_move_bps"):
+            object.__setattr__(self, name, _d(getattr(self, name), name, allow_zero=True))
+        if min(self.max_book_age_ms, self.max_fx_age_ms, self.max_unhedged_wait_ms) <= 0:
+            raise LiquidityInputError("liquidity time limits must be positive")
+        if self.max_future_clock_skew_ms < 0:
+            raise LiquidityInputError("future clock skew limit must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -110,7 +127,7 @@ def _defer_or_derisk(
         executable_notional_quote=Decimal("0"),
         executable_notional_usd=Decimal("0"),
         slippage_bps=None,
-        estimated_fee_bps=policy.taker_fee_bps,
+        estimated_fee_bps=taker_fee,
         estimated_total_cost_bps=None,
         book_age_ms=max(0, now_ms - book.observed_at_ms),
         wait_elapsed_ms=elapsed, wait_remaining_ms=remaining,
@@ -149,8 +166,12 @@ def evaluate_hedge_liquidity(
         raise LiquidityInputError("position_side must be LONG or SHORT")
     if policy.max_book_age_ms <= 0 or policy.max_fx_age_ms <= 0 or policy.max_unhedged_wait_ms <= 0:
         raise LiquidityInputError("liquidity time limits must be positive")
-    if policy.max_slippage_bps < 0 or policy.taker_fee_bps < 0 or policy.safety_buffer_bps < 0:
-        raise LiquidityInputError("cost policy values must be non-negative")
+    max_unhedged = _d(policy.max_unhedged_notional_usd, "max_unhedged_notional_usd")
+    min_internal = _d(policy.internal_min_notional_usd, "internal_min_notional_usd")
+    max_slippage = _d(policy.max_slippage_bps, "max_slippage_bps", allow_zero=True)
+    taker_fee = _d(policy.taker_fee_bps, "taker_fee_bps", allow_zero=True)
+    safety_buffer = _d(policy.safety_buffer_bps, "safety_buffer_bps", allow_zero=True)
+    max_adverse = _d(policy.max_adverse_move_bps, "max_adverse_move_bps", allow_zero=True)
     remaining_base = required - reserved
     if remaining_base <= 0:
         return HedgeLiquidityDecision(
@@ -166,7 +187,7 @@ def evaluate_hedge_liquidity(
             book_sequence=book.sequence, next_evaluate_at_ms=now_ms + 500,
         )
 
-    if unhedged_usd > policy.max_unhedged_notional_usd:
+    if unhedged_usd > max_unhedged:
         return _defer_or_derisk(
             reason="UNHEDGED_NOTIONAL_LIMIT_EXCEEDED", now_ms=now_ms,
             unhedged_since_ms=unhedged_since_ms, policy=policy,
@@ -211,7 +232,7 @@ def evaluate_hedge_liquidity(
             (reference - best) / reference * Decimal("10000")
             if is_short else (best - reference) / reference * Decimal("10000")
         )
-        if adverse_bps > policy.max_adverse_move_bps:
+        if adverse_bps > max_adverse:
             return _defer_or_derisk(reason="ADVERSE_PRICE_MOVE", now_ms=now_ms,
                                     unhedged_since_ms=unhedged_since_ms, policy=policy,
                                     book=book, unhedged_notional_usd=unhedged_usd)
@@ -254,17 +275,17 @@ def evaluate_hedge_liquidity(
     slippage = max(Decimal("0"), slippage)
     notional_usd = quote_notional * fx_rate
     min_notional_usd = max(
-        policy.internal_min_notional_usd,
+        min_internal,
         min_quote * fx_rate,
     )
     elapsed = max(0, now_ms - unhedged_since_ms)
     wait_remaining = max(0, policy.max_unhedged_wait_ms - elapsed)
-    total_cost = slippage + policy.taker_fee_bps + policy.safety_buffer_bps
+    total_cost = slippage + taker_fee + safety_buffer
     if notional_usd < min_notional_usd:
         return _defer_or_derisk(reason="BELOW_INTERNAL_OR_VENUE_MIN_NOTIONAL",
                                 now_ms=now_ms, unhedged_since_ms=unhedged_since_ms,
                                 policy=policy, book=book, unhedged_notional_usd=unhedged_usd)
-    if slippage > policy.max_slippage_bps:
+    if slippage > max_slippage:
         return _defer_or_derisk(reason="SLIPPAGE_LIMIT_EXCEEDED", now_ms=now_ms,
                                 unhedged_since_ms=unhedged_since_ms, policy=policy,
                                 book=book, unhedged_notional_usd=unhedged_usd)
