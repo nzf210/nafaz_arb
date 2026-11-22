@@ -167,3 +167,17 @@ Persist canonical JSON plus a stable cryptographic hash (canonicalization algori
 - Hedge pooling/allocation (PR-05).
 - New profit/exit thresholds or strategy changes (PR-07/PR-08).
 - Runtime LIVE cutover, production migration or exchange operations.
+
+
+## 10. PR-01A contract clarifications
+
+The following clarifications are normative and supersede any ambiguous wording above:
+
+1. **Aggregate version is persisted on the session row.** Add `aggregate_version BIGINT NOT NULL DEFAULT 0` to `execution_sessions`. It is the sole per-session event-stream cursor. Every accepted session or leg event increments it exactly once in the same transaction as the entity update and event insert. A unique constraint on `(session_id, aggregate_version)` in the event table prevents gaps from duplicate event insertion; transaction rollback must roll back the version increment too.
+2. **Legacy provenance stays nullable.** `account_scope_id`, `admission_key`, `source_dispatch_id`, policy snapshot/hash, and market identity fields remain NULL for legacy rows unless authoritative evidence exists. Do not add synthetic values or treat a database default as provenance. A V3 writer must supply and validate the required fields for newly admitted sessions.
+3. **Fencing compatibility is explicit.** Preserve legacy `owner_fencing`. The new numeric `fencing_generation` must be nullable for legacy rows during rollout, or otherwise be accompanied by an explicit `fencing_generation_known` provenance flag. Do not initialize an unknown legacy owner as generation zero and then treat it as a valid lease. V3 admission/ownership acquisition must establish a real generation before any V3 mutation.
+4. **Foreign-key behavior must be migrated, not merely documented.** Inspect the actual constraint name and definition in the target schema. Replace session-to-leg cascade deletion with `ON DELETE RESTRICT` (or an equivalent non-cascading constraint) and add the same retention protection for events and all later execution evidence tables. Migration must fail safely if the expected constraint cannot be identified; never drop a guessed constraint name.
+5. **Event table integrity.** `execution_session_events.session_id` references sessions with `ON DELETE RESTRICT`; aggregate_version is positive/monotonic after the first event; event rows are append-only for application roles. Any retention/purge is a separate audited operation with explicit dependency handling.
+6. **No silent quantity conversion.** Existing V2 quantity columns remain unchanged and retain their legacy semantics. New typed quantity fields are nullable for legacy rows. A V3-ready leg requires an explicit quantity_unit and evidenced conversion metadata before it can participate in hedge or completion calculations.
+
+PR-02 must implement these rules and include catalog assertions that verify the real pre-migration FK, indexes, RLS and grants before changing them.
