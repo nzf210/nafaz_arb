@@ -41,8 +41,13 @@ def build_admission_identity(
         raise SessionAdmissionError(
             "account_scope_id, source_dispatch_id, opportunity_id and pair_key are required"
         )
+    idempotency_identity = {
+        "account_scope_id": identity["account_scope_id"],
+        "source_dispatch_id": identity["source_dispatch_id"],
+        "pair_key": identity["pair_key"],
+    }
     digest = hashlib.sha256(
-        ("nafaz:executor-v3:admission:v1:" + _canonical(identity)).encode("utf-8")
+        ("nafaz:executor-v3:admission:v1:" + _canonical(idempotency_identity)).encode("utf-8")
     ).hexdigest()
     return "v3-adm-" + digest, "v3-session-" + digest[:32]
 
