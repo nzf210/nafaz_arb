@@ -11,7 +11,7 @@ CREATE INDEX IF NOT EXISTS idx_executor_submit_attempts_owner_scope
     ON public.executor_submit_attempts (owner_scope_key, owner_generation, created_at DESC)
     WHERE owner_scope_key IS NOT NULL;
 
-DO $
+DO $body$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
@@ -30,7 +30,7 @@ BEGIN
                 )
             ) NOT VALID;
     END IF;
-END $;
+END $body$;
 
 ALTER TABLE public.executor_submit_attempts
     VALIDATE CONSTRAINT executor_submit_owner_generation_pair;
