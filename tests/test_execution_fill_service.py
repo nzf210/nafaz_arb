@@ -161,7 +161,8 @@ async def test_postgres_fill_is_exactly_once_and_updates_leg_atomically(postgres
         leg = await conn.fetchrow(
             """
             SELECT status, state_version, confirmed_filled_quantity,
-                   confirmed_quote_quantity, average_fill_price
+                   confirmed_quote_quantity, confirmed_exposure_quantity,
+                   average_fill_price
             FROM public.execution_legs WHERE leg_id=$1
             """,
             f"spot-{suffix}",
@@ -174,6 +175,7 @@ async def test_postgres_fill_is_exactly_once_and_updates_leg_atomically(postgres
     assert leg["status"] == "PARTIALLY_FILLED"
     assert Decimal(str(leg["confirmed_filled_quantity"])) == Decimal("0.0004")
     assert Decimal(str(leg["average_fill_price"])) == Decimal("1000000000")
+    assert Decimal(str(leg["confirmed_exposure_quantity"])) == Decimal("0.0004")
     assert event_count == 9
 
 
@@ -268,3 +270,41 @@ async def test_postgres_late_fill_after_completion_reopens_reconciliation(postgr
         )
     assert status == "RECONCILIATION_REQUIRED"
     assert leg_status == "RECONCILIATION_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_postgres_futures_fill_keeps_contracts_separate_from_base_exposure(postgres_pool):
+    suffix = uuid.uuid4().hex
+    coordinator, admitted, _, aggregate = await _admitted_session(postgres_pool, suffix)
+    lease = admitted["coordinator_lease"]
+    leg_version = 1
+    for state in ("PREPARED", "SUBMITTING"):
+        result = await coordinator.transition_leg(
+            coordinator_lease=lease, session_id=admitted["session_id"],
+            leg_id=f"future-{suffix}", target_state=state,
+            expected_leg_state_version=leg_version,
+            expected_aggregate_version=aggregate,
+            fencing_generation=lease.generation,
+            event_type="FUTURES_LEG_" + state,
+            event_idempotency_key=f"{admitted['admission_key']}:future:{state.lower()}",
+            actor_id="fill-integration-test",
+        )
+        leg_version += 1
+        aggregate = result["aggregate_version"]
+    result = await ExecutionFillService(postgres_pool).record_fill(
+        session_id=admitted["session_id"], leg_id=f"future-{suffix}",
+        account_scope_id="fill-account-" + suffix,
+        venue="okx", market_type="swap", symbol="BTC-USDT-SWAP",
+        exchange_trade_id="future-trade-" + suffix, side="sell",
+        quantity="2", price="100000", quote_asset="USDT",
+        quote_quantity="200", fee_amount="0.02", fee_asset="USDT",
+        fee_verified=True, fee_source="EXCHANGE_TRADE",
+        filled_at=datetime.now(timezone.utc), actor_id="fill-integration-test",
+        event_idempotency_key="future-fill-event-" + suffix,
+        expected_leg_state_version=leg_version,
+        expected_aggregate_version=aggregate,
+        fencing_generation=lease.generation, coordinator_lease=lease,
+    )
+    assert result["confirmed_filled_quantity"] == "2"
+    assert result["confirmed_exposure_quantity"] == "0.002"
+    assert result["average_fill_price"] == "100000"
