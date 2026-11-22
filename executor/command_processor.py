@@ -125,6 +125,8 @@ class CommandProcessor:
                         client_order_id=client_id,
                     )
                     result = {"success": res.status.value == "CONFIRMED", "status": res.status.value}
+                    if res.error_message:
+                        result["detail"] = res.error_message
                 else:
                     result = {"success": False, "detail": "Gateway or client not initialized"}
 
