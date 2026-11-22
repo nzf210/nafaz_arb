@@ -60,14 +60,28 @@ class ExecutionSessionRepository:
             if leg_type == "FUTURES":
                 _required_text(leg.get("settlement_asset"), "Futures settlement_asset")
                 _positive_decimal(leg.get("contract_size"), "Futures contract_size")
+            market_type = _required_text(leg.get("market_type"), "leg.market_type").lower()
+            base_asset = _required_text(leg.get("base_asset"), "leg.base_asset").upper()
+            if leg_type == "SPOT" and market_type != "spot":
+                raise ValueError("SPOT leg market_type must be spot")
+            if leg_type == "FUTURES":
+                if market_type not in {"swap", "future", "futures"}:
+                    raise ValueError("FUTURES leg market_type must be swap or future")
+                if str(leg.get("position_side") or "").upper() not in {"LONG", "SHORT"}:
+                    raise ValueError("FUTURES leg position_side must be LONG or SHORT")
+                contract_type = str(leg.get("contract_type") or "").strip().upper()
+                if contract_type not in {
+                    "LINEAR", "INVERSE", "LINEAR_PERPETUAL", "INVERSE_PERPETUAL"
+                }:
+                    raise ValueError("FUTURES leg contract_type must identify linear or inverse contracts")
             result.append({
                 "leg_id": _required_text(leg.get("leg_id"), "leg.leg_id"),
                 "leg_type": leg_type,
                 "venue": _required_text(leg.get("venue"), "leg.venue").lower(),
-                "market_type": _required_text(leg.get("market_type"), "leg.market_type").lower(),
+                "market_type": market_type,
                 "symbol": _required_text(leg.get("symbol"), "leg.symbol"),
                 "normalized_symbol": _required_text(leg.get("normalized_symbol"), "leg.normalized_symbol"),
-                "base_asset": _required_text(leg.get("base_asset"), "leg.base_asset").upper(),
+                "base_asset": base_asset,
                 "quote_asset": _required_text(leg.get("quote_asset"), "leg.quote_asset").upper(),
                 "settlement_asset": str(leg.get("settlement_asset") or "").upper() or None,
                 "contract_type": str(leg.get("contract_type") or "") or None,
@@ -90,6 +104,9 @@ class ExecutionSessionRepository:
                     leg.get("target_qty", 0), "leg.target_qty", allow_zero=True
                 ),
             })
+        by_type = {item["leg_type"]: item for item in result}
+        if by_type["SPOT"]["base_asset"] != by_type["FUTURES"]["base_asset"]:
+            raise ValueError("SPOT and FUTURES legs must represent the same base asset")
         return result
 
     async def create_session(
@@ -134,7 +151,7 @@ class ExecutionSessionRepository:
                         execution_policy_snapshot, risk_policy_snapshot,
                         exit_policy_snapshot
                     ) VALUES (
-                        $1,$2,$3,'CREATED',$4,$5,$6,1,1,$7,
+                        $1,$2,$3,'CREATED',$4,$5,$6,1,3,$7,
                         $8::jsonb,$9::jsonb,$10,$11::jsonb,$12::jsonb,$13::jsonb
                     )
                     ON CONFLICT (admission_key) WHERE admission_key IS NOT NULL
@@ -222,23 +239,37 @@ class ExecutionSessionRepository:
                         leg["quantity_unit"], leg["base_per_unit"], leg["order_quantity"],
                         leg["exposure_quantity"], leg["target_qty"], account_scope_id,
                     )
-                await conn.execute(
-                    """
-                    INSERT INTO public.execution_session_events (
-                        session_id, aggregate_version, entity_type, entity_id,
-                        entity_version, event_type, event_idempotency_key,
-                        actor_id, fencing_generation, payload
-                    ) VALUES ($1,1,'SESSION',$1,1,'SESSION_CREATED',$2,$3,$4,$5::jsonb)
-                    """,
-                    session_id, event_key, actor_id, generation,
-                    _canonical_json({
-                        "opportunity_id": opportunity_id,
-                        "source_dispatch_id": source_dispatch_id,
-                        "account_scope_id": account_scope_id,
-                        "policy_snapshot_hash": policy_hash,
-                    }),
+                admission_payload = {
+                    "opportunity_id": opportunity_id,
+                    "source_dispatch_id": source_dispatch_id,
+                    "account_scope_id": account_scope_id,
+                    "pair_key": pair_key,
+                    "policy_snapshot_hash": policy_hash,
+                    "execution_policy_snapshot": execution_json,
+                    "risk_policy_snapshot": risk_json,
+                    "exit_policy_snapshot": exit_json,
+                }
+                await self._insert_event(
+                    conn, session_id=session_id, aggregate_version=1,
+                    entity_type="SESSION", entity_id=session_id,
+                    entity_version=1, event_type="SESSION_CREATED",
+                    idempotency_key=f"{event_key}:session", actor_id=actor_id,
+                    fencing_generation=generation, reason="",
+                    correlation_id=source_dispatch_id, payload=admission_payload,
                 )
-        return {"session_id": session_id, "created": True, "aggregate_version": 1}
+                for aggregate_version, leg in enumerate(
+                    sorted(validated_legs, key=lambda item: item["leg_type"]), start=2
+                ):
+                    await self._insert_event(
+                        conn, session_id=session_id, aggregate_version=aggregate_version,
+                        entity_type="LEG", entity_id=leg["leg_id"],
+                        entity_version=1, event_type=f"{leg['leg_type']}_LEG_CREATED",
+                        idempotency_key=f"{event_key}:{leg['leg_type'].lower()}",
+                        actor_id=actor_id, fencing_generation=generation, reason="",
+                        correlation_id=source_dispatch_id,
+                        payload={"session_id": session_id, **leg},
+                    )
+        return {"session_id": session_id, "created": True, "aggregate_version": 3}
 
     async def _existing_event(
         self, conn: Any, *, session_id: str, idempotency_key: str,
