@@ -345,6 +345,8 @@ class ExecutionFillService:
 
                 session_target = old_session_state
                 late_fill = old_session_state in {"COMPLETED", "FAILED", "ABORTED"}
+                if late_fill:
+                    leg_target = "RECONCILIATION_REQUIRED"
                 if late_fill or leg_target == "RECONCILIATION_REQUIRED":
                     session_target = "RECONCILIATION_REQUIRED"
                 elif old_session_state in {"CREATED", "VALIDATING", "REJECTED"}:
