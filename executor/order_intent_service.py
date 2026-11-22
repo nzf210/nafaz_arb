@@ -222,6 +222,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
                         market_type=market_type, instrument=instrument,
                         reserved_base_qty=reserved_base_qty,
                         reserved_notional=reserved_notional,
+                        reservation_asset=reservation_asset,
                         max_reserved_base_qty=max_reserved_base_qty,
                         max_reserved_notional=max_reserved_notional,
                     )
@@ -264,6 +265,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         conn: Any, *, account_scope_id: str, venue: str,
         market_type: str, instrument: str,
         reserved_base_qty: Decimal, reserved_notional: Decimal,
+        reservation_asset: str | None,
         max_reserved_base_qty: Any | None,
         max_reserved_notional: Any | None,
     ) -> None:
