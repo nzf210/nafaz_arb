@@ -51,7 +51,7 @@ class OrderIntentLifecycleMixin:
         exchange_order_id: str | None = None, venue_response: Mapping[str, Any] | None = None,
         error: str | None = None, release_reservation: bool = False,
     ) -> dict:
-        actor = _required(actor_id, "actor_id")
+        actor = requiredactor_id, "actor_id")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
@@ -62,14 +62,18 @@ class OrderIntentLifecycleMixin:
                     raise OrderIntentError("mutation intent does not exist")
                 scope_key = str(row["owner_scope_key"] or "")
                 generation = int(row["owner_generation"] or 0)
+                current = str(row["status"]).upper()
+                attempt_count = int(row["attempt_count"])
+                if target_status == "SUBMITTING":
+                    attempt_count += 1
                 if require_lease:
                     scope_key, generation = await self._validate_mutation_lease(
                         conn, row, lease,
-                        require_persisted_owner=target_status != "SUBMITTING",
+                        require_persisted_owner=(target_status != "SUBMITTING" or current != "PREPARED"),
                     )
                 event_key = str(
                     payload.get("event_idempotency_key")
-                    or f"{intent_id}:{target_status.lower()}:{int(row['attempt_count'])}"
+                    or f"{intent_id}:{target_status.lower()}:{attempt_count}"
                 )
                 event = await conn.fetchrow(
                     """
@@ -81,15 +85,24 @@ class OrderIntentLifecycleMixin:
                 if event is not None:
                     if str(event["event_type"]) != event_type:
                         raise OrderIntentConflict("event idempotency key was reused for another transition")
+                    stored_payload = event["payload"]
+                    if isinstance(stored_payload, str):
+                        stored_payload = json.loads(stored_payload)
+                    if any(stored_payload.get(key) != value for key, value in payload.items()):
+                        raise OrderIntentConflict("event idempotency key was replayed with different evidence")
                     return dict(row)
-                current = str(row["status"]).upper()
                 if current not in allowed_from:
                     raise OrderIntentConflict(
                         f"invalid intent transition {current} -> {target_status}"
                     )
-                attempt_count = int(row["attempt_count"])
-                if target_status == "SUBMITTING":
-                    attempt_count += 1
+                required_operation = (
+                    "CANCEL" if target_status == "CANCEL_CONFIRMED"
+                    else "CREATE" if target_status == "COMPLETED" else None
+                )
+                if required_operation and str(row["operation"]) != required_operation:
+                    raise OrderIntentConflict(
+                        f"{target_status} is invalid for {row['operation']} intent"
+                    )
                 next_version = int(row["state_version"]) + 1
                 reservation_base = Decimal("0") if release_reservation else Decimal(str(row["reserved_base_qty"]))
                 reservation_notional = Decimal("0") if release_reservation else Decimal(str(row["reserved_notional"]))
@@ -165,7 +178,7 @@ class OrderIntentLifecycleMixin:
         return await self._transition(
             intent_id=intent_id, target_status="UNKNOWN",
             allowed_from=("SUBMITTING",), event_type="INTENT_SUBMISSION_UNKNOWN",
-            actor_id=actor_id, payload={}, lease=lease, error=error,
+            actor_id=actor_id, payload={"error": str(error)[:2000]}, lease=lease, error=error,
         )
 
     async def mark_rejected(
@@ -177,7 +190,7 @@ class OrderIntentLifecycleMixin:
         return await self._transition(
             intent_id=intent_id, target_status="REJECTED",
             allowed_from=("SUBMITTING", "UNKNOWN"), event_type="INTENT_REJECTED",
-            actor_id=actor_id, payload={}, lease=lease, error=error,
+            actor_id=actor_id, payload={"error": str(error)[:2000]}, lease=lease, error=error,
             release_reservation=True,
         )
 
@@ -187,7 +200,7 @@ class OrderIntentLifecycleMixin:
         return await self._transition(
             intent_id=intent_id, target_status="ABORTED",
             allowed_from=("PREPARED",), event_type="INTENT_ABORTED",
-            actor_id=actor_id, payload={}, require_lease=False, error=reason,
+            actor_id=actor_id, payload={"reason": str(reason)[:2000]}, require_lease=False, error=reason,
             release_reservation=True,
         )
 
