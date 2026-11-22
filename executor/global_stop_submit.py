@@ -72,7 +72,7 @@ class GlobalStopSubmitMixin:
                 expected_amount_spec = json.loads(values[10])
                 expected_recovery_context = json.loads(values[9])
                 if (
-                    any(existing[key] != value for key, value in expected.items())
+                    any(existing.get(key) != value for key, value in expected.items())
                     or stored_amount_spec != expected_amount_spec
                     or stored_recovery_context != expected_recovery_context
                 ):
