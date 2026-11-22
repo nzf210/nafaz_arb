@@ -154,6 +154,7 @@ class ExecutorConfig:
     private_stream_max_age_seconds: float = 5.0
     executor_instance_id: str = ""
     emergency_derisk_owner_id: str = ""
+    emergency_derisk_allowed: bool = False
     emergency_derisk_lease_ttl_ms: int = 120000
     # Fraction of accumulated funding retained for realized PnL; only the
     # complementary fraction may decay the target exit spread.
@@ -279,6 +280,7 @@ class ExecutorConfig:
                 ("private_stream_max_age_seconds", float),
                 ("executor_instance_id", str),
                 ("emergency_derisk_owner_id", str),
+                ("emergency_derisk_allowed", bool),
                 ("emergency_derisk_lease_ttl_ms", int),
                 ("funding_decay_retention_ratio", float),
                 ("monitor_interval_seconds", float),
@@ -508,6 +510,10 @@ class ExecutorConfig:
             self.executor_instance_id = instance_id.strip()
         if emergency_owner := os.getenv("EMERGENCY_DERISK_OWNER_ID"):
             self.emergency_derisk_owner_id = emergency_owner.strip()
+        if emergency_allowed := os.getenv("EMERGENCY_DERISK_ALLOWED"):
+            self.emergency_derisk_allowed = emergency_allowed.strip().lower() in {
+                "1", "true", "yes", "on"
+            }
         if emergency_ttl := os.getenv("EMERGENCY_DERISK_LEASE_TTL_MS"):
             try:
                 self.emergency_derisk_lease_ttl_ms = int(emergency_ttl)
@@ -738,6 +744,7 @@ class ExecutorConfig:
                 "min_venue_health_score": getattr(self, "min_venue_health_score", 0.2),
                 "executor_instance_id": getattr(self, "executor_instance_id", ""),
                 "emergency_derisk_owner_id": getattr(self, "emergency_derisk_owner_id", ""),
+                "emergency_derisk_allowed": getattr(self, "emergency_derisk_allowed", False),
                 "emergency_derisk_lease_ttl_ms": getattr(self, "emergency_derisk_lease_ttl_ms", 120000),
                 "mock_mode": getattr(self, "mock_mode", False),
                 "execution_mode": getattr(self, "execution_mode", "TAKER_TAKER"),
