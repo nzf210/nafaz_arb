@@ -71,7 +71,7 @@ class RiskBudgetMetricsBuilder:
             for value in (pending_entries, pending_exits, pending_hedges)
         )
         for pending in (pending_entries.values() if isinstance(pending_entries, Mapping) else []):
-            notional = cls._pending_notional(pending)
+            notional = cls._pending_notional(pending, engine=engine)
             if notional <= 0:
                 gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = True
             gross += notional
@@ -135,7 +135,7 @@ class RiskBudgetMetricsBuilder:
         }
 
     @staticmethod
-    def _pending_notional(pending: Any) -> float:
+    def _pending_notional(pending: Any, *, engine: Any = None) -> float:
         def get(key: str, default: Any = 0.0) -> Any:
             if isinstance(pending, Mapping):
                 return pending.get(key, default)
@@ -146,7 +146,21 @@ class RiskBudgetMetricsBuilder:
                 return value
         amount = float(get("quantity", get("amount", 0.0)) or 0.0)
         price = float(get("price", 0.0) or 0.0)
-        return max(0.0, amount * price)
+        quote_asset = str(
+            get("quote_asset", get("quote_currency", "")) or ""
+        ).upper()
+        if quote_asset in {"USDT", "USD"}:
+            return max(0.0, amount * price)
+        if quote_asset == "IDR":
+            rate = float(
+                get(
+                    "usdt_idr_rate",
+                    getattr(engine, "usdt_idr_rate", getattr(engine, "_usdt_idr_rate", 0.0)),
+                ) or 0.0
+            )
+            return max(0.0, amount * price / rate) if rate > 0 else 0.0
+        # Never treat an unknown quote currency (especially IDR) as USDT.
+        return 0.0
 
     @staticmethod
     def limits_from_config(config: Any) -> dict:
