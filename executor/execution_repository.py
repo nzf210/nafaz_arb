@@ -241,7 +241,9 @@ class ExecutionSessionRepository:
                     existing = await conn.fetchrow(
                         """
                         SELECT session_id, opportunity_id, source_dispatch_id,
-                               account_scope_id, policy_snapshot_hash
+                               account_scope_id, policy_snapshot_hash,
+                               execution_policy_snapshot, risk_policy_snapshot,
+                               exit_policy_snapshot
                         FROM public.execution_sessions
                         WHERE admission_key=$1
                         FOR UPDATE
@@ -253,8 +255,34 @@ class ExecutionSessionRepository:
                         or str(existing["source_dispatch_id"]) != source_dispatch_id
                         or str(existing["account_scope_id"]) != account_scope_id
                         or str(existing["policy_snapshot_hash"]) != policy_hash
+                        or not _same_json(existing["execution_policy_snapshot"], execution_json)
+                        or not _same_json(existing["risk_policy_snapshot"], risk_json)
+                        or not _same_json(existing["exit_policy_snapshot"], exit_json)
                     ):
                         raise AdmissionConflict("admission_key is already bound to a different request")
+                    existing_legs = await conn.fetch(
+                        """
+                        SELECT leg_type, venue, market_type, symbol, normalized_symbol,
+                               base_asset, quote_asset, settlement_asset, contract_type,
+                               contract_size, position_side, quantity_unit, base_per_unit
+                        FROM public.execution_legs
+                        WHERE session_id=$1
+                        ORDER BY leg_type
+                        """,
+                        str(existing["session_id"]),
+                    )
+                    expected_legs = sorted(validated_legs, key=lambda item: item["leg_type"])
+                    actual_legs = [dict(item) for item in existing_legs]
+                    identity_fields = (
+                        "leg_type", "venue", "market_type", "symbol", "normalized_symbol",
+                        "base_asset", "quote_asset", "settlement_asset", "contract_type",
+                        "contract_size", "position_side", "quantity_unit", "base_per_unit",
+                    )
+                    if len(actual_legs) != len(expected_legs) or any(
+                        any(str(actual.get(field) or "") != str(expected.get(field) or "") for field in identity_fields)
+                        for actual, expected in zip(actual_legs, expected_legs)
+                    ):
+                        raise AdmissionConflict("admission_key is already bound to different venue/market legs")
                     return {
                         "session_id": str(existing["session_id"]),
                         "created": False,
@@ -339,6 +367,7 @@ class ExecutionSessionRepository:
         target = _required_text(target_state, "target_state").upper()
         key = _required_text(event_idempotency_key, "event_idempotency_key")
         actor = _required_text(actor_id, "actor_id")
+        event_type = _required_text(event_type, "event_type")
         if target == "COMPLETED":
             required = {
                 "spot_flat", "futures_flat", "orders_terminal",
@@ -416,6 +445,7 @@ class ExecutionSessionRepository:
         target = _required_text(target_state, "target_state").upper()
         key = _required_text(event_idempotency_key, "event_idempotency_key")
         actor = _required_text(actor_id, "actor_id")
+        event_type = _required_text(event_type, "event_type")
         event_payload = dict(payload or {})
         event_payload["target_state"] = target
         if target == "CLOSED":
