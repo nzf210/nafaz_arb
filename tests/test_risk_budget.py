@@ -215,6 +215,10 @@ def test_new_quantitative_risk_budget_fields_load_from_executor_config(tmp_path)
 @pytest.mark.asyncio
 async def test_durable_scope_limits_override_config_budget_defaults():
     class _Connection:
+        async def execute(self, query, scope_key):
+            assert "pg_advisory_xact_lock" in query
+            assert scope_key == "global"
+
         async def fetch(self, query, scope_keys):
             return [{
                 "scope_key": "global",
