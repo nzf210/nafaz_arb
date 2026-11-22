@@ -134,15 +134,18 @@ class HedgeReservationMixin(HedgeServiceBase):
                         """,
                         reservation["reservation_id"], obligation["obligation_id"], take,
                     )
-                    await conn.execute(
+                    updated_obligation = await conn.execute(
                         """
                         UPDATE public.execution_hedge_obligations
                         SET reserved_base_quantity=reserved_base_quantity+$2,
                             updated_at=clock_timestamp()
                         WHERE obligation_id=$1
+                          AND target_base_quantity >= confirmed_base_quantity + reserved_base_quantity + $2
                         """,
                         obligation["obligation_id"], take,
                     )
+                    if not updated_obligation.endswith(" 1"):
+                        raise HedgeObligationError("hedge obligation reservation compare-and-swap failed")
                     item_payload.append({
                         "obligation_id": str(obligation["obligation_id"]),
                         "reserved_base_quantity": _fmt(take),
@@ -304,7 +307,7 @@ class HedgeReservationMixin(HedgeServiceBase):
                     )
                     if unfilled <= 0:
                         continue
-                    await conn.execute(
+                    released_obligation = await conn.execute(
                         """
                         UPDATE public.execution_hedge_obligations
                         SET reserved_base_quantity=reserved_base_quantity-$2,
@@ -319,6 +322,8 @@ class HedgeReservationMixin(HedgeServiceBase):
                         """,
                         item["obligation_id"], unfilled,
                     )
+                    if not released_obligation.endswith(" 1"):
+                        raise HedgeObligationError("hedge obligation release compare-and-swap failed")
                     released_total += unfilled
                 await conn.execute(
                     """
