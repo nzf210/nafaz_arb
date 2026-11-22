@@ -82,6 +82,7 @@ class GlobalStopAttemptMixin:
             rows = await conn.fetch(
                 "select client_order_id, exchange, market_type, symbol, side, order_type, "
                 "quantity, price, pair_key, amount_spec, recovery_context, status, "
+                "account_scope_id, owner_scope_key, owner_generation, risk_control_snapshot, "
                 "submit_started_at, last_error from public.executor_submit_attempts "
                 "where status in ('SUBMITTING','UNKNOWN') order by submit_started_at limit $1",
                 max(1, min(int(limit), 1000)),
