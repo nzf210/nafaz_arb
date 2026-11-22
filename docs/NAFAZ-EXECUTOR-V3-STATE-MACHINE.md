@@ -174,3 +174,13 @@ They must be mapped explicitly to V3 session/leg projections; do not rename enum
 - Legacy sessions without an evidenced immutable policy snapshot remain LEGACY/UNKNOWN for policy provenance; they are not silently promoted by a default empty JSON object.
 - Deleting a session cannot cascade-delete its legs or transition history; retention is an explicit audited archive/purge operation.
 - A stale fencing generation cannot mutate state or publish a transition event.
+
+
+## 11. PR-01A aggregate-version and legacy-ownership clarifications
+
+- `execution_sessions.aggregate_version` is the durable per-session event cursor. It increments once for every accepted session or leg transition, atomically with the event insert.
+- The session's own `state_version` and each leg's `state_version` remain entity-scoped versions. They are not substitutes for aggregate_version.
+- A leg transition increments that leg's state_version and the parent aggregate_version; it does not increment the session state_version unless the session projection itself changes.
+- Legacy rows with unknown ownership must not be assigned a trusted fencing generation by default. Keep generation NULL/unknown until a V3 ownership acquisition establishes a real generation. Preserve V2 owner_fencing during compatibility.
+- The transition transaction must verify the expected aggregate_version in addition to entity version and fencing generation. A failed compare-and-swap changes no row and appends no event.
+- Session deletion must not cascade to legs, events, orders, fills, obligations, positions or exit records. Use RESTRICT/non-cascading relationships and a separate audited retention process.
