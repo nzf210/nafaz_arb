@@ -220,6 +220,10 @@ def evaluate_hedge_liquidity(
         return _defer_or_derisk(reason="BOOK_SEQUENCE_GAP", now_ms=now_ms,
                                 unhedged_since_ms=unhedged_since_ms, policy=policy,
                                 book=book, unhedged_notional_usd=unhedged_usd)
+    if not str(book.sequence or "").strip():
+        return _defer_or_derisk(reason="BOOK_SEQUENCE_MISSING", now_ms=now_ms,
+                                unhedged_since_ms=unhedged_since_ms, policy=policy,
+                                book=book, unhedged_notional_usd=unhedged_usd)
     if not book.checksum_valid:
         return _defer_or_derisk(reason="BOOK_CHECKSUM_INVALID", now_ms=now_ms,
                                 unhedged_since_ms=unhedged_since_ms, policy=policy,
@@ -239,6 +243,10 @@ def evaluate_hedge_liquidity(
     is_short = side == "SHORT"
     levels = bids if is_short else asks
     best = levels[0].price
+    if reference_price is None and max_adverse > 0:
+        return _defer_or_derisk(reason="REFERENCE_PRICE_UNAVAILABLE", now_ms=now_ms,
+                                unhedged_since_ms=unhedged_since_ms, policy=policy,
+                                book=book, unhedged_notional_usd=unhedged_usd)
     if reference_price is not None:
         reference = _d(reference_price, "reference_price")
         adverse_bps = (
