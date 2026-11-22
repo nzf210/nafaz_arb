@@ -433,8 +433,12 @@ begin
         select 1 from information_schema.columns
         where table_schema='public' and table_name='executor_submit_attempts'
           and column_name='owner_generation'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema='public' and table_name='executor_submit_attempts'
+          and column_name='risk_control_snapshot'
     ) then
-        raise exception 'submit attempt owner scope/fencing columns are missing';
+        raise exception 'submit attempt owner scope/fencing/risk snapshot columns are missing';
     end if;
 
     if not exists (
