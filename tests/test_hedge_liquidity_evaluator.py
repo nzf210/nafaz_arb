@@ -85,8 +85,8 @@ def test_partial_depth_above_minimum_returns_partial_submit():
         (_book(observed=9000), _fx(), "BOOK_STALE"),
         (_book(sequence_valid=False), _fx(), "BOOK_SEQUENCE_GAP"),
         (_book(checksum_valid=False), _fx(), "BOOK_CHECKSUM_INVALID"),
-        (_book(bids=[("100", "10")]), _fx(), "INSUFFICIENT_EXECUTABLE_DEPTH"),
-        (_book(bids=[("100", "100"), ("98", "100")]), _fx(), "SLIPPAGE_LIMIT_EXCEEDED"),
+        (_book(bids=[("100", "0.5")]), _fx(), "INSUFFICIENT_EXECUTABLE_DEPTH"),
+        (_book(bids=[("100", "50"), ("98", "50")]), _fx(), "SLIPPAGE_LIMIT_EXCEEDED"),
         (_book(bids=[("100", "100")]), _fx(observed=8000), "FX_STALE_OR_UNVERIFIED"),
     ],
 )
