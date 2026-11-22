@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -19,8 +20,17 @@ from executor.session_coordinator import (
 
 
 def _snapshots():
+    now = datetime.now(timezone.utc)
+    evidence = {
+        name: {
+            "status": "VERIFIED" if name != "fx_conversion" else "NOT_REQUIRED",
+            "observed_at": now.isoformat(),
+            "valid_until": (now + timedelta(minutes=2)).isoformat(),
+        }
+        for name in ("market_metadata", "fee_schedule", "fx_conversion")
+    }
     return {
-        "policy_snapshot": {"strategy": "spot-perp", "version": 3},
+        "policy_snapshot": {"strategy": "spot-perp", "version": 3, "evidence": evidence},
         "execution_policy_snapshot": {"mode": "maker-taker"},
         "risk_policy_snapshot": {"max_unhedged_ms": 3000},
         "exit_policy_snapshot": {"take_profit": {"net_roi_pct": 0.3}},
@@ -84,6 +94,17 @@ def test_admission_identity_rejects_missing_dispatch_identity():
             account_scope_id="account-a", source_dispatch_id="",
             opportunity_id="opp-1", pair_key="route-a",
         )
+
+
+def test_policy_snapshot_rejects_stale_critical_evidence():
+    from executor.session_coordinator import _validate_policy_evidence
+
+    snapshot = _snapshots()["policy_snapshot"]
+    snapshot["evidence"]["fee_schedule"]["valid_until"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=1)
+    ).isoformat()
+    with pytest.raises(SessionAdmissionError, match="fee_schedule is stale"):
+        _validate_policy_evidence(snapshot)
 
 
 class _FakeAcquire:
