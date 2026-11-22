@@ -115,7 +115,8 @@ class ExecutionSessionRepository:
                         SELECT session_id, opportunity_id, source_dispatch_id,
                                account_scope_id, pair_key, policy_snapshot_hash,
                                execution_policy_snapshot, risk_policy_snapshot,
-                               exit_policy_snapshot
+                               exit_policy_snapshot, state_version, aggregate_version,
+                               fencing_generation
                         FROM public.execution_sessions
                         WHERE admission_key=$1
                         FOR UPDATE
@@ -165,10 +166,56 @@ class ExecutionSessionRepository:
                         for actual, expected in zip(actual_legs, expected_legs)
                     ):
                         raise AdmissionConflict("admission_key is already bound to different venue/market legs")
+                    existing_aggregate_version = int(existing["aggregate_version"])
+                    if coordinator_lease is not None:
+                        existing_generation = existing["fencing_generation"]
+                        if existing_generation is None:
+                            raise StaleAggregate(
+                                "cannot reclaim a session without durable prior fencing provenance"
+                            )
+                        existing_generation = int(existing_generation)
+                        if existing_generation > generation:
+                            raise StaleAggregate("coordinator lease generation is older than the session fence")
+                        if existing_generation < generation:
+                            next_state_version = int(existing["state_version"]) + 1
+                            next_aggregate_version = existing_aggregate_version + 1
+                            updated = await conn.fetchrow(
+                                """
+                                UPDATE public.execution_sessions
+                                SET fencing_generation=$2, state_version=$3,
+                                    aggregate_version=$4, updated_at=clock_timestamp()
+                                WHERE session_id=$1 AND fencing_generation=$5
+                                  AND state_version=$6 AND aggregate_version=$7
+                                RETURNING aggregate_version
+                                """,
+                                str(existing["session_id"]), generation,
+                                next_state_version, next_aggregate_version,
+                                existing_generation, int(existing["state_version"]),
+                                existing_aggregate_version,
+                            )
+                            if updated is None:
+                                raise StaleAggregate("session fence reclaim compare-and-swap lost")
+                            await self._insert_event(
+                                conn, session_id=str(existing["session_id"]),
+                                aggregate_version=next_aggregate_version,
+                                entity_type="SESSION", entity_id=str(existing["session_id"]),
+                                entity_version=next_state_version,
+                                event_type="COORDINATOR_LEASE_RECLAIMED",
+                                idempotency_key=f"{event_key}:fence:{generation}",
+                                actor_id=actor_id, fencing_generation=generation,
+                                reason="expired coordinator lease reclaimed",
+                                correlation_id=source_dispatch_id,
+                                payload={
+                                    "previous_generation": existing_generation,
+                                    "current_generation": generation,
+                                    "admission_key": admission_key,
+                                },
+                            )
+                            existing_aggregate_version = next_aggregate_version
                     return {
                         "session_id": str(existing["session_id"]),
                         "created": False,
-                        "aggregate_version": None,
+                        "aggregate_version": existing_aggregate_version,
                     }
 
                 if coordinator_lease is not None:
