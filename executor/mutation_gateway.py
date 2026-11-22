@@ -430,6 +430,12 @@ class MutationGateway:
                         )
                 except Exception:
                     logger.exception("failed to abort pre-submit V3 mutation intent")
+            try:
+                await self.global_stop.mark_submit_aborted(
+                    client_order_id, f"blocked before venue boundary: {exc}"
+                )
+            except Exception:
+                logger.debug("no PREPARED submit attempt to abort for %s", client_order_id)
             if slot_reserved:
                 await self.slot_manager.release_slot(
                     exchange, client_order_id, reason="GLOBAL_STOP_BLOCKED"
