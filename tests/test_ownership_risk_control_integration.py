@@ -545,3 +545,33 @@ async def test_risk_control_idempotency_is_serialized_for_concurrent_writers(pos
     first, second = await asyncio.gather(write_control(), write_control())
     assert first["version"] == second["version"] == 1
     assert sorted([first["duplicate"], second["duplicate"]]) == [False, True]
+
+@pytest.mark.asyncio
+async def test_concurrent_lease_acquisition_has_one_owner(postgres_pool):
+    suffix = uuid.uuid4().hex
+    scope = {
+        "account_scope_id": "concurrent-owner-account-" + suffix,
+        "venue": "mexc",
+        "market_type": "perpetual",
+        "instrument": "ETH_USDT",
+    }
+    owners = [
+        OwnershipLeaseService(owner_id="owner-a-" + suffix, lease_seconds=30),
+        OwnershipLeaseService(owner_id="owner-b-" + suffix, lease_seconds=30),
+    ]
+
+    async def acquire(owner):
+        async with postgres_pool.acquire() as conn:
+            try:
+                return owner, await owner.acquire(conn, **scope)
+            except OwnershipHeld as exc:
+                return owner, exc
+
+    results = await asyncio.gather(*(acquire(owner) for owner in owners))
+    granted = [(owner, result) for owner, result in results if not isinstance(result, Exception)]
+    rejected = [(owner, result) for owner, result in results if isinstance(result, OwnershipHeld)]
+    assert len(granted) == 1
+    assert len(rejected) == 1
+    owner, lease = granted[0]
+    async with postgres_pool.acquire() as conn:
+        assert await owner.release(conn, lease) is True
