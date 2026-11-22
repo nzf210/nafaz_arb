@@ -651,7 +651,7 @@ Reviewed target branch head before this follow-up: `8167cefe153e5c950e4732c9120b
 - Source fixes: `203d7448` (LIVE registry gate) and `b69d82cf` (generic venue/risk-lane binding).
 - Regression tests: `1e68e26f`, `b10ae10a`, and `e83fa8ec`.
 - GitHub combined status for the earlier branch head `8167cefe` returned no status entries, and the available commit-workflow lookup returned no PR-triggered runs. Therefore no CI result is claimed for these follow-up commits until a check run is observed on the resulting branch head.
-- No local test execution was performed in this connector-only run.
+- A local clone attempt failed with `Could not resolve host: github.com`; therefore no local test execution was possible in this run.
 - No merge, deployment, production migration, cutover, or live order was performed.
 
 Remaining gates: clone-wide/runtime-instrumented create-order inventory; scoped durable active-market admission resilient to Redis loss; production wiring and lifecycle registration for MutationGateway; operator identity and HMAC secret custody/rotation; dual approval and manual-resolution runbook; repeated PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; and per-venue sandbox/paper exact-ID/eventual-consistency tests. Status remains PARTIAL / NOT LIVE-CERTIFIED.
