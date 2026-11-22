@@ -77,7 +77,7 @@ def build_scope_key(
         str(account_scope_id or "").strip(),
         str(venue or "").strip().lower(),
         str(market_type or "").strip().lower(),
-        str(instrument or "").strip(),
+        str(instrument or "").strip().upper(),
     )
     if not all(values):
         raise ValueError("account_scope_id, venue, market_type and instrument are required")
@@ -105,7 +105,7 @@ class OwnershipLeaseService:
         account = str(account_scope_id or "").strip()
         exchange = str(venue or "").strip().lower()
         market = str(market_type or "").strip().lower()
-        native_instrument = str(instrument or "").strip()
+        native_instrument = str(instrument or "").strip().upper()
         scope_key = build_scope_key(account, exchange, market, native_instrument)
         async with conn.transaction():
             await conn.execute(
