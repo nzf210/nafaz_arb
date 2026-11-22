@@ -68,7 +68,6 @@ class RiskControlPlane:
         blocked = []
         derisk_denied = []
         snapshot = []
-        evaluated_scopes = set()
         for row in rows:
             entry_blocked = bool(row["entry_blocked"])
             derisk_allowed = bool(row["derisk_allowed"])
@@ -90,7 +89,6 @@ class RiskControlPlane:
                 raise RiskPermissionDenied(
                     f"RISK_BUDGET_BLOCKED at {scope_key}: {budget_error}"
                 ) from budget_error
-            evaluated_scopes.add(scope_key)
             snapshot.append({
                 "scope_key": scope_key,
                 "version": int(row["version"]),
