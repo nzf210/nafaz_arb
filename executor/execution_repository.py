@@ -314,8 +314,10 @@ class ExecutionSessionRepository:
                     """,
                     session_id,
                 )
+                if current is None:
+                    raise ExecutionRepositoryError("execution session does not exist")
                 if coordinator_lease is not None:
-                    await self._validate_coordinator_lease(
+                    await validate_coordinator_lease(
                         conn, coordinator_lease, session_id=session_id,
                         account_scope_id=str(current["account_scope_id"]),
                         expected_generation=fencing_generation,
