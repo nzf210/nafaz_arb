@@ -35,6 +35,12 @@ END $;
 ALTER TABLE public.executor_submit_attempts
     VALIDATE CONSTRAINT executor_submit_owner_generation_pair;
 
+CREATE INDEX IF NOT EXISTS idx_executor_submit_attempts_scoped_unresolved
+    ON public.executor_submit_attempts (
+        account_scope_id, exchange, market_type, symbol, created_at
+    )
+    WHERE status IN ('SUBMITTING', 'UNKNOWN');
+
 CREATE TABLE IF NOT EXISTS public.executor_ownership_leases (
     scope_key TEXT PRIMARY KEY,
     account_scope_id TEXT NOT NULL,
