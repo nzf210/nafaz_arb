@@ -1,10 +1,10 @@
-"""PostgreSQL-backed global STOP state and cross-instance order-submit fencing.
+"""PostgreSQL global STOP and per-account/instrument mutation ownership.
 
-The transaction-scoped advisory lock is deliberately held across the venue
-create-order request. This makes STOP and a new-order request linearizable:
-whichever obtains the lock first completes its critical section first. The
-exchange side effect is still not atomic with PostgreSQL; callers must use a
-stable client order id and reconcile ambiguous acknowledgements.
+New entries hold a shared global advisory lock and an exclusive native-scope
+lock across the venue request. This permits independent scopes to submit in
+parallel while a manual STOP takes the exclusive global lock and waits for
+already-admitted requests. The exchange side effect remains non-atomic with
+PostgreSQL; stable client IDs and ambiguous-outcome reconciliation are required.
 """
 from __future__ import annotations
 
@@ -18,12 +18,12 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
-logger = logging.getLogger("executor.global_stop")
-
 from executor.ownership import (
     OwnershipError, OwnershipLeaseService, advisory_scope_lock_key, build_scope_key,
 )
 from executor.risk_control import RiskControlPlane, RiskPermissionDenied, risk_scope_keys
+
+logger = logging.getLogger("executor.global_stop")
 
 
 def _json_mapping(value: Any) -> Optional[dict]:
