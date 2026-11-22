@@ -35,4 +35,16 @@ def _same_json(left: Any, right: str) -> bool:
             return False
     return left == json.loads(right)
 
-
+def _same_value(left: Any, right: Any, field: str) -> bool:
+    """Compare PostgreSQL NUMERIC values without depending on display scale."""
+    if field in {
+        "contract_size", "base_per_unit", "order_quantity",
+        "exposure_quantity", "target_qty",
+    }:
+        if left is None or right is None:
+            return left is None and right is None
+        try:
+            return Decimal(str(left)) == Decimal(str(right))
+        except (InvalidOperation, TypeError, ValueError):
+            return False
+    return str(left or "") == str(right or "")
