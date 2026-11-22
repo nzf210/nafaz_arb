@@ -429,7 +429,7 @@ class EngineEntrySubmissionMixin:
                 funding_cost_pct=funding_cost_pct,
                 market_data_age_ms=market_data_age_ms,
             )
-            risk_limits = RiskBudgetMetricsBuilder.limits_from_config(self.config)
+            risk_limits = RiskBudgetMetricsBuilder.limits_from_config(getattr(self, "config", None))
             recovery_context["strategy_price_idr"] = buy_price_idr
             recovery_context["exchange_order_price"] = exchange_order_price
             recovery_context["exchange_quote_asset"] = str(
