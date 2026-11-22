@@ -256,9 +256,15 @@ async def test_postgres_late_fill_after_completion_reopens_reconciliation(postgr
     args["expected_aggregate_version"] = int(row["aggregate_version"])
     result = await ExecutionFillService(postgres_pool).record_fill(**args)
     assert result["session_state"] == "RECONCILIATION_REQUIRED"
+    assert result["leg_state"] == "RECONCILIATION_REQUIRED"
     async with postgres_pool.acquire() as conn:
         status = await conn.fetchval(
             "SELECT status FROM public.execution_sessions WHERE session_id=$1",
             admitted["session_id"],
         )
+        leg_status = await conn.fetchval(
+            "SELECT status FROM public.execution_legs WHERE leg_id=$1",
+            f"spot-{suffix}",
+        )
     assert status == "RECONCILIATION_REQUIRED"
+    assert leg_status == "RECONCILIATION_REQUIRED"
