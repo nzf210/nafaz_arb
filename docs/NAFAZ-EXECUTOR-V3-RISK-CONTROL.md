@@ -47,7 +47,9 @@ At startup, PostgreSQL risk state is restored first. When PostgreSQL is unavaila
 
 ## Emergency de-risk ownership during PostgreSQL outage
 
-Normal de-risk operations use the PostgreSQL de-risk fence. If PostgreSQL fencing is unavailable, the executor may use a Redis lease only when all of the following hold:
+Normal de-risk operations use a PostgreSQL advisory lock scoped to account, venue, market type, and native instrument, plus the durable ownership generation lease. The fence checks the hierarchical `DE_RISK_ALLOWED` control; global STOP is informational for protective mutations and does not block them. Independent instruments can de-risk concurrently.
+
+If PostgreSQL fencing is unavailable, the executor may use a Redis lease only when all of the following hold:
 
 1. `EXECUTOR_INSTANCE_ID` identifies the running executor.
 2. `EMERGENCY_DERISK_OWNER_ID` identifies the single designated emergency owner and exactly matches that executor ID.
