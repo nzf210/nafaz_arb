@@ -69,6 +69,7 @@ class HedgeLiquidityPolicy:
     max_fx_age_ms: int = 30000
     max_future_clock_skew_ms: int = 250
     max_slippage_bps: Decimal = Decimal("25")
+    max_total_cost_bps: Decimal = Decimal("50")
     taker_fee_bps: Decimal = Decimal("5")
     safety_buffer_bps: Decimal = Decimal("5")
     max_unhedged_notional_usd: Decimal = Decimal("25")
@@ -78,7 +79,7 @@ class HedgeLiquidityPolicy:
     def __post_init__(self):
         for name in ("internal_min_notional_usd", "max_unhedged_notional_usd"):
             object.__setattr__(self, name, _d(getattr(self, name), name))
-        for name in ("max_slippage_bps", "taker_fee_bps", "safety_buffer_bps", "max_adverse_move_bps"):
+        for name in ("max_slippage_bps", "max_total_cost_bps", "taker_fee_bps", "safety_buffer_bps", "max_adverse_move_bps"):
             object.__setattr__(self, name, _d(getattr(self, name), name, allow_zero=True))
         if min(self.max_book_age_ms, self.max_fx_age_ms, self.max_unhedged_wait_ms) <= 0:
             raise LiquidityInputError("liquidity time limits must be positive")
@@ -175,6 +176,7 @@ def evaluate_hedge_liquidity(
     max_unhedged = _d(policy.max_unhedged_notional_usd, "max_unhedged_notional_usd")
     min_internal = _d(policy.internal_min_notional_usd, "internal_min_notional_usd")
     max_slippage = _d(policy.max_slippage_bps, "max_slippage_bps", allow_zero=True)
+    max_total_cost = _d(policy.max_total_cost_bps, "max_total_cost_bps", allow_zero=True)
     taker_fee = _d(policy.taker_fee_bps, "taker_fee_bps", allow_zero=True)
     safety_buffer = _d(policy.safety_buffer_bps, "safety_buffer_bps", allow_zero=True)
     max_adverse = _d(policy.max_adverse_move_bps, "max_adverse_move_bps", allow_zero=True)
@@ -296,6 +298,10 @@ def evaluate_hedge_liquidity(
                                 policy=policy, book=book, unhedged_notional_usd=unhedged_usd)
     if slippage > max_slippage:
         return _defer_or_derisk(reason="SLIPPAGE_LIMIT_EXCEEDED", now_ms=now_ms,
+                                unhedged_since_ms=unhedged_since_ms, policy=policy,
+                                book=book, unhedged_notional_usd=unhedged_usd)
+    if total_cost > max_total_cost:
+        return _defer_or_derisk(reason="TOTAL_COST_LIMIT_EXCEEDED", now_ms=now_ms,
                                 unhedged_since_ms=unhedged_since_ms, policy=policy,
                                 book=book, unhedged_notional_usd=unhedged_usd)
 
