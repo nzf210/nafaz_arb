@@ -13,6 +13,7 @@ from executor.helpers import (
     resolve_local_market_identity,
 )
 from executor.order_slots import SlotExhaustedError
+from executor.ownership import account_scope_id_for
 from executor.engine_common import logger
 
 
@@ -380,6 +381,9 @@ class EngineEntrySubmissionMixin:
             )
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
+            account_scope_id = account_scope_id_for(
+                self.config, pair_info.local_exchange
+            )
             placed_time = time.time()
             exchange_order_price = self._local_order_limit_price(
                 pair_info, snapshot, buy_price_idr
@@ -423,6 +427,7 @@ class EngineEntrySubmissionMixin:
                     pair_key=pair_tag,
                     recovery_context=recovery_context,
                     amount_spec=pair_info.local_amount_spec.to_dict(),
+                    account_scope_id=account_scope_id,
                 )
             quote_asset = self._spot_slot_account(pair_info)
             if getattr(self, "slot_manager", None) is not None:
@@ -487,6 +492,10 @@ class EngineEntrySubmissionMixin:
                             pre_submit_guard=_pair_admission_guard,
                             scope_exchange=pair_info.local_exchange,
                             scope_symbol=pair_info.local_symbol,
+                            scope_market_type="spot",
+                            account_scope_id=account_scope_id,
+                            action_class="ENTRY",
+                            scope_pair_key=pair_tag,
                         ) as fence_conn:
                             submission_started = True
                             try:
