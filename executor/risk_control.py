@@ -120,6 +120,10 @@ class RiskControlPlane:
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
         async with pool.acquire() as conn:
             async with conn.transaction():
+                await conn.execute(
+                    "select pg_advisory_xact_lock(hashtextextended('nafaz:risk-control:' || $1, 0))",
+                    key,
+                )
                 prior_event = await conn.fetchrow(
                     """
                     SELECT version, event_type, entry_blocked, derisk_allowed, payload
