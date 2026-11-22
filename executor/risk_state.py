@@ -311,10 +311,33 @@ class RiskStateMixin:
         self._halt_reason = "RISK_STATE_PERSISTENCE_FAILED"
         self._entry_blocked = True
 
-    async def _restore_daily_loss_ledger(self, writer) -> None:
-        self._daily_realized_loss_usdt = await writer.fetch_daily_realized_loss_usdt(
-            self._utc_day(), is_mock=bool(getattr(self.config, "mock_mode", False))
-        )
+    async def _restore_daily_loss_ledger(self, writer, fallback=None) -> None:
+        try:
+            loss = await writer.fetch_daily_realized_loss_usdt(
+                self._utc_day(), is_mock=bool(getattr(self.config, "mock_mode", False))
+            )
+        except Exception:
+            if fallback is None:
+                raise
+            logger.critical(
+                "Primary daily-loss ledger unavailable; restoring from durable fallback"
+            )
+            self._risk_persistence_failed = True
+            self._trading_halted = True
+            self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
+            self._entry_blocked = True
+            loss = await fallback.fetch_daily_realized_loss_usdt(
+                self._utc_day(), is_mock=bool(getattr(self.config, "mock_mode", False))
+            )
+        if fallback is not None:
+            try:
+                fallback_loss = await fallback.fetch_daily_realized_loss_usdt(
+                    self._utc_day(), is_mock=bool(getattr(self.config, "mock_mode", False))
+                )
+                loss = max(float(loss), float(fallback_loss))
+            except Exception:
+                logger.warning("Fallback daily-loss ledger could not be read; using primary")
+        self._daily_realized_loss_usdt = float(loss)
         self._loss_day = self._utc_day()
         self._risk_state_restored = True
         limit = float(getattr(self.config, "max_daily_loss_usdt", 0.0) or 0.0)
@@ -343,7 +366,7 @@ class RiskStateMixin:
         self._roll_loss_day_if_needed()
 
     async def _restore_risk_state(self) -> None:
-        """Restore unresolved durable halts before recovery/listeners can accept signals."""
+        """Restore risk state before recovery; degrade to protect-only if PG is down."""
         pg_risk = getattr(self, "postgres_risk", None)
         has_pg = pg_risk is not None and getattr(pg_risk, "enabled", False)
         writer = getattr(self, "supabase", None)
@@ -364,9 +387,72 @@ class RiskStateMixin:
         active_backend = pg_risk if has_pg else writer
         rows = []
         if has_pg:
-            rows = await pg_risk.fetch_active_risk_states(
-                is_mock=bool(getattr(self.config, "mock_mode", False))
-            )
+            try:
+                rows = await pg_risk.fetch_active_risk_states(
+                    is_mock=bool(getattr(self.config, "mock_mode", False))
+                )
+            except Exception as pg_error:
+                self._risk_persistence_failed = True
+                self._trading_halted = True
+                self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
+                self._entry_blocked = True
+                if not has_sb:
+                    # Continue in protect-only mode; no new exposure can pass readiness.
+                    self._risk_state_restored = True
+                    logger.critical(
+                        "PostgreSQL risk state unavailable and no fallback exists: %s",
+                        pg_error,
+                    )
+                    return
+                logger.critical(
+                    "PostgreSQL risk state unavailable; restoring protect-only state from Supabase: %s",
+                    pg_error,
+                )
+                active_backend = writer
+                rows = await writer.fetch_active_risk_states(
+                    is_mock=bool(getattr(self.config, "mock_mode", False))
+                )
+            else:
+                if has_sb:
+                    try:
+                        sb_rows = await writer.fetch_active_risk_states(
+                            is_mock=bool(getattr(self.config, "mock_mode", False))
+                        )
+                        merged = {str(row.get("state_id")): dict(row) for row in rows}
+                        for row in sb_rows:
+                            state_id = str(row.get("state_id") or "")
+                            if not state_id:
+                                continue
+                            current = merged.get(state_id)
+                            incoming_at = str(row.get("updated_at") or "")
+                            current_at = str((current or {}).get("updated_at") or "")
+                            if current is None or incoming_at > current_at:
+                                merged[state_id] = dict(row)
+                                persisted = await pg_risk.persist_risk_state(
+                                    state_type=str(row.get("state_type") or ""),
+                                    scope=str(row.get("scope") or "global"),
+                                    exchange=row.get("exchange"),
+                                    pair_key=row.get("pair_key"),
+                                    reason=str(row.get("reason") or ""),
+                                    value=row.get("value"),
+                                    resolved=False,
+                                    state_id=state_id,
+                                    is_mock=bool(getattr(self.config, "mock_mode", False)),
+                                )
+                                if not persisted:
+                                    self._risk_persistence_failed = True
+                                    self._trading_halted = True
+                                    self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
+                                    self._entry_blocked = True
+                        rows = list(merged.values())
+                    except Exception:
+                        logger.exception(
+                            "Could not reconcile Supabase risk-state fallback into PostgreSQL"
+                        )
+                        self._risk_persistence_failed = True
+                        self._trading_halted = True
+                        self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
+                        self._entry_blocked = True
         elif has_sb:
             rows = await writer.fetch_active_risk_states(
                 is_mock=bool(getattr(self.config, "mock_mode", False))
@@ -375,7 +461,8 @@ class RiskStateMixin:
         for row in rows:
             self._restore_risk_record(row)
         self._restore_risk_persistence_failure(active_backend)
-        await self._restore_daily_loss_ledger(active_backend)
+        fallback = writer if has_pg and has_sb and active_backend is pg_risk else None
+        await self._restore_daily_loss_ledger(active_backend, fallback=fallback)
         logger.warning("Restored %d unresolved durable risk-state records", len(rows))
 
     def _record_order_success(self, exchange: str) -> None:
