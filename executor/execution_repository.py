@@ -8,12 +8,18 @@ committed in the same PostgreSQL transaction.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any, Mapping, Optional
 
 from executor.execution_states import LEG_TRANSITIONS, SESSION_TRANSITIONS
 from executor.execution_leg_validation import validate_execution_legs
 from executor.execution_serialization import (
     _canonical_json, _required_text, _same_json, _same_value,
+)
+from executor.risk_control import RiskControlPlane
+from executor.execution_repository_fencing import (
+    admission_risk_scopes, validate_coordinator_lease,
+    assert_aggregate_versions, insert_session_event,
 )
 
 
@@ -51,6 +57,8 @@ class ExecutionSessionRepository:
         execution_policy_snapshot: Optional[Mapping[str, Any]] = None,
         risk_policy_snapshot: Optional[Mapping[str, Any]] = None,
         exit_policy_snapshot: Optional[Mapping[str, Any]] = None,
+        coordinator_lease: Any = None, risk_metrics: Optional[Mapping[str, Any]] = None,
+        risk_limits: Optional[Mapping[str, Any]] = None,
     ) -> dict:
         """Create one durable session and its two legs, idempotently by admission key."""
         session_id = _required_text(session_id, "session_id")
@@ -72,9 +80,22 @@ class ExecutionSessionRepository:
         risk_json = _canonical_json(risk_policy_snapshot or {})
         exit_json = _canonical_json(exit_policy_snapshot or {})
         event_key = f"admission:{admission_key}"
+        coordinator_scope_key = (
+            str(coordinator_lease.scope_key) if coordinator_lease is not None else None
+        )
+        coordinator_owner_id = (
+            str(coordinator_lease.owner_id) if coordinator_lease is not None else None
+        )
 
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                risk_decision = None
+                if coordinator_lease is not None:
+                    await validate_coordinator_lease(
+                        conn, coordinator_lease, session_id=session_id,
+                        account_scope_id=account_scope_id,
+                        expected_generation=generation,
+                    )
                 row = await conn.fetchrow(
                     """
                     INSERT INTO public.execution_sessions (
@@ -83,10 +104,10 @@ class ExecutionSessionRepository:
                         state_version, aggregate_version, fencing_generation,
                         strategy_snapshot, policy_snapshot, policy_snapshot_hash,
                         execution_policy_snapshot, risk_policy_snapshot,
-                        exit_policy_snapshot
+                        exit_policy_snapshot, coordinator_scope_key, coordinator_owner_id
                     ) VALUES (
                         $1,$2,$3,'CREATED',$4,$5,$6,1,3,$7,
-                        $8::jsonb,$9::jsonb,$10,$11::jsonb,$12::jsonb,$13::jsonb
+                        $8::jsonb,$9::jsonb,$10,$11::jsonb,$12::jsonb,$13::jsonb,$14,$15
                     )
                     ON CONFLICT (admission_key) WHERE admission_key IS NOT NULL
                     DO NOTHING
@@ -96,6 +117,7 @@ class ExecutionSessionRepository:
                     source_dispatch_id, account_scope_id, generation,
                     policy_json, policy_json, policy_hash,
                     execution_json, risk_json, exit_json,
+                    coordinator_scope_key, coordinator_owner_id,
                 )
                 if row is None:
                     existing = await conn.fetchrow(
@@ -103,13 +125,21 @@ class ExecutionSessionRepository:
                         SELECT session_id, opportunity_id, source_dispatch_id,
                                account_scope_id, pair_key, policy_snapshot_hash,
                                execution_policy_snapshot, risk_policy_snapshot,
-                               exit_policy_snapshot
+                               exit_policy_snapshot, state_version, aggregate_version,
+                               fencing_generation, coordinator_scope_key, coordinator_owner_id
                         FROM public.execution_sessions
                         WHERE admission_key=$1
                         FOR UPDATE
                         """,
                         admission_key,
                     )
+                    existing_risk_snapshot = (
+                        existing["risk_policy_snapshot"] if existing is not None else {}
+                    )
+                    if isinstance(existing_risk_snapshot, str):
+                        existing_risk_snapshot = json.loads(existing_risk_snapshot)
+                    existing_risk_snapshot = dict(existing_risk_snapshot or {})
+                    existing_risk_snapshot.pop("admission_decision", None)
                     if existing is None or (
                         str(existing["opportunity_id"]) != opportunity_id
                         or str(existing["source_dispatch_id"]) != source_dispatch_id
@@ -117,7 +147,7 @@ class ExecutionSessionRepository:
                         or str(existing["pair_key"]) != pair_key
                         or str(existing["policy_snapshot_hash"]) != policy_hash
                         or not _same_json(existing["execution_policy_snapshot"], execution_json)
-                        or not _same_json(existing["risk_policy_snapshot"], risk_json)
+                        or not _same_json(existing_risk_snapshot, _canonical_json(risk_policy_snapshot or {}))
                         or not _same_json(existing["exit_policy_snapshot"], exit_json)
                     ):
                         raise AdmissionConflict("admission_key is already bound to a different request")
@@ -146,11 +176,45 @@ class ExecutionSessionRepository:
                         for actual, expected in zip(actual_legs, expected_legs)
                     ):
                         raise AdmissionConflict("admission_key is already bound to different venue/market legs")
+                    existing_generation = existing["fencing_generation"]
+                    if coordinator_lease is not None and (
+                        existing_generation is None or int(existing_generation) != generation
+                        or str(existing["coordinator_scope_key"] or "") != coordinator_scope_key
+                        or str(existing["coordinator_owner_id"] or "") != coordinator_owner_id
+                    ):
+                        raise StaleAggregate(
+                            "existing session has a different coordinator generation; use recovery reclaim"
+                        )
+                    existing_aggregate_version = int(existing["aggregate_version"])
                     return {
                         "session_id": str(existing["session_id"]),
                         "created": False,
-                        "aggregate_version": None,
+                        "aggregate_version": existing_aggregate_version,
+                        "fencing_generation": int(existing["fencing_generation"] or 0),
                     }
+
+                if coordinator_lease is not None:
+                    scopes = admission_risk_scopes(
+                        account_scope_id=account_scope_id, pair_key=pair_key,
+                        session_id=session_id, legs=validated_legs,
+                    )
+                    for scope_key in sorted(scopes):
+                        await conn.execute(
+                            "select pg_advisory_xact_lock(hashtextextended('nafaz:risk-control:' || $1, 0))",
+                            scope_key,
+                        )
+                    risk_decision = await RiskControlPlane.assert_allowed(
+                        conn, scope_keys=scopes, action_class="ENTRY",
+                        risk_metrics=risk_metrics, risk_limits=risk_limits,
+                    )
+                    risk_json = _canonical_json({
+                        **dict(risk_policy_snapshot or {}),
+                        "admission_decision": risk_decision,
+                    })
+                    await conn.execute(
+                        "UPDATE public.execution_sessions SET risk_policy_snapshot=$2::jsonb WHERE session_id=$1",
+                        session_id, risk_json,
+                    )
 
                 for leg in validated_legs:
                     await conn.execute(
@@ -183,7 +247,7 @@ class ExecutionSessionRepository:
                     "risk_policy_snapshot": risk_json,
                     "exit_policy_snapshot": exit_json,
                 }
-                await self._insert_event(
+                await insert_session_event(
                     conn, session_id=session_id, aggregate_version=1,
                     entity_type="SESSION", entity_id=session_id,
                     entity_version=1, event_type="SESSION_CREATED",
@@ -194,7 +258,7 @@ class ExecutionSessionRepository:
                 for aggregate_version, leg in enumerate(
                     sorted(validated_legs, key=lambda item: item["leg_type"]), start=2
                 ):
-                    await self._insert_event(
+                    await insert_session_event(
                         conn, session_id=session_id, aggregate_version=aggregate_version,
                         entity_type="LEG", entity_id=leg["leg_id"],
                         entity_version=1, event_type=f"{leg['leg_type']}_LEG_CREATED",
@@ -203,7 +267,10 @@ class ExecutionSessionRepository:
                         correlation_id=source_dispatch_id,
                         payload={"session_id": session_id, **leg},
                     )
-        return {"session_id": session_id, "created": True, "aggregate_version": 3}
+        result = {"session_id": session_id, "created": True, "aggregate_version": 3}
+        if risk_decision is not None:
+            result["risk_decision"] = risk_decision
+        return result
 
     async def _existing_event(
         self, conn: Any, *, session_id: str, idempotency_key: str,
@@ -240,6 +307,7 @@ class ExecutionSessionRepository:
         actor_id: str, reason: str = "", payload: Optional[Mapping[str, Any]] = None,
         correlation_id: Optional[str] = None,
         completion_evidence: Optional[Mapping[str, bool]] = None,
+        coordinator_lease: Any = None,
     ) -> dict:
         target = _required_text(target_state, "target_state").upper()
         key = _required_text(event_idempotency_key, "event_idempotency_key")
@@ -261,6 +329,24 @@ class ExecutionSessionRepository:
         event_payload["target_state"] = target
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                current = await conn.fetchrow(
+                    """
+                    SELECT status, state_version, aggregate_version, fencing_generation, account_scope_id,
+                           coordinator_scope_key, coordinator_owner_id
+                    FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
+                    """,
+                    session_id,
+                )
+                if current is None:
+                    raise ExecutionRepositoryError("execution session does not exist")
+                if coordinator_lease is not None:
+                    await validate_coordinator_lease(
+                        conn, coordinator_lease, session_id=session_id,
+                        account_scope_id=str(current["account_scope_id"]),
+                        expected_generation=fencing_generation,
+                        session_scope_key=current["coordinator_scope_key"],
+                        session_owner_id=current["coordinator_owner_id"],
+                    )
                 duplicate = await self._existing_event(
                     conn, session_id=session_id, idempotency_key=key,
                     entity_type="SESSION", entity_id=session_id,
@@ -268,14 +354,7 @@ class ExecutionSessionRepository:
                 )
                 if duplicate:
                     return duplicate
-                current = await conn.fetchrow(
-                    """
-                    SELECT status, state_version, aggregate_version, fencing_generation
-                    FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
-                    """,
-                    session_id,
-                )
-                self._assert_versions(
+                assert_aggregate_versions(
                     current, expected_state_version, expected_aggregate_version,
                     fencing_generation,
                 )
@@ -298,7 +377,7 @@ class ExecutionSessionRepository:
                 )
                 if updated is None:
                     raise StaleAggregate("session compare-and-swap lost")
-                await self._insert_event(
+                await insert_session_event(
                     conn, session_id=session_id, aggregate_version=new_aggregate_version,
                     entity_type="SESSION", entity_id=session_id,
                     entity_version=new_state_version, event_type=event_type,
@@ -318,6 +397,7 @@ class ExecutionSessionRepository:
         fencing_generation: int, event_type: str, event_idempotency_key: str,
         actor_id: str, reason: str = "", payload: Optional[Mapping[str, Any]] = None,
         correlation_id: Optional[str] = None,
+        coordinator_lease: Any = None,
     ) -> dict:
         target = _required_text(target_state, "target_state").upper()
         key = _required_text(event_idempotency_key, "event_idempotency_key")
@@ -331,6 +411,22 @@ class ExecutionSessionRepository:
                 raise ValueError("CLOSED requires verified flatness and terminal-order evidence")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                session = await conn.fetchrow(
+                    """
+                    SELECT aggregate_version, fencing_generation, account_scope_id,
+                           coordinator_scope_key, coordinator_owner_id
+                    FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
+                    """,
+                    session_id,
+                )
+                if coordinator_lease is not None:
+                    await validate_coordinator_lease(
+                        conn, coordinator_lease, session_id=session_id,
+                        account_scope_id=str(session["account_scope_id"]),
+                        expected_generation=fencing_generation,
+                        session_scope_key=session["coordinator_scope_key"],
+                        session_owner_id=session["coordinator_owner_id"],
+                    )
                 duplicate = await self._existing_event(
                     conn, session_id=session_id, idempotency_key=key,
                     entity_type="LEG", entity_id=leg_id,
@@ -338,14 +434,7 @@ class ExecutionSessionRepository:
                 )
                 if duplicate:
                     return duplicate
-                session = await conn.fetchrow(
-                    """
-                    SELECT aggregate_version, fencing_generation
-                    FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
-                    """,
-                    session_id,
-                )
-                self._assert_versions(
+                assert_aggregate_versions(
                     session, None, expected_aggregate_version, fencing_generation,
                     entity_version_check=False,
                 )
@@ -388,7 +477,7 @@ class ExecutionSessionRepository:
                 )
                 if updated_session is None:
                     raise StaleAggregate("session aggregate compare-and-swap lost")
-                await self._insert_event(
+                await insert_session_event(
                     conn, session_id=session_id, aggregate_version=new_aggregate_version,
                     entity_type="LEG", entity_id=leg_id,
                     entity_version=new_leg_version, event_type=event_type,
@@ -402,40 +491,3 @@ class ExecutionSessionRepository:
             "aggregate_version": new_aggregate_version,
         }
 
-    @staticmethod
-    def _assert_versions(
-        row: Any, expected_state_version: Optional[int],
-        expected_aggregate_version: int, fencing_generation: int,
-        *, entity_version_check: bool = True,
-    ) -> None:
-        if row is None:
-            raise ExecutionRepositoryError("execution session does not exist")
-        if int(row["aggregate_version"]) != int(expected_aggregate_version):
-            raise StaleAggregate("session aggregate version is stale")
-        if entity_version_check and int(row["state_version"]) != int(expected_state_version):
-            raise StaleAggregate("session state version is stale")
-        current_fence = row["fencing_generation"]
-        if current_fence is None or int(current_fence) != int(fencing_generation):
-            raise StaleAggregate("ownership fencing generation is missing or stale")
-
-    @staticmethod
-    async def _insert_event(
-        conn: Any, *, session_id: str, aggregate_version: int,
-        entity_type: str, entity_id: str, entity_version: int,
-        event_type: str, idempotency_key: str, actor_id: str,
-        fencing_generation: int, reason: str,
-        correlation_id: Optional[str], payload: Mapping[str, Any],
-    ) -> None:
-        await conn.execute(
-            """
-            INSERT INTO public.execution_session_events (
-                session_id, aggregate_version, entity_type, entity_id,
-                entity_version, event_type, event_idempotency_key, actor_id,
-                fencing_generation, reason, correlation_id, payload
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
-            """,
-            session_id, aggregate_version, entity_type, entity_id,
-            entity_version, event_type, idempotency_key, actor_id,
-            fencing_generation, reason[:2000], correlation_id,
-            _canonical_json(payload),
-        )
