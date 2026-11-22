@@ -129,6 +129,7 @@ class MutationGateway:
         price: float,
         pair_key: str,
         session_id: Optional[str] = None,
+        pre_submit_guard: Optional[Any] = None,
         extra_params: Optional[dict] = None,
     ) -> MutationResult:
         """Create through the durable PREPARED/SUBMITTING + shared session fence."""
@@ -161,6 +162,14 @@ class MutationGateway:
         params["clientOrderId"] = venue_client_order_id(
             SimpleNamespace(id=exchange), client_order_id
         )
+        if not callable(pre_submit_guard):
+            return MutationResult(
+                status=MutationResultType.REJECTED,
+                client_order_id=client_order_id,
+                error_message=(
+                    "Generic create-order requires a pre-submit active-market admission guard"
+                ),
+            )
 
         if not callable(getattr(client, "create_order_direct", None)) and not callable(
             getattr(client, "create_order", None)
@@ -255,7 +264,10 @@ class MutationGateway:
         submission_started = False
         try:
             async with self.global_stop.order_submit_fence(
-                client_order_id=client_order_id
+                client_order_id=client_order_id,
+                pre_submit_guard=pre_submit_guard,
+                scope_exchange=exchange,
+                scope_symbol=symbol,
             ) as fence_conn:
                 try:
                     # From this point the venue adapter may cross its HTTP

@@ -82,6 +82,7 @@ def _create_args():
         "quantity": 0.01,
         "price": 10.0,
         "pair_key": "tokocrypto:BTC/USDT",
+        "pre_submit_guard": lambda: True,
         "extra_params": {"client_order_id": "stable-entry-client-id"},
     }
 
@@ -269,3 +270,20 @@ async def test_closed_zero_fill_is_not_treated_as_cancelled_for_slot_release():
     assert result.status == MutationResultType.SUBMISSION_UNKNOWN
     assert "does not prove a zero-fill cancel" in result.error_message
     assert "release_slot" not in events
+
+
+@pytest.mark.asyncio
+async def test_generic_create_rejects_missing_active_market_admission_guard():
+    events = []
+    stop = _FakeGlobalStop(events)
+    slots = _RecordingSlots(events)
+    venue = _CreateVenue(events)
+    gateway = MutationGateway(stop, slots)
+    args = _create_args()
+    args.pop("pre_submit_guard")
+
+    result = await gateway.execute_create_order(venue, **args)
+
+    assert result.status == MutationResultType.REJECTED
+    assert "pre-submit active-market admission guard" in result.error_message
+    assert events == []

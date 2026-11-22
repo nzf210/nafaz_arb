@@ -218,7 +218,7 @@ async def test_mutation_gateway_create_and_timeout():
     res = await gateway.execute_create_order(
         client_mock, exchange="tokocrypto", market_type="spot",
         symbol="BTC/BIDR", side="buy", order_type="limit",
-        quantity=1.5, price=100.0, pair_key="tokocrypto:BTC_BIDR",
+        quantity=1.5, price=100.0, pair_key="tokocrypto:BTC_BIDR", pre_submit_guard=lambda: True,
     )
     assert res.status == MutationResultType.CONFIRMED
     assert res.exchange_order_id == "ex-101"
@@ -233,7 +233,7 @@ async def test_mutation_gateway_create_and_timeout():
     res_timeout = await gateway.execute_create_order(
         slow_client, exchange="tokocrypto", market_type="spot",
         symbol="ETH/BIDR", side="buy", order_type="limit",
-        quantity=0.5, price=2000.0, pair_key="tokocrypto:ETH_BIDR",
+        quantity=0.5, price=2000.0, pair_key="tokocrypto:ETH_BIDR", pre_submit_guard=lambda: True,
     )
     assert res_timeout.status == MutationResultType.SUBMISSION_UNKNOWN
     assert stop.statuses[res_timeout.client_order_id] == "UNKNOWN"
@@ -247,7 +247,7 @@ async def test_mutation_gateway_create_fails_closed_without_initialized_global_s
     result = await gateway.execute_create_order(
         client_mock, exchange="tokocrypto", market_type="spot",
         symbol="BTC/BIDR", side="buy", order_type="limit",
-        quantity=1.0, price=100.0, pair_key="tokocrypto:BTC_BIDR",
+        quantity=1.0, price=100.0, pair_key="tokocrypto:BTC_BIDR", pre_submit_guard=lambda: True,
     )
     assert result.status == MutationResultType.REJECTED
     assert "fencing is not initialized" in result.error_message
@@ -264,7 +264,7 @@ async def test_mutation_gateway_connection_reset_is_unknown_and_keeps_slot():
     result = await gateway.execute_create_order(
         client_mock, exchange="okx", market_type="perpetual",
         symbol="BTC/USDT:USDT", side="sell", order_type="market",
-        quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
+        quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc", pre_submit_guard=lambda: True,
     )
     assert result.status == MutationResultType.SUBMISSION_UNKNOWN
     assert stop.statuses[result.client_order_id] == "UNKNOWN"
@@ -284,7 +284,7 @@ async def test_mutation_gateway_definitive_rejection_releases_slot_after_ledger_
     result = await gateway.execute_create_order(
         client_mock, exchange="tokocrypto", market_type="spot",
         symbol="BTC/BIDR", side="buy", order_type="limit",
-        quantity=1.0, price=100.0, pair_key="tokocrypto:BTC_BIDR",
+        quantity=1.0, price=100.0, pair_key="tokocrypto:BTC_BIDR", pre_submit_guard=lambda: True,
     )
     assert result.status == MutationResultType.REJECTED
     assert stop.statuses[result.client_order_id] == "REJECTED"
@@ -300,7 +300,7 @@ async def test_mutation_gateway_missing_order_id_remains_unknown():
     result = await gateway.execute_create_order(
         client_mock, exchange="mexc", market_type="perpetual",
         symbol="BTC/USDT:USDT", side="sell", order_type="market",
-        quantity=0.01, price=50000.0, pair_key="tokocrypto__mexc__btc",
+        quantity=0.01, price=50000.0, pair_key="tokocrypto__mexc__btc", pre_submit_guard=lambda: True,
     )
     assert result.status == MutationResultType.SUBMISSION_UNKNOWN
     assert stop.statuses[result.client_order_id] == "UNKNOWN"
@@ -316,7 +316,7 @@ async def test_mutation_gateway_ack_persistence_failure_keeps_unresolved_slot():
     result = await gateway.execute_create_order(
         client_mock, exchange="okx", market_type="perpetual",
         symbol="BTC/USDT:USDT", side="sell", order_type="market",
-        quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
+        quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc", pre_submit_guard=lambda: True,
     )
     assert result.status == MutationResultType.SUBMISSION_UNKNOWN
     assert result.exchange_order_id == "accepted-but-unpersisted"
@@ -334,7 +334,7 @@ async def test_mutation_gateway_explicit_ip_ban_persists_global_stop():
     result = await gateway.execute_create_order(
         client_mock, exchange="okx", market_type="perpetual",
         symbol="BTC/USDT:USDT", side="sell", order_type="market",
-        quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
+        quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc", pre_submit_guard=lambda: True,
     )
 
     assert result.status == MutationResultType.REJECTED
