@@ -16,7 +16,7 @@ from executor.execution_leg_validation import validate_execution_legs
 from executor.execution_serialization import (
     _canonical_json, _required_text, _same_json, _same_value,
 )
-from executor.risk_control import RiskControlPlane, risk_scope_keys
+from executor.risk_control import RiskControlPlane
 from executor.execution_repository_fencing import admission_risk_scopes, validate_coordinator_lease
 
 
