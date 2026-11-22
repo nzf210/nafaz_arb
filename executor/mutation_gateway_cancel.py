@@ -207,7 +207,8 @@ class MutationGatewayCancelMixin:
                         confirmed = await service.mark_cancel_confirmed(
                             intent_id, lease=lease, actor_id=actor_id,
                             final_status=final_status, fresh_fetch=True,
-                            fills_reconciled=True,
+                            fills_reconciled=True, exchange_order_id=order_id,
+                            venue_response=after,
                         )
                         if market_type == "spot" and target_client_id:
                             await self.slot_manager.release_slot(
