@@ -94,8 +94,6 @@ class RiskControlPlane:
         kind = str(scope_type or "").strip().upper()
         if not key or not actor or not event_key or not kind:
             raise ValueError("scope_key, scope_type, actor_id and event_idempotency_key are required")
-        if not derisk_allowed and not entry_blocked:
-            raise ValueError("a control cannot allow new entries while disabling all de-risk actions")
         payload = {
             "entry_blocked": bool(entry_blocked),
             "derisk_allowed": bool(derisk_allowed),
