@@ -246,6 +246,12 @@ class ExecutionHedgeObligationService:
                         str(prior["futures_venue"]) == route["venue"]
                         and str(prior["futures_market_type"]) == route["market"]
                         and str(prior["futures_symbol"]) == route["symbol"]
+                        and str(prior["base_asset"]).upper() == route["base"]
+                        and str(prior["position_side"]).upper() == route["side"]
+                        and str(prior["quantity_unit"]).upper() == route["unit"]
+                        and str(prior["contract_type"] or "") == str(contract_type or "")
+                        and (Decimal(str(prior["contract_size"])) if prior["contract_size"] is not None else None) == contract
+                        and Decimal(str(prior["base_per_unit"])) == unit
                         and Decimal(str(prior["requested_base_quantity"])) == requested
                     )
                     if not same:
@@ -643,8 +649,6 @@ class ExecutionHedgeObligationService:
                             "aggregate_version": int(session["aggregate_version"])}
                 if status in {"CONSUMED", "RECONCILIATION_REQUIRED"}:
                     raise HedgeObligationError(f"cannot release reservation in {status} state")
-                if status == "UNKNOWN":
-                    raise HedgeObligationError("unknown Futures submission must be reconciled before release")
                 if status != "RESERVED" and not (terminal_order_verified and fills_reconciled):
                     raise HedgeObligationError("submitted reservation release requires terminal order and fill proof")
                 items = await conn.fetch(
