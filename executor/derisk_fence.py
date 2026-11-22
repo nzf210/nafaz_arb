@@ -43,7 +43,12 @@ async def _acquire_emergency_lease(
         str(getattr(config, "emergency_derisk_owner_id", "") or "").strip()
         or os.getenv("EMERGENCY_DERISK_OWNER_ID", "").strip()
     )
-    resolved_scope = account_scope_id or account_scope_id_for(config, venue)
+    try:
+        resolved_scope = account_scope_id or account_scope_id_for(config, venue)
+    except Exception as exc:
+        raise GlobalStopError(
+            f"cannot establish emergency de-risk account scope for {venue}: {exc}"
+        ) from exc
     ttl_ms = int(getattr(config, "emergency_derisk_lease_ttl_ms", 120000) or 120000)
     try:
         lease = await EmergencyDeriskLease.acquire(
