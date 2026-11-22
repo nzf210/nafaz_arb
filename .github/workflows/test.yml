@@ -125,6 +125,11 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
         run: pytest -q tests/test_execution_fill_service.py
+      - name: Exercise Executor V3 hedge obligations and allocations against PostgreSQL
+        timeout-minutes: 3
+        env:
+          TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
+        run: pytest -q tests/test_execution_hedge_obligations.py
 
   docker-images:
     runs-on: ubuntu-latest
