@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
 from executor.global_stop_common import (
-    DERISK_LOCK_KEY, FENCE_LOCK_KEY, GlobalStopError, logger,
+    DERISK_LOCK_KEY, FENCE_LOCK_KEY, GlobalStopError, logger, _json_mapping,
 )
 from executor.ownership import (
     OwnershipError, OwnershipLeaseService, advisory_scope_lock_key, build_scope_key,
