@@ -554,7 +554,7 @@ class GlobalStopSubmitMixin:
             or (action in {"HEDGE", "DERISK"} and not account_scope_id)
         ):
             raise GlobalStopError(
-                "valid client order id and scoped ENTRY/HEDGE/DERISK action are required"
+                "valid client order id and scoped ENTRY/HEDGE action (including DERISK) are required"
             )
 
         yielded_to_caller = False
