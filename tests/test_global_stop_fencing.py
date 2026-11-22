@@ -497,6 +497,8 @@ async def test_spot_ip_ban_stop_write_failure_never_uses_lookup_to_acknowledge()
         local_amount_spec=_FakeAmountSpec(),
         global_amount_spec={"unit": "BASE", "step": 0.001},
         quote_asset="USDT",
+        global_exchange="okx",
+        base_asset="BTC",
     )
 
     await engine._submit_entry_order(
