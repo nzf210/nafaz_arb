@@ -66,8 +66,10 @@ The arrows are not a single linear sequence. Valid transitions depend on observe
 ## 4. Transition envelope
 
 Every transition command must carry:
-- session_id and leg_id;
-- expected current state and state_version;
+- session_id; leg_id when the transition targets a leg;
+- entity_type and entity_id;
+- expected current state and entity_version;
+- expected parent session aggregate_version;
 - worker/actor identity;
 - current fencing_generation;
 - event_idempotency_key;
@@ -78,12 +80,13 @@ The transaction must:
 1. lock or compare-and-swap the relevant row;
 2. verify expected state/version and fencing generation;
 3. validate the transition against the transition table;
-4. update the session/leg projection and increment version;
-5. append the transition event;
-6. enqueue any transactional outbox event;
+4. update the target session/leg projection and increment its entity_version;
+5. increment the parent session aggregate_version for every accepted aggregate event;
+6. append the event with both aggregate_version and entity_version;
+7. enqueue any transactional outbox event;
 7. commit atomically.
 
-A stale or duplicate transition must not create a second state change or duplicate downstream command.
+A stale or duplicate transition must not create a second state change or duplicate downstream command. The aggregate_version is the single ordered event-stream cursor per session; entity_version is scoped to the changed session or leg. A leg-only event must not reuse another event's aggregate_version.
 
 ## 5. Transition rules and evidence
 
@@ -154,7 +157,7 @@ FAILED, ABORTED, CANCELED and CLOSED order states do not independently satisfy t
 
 Existing `PositionState` values (`IDLE`, `ENTRY_PENDING`, `ENTRY_PARTIAL`, `HEDGED_ACTIVE`, `EXIT_PENDING`, `CLOSED`, `FAILED`, `RECONCILIATION_REQUIRED`) remain legacy runtime concepts during migration.
 
-They must be mapped explicitly to V3 session/leg projections; do not rename enum values in place or change Redis payload semantics in this PR. Existing `LegStatus` in `executor/leg_managers.py` is an in-memory projection and is not canonical until PostgreSQL hydration/replay is proven.
+They must be mapped explicitly to V3 session/leg projections; do not rename enum values in place or change Redis payload semantics in this PR. Existing `LegStatus` in `executor/leg_managers.py` is an in-memory projection and is not canonical until PostgreSQL hydration/replay is proven. Legacy rows with unknown account scope, market identity, quantity units or policy provenance must remain explicitly legacy/unknown; a migration default is not evidence.
 
 ## 10. PR-01 transition test matrix
 
@@ -168,4 +171,6 @@ They must be mapped explicitly to V3 session/leg projections; do not rename enum
 - One leg closing does not close the other leg or mark the session COMPLETED.
 - Unknown order/position/fill history forces RECONCILIATION_REQUIRED, never COMPLETED.
 - Restart reconstructs session and both legs from PostgreSQL records without relying on Redis.
+- Legacy sessions without an evidenced immutable policy snapshot remain LEGACY/UNKNOWN for policy provenance; they are not silently promoted by a default empty JSON object.
+- Deleting a session cannot cascade-delete its legs or transition history; retention is an explicit audited archive/purge operation.
 - A stale fencing generation cannot mutate state or publish a transition event.
