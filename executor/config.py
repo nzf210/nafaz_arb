@@ -482,6 +482,18 @@ class ExecutorConfig:
             except ValueError:
                 pass
 
+        for env_name, attr, caster in (
+            ("MAX_DRAWDOWN_PCT", "max_drawdown_pct", float),
+            ("MAX_FUNDING_COST_PCT", "max_funding_cost_pct", float),
+            ("MAX_UNHEDGED_DURATION_MS", "max_unhedged_duration_ms", int),
+            ("MIN_VENUE_HEALTH_SCORE", "min_venue_health_score", float),
+        ):
+            if raw_value := os.getenv(env_name):
+                try:
+                    setattr(self, attr, caster(raw_value))
+                except ValueError:
+                    pass
+
         if slippage_env := os.getenv("MAX_ENTRY_SLIPPAGE_PCT"):
             try:
                 self.max_entry_slippage_pct = float(slippage_env)
@@ -698,6 +710,11 @@ class ExecutorConfig:
                 "max_position_usdt": getattr(self, "max_position_usdt", 0.0),
                 "allocation_per_pair": getattr(self, "allocation_per_pair", 0.0),
                 "min_allocated_capital": getattr(self, "min_allocated_capital", 0.0),
+                "max_daily_loss_usdt": getattr(self, "max_daily_loss_usdt", 0.0),
+                "max_drawdown_pct": getattr(self, "max_drawdown_pct", 0.0),
+                "max_funding_cost_pct": getattr(self, "max_funding_cost_pct", 0.0),
+                "max_unhedged_duration_ms": getattr(self, "max_unhedged_duration_ms", 0),
+                "min_venue_health_score": getattr(self, "min_venue_health_score", 0.2),
                 "mock_mode": getattr(self, "mock_mode", False),
                 "execution_mode": getattr(self, "execution_mode", "TAKER_TAKER"),
             })
