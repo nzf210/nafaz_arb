@@ -79,7 +79,7 @@ class V3PnLPolicy:
 
 @dataclass(frozen=True)
 class V3PnLResult:
-    realized_pnl_gross: Decimal
+    realized_pnl_gross: Decimal | None
     realized_pnl_net: Decimal | None
     unrealized_pnl_gross: Decimal | None
     estimated_exit_fees: Decimal | None
@@ -90,7 +90,7 @@ class V3PnLResult:
     estimated_liquidation_pnl: Decimal | None
     spot_open_base_quantity: Decimal
     futures_open_base_quantity: Decimal
-    spot_entry_notional: Decimal
+    spot_entry_notional: Decimal | None
     total_deployed_capital: Decimal | None
     strategy_roi_pct: Decimal | None
     return_on_deployed_capital_pct: Decimal | None
@@ -104,7 +104,7 @@ class V3PnLResult:
     reporting_currency: str
 
 
-def _v3_position(fills: Sequence[V3FillFact], *, leg_type: str, side: str):
+def _v3_position(fills: Sequence[V3FillFact], *, leg_type: str, reporting_currency: str):
     """Weighted-average position accounting; realized PnL applies only to closed qty."""
     ordered = sorted(
         (fill for fill in fills if fill.leg_type.upper() == leg_type),
@@ -114,6 +114,8 @@ def _v3_position(fills: Sequence[V3FillFact], *, leg_type: str, side: str):
     average_entry = Decimal("0")
     realized = Decimal("0")
     entry_notional = Decimal("0")
+    realized_complete = True
+    entry_notional_complete = True
     quote_asset = ""
     base_asset = ""
     for fill in ordered:
@@ -138,6 +140,8 @@ def _v3_position(fills: Sequence[V3FillFact], *, leg_type: str, side: str):
                 raise ValueError("Futures position_side must be LONG or SHORT")
             if fill.contract_type.upper() not in {"LINEAR", "LINEAR_PERPETUAL"}:
                 raise ValueError("V3 PnL currently requires linear Futures contract accounting")
+            if any(existing.position_side.upper() != position_side for existing in ordered):
+                raise ValueError("Futures position_side changed within one session")
             open_side = "buy" if position_side == "LONG" else "sell"
         close_side = "sell" if open_side == "buy" else "buy"
         if fill_side == open_side:
@@ -147,8 +151,15 @@ def _v3_position(fills: Sequence[V3FillFact], *, leg_type: str, side: str):
             )
             open_quantity = new_quantity
             if leg_type == "SPOT":
-                fx = _v3_decimal(fill.fx_rate_to_reporting, "fill.fx_rate", allow_zero=False) if quote != "USDT" else Decimal("1")
-                entry_notional += base_quantity * price * fx
+                if quote == reporting_currency:
+                    entry_fx = Decimal("1")
+                elif fill.fx_verified and fill.fx_rate_to_reporting is not None:
+                    entry_fx = _v3_decimal(fill.fx_rate_to_reporting, "fill.fx_rate", allow_zero=False)
+                else:
+                    entry_notional_complete = False
+                    entry_fx = None
+                if entry_fx is not None:
+                    entry_notional += base_quantity * price * entry_fx
         elif fill_side == close_side:
             if base_quantity > open_quantity:
                 raise ValueError(f"{leg_type} close fill exceeds verified open position")
@@ -157,8 +168,15 @@ def _v3_position(fills: Sequence[V3FillFact], *, leg_type: str, side: str):
                 if position_side == "LONG"
                 else (average_entry - price) * base_quantity
             )
-            fx = _v3_decimal(fill.fx_rate_to_reporting, "fill.fx_rate", allow_zero=False) if quote != "USDT" else Decimal("1")
-            realized += realized_native * fx
+            if quote == reporting_currency:
+                close_fx = Decimal("1")
+            elif fill.fx_verified and fill.fx_rate_to_reporting is not None:
+                close_fx = _v3_decimal(fill.fx_rate_to_reporting, "fill.fx_rate", allow_zero=False)
+            else:
+                close_fx = None
+                realized_complete = False
+            if close_fx is not None:
+                realized += realized_native * close_fx
             open_quantity -= base_quantity
             if open_quantity == 0:
                 average_entry = Decimal("0")
@@ -169,6 +187,8 @@ def _v3_position(fills: Sequence[V3FillFact], *, leg_type: str, side: str):
         "average_entry": average_entry,
         "realized": realized,
         "entry_notional": entry_notional,
+        "entry_notional_complete": entry_notional_complete,
+        "realized_complete": realized_complete,
         "quote_asset": quote_asset,
         "base_asset": base_asset,
         "position_side": (
@@ -188,11 +208,11 @@ def compute_position_pnl_v3(
 ) -> V3PnLResult:
     """Reproduce verified realized PnL and confidence-gated net liquidation PnL."""
     missing: list[str] = []
-    spot = _v3_position(fills, leg_type="SPOT", side="LONG")
-    futures = _v3_position(fills, leg_type="FUTURES", side="SHORT")
+    reporting = policy.reporting_currency.upper()
+    spot = _v3_position(fills, leg_type="SPOT", reporting_currency=reporting)
+    futures = _v3_position(fills, leg_type="FUTURES", reporting_currency=reporting)
     if policy.max_mark_age_ms <= 0 or policy.max_fx_age_ms <= 0:
         raise ValueError("PnL evidence age limits must be positive")
-    reporting = policy.reporting_currency.upper()
     fees_paid = Decimal("0")
     fees_complete = True
     fx_complete = True
@@ -266,10 +286,11 @@ def compute_position_pnl_v3(
             continue
         funding_total += amount * rate
 
+    has_open_position = spot["open_quantity"] > 0 or futures["open_quantity"] > 0
     mark_age = now_ms - int(market.observed_at_ms)
-    marks_fresh = 0 <= mark_age <= policy.max_mark_age_ms
+    marks_fresh = not has_open_position or 0 <= mark_age <= policy.max_mark_age_ms
     fx_age = now_ms - int(market.fx_observed_at_ms)
-    market_fx_fresh = 0 <= fx_age <= policy.max_fx_age_ms and market.fx_verified
+    market_fx_fresh = not has_open_position or (0 <= fx_age <= policy.max_fx_age_ms and market.fx_verified)
     if not marks_fresh:
         missing.append("MARK_STALE")
     if not market_fx_fresh:
@@ -287,6 +308,9 @@ def compute_position_pnl_v3(
         if not marks_fresh or not market.spot_depth_sufficient or market.spot_exit_vwap is None:
             depth_complete = False
             missing.append("SPOT_EXIT_DEPTH_INSUFFICIENT")
+        elif spot["quote_asset"] == reporting:
+            spot_exit = _v3_decimal(market.spot_exit_vwap, "spot_exit_vwap", allow_zero=False)
+            spot_fx = Decimal("1")
         elif not market_fx_fresh or market.spot_fx_rate_to_reporting is None:
             fx_complete = False
             missing.append("SPOT_MARK_FX_UNKNOWN")
@@ -302,6 +326,9 @@ def compute_position_pnl_v3(
         if not marks_fresh or not market.futures_depth_sufficient or market.futures_close_vwap is None:
             depth_complete = False
             missing.append("FUTURES_CLOSE_DEPTH_INSUFFICIENT")
+        elif futures["quote_asset"] == reporting:
+            futures_exit = _v3_decimal(market.futures_close_vwap, "futures_close_vwap", allow_zero=False)
+            futures_fx = Decimal("1")
         elif not market_fx_fresh or market.futures_fx_rate_to_reporting is None:
             fx_complete = False
             missing.append("FUTURES_MARK_FX_UNKNOWN")
@@ -318,16 +345,27 @@ def compute_position_pnl_v3(
             estimated_exit_fees += futures_exit_notional * _v3_decimal(policy.futures_exit_fee_rate, "futures_exit_fee_rate")
             slippage_reserve += futures_exit_notional * _v3_decimal(policy.exit_slippage_reserve_bps, "exit_slippage_reserve_bps") / Decimal("10000")
 
-    realized_gross = spot["realized"] + futures["realized"]
+    realized_complete = spot["realized_complete"] and futures["realized_complete"]
+    entry_notional_complete = spot["entry_notional_complete"]
+    if not realized_complete:
+        fx_complete = False
+        missing.append("REALIZED_PNL_FX_UNKNOWN")
+    if not entry_notional_complete:
+        fx_complete = False
+        missing.append("SPOT_ENTRY_FX_UNKNOWN")
+    realized_gross = (
+        spot["realized"] + futures["realized"] if realized_complete else None
+    )
+    spot_entry_notional = spot["entry_notional"] if entry_notional_complete else None
     realized_net = (
         realized_gross + funding_total - fees_paid
-        if fees_complete and funding_complete and fx_complete else None
+        if realized_gross is not None and fees_complete and funding_complete else None
     )
     exit_complete = depth_complete and marks_fresh and fx_complete
     liquidation = (
         realized_gross + unrealized + funding_total - fees_paid
         - estimated_exit_fees - slippage_reserve - tax_reserve
-        if exit_complete and fees_complete and funding_complete else None
+        if realized_gross is not None and exit_complete and fees_complete and funding_complete else None
     )
     capital = None
     strategy_roi = None
@@ -335,10 +373,13 @@ def compute_position_pnl_v3(
     if policy.actual_futures_margin is not None:
         margin = _v3_decimal(policy.actual_futures_margin, "actual_futures_margin")
         fee_reserve = _v3_decimal(policy.fee_reserve, "fee_reserve")
-        capital = spot["entry_notional"] + margin + fee_reserve
-        if liquidation is not None and spot["entry_notional"] > 0:
-            strategy_roi = liquidation / spot["entry_notional"] * Decimal("100")
-        if liquidation is not None and capital > 0:
+        capital = (
+            spot_entry_notional + margin + fee_reserve
+            if spot_entry_notional is not None else None
+        )
+        if liquidation is not None and spot_entry_notional is not None and spot_entry_notional > 0:
+            strategy_roi = liquidation / spot_entry_notional * Decimal("100")
+        if liquidation is not None and capital is not None and capital > 0:
             deployed_roi = liquidation / capital * Decimal("100")
     else:
         missing.append("ACTUAL_FUTURES_MARGIN_UNKNOWN")
@@ -356,12 +397,12 @@ def compute_position_pnl_v3(
         estimated_exit_fees=estimated_exit_fees if depth_complete and marks_fresh else None,
         exit_slippage_reserve=slippage_reserve if depth_complete and marks_fresh else None,
         tax_reserve=tax_reserve if depth_complete and marks_fresh else None,
-        funding_accrued=funding_total if funding_complete and fx_complete else None,
-        fees_paid=fees_paid if fees_complete and fx_complete else None,
+        funding_accrued=funding_total if funding_complete else None,
+        fees_paid=fees_paid if fees_complete else None,
         estimated_liquidation_pnl=liquidation,
         spot_open_base_quantity=spot_open,
         futures_open_base_quantity=futures_open,
-        spot_entry_notional=spot["entry_notional"],
+        spot_entry_notional=spot_entry_notional,
         total_deployed_capital=capital,
         strategy_roi_pct=strategy_roi,
         return_on_deployed_capital_pct=deployed_roi,
