@@ -210,10 +210,15 @@ class MutationGatewayCancelIntentMixin:
                             venue_response=after,
                         )
                         if market_type == "spot" and target_client_id:
-                            await self.slot_manager.release_slot(
-                                exchange, target_client_id,
-                                reason=f"V3_CANCEL_TERMINAL_{final_status.upper()}",
-                            )
+                            try:
+                                await self.slot_manager.release_slot(
+                                    exchange, target_client_id,
+                                    reason=f"V3_CANCEL_TERMINAL_{final_status.upper()}",
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "cancel is durably confirmed but local slot release needs reconciliation"
+                                )
                         return MutationResult(
                             status=MutationResultType.CONFIRMED,
                             client_order_id=result_client_id,
