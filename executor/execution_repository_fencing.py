@@ -62,3 +62,44 @@ async def validate_coordinator_lease(
     if row is None:
         from executor.execution_repository import StaleAggregate
         raise StaleAggregate("coordinator lease is expired, missing or superseded")
+
+def assert_aggregate_versions(
+    row: Any, expected_state_version: int | None,
+    expected_aggregate_version: int, fencing_generation: int,
+    *, entity_version_check: bool = True,
+) -> None:
+    from executor.execution_repository import ExecutionRepositoryError, StaleAggregate
+
+    if row is None:
+        raise ExecutionRepositoryError("execution session does not exist")
+    if int(row["aggregate_version"]) != int(expected_aggregate_version):
+        raise StaleAggregate("session aggregate version is stale")
+    if entity_version_check and int(row["state_version"]) != int(expected_state_version):
+        raise StaleAggregate("session state version is stale")
+    current_fence = row["fencing_generation"]
+    if current_fence is None or int(current_fence) != int(fencing_generation):
+        raise StaleAggregate("ownership fencing generation is missing or stale")
+
+
+async def insert_session_event(
+    conn: Any, *, session_id: str, aggregate_version: int,
+    entity_type: str, entity_id: str, entity_version: int,
+    event_type: str, idempotency_key: str, actor_id: str,
+    fencing_generation: int, reason: str,
+    correlation_id: str | None, payload: Mapping[str, Any],
+) -> None:
+    from executor.execution_serialization import _canonical_json
+
+    await conn.execute(
+        """
+        INSERT INTO public.execution_session_events (
+            session_id, aggregate_version, entity_type, entity_id,
+            entity_version, event_type, event_idempotency_key, actor_id,
+            fencing_generation, reason, correlation_id, payload
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+        """,
+        session_id, aggregate_version, entity_type, entity_id,
+        entity_version, event_type, idempotency_key, actor_id,
+        fencing_generation, reason[:2000], correlation_id,
+        _canonical_json(payload),
+    )
