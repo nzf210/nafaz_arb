@@ -134,6 +134,22 @@ async def test_admission_is_idempotent_and_preserves_native_venue_symbols(reposi
     assert by_type["FUTURES"]["settlement_asset"] == "USDT"
     from decimal import Decimal
     assert by_type["FUTURES"]["exposure_quantity"] == Decimal("0.001")
+    async with repository.pool.acquire() as conn:
+        events = await conn.fetch(
+            """
+            SELECT entity_type, entity_id, event_type, payload
+            FROM public.execution_session_events
+            WHERE session_id=$1 ORDER BY aggregate_version
+            """,
+            identity["session_id"],
+        )
+    assert len(events) == 3
+    assert [row["event_type"] for row in events] == [
+        "SESSION_CREATED", "FUTURES_LEG_CREATED", "SPOT_LEG_CREATED"
+    ]
+    assert events[1]["payload"]["base_asset"] == "BTC"
+    assert events[1]["payload"]["symbol"] == "BTC-USDT-SWAP"
+    assert events[2]["payload"]["symbol"] == "btc_idr"
 
 
 async def test_admission_key_cannot_be_reused_for_a_different_route(repository):
@@ -252,7 +268,7 @@ async def test_completed_session_requires_every_flatness_gate(repository):
             session_id=identity["session_id"],
             target_state="COMPLETED",
             expected_state_version=1,
-            expected_aggregate_version=1,
+            expected_aggregate_version=3,
             fencing_generation=identity["fencing_generation"],
             event_type="SESSION_COMPLETED",
             event_idempotency_key=f"{identity['admission_key']}:premature-completion",
