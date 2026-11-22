@@ -141,6 +141,33 @@ GRANT SELECT, INSERT, UPDATE ON TABLE public.execution_sessions TO service_role;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.execution_legs TO service_role;
 GRANT SELECT, INSERT ON TABLE public.execution_session_events TO service_role;
 
+CREATE TABLE IF NOT EXISTS public.execution_outbox (
+    outbox_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL
+        REFERENCES public.execution_session_events(event_id) ON DELETE RESTRICT,
+    session_id TEXT NOT NULL
+        REFERENCES public.execution_sessions(session_id) ON DELETE RESTRICT,
+    aggregate_version BIGINT NOT NULL CHECK (aggregate_version > 0),
+    topic TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    published_at TIMESTAMPTZ,
+    attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+    locked_at TIMESTAMPTZ,
+    locked_by TEXT,
+    last_error TEXT,
+    CONSTRAINT uq_execution_outbox_event_topic UNIQUE (event_id, topic)
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_outbox_pending
+    ON public.execution_outbox (available_at, created_at)
+    WHERE published_at IS NULL;
+
+ALTER TABLE public.execution_outbox ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.execution_outbox FROM anon, authenticated;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.execution_outbox TO service_role;
+
 COMMENT ON TABLE public.execution_session_events IS
     'Append-only execution aggregate transition journal. Application roles receive INSERT/SELECT only; corrections require compensating events.';
 COMMENT ON COLUMN public.execution_sessions.fencing_generation IS
