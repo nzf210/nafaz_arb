@@ -115,6 +115,16 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
         run: pytest -q tests/test_ownership_risk_control_integration.py
+      - name: Exercise Executor V3 coordinator admission and fencing against PostgreSQL
+        timeout-minutes: 3
+        env:
+          TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
+        run: pytest -q tests/test_session_coordinator.py
+      - name: Exercise Executor V3 durable fill lifecycle against PostgreSQL
+        timeout-minutes: 3
+        env:
+          TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
+        run: pytest -q tests/test_execution_fill_service.py
 
   docker-images:
     runs-on: ubuntu-latest
