@@ -30,7 +30,7 @@ def risk_scope_keys(
     account = str(account_scope_id or "").strip()
     exchange = str(venue or "").strip().lower()
     market = str(market_type or "").strip().lower()
-    symbol = str(instrument or "").strip()
+    symbol = str(instrument or "").strip().upper()
     keys = ["global"]
     if account:
         keys.append("account:" + account)
