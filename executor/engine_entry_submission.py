@@ -383,7 +383,11 @@ class EngineEntrySubmissionMixin:
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
             account_scope_id = (
                 account_scope_id_for(self.config, pair_info.local_exchange)
-                if self.global_stop is not None and not getattr(self.config, "mock_mode", False)
+                if (
+                    self.global_stop is not None
+                    and getattr(self, "config", None) is not None
+                    and not getattr(self.config, "mock_mode", False)
+                )
                 else None
             )
             placed_time = time.time()
