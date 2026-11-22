@@ -23,6 +23,7 @@ class RiskBudgetMetricsBuilder:
     def build(
         cls, engine: Any, *, venue: str, action_class: str,
         proposed_notional_usdt: float = 0.0,
+        planned_hedge_notional_usdt: float = 0.0,
         slippage_bps: Optional[float] = None,
         funding_cost_pct: Optional[float] = None,
         market_data_age_ms: Optional[float] = None,
@@ -90,9 +91,10 @@ class RiskBudgetMetricsBuilder:
         proposed = max(0.0, float(proposed_notional_usdt or 0.0))
         action = str(action_class or "ENTRY").strip().upper()
         if action == "ENTRY":
-            gross += proposed
-            deployed += proposed
-            net += proposed
+            planned_hedge = max(0.0, float(planned_hedge_notional_usdt or 0.0))
+            gross += proposed + planned_hedge
+            deployed += proposed + planned_hedge / leverage
+            net += proposed - planned_hedge
             unhedged += proposed
             open_order_count += 1
         elif action == "HEDGE":
