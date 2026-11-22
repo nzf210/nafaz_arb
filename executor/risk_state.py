@@ -14,6 +14,9 @@ class RiskStateMixin:
     """Persistence and lifecycle controls for durable risk state."""
 
     def _mark_risk_persistence_failed(self, state_type: str, exc: BaseException) -> None:
+        if bool(getattr(self.config, "mock_mode", False)):
+            logger.warning("Mock risk-state persistence failed for %s: %s", state_type, exc)
+            return
         writer = getattr(self, "supabase", None)
         pg_risk = getattr(self, "postgres_risk", None)
         if writer is not None and getattr(writer, "enabled", False):
@@ -35,6 +38,8 @@ class RiskStateMixin:
 
     def _on_risk_state_persisted(self, task, state_type: str) -> None:
         tasks = getattr(self, "_risk_persistence_tasks", set())
+        if task not in tasks:
+            return
         tasks.discard(task)
         self._risk_persistence_tasks = tasks
         self._risk_persistence_pending_count = max(
@@ -54,10 +59,8 @@ class RiskStateMixin:
     async def _flush_risk_state_persistence(self) -> bool:
         tasks = list(getattr(self, "_risk_persistence_tasks", set()))
         if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, BaseException) or result is False:
-                    self._risk_persistence_failed = True
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.sleep(0)
         return (
             not bool(getattr(self, "_risk_persistence_pending", False))
             and not bool(getattr(self, "_risk_persistence_failed", False))
