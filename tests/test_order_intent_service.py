@@ -115,6 +115,25 @@ async def test_concurrent_create_reservations_are_serialized(postgres_pool):
 
 
 @pytest.mark.asyncio
+async def test_notional_reservation_budgets_do_not_mix_quote_assets(postgres_pool):
+    service = OrderIntentService(postgres_pool)
+    suffix = uuid.uuid4().hex
+    first = await service.prepare_create(**_create_args(
+        suffix, idempotency_key="usdt-" + suffix,
+        reserved_base_qty="0.1", reserved_notional="80",
+        reservation_asset="USDT", max_reserved_base_qty="2",
+        max_reserved_notional="100",
+    ))
+    second = await service.prepare_create(**_create_args(
+        suffix, idempotency_key="usdc-" + suffix,
+        reserved_base_qty="0.1", reserved_notional="80",
+        reservation_asset="USDC", max_reserved_base_qty="2",
+        max_reserved_notional="100",
+    ))
+    assert first["intent_id"] != second["intent_id"]
+
+
+@pytest.mark.asyncio
 async def test_cancel_intent_requires_terminal_fetch_and_fill_reconciliation(postgres_pool):
     service = OrderIntentService(postgres_pool)
     suffix = uuid.uuid4().hex
@@ -137,6 +156,8 @@ async def test_cancel_intent_requires_terminal_fetch_and_fill_reconciliation(pos
         risk_snapshot={"action_class": "CANCEL", "allowed": True},
     )
     assert submitting["status"] == "SUBMITTING"
+    assert submitting["owner_id"] == lease.owner_id
+    assert submitting["risk_control_snapshot"] == {"action_class": "CANCEL", "allowed": True}
     replay = await service.mark_submitting(
         intent["intent_id"], lease=lease, actor_id="cancel-test",
         risk_snapshot={"action_class": "CANCEL", "allowed": True},
