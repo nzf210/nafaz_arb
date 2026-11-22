@@ -72,7 +72,7 @@ class RiskControlPlane:
             entry_blocked = bool(row["entry_blocked"])
             derisk_allowed = bool(row["derisk_allowed"])
             scope_key = str(row["scope_key"])
-            raw_limits = row["limits"]
+            raw_limits = row.get("limits")
             if isinstance(raw_limits, str):
                 try:
                     raw_limits = json.loads(raw_limits)
