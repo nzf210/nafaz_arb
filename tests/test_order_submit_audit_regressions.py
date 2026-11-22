@@ -276,10 +276,29 @@ async def test_derisking_is_allowed_while_global_stop_is_active_and_submit_is_un
     service = GlobalStopService("postgresql://unused")
     service.pool = _Pool(conn)
 
-    async with service.derisk_submit_fence(client_order_id="exit-client-1") as fenced:
+    async def _allow(*args, **kwargs):
+        return {"action_class": "DERISK"}
+
+    async def _acquire(*args, **kwargs):
+        return SimpleNamespace(generation=1)
+
+    async def _validate(*args, **kwargs):
+        return True
+
+    service.risk_control_plane.assert_allowed = _allow
+    service.ownership.acquire = _acquire
+    service.ownership.validate = _validate
+
+    async with service.derisk_submit_fence(
+        client_order_id="exit-client-1",
+        account_scope_id="test-okx-account",
+        venue="okx",
+        market_type="perpetual",
+        instrument="BTC/USDT:USDT",
+    ) as fenced:
         assert fenced is conn
 
-    assert any("pg_advisory_lock" in query for query in conn.statements)
+    assert any("pg_try_advisory_lock" in query for query in conn.statements)
     assert any("pg_advisory_unlock" in query for query in conn.statements)
 
 
@@ -292,6 +311,7 @@ async def test_derisking_uses_designated_redis_lease_when_postgres_is_unavailabl
             mock_mode=False,
             executor_instance_id="test-worker",
             emergency_derisk_owner_id="test-worker",
+            emergency_derisk_allowed=True,
             emergency_derisk_lease_ttl_ms=120000,
         ),
     )
@@ -426,6 +446,7 @@ class _ForceCloseHarness(ForceCloseLegMixin):
             exchanges={"tokocrypto": SimpleNamespace(api_key="test-tokocrypto-key")},
             executor_instance_id="test-worker",
             emergency_derisk_owner_id="test-worker",
+            emergency_derisk_allowed=True,
             emergency_derisk_lease_ttl_ms=120000,
         )
         self.redis = _EmergencyRedis()
