@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from executor.execution_repository import ExecutionSessionRepository
 from executor.ownership import OwnershipLeaseService
 from executor.execution_session_recovery import ExecutionSessionRecovery
+
+logger = logging.getLogger(__name__)
 
 
 class SessionAdmissionError(RuntimeError):
@@ -171,8 +174,11 @@ class SessionCoordinator:
             }
         except Exception:
             if lease is not None:
-                async with self.pool.acquire() as conn:
-                    await self.ownership.release(conn, lease)
+                try:
+                    async with self.pool.acquire() as conn:
+                        await self.ownership.release(conn, lease)
+                except Exception:
+                    logger.exception("failed to release coordinator lease after admission/recovery failure")
             raise
 
     async def recover(
@@ -194,8 +200,11 @@ class SessionCoordinator:
             return {**result, "coordinator_lease": lease}
         except Exception:
             if lease is not None:
-                async with self.pool.acquire() as conn:
-                    await self.ownership.release(conn, lease)
+                try:
+                    async with self.pool.acquire() as conn:
+                        await self.ownership.release(conn, lease)
+                except Exception:
+                    logger.exception("failed to release coordinator lease after admission/recovery failure")
             raise
 
     async def transition(
