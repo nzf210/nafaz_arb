@@ -54,8 +54,8 @@ class ExecutionDomainRepository:
         correlation_id: str = "",
     ) -> SessionCreationResult:
         """Create one V3 session and its Spot/Futures legs with initial events."""
-        if not all((session_id, admission_key, account_scope_id, pair_key)):
-            raise ValueError("session_id, admission_key, account_scope_id and pair_key are required")
+        if not all((session_id, admission_key, account_scope_id, source_dispatch_id, pair_key)):
+            raise ValueError("session_id, admission_key, account_scope_id, source_dispatch_id and pair_key are required")
         if fencing_generation <= 0:
             raise StaleExecutionFence("new V3 sessions require a positive fencing generation")
         if not isinstance(policy_snapshot, Mapping) or not policy_snapshot:
@@ -95,6 +95,10 @@ class ExecutionDomainRepository:
                     raise ValueError("FUTURES leg market_type cannot be spot")
                 if not leg["settle_asset"]:
                     raise ValueError("FUTURES leg requires an explicit settle_asset")
+                if leg["contract_type"] not in ("linear", "inverse"):
+                    raise ValueError("FUTURES leg contract_type must be linear or inverse")
+                if leg["position_side"] not in ("LONG", "SHORT"):
+                    raise ValueError("FUTURES leg position_side must be LONG or SHORT")
                 leg["contract_size"] = _positive_decimal(leg.get("contract_size"), "FUTURES.contract_size")
             prepared_legs.append(leg)
 
