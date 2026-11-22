@@ -40,12 +40,15 @@ class ExecutionSessionRecovery:
                     raise ExecutionRepositoryError("execution session does not exist")
                 if str(row["account_scope_id"] or "") != str(account_scope_id):
                     raise StaleAggregate("session account scope does not match recovery request")
+                if not row["coordinator_scope_key"] or not row["coordinator_owner_id"]:
+                    raise StaleAggregate(
+                        "session has no persisted coordinator lease identity to reclaim"
+                    )
                 await validate_coordinator_lease(
                     conn, coordinator_lease, session_id=session_id,
                     account_scope_id=account_scope_id,
                     expected_generation=int(coordinator_lease.generation),
                     session_scope_key=row["coordinator_scope_key"],
-                    session_owner_id=row["coordinator_owner_id"],
                 )
                 status = str(row["status"]).upper()
                 if status in {"COMPLETED", "REJECTED"}:
