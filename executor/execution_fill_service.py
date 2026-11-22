@@ -40,6 +40,10 @@ def _decimal(value: Any, name: str, *, positive: bool = True) -> Decimal:
     return number
 
 
+def _decimal_text(value: Decimal) -> str:
+    return format(value.normalize(), "f")
+
+
 def _timestamp(value: Any) -> datetime:
     if isinstance(value, str):
         try:
@@ -415,8 +419,8 @@ class ExecutionFillService:
             "leg_state": leg_target, "leg_state_version": new_leg_version,
             "session_state": session_target, "session_state_version": new_session_version,
             "aggregate_version": new_aggregate,
-            "confirmed_filled_quantity": str(new_leg_qty),
-            "confirmed_quote_quantity": str(new_leg_quote),
-            "confirmed_exposure_quantity": str(new_exposure_quantity),
-            "average_fill_price": str(new_average),
+            "confirmed_filled_quantity": _decimal_text(new_leg_qty),
+            "confirmed_quote_quantity": _decimal_text(new_leg_quote),
+            "confirmed_exposure_quantity": _decimal_text(new_exposure_quantity),
+            "average_fill_price": _decimal_text(new_average),
         }
