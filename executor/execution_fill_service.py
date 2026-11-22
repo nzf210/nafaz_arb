@@ -64,6 +64,12 @@ def _same_fill(row: Any, facts: Mapping[str, Any]) -> bool:
         and str(row["quote_asset"]).upper() == facts["quote_asset"]
         and Decimal(str(row["fee_amount"])) == facts["fee_amount"]
         and str(row["fee_asset"] or "").upper() == facts["fee_asset"]
+        and bool(row["fee_verified"]) == facts["fee_verified"]
+        and str(row["fee_source"] or "") == facts["fee_source"]
+        and str(row["exchange_order_id"] or "") == facts["exchange_order_id"]
+        and str(row["client_order_id"] or "") == facts["client_order_id"]
+        and str(row["source_event_id"] or "") == facts["source_event_id"]
+        and row["filled_at"] == facts["filled_at"]
     )
 
 
@@ -139,11 +145,15 @@ class ExecutionFillService:
                 """
                 UPDATE public.execution_event_inbox
                 SET processing_status=$2,
-                    attempts=attempts + CASE WHEN $2 IN ('PROCESSING','RETRY') THEN 1 ELSE 0 END,
+                    attempts=attempts + CASE WHEN $2='PROCESSING' THEN 1 ELSE 0 END,
                     last_error=$3,
                     processed_at=CASE WHEN $2='PROCESSED' THEN clock_timestamp() ELSE NULL END
                 WHERE inbox_id=$1::uuid
-                  AND processing_status IN ('RECEIVED','PROCESSING','RETRY')
+                  AND (
+                    (processing_status='RECEIVED' AND $2 IN ('PROCESSING','QUARANTINED'))
+                    OR (processing_status='PROCESSING' AND $2 IN ('PROCESSED','RETRY','QUARANTINED'))
+                    OR (processing_status='RETRY' AND $2 IN ('PROCESSING','QUARANTINED'))
+                  )
                 RETURNING inbox_id
                 """,
                 inbox_id, target, str(error or "")[:2000] or None,
