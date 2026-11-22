@@ -121,6 +121,10 @@ class ExecutorConfig:
     # Hard stop: halt all new entries once the day's realized loss crosses this.
     # 0 disables the breaker.
     max_daily_loss_usdt: float = 50.0
+    max_drawdown_pct: float = 0.0
+    max_funding_cost_pct: float = 0.0
+    max_unhedged_duration_ms: int = 0
+    min_venue_health_score: float = 0.2
     # Abort the hedge if the live futures ask is worse than the expected short
     # price by more than this fraction (0.003 = 0.3%). 0 disables the guard.
     max_entry_slippage_pct: float = 0.003
@@ -605,6 +609,10 @@ class ExecutorConfig:
         "allocation_per_pair": (0.0, 1.0, 0.5),
         "min_allocated_capital": (0.0, None, 10.0),
         "max_daily_loss_usdt": (0.0, None, 50.0),
+        "max_drawdown_pct": (0.0, 100.0, 0.0),
+        "max_funding_cost_pct": (0.0, 10.0, 0.0),
+        "max_unhedged_duration_ms": (0, 86400000, 0),
+        "min_venue_health_score": (0.0, 1.0, 0.2),
         "max_entry_slippage_pct": (0.0, 1.0, 0.003),
         "entry_revalidation_min_spread_pct": (0.0, 100.0, 0.0),
         "max_exposure_per_exchange_usdt": (0.0, None, 0.0),
