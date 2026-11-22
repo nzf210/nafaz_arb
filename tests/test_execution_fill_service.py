@@ -174,7 +174,7 @@ async def test_postgres_fill_is_exactly_once_and_updates_leg_atomically(postgres
     assert leg["status"] == "PARTIALLY_FILLED"
     assert Decimal(str(leg["confirmed_filled_quantity"])) == Decimal("0.0004")
     assert Decimal(str(leg["average_fill_price"])) == Decimal("1000000000")
-    assert event_count == 8
+    assert event_count == 9
 
 
 @pytest.mark.asyncio
