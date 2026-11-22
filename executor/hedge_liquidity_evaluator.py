@@ -19,7 +19,9 @@ def _d(value, name: str, *, allow_zero: bool = False) -> Decimal:
         result = value if isinstance(value, Decimal) else Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise LiquidityInputError(f"{name} must be a finite decimal") from exc
-    if not result.is_finite() or (result < 0 if allow_zero else result <= 0):
+    if not result.is_finite():
+        raise LiquidityInputError(f"{name} must be a finite decimal")
+    if result < 0 if allow_zero else result <= 0:
         raise LiquidityInputError(f"{name} must be {'non-negative' if allow_zero else 'positive'}")
     return result
 
@@ -131,7 +133,7 @@ def _defer_or_derisk(
         executable_notional_quote=Decimal("0"),
         executable_notional_usd=Decimal("0"),
         slippage_bps=None,
-        estimated_fee_bps=taker_fee,
+        estimated_fee_bps=policy.taker_fee_bps,
         estimated_total_cost_bps=None,
         book_age_ms=max(0, now_ms - book.observed_at_ms),
         book_observed_at_ms=int(book.observed_at_ms),
