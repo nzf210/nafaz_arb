@@ -86,23 +86,6 @@ class ExecutionSessionRepository:
                         account_scope_id=account_scope_id,
                         expected_generation=generation,
                     )
-                    scopes = self._admission_risk_scopes(
-                        account_scope_id=account_scope_id, pair_key=pair_key,
-                        session_id=session_id, legs=validated_legs,
-                    )
-                    for scope_key in sorted(scopes):
-                        await conn.execute(
-                            "select pg_advisory_xact_lock(hashtextextended('nafaz:risk-control:' || $1, 0))",
-                            scope_key,
-                        )
-                    risk_decision = await RiskControlPlane.assert_allowed(
-                        conn, scope_keys=scopes, action_class="ENTRY",
-                        risk_metrics=risk_metrics, risk_limits=risk_limits,
-                    )
-                    risk_json = _canonical_json({
-                        **dict(risk_policy_snapshot or {}),
-                        "admission_decision": risk_decision,
-                    })
                 row = await conn.fetchrow(
                     """
                     INSERT INTO public.execution_sessions (
@@ -179,6 +162,29 @@ class ExecutionSessionRepository:
                         "created": False,
                         "aggregate_version": None,
                     }
+
+                if coordinator_lease is not None:
+                    scopes = self._admission_risk_scopes(
+                        account_scope_id=account_scope_id, pair_key=pair_key,
+                        session_id=session_id, legs=validated_legs,
+                    )
+                    for scope_key in sorted(scopes):
+                        await conn.execute(
+                            "select pg_advisory_xact_lock(hashtextextended('nafaz:risk-control:' || $1, 0))",
+                            scope_key,
+                        )
+                    risk_decision = await RiskControlPlane.assert_allowed(
+                        conn, scope_keys=scopes, action_class="ENTRY",
+                        risk_metrics=risk_metrics, risk_limits=risk_limits,
+                    )
+                    risk_json = _canonical_json({
+                        **dict(risk_policy_snapshot or {}),
+                        "admission_decision": risk_decision,
+                    })
+                    await conn.execute(
+                        "UPDATE public.execution_sessions SET risk_policy_snapshot=$2::jsonb WHERE session_id=$1",
+                        session_id, risk_json,
+                    )
 
                 for leg in validated_legs:
                     await conn.execute(
