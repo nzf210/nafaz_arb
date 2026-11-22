@@ -211,7 +211,7 @@ class RiskBudgetEvaluator:
             str(key): value for key, value in dict(limits or {}).items()
             if key in cls.LIMIT_TO_METRIC or key == "min_venue_health_score"
         }
-        if action == "DERISK" or not configured:
+        if action in {"HEDGE", "DERISK"} or not configured:
             return {
                 "action_class": action,
                 "limits": configured,
