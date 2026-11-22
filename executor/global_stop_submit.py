@@ -114,6 +114,113 @@ class GlobalStopSubmitMixin:
         return dict(row)
 
     @asynccontextmanager
+    async def mutation_reconciliation_fence(
+        self, *, intent_id: str, intent_service: Any, actor_id: str,
+    ) -> AsyncIterator[Any]:
+        """Acquire exact-scope ownership for read-only reconciliation under STOP."""
+        key = str(intent_id or "").strip()
+        if not key or intent_service is None:
+            raise GlobalStopError("durable mutation intent and repository are required")
+        if not await self.ensure_pool():
+            raise GlobalStopError("PostgreSQL mutation reconciliation is unavailable")
+
+        global_locked = False
+        scope_locked = False
+        yielded_to_caller = False
+        scope_key = ""
+        lease = None
+        try:
+            async with self.pool.acquire() as conn:
+                try:
+                    global_locked = bool(await conn.fetchval(
+                        "select pg_try_advisory_lock_shared($1)", FENCE_LOCK_KEY
+                    ))
+                    if not global_locked:
+                        raise GlobalStopError("global STOP transition is in progress")
+                    async with conn.transaction():
+                        intent = await conn.fetchrow(
+                            """
+                            SELECT operation, status, account_scope_id, venue,
+                                   market_type, instrument
+                            FROM public.executor_mutation_intents
+                            WHERE intent_id=$1 FOR UPDATE
+                            """,
+                            key,
+                        )
+                        if intent is None or str(intent["status"]).upper() not in {
+                            "SUBMITTING", "UNKNOWN", "ACKNOWLEDGED",
+                        }:
+                            raise GlobalStopError("reconciliation requires an unresolved mutation intent")
+                        scope_key = build_scope_key(
+                            str(intent["account_scope_id"]), str(intent["venue"]),
+                            str(intent["market_type"]), str(intent["instrument"]),
+                        )
+                    lock_key = advisory_scope_lock_key(scope_key)
+                    scope_locked = bool(await conn.fetchval(
+                        "select pg_try_advisory_lock($1)", lock_key
+                    ))
+                    if not scope_locked:
+                        raise GlobalStopError(
+                            f"another mutation owns reconciliation scope {scope_key[:12]}"
+                        )
+                    async with conn.transaction():
+                        intent = await conn.fetchrow(
+                            """
+                            SELECT operation, status, account_scope_id, venue,
+                                   market_type, instrument
+                            FROM public.executor_mutation_intents
+                            WHERE intent_id=$1 FOR UPDATE
+                            """,
+                            key,
+                        )
+                        if intent is None or str(intent["status"]).upper() not in {
+                            "SUBMITTING", "UNKNOWN", "ACKNOWLEDGED",
+                        }:
+                            raise GlobalStopError("mutation intent changed before reconciliation")
+                        lease = await self.ownership.acquire(
+                            conn,
+                            account_scope_id=str(intent["account_scope_id"]),
+                            venue=str(intent["venue"]),
+                            market_type=str(intent["market_type"]),
+                            instrument=str(intent["instrument"]),
+                        )
+                        await self.ownership.validate(conn, lease)
+                        reconciled_intent = await intent_service.reclaim_for_reconciliation_in_transaction(
+                            conn, key, lease=lease, actor_id=actor_id,
+                        )
+                    yielded_to_caller = True
+                    yield conn, lease, reconciled_intent
+                finally:
+                    if scope_locked:
+                        try:
+                            await conn.execute(
+                                "select pg_advisory_unlock($1)", advisory_scope_lock_key(scope_key)
+                            )
+                        except Exception as exc:
+                            self._demote_broken_pool(exc)
+                            logger.warning("failed to release mutation reconciliation scope lock")
+                    if global_locked:
+                        try:
+                            await conn.execute(
+                                "select pg_advisory_unlock_shared($1)", FENCE_LOCK_KEY
+                            )
+                        except Exception as exc:
+                            self._demote_broken_pool(exc)
+                            logger.warning("failed to release mutation reconciliation global lock")
+                    if lease is not None:
+                        try:
+                            async with conn.transaction():
+                                await self.ownership.release(conn, lease)
+                        except Exception:
+                            logger.exception("failed to release reconciliation ownership lease")
+        except GlobalStopError:
+            raise
+        except Exception as exc:
+            if not yielded_to_caller:
+                self._demote_broken_pool(exc)
+            raise
+
+    @asynccontextmanager
     async def cancel_submit_fence(
         self, *, intent_id: str, intent_service: Any, actor_id: str,
     ) -> AsyncIterator[Any]:
