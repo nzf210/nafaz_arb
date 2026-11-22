@@ -348,13 +348,6 @@ class ExecutionSessionRepository:
         event_payload["target_state"] = target
         async with self.pool.acquire() as conn:
             async with conn.transaction():
-                duplicate = await self._existing_event(
-                    conn, session_id=session_id, idempotency_key=key,
-                    entity_type="SESSION", entity_id=session_id,
-                    event_type=event_type, payload=event_payload,
-                )
-                if duplicate:
-                    return duplicate
                 current = await conn.fetchrow(
                     """
                     SELECT status, state_version, aggregate_version, fencing_generation
@@ -362,20 +355,23 @@ class ExecutionSessionRepository:
                     """,
                     session_id,
                 )
+                if coordinator_lease is not None:
+                    await self._validate_coordinator_lease(
+                        conn, coordinator_lease, session_id=session_id,
+                        account_scope_id=str(current["account_scope_id"]),
+                        expected_generation=fencing_generation,
+                    )
+                duplicate = await self._existing_event(
+                    conn, session_id=session_id, idempotency_key=key,
+                    entity_type="SESSION", entity_id=session_id,
+                    event_type=event_type, payload=event_payload,
+                )
+                if duplicate:
+                    return duplicate
                 self._assert_versions(
                     current, expected_state_version, expected_aggregate_version,
                     fencing_generation,
                 )
-                if coordinator_lease is not None:
-                    session_identity = await conn.fetchrow(
-                        "SELECT account_scope_id FROM public.execution_sessions WHERE session_id=$1",
-                        session_id,
-                    )
-                    await self._validate_coordinator_lease(
-                        conn, coordinator_lease, session_id=session_id,
-                        account_scope_id=str(session_identity["account_scope_id"]),
-                        expected_generation=fencing_generation,
-                    )
                 old_state = str(current["status"]).upper()
                 if target not in SESSION_TRANSITIONS.get(old_state, set()):
                     raise InvalidTransition(f"session transition {old_state}->{target} is not allowed")
@@ -429,6 +425,19 @@ class ExecutionSessionRepository:
                 raise ValueError("CLOSED requires verified flatness and terminal-order evidence")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
+                session = await conn.fetchrow(
+                    """
+                    SELECT aggregate_version, fencing_generation, account_scope_id
+                    FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
+                    """,
+                    session_id,
+                )
+                if coordinator_lease is not None:
+                    await self._validate_coordinator_lease(
+                        conn, coordinator_lease, session_id=session_id,
+                        account_scope_id=str(session["account_scope_id"]),
+                        expected_generation=fencing_generation,
+                    )
                 duplicate = await self._existing_event(
                     conn, session_id=session_id, idempotency_key=key,
                     entity_type="LEG", entity_id=leg_id,
@@ -436,27 +445,10 @@ class ExecutionSessionRepository:
                 )
                 if duplicate:
                     return duplicate
-                session = await conn.fetchrow(
-                    """
-                    SELECT aggregate_version, fencing_generation
-                    FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
-                    """,
-                    session_id,
-                )
                 self._assert_versions(
                     session, None, expected_aggregate_version, fencing_generation,
                     entity_version_check=False,
                 )
-                if coordinator_lease is not None:
-                    session_identity = await conn.fetchrow(
-                        "SELECT account_scope_id FROM public.execution_sessions WHERE session_id=$1",
-                        session_id,
-                    )
-                    await self._validate_coordinator_lease(
-                        conn, coordinator_lease, session_id=session_id,
-                        account_scope_id=str(session_identity["account_scope_id"]),
-                        expected_generation=fencing_generation,
-                    )
                 leg = await conn.fetchrow(
                     """
                     SELECT status, state_version FROM public.execution_legs
