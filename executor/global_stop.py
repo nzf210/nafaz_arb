@@ -140,6 +140,33 @@ class GlobalStopService:
                 )
                 if row is None:
                     raise GlobalStopError("global control row is missing; apply PostgreSQL fencing migration")
+                schema = await conn.fetchrow(
+                    """
+                    SELECT
+                        to_regclass('public.executor_ownership_leases') AS ownership_table,
+                        to_regclass('public.executor_ownership_events') AS ownership_events,
+                        to_regclass('public.executor_risk_controls') AS risk_controls,
+                        to_regclass('public.executor_risk_control_events') AS risk_events
+                    """
+                )
+                if not schema or any(
+                    schema[name] is None
+                    for name in ("ownership_table", "ownership_events", "risk_controls", "risk_events")
+                ):
+                    raise GlobalStopError(
+                        "Executor V3 ownership/risk schema is missing; apply the V3 ownership migration"
+                    )
+                owner_columns = await conn.fetchval(
+                    """
+                    SELECT count(*) FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name='executor_submit_attempts'
+                      AND column_name IN ('account_scope_id','owner_scope_key','owner_generation')
+                    """
+                )
+                if int(owner_columns or 0) != 3:
+                    raise GlobalStopError(
+                        "Executor V3 submit ownership columns are missing; apply the V3 ownership migration"
+                    )
         except Exception:
             await self.close()
             raise
@@ -147,7 +174,15 @@ class GlobalStopService:
 
     async def close(self) -> None:
         if self.pool is not None:
-            await self.pool.close()
+            pool = self.pool
+            try:
+                async with pool.acquire() as conn:
+                    released = await self.ownership.release_all(conn)
+                    if released:
+                        logger.info("Released %d scoped ownership leases on shutdown", released)
+            except Exception:
+                logger.exception("Could not release scoped ownership leases during shutdown")
+            await pool.close()
             self.pool = None
 
     def _require_pool(self):
