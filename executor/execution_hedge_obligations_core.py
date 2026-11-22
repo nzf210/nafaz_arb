@@ -30,6 +30,8 @@ class HedgeObligationMixin(HedgeServiceBase):
                            f.market_type, f.symbol, f.side, f.quantity,
                            f.exchange_trade_id, spot.leg_id AS spot_leg_id,
                            spot.leg_type AS spot_leg_type, spot.base_asset,
+                           spot.venue AS spot_venue, spot.market_type AS spot_market_type,
+                           spot.symbol AS spot_symbol,
                            spot.base_per_unit AS spot_base_per_unit,
                            futures.leg_id AS futures_leg_id,
                            futures.venue AS futures_venue,
@@ -53,8 +55,14 @@ class HedgeObligationMixin(HedgeServiceBase):
                     raise HedgeObligationError("confirmed Spot fill or paired Futures leg does not exist")
                 if str(fill["account_scope_id"]) != str(session["account_scope_id"]):
                     raise HedgeObligationError("source fill account scope does not match session")
-                if str(fill["spot_leg_type"]) != "SPOT" or str(fill["market_type"]).lower() != "spot":
-                    raise HedgeObligationError("source fill is not bound to a Spot leg")
+                if (
+                    str(fill["spot_leg_type"]) != "SPOT"
+                    or str(fill["market_type"]).lower() != "spot"
+                    or str(fill["spot_market_type"]).lower() != "spot"
+                    or str(fill["venue"]).lower() != str(fill["spot_venue"]).lower()
+                    or str(fill["symbol"]) != str(fill["spot_symbol"])
+                ):
+                    raise HedgeObligationError("source fill is not bound to its exact Spot leg identity")
                 if str(fill["side"]).lower() != "buy":
                     raise HedgeObligationError("only confirmed Spot entry buys create hedge obligations")
                 if str(fill["position_side"] or "").upper() != "SHORT":
