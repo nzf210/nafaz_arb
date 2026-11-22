@@ -46,11 +46,14 @@ def account_scope_id_for(config: Any, exchange: str) -> str:
     if not venue:
         raise ValueError("exchange is required for account scope identity")
     credentials = (getattr(config, "exchanges", {}) or {}).get(venue)
-    if credentials is None:
+    if not str(getattr(credentials, "api_key", "") or "").strip():
+        fallback = None
         if venue == str(getattr(config, "local_exchange_name", "")).lower():
-            credentials = getattr(config, "local_credentials", None)
+            fallback = getattr(config, "local_credentials", None)
         elif venue == str(getattr(config, "global_exchange_name", "")).lower():
-            credentials = getattr(config, "global_credentials", None)
+            fallback = getattr(config, "global_credentials", None)
+        if str(getattr(fallback, "api_key", "") or "").strip():
+            credentials = fallback
     explicit = str(getattr(credentials, "account_scope_id", "") or "").strip()
     if explicit:
         return explicit
