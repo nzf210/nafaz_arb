@@ -1,6 +1,6 @@
 # NAFAZ Executor V3 — Session and Leg State Machine
 
-Status: PR-01 design artifact — review required before runtime wiring.
+Status: PR-01 design contract — durable repository implemented in PR-01B; runtime coordinator wiring remains pending.
 Repository: nzf210/nafaz_arb
 Scope: Executor only. Scanner contract remains frozen.
 
