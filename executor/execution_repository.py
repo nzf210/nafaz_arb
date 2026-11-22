@@ -241,7 +241,7 @@ class ExecutionSessionRepository:
                     existing = await conn.fetchrow(
                         """
                         SELECT session_id, opportunity_id, source_dispatch_id,
-                               account_scope_id, policy_snapshot_hash,
+                               account_scope_id, pair_key, policy_snapshot_hash,
                                execution_policy_snapshot, risk_policy_snapshot,
                                exit_policy_snapshot
                         FROM public.execution_sessions
@@ -254,6 +254,7 @@ class ExecutionSessionRepository:
                         str(existing["opportunity_id"]) != opportunity_id
                         or str(existing["source_dispatch_id"]) != source_dispatch_id
                         or str(existing["account_scope_id"]) != account_scope_id
+                        or str(existing["pair_key"]) != pair_key
                         or str(existing["policy_snapshot_hash"]) != policy_hash
                         or not _same_json(existing["execution_policy_snapshot"], execution_json)
                         or not _same_json(existing["risk_policy_snapshot"], risk_json)
@@ -264,7 +265,8 @@ class ExecutionSessionRepository:
                         """
                         SELECT leg_type, venue, market_type, symbol, normalized_symbol,
                                base_asset, quote_asset, settlement_asset, contract_type,
-                               contract_size, position_side, quantity_unit, base_per_unit
+                               contract_size, position_side, quantity_unit, base_per_unit,
+                               order_quantity, exposure_quantity, target_qty
                         FROM public.execution_legs
                         WHERE session_id=$1
                         ORDER BY leg_type
@@ -277,6 +279,7 @@ class ExecutionSessionRepository:
                         "leg_type", "venue", "market_type", "symbol", "normalized_symbol",
                         "base_asset", "quote_asset", "settlement_asset", "contract_type",
                         "contract_size", "position_side", "quantity_unit", "base_per_unit",
+                        "order_quantity", "exposure_quantity", "target_qty",
                     )
                     if len(actual_legs) != len(expected_legs) or any(
                         any(str(actual.get(field) or "") != str(expected.get(field) or "") for field in identity_fields)
