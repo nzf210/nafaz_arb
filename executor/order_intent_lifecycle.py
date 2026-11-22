@@ -51,7 +51,7 @@ class OrderIntentLifecycleMixin:
         exchange_order_id: str | None = None, venue_response: Mapping[str, Any] | None = None,
         error: str | None = None, release_reservation: bool = False,
     ) -> dict:
-        actor = requiredactor_id, "actor_id")
+        actor = required(actor_id, "actor_id")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow(
