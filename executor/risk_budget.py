@@ -86,8 +86,8 @@ class RiskBudgetMetricsBuilder:
                 gross_unpriced = deployed_unpriced = net_unpriced = unhedged_unpriced = True
             gross += notional
             deployed += notional / leverage
-            net = max(0.0, abs(net) - notional)
-            unhedged = max(0.0, unhedged - notional)
+            # A pending hedge is not evidence of a filled hedge. Keep net and
+            # unhedged exposure unchanged until venue reconciliation confirms fills.
 
         proposed = max(0.0, float(proposed_notional_usdt or 0.0))
         action = str(action_class or "ENTRY").strip().upper()
