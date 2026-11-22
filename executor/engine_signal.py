@@ -71,6 +71,9 @@ class EngineSignalMixin:
                     pair_tag,
                 )
                 return
+            if getattr(self, "_risk_persistence_pending", False):
+                logger.warning("[Risk] rejecting %s: durable risk-state write is still pending", pair_tag)
+                return
             if getattr(self, "_risk_persistence_failed", False):
                 logger.critical("[Risk] rejecting %s: durable risk-state persistence is not trustworthy", pair_tag)
                 return
