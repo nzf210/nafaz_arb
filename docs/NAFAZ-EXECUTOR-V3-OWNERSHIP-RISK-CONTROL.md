@@ -45,6 +45,7 @@ The durable risk-control projection is hierarchical: global, account, venue, ins
 - DE_RISK_ALLOWED controls whether a protective hedge/de-risk action may proceed.
 - These permissions are independent. A global STOP or entry halt can block new entries while still allowing a hedge when DE_RISK_ALLOWED is true.
 - A control projection update and its append-only event are committed in one transaction with a monotonic version and optional expected-version CAS.
+- Every scoped submit attempt stores the effective control flags and versions it observed in risk_control_snapshot, alongside the ownership generation.
 - Idempotency keys are scoped to the control record. Reusing a key with different event content is rejected.
 
 The current PR wires durable control checks into spot entry and futures hedge submission. Limits are stored as typed JSON policy data for subsequent evaluator integration; this PR does not claim every exposure, daily-loss, drawdown, slippage or funding limit has been moved into the new control plane. Existing risk engines remain active.
