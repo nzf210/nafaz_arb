@@ -91,10 +91,12 @@ class GlobalStopSubmitMixin:
         """
         if not client_order_id or len(client_order_id) > 128:
             raise GlobalStopError("valid stable client_order_id is required before submit")
+        venue_key = str(venue or "").strip().lower()
+        market_key = str(market_type or "").strip().lower()
         native_instrument = str(instrument or "").strip().upper()
         try:
             scope_key = build_scope_key(
-                account_scope_id, venue, market_type, native_instrument
+                account_scope_id, venue_key, market_key, native_instrument
             )
         except ValueError as exc:
             raise GlobalStopError(
@@ -136,8 +138,8 @@ class GlobalStopSubmitMixin:
                             conn,
                             scope_keys=risk_scope_keys(
                                 account_scope_id=account_scope_id,
-                                venue=venue,
-                                market_type=market_type,
+                                venue=venue_key,
+                                market_type=market_key,
                                 instrument=native_instrument,
                             ),
                             action_class="DERISK",
@@ -145,9 +147,9 @@ class GlobalStopSubmitMixin:
                         lease = await self.ownership.acquire(
                             conn,
                             account_scope_id=account_scope_id,
-                            venue=venue,
-                            market_type=market_type,
-                            instrument=instrument,
+                            venue=venue_key,
+                            market_type=market_key,
+                            instrument=native_instrument,
                         )
                         await self.ownership.validate(conn, lease)
                         unresolved = await conn.fetchrow(
@@ -160,7 +162,7 @@ class GlobalStopSubmitMixin:
                               AND client_order_id <> $5
                             ORDER BY created_at LIMIT 1
                             """,
-                            account_scope_id, venue, market_type, native_instrument,
+                            account_scope_id, venue_key, market_key, native_instrument,
                             client_order_id,
                         )
                         if unresolved is not None:
