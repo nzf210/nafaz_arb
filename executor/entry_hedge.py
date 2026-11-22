@@ -652,7 +652,7 @@ class EntryHedgeMixin:
                 if order_info.get("global_book_timestamp_ms") else None
             ),
         )
-        risk_limits = RiskBudgetMetricsBuilder.limits_from_config(self.config)
+        risk_limits = RiskBudgetMetricsBuilder.limits_from_config(getattr(self, "config", None))
         ip_ban_stop_persistence_failed = False
         try:
             if global_stop is None:
