@@ -241,6 +241,10 @@ async def test_durable_scope_limits_override_config_budget_defaults():
 @pytest.mark.asyncio
 async def test_durable_derisk_permission_is_separate_from_entry_block():
     class _Connection:
+        async def execute(self, query, scope_key):
+            assert "pg_advisory_xact_lock" in query
+            assert scope_key == "global"
+
         async def fetch(self, query, scope_keys):
             return [{
                 "scope_key": "global",
