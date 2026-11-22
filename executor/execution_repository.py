@@ -142,7 +142,12 @@ class ExecutionSessionRepository:
             quantity_unit = _required_text(leg.get("quantity_unit"), "leg.quantity_unit").upper()
             if quantity_unit not in {"BASE", "QUOTE", "CONTRACTS"}:
                 raise ValueError("leg.quantity_unit must be BASE, QUOTE or CONTRACTS")
-            base_per_unit = _positive_decimal(leg.get("base_per_unit"), "leg.base_per_unit")
+            base_per_unit = (
+                _positive_decimal(leg["base_per_unit"], "leg.base_per_unit")
+                if leg.get("base_per_unit") is not None else None
+            )
+            if quantity_unit in {"BASE", "CONTRACTS"} and base_per_unit is None:
+                raise ValueError("BASE/CONTRACTS legs require explicit base_per_unit conversion metadata")
             if leg_type == "FUTURES":
                 _required_text(leg.get("settlement_asset"), "Futures settlement_asset")
                 _positive_decimal(leg.get("contract_size"), "Futures contract_size")
@@ -298,10 +303,11 @@ class ExecutionSessionRepository:
     async def _existing_event(
         self, conn: Any, *, session_id: str, idempotency_key: str,
         entity_type: str, entity_id: str, event_type: str,
+        payload: Mapping[str, Any],
     ) -> Optional[dict]:
         row = await conn.fetchrow(
             """
-            SELECT event_id, aggregate_version, entity_type, entity_id, event_type
+            SELECT event_id, aggregate_version, entity_type, entity_id, event_type, payload
             FROM public.execution_session_events
             WHERE session_id=$1 AND event_idempotency_key=$2
             """,
@@ -313,6 +319,7 @@ class ExecutionSessionRepository:
             str(row["entity_type"]) != entity_type
             or str(row["entity_id"]) != entity_id
             or str(row["event_type"]) != event_type
+            or not _same_json(row["payload"], _canonical_json(payload))
         ):
             raise AdmissionConflict("event idempotency key was reused for a different transition")
         return {
@@ -342,11 +349,16 @@ class ExecutionSessionRepository:
                 raise ValueError("COMPLETED requires the full verified-flatness evidence set")
             if not all(completion_evidence[name] is True for name in required):
                 raise ValueError("COMPLETED rejected: one or more flatness gates are unverified")
+        event_payload = dict(payload or {})
+        if completion_evidence is not None:
+            event_payload["completion_evidence"] = dict(completion_evidence)
+        event_payload["target_state"] = target
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 duplicate = await self._existing_event(
                     conn, session_id=session_id, idempotency_key=key,
-                    entity_type="SESSION", entity_id=session_id, event_type=event_type,
+                    entity_type="SESSION", entity_id=session_id,
+                    event_type=event_type, payload=event_payload,
                 )
                 if duplicate:
                     return duplicate
@@ -380,9 +392,6 @@ class ExecutionSessionRepository:
                 )
                 if updated is None:
                     raise StaleAggregate("session compare-and-swap lost")
-                event_payload = dict(payload or {})
-                if completion_evidence is not None:
-                    event_payload["completion_evidence"] = dict(completion_evidence)
                 await self._insert_event(
                     conn, session_id=session_id, aggregate_version=new_aggregate_version,
                     entity_type="SESSION", entity_id=session_id,
@@ -407,11 +416,18 @@ class ExecutionSessionRepository:
         target = _required_text(target_state, "target_state").upper()
         key = _required_text(event_idempotency_key, "event_idempotency_key")
         actor = _required_text(actor_id, "actor_id")
+        event_payload = dict(payload or {})
+        event_payload["target_state"] = target
+        if target == "CLOSED":
+            required = {"verified_flat", "orders_terminal", "no_unknown_submits"}
+            if not required.issubset(event_payload) or not all(event_payload[name] is True for name in required):
+                raise ValueError("CLOSED requires verified flatness and terminal-order evidence")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 duplicate = await self._existing_event(
                     conn, session_id=session_id, idempotency_key=key,
-                    entity_type="LEG", entity_id=leg_id, event_type=event_type,
+                    entity_type="LEG", entity_id=leg_id,
+                    event_type=event_type, payload=event_payload,
                 )
                 if duplicate:
                     return duplicate
@@ -471,7 +487,7 @@ class ExecutionSessionRepository:
                     entity_version=new_leg_version, event_type=event_type,
                     idempotency_key=key, actor_id=actor,
                     fencing_generation=fencing_generation, reason=reason,
-                    correlation_id=correlation_id, payload=dict(payload or {}),
+                    correlation_id=correlation_id, payload=event_payload,
                 )
         return {
             "duplicate": False, "state": target,
