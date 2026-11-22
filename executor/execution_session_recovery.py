@@ -62,20 +62,18 @@ class ExecutionSessionRecovery:
                 aggregate_version = int(row["aggregate_version"])
                 reclaimed = old_generation < generation
                 if reclaimed:
-                    next_state_version = state_version + 1
                     next_aggregate_version = aggregate_version + 1
                     updated = await conn.fetchrow(
                         """
                         UPDATE public.execution_sessions
-                        SET fencing_generation=$2, state_version=$3,
-                            aggregate_version=$4, updated_at=clock_timestamp()
-                        WHERE session_id=$1 AND fencing_generation=$5
-                          AND state_version=$6 AND aggregate_version=$7
+                        SET fencing_generation=$2, aggregate_version=$3,
+                            updated_at=clock_timestamp()
+                        WHERE session_id=$1 AND fencing_generation=$4
+                          AND state_version=$5 AND aggregate_version=$6
                         RETURNING aggregate_version
                         """,
-                        session_id, generation, next_state_version,
-                        next_aggregate_version, old_generation,
-                        state_version, aggregate_version,
+                        session_id, generation, next_aggregate_version,
+                        old_generation, state_version, aggregate_version,
                     )
                     if updated is None:
                         raise StaleAggregate("session recovery compare-and-swap lost")
@@ -83,7 +81,7 @@ class ExecutionSessionRecovery:
                         conn, session_id=session_id,
                         aggregate_version=next_aggregate_version,
                         entity_type="SESSION", entity_id=session_id,
-                        entity_version=next_state_version,
+                        entity_version=state_version,
                         event_type="COORDINATOR_LEASE_RECLAIMED",
                         idempotency_key=f"coordinator-recovery:{session_id}:{generation}",
                         actor_id=actor, fencing_generation=generation,
@@ -95,7 +93,6 @@ class ExecutionSessionRecovery:
                             "status": status,
                         },
                     )
-                    state_version = next_state_version
                     aggregate_version = next_aggregate_version
                 return {
                     "session_id": session_id,
