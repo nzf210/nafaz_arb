@@ -164,7 +164,7 @@ class OrderIntentLifecycleMixin:
         self, intent_id: str, *, lease: Any, actor_id: str,
         exchange_order_id: str, venue_response: Mapping[str, Any],
     ) -> dict:
-        order_id = _required(exchange_order_id, "exchange_order_id")
+        order_id = required(exchange_order_id, "exchange_order_id")
         return await self._transition(
             intent_id=intent_id, target_status="ACKNOWLEDGED",
             allowed_from=("SUBMITTING", "UNKNOWN"), event_type="INTENT_ACKNOWLEDGED",
