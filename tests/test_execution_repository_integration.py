@@ -5,6 +5,7 @@ They are skipped in developer environments without TEST_POSTGRES_DSN.
 """
 from __future__ import annotations
 
+import json
 import os
 import uuid
 
@@ -147,9 +148,11 @@ async def test_admission_is_idempotent_and_preserves_native_venue_symbols(reposi
     assert [row["event_type"] for row in events] == [
         "SESSION_CREATED", "FUTURES_LEG_CREATED", "SPOT_LEG_CREATED"
     ]
-    assert events[1]["payload"]["base_asset"] == "BTC"
-    assert events[1]["payload"]["symbol"] == "BTC-USDT-SWAP"
-    assert events[2]["payload"]["symbol"] == "btc_idr"
+    futures_payload = json.loads(events[1]["payload"])
+    spot_payload = json.loads(events[2]["payload"])
+    assert futures_payload["base_asset"] == "BTC"
+    assert futures_payload["symbol"] == "BTC-USDT-SWAP"
+    assert spot_payload["symbol"] == "btc_idr"
 
 
 async def test_admission_key_cannot_be_reused_for_a_different_route(repository):
@@ -242,7 +245,7 @@ async def test_invalid_transition_and_stale_fence_write_nothing(repository):
             session_id=identity["session_id"],
             target_state="VALIDATING",
             expected_state_version=1,
-            expected_aggregate_version=1,
+            expected_aggregate_version=3,
             fencing_generation=identity["fencing_generation"] + 1,
             event_type="SESSION_VALIDATING",
             event_idempotency_key=f"{identity['admission_key']}:stale-fence",
@@ -277,21 +280,21 @@ async def test_completed_session_requires_every_flatness_gate(repository):
         )
 
 
-def test_admission_rejects_mismatched_spot_and_futures_base_assets():
+async def test_admission_rejects_mismatched_spot_and_futures_base_assets():
     legs = _legs()
     legs[1]["base_asset"] = "ETH"
     with pytest.raises(ValueError, match="same base asset"):
         ExecutionSessionRepository._validate_legs(legs)
 
 
-def test_admission_rejects_futures_misclassified_as_spot_market():
+async def test_admission_rejects_futures_misclassified_as_spot_market():
     legs = _legs()
     legs[1]["market_type"] = "spot"
     with pytest.raises(ValueError, match="FUTURES leg market_type"):
         ExecutionSessionRepository._validate_legs(legs)
 
 
-def test_admission_rejects_missing_futures_position_side():
+async def test_admission_rejects_missing_futures_position_side():
     legs = _legs()
     legs[1]["position_side"] = ""
     with pytest.raises(ValueError, match="position_side"):
