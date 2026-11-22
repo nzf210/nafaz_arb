@@ -105,6 +105,11 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
         run: pytest -q tests/test_postgres_submit_fencing_integration.py
+      - name: Exercise durable Executor V3 session aggregate repository
+        timeout-minutes: 3
+        env:
+          TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
+        run: pytest -q tests/test_execution_repository_integration.py
 
   docker-images:
     runs-on: ubuntu-latest
