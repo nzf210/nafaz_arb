@@ -181,3 +181,17 @@ The following clarifications are normative and supersede any ambiguous wording a
 6. **No silent quantity conversion.** Existing V2 quantity columns remain unchanged and retain their legacy semantics. New typed quantity fields are nullable for legacy rows. A V3-ready leg requires an explicit quantity_unit and evidenced conversion metadata before it can participate in hedge or completion calculations.
 
 PR-02 must implement these rules and include catalog assertions that verify the real pre-migration FK, indexes, RLS and grants before changing them.
+
+## 11. PR-01B schema implementation
+
+Implemented in `supabase/migrations/20261122000100_add_executor_v3_durable_sessions.sql`:
+
+- Additive nullable provenance, policy, venue identity and typed-quantity columns; legacy values are not synthesized.
+- Separate session entity version and aggregate event cursor.
+- Partial unique admission-key index, preserving multiple legacy NULL values.
+- Catalog-discovered replacement of the execution-leg session FK with `ON DELETE RESTRICT`.
+- Append-only `execution_session_events`, unique aggregate cursor and per-session idempotency key, RLS and service-role INSERT/SELECT-only grants.
+- Positive typed-quantity checks without changing V2 target/filled/exposure semantics.
+
+The migration and schema smoke test are code artifacts only. They have not been applied to a production database. Runtime repository/CAS behavior, transactional event emission, admission idempotency and restart hydration remain implementation work and are not claimed complete by this migration.
+
