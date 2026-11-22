@@ -277,7 +277,7 @@ class ExecutionFillService:
                         raise FillConflict("fill event idempotency key was reused for another trade")
                     prior_fill = await conn.fetchrow(
                         """
-                        SELECT fill_id FROM public.execution_fills
+                        SELECT * FROM public.execution_fills
                         WHERE account_scope_id=$1 AND venue=$2 AND market_type=$3
                           AND symbol=$4 AND exchange_trade_id=$5
                         """,
@@ -286,6 +286,8 @@ class ExecutionFillService:
                     )
                     if prior_fill is None:
                         raise FillConflict("fill event exists without its immutable fill record")
+                    if not _same_fill(prior_fill, facts):
+                        raise FillConflict("fill event idempotency key was replayed with changed immutable facts")
                     return {
                         "duplicate": True, "fill_id": str(prior_fill["fill_id"]),
                         "aggregate_version": int(session["aggregate_version"]),
