@@ -115,15 +115,19 @@ class HedgeAllocationMixin(HedgeServiceBase):
                         continue
                     new_item_allocated = Decimal(str(item["item_allocated_base_quantity"])) + take
                     new_confirmed = Decimal(str(item["confirmed_base_quantity"])) + take
-                    await conn.execute(
+                    updated_item = await conn.execute(
                         """
                         UPDATE public.execution_hedge_reservation_items
                         SET allocated_base_quantity=$3, updated_at=clock_timestamp()
                         WHERE reservation_id=$1::uuid AND obligation_id=$2::uuid
+                          AND allocated_base_quantity=$4
                         """,
                         reservation_id, item["obligation_id"], new_item_allocated,
+                        item["item_allocated_base_quantity"],
                     )
-                    await conn.execute(
+                    if not updated_item.endswith(" 1"):
+                        raise HedgeObligationError("reservation item allocation compare-and-swap failed")
+                    updated_obligation = await conn.execute(
                         """
                         UPDATE public.execution_hedge_obligations
                         SET confirmed_base_quantity=confirmed_base_quantity+$2,
@@ -140,6 +144,8 @@ class HedgeAllocationMixin(HedgeServiceBase):
                         """,
                         item["obligation_id"], take,
                     )
+                    if not updated_obligation.endswith(" 1"):
+                        raise HedgeObligationError("obligation fill allocation compare-and-swap failed")
                     allocation = await conn.fetchrow(
                         """
                         INSERT INTO public.execution_hedge_allocations (
@@ -166,14 +172,18 @@ class HedgeAllocationMixin(HedgeServiceBase):
                 new_reservation_status = (
                     "CONSUMED" if new_allocated_total == reserved_total else "PARTIALLY_FILLED"
                 )
-                await conn.execute(
+                updated_reservation = await conn.execute(
                     """
                     UPDATE public.execution_hedge_reservations
                     SET allocated_base_quantity=$2, status=$3, updated_at=clock_timestamp()
                     WHERE reservation_id=$1::uuid
+                      AND allocated_base_quantity=$4
                     """,
                     reservation_id, new_allocated_total, new_reservation_status,
+                    allocated_total,
                 )
+                if not updated_reservation.endswith(" 1"):
+                    raise HedgeObligationError("hedge reservation allocation compare-and-swap failed")
                 version = await self._append_event(
                     conn, session_id=session_id, session=session,
                     event_type="HEDGE_FILL_ALLOCATED", idempotency_key=key,
