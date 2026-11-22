@@ -519,3 +519,29 @@ async def test_manual_global_stop_waits_for_active_shared_submit_and_blocks_next
             )
         await service_a.close()
         await service_b.close()
+
+@pytest.mark.asyncio
+async def test_risk_control_idempotency_is_serialized_for_concurrent_writers(postgres_pool):
+    controls = RiskControlPlane()
+    suffix = uuid.uuid4().hex
+    account = "risk-idempotency-account-" + suffix
+    key = "account:" + account
+    event_key = "concurrent-risk-event-" + suffix
+
+    async def write_control():
+        return await controls.set_control(
+            postgres_pool,
+            scope_key=key,
+            scope_type="ACCOUNT",
+            account_scope_id=account,
+            entry_blocked=True,
+            derisk_allowed=True,
+            actor_id="integration-test",
+            event_type="ENTRY_BLOCKED",
+            event_idempotency_key=event_key,
+            state={"reason": "concurrent idempotency"},
+        )
+
+    first, second = await asyncio.gather(write_control(), write_control())
+    assert first["version"] == second["version"] == 1
+    assert sorted([first["duplicate"], second["duplicate"]]) == [False, True]
