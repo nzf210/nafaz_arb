@@ -14,6 +14,7 @@ from executor.helpers import build_client_order_id
 from executor.ownership import build_scope_key
 from executor.order_intent_common import (
     OrderIntentError, OrderIntentConflict, OrderIntentReservationConflict,
+    OrderIntentStaleOwner,
     required,
 )
 from executor.order_intent_lifecycle import OrderIntentLifecycleMixin
