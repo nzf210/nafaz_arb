@@ -164,6 +164,11 @@ async def test_session_and_leg_events_use_one_monotonic_aggregate_cursor(reposit
     assert replay["duplicate"] is True
     assert replay["aggregate_version"] == 2
 
+    conflicting_replay = dict(transition)
+    conflicting_replay["payload"] = {"validation": "different"}
+    with pytest.raises(AdmissionConflict, match="different transition"):
+        await repository.transition_session(**conflicting_replay)
+
     stale = dict(transition)
     stale["event_idempotency_key"] += ":stale"
     with pytest.raises(StaleAggregate):
