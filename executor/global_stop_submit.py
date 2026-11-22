@@ -541,7 +541,7 @@ class GlobalStopSubmitMixin:
             raise GlobalStopError("V3 mutation intents require an account-scoped venue lease")
         if (
             not client_order_id or len(client_order_id) > 128
-            or action not in {"ENTRY", "HEDGE"}
+            or action not in {"ENTRY", "HEDGE", "DERISK"}
             or (
                 bool(getattr(self, "require_scoped_submits", False))
                 and (
@@ -551,10 +551,10 @@ class GlobalStopSubmitMixin:
                     or not str(scope_market_type or "").strip()
                 )
             )
-            or (action == "HEDGE" and not account_scope_id)
+            or (action in {"HEDGE", "DERISK"} and not account_scope_id)
         ):
             raise GlobalStopError(
-                "valid client order id and scoped ENTRY/HEDGE action are required"
+                "valid client order id and scoped ENTRY/HEDGE/DERISK action are required"
             )
 
         yielded_to_caller = False
