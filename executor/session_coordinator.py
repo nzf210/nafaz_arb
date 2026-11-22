@@ -173,39 +173,29 @@ class SessionCoordinator:
                 "coordinator_generation": lease.generation,
             }
         except Exception:
-            if lease is not None:
-                try:
-                    async with self.pool.acquire() as conn:
-                        await self.ownership.release(conn, lease)
-                except Exception:
-                    logger.exception("failed to release coordinator lease after admission/recovery failure")
+            # The repository may have committed before the caller observed an
+            # exception (for example, a connection loss while returning COMMIT).
+            # Never release a coordinator fence on an ambiguous outcome. The
+            # lease expires naturally and recovery resolves durable state.
             raise
 
     async def recover(
         self, *, session_id: str, account_scope_id: str, actor_id: str,
     ) -> dict:
         """Acquire a newer coordinator generation and durably fence the session."""
-        lease = None
-        try:
-            async with self.pool.acquire() as conn:
-                lease = await self.ownership.acquire(
-                    conn, account_scope_id=account_scope_id,
-                    venue="coordinator", market_type="session",
-                    instrument=session_id,
-                )
-            result = await self.recovery.reclaim(
-                session_id=session_id, account_scope_id=account_scope_id,
-                coordinator_lease=lease, actor_id=actor_id,
+        async with self.pool.acquire() as conn:
+            lease = await self.ownership.acquire(
+                conn, account_scope_id=account_scope_id,
+                venue="coordinator", market_type="session",
+                instrument=session_id,
             )
-            return {**result, "coordinator_lease": lease}
-        except Exception:
-            if lease is not None:
-                try:
-                    async with self.pool.acquire() as conn:
-                        await self.ownership.release(conn, lease)
-                except Exception:
-                    logger.exception("failed to release coordinator lease after admission/recovery failure")
-            raise
+        # A failed reclaim is also ambiguous with respect to transaction commit.
+        # Keep the lease until expiry rather than risking release of a committed fence.
+        result = await self.recovery.reclaim(
+            session_id=session_id, account_scope_id=account_scope_id,
+            coordinator_lease=lease, actor_id=actor_id,
+        )
+        return {**result, "coordinator_lease": lease}
 
     async def transition(
         self, *, coordinator_lease: Any, **transition: Any,
@@ -226,7 +216,28 @@ class SessionCoordinator:
         )
 
     async def release(self, coordinator_lease: Any) -> bool:
+        """Release only a lease that has no durable session bound to it.
+
+        Active or terminal session leases are retained until their lifecycle
+        owner explicitly implements a proof-backed safe release policy. This
+        prevents a caller from dropping the fence while a session is unresolved.
+        """
         if coordinator_lease is None:
             return False
         async with self.pool.acquire() as conn:
+            session = await conn.fetchrow(
+                """
+                SELECT session_id
+                FROM public.execution_sessions
+                WHERE coordinator_scope_key=$1
+                  AND coordinator_owner_id=$2
+                  AND fencing_generation=$3
+                LIMIT 1
+                """,
+                coordinator_lease.scope_key,
+                coordinator_lease.owner_id,
+                coordinator_lease.generation,
+            )
+            if session is not None:
+                return False
             return await self.ownership.release(conn, coordinator_lease)
