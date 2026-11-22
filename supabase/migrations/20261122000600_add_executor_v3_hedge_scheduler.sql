@@ -12,6 +12,15 @@ ALTER TABLE public.execution_hedge_obligations
         CHECK (deferred_count >= 0),
     ADD COLUMN IF NOT EXISTS de_risk_required BOOLEAN NOT NULL DEFAULT FALSE;
 
+ALTER TABLE public.execution_hedge_obligations
+    ALTER COLUMN next_evaluate_at SET DEFAULT clock_timestamp();
+
+UPDATE public.execution_hedge_obligations
+SET next_evaluate_at=created_at
+WHERE next_evaluate_at IS NULL
+  AND status IN ('OPEN','PARTIALLY_HEDGED')
+  AND de_risk_required=FALSE;
+
 CREATE INDEX IF NOT EXISTS idx_execution_hedge_obligations_due
     ON public.execution_hedge_obligations(status, next_evaluate_at, created_at)
     WHERE status IN ('OPEN','PARTIALLY_HEDGED')
