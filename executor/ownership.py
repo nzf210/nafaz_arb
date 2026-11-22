@@ -220,3 +220,28 @@ class OwnershipLeaseService:
                 uuid.uuid4().hex, row["lease_expires_at"],
             )
             return True
+
+    async def release_all(self, conn: Any) -> int:
+        """Release this process owner's live leases during graceful shutdown."""
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                UPDATE public.executor_ownership_leases
+                SET lease_expires_at=clock_timestamp(), updated_at=clock_timestamp()
+                WHERE owner_id=$1 AND lease_expires_at > clock_timestamp()
+                RETURNING scope_key, generation, lease_expires_at
+                """,
+                self.owner_id,
+            )
+            for row in rows:
+                await conn.execute(
+                    """
+                    INSERT INTO public.executor_ownership_events (
+                        scope_key, generation, owner_id, event_type,
+                        event_idempotency_key, lease_expires_at, metadata
+                    ) VALUES ($1,$2,$3,'RELEASED',$4,$5,'{"source":"graceful-shutdown"}'::jsonb)
+                    """,
+                    row["scope_key"], row["generation"], self.owner_id,
+                    uuid.uuid4().hex, row["lease_expires_at"],
+                )
+            return len(rows)
