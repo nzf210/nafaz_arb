@@ -181,12 +181,13 @@ async def test_entry_blocked_and_derisk_allowed_are_independent(postgres_pool):
 
 async def _prepare_submit(
     service: GlobalStopService, *, client_id: str, account_scope_id: str,
-    symbol: str, pair_key: str,
+    symbol: str, pair_key: str, exchange: str = "binance",
+    market_type: str = "spot",
 ):
     await service.prepare_submit_attempt(
         client_order_id=client_id,
-        exchange="binance",
-        market_type="spot",
+        exchange=exchange,
+        market_type=market_type,
         symbol=symbol,
         side="buy",
         order_type="limit",
@@ -311,6 +312,7 @@ async def test_global_stop_blocks_entry_but_allows_approved_protective_hedge():
         await _prepare_submit(
             service, client_id=entry_id, account_scope_id=account,
             symbol="BTC/IDR", pair_key="risk-entry-pair-" + suffix,
+            exchange="indodax", market_type="spot",
         )
         with pytest.raises(GlobalStopError, match="ENTRY_BLOCKED"):
             async with service.order_submit_fence(
