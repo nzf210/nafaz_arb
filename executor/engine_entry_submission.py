@@ -14,6 +14,7 @@ from executor.helpers import (
 )
 from executor.order_slots import SlotExhaustedError
 from executor.ownership import account_scope_id_for
+from executor.risk_budget import RiskBudgetMetricsBuilder
 from executor.engine_common import logger
 
 
@@ -397,6 +398,38 @@ class EngineEntrySubmissionMixin:
             recovery_context = self._entry_recovery_context(
                 payload, pair_info, snapshot, directives, actual_cost_usdt
             )
+            best_ask = float(getattr(snapshot, "local_best_ask", 0.0) or 0.0)
+            slippage_bps = (
+                max(0.0, (exchange_order_price - best_ask) / best_ask * 10000.0)
+                if best_ask > 0 else None
+            )
+            snapshot_timestamp = int(getattr(snapshot, "timestamp_ms", 0) or 0)
+            market_data_age_ms = (
+                max(0, int(time.time() * 1000) - snapshot_timestamp)
+                if snapshot_timestamp > 0 else None
+            )
+            funding_data = (
+                payload.get("funding_metrics") if isinstance(payload, dict)
+                else getattr(payload, "funding_metrics", None)
+            )
+            funding_rate = (
+                funding_data.get("current_funding_rate")
+                if isinstance(funding_data, dict)
+                else getattr(funding_data, "current_funding_rate", None)
+            )
+            funding_cost_pct = (
+                abs(float(funding_rate)) * 100.0 if funding_rate is not None else None
+            )
+            risk_metrics = RiskBudgetMetricsBuilder.build(
+                self,
+                venue=pair_info.local_exchange,
+                action_class="ENTRY",
+                proposed_notional_usdt=actual_cost_usdt,
+                slippage_bps=slippage_bps,
+                funding_cost_pct=funding_cost_pct,
+                market_data_age_ms=market_data_age_ms,
+            )
+            risk_limits = RiskBudgetMetricsBuilder.limits_from_config(self.config)
             recovery_context["strategy_price_idr"] = buy_price_idr
             recovery_context["exchange_order_price"] = exchange_order_price
             recovery_context["exchange_quote_asset"] = str(
@@ -502,6 +535,8 @@ class EngineEntrySubmissionMixin:
                             account_scope_id=account_scope_id,
                             action_class="ENTRY",
                             scope_pair_key=pair_tag,
+                            risk_metrics=risk_metrics,
+                            risk_limits=risk_limits,
                         ) as fence_conn:
                             submission_started = True
                             try:
