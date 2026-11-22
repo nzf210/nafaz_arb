@@ -28,7 +28,8 @@ class ExecutionSessionRecovery:
                 row = await conn.fetchrow(
                     """
                     SELECT status, state_version, aggregate_version,
-                           fencing_generation, account_scope_id
+                           fencing_generation, account_scope_id,
+                           coordinator_scope_key, coordinator_owner_id
                     FROM public.execution_sessions
                     WHERE session_id=$1
                     FOR UPDATE
@@ -43,6 +44,8 @@ class ExecutionSessionRecovery:
                     conn, coordinator_lease, session_id=session_id,
                     account_scope_id=account_scope_id,
                     expected_generation=int(coordinator_lease.generation),
+                    session_scope_key=row["coordinator_scope_key"],
+                    session_owner_id=row["coordinator_owner_id"],
                 )
                 status = str(row["status"]).upper()
                 if status in {"COMPLETED", "REJECTED"}:
@@ -67,12 +70,14 @@ class ExecutionSessionRecovery:
                         """
                         UPDATE public.execution_sessions
                         SET fencing_generation=$2, aggregate_version=$3,
+                            coordinator_scope_key=$4, coordinator_owner_id=$5,
                             updated_at=clock_timestamp()
-                        WHERE session_id=$1 AND fencing_generation=$4
-                          AND state_version=$5 AND aggregate_version=$6
+                        WHERE session_id=$1 AND fencing_generation=$6
+                          AND state_version=$7 AND aggregate_version=$8
                         RETURNING aggregate_version
                         """,
                         session_id, generation, next_aggregate_version,
+                        coordinator_lease.scope_key, coordinator_lease.owner_id,
                         old_generation, state_version, aggregate_version,
                     )
                     if updated is None:
