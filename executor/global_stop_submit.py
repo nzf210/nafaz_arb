@@ -208,7 +208,7 @@ class GlobalStopSubmitMixin:
         risk_metrics: Optional[dict], risk_limits: Optional[dict],
     ) -> tuple[Optional[Any], dict]:
         if not account_scope_id:
-            return None, {}
+            raise GlobalStopError("account_scope_id is required for every LIVE submit")
         if intent is None or str(intent["account_scope_id"] or "") != str(account_scope_id):
             raise GlobalStopError(
                 "account scope does not match the durable PREPARED intent"
@@ -330,9 +330,14 @@ class GlobalStopSubmitMixin:
         if (
             not client_order_id or len(client_order_id) > 128
             or action not in {"ENTRY", "HEDGE"}
-            or (action == "HEDGE" and not account_scope_id)
+            or not account_scope_id
+            or not str(scope_exchange or "").strip()
+            or not str(scope_symbol or "").strip()
+            or not str(scope_market_type or "").strip()
         ):
-            raise GlobalStopError("valid client order id and scoped ENTRY/HEDGE action are required")
+            raise GlobalStopError(
+                "valid client order id and complete account/venue/market/instrument scope are required"
+            )
 
         yielded_to_caller = False
         shared_locked = False
