@@ -242,7 +242,7 @@ class GlobalStopSubmitMixin:
             raise GlobalStopError(
                 f"scoped submit requires a durable PREPARED intent: {client_order_id}"
             )
-        stored_mutation_intent_id = str(intent["mutation_intent_id"] or "").strip() or None
+        stored_mutation_intent_id = str(intent.get("mutation_intent_id") or "").strip() or None
         expected_intent_id = str(expected_mutation_intent_id or "").strip() or None
         if stored_mutation_intent_id != expected_intent_id:
             raise GlobalStopError("submit attempt mutation intent linkage does not match")
@@ -394,6 +394,8 @@ class GlobalStopSubmitMixin:
         if not await self.ensure_pool():
             raise GlobalStopError("PostgreSQL STOP fencing is unavailable; create-order blocked")
         action = str(action_class or "ENTRY").strip().upper()
+        if mutation_intent_id and not account_scope_id:
+            raise GlobalStopError("V3 mutation intents require an account-scoped venue lease")
         if (
             not client_order_id or len(client_order_id) > 128
             or action not in {"ENTRY", "HEDGE"}
