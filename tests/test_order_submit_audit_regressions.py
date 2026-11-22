@@ -191,6 +191,7 @@ class _HedgeHarness(EntryHedgeMixin):
             mock_mode=False,
             futures_min_notional=0.0,
             partial_fill_safety_policy="scale_to_min",
+            exchanges={"okx": SimpleNamespace(account_scope_id="test-okx-account")},
         )
         self.capabilities = None
         self.client = _FuturesVenue()
