@@ -14,7 +14,7 @@ from executor.helpers import build_client_order_id
 from executor.ownership import build_scope_key
 from executor.order_intent_common import (
     OrderIntentError, OrderIntentConflict, OrderIntentReservationConflict,
-    OrderIntentStaleOwner, required,
+    required,
 )
 from executor.order_intent_lifecycle import OrderIntentLifecycleMixin
 
@@ -70,13 +70,13 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         request_metadata: Mapping[str, Any] | None = None,
     ) -> dict:
         account = required(account_scope_id, "account_scope_id")
-        idem = _required(idempotency_key, "idempotency_key")
-        exchange = _required(venue, "venue").lower()
-        market = _required(market_type, "market_type").lower()
-        symbol = _required(instrument, "instrument").upper()
-        order_side = _required(side, "side").lower()
-        kind = _required(order_type, "order_type").lower()
-        actor = _required(actor_id, "actor_id")
+        idem = required(idempotency_key, "idempotency_key")
+        exchange = required(venue, "venue").lower()
+        market = required(market_type, "market_type").lower()
+        symbol = required(instrument, "instrument").upper()
+        order_side = required(side, "side").lower()
+        kind = required(order_type, "order_type").lower()
+        actor = required(actor_id, "actor_id")
         qty = _decimal(quantity, "quantity")
         limit_price = _decimal(price, "price", allow_zero=True)
         if kind == "limit" and limit_price <= 0:
@@ -129,12 +129,12 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         target_client_order_id: str | None = None,
         session_id: str | None = None, leg_id: str | None = None,
     ) -> dict:
-        account = _required(account_scope_id, "account_scope_id")
-        idem = _required(idempotency_key, "idempotency_key")
-        exchange = _required(venue, "venue").lower()
-        market = _required(market_type, "market_type").lower()
-        symbol = _required(instrument, "instrument").upper()
-        actor = _required(actor_id, "actor_id")
+        account = required(account_scope_id, "account_scope_id")
+        idem = required(idempotency_key, "idempotency_key")
+        exchange = required(venue, "venue").lower()
+        market = required(market_type, "market_type").lower()
+        symbol = required(instrument, "instrument").upper()
+        actor = required(actor_id, "actor_id")
         order_id = str(target_order_id or "").strip() or None
         target_cid = str(target_client_order_id or "").strip() or None
         if not order_id and not target_cid:
