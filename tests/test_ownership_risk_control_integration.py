@@ -364,13 +364,24 @@ async def test_global_stop_blocks_entry_but_allows_approved_protective_hedge():
         async with service.pool.acquire() as conn:
             statuses = await conn.fetch(
                 """
-                SELECT client_order_id, status FROM public.executor_submit_attempts
+                SELECT client_order_id, status, risk_control_snapshot
+                FROM public.executor_submit_attempts
                 WHERE client_order_id = any($1::text[])
                 """,
                 [entry_id, hedge_id],
             )
         by_id = {row["client_order_id"]: row["status"] for row in statuses}
         assert by_id == {entry_id: "PREPARED", hedge_id: "SUBMITTING"}
+        hedge_row = next(row for row in statuses if row["client_order_id"] == hedge_id)
+        snapshot = hedge_row["risk_control_snapshot"]
+        if isinstance(snapshot, str):
+            import json
+            snapshot = json.loads(snapshot)
+        global_control = next(
+            item for item in snapshot["controls"] if item["scope_key"] == "global"
+        )
+        assert global_control["entry_blocked"] is True
+        assert global_control["derisk_allowed"] is True
     finally:
         async with service.pool.acquire() as conn:
             await conn.execute(
