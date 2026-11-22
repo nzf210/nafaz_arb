@@ -5,6 +5,7 @@ They are skipped in developer environments without TEST_POSTGRES_DSN.
 """
 from __future__ import annotations
 
+import json
 import os
 import uuid
 
@@ -112,7 +113,7 @@ async def test_admission_is_idempotent_and_preserves_native_venue_symbols(reposi
     assert first == {
         "session_id": identity["session_id"],
         "created": True,
-        "aggregate_version": 1,
+        "aggregate_version": 3,
     }
     assert second["session_id"] == identity["session_id"]
     assert second["created"] is False
@@ -134,6 +135,24 @@ async def test_admission_is_idempotent_and_preserves_native_venue_symbols(reposi
     assert by_type["FUTURES"]["settlement_asset"] == "USDT"
     from decimal import Decimal
     assert by_type["FUTURES"]["exposure_quantity"] == Decimal("0.001")
+    async with repository.pool.acquire() as conn:
+        events = await conn.fetch(
+            """
+            SELECT entity_type, entity_id, event_type, payload
+            FROM public.execution_session_events
+            WHERE session_id=$1 ORDER BY aggregate_version
+            """,
+            identity["session_id"],
+        )
+    assert len(events) == 3
+    assert [row["event_type"] for row in events] == [
+        "SESSION_CREATED", "FUTURES_LEG_CREATED", "SPOT_LEG_CREATED"
+    ]
+    futures_payload = json.loads(events[1]["payload"])
+    spot_payload = json.loads(events[2]["payload"])
+    assert futures_payload["base_asset"] == "BTC"
+    assert futures_payload["symbol"] == "BTC-USDT-SWAP"
+    assert spot_payload["symbol"] == "btc_idr"
 
 
 async def test_admission_key_cannot_be_reused_for_a_different_route(repository):
@@ -150,7 +169,7 @@ async def test_session_and_leg_events_use_one_monotonic_aggregate_cursor(reposit
         session_id=identity["session_id"],
         target_state="VALIDATING",
         expected_state_version=1,
-        expected_aggregate_version=1,
+        expected_aggregate_version=3,
         fencing_generation=identity["fencing_generation"],
         event_type="SESSION_VALIDATING",
         event_idempotency_key=f"{identity['admission_key']}:validating",
@@ -159,11 +178,11 @@ async def test_session_and_leg_events_use_one_monotonic_aggregate_cursor(reposit
     )
     first = await repository.transition_session(**transition)
     assert first["state_version"] == 2
-    assert first["aggregate_version"] == 2
+    assert first["aggregate_version"] == 4
 
     replay = await repository.transition_session(**transition)
     assert replay["duplicate"] is True
-    assert replay["aggregate_version"] == 2
+    assert replay["aggregate_version"] == 4
 
     conflicting_replay = dict(transition)
     conflicting_replay["payload"] = {"validation": "different"}
@@ -180,14 +199,14 @@ async def test_session_and_leg_events_use_one_monotonic_aggregate_cursor(reposit
         leg_id=f"v3-spot-{identity['session_id']}",
         target_state="PREPARED",
         expected_leg_state_version=1,
-        expected_aggregate_version=2,
+        expected_aggregate_version=4,
         fencing_generation=identity["fencing_generation"],
         event_type="SPOT_LEG_PREPARED",
         event_idempotency_key=f"{identity['admission_key']}:spot-prepared",
         actor_id=identity["actor_id"],
     )
     assert leg_result["state_version"] == 2
-    assert leg_result["aggregate_version"] == 3
+    assert leg_result["aggregate_version"] == 5
 
     async with repository.pool.acquire() as conn:
         session = await conn.fetchrow(
@@ -198,8 +217,8 @@ async def test_session_and_leg_events_use_one_monotonic_aggregate_cursor(reposit
             "SELECT aggregate_version FROM public.execution_session_events WHERE session_id=$1 ORDER BY aggregate_version",
             identity["session_id"],
         )
-    assert (session["state_version"], session["aggregate_version"]) == (2, 3)
-    assert [row["aggregate_version"] for row in events] == [1, 2, 3]
+    assert (session["state_version"], session["aggregate_version"]) == (2, 5)
+    assert [row["aggregate_version"] for row in events] == [1, 2, 3, 4, 5]
 
 
 async def test_invalid_transition_and_stale_fence_write_nothing(repository):
@@ -209,7 +228,7 @@ async def test_invalid_transition_and_stale_fence_write_nothing(repository):
             session_id=identity["session_id"],
             target_state="COMPLETED",
             expected_state_version=1,
-            expected_aggregate_version=1,
+            expected_aggregate_version=3,
             fencing_generation=identity["fencing_generation"],
             event_type="INVALID_COMPLETION",
             event_idempotency_key=f"{identity['admission_key']}:bad-completion",
@@ -226,7 +245,7 @@ async def test_invalid_transition_and_stale_fence_write_nothing(repository):
             session_id=identity["session_id"],
             target_state="VALIDATING",
             expected_state_version=1,
-            expected_aggregate_version=1,
+            expected_aggregate_version=3,
             fencing_generation=identity["fencing_generation"] + 1,
             event_type="SESSION_VALIDATING",
             event_idempotency_key=f"{identity['admission_key']}:stale-fence",
@@ -241,8 +260,8 @@ async def test_invalid_transition_and_stale_fence_write_nothing(repository):
             "SELECT count(*) FROM public.execution_session_events WHERE session_id=$1",
             identity["session_id"],
         )
-    assert (row["state_version"], row["aggregate_version"], row["status"]) == (1, 1, "CREATED")
-    assert event_count == 1
+    assert (row["state_version"], row["aggregate_version"], row["status"]) == (1, 3, "CREATED")
+    assert event_count == 3
 
 
 async def test_completed_session_requires_every_flatness_gate(repository):
@@ -252,10 +271,31 @@ async def test_completed_session_requires_every_flatness_gate(repository):
             session_id=identity["session_id"],
             target_state="COMPLETED",
             expected_state_version=1,
-            expected_aggregate_version=1,
+            expected_aggregate_version=3,
             fencing_generation=identity["fencing_generation"],
             event_type="SESSION_COMPLETED",
             event_idempotency_key=f"{identity['admission_key']}:premature-completion",
             actor_id=identity["actor_id"],
             completion_evidence={"spot_flat": True},
         )
+
+
+async def test_admission_rejects_mismatched_spot_and_futures_base_assets():
+    legs = _legs()
+    legs[1]["base_asset"] = "ETH"
+    with pytest.raises(ValueError, match="same base asset"):
+        ExecutionSessionRepository._validate_legs(legs)
+
+
+async def test_admission_rejects_futures_misclassified_as_spot_market():
+    legs = _legs()
+    legs[1]["market_type"] = "spot"
+    with pytest.raises(ValueError, match="FUTURES leg market_type"):
+        ExecutionSessionRepository._validate_legs(legs)
+
+
+async def test_admission_rejects_missing_futures_position_side():
+    legs = _legs()
+    legs[1]["position_side"] = ""
+    with pytest.raises(ValueError, match="position_side"):
+        ExecutionSessionRepository._validate_legs(legs)

@@ -56,13 +56,21 @@ def _submitter(
 
 
 
-def _derisk_holder(dsn, active_event, release_event, result_queue):
+def _derisk_holder(
+    dsn, active_event, release_event, result_queue, *,
+    account_scope_id="test-derisk-account", venue="okx",
+    market_type="swap", instrument="BTC-USDT-SWAP",
+):
     async def run():
         service = GlobalStopService(dsn, min_size=1, max_size=1)
         await service.start()
         try:
             async with service.derisk_submit_fence(
-                client_order_id="pg-derisk-" + uuid.uuid4().hex[:12]
+                client_order_id="pg-derisk-" + uuid.uuid4().hex[:12],
+                account_scope_id=account_scope_id,
+                venue=venue,
+                market_type=market_type,
+                instrument=instrument,
             ):
                 result_queue.put("ACQUIRED")
                 active_event.set()

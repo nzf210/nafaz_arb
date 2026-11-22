@@ -422,6 +422,10 @@ class _SpotIPRestrictedVenue:
 
 class _SpotSubmissionHarness(EngineEntrySubmissionMixin):
     def __init__(self, stop, venue):
+        self.config = SimpleNamespace(
+            mock_mode=False,
+            exchanges={"binance": SimpleNamespace(account_scope_id="test-binance-account")},
+        )
         self.global_stop = stop
         self.client = venue
         self.halts = []
@@ -493,6 +497,8 @@ async def test_spot_ip_ban_stop_write_failure_never_uses_lookup_to_acknowledge()
         local_amount_spec=_FakeAmountSpec(),
         global_amount_spec={"unit": "BASE", "step": 0.001},
         quote_asset="USDT",
+        global_exchange="okx",
+        base_asset="BTC",
     )
 
     await engine._submit_entry_order(
@@ -1134,16 +1140,39 @@ async def test_derisk_fence_uses_independent_session_lock_key():
     service = GlobalStopService("postgresql://unused")
     service.pool = _FakePool(conn)
 
-    async with service.derisk_submit_fence(client_order_id="stable-exit-order") as fenced_conn:
+    async def _allow(*args, **kwargs):
+        return {"action_class": "DERISK"}
+
+    async def _acquire(*args, **kwargs):
+        return SimpleNamespace(generation=1)
+
+    async def _validate(*args, **kwargs):
+        return True
+
+    service.risk_control_plane.assert_allowed = _allow
+    service.ownership.acquire = _acquire
+    service.ownership.validate = _validate
+
+    async with service.derisk_submit_fence(
+        client_order_id="stable-exit-order",
+        account_scope_id="test-account",
+        venue="okx",
+        market_type="swap",
+        instrument="BTC-USDT-SWAP",
+    ) as fenced_conn:
         assert fenced_conn is conn
 
     lock_calls = [
-        args[0]
-        for query, args in conn.executed
-        if "pg_advisory_lock" in query or "pg_advisory_unlock" in query
+        args[0] for query, args in conn.executed
+        if "pg_try_advisory_lock" in query
     ]
-    assert lock_calls == [DERISK_LOCK_KEY, DERISK_LOCK_KEY]
-    assert DERISK_LOCK_KEY != FENCE_LOCK_KEY
+    unlock_calls = [
+        args[0] for query, args in conn.executed
+        if "pg_advisory_unlock" in query
+    ]
+    assert len(lock_calls) == len(unlock_calls) == 1
+    assert lock_calls == unlock_calls
+    assert lock_calls[0] != FENCE_LOCK_KEY
 
 
 class _RecordingAsyncContext:
@@ -1229,6 +1258,8 @@ async def test_spot_entry_persists_prepared_intent_before_reserving_slot():
         local_amount_spec=_FakeAmountSpec(),
         global_amount_spec=_FakeAmountSpec(),
         quote_asset="USDT",
+        global_exchange="okx",
+        base_asset="BTC",
     )
 
     await engine._submit_entry_order(

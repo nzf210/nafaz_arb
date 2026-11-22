@@ -134,7 +134,7 @@ async def test_derisk_fence_does_not_bypass_durable_permission_denial():
 
     class _DeniedService:
         @asynccontextmanager
-        async def derisk_submit_fence(self, *, client_order_id):
+        async def derisk_submit_fence(self, *, client_order_id, **kwargs):
             raise GlobalStopError("DE_RISK_NOT_ALLOWED by durable risk scope")
             yield None
 
