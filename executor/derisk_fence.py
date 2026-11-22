@@ -34,6 +34,14 @@ async def _acquire_emergency_lease(
     venue: str, market_type: str, instrument: str,
 ) -> EmergencyDeriskLease:
     config = engine.config
+    emergency_allowed = bool(getattr(config, "emergency_derisk_allowed", False)) or (
+        os.getenv("EMERGENCY_DERISK_ALLOWED", "").strip().lower()
+        in {"1", "true", "yes", "on"}
+    )
+    if not emergency_allowed:
+        raise GlobalStopError(
+            "PostgreSQL is unavailable and emergency de-risk is not explicitly authorized"
+        )
     owner_id = (
         str(getattr(config, "executor_instance_id", "") or "").strip()
         or os.getenv("EXECUTOR_INSTANCE_ID", "").strip()
