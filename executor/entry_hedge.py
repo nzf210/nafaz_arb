@@ -20,6 +20,7 @@ from executor.helpers import (
     is_trading_permission_denied,
 )
 from executor.entry_common import logger
+from executor.ownership import account_scope_id_for
 
 
 
@@ -610,6 +611,9 @@ class EntryHedgeMixin:
             required=True,
         )
         global_stop = getattr(self, "global_stop", None)
+        hedge_account_scope_id = account_scope_id_for(
+            self.config, str(order_info.get("global_exchange") or "")
+        )
         if global_stop is not None:
             await global_stop.prepare_submit_attempt(
                 client_order_id=hedge_coid,
@@ -623,6 +627,7 @@ class EntryHedgeMixin:
                 pair_key=pair_tag,
                 recovery_context=recovery_context,
                 amount_spec=order_info.get("global_amount_spec"),
+                account_scope_id=hedge_account_scope_id,
             )
         ip_ban_stop_persistence_failed = False
         try:
@@ -642,6 +647,10 @@ class EntryHedgeMixin:
                         client_order_id=hedge_coid,
                         scope_exchange=str(order_info.get("global_exchange") or ""),
                         scope_symbol=global_symbol,
+                        scope_market_type="perpetual",
+                        account_scope_id=hedge_account_scope_id,
+                        action_class="HEDGE",
+                        scope_pair_key=pair_tag,
                     ) as fence_conn:
                         order_info["hedge_submit_started"] = True
                         try:
