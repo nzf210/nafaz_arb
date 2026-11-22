@@ -96,3 +96,32 @@ Unit and PostgreSQL integration tests must cover:
 - no exchange mutation is reachable from the coordinator.
 
 The coordinator is not eligible for runtime wiring until these tests pass and the durable event stream can reconstruct the initial aggregate and every subsequent coordinator transition.
+
+
+## 9. Implemented coordinator input and recovery contract
+
+The implementation exposes `SessionCoordinator.admit`, `SessionCoordinator.transition`,
+`SessionCoordinator.transition_leg`, and `SessionCoordinator.recover`.
+
+- Admission identity is SHA-256 over a versioned canonical payload containing account scope,
+  source dispatch ID, and pair route. Opportunity identity remains a collision check, not a
+  second idempotency namespace.
+- The immutable policy snapshot must contain evidence records for `market_metadata`,
+  `fee_schedule`, and `fx_conversion`. Each record carries `status`, `observed_at`, and
+  `valid_until`; timestamps must be timezone-aware and current. FX may be explicitly
+  `NOT_REQUIRED`; market metadata and fee evidence must be `VERIFIED`.
+- The repository verifies the coordinator lease row under `FOR UPDATE` in the same
+  transaction as session/leg/event writes. It locks the same risk-control advisory keys
+  used by risk-control updates before evaluating ENTRY permission, preventing a STOP
+  update from racing past admission.
+- Recovery is a separate operation. It loads the persisted session and policy rather than
+  rebuilding policy from current market data, acquires the session coordinator scope,
+  increments only the aggregate cursor when the generation changes, and appends
+  `COORDINATOR_LEASE_RECLAIMED`. The session state version is unchanged by a fence-only
+  reclaim.
+- Idempotent admission replay with a different coordinator generation is rejected with
+  an instruction to use the recovery operation. A duplicate with the same generation
+  returns the existing aggregate without creating new events.
+
+These methods remain an isolated V3 service. No engine/runtime wiring or exchange
+mutation is introduced by this stage.
