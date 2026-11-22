@@ -134,6 +134,7 @@ async def test_cancel_intent_requires_terminal_fetch_and_fill_reconciliation(pos
 
     submitting = await service.mark_submitting(
         intent["intent_id"], lease=lease, actor_id="cancel-test",
+        risk_snapshot={"action_class": "CANCEL", "allowed": True},
     )
     assert submitting["status"] == "SUBMITTING"
     replay = await service.mark_submitting(
@@ -188,6 +189,7 @@ async def test_stale_mutation_owner_must_reclaim_before_reconciliation(postgres_
         )
     await service.mark_submitting(
         intent["intent_id"], lease=old_lease, actor_id="old-worker",
+        risk_snapshot={"action_class": "ENTRY", "allowed": True},
     )
 
     new_owner = OwnershipLeaseService(owner_id="new-intent-worker-" + suffix)
