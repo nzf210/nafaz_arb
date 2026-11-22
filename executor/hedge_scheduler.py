@@ -124,7 +124,7 @@ class HedgeScheduler(HedgeServiceBase):
                         next_evaluate_at=$5, max_wait_until=COALESCE(max_wait_until,$6),
                         last_evaluated_at=clock_timestamp(), last_book_at=$7,
                         last_book_sequence=$8,
-                        deferred_count=deferred_count + CASE WHEN $3 IS NOT NULL OR $9=TRUE THEN 1 ELSE 0 END,
+                        deferred_count=deferred_count + CASE WHEN $3::text IS NOT NULL OR $9=TRUE THEN 1 ELSE 0 END,
                         de_risk_required=de_risk_required OR $9, updated_at=clock_timestamp()
                     WHERE obligation_id=$1::uuid
                     """,
