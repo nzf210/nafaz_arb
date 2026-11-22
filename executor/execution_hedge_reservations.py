@@ -58,6 +58,7 @@ class HedgeReservationMixin(HedgeServiceBase):
                         and (Decimal(str(prior["contract_size"])) if prior["contract_size"] is not None else None) == contract
                         and Decimal(str(prior["base_per_unit"])) == unit
                         and Decimal(str(prior["requested_base_quantity"])) == requested
+                        and Decimal(str(prior["minimum_base_quantity"])) == minimum
                     )
                     if not same:
                         raise FillConflict("hedge reservation idempotency key was reused with a different request")
@@ -105,14 +106,14 @@ class HedgeReservationMixin(HedgeServiceBase):
                         session_id, account_scope_id, futures_venue, futures_market_type,
                         futures_symbol, base_asset, contract_type, contract_size,
                         quantity_unit, base_per_unit, position_side,
-                        requested_base_quantity, reserved_base_quantity,
+                        requested_base_quantity, minimum_base_quantity, reserved_base_quantity,
                         idempotency_key, actor_id
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                     RETURNING reservation_id
                     """,
                     session_id, session["account_scope_id"], route["venue"], route["market"],
                     route["symbol"], route["base"], contract_type, contract,
-                    route["unit"], unit, route["side"], requested, total, key, actor,
+                    route["unit"], unit, route["side"], requested, minimum, total, key, actor,
                 )
                 remaining = total
                 item_payload = []
