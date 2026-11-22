@@ -429,6 +429,7 @@ class EngineEntrySubmissionMixin:
                     actual_cost_usdt,
                     float(getattr(getattr(self, "config", None), "futures_min_notional", 0.0) or 0.0),
                 ),
+                related_venues=[pair_info.global_exchange],
                 slippage_bps=slippage_bps,
                 funding_cost_pct=funding_cost_pct,
                 market_data_age_ms=market_data_age_ms,
