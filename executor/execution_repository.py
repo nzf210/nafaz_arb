@@ -12,7 +12,7 @@ from typing import Any, Mapping, Optional
 
 from executor.execution_states import LEG_TRANSITIONS, SESSION_TRANSITIONS
 from executor.execution_serialization import (
-    _canonical_json, _positive_decimal, _required_text, _same_json,
+    _canonical_json, _positive_decimal, _required_text, _same_json, _same_value,
 )
 
 
@@ -191,7 +191,7 @@ class ExecutionSessionRepository:
                         "order_quantity", "exposure_quantity", "target_qty",
                     )
                     if len(actual_legs) != len(expected_legs) or any(
-                        any(str(actual.get(field) or "") != str(expected.get(field) or "") for field in identity_fields)
+                        any(not _same_value(actual.get(field), expected.get(field), field) for field in identity_fields)
                         for actual, expected in zip(actual_legs, expected_legs)
                     ):
                         raise AdmissionConflict("admission_key is already bound to different venue/market legs")
