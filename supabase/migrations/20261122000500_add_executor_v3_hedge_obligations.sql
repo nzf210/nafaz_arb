@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_reservations (
     base_per_unit NUMERIC(38,18) NOT NULL CHECK (base_per_unit > 0),
     position_side TEXT NOT NULL CHECK (position_side IN ('LONG','SHORT')),
     requested_base_quantity NUMERIC(38,18) NOT NULL CHECK (requested_base_quantity > 0),
+    minimum_base_quantity NUMERIC(38,18) NOT NULL CHECK (minimum_base_quantity > 0),
     reserved_base_quantity NUMERIC(38,18) NOT NULL CHECK (reserved_base_quantity > 0),
     allocated_base_quantity NUMERIC(38,18) NOT NULL DEFAULT 0 CHECK (allocated_base_quantity >= 0),
     status TEXT NOT NULL DEFAULT 'RESERVED'
