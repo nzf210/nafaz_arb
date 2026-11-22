@@ -128,6 +128,7 @@ class GlobalStopSubmitMixin:
         scope_locked = False
         yielded_to_caller = False
         scope_key = ""
+        lease = None
         try:
             async with self.pool.acquire() as conn:
                 try:
@@ -206,6 +207,12 @@ class GlobalStopSubmitMixin:
                         except Exception as exc:
                             self._demote_broken_pool(exc)
                             logger.warning("failed to release mutation reconciliation global lock")
+                    if lease is not None:
+                        try:
+                            async with conn.transaction():
+                                await self.ownership.release(conn, lease)
+                        except Exception:
+                            logger.exception("failed to release reconciliation ownership lease")
         except GlobalStopError:
             raise
         except Exception as exc:
