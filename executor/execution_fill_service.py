@@ -235,8 +235,9 @@ class ExecutionFillService:
                 leg = await conn.fetchrow(
                     """
                     SELECT status, state_version, venue, market_type, symbol,
-                           quote_asset, account_scope_id, confirmed_filled_quantity,
-                           confirmed_quote_quantity
+                           quote_asset, account_scope_id, base_per_unit,
+                           confirmed_filled_quantity, confirmed_quote_quantity,
+                           confirmed_price_quantity, confirmed_exposure_quantity
                     FROM public.execution_legs
                     WHERE session_id=$1 AND leg_id=$2 FOR UPDATE
                     """,
@@ -352,9 +353,12 @@ class ExecutionFillService:
                 elif old_session_state in {"CREATED", "VALIDATING", "REJECTED"}:
                     raise FillValidationError(f"fill is not valid for session state {old_session_state}")
 
+                base_per_unit = _decimal(leg["base_per_unit"], "leg.base_per_unit")
                 new_leg_qty = Decimal(str(leg["confirmed_filled_quantity"])) + facts["quantity"]
                 new_leg_quote = Decimal(str(leg["confirmed_quote_quantity"])) + facts["quote_quantity"]
-                new_average = new_leg_quote / new_leg_qty
+                new_price_quantity = Decimal(str(leg["confirmed_price_quantity"])) + facts["quantity"] * facts["price"]
+                new_exposure_quantity = Decimal(str(leg["confirmed_exposure_quantity"])) + facts["quantity"] * base_per_unit
+                new_average = new_price_quantity / new_leg_qty
                 new_leg_version = int(leg["state_version"]) + 1
                 new_aggregate = int(session["aggregate_version"]) + 1
                 new_session_version = int(session["state_version"]) + (
@@ -365,11 +369,13 @@ class ExecutionFillService:
                     UPDATE public.execution_legs
                     SET status=$3, state_version=$4,
                         confirmed_filled_quantity=$5, confirmed_quote_quantity=$6,
-                        average_fill_price=$7, last_fill_at=$8, updated_at=clock_timestamp()
+                        confirmed_price_quantity=$7, confirmed_exposure_quantity=$8,
+                        average_fill_price=$9, last_fill_at=$10, updated_at=clock_timestamp()
                     WHERE session_id=$1 AND leg_id=$2 AND state_version=$9
                     """,
                     facts["session_id"], facts["leg_id"], leg_target, new_leg_version,
-                    new_leg_qty, new_leg_quote, new_average, facts["filled_at"],
+                    new_leg_qty, new_leg_quote, new_price_quantity,
+                    new_exposure_quantity, new_average, facts["filled_at"],
                     int(leg["state_version"]),
                 )
                 await conn.execute(
@@ -411,5 +417,6 @@ class ExecutionFillService:
             "aggregate_version": new_aggregate,
             "confirmed_filled_quantity": str(new_leg_qty),
             "confirmed_quote_quantity": str(new_leg_quote),
+            "confirmed_exposure_quantity": str(new_exposure_quantity),
             "average_fill_price": str(new_average),
         }
