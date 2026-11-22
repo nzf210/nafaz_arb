@@ -274,10 +274,12 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         current = await conn.fetchrow(
             """
             SELECT COALESCE(sum(reserved_base_qty),0) AS base_qty,
-                   COALESCE(sum(reserved_notional),0) AS notional
+                   COALESCE(sum(reserved_notional) FILTER (
+                       WHERE reservation_asset IS NOT DISTINCT FROM $5
+                   ),0) AS notional
             FROM public.executor_mutation_intents
             WHERE account_scope_id=$1 AND venue=$2 AND market_type=$3
-              AND instrument=$4 AND reservation_asset IS NOT DISTINCT FROM $5
+              AND instrument=$4
               AND status IN ('PREPARED','SUBMITTING','UNKNOWN','ACKNOWLEDGED')
             """,
             account_scope_id, venue, market_type, instrument,
