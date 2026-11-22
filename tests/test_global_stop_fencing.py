@@ -104,6 +104,7 @@ class _FakeConnection:
                 row["fence_epoch"] = args[1]
                 row["owner_scope_key"] = args[2]
                 row["owner_generation"] = args[3]
+                row["risk_control_snapshot"] = args[4]
                 return {"client_order_id": args[0]}
             return None
         if "where client_order_id = $1" in query:
