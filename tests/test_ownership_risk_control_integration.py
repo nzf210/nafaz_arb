@@ -33,6 +33,14 @@ def test_account_scope_identity_is_stable_and_credential_bound():
     assert first == account_scope_id_for(config_a, "binance")
     assert first != account_scope_id_for(config_b, "binance")
     assert "public-key-A" not in first
+    explicit = SimpleNamespace(
+        exchanges={
+            "binance": SimpleNamespace(
+                api_key="rotated-key", account_scope_id="stable-account-uuid"
+            )
+        }
+    )
+    assert account_scope_id_for(explicit, "binance") == "stable-account-uuid"
 
 
 @pytest.fixture
