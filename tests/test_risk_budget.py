@@ -152,13 +152,14 @@ def test_metrics_builder_projects_entry_risk_and_pending_orders():
         venue="okx",
         action_class="ENTRY",
         proposed_notional_usdt=50.0,
+        planned_hedge_notional_usdt=50.0,
         slippage_bps=12.0,
         funding_cost_pct=0.01,
         market_data_age_ms=250.0,
     )
-    assert metrics["gross_exposure_usdt"] == 270.0
-    assert metrics["deployed_capital_usdt"] == 180.0
-    assert metrics["net_exposure_usdt"] == 70.0
+    assert metrics["gross_exposure_usdt"] == 320.0
+    assert metrics["deployed_capital_usdt"] == 205.0
+    assert metrics["net_exposure_usdt"] == 20.0
     assert metrics["unhedged_notional_usdt"] == 170.0
     assert metrics["open_order_count"] == 3
     assert metrics["daily_loss_usdt"] == 5.0
