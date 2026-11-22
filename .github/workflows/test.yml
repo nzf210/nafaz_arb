@@ -104,7 +104,7 @@ jobs:
         timeout-minutes: 3
         env:
           TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
-        run: pytest -q tests/test_postgres_submit_fencing_integration.py
+        run: pytest -q tests/test_postgres_submit_fencing_integration.py tests/test_execution_domain_repository.py
 
   docker-images:
     runs-on: ubuntu-latest
