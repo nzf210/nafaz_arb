@@ -164,6 +164,9 @@ class ArbitrageEngine(
         self._halt_reason: str = ""
         self._risk_state_restored = False
         self._risk_persistence_failed = False
+        self._risk_persistence_pending = False
+        self._risk_persistence_pending_count = 0
+        self._risk_persistence_tasks = set()
 
         # Risk-control: halts keyed by exchange name (venue-level, not global).
         self._exchange_halted: Dict[str, str] = {}
