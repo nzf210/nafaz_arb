@@ -17,7 +17,10 @@ from executor.execution_serialization import (
     _canonical_json, _required_text, _same_json, _same_value,
 )
 from executor.risk_control import RiskControlPlane
-from executor.execution_repository_fencing import admission_risk_scopes, validate_coordinator_lease
+from executor.execution_repository_fencing import (
+    admission_risk_scopes, validate_coordinator_lease,
+    assert_aggregate_versions, insert_session_event,
+)
 
 
 class ExecutionRepositoryError(RuntimeError):
@@ -244,7 +247,7 @@ class ExecutionSessionRepository:
                     "risk_policy_snapshot": risk_json,
                     "exit_policy_snapshot": exit_json,
                 }
-                await self._insert_event(
+                await insert_session_event(
                     conn, session_id=session_id, aggregate_version=1,
                     entity_type="SESSION", entity_id=session_id,
                     entity_version=1, event_type="SESSION_CREATED",
@@ -351,7 +354,7 @@ class ExecutionSessionRepository:
                 )
                 if duplicate:
                     return duplicate
-                self._assert_versions(
+                assert_aggregate_versions(
                     current, expected_state_version, expected_aggregate_version,
                     fencing_generation,
                 )
@@ -488,40 +491,3 @@ class ExecutionSessionRepository:
             "aggregate_version": new_aggregate_version,
         }
 
-    @staticmethod
-    def _assert_versions(
-        row: Any, expected_state_version: Optional[int],
-        expected_aggregate_version: int, fencing_generation: int,
-        *, entity_version_check: bool = True,
-    ) -> None:
-        if row is None:
-            raise ExecutionRepositoryError("execution session does not exist")
-        if int(row["aggregate_version"]) != int(expected_aggregate_version):
-            raise StaleAggregate("session aggregate version is stale")
-        if entity_version_check and int(row["state_version"]) != int(expected_state_version):
-            raise StaleAggregate("session state version is stale")
-        current_fence = row["fencing_generation"]
-        if current_fence is None or int(current_fence) != int(fencing_generation):
-            raise StaleAggregate("ownership fencing generation is missing or stale")
-
-    @staticmethod
-    async def _insert_event(
-        conn: Any, *, session_id: str, aggregate_version: int,
-        entity_type: str, entity_id: str, entity_version: int,
-        event_type: str, idempotency_key: str, actor_id: str,
-        fencing_generation: int, reason: str,
-        correlation_id: Optional[str], payload: Mapping[str, Any],
-    ) -> None:
-        await conn.execute(
-            """
-            INSERT INTO public.execution_session_events (
-                session_id, aggregate_version, entity_type, entity_id,
-                entity_version, event_type, event_idempotency_key, actor_id,
-                fencing_generation, reason, correlation_id, payload
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
-            """,
-            session_id, aggregate_version, entity_type, entity_id,
-            entity_version, event_type, idempotency_key, actor_id,
-            fencing_generation, reason[:2000], correlation_id,
-            _canonical_json(payload),
-        )
