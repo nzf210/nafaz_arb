@@ -148,3 +148,18 @@ def test_all_in_fee_and_buffer_cost_ceiling_is_enforced():
     )
     assert result.action == "DEFER"
     assert result.reason == "TOTAL_COST_LIMIT_EXCEEDED"
+
+def test_missing_sequence_or_reference_price_never_authorizes_submit():
+    missing_sequence = _evaluate(
+        book=OrderBookSnapshot(
+            bids=(BookLevel.make("100", "200"),),
+            asks=(BookLevel.make("100.1", "200"),),
+            observed_at_ms=9900, sequence="",
+        ),
+    )
+    assert missing_sequence.action == "DEFER"
+    assert missing_sequence.reason == "BOOK_SEQUENCE_MISSING"
+
+    missing_reference = _evaluate(reference_price=None)
+    assert missing_reference.action == "DEFER"
+    assert missing_reference.reason == "REFERENCE_PRICE_UNAVAILABLE"
