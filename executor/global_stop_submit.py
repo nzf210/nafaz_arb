@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from decimal import Decimal
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
 
@@ -22,8 +23,9 @@ class GlobalStopSubmitMixin:
         price: float, pair_key: str, recovery_context: Optional[dict] = None,
         amount_spec: Optional[dict] = None,
         account_scope_id: Optional[str] = None,
+        mutation_intent_id: Optional[str] = None,
     ) -> dict:
-        """Commit a durable PREPARED intent before any venue HTTP request."""
+        """Commit one PREPARED external attempt linked to its immutable logical intent."""
         self._require_pool()
         if not client_order_id or len(client_order_id) > 128:
             raise GlobalStopError("valid stable client_order_id is required")
@@ -35,48 +37,80 @@ class GlobalStopSubmitMixin:
             json.dumps(recovery_context or {}, separators=(",", ":"), default=str),
             json.dumps(amount_spec or {}, separators=(",", ":"), sort_keys=True, default=str),
             str(account_scope_id or "").strip() or None,
+            str(mutation_intent_id or "").strip() or None,
         )
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "insert into public.executor_submit_attempts "
-                "(client_order_id, exchange, market_type, symbol, side, order_type, "
-                "quantity, price, pair_key, recovery_context, amount_spec, status, account_scope_id) "
-                "values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,'PREPARED',$12) "
-                "on conflict (client_order_id) do nothing "
-                "returning client_order_id, status, created_at, account_scope_id",
-                *values,
-            )
-            if row is None:
-                existing = await conn.fetchrow(
-                    "select client_order_id, status, created_at, exchange, market_type, symbol, "
-                    "side, order_type, quantity, price, pair_key, amount_spec, recovery_context, "
-                    "account_scope_id from public.executor_submit_attempts "
-                    "where client_order_id = $1",
-                    client_order_id,
+            async with conn.transaction():
+                if values[12] is not None:
+                    logical = await conn.fetchrow(
+                        """
+                        SELECT operation, status, account_scope_id, venue, market_type,
+                               instrument, pair_key, client_order_id, side, order_type,
+                               quantity, price
+                        FROM public.executor_mutation_intents
+                        WHERE intent_id=$1 FOR UPDATE
+                        """,
+                        values[12],
+                    )
+                    if logical is None or logical["operation"] != "CREATE" or logical["status"] != "PREPARED":
+                        raise GlobalStopError("linked logical CREATE intent is missing or not PREPARED")
+                    if any((
+                        str(logical["account_scope_id"]) != str(values[11]),
+                        str(logical["venue"]).lower() != values[1],
+                        str(logical["market_type"]).lower() != values[2],
+                        str(logical["instrument"]) != values[3],
+                        str(logical["pair_key"]) != values[8],
+                        str(logical["client_order_id"]) != values[0],
+                        str(logical["side"]).lower() != values[4],
+                        str(logical["order_type"]).lower() != values[5],
+                        Decimal(str(logical["quantity"])) != Decimal(str(values[6])),
+                        Decimal(str(logical["price"])) != Decimal(str(values[7])),
+                    )):
+                        raise GlobalStopError("external submit parameters differ from immutable logical intent")
+
+                row = await conn.fetchrow(
+                    "insert into public.executor_submit_attempts "
+                    "(client_order_id, exchange, market_type, symbol, side, order_type, "
+                    "quantity, price, pair_key, recovery_context, amount_spec, status, account_scope_id, mutation_intent_id) "
+                    "values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,'PREPARED',$12,$13) "
+                    "on conflict (client_order_id) do nothing "
+                    "returning client_order_id, status, created_at, account_scope_id, mutation_intent_id",
+                    *values,
                 )
-                if existing is None or existing["status"] != "PREPARED":
-                    raise GlobalStopError(
-                        f"client order id already has a non-reusable submit attempt: {client_order_id}"
+                if row is None:
+                    existing = await conn.fetchrow(
+                        "select client_order_id, status, created_at, exchange, market_type, symbol, "
+                        "side, order_type, quantity, price, pair_key, amount_spec, recovery_context, "
+                        "account_scope_id, mutation_intent_id from public.executor_submit_attempts "
+                        "where client_order_id = $1 for update",
+                        client_order_id,
                     )
-                expected = {
-                    "exchange": values[1], "market_type": values[2], "symbol": values[3],
-                    "side": values[4], "order_type": values[5], "quantity": values[6],
-                    "price": values[7], "pair_key": values[8],
-                    "account_scope_id": values[11],
-                }
-                stored_amount_spec = _json_mapping(existing.get("amount_spec"))
-                stored_recovery_context = _json_mapping(existing.get("recovery_context"))
-                expected_amount_spec = json.loads(values[10])
-                expected_recovery_context = json.loads(values[9])
-                if (
-                    any(existing[key] != value for key, value in expected.items())
-                    or stored_amount_spec != expected_amount_spec
-                    or stored_recovery_context != expected_recovery_context
-                ):
-                    raise GlobalStopError(
-                        f"client order id collision with a different order intent: {client_order_id}"
-                    )
-                row = existing
+                    if existing is None or existing["status"] != "PREPARED":
+                        raise GlobalStopError(
+                            f"client order id already has a non-reusable submit attempt: {client_order_id}"
+                        )
+                    expected = {
+                        "exchange": values[1], "market_type": values[2], "symbol": values[3],
+                        "side": values[4], "order_type": values[5], "quantity": values[6],
+                        "price": values[7], "pair_key": values[8],
+                        "account_scope_id": values[11],
+                        "mutation_intent_id": values[12],
+                    }
+                    stored_amount_spec = _json_mapping(existing.get("amount_spec"))
+                    stored_recovery_context = _json_mapping(existing.get("recovery_context"))
+                    expected_amount_spec = json.loads(values[10])
+                    expected_recovery_context = json.loads(values[9])
+                    if (
+                        any(existing.get(key) != value for key, value in expected.items())
+                        or Decimal(str(existing["quantity"])) != Decimal(str(values[6]))
+                        or Decimal(str(existing["price"])) != Decimal(str(values[7]))
+                        or stored_amount_spec != expected_amount_spec
+                        or stored_recovery_context != expected_recovery_context
+                    ):
+                        raise GlobalStopError(
+                            f"client order id collision with a different order intent: {client_order_id}"
+                        )
+                    row = existing
         return dict(row)
 
     @asynccontextmanager
@@ -221,6 +255,7 @@ class GlobalStopSubmitMixin:
         self, conn: Any, *, client_order_id: str, scope_requested: bool,
         scope_exchange: Optional[str], scope_symbol: Optional[str],
         scope_market_type: Optional[str],
+        expected_mutation_intent_id: Optional[str] = None,
     ) -> Optional[Any]:
         if not scope_requested:
             return None
@@ -229,7 +264,7 @@ class GlobalStopSubmitMixin:
                 "both scope_exchange and scope_symbol are required for scoped submit fencing"
             )
         intent = await conn.fetchrow(
-            "select exchange, market_type, symbol, status, account_scope_id, pair_key "
+            "select exchange, market_type, symbol, status, account_scope_id, pair_key, mutation_intent_id "
             "from public.executor_submit_attempts "
             "where client_order_id = $1 for update",
             client_order_id,
@@ -238,6 +273,10 @@ class GlobalStopSubmitMixin:
             raise GlobalStopError(
                 f"scoped submit requires a durable PREPARED intent: {client_order_id}"
             )
+        stored_mutation_intent_id = str(intent.get("mutation_intent_id") or "").strip() or None
+        expected_intent_id = str(expected_mutation_intent_id or "").strip() or None
+        if stored_mutation_intent_id != expected_intent_id:
+            raise GlobalStopError("submit attempt mutation intent linkage does not match")
         durable_exchange = str(intent["exchange"] or "").strip().lower()
         durable_market = str(intent["market_type"] or "").strip().lower()
         durable_symbol = str(intent["symbol"] or "").strip()
@@ -370,6 +409,10 @@ class GlobalStopSubmitMixin:
         scope_session_id: Optional[str] = None,
         risk_metrics: Optional[dict] = None,
         risk_limits: Optional[dict] = None,
+        mutation_intent_id: Optional[str] = None,
+        mutation_intent_service: Optional[Any] = None,
+        mutation_intent_actor_id: Optional[str] = None,
+        mutation_intent_lease_callback: Optional[Any] = None,
     ) -> AsyncIterator[Any]:
         """Fence a venue mutation with shared global STOP and exclusive instrument ownership.
 
@@ -382,6 +425,8 @@ class GlobalStopSubmitMixin:
         if not await self.ensure_pool():
             raise GlobalStopError("PostgreSQL STOP fencing is unavailable; create-order blocked")
         action = str(action_class or "ENTRY").strip().upper()
+        if mutation_intent_id and not account_scope_id:
+            raise GlobalStopError("V3 mutation intents require an account-scoped venue lease")
         if (
             not client_order_id or len(client_order_id) > 128
             or action not in {"ENTRY", "HEDGE"}
@@ -455,6 +500,7 @@ class GlobalStopSubmitMixin:
                             scope_exchange=scope_exchange,
                             scope_symbol=scope_symbol,
                             scope_market_type=scope_market_type,
+                            expected_mutation_intent_id=mutation_intent_id,
                         )
                         lease, risk_snapshot = await self._acquire_submit_ownership(
                             conn,
@@ -488,6 +534,18 @@ class GlobalStopSubmitMixin:
                             lease=lease,
                             risk_snapshot=risk_snapshot,
                         )
+                        if mutation_intent_id:
+                            if mutation_intent_service is None or lease is None:
+                                raise GlobalStopError(
+                                    "V3 submit requires the durable mutation intent service and scoped lease"
+                                )
+                            await mutation_intent_service.mark_submitting_in_transaction(
+                                conn, mutation_intent_id, lease=lease,
+                                actor_id=str(mutation_intent_actor_id or "executor"),
+                                risk_snapshot=risk_snapshot,
+                            )
+                    if mutation_intent_lease_callback is not None:
+                        mutation_intent_lease_callback(lease)
                     yielded_to_caller = True
                     yield conn
                 finally:

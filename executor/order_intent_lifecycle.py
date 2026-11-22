@@ -236,19 +236,92 @@ class OrderIntentLifecycleMixin:
                 )
         return dict(updated)
 
+    async def mark_submitting_in_transaction(
+        self, conn: Any, intent_id: str, *, lease: Any,
+        actor_id: str, risk_snapshot: Mapping[str, Any],
+    ) -> dict:
+        actor = required(actor_id, "actor_id")
+        if not isinstance(risk_snapshot, Mapping) or not risk_snapshot:
+            raise OrderIntentError("SUBMITTING requires a durable risk-control snapshot")
+        row = await conn.fetchrow(
+            "SELECT * FROM public.executor_mutation_intents WHERE intent_id=$1 FOR UPDATE",
+            intent_id,
+        )
+        if row is None:
+            raise OrderIntentError("mutation intent does not exist")
+        current = str(row["status"]).upper()
+        if current not in {"PREPARED", "SUBMITTING"}:
+            raise OrderIntentConflict(f"invalid intent transition {current} -> SUBMITTING")
+        scope_key, generation = await self._validate_mutation_lease(
+            conn, row, lease, require_persisted_owner=current != "PREPARED",
+        )
+        attempt_count = int(row["attempt_count"])
+        if current == "PREPARED":
+            attempt_count += 1
+        event_key = f"{intent_id}:submitting:{attempt_count}"
+        event = await conn.fetchrow(
+            """
+            SELECT event_type, payload FROM public.executor_mutation_intent_events
+            WHERE intent_id=$1 AND event_idempotency_key=$2
+            """,
+            intent_id, event_key,
+        )
+        event_payload = {"risk_control_snapshot": dict(risk_snapshot)}
+        if event is not None:
+            stored = event["payload"]
+            if isinstance(stored, str):
+                stored = json.loads(stored)
+            if (
+                str(event["event_type"]) != "INTENT_SUBMITTING"
+                or stored.get("risk_control_snapshot") != dict(risk_snapshot)
+            ):
+                raise OrderIntentConflict("submit intent replay changed risk evidence")
+            return dict(row)
+        if current != "PREPARED":
+            raise OrderIntentConflict("SUBMITTING intent has no matching durable submit event")
+        next_version = int(row["state_version"]) + 1
+        updated = await conn.fetchrow(
+            """
+            UPDATE public.executor_mutation_intents
+            SET status='SUBMITTING', state_version=$2, attempt_count=$3,
+                owner_scope_key=$4, owner_id=$5, owner_generation=$6,
+                risk_control_snapshot=$7::jsonb, updated_at=clock_timestamp()
+            WHERE intent_id=$1 AND state_version=$8
+            RETURNING *
+            """,
+            intent_id, next_version, attempt_count, scope_key,
+            lease.owner_id, generation,
+            json.dumps(dict(risk_snapshot), sort_keys=True, separators=(",", ":"), default=str),
+            int(row["state_version"]),
+        )
+        if updated is None:
+            raise OrderIntentStaleOwner("mutation intent submit compare-and-swap lost")
+        await conn.execute(
+            """
+            INSERT INTO public.executor_mutation_intent_events (
+                intent_id, event_version, event_type, event_idempotency_key,
+                actor_id, owner_scope_key, owner_id, owner_generation, payload
+            ) VALUES ($1,$2,'INTENT_SUBMITTING',$3,$4,$5,$6,$7,$8::jsonb)
+            """,
+            intent_id, next_version, event_key, actor, scope_key,
+            lease.owner_id, generation,
+            json.dumps({
+                **event_payload, "previous_status": current,
+                "target_status": "SUBMITTING", "attempt_count": attempt_count,
+            }, sort_keys=True, separators=(",", ":"), default=str),
+        )
+        return dict(updated)
+
     async def mark_submitting(
         self, intent_id: str, *, lease: Any, actor_id: str,
         risk_snapshot: Mapping[str, Any],
     ) -> dict:
-        if not isinstance(risk_snapshot, Mapping) or not risk_snapshot:
-            raise OrderIntentError("SUBMITTING requires a durable risk-control snapshot")
-        return await self._transition(
-            intent_id=intent_id, target_status="SUBMITTING",
-            allowed_from=("PREPARED",), event_type="INTENT_SUBMITTING",
-            actor_id=actor_id,
-            payload={"risk_control_snapshot": dict(risk_snapshot)},
-            lease=lease, risk_snapshot=risk_snapshot,
-        )
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                return await self.mark_submitting_in_transaction(
+                    conn, intent_id, lease=lease, actor_id=actor_id,
+                    risk_snapshot=risk_snapshot,
+                )
 
     async def mark_acknowledged(
         self, intent_id: str, *, lease: Any, actor_id: str,

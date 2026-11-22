@@ -66,7 +66,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
 
     async def prepare_create(
         self, *, account_scope_id: str, idempotency_key: str,
-        venue: str, market_type: str, instrument: str,
+        venue: str, market_type: str, instrument: str, pair_key: str,
         side: str, order_type: str, quantity: Any, price: Any,
         actor_id: str, session_id: str | None = None, leg_id: str | None = None,
         reserved_base_qty: Any = 0, reserved_notional: Any = 0,
@@ -80,6 +80,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         exchange = required(venue, "venue").lower()
         market = required(market_type, "market_type").lower()
         symbol = required(instrument, "instrument").upper()
+        route = required(pair_key, "pair_key")
         order_side = required(side, "side").lower()
         kind = required(order_type, "order_type").lower()
         actor = required(actor_id, "actor_id")
@@ -105,7 +106,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         payload = {
             "operation": "CREATE", "account_scope_id": account,
             "session_id": session, "leg_id": leg, "venue": exchange,
-            "market_type": market, "instrument": symbol, "side": order_side,
+            "market_type": market, "instrument": symbol, "pair_key": route, "side": order_side,
             "order_type": kind, "quantity": format(qty, "f"),
             "price": format(limit_price, "f"),
             "reserved_base_qty": format(base_reservation, "f"),
@@ -118,7 +119,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         return await self._prepare(
             intent_id=intent_id, idempotency_key=idem, account_scope_id=account,
             operation="CREATE", venue=exchange, market_type=market,
-            instrument=symbol, client_order_id=client_order_id,
+            instrument=symbol, pair_key=route, client_order_id=client_order_id,
             target_order_id=None, target_client_order_id=None,
             side=order_side, order_type=kind, quantity=qty, price=limit_price,
             session_id=session, leg_id=leg, reserved_base_qty=base_reservation,
@@ -130,7 +131,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
 
     async def prepare_cancel(
         self, *, account_scope_id: str, idempotency_key: str,
-        venue: str, market_type: str, instrument: str,
+        venue: str, market_type: str, instrument: str, pair_key: str,
         actor_id: str, target_order_id: str | None = None,
         target_client_order_id: str | None = None,
         session_id: str | None = None, leg_id: str | None = None,
@@ -140,6 +141,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         exchange = required(venue, "venue").lower()
         market = required(market_type, "market_type").lower()
         symbol = required(instrument, "instrument").upper()
+        route = required(pair_key, "pair_key")
         actor = required(actor_id, "actor_id")
         order_id = str(target_order_id or "").strip() or None
         target_cid = str(target_client_order_id or "").strip() or None
@@ -153,7 +155,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         payload = {
             "operation": "CANCEL", "account_scope_id": account,
             "session_id": session, "leg_id": leg, "venue": exchange,
-            "market_type": market, "instrument": symbol,
+            "market_type": market, "instrument": symbol, "pair_key": route,
             "target_order_id": order_id, "target_client_order_id": target_cid,
         }
         request_json = _canonical(payload)
@@ -161,7 +163,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         return await self._prepare(
             intent_id=intent_id, idempotency_key=idem, account_scope_id=account,
             operation="CANCEL", venue=exchange, market_type=market,
-            instrument=symbol, client_order_id=None, target_order_id=order_id,
+            instrument=symbol, pair_key=route, client_order_id=None, target_order_id=order_id,
             target_client_order_id=target_cid, side=None, order_type=None,
             quantity=None, price=None, session_id=session, leg_id=leg,
             reserved_base_qty=Decimal("0"), reserved_notional=Decimal("0"),
@@ -171,7 +173,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
 
     async def _prepare(
         self, *, intent_id: str, idempotency_key: str, account_scope_id: str,
-        operation: str, venue: str, market_type: str, instrument: str,
+        operation: str, venue: str, market_type: str, instrument: str, pair_key: str,
         client_order_id: str | None, target_order_id: str | None,
         target_client_order_id: str | None, side: str | None,
         order_type: str | None, quantity: Decimal | None, price: Decimal | None,
@@ -191,11 +193,13 @@ class OrderIntentService(OrderIntentLifecycleMixin):
                 )
                 if session_id:
                     session = await conn.fetchrow(
-                        "SELECT account_scope_id FROM public.execution_sessions WHERE session_id=$1 FOR KEY SHARE",
+                        "SELECT account_scope_id, pair_key FROM public.execution_sessions WHERE session_id=$1 FOR KEY SHARE",
                         session_id,
                     )
                     if session is None or str(session["account_scope_id"] or "") != account_scope_id:
                         raise OrderIntentError("session is missing or belongs to a different account scope")
+                    if str(session["pair_key"] or "") != pair_key:
+                        raise OrderIntentError("mutation intent pair_key does not match its durable session route")
                 if leg_id:
                     leg = await conn.fetchrow(
                         "SELECT session_id, account_scope_id FROM public.execution_legs WHERE leg_id=$1 FOR KEY SHARE",
@@ -236,19 +240,19 @@ class OrderIntentService(OrderIntentLifecycleMixin):
                     """
                     INSERT INTO public.executor_mutation_intents (
                         intent_id, idempotency_key, operation, account_scope_id,
-                        session_id, leg_id, venue, market_type, instrument,
+                        session_id, leg_id, venue, market_type, instrument, pair_key,
                         client_order_id, target_order_id, target_client_order_id,
                         side, order_type, quantity, price, reserved_base_qty,
                         reserved_notional, reservation_asset, request_hash,
                         request_payload, status, state_version
                     ) VALUES (
-                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
-                        $13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,'PREPARED',1
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,
+                        $14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,'PREPARED',1
                     )
                     RETURNING *
                     """,
                     intent_id, idempotency_key, operation, account_scope_id,
-                    session_id, leg_id, venue, market_type, instrument,
+                    session_id, leg_id, venue, market_type, instrument, pair_key,
                     client_order_id, target_order_id, target_client_order_id,
                     side, order_type, quantity, price, reserved_base_qty,
                     reserved_notional, reservation_asset, request_hash, request_payload,
@@ -301,6 +305,15 @@ class OrderIntentService(OrderIntentLifecycleMixin):
             max_reserved_notional, "max_reserved_notional", allow_zero=True
         ):
             raise OrderIntentReservationConflict("notional in-flight reservation budget exceeded")
+
+    async def get_intent(self, intent_id: str) -> dict | None:
+        key = required(intent_id, "intent_id")
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM public.executor_mutation_intents WHERE intent_id=$1",
+                key,
+            )
+        return dict(row) if row is not None else None
 
     async def list_unresolved(
         self, *, account_scope_id: str | None = None, limit: int = 100,
