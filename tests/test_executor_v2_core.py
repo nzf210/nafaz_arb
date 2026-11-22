@@ -251,7 +251,6 @@ async def test_mutation_gateway_create_fails_closed_without_initialized_global_s
         symbol="BTC/BIDR", side="buy", order_type="limit",
         quantity=1.0, price=100.0, pair_key="tokocrypto:BTC_BIDR",
         account_scope_id="test-account-tokocrypto",
-        account_scope_id="test-account-tokocrypto",
     )
     assert result.status == MutationResultType.REJECTED
     assert "fencing is not initialized" in result.error_message
@@ -269,7 +268,6 @@ async def test_mutation_gateway_connection_reset_is_unknown_and_keeps_slot():
         client_mock, exchange="okx", market_type="perpetual",
         symbol="BTC/USDT:USDT", side="sell", order_type="market",
         quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
-        account_scope_id="test-account-okx",
         account_scope_id="test-account-okx",
     )
     assert result.status == MutationResultType.SUBMISSION_UNKNOWN
@@ -291,6 +289,7 @@ async def test_mutation_gateway_definitive_rejection_releases_slot_after_ledger_
         client_mock, exchange="tokocrypto", market_type="spot",
         symbol="BTC/BIDR", side="buy", order_type="limit",
         quantity=1.0, price=100.0, pair_key="tokocrypto:BTC_BIDR",
+        account_scope_id="test-account-tokocrypto",
     )
     assert result.status == MutationResultType.REJECTED
     assert stop.statuses[result.client_order_id] == "REJECTED"
@@ -324,6 +323,7 @@ async def test_mutation_gateway_ack_persistence_failure_keeps_unresolved_slot():
         client_mock, exchange="okx", market_type="perpetual",
         symbol="BTC/USDT:USDT", side="sell", order_type="market",
         quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
+        account_scope_id="test-account-okx",
     )
     assert result.status == MutationResultType.SUBMISSION_UNKNOWN
     assert result.exchange_order_id == "accepted-but-unpersisted"
@@ -342,6 +342,7 @@ async def test_mutation_gateway_explicit_ip_ban_persists_global_stop():
         client_mock, exchange="okx", market_type="perpetual",
         symbol="BTC/USDT:USDT", side="sell", order_type="market",
         quantity=0.01, price=50000.0, pair_key="tokocrypto__okx__btc",
+        account_scope_id="test-account-okx",
     )
 
     assert result.status == MutationResultType.REJECTED
