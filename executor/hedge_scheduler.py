@@ -25,10 +25,6 @@ class HedgeScheduler(HedgeServiceBase):
         action = str(decision.action or "").upper()
         if action not in {"SUBMIT", "PARTIAL_SUBMIT", "DEFER", "DE_RISK_REQUIRED"}:
             raise ValueError("unsupported hedge liquidity action")
-        observed_at = (
-            datetime.fromtimestamp(decision.book_age_ms and 0 or 0, timezone.utc)
-            if decision.book_age_ms is None else None
-        )
         payload = {
             "action": action,
             "reason": decision.reason,
@@ -47,13 +43,11 @@ class HedgeScheduler(HedgeServiceBase):
             "next_evaluate_at_ms": decision.next_evaluate_at_ms,
         }
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        book_at = (
-            datetime.now(timezone.utc)
-            if decision.book_age_ms is None
-            else datetime.fromtimestamp(
-                (int(datetime.now(timezone.utc).timestamp() * 1000) - decision.book_age_ms) / 1000,
-                timezone.utc,
-            )
+        book_at = datetime.fromtimestamp(
+            decision.book_observed_at_ms / 1000, timezone.utc
+        )
+        evaluated_at = datetime.fromtimestamp(
+            decision.evaluated_at_ms / 1000, timezone.utc
         )
         next_at = (
             datetime.fromtimestamp(decision.next_evaluate_at_ms / 1000, timezone.utc)
@@ -70,7 +64,7 @@ class HedgeScheduler(HedgeServiceBase):
                     """
                     SELECT status, account_scope_id, target_base_quantity,
                            confirmed_base_quantity, reserved_base_quantity,
-                           deferred_since, deferred_count, de_risk_required
+                           deferred_since, deferred_count, de_risk_required, created_at
                     FROM public.execution_hedge_obligations
                     WHERE obligation_id=$1::uuid AND session_id=$2
                     FOR UPDATE
@@ -105,13 +99,15 @@ class HedgeScheduler(HedgeServiceBase):
                         "aggregate_version": int(session["aggregate_version"]),
                     }
 
+                if bool(obligation["de_risk_required"]) or str(obligation["status"]) == "BLOCKED":
+                    raise HedgeObligationError("blocked hedge obligation requires recovery/de-risk resolution")
                 deferred_since = obligation["deferred_since"]
                 max_wait_until = None
                 if action == "DEFER":
                     if deferred_since is None:
-                        deferred_since = book_at
+                        deferred_since = obligation["created_at"]
                     max_wait_until = datetime.fromtimestamp(
-                        (int(book_at.timestamp() * 1000) + decision.wait_elapsed_ms + decision.wait_remaining_ms) / 1000,
+                        decision.evaluated_at_ms / 1000 + decision.wait_remaining_ms / 1000,
                         timezone.utc,
                     )
                 elif action in {"SUBMIT", "PARTIAL_SUBMIT"}:
@@ -130,8 +126,8 @@ class HedgeScheduler(HedgeServiceBase):
                         next_evaluate_at=$5, max_wait_until=COALESCE(max_wait_until,$6),
                         last_evaluated_at=clock_timestamp(), last_book_at=$7,
                         last_book_sequence=$8,
-                        deferred_count=deferred_count + CASE WHEN $2='BLOCKED' OR $3 IS NOT NULL THEN 1 ELSE 0 END,
-                        de_risk_required=$9, updated_at=clock_timestamp()
+                        deferred_count=deferred_count + CASE WHEN $3 IS NOT NULL OR $9=TRUE THEN 1 ELSE 0 END,
+                        de_risk_required=de_risk_required OR $9, updated_at=clock_timestamp()
                     WHERE obligation_id=$1::uuid
                     """,
                     obligation_id, new_status,
@@ -165,7 +161,7 @@ class HedgeScheduler(HedgeServiceBase):
                     decision.executable_notional_quote, decision.executable_notional_usd,
                     decision.slippage_bps, decision.estimated_fee_bps,
                     decision.estimated_total_cost_bps,
-                    max(Decimal("0"), Decimal(str(decision.executable_notional_usd))),
+                    decision.unhedged_notional_usd,
                     decision.wait_elapsed_ms, decision.wait_remaining_ms,
                     next_at, payload_json,
                 )
