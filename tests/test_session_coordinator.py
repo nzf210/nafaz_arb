@@ -326,7 +326,17 @@ async def test_postgres_coordinator_admission_and_transition_are_fenced(postgres
             "SELECT event_type FROM public.execution_session_events WHERE session_id=$1 ORDER BY aggregate_version",
             result["session_id"],
         )
+        binding = await conn.fetchrow(
+            """
+            SELECT coordinator_scope_key, coordinator_owner_id, fencing_generation
+            FROM public.execution_sessions WHERE session_id=$1
+            """,
+            result["session_id"],
+        )
     assert event_types[-2]["event_type"] == "COORDINATOR_LEASE_RECLAIMED"
+    assert binding["coordinator_scope_key"] == replay["coordinator_lease"].scope_key
+    assert binding["coordinator_owner_id"] == replay["coordinator_lease"].owner_id
+    assert binding["fencing_generation"] == replacement.generation
     await recovered.release(replay["coordinator_lease"])
 
 
