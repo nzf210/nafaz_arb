@@ -154,6 +154,11 @@ async def test_postgres_partial_spot_fills_reserve_and_allocate_hedge_exactly_on
         coordinator_lease=lease, fencing_generation=lease.generation,
     )
     assert first_obligation["target_base_quantity"] == "0.0002"
+    async with postgres_pool.acquire() as conn:
+        assert await conn.fetchval(
+            "SELECT status FROM public.execution_sessions WHERE session_id=$1",
+            admitted["session_id"],
+        ) == "HEDGE_PENDING"
 
     second_fill = await _spot_fill(
         postgres_pool, admitted, suffix, suffix + "-2",
@@ -257,6 +262,10 @@ async def test_postgres_partial_spot_fills_reserve_and_allocate_hedge_exactly_on
             "SELECT count(*) FROM public.execution_hedge_allocations WHERE reservation_id=$1::uuid",
             reservation["reservation_id"],
         )
+        session_status = await conn.fetchval(
+            "SELECT status FROM public.execution_sessions WHERE session_id=$1",
+            admitted["session_id"],
+        )
     assert len(obligations) == 2
     assert all(row["status"] == "HEDGED" for row in obligations)
     assert all(Decimal(str(row["confirmed_base_quantity"])) == Decimal("0.0002") for row in obligations)
@@ -265,6 +274,7 @@ async def test_postgres_partial_spot_fills_reserve_and_allocate_hedge_exactly_on
     assert reservation_row["status"] == "CONSUMED"
     assert Decimal(str(reservation_row["allocated_base_quantity"])) == Decimal("0.0004")
     assert allocation_count == 2
+    assert session_status == "PARTIALLY_HEDGED"
 
 
 @pytest.mark.asyncio
