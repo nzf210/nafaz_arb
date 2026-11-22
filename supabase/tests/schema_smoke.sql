@@ -436,6 +436,35 @@ begin
     ) then
         raise exception 'submit attempt owner scope/fencing columns are missing';
     end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.executor_submit_attempts'::regclass
+          and conname='executor_submit_owner_generation_pair'
+    ) then
+        raise exception 'submit attempt owner scope/generation consistency constraint is missing';
+    end if;
+
+    if not exists (
+        select 1 from pg_trigger
+        where tgrelid='public.executor_ownership_leases'::regclass
+          and tgname='trg_executor_ownership_leases_updated_at'
+          and not tgisinternal
+    ) or not exists (
+        select 1 from pg_trigger
+        where tgrelid='public.executor_risk_controls'::regclass
+          and tgname='trg_executor_risk_controls_updated_at'
+          and not tgisinternal
+    ) then
+        raise exception 'ownership/risk projection updated_at triggers are missing';
+    end if;
+
+    if not has_table_privilege('service_role','public.executor_ownership_events','select')
+       or not has_table_privilege('service_role','public.executor_ownership_events','insert')
+       or not has_table_privilege('service_role','public.executor_risk_control_events','select')
+       or not has_table_privilege('service_role','public.executor_risk_control_events','insert') then
+        raise exception 'service_role must be able to read and append ownership/risk events';
+    end if;
 end $$;
 
 insert into public.executor_ownership_leases (
