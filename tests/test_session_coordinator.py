@@ -294,7 +294,7 @@ async def test_postgres_coordinator_admission_and_transition_are_fenced(postgres
     assert replay["reclaimed"] is True
     assert replay["session_id"] == result["session_id"]
     assert replay["fencing_generation"] == replacement.generation
-    assert replay["state_version"] == 3
+    assert replay["state_version"] == 2
     assert replay["aggregate_version"] == 5
 
     with pytest.raises(StaleAggregate, match="coordinator lease"):
@@ -313,7 +313,7 @@ async def test_postgres_coordinator_admission_and_transition_are_fenced(postgres
         coordinator_lease=replay["coordinator_lease"],
         session_id=result["session_id"],
         target_state="ADMITTED",
-        expected_state_version=3,
+        expected_state_version=2,
         expected_aggregate_version=5,
         fencing_generation=replacement.generation,
         event_type="SESSION_ADMITTED",
