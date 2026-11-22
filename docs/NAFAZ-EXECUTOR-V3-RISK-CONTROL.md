@@ -51,8 +51,9 @@ Normal de-risk operations use the PostgreSQL de-risk fence. If PostgreSQL fencin
 
 1. `EXECUTOR_INSTANCE_ID` identifies the running executor.
 2. `EMERGENCY_DERISK_OWNER_ID` identifies the single designated emergency owner and exactly matches that executor ID.
-3. Redis is available.
-4. The mutation supplies a stable client order ID and complete account-scope, venue, market-type, and native-instrument identity.
+3. `EMERGENCY_DERISK_ALLOWED=true` explicitly authorizes the emergency fallback while the durable database control plane is unavailable.
+4. Redis is available.
+5. The mutation supplies a stable client order ID and complete account-scope, venue, market-type, and native-instrument identity.
 
 The lease uses Redis `SET NX PX` with a per-scope key and a bounded TTL (default 120 seconds, configurable through `EMERGENCY_DERISK_LEASE_TTL_MS`, maximum 5 minutes). Release is compare-and-delete; an unconditional delete is never used. Different instruments can be de-risked independently. If designated ownership or Redis is unavailable, the operation fails closed rather than submitting unfenced.
 
