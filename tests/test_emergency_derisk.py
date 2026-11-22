@@ -31,6 +31,7 @@ def _engine(redis=None, *, owner="worker-a", designated="worker-a", service=None
             mock_mode=False,
             executor_instance_id=owner,
             emergency_derisk_owner_id=designated,
+            emergency_derisk_allowed=True,
             emergency_derisk_lease_ttl_ms=120000,
         ),
         redis=redis,
