@@ -187,6 +187,9 @@ async def test_postgres_fill_trade_identity_conflict_is_rejected(postgres_pool):
     changed = {**args, "quantity": "0.0005", "quote_quantity": "500000"}
     with pytest.raises(FillConflict, match="different immutable facts"):
         await service.record_fill(**changed)
+    changed_trade = {**args, "exchange_trade_id": "another-trade-" + suffix}
+    with pytest.raises(FillConflict, match="idempotency key was reused"):
+        await service.record_fill(**changed_trade)
     async with postgres_pool.acquire() as conn:
         count = await conn.fetchval(
             "SELECT count(*) FROM public.execution_fills WHERE session_id=$1",
