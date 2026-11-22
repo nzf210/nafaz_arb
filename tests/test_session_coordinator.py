@@ -58,6 +58,10 @@ def test_admission_identity_is_stable_and_account_route_scoped():
         account_scope_id="account-a", source_dispatch_id="dispatch-1",
         opportunity_id="opp-1", pair_key="indodax:btc_idr->okx:btc-usdt-swap",
     )
+    changed_opportunity = build_admission_identity(
+        account_scope_id="account-a", source_dispatch_id="dispatch-1",
+        opportunity_id="opp-different", pair_key="indodax:btc_idr->okx:btc-usdt-swap",
+    )
     other_account = build_admission_identity(
         account_scope_id="account-b", source_dispatch_id="dispatch-1",
         opportunity_id="opp-1", pair_key="indodax:btc_idr->okx:btc-usdt-swap",
@@ -67,6 +71,7 @@ def test_admission_identity_is_stable_and_account_route_scoped():
         opportunity_id="opp-1", pair_key="tokocrypto:btc_idr->mexc:btc_usdt",
     )
     assert first == retry
+    assert first == changed_opportunity
     assert first != other_account
     assert first != other_route
     assert first[0].startswith("v3-adm-")
