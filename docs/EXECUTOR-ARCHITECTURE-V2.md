@@ -1788,3 +1788,31 @@ Startup verification must compare the aggregate required spot quantity for each 
 scripts/resolve_ai_position.py contains direct spot market SELL and futures market BUY with reduceOnly=True. These are explicitly de-risk-only operations and are not subject to the entry Global STOP fence. The utility is operator-invoked, not an executor production caller. It currently uses fixed client IDs and does not perform exact-client-ID recovery after a lost/ambiguous create acknowledgement; operators must not rerun it after an ambiguous result without first verifying venue state. This is a separate idempotency/runbook limitation, not justification to block risk-reducing operations with the entry STOP.
 
 Verification: source/test head 817eec2bafac85f2b0f242b3681cc4e06574f46b passed workflow [44881614430](https://github.com/nzf210/nafaz_arb/actions/runs/44881614430), all five jobs. The PostgreSQL job exercised a disposable real PostgreSQL multi-process submit-disconnect test. Actual VPS topology fault injection and real venue sandbox contracts remain open. Overall status remains PARTIAL / NOT LIVE-CERTIFIED.
+
+
+## 2026-11-22 audit correction — submit ledger, order registry, and mutation routing
+
+The PostgreSQL `executor_submit_attempts` table and the universal `order_registry` are separate authorities with different responsibilities:
+
+- `GlobalStopService` owns the canonical STOP state, fencing epoch, and durable PREPARED/SUBMITTING submit-attempt record. It proves whether a venue create request may be in flight and preserves ambiguity after a lost database session.
+- The universal order registry owns the order's lifecycle identity, venue order ID, fill/hedge watermarks, and startup recovery projection. A GlobalStop DSN is not a substitute for the durable order-registry/outbox writer.
+
+LIVE `_register_order_intent(required=True)` now requires the Supabase/outbox writer to be enabled. If that writer is disabled, the executor rejects before venue submission even when GlobalStop PostgreSQL is connected. This closes the Redis-only LIVE intent acceptance defect (source commit `203d74480ee6b4c3e984ccab1a48ebc7b9b843b4`; regression `1e68e26f3462a4550c69e8532e9e6bc139931124`).
+
+### Generic MutationGateway boundary
+
+`MutationGateway.execute_create_order` is an exposure-increasing entry lane, not a universal path for every create-order operation:
+
+- It resolves the exact venue and market via `for_venue(exchange, market)` when a facade is supplied, then verifies the resolved raw client's `.id` equals the durable intent's exchange. Direct clients without a verifiable matching venue ID fail before PREPARED or slot reservation.
+- Spot SELL and futures `reduceOnly=True` are rejected from this entry method. Existing spot SELL exit/rollback/force-close and futures reduceOnly close wrappers remain on the independent de-risk lane and are not placed behind the entry STOP.
+- The generic gateway still has no production caller in the inspected branch paths. Existing LIVE spot BUY and futures short SELL continue to use their dedicated fenced lifecycle wrappers. Do not claim the gateway is the sole private mutation boundary until every production caller is routed or explicitly classified and the order-registry lifecycle is integrated.
+
+The gateway's `pre_submit_guard` remains a caller-provided no-argument callback. The presence of a callable is not proof of a correct market-admission policy. Before LIVE wiring, replace this loose contract with a scoped/auditable guard bound to the durable intent and prove its behavior across executor instances.
+
+### Cross-instance market admission limitation
+
+The current spot active-market check reads in-memory state and shared Redis active/pending keys. It fails closed when Redis is unavailable, but an empty keyspace after Redis eviction/flush is not distinguishable from a truly empty market. The shared PostgreSQL submit lock serializes submitters, yet ACKNOWLEDGED attempts do not themselves represent a still-open position and cannot be used as a permanent market lock. A durable market-exposure reservation or equivalent canonical transactionally checked gate remains required to prove duplicate-market exclusion through Redis data loss.
+
+This limitation does not justify putting risk-reducing orders behind entry STOP. Spot SELL, futures reduceOnly close, rollback, force-close, and cancel retain their separate protective semantics.
+
+Verification for the 2026-11-22 follow-up is tracked in `docs/AUDIT-FINDINGS.md` and `docs/V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md`. No CI pass is claimed until the updated branch head has a verifiable check run.
