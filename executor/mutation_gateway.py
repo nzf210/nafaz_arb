@@ -137,6 +137,15 @@ class MutationGateway:
         side = side.lower().strip()
         order_type = order_type.lower().strip()
         params = dict(extra_params or {})
+        # Cancellation may use this gateway without entry admission; creates may
+        # never degrade to an unfenced compatibility path.
+        if self.global_stop is None or not getattr(self.global_stop, "enabled", False):
+            return MutationResult(
+                status=MutationResultType.REJECTED,
+                client_order_id="",
+                error_message="PostgreSQL Global STOP fencing is not initialized; create-order blocked",
+            )
+
         account_scope_id = str(
             account_scope_id or params.get("account_scope_id") or ""
         ).strip()
@@ -145,15 +154,6 @@ class MutationGateway:
                 status=MutationResultType.REJECTED,
                 client_order_id="",
                 error_message="account_scope_id is required for scoped create-order ownership",
-            )
-
-        # Cancellation may use this gateway without entry admission; creates may
-        # never degrade to an unfenced compatibility path.
-        if self.global_stop is None or not getattr(self.global_stop, "enabled", False):
-            return MutationResult(
-                status=MutationResultType.REJECTED,
-                client_order_id="",
-                error_message="PostgreSQL Global STOP fencing is not initialized; create-order blocked",
             )
 
         client_order_id = str(
