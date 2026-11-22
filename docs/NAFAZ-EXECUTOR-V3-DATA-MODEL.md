@@ -74,11 +74,11 @@ The current `target_qty`, `filled_qty` and `exposure_qty` columns are NUMERIC, b
 The migration should extend the existing tables, not replace them. Proposed logical additions:
 
 ### execution_sessions
-- `admission_key TEXT` (unique once all existing rows are safely backfilled);
+- `admission_key TEXT NULL` for legacy rows; create a partial unique index over non-null values after duplicate analysis; never fabricate keys for legacy sessions.
 - `account_scope_id TEXT`;
 - `state_version BIGINT NOT NULL DEFAULT 0`;
 - `fencing_generation BIGINT NOT NULL DEFAULT 0`;
-- `policy_snapshot JSONB NOT NULL DEFAULT '{}'`;
+- `policy_snapshot JSONB NULL` during compatibility rollout; require a valid non-null snapshot only for newly admitted V3 sessions after the V3 admission writer is enabled; do not backfill legacy rows with `{}`;
 - `policy_snapshot_hash TEXT`;
 - `state_reason TEXT`;
 - `source_dispatch_id TEXT` where the scanner contract supplies a distinct dispatch identity; otherwise preserve source_opportunity_id without changing the scanner.
@@ -99,17 +99,17 @@ Keep `opportunity_id`, `pair_key`, `strategy_snapshot`, `status`, and `owner_fen
 Retain the legacy quantity columns until all readers/writers have an explicit migration mapping. Do not dual-write values with ambiguous units.
 
 ### execution_session_events
-Append-only transition journal:
+Append-only aggregate transition journal:
 - event_id (primary key);
-- session_id (foreign key);
-- state_version (unique per session);
-- from_state, to_state, event_type;
+- session_id (foreign key with `ON DELETE RESTRICT`; execution history is not cascade-deleted);
+- aggregate_version (monotonic and unique per session);
+- entity_type (`SESSION` or `LEG`), entity_id, entity_version (the version of the changed session/leg), from_state, to_state, event_type;
 - actor_id / worker_id and fencing_generation;
 - correlation_id, idempotency_key;
 - event_payload JSONB;
 - occurred_at.
 
-The session row update and event insert must be one PostgreSQL transaction. Unique (session_id, state_version) and unique event idempotency key prevent replay duplication.
+The changed session/leg row, aggregate version increment, event insert and transactional outbox insert must commit in one PostgreSQL transaction. Unique (session_id, aggregate_version), unique (session_id, idempotency_key), and unique event_id prevent replay duplication. A leg transition increments that leg's entity_version and the parent session's aggregate_version; a session transition increments both its entity_version and aggregate_version.
 
 ## 5. State and transition invariants
 
@@ -134,15 +134,15 @@ At admission, persist a canonical snapshot containing:
 - exit target, stop, trailing and time-decay policy;
 - position mode and leverage assumptions.
 
-Persist canonical JSON plus a stable cryptographic hash. The snapshot is immutable for the session. Policy changes apply only to new sessions unless a separately audited migration explicitly updates an existing session. Secrets and API credentials must never be included.
+Persist canonical JSON plus a stable cryptographic hash (canonicalization algorithm/version must be pinned, e.g. RFC 8785 JSON Canonicalization Scheme, with SHA-256). Hash input must include an explicit schema/version domain separator. The snapshot is immutable for the session. Policy changes apply only to new sessions unless a separately audited migration explicitly updates an existing session. Secrets and API credentials must never be included.
 
 ## 7. Migration and backfill rules
 
 1. Inspect complete current DDL, constraints, indexes, RLS and applied migration evidence before writing SQL.
-2. Backfill legacy session rows with provenance; do not invent account scope, dispatch identity, native quote/settlement or contract metadata.
+2. Backfill legacy session rows with provenance; do not invent account scope, dispatch identity, native quote/settlement, contract metadata, admission keys or policy snapshots. Keep unknown legacy fields NULL.
 3. Rows with ambiguous identity/quantity units remain marked legacy/unknown and are not silently promoted to V3-ready sessions.
-4. Add nullable columns first; validate/backfill; add constraints and uniqueness only after duplicate analysis.
-5. Keep the migration additive and reversible where practical. Do not drop old columns or Redis keys in PR-01.
+4. Add nullable columns first; validate/backfill only values with evidence; add constraints and uniqueness only after duplicate analysis. For admission idempotency, use a partial unique index on non-null admission_key so legacy NULL rows remain valid.
+5. Keep the migration additive and reversible where practical. Do not drop old columns or Redis keys in PR-01. Do not add a default `{}` policy snapshot that makes legacy sessions appear V3-complete. Avoid `ON DELETE CASCADE` from sessions to legs/events/orders/fills; use RESTRICT and explicit audited retention/archive workflows.
 6. Verify migration replay and rollback in disposable PostgreSQL, plus existing Supabase migration CI.
 7. Do not connect to production or apply a migration to the user's VPS as part of this PR.
 
@@ -153,10 +153,10 @@ Persist canonical JSON plus a stable cryptographic hash. The snapshot is immutab
 - Two account scopes using the same pair_key remain isolated.
 - Stale state_version update is rejected without changing the row or event journal.
 - Stale fencing_generation update is rejected.
-- Session and event journal commit atomically; injected failure leaves neither partially updated.
+- Session/leg update, aggregate version and event journal commit atomically; injected failure leaves no partial state.
 - Spot IDR symbol and Futures USDT contract identity survive serialization/restart unchanged.
 - Contract quantity and base-equivalent exposure remain distinct for non-unit contract sizes.
-- Policy snapshot hash is stable, immutable and contains no secrets.
+- Policy snapshot hash is stable, immutable, versioned and contains no secrets; legacy sessions remain snapshot-unknown rather than receiving fabricated `{}` snapshots.
 - Legacy records with ambiguous unit or venue identity are preserved as legacy/unknown, not fabricated into complete sessions.
 
 ## 9. Explicitly out of scope
