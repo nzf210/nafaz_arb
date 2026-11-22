@@ -290,3 +290,150 @@ delete from public.reconciliation_audit
 where event_id = 'schema-smoke-reconcile-1';
 
 drop table pg_temp._smoke_constants;
+
+-- Durable executor V3 schema: legacy provenance remains unknown, transition
+-- events are append-only for service_role, and session evidence cannot cascade.
+DO $
+DECLARE
+    tbl TEXT;
+    fk_delete_action "char";
+BEGIN
+    FOREACH tbl IN ARRAY ARRAY[
+        'execution_sessions', 'execution_legs', 'execution_session_events'
+    ] LOOP
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relname = tbl AND c.relrowsecurity
+        ) THEN
+            RAISE EXCEPTION 'RLS is not enabled on public.%', tbl;
+        END IF;
+        IF has_table_privilege('anon', format('public.%I', tbl), 'select')
+           OR has_table_privilege('authenticated', format('public.%I', tbl), 'select') THEN
+            RAISE EXCEPTION 'client role unexpectedly has SELECT on public.%', tbl;
+        END IF;
+        IF NOT has_table_privilege('service_role', format('public.%I', tbl), 'select')
+           OR NOT has_table_privilege('service_role', format('public.%I', tbl), 'insert') THEN
+            RAISE EXCEPTION 'service_role lacks required access on public.%', tbl;
+        END IF;
+    END LOOP;
+
+    IF has_table_privilege('service_role', 'public.execution_session_events', 'update')
+       OR has_table_privilege('service_role', 'public.execution_session_events', 'delete') THEN
+        RAISE EXCEPTION 'execution_session_events is mutable by service_role';
+    END IF;
+
+    SELECT c.confdeltype INTO fk_delete_action
+    FROM pg_constraint c
+    WHERE c.conrelid = 'public.execution_legs'::regclass
+      AND c.confrelid = 'public.execution_sessions'::regclass
+      AND c.contype = 'f'
+      AND c.conkey = ARRAY[
+          (SELECT attnum FROM pg_attribute
+           WHERE attrelid = 'public.execution_legs'::regclass
+             AND attname = 'session_id' AND NOT attisdropped)
+      ]::smallint[]
+      AND c.confkey = ARRAY[
+          (SELECT attnum FROM pg_attribute
+           WHERE attrelid = 'public.execution_sessions'::regclass
+             AND attname = 'session_id' AND NOT attisdropped)
+      ]::smallint[];
+
+    IF fk_delete_action IS NULL OR fk_delete_action NOT IN ('r', 'a') THEN
+        RAISE EXCEPTION 'execution_legs session FK is missing or still cascading';
+    END IF;
+END $;
+
+DO $
+DECLARE
+    missing_columns TEXT[];
+BEGIN
+    SELECT array_agg(required.column_name)
+    INTO missing_columns
+    FROM (VALUES
+        ('execution_sessions', 'admission_key'),
+        ('execution_sessions', 'account_scope_id'),
+        ('execution_sessions', 'aggregate_version'),
+        ('execution_sessions', 'fencing_generation'),
+        ('execution_sessions', 'policy_snapshot'),
+        ('execution_legs', 'native_symbol'),
+        ('execution_legs', 'quantity_unit'),
+        ('execution_legs', 'target_order_qty'),
+        ('execution_legs', 'target_base_qty'),
+        ('execution_legs', 'verified_exposure_base_qty')
+    ) AS required(table_name, column_name)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM information_schema.columns c
+        WHERE c.table_schema = 'public'
+          AND c.table_name = required.table_name
+          AND c.column_name = required.column_name
+    );
+
+    IF missing_columns IS NOT NULL THEN
+        RAISE EXCEPTION 'V3 execution columns missing: %', missing_columns;
+    END IF;
+END $;
+
+-- A legacy session/leg must not receive fabricated account, policy, venue or
+-- quantity provenance merely because the additive migration was applied.
+INSERT INTO public.execution_sessions (session_id, pair_key)
+VALUES ('schema-smoke-v3-legacy-session', 'legacy:unknown-pair');
+
+INSERT INTO public.execution_legs (
+    leg_id, session_id, leg_type, venue, market_type, symbol
+) VALUES (
+    'schema-smoke-v3-legacy-spot',
+    'schema-smoke-v3-legacy-session',
+    'SPOT', 'legacy-unknown', 'spot', 'LEGACY/UNKNOWN'
+);
+
+DO $
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM public.execution_sessions
+        WHERE session_id = 'schema-smoke-v3-legacy-session'
+          AND (admission_key IS NOT NULL OR account_scope_id IS NOT NULL
+               OR fencing_generation IS NOT NULL OR policy_snapshot IS NOT NULL
+               OR policy_snapshot_hash IS NOT NULL)
+    ) THEN
+        RAISE EXCEPTION 'legacy session received fabricated V3 provenance';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM public.execution_legs
+        WHERE leg_id = 'schema-smoke-v3-legacy-spot'
+          AND (native_symbol IS NOT NULL OR normalized_symbol IS NOT NULL
+               OR quantity_unit IS NOT NULL OR target_order_qty IS NOT NULL
+               OR target_base_qty IS NOT NULL OR verified_exposure_base_qty IS NOT NULL)
+    ) THEN
+        RAISE EXCEPTION 'legacy leg received fabricated V3 identity or quantity units';
+    END IF;
+END $;
+
+INSERT INTO public.execution_session_events (
+    session_id, aggregate_version, entity_type, entity_id, entity_version,
+    to_state, event_type, idempotency_key, event_payload
+) VALUES (
+    'schema-smoke-v3-legacy-session', 1, 'SESSION',
+    'schema-smoke-v3-legacy-session', 1,
+    'CREATED', 'SCHEMA_SMOKE', 'schema-smoke-v3-event-1', '{}'::jsonb
+);
+
+DO $
+BEGIN
+    BEGIN
+        DELETE FROM public.execution_sessions
+        WHERE session_id = 'schema-smoke-v3-legacy-session';
+        RAISE EXCEPTION 'session deletion unexpectedly succeeded despite retained event/leg evidence';
+    EXCEPTION WHEN foreign_key_violation THEN
+        NULL;
+    END;
+END $;
+
+DELETE FROM public.execution_session_events
+WHERE session_id = 'schema-smoke-v3-legacy-session';
+DELETE FROM public.execution_legs
+WHERE session_id = 'schema-smoke-v3-legacy-session';
+DELETE FROM public.execution_sessions
+WHERE session_id = 'schema-smoke-v3-legacy-session';
+
