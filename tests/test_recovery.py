@@ -820,3 +820,89 @@ async def test_paper_balance_report_is_explicitly_simulated():
     assert len(reports) == 2
     assert all(report["status"] == "ok" for report in reports)
     assert all(report["assets"][0]["asset"] == "USDT" for report in reports)
+
+@pytest.mark.asyncio
+async def test_recovery_open_order_never_regresses_persisted_spot_fill(
+    engine, fake_redis, mock_client
+):
+    """A lagging open-order snapshot cannot lower a persisted Spot fill watermark."""
+    order_info = {
+        "order_id": "recovery-monotonic-open",
+        "client_order_id": "spot-recovery-monotonic-open",
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "qty": 0.01,
+        "filled": 0.004,
+        "hedged_short_qty": 0.0,
+        "price": 1_000_000_000.0,
+        "placed_time": time.time(),
+    }
+    await fake_redis.set(
+        "arb:pending_entry:indodax:btc_idr", json.dumps(order_info)
+    )
+    mock_client.orders["recovery-monotonic-open"] = {
+        "id": "recovery-monotonic-open",
+        "symbol": "btc_idr",
+        "status": "open",
+        "filled": 0.002,
+    }
+
+    await engine._recover_pending_entry_orders()
+
+    pair_tag = "indodax:btc_idr__binance:btc_usdt"
+    assert engine.pending_entry_orders[pair_tag]["filled"] == pytest.approx(0.004)
+    assert engine.pending_entry_orders[pair_tag]["filled_spot_amount"] == pytest.approx(0.004)
+    persisted = json.loads(
+        await fake_redis.get("arb:pending_entry:" + pair_tag)
+    )
+    assert persisted["filled"] == pytest.approx(0.004)
+
+
+@pytest.mark.asyncio
+async def test_recovery_terminal_order_never_regresses_persisted_spot_fill(
+    engine, fake_redis, mock_client, monkeypatch
+):
+    """A terminal venue snapshot cannot erase a newer persisted Spot fill."""
+    order_info = {
+        "order_id": "recovery-monotonic-terminal",
+        "client_order_id": "spot-recovery-monotonic-terminal",
+        "symbol": "btc_idr",
+        "global_symbol": "BTCUSDT",
+        "local_exchange": "indodax",
+        "global_exchange": "binance",
+        "qty": 0.01,
+        "filled": 0.004,
+        "hedged_short_qty": 0.0,
+        "price": 1_000_000_000.0,
+        "placed_time": time.time(),
+    }
+    await fake_redis.set(
+        "arb:pending_entry:indodax:btc_idr", json.dumps(order_info)
+    )
+    mock_client.orders["recovery-monotonic-terminal"] = {
+        "id": "recovery-monotonic-terminal",
+        "symbol": "btc_idr",
+        "status": "canceled",
+        "filled": 0.002,
+    }
+    captured = {}
+
+    async def capture_terminal(pair_tag, info, order_id, symbol, status):
+        captured.update(
+            pair_tag=pair_tag,
+            filled=info["filled"],
+            filled_spot_amount=info.get("filled_spot_amount"),
+            status=status,
+        )
+
+    monkeypatch.setattr(
+        engine, "_reconcile_terminal_pending_entry", capture_terminal
+    )
+    await engine._recover_pending_entry_orders()
+
+    assert captured["filled"] == pytest.approx(0.004)
+    assert captured["filled_spot_amount"] == pytest.approx(0.004)
+    assert captured["status"] == "canceled"
+
