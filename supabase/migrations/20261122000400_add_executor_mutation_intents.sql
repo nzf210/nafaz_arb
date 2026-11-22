@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS public.executor_mutation_intents (
     owner_scope_key TEXT,
     owner_id TEXT,
     owner_generation BIGINT,
+    risk_control_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
     last_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -82,6 +83,25 @@ CREATE TABLE IF NOT EXISTS public.executor_mutation_intents (
             )
         )
 );
+
+
+DO $
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.executor_mutation_intents'::regclass
+          AND conname='executor_mutation_intent_owner_scope_fkey'
+    ) THEN
+        ALTER TABLE public.executor_mutation_intents
+            ADD CONSTRAINT executor_mutation_intent_owner_scope_fkey
+            FOREIGN KEY (owner_scope_key)
+            REFERENCES public.executor_ownership_leases(scope_key)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+END $;
+
+ALTER TABLE public.executor_mutation_intents
+    VALIDATE CONSTRAINT executor_mutation_intent_owner_scope_fkey;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_executor_mutation_intent_client_order
     ON public.executor_mutation_intents (lower(venue), client_order_id)
