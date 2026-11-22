@@ -1248,7 +1248,7 @@ async def test_live_global_stop_requires_complete_scope_before_submit():
         "postgresql://unused", require_scoped_submits=True
     )
     service.pool = object()
-    with pytest.raises(GlobalStopError, match="complete account/venue/market/instrument scope"):
+    with pytest.raises(GlobalStopError, match="scoped ENTRY/HEDGE action"):
         async with service.order_submit_fence(
             client_order_id="live-unscoped-order"
         ):
