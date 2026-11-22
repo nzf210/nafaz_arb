@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS public.executor_mutation_intents (
     exchange_order_id TEXT,
     venue_response JSONB,
     owner_scope_key TEXT,
+    owner_id TEXT,
     owner_generation BIGINT,
     last_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -50,9 +51,10 @@ CREATE TABLE IF NOT EXISTS public.executor_mutation_intents (
         CHECK (reserved_base_qty >= 0 AND reserved_notional >= 0),
     CONSTRAINT executor_mutation_intent_owner_pair
         CHECK (
-            (owner_scope_key IS NULL AND owner_generation IS NULL)
+            (owner_scope_key IS NULL AND owner_id IS NULL AND owner_generation IS NULL)
             OR (
                 owner_scope_key IS NOT NULL
+                AND owner_id IS NOT NULL
                 AND owner_generation IS NOT NULL
                 AND owner_generation > 0
             )
@@ -113,6 +115,7 @@ CREATE TABLE IF NOT EXISTS public.executor_mutation_intent_events (
     event_idempotency_key TEXT NOT NULL,
     actor_id TEXT NOT NULL,
     owner_scope_key TEXT,
+    owner_id TEXT,
     owner_generation BIGINT,
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
