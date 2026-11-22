@@ -86,8 +86,8 @@ class OrderIntentService(OrderIntentLifecycleMixin):
         base_reservation = _decimal(reserved_base_qty, "reserved_base_qty", allow_zero=True)
         notional_reservation = _decimal(reserved_notional, "reserved_notional", allow_zero=True)
         asset = str(reservation_asset or "").strip().upper() or None
-        if notional_reservation > 0 and not asset:
-            raise ValueError("reservation_asset is required for a positive reserved_notional")
+        if (notional_reservation > 0 or max_reserved_notional is not None) and not asset:
+            raise ValueError("reservation_asset is required for notional reservation or limits")
         session = str(session_id or "").strip() or None
         leg = str(leg_id or "").strip() or None
         if leg and not session:
@@ -275,10 +275,11 @@ class OrderIntentService(OrderIntentLifecycleMixin):
                    COALESCE(sum(reserved_notional),0) AS notional
             FROM public.executor_mutation_intents
             WHERE account_scope_id=$1 AND venue=$2 AND market_type=$3
-              AND instrument=$4
+              AND instrument=$4 AND reservation_asset IS NOT DISTINCT FROM $5
               AND status IN ('PREPARED','SUBMITTING','UNKNOWN','ACKNOWLEDGED')
             """,
             account_scope_id, venue, market_type, instrument,
+            reservation_asset,
         )
         base_total = Decimal(str(current["base_qty"])) + reserved_base_qty
         notional_total = Decimal(str(current["notional"])) + reserved_notional
