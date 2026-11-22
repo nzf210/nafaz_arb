@@ -7,15 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from executor.execution_repository import ExecutionSessionRepository
 from executor.ownership import OwnershipLeaseService
 from executor.execution_session_recovery import ExecutionSessionRecovery
-
-logger = logging.getLogger(__name__)
 
 
 class SessionAdmissionError(RuntimeError):
