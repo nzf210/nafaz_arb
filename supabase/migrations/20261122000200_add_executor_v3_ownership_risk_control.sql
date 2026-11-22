@@ -167,10 +167,10 @@ ALTER TABLE public.executor_ownership_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.executor_risk_controls ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.executor_risk_control_events ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON TABLE public.executor_ownership_leases FROM anon, authenticated;
-REVOKE ALL ON TABLE public.executor_ownership_events FROM anon, authenticated;
-REVOKE ALL ON TABLE public.executor_risk_controls FROM anon, authenticated;
-REVOKE ALL ON TABLE public.executor_risk_control_events FROM anon, authenticated;
+REVOKE ALL ON TABLE public.executor_ownership_leases FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON TABLE public.executor_ownership_events FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON TABLE public.executor_risk_controls FROM PUBLIC, anon, authenticated, service_role;
+REVOKE ALL ON TABLE public.executor_risk_control_events FROM PUBLIC, anon, authenticated, service_role;
 
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.executor_ownership_leases TO service_role;
 GRANT SELECT, INSERT ON TABLE public.executor_ownership_events TO service_role;
