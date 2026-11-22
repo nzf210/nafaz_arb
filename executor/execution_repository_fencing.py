@@ -57,7 +57,7 @@ async def validate_coordinator_lease(
           AND lease_expires_at > clock_timestamp()
         FOR UPDATE
         """,
-        scope_key, account_scope_id, session_id, owner_id, generation,
+        scope_key, account_scope_id, str(session_id).upper(), owner_id, generation,
     )
     if row is None:
         from executor.execution_repository import StaleAggregate
