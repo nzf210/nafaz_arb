@@ -110,6 +110,11 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
         run: pytest -q tests/test_execution_repository_integration.py
+      - name: Exercise Executor V3 ownership leases and risk controls
+        timeout-minutes: 3
+        env:
+          TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
+        run: pytest -q tests/test_ownership_risk_control_integration.py
 
   docker-images:
     runs-on: ubuntu-latest
