@@ -589,7 +589,19 @@ class EngineRecoveryMixin:
     async def _adopt_open_pending_entry(
         self, pair_tag: str, order_info: dict, order_id: str, filled: float
     ) -> None:
-        order_info["filled"] = float(filled or 0.0)
+        # Redis may contain a newer cumulative fill than a lagging venue
+        # snapshot. Recovery must never move the Spot watermark backwards.
+        previous_filled = float(order_info.get("filled", 0.0) or 0.0)
+        venue_filled = float(filled or 0.0)
+        if (
+            not math.isfinite(previous_filled)
+            or not math.isfinite(venue_filled)
+            or previous_filled < 0
+            or venue_filled < 0
+        ):
+            raise ValueError("invalid cumulative Spot fill watermark during adoption")
+        order_info["filled"] = max(previous_filled, venue_filled)
+        order_info["filled_spot_amount"] = order_info["filled"]
         self.pending_entry_orders[pair_tag] = order_info
         self.states[pair_tag] = (
             PositionState.ENTRY_PARTIAL
@@ -729,7 +741,37 @@ class EngineRecoveryMixin:
                 pair_tag, order_info, order_id, symbol
             )
             return
-        order_info["filled"] = float(filled or 0.0)
+
+        # The persisted value is a durable lower bound. Venue order snapshots
+        # can temporarily regress (eventual consistency/private-stream lag),
+        # so taking the venue value directly can erase a previously observed
+        # Spot fill and under-hedge the position after restart.
+        try:
+            persisted_filled = float(order_info.get("filled", 0.0) or 0.0)
+            venue_filled = float(filled or 0.0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("invalid cumulative Spot fill watermark in recovery") from exc
+        if (
+            not math.isfinite(persisted_filled)
+            or not math.isfinite(venue_filled)
+            or persisted_filled < 0
+            or venue_filled < 0
+        ):
+            self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
+            self._mark_failed(
+                pair_tag,
+                "ENTRY_FILL_WATERMARK_INVALID",
+                "Persisted or venue cumulative Spot fill is invalid; recovery retained the record.",
+                detail={
+                    "order_id": order_id,
+                    "persisted_filled": repr(order_info.get("filled")),
+                    "venue_filled": repr(filled),
+                },
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+            return
+        order_info["filled"] = max(persisted_filled, venue_filled)
+        order_info["filled_spot_amount"] = order_info["filled"]
         if status == "open":
             await self._adopt_open_pending_entry(
                 pair_tag, order_info, order_id, filled
