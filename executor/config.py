@@ -23,8 +23,8 @@ class ExchangeCredentials:
     api_secret: str = ""
     passphrase: Optional[str] = None
     testnet: bool = False
-    account_scope_id: str = ""
     options: Dict[str, Any] = field(default_factory=dict)
+    account_scope_id: str = ""
 
 
 @dataclass
