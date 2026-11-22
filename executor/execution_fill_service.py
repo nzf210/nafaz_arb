@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from executor.execution_repository import (
-    ExecutionRepositoryError, StaleAggregate,
+    ExecutionRepositoryError,
 )
 from executor.execution_repository_fencing import (
     insert_session_event, validate_coordinator_lease,
@@ -32,7 +32,9 @@ def _decimal(value: Any, name: str, *, positive: bool = True) -> Decimal:
         number = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise FillValidationError(f"{name} must be a finite decimal") from exc
-    if not number.is_finite() or (number <= 0 if positive else number < 0):
+    if not number.is_finite():
+        raise FillValidationError(f"{name} must be a finite decimal")
+    if number <= 0 if positive else number < 0:
         condition = "positive" if positive else "non-negative"
         raise FillValidationError(f"{name} must be {condition}")
     return number
