@@ -13,75 +13,138 @@ logger = logging.getLogger("executor.engine")
 class RiskStateMixin:
     """Persistence and lifecycle controls for durable risk state."""
 
+    def _mark_risk_persistence_failed(self, state_type: str, exc: BaseException) -> None:
+        writer = getattr(self, "supabase", None)
+        pg_risk = getattr(self, "postgres_risk", None)
+        if writer is not None and getattr(writer, "enabled", False):
+            try:
+                writer.mark_risk_persistence_failure()
+            except Exception:
+                logger.exception("Could not persist risk failure latch to local outbox")
+        if pg_risk is not None:
+            try:
+                pg_risk.mark_risk_persistence_failure()
+            except Exception:
+                logger.exception("Could not mark PostgreSQL risk persistence failure")
+        self._entry_blocked = True
+        self._risk_persistence_failed = True
+        logger.critical(
+            "LIVE entry blocked: risk state %s was not durably persisted: %s",
+            state_type, exc,
+        )
+
+    def _on_risk_state_persisted(self, task, state_type: str) -> None:
+        tasks = getattr(self, "_risk_persistence_tasks", set())
+        tasks.discard(task)
+        self._risk_persistence_tasks = tasks
+        self._risk_persistence_pending_count = max(
+            0, int(getattr(self, "_risk_persistence_pending_count", 1)) - 1
+        )
+        self._risk_persistence_pending = self._risk_persistence_pending_count > 0
+        try:
+            persisted = bool(task.result())
+        except Exception as exc:
+            self._mark_risk_persistence_failed(state_type, exc)
+            return
+        if not persisted:
+            self._mark_risk_persistence_failed(
+                state_type, RuntimeError("PostgreSQL risk-state writer returned false")
+            )
+
+    async def _flush_risk_state_persistence(self) -> bool:
+        tasks = list(getattr(self, "_risk_persistence_tasks", set()))
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) or result is False:
+                    self._risk_persistence_failed = True
+        return (
+            not bool(getattr(self, "_risk_persistence_pending", False))
+            and not bool(getattr(self, "_risk_persistence_failed", False))
+        )
+
     def _persist_risk_state(
         self, state_type: str, *, scope: str = "global", exchange: str = None,
         pair_key: str = None, reason: str = "", value=None, resolved: bool = False,
     ) -> bool:
-        """Persist safety state synchronously to the durable local outbox."""
+        """Journal safety state locally before asynchronous canonical persistence."""
         writer = getattr(self, "supabase", None)
         pg_risk = getattr(self, "postgres_risk", None)
         has_pg = pg_risk is not None and getattr(pg_risk, "enabled", False)
         has_sb = writer is not None and getattr(writer, "enabled", False)
+        is_mock = bool(getattr(self.config, "mock_mode", False))
 
         if not has_pg and not has_sb:
-            if not getattr(self.config, "mock_mode", False):
+            if not is_mock:
                 self._entry_blocked = True
                 self._risk_persistence_failed = True
                 logger.critical("LIVE entry blocked: durable risk-state storage is unavailable")
             return False
 
-        ok = False
-        if has_pg:
+        # The SQLite outbox is the synchronous durability boundary when present.
+        outbox_saved = False
+        if has_sb:
             try:
-                loop = None
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    pass
-                if loop and loop.is_running():
-                    loop.create_task(
-                        pg_risk.persist_risk_state(
-                            state_type=state_type, scope=scope, exchange=exchange,
-                            pair_key=pair_key, reason=reason, value=value, resolved=resolved,
-                            is_mock=bool(getattr(self.config, "mock_mode", False)),
-                        )
-                    )
-                    ok = True
-                else:
-                    ok = asyncio.run(
-                        pg_risk.persist_risk_state(
-                            state_type=state_type, scope=scope, exchange=exchange,
-                            pair_key=pair_key, reason=reason, value=value, resolved=resolved,
-                            is_mock=bool(getattr(self.config, "mock_mode", False)),
-                        )
-                    )
-            except Exception:
-                logger.exception("Durable PostgreSQL risk-state write raised for %s", state_type)
-                ok = False
-
-        if not ok and has_sb:
-            try:
-                ok = writer.risk_state(
+                outbox_saved = bool(writer.risk_state(
                     state_type=state_type, scope=scope, exchange=exchange,
                     pair_key=pair_key, reason=reason, value=value, resolved=resolved,
-                    is_mock=bool(getattr(self.config, "mock_mode", False)),
-                )
-            except Exception:
-                logger.exception("Durable risk-state write raised for %s", state_type)
-                ok = False
+                    is_mock=is_mock,
+                ))
+            except Exception as exc:
+                logger.exception("Local risk-state outbox write raised for %s", state_type)
+                if not has_pg:
+                    self._mark_risk_persistence_failed(state_type, exc)
+                    return False
 
-        if not ok and not getattr(self.config, "mock_mode", False):
-            if has_sb:
-                try:
-                    writer.mark_risk_persistence_failure()
-                except Exception:
-                    pass
-            if has_pg:
-                pg_risk.mark_risk_persistence_failure()
-            self._entry_blocked = True
-            self._risk_persistence_failed = True
-            logger.critical("LIVE entry blocked: risk state could not be journaled")
-        return bool(ok)
+        if has_pg:
+            payload = {
+                "state_type": state_type,
+                "scope": scope,
+                "exchange": exchange,
+                "pair_key": pair_key,
+                "reason": reason,
+                "value": value,
+                "resolved": resolved,
+                "is_mock": is_mock,
+            }
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None and loop.is_running():
+                self._risk_persistence_pending_count = (
+                    int(getattr(self, "_risk_persistence_pending_count", 0)) + 1
+                )
+                self._risk_persistence_pending = True
+                task = loop.create_task(pg_risk.persist_risk_state(**payload))
+                tasks = getattr(self, "_risk_persistence_tasks", set())
+                tasks.add(task)
+                self._risk_persistence_tasks = tasks
+                task.add_done_callback(
+                    lambda completed, kind=state_type: self._on_risk_state_persisted(
+                        completed, kind
+                    )
+                )
+                return True
+            try:
+                ok = bool(asyncio.run(pg_risk.persist_risk_state(**payload)))
+            except Exception as exc:
+                self._mark_risk_persistence_failed(state_type, exc)
+                return False
+            if not ok:
+                self._mark_risk_persistence_failed(
+                    state_type, RuntimeError("PostgreSQL risk-state writer returned false")
+                )
+                return False
+            return True
+
+        if has_sb and outbox_saved:
+            return True
+        if not is_mock:
+            self._mark_risk_persistence_failed(
+                state_type, RuntimeError("no durable risk-state backend accepted the event")
+            )
+        return False
 
     def _restore_daily_loss_record(self, value) -> None:
         state = value if isinstance(value, dict) else {}
