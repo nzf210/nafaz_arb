@@ -193,7 +193,10 @@ class ArbitrageEngine(
         self.supabase = SupabaseWriter(getattr(config, "supabase", None))
         pg_dsn = str(getattr(config, "postgres_dsn", "") or "")
         self.global_stop = (
-            GlobalStopService(pg_dsn, redis_client)
+            GlobalStopService(
+                pg_dsn, redis_client,
+                require_scoped_submits=not bool(getattr(config, "mock_mode", False)),
+            )
             if pg_dsn else None
         )
         self.postgres_risk = (
