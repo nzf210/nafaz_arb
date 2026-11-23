@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -10,6 +11,7 @@ import pytest
 
 from executor.execution_fill_service import ExecutionFillService
 from executor.execution_hedge_obligations import ExecutionHedgeObligationService
+from executor.execution_hedge_common import HedgeObligationError
 from executor.hedge_liquidity_evaluator import (
     BookLevel, FXSnapshot, HedgeLiquidityPolicy, OrderBookSnapshot,
     evaluate_hedge_liquidity,
@@ -167,6 +169,17 @@ async def test_postgres_scheduler_persists_deferral_and_wait_expiry(postgres_poo
     )
     assert decision.action == "DEFER"
     scheduler = HedgeScheduler(postgres_pool)
+    forged_oversize = replace(
+        decision, action="SUBMIT",
+        executable_base_quantity=Decimal("0.0003"),
+    )
+    with pytest.raises(HedgeObligationError, match="exact unreserved obligation residual"):
+        await scheduler.record_decision(
+            session_id=admitted["session_id"], obligation_id=obligation["obligation_id"],
+            decision=forged_oversize, actor_id="scheduler-integration-test",
+            idempotency_key="forged-oversize-" + suffix,
+            coordinator_lease=lease, fencing_generation=lease.generation,
+        )
     first = await scheduler.record_decision(
         session_id=admitted["session_id"], obligation_id=obligation["obligation_id"],
         decision=decision, actor_id="scheduler-integration-test",
