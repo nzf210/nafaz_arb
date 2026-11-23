@@ -149,26 +149,28 @@ def test_positive_decimal_rejects_nan_zero_and_negative():
 
 
 @pytest.mark.asyncio
-async def test_prepares_both_intents_before_advancing_session():
+async def test_prepares_only_spot_intent_before_advancing_session():
     service, lease, intents, repository = _runtime()
     result = await service.prepare_entry(
         session_id="session-1", coordinator_lease=lease,
         specs=_specs(), actor_id="unit-test",
     )
-    assert len(intents.calls) == 2
-    assert {call["leg_id"] for call in intents.calls} == {"spot-1", "future-1"}
-    assert len(repository.legs) == 2
+    assert len(intents.calls) == 1
+    assert {call["leg_id"] for call in intents.calls} == {"spot-1"}
+    assert len(repository.legs) == 1
+    assert repository.legs[0]["leg_id"] == "spot-1"
     assert repository.sessions[0]["target_state"] == "ENTRY_IN_PROGRESS"
     assert result["state"] == "ENTRY_IN_PROGRESS"
-    assert set(result["intents"]) == {"spot-1", "future-1"}
+    assert set(result["intents"]) == {"spot-1"}
+    assert result["spot_intent"]["leg_id"] == "spot-1"
 
 
 @pytest.mark.asyncio
-async def test_invalid_second_leg_is_rejected_before_any_intent_is_written():
+async def test_invalid_spot_side_is_rejected_before_any_intent_is_written():
     service, lease, intents, repository = _runtime()
     specs = _specs()
-    specs[1]["side"] = "buy"
-    with pytest.raises(SessionEntryIntentError, match="FUTURES entry side"):
+    specs[0]["side"] = "sell"
+    with pytest.raises(SessionEntryIntentError, match="Spot entry side"):
         await service.prepare_entry(
             session_id="session-1", coordinator_lease=lease,
             specs=specs, actor_id="unit-test",
@@ -179,11 +181,13 @@ async def test_invalid_second_leg_is_rejected_before_any_intent_is_written():
 
 
 @pytest.mark.asyncio
-async def test_duplicate_leg_idempotency_keys_are_rejected_before_writes():
+async def test_parallel_futures_entry_specification_is_rejected_before_writes():
     service, lease, intents, repository = _runtime()
-    specs = _specs()
-    specs[1]["idempotency_key"] = specs[0]["idempotency_key"]
-    with pytest.raises(SessionEntryIntentError, match="distinct idempotency key"):
+    specs = _specs() + [{
+        "leg_id": "future-1", "idempotency_key": "dispatch-1-future",
+        "side": "sell", "order_type": "limit", "quantity": "1", "price": "90000",
+    }]
+    with pytest.raises(SessionEntryIntentError, match="exactly one initial Spot"):
         await service.prepare_entry(
             session_id="session-1", coordinator_lease=lease,
             specs=specs, actor_id="unit-test",
@@ -191,7 +195,6 @@ async def test_duplicate_leg_idempotency_keys_are_rejected_before_writes():
     assert intents.calls == []
     assert repository.legs == []
     assert repository.sessions == []
-
 
 @pytest.fixture
 async def postgres_pool():
