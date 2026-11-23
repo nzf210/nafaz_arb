@@ -96,6 +96,8 @@ class _Intents:
             "leg_id": kwargs["leg_id"],
             "venue": kwargs["venue"],
             "instrument": kwargs["instrument"],
+            "pair_key": kwargs["pair_key"],
+            "account_scope_id": kwargs["account_scope_id"],
             "status": "PREPARED",
         }
 
