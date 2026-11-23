@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from decimal import Decimal, InvalidOperation
+from typing import Optional, Sequence
 
 logger = logging.getLogger("executor.pair_pnl_engine")
 
@@ -213,3 +214,283 @@ class PairPnLEngine:
             spot_exit_fee_usd=round(spot_exit_fee_usd, 4),
             futures_exit_fee_usd=round(futures_exit_fee_usd, 4),
         )
+
+
+class PairPnLInputError(ValueError):
+    """A valuation input is missing, stale, unverified, or inconsistent."""
+
+
+def _pnl_decimal(value, name: str, *, allow_zero: bool = False) -> Decimal:
+    try:
+        result = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise PairPnLInputError(f"{name} must be a finite decimal") from exc
+    if not result.is_finite() or (result < 0 if allow_zero else result <= 0):
+        raise PairPnLInputError(
+            f"{name} must be {'non-negative' if allow_zero else 'positive'}"
+        )
+    return result
+
+
+@dataclass(frozen=True)
+class PnLBookLevel:
+    price: Decimal
+    quantity: Decimal
+
+    def __post_init__(self):
+        object.__setattr__(self, "price", _pnl_decimal(self.price, "book.price"))
+        object.__setattr__(self, "quantity", _pnl_decimal(self.quantity, "book.quantity"))
+
+
+@dataclass(frozen=True)
+class PnLFXEvidence:
+    quote_to_reporting_rate: Decimal
+    source: str
+    observed_at_ms: int
+    verified: bool
+    max_age_ms: int = 30000
+
+    def __post_init__(self):
+        object.__setattr__(
+            self, "quote_to_reporting_rate",
+            _pnl_decimal(self.quote_to_reporting_rate, "fx.quote_to_reporting_rate"),
+        )
+        if not str(self.source or "").strip() or self.verified is not True:
+            raise PairPnLInputError("FX evidence must have a source and be verified")
+        if isinstance(self.observed_at_ms, bool) or not isinstance(self.observed_at_ms, int):
+            raise PairPnLInputError("FX observed_at_ms must be an integer timestamp")
+        if isinstance(self.max_age_ms, bool) or not isinstance(self.max_age_ms, int) or self.max_age_ms <= 0:
+            raise PairPnLInputError("FX max_age_ms must be a positive integer")
+
+
+@dataclass(frozen=True)
+class PairPnLSnapshotV3:
+    session_id: str
+    pair_key: str
+    reporting_currency: str
+    evaluated_at_ms: int
+    spot_estimated_liquidation_pnl: Decimal
+    futures_estimated_liquidation_pnl: Decimal
+    funding_reporting_amount: Decimal
+    entry_fees_reporting: Decimal
+    estimated_exit_fees_reporting: Decimal
+    estimated_tax_reporting: Decimal
+    conversion_cost_reporting: Decimal
+    estimated_net_liquidation_pnl: Decimal
+    strategy_roi_pct: Decimal
+    return_on_deployed_capital_pct: Decimal | None
+    total_deployed_capital_reporting: Decimal | None
+    spot_exit_vwap: Decimal
+    futures_exit_vwap: Decimal
+    spot_slippage_bps: Decimal
+    futures_slippage_bps: Decimal
+    spot_executable_base_quantity: Decimal
+    futures_executable_base_quantity: Decimal
+    hedge_drift_base_quantity: Decimal
+    confidence: str
+    provenance: dict
+
+
+def _sweep_pnl_depth(
+    levels: Sequence[PnLBookLevel], quantity: Decimal, *, side: str,
+    contract_size: Decimal = Decimal("1"),
+) -> tuple[Decimal, Decimal, Decimal]:
+    if not levels:
+        raise PairPnLInputError("executable order-book depth is empty")
+    ordered = sorted(levels, key=lambda level: level.price, reverse=(side == "SELL"))
+    best = ordered[0].price
+    remaining = quantity
+    quote_notional = Decimal("0")
+    filled = Decimal("0")
+    for level in ordered:
+        take = min(remaining, level.quantity)
+        if take <= 0:
+            continue
+        quote_notional += take * contract_size * level.price
+        filled += take
+        remaining -= take
+        if remaining <= 0:
+            break
+    if remaining > 0 or filled != quantity:
+        raise PairPnLInputError("executable order-book depth is insufficient for full liquidation")
+    base_quantity = filled * contract_size
+    vwap = quote_notional / base_quantity
+    slippage = (
+        (best - vwap) / best * Decimal("10000")
+        if side == "SELL" else (vwap - best) / best * Decimal("10000")
+    )
+    return vwap, quote_notional, max(Decimal("0"), slippage)
+
+
+def compute_pair_pnl_v3(
+    *,
+    session_id: str,
+    pair_key: str,
+    reporting_currency: str,
+    now_ms: int,
+    max_book_age_ms: int,
+    spot_quantity_base,
+    spot_entry_cost_quote,
+    spot_entry_fee_quote,
+    spot_entry_fee_verified: bool,
+    spot_bid_levels: Sequence[PnLBookLevel],
+    spot_book_observed_at_ms: int,
+    spot_book_sequence: str,
+    spot_book_checksum_valid: bool,
+    spot_fx: PnLFXEvidence,
+    spot_exit_fee_rate,
+    spot_tax_rate,
+    futures_quantity_native,
+    futures_contract_size,
+    futures_entry_price,
+    futures_entry_fee_quote,
+    futures_entry_fee_verified: bool,
+    futures_ask_levels: Sequence[PnLBookLevel],
+    futures_book_observed_at_ms: int,
+    futures_book_sequence: str,
+    futures_book_checksum_valid: bool,
+    futures_fx: PnLFXEvidence,
+    futures_exit_fee_rate,
+    funding_reporting_amount,
+    funding_verified: bool,
+    funding_source: str,
+    conversion_cost_reporting=Decimal("0"),
+    actual_futures_margin_reporting=None,
+    fee_reserve_reporting=Decimal("0"),
+) -> PairPnLSnapshotV3:
+    """Compute estimated pair liquidation PnL from verified fills and executable depth.
+
+    This is a valuation only. It never labels estimated liquidation as realized PnL.
+    Missing/stale books, fee verification, FX, or funding evidence fail closed.
+    """
+    if not str(session_id or "").strip() or not str(pair_key or "").strip():
+        raise PairPnLInputError("session_id and pair_key are required")
+    if isinstance(now_ms, bool) or not isinstance(now_ms, int):
+        raise PairPnLInputError("now_ms must be an integer timestamp")
+    if isinstance(max_book_age_ms, bool) or not isinstance(max_book_age_ms, int) or max_book_age_ms <= 0:
+        raise PairPnLInputError("max_book_age_ms must be a positive integer")
+    if not isinstance(spot_entry_fee_verified, bool) or spot_entry_fee_verified is not True:
+        raise PairPnLInputError("Spot entry fee valuation must be verified")
+    if not isinstance(futures_entry_fee_verified, bool) or futures_entry_fee_verified is not True:
+        raise PairPnLInputError("Futures entry fee valuation must be verified")
+    if not isinstance(funding_verified, bool) or funding_verified is not True or not str(funding_source or "").strip():
+        raise PairPnLInputError("funding amount must have verified settlement provenance")
+    if spot_book_checksum_valid is not True or futures_book_checksum_valid is not True:
+        raise PairPnLInputError("order-book checksum must be valid")
+    if not str(spot_book_sequence or "").strip() or not str(futures_book_sequence or "").strip():
+        raise PairPnLInputError("order-book sequence is required")
+    for name, observed in (
+        ("Spot", spot_book_observed_at_ms),
+        ("Futures", futures_book_observed_at_ms),
+    ):
+        if isinstance(observed, bool) or not isinstance(observed, int):
+            raise PairPnLInputError(f"{name} book timestamp must be an integer")
+        age = now_ms - observed
+        if age < 0 or age > max_book_age_ms:
+            raise PairPnLInputError(f"{name} order book is stale or from the future")
+    for name, fx in (("Spot", spot_fx), ("Futures", futures_fx)):
+        age = now_ms - fx.observed_at_ms
+        if age < 0 or age > fx.max_age_ms:
+            raise PairPnLInputError(f"{name} FX evidence is stale or from the future")
+
+    spot_qty = _pnl_decimal(spot_quantity_base, "spot_quantity_base")
+    spot_cost = _pnl_decimal(spot_entry_cost_quote, "spot_entry_cost_quote")
+    spot_entry_fee = _pnl_decimal(spot_entry_fee_quote, "spot_entry_fee_quote", allow_zero=True)
+    spot_exit_rate = _pnl_decimal(spot_exit_fee_rate, "spot_exit_fee_rate", allow_zero=True)
+    tax_rate = _pnl_decimal(spot_tax_rate, "spot_tax_rate", allow_zero=True)
+    futures_qty = _pnl_decimal(futures_quantity_native, "futures_quantity_native")
+    contract_size = _pnl_decimal(futures_contract_size, "futures_contract_size")
+    futures_entry = _pnl_decimal(futures_entry_price, "futures_entry_price")
+    futures_entry_fee = _pnl_decimal(futures_entry_fee_quote, "futures_entry_fee_quote", allow_zero=True)
+    futures_exit_rate = _pnl_decimal(futures_exit_fee_rate, "futures_exit_fee_rate", allow_zero=True)
+    funding = Decimal(str(funding_reporting_amount))
+    conversion_cost = _pnl_decimal(conversion_cost_reporting, "conversion_cost_reporting", allow_zero=True)
+    reserve = _pnl_decimal(fee_reserve_reporting, "fee_reserve_reporting", allow_zero=True)
+    if not funding.is_finite():
+        raise PairPnLInputError("funding_reporting_amount must be finite")
+
+    spot_vwap, spot_exit_notional, spot_slippage = _sweep_pnl_depth(
+        spot_bid_levels, spot_qty, side="SELL",
+    )
+    futures_vwap, futures_exit_notional, futures_slippage = _sweep_pnl_depth(
+        futures_ask_levels, futures_qty, side="BUY", contract_size=contract_size,
+    )
+    futures_base_qty = futures_qty * contract_size
+
+    spot_exit_fee_quote = spot_exit_notional * spot_exit_rate
+    spot_tax_quote = spot_exit_notional * tax_rate
+    futures_exit_fee_quote = futures_exit_notional * futures_exit_rate
+
+    spot_entry_fee_reporting = spot_entry_fee * spot_fx.quote_to_reporting_rate
+    spot_exit_fee_reporting = spot_exit_fee_quote * spot_fx.quote_to_reporting_rate
+    spot_tax_reporting = spot_tax_quote * spot_fx.quote_to_reporting_rate
+    spot_pnl = (
+        spot_exit_notional - spot_exit_fee_quote - spot_tax_quote
+        - spot_cost - spot_entry_fee
+    ) * spot_fx.quote_to_reporting_rate
+
+    futures_entry_notional = futures_base_qty * futures_entry
+    futures_entry_fee_reporting = futures_entry_fee * futures_fx.quote_to_reporting_rate
+    futures_exit_fee_reporting = futures_exit_fee_quote * futures_fx.quote_to_reporting_rate
+    futures_pnl = (
+        (futures_entry - futures_vwap) * futures_base_qty
+        - futures_entry_fee - futures_exit_fee_quote
+    ) * futures_fx.quote_to_reporting_rate
+
+    entry_fees = spot_entry_fee_reporting + futures_entry_fee_reporting
+    exit_fees = spot_exit_fee_reporting + futures_exit_fee_reporting
+    total_net = (
+        spot_pnl + futures_pnl + funding
+        - conversion_cost
+    )
+    spot_notional_reporting = spot_cost * spot_fx.quote_to_reporting_rate
+    strategy_roi = (
+        total_net / spot_notional_reporting * Decimal("100")
+        if spot_notional_reporting > 0 else Decimal("0")
+    )
+
+    deployed_capital = None
+    deployed_roi = None
+    if actual_futures_margin_reporting is not None:
+        margin = _pnl_decimal(
+            actual_futures_margin_reporting, "actual_futures_margin_reporting",
+            allow_zero=True,
+        )
+        deployed_capital = spot_notional_reporting + margin + reserve
+        if deployed_capital > 0:
+            deployed_roi = total_net / deployed_capital * Decimal("100")
+
+    return PairPnLSnapshotV3(
+        session_id=str(session_id), pair_key=str(pair_key),
+        reporting_currency=str(reporting_currency or "").upper(),
+        evaluated_at_ms=now_ms,
+        spot_estimated_liquidation_pnl=spot_pnl,
+        futures_estimated_liquidation_pnl=futures_pnl,
+        funding_reporting_amount=funding,
+        entry_fees_reporting=entry_fees,
+        estimated_exit_fees_reporting=exit_fees,
+        estimated_tax_reporting=spot_tax_reporting,
+        conversion_cost_reporting=conversion_cost,
+        estimated_net_liquidation_pnl=total_net,
+        strategy_roi_pct=strategy_roi,
+        return_on_deployed_capital_pct=deployed_roi,
+        total_deployed_capital_reporting=deployed_capital,
+        spot_exit_vwap=spot_vwap, futures_exit_vwap=futures_vwap,
+        spot_slippage_bps=spot_slippage, futures_slippage_bps=futures_slippage,
+        spot_executable_base_quantity=spot_qty,
+        futures_executable_base_quantity=futures_base_qty,
+        hedge_drift_base_quantity=abs(spot_qty - futures_base_qty),
+        confidence="VERIFIED",
+        provenance={
+            "spot_book_sequence": spot_book_sequence,
+            "spot_book_observed_at_ms": spot_book_observed_at_ms,
+            "futures_book_sequence": futures_book_sequence,
+            "futures_book_observed_at_ms": futures_book_observed_at_ms,
+            "spot_fx_source": spot_fx.source,
+            "spot_fx_observed_at_ms": spot_fx.observed_at_ms,
+            "futures_fx_source": futures_fx.source,
+            "futures_fx_observed_at_ms": futures_fx.observed_at_ms,
+            "funding_source": funding_source,
+            "funding_verified": funding_verified,
+        },
+    )
