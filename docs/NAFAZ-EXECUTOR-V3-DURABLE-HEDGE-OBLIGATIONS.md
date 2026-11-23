@@ -36,7 +36,7 @@ Reservation lifecycle:
 - PARTIALLY_FILLED / CONSUMED: confirmed Futures fills have been allocated.
 - RELEASED: only proven-unfilled remainder has been returned to obligations.
 
-UNKNOWN/SUBMITTED/PARTIALLY_FILLED reservations cannot be released without both terminal-order verification and fill reconciliation. Both proof flags must be actual booleans; truthy strings are rejected. Release also requires non-empty terminal-order and fill-reconciliation evidence records (source, evidence ID, timestamps, order identity, terminal status, and an explicit fills-checked assertion). The evidence is persisted on the reservation and copied into the session event journal. Unknown submissions remain locked until evidence is supplied.
+UNKNOWN/SUBMITTED/PARTIALLY_FILLED reservations cannot be released without both terminal-order verification and fill reconciliation. Both proof flags must be actual booleans; truthy strings are rejected. Release also requires non-empty terminal-order and fill-reconciliation evidence records (source, evidence ID, timestamps, the exact reserved client-order identity, terminal status, and an explicit fills-checked assertion). The evidence is persisted on the reservation and copied into the session event journal. Unknown submissions remain locked until evidence is supplied.
 
 ## Allocation contract
 
