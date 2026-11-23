@@ -95,6 +95,25 @@ END $release_evidence$;
 ALTER TABLE public.execution_hedge_reservations
     VALIDATE CONSTRAINT execution_hedge_release_evidence_object;
 
+CREATE OR REPLACE FUNCTION public.guard_execution_hedge_release_evidence()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $hedge_release$
+BEGIN
+    IF OLD.release_evidence <> '{}'::jsonb
+       AND NEW.release_evidence IS DISTINCT FROM OLD.release_evidence THEN
+        RAISE EXCEPTION 'hedge reservation release evidence is immutable';
+    END IF;
+    RETURN NEW;
+END;
+$hedge_release$;
+
+DROP TRIGGER IF EXISTS trg_execution_hedge_release_evidence_immutable
+    ON public.execution_hedge_reservations;
+CREATE TRIGGER trg_execution_hedge_release_evidence_immutable
+    BEFORE UPDATE OF release_evidence ON public.execution_hedge_reservations
+    FOR EACH ROW EXECUTE FUNCTION public.guard_execution_hedge_release_evidence();
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_hedge_reservation_client_order
     ON public.execution_hedge_reservations(
         account_scope_id, futures_venue, futures_market_type, client_order_id
