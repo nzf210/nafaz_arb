@@ -314,7 +314,7 @@ class HedgeAttemptLedger:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                select attempt_id, version
+                select attempt_id, version, status
                 from public.executor_hedge_attempts
                 where hedge_client_order_id=$1
                 """,
@@ -331,6 +331,9 @@ class HedgeAttemptLedger:
         )
         if not terminal:
             return False
+        current_status = str(row["status"] or "")
+        if current_status in _TERMINAL:
+            return current_status == terminal
         return await self.finalize_attempt(
             str(row["attempt_id"]),
             expected_version=int(row["version"]),
@@ -423,7 +426,39 @@ class HedgeAttemptLedger:
                             str(attempt["futures_symbol"]))
                 if identity != (scope, exchange, symbol):
                     raise ValueError("fill identity does not match hedge attempt")
-                if str(attempt["status"]) not in (
+                attempt_status = str(attempt["status"])
+                if attempt_status in _TERMINAL:
+                    existing = await conn.fetchrow(
+                        """
+                        select fill_qty_base, fill_price, fee_amount, fee_currency
+                        from public.executor_hedge_attempt_fills
+                        where attempt_id=$1::uuid and venue_trade_id=$2
+                        """,
+                        attempt_id, trade_id,
+                    )
+                    if existing is None:
+                        raise ValueError("cannot append a new fill to a terminal hedge attempt")
+                    if (
+                        _decimal(existing["fill_qty_base"], "stored fill") != qty
+                        or _decimal(existing["fill_price"], "stored price") != price
+                        or (None if existing["fee_amount"] is None else _decimal(existing["fee_amount"], "stored fee", allow_zero=True)) != fee
+                        or (str(existing["fee_currency"] or "")) != str(fee_currency or "")
+                    ):
+                        raise ValueError("immutable venue trade facts changed on terminal replay")
+                    total = await conn.fetchval(
+                        """
+                        select coalesce(sum(fill_qty_base),0)
+                        from public.executor_hedge_attempt_fills where attempt_id=$1::uuid
+                        """,
+                        attempt_id,
+                    )
+                    return {
+                        "inserted": False,
+                        "confirmed_qty_base": str(
+                            _decimal(total, "attempt fill total", allow_zero=True)
+                        ),
+                    }
+                if attempt_status not in (
                     "UNKNOWN", "ACKNOWLEDGED", "OPEN", "PARTIALLY_FILLED",
                     "RECONCILIATION_REQUIRED"
                 ):
