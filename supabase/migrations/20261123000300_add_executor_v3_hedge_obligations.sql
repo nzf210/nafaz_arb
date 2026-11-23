@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_reservations (
     status TEXT NOT NULL DEFAULT 'RESERVED'
         CHECK (status IN ('RESERVED','SUBMITTED','UNKNOWN','PARTIALLY_FILLED','CONSUMED','RELEASED','RECONCILIATION_REQUIRED')),
     client_order_id TEXT,
-    release_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
+    release_evidence JSONB NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(release_evidence)='object'),
     idempotency_key TEXT NOT NULL,
     actor_id TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -78,6 +79,22 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_reservations (
 
 ALTER TABLE public.execution_hedge_reservations
     ADD COLUMN IF NOT EXISTS release_evidence JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+DO $release_evidence$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_hedge_reservations'::regclass
+          AND conname='execution_hedge_release_evidence_object'
+    ) THEN
+        ALTER TABLE public.execution_hedge_reservations
+            ADD CONSTRAINT execution_hedge_release_evidence_object
+            CHECK (jsonb_typeof(release_evidence)='object') NOT VALID;
+    END IF;
+END $release_evidence$;
+
+ALTER TABLE public.execution_hedge_reservations
+    VALIDATE CONSTRAINT execution_hedge_release_evidence_object;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_hedge_reservation_client_order
     ON public.execution_hedge_reservations(
