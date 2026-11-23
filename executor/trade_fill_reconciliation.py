@@ -463,6 +463,37 @@ class TradeFillReconciliationWorker:
             )
             return None
         if filled_qty <= self.absolute_tolerance:
+            # A terminal zero-fill Futures order has no trade rows to replay,
+            # but its order outcome still releases the durable attempt slot.
+            status = str(row.get("status") or "").lower()
+            client_order_id = str(row.get("client_order_id") or "")
+            attempt_ledger = getattr(self.engine, "hedge_attempt_ledger", None)
+            if (
+                status in ("closed", "filled", "canceled", "cancelled", "expired", "rejected")
+                and client_order_id
+                and attempt_ledger is not None
+                and attempt_ledger.enabled
+            ):
+                finalized = await attempt_ledger.finalize_by_client_order_id(
+                    client_order_id=client_order_id,
+                    terminal_status=status,
+                    order_reconciled=True,
+                    fills_reconciled=True,
+                    actor_id="trade-fill-reconciliation-zero-fill",
+                )
+                if finalized is False:
+                    await self._halt(
+                        identity,
+                        scope,
+                        "Terminal zero-fill order could not finalize its durable hedge attempt.",
+                        {
+                            "client_order_id": client_order_id,
+                            "exchange": row.get("exchange_name"),
+                            "symbol": row.get("symbol"),
+                            "status": status,
+                        },
+                    )
+                    return None
             self._clear(identity, scope)
             return None
         watermark_current = await self._watermark_is_current(
