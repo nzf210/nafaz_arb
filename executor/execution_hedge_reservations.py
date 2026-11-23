@@ -1,13 +1,49 @@
 """Durable hedge reservation lifecycle."""
 from __future__ import annotations
 
+import json
 from decimal import Decimal
-from typing import Any
+from typing import Any, Mapping
 
 from executor.execution_fill_service import FillConflict
 from executor.execution_hedge_common import (
     HedgeServiceBase, HedgeObligationError, _qty, _text, _fmt,
 )
+
+
+def _proof(value: Any, name: str, required_fields: tuple[str, ...]) -> dict:
+    if not isinstance(value, Mapping) or not value:
+        raise HedgeObligationError(f"{name} must be a non-empty evidence mapping")
+    result = dict(value)
+    for field in required_fields:
+        if not str(result.get(field) or "").strip():
+            raise HedgeObligationError(f"{name}.{field} is required")
+    return result
+
+
+def _terminal_order_proof(value: Any) -> dict:
+    proof = _proof(
+        value, "terminal_order_evidence",
+        ("evidence_id", "source", "verified_at"),
+    )
+    status = str(proof.get("terminal_status") or "").strip().lower()
+    if status not in {"closed", "canceled", "cancelled", "filled", "rejected", "expired"}:
+        raise HedgeObligationError("terminal_order_evidence.terminal_status must be terminal")
+    if not str(proof.get("exchange_order_id") or proof.get("client_order_id") or "").strip():
+        raise HedgeObligationError("terminal_order_evidence requires an order identifier")
+    return proof
+
+
+def _fill_reconciliation_proof(value: Any) -> dict:
+    proof = _proof(
+        value, "fill_reconciliation_evidence",
+        ("evidence_id", "source", "reconciled_at"),
+    )
+    if proof.get("fills_checked") is not True:
+        raise HedgeObligationError("fill_reconciliation_evidence.fills_checked must be true")
+    if not str(proof.get("exchange_order_id") or proof.get("client_order_id") or "").strip():
+        raise HedgeObligationError("fill_reconciliation_evidence requires an order identifier")
+    return proof
 
 
 class HedgeReservationMixin(HedgeServiceBase):
@@ -259,6 +295,8 @@ class HedgeReservationMixin(HedgeServiceBase):
         self, *, session_id: str, reservation_id: str,
         actor_id: str, event_idempotency_key: str,
         terminal_order_verified: bool = False, fills_reconciled: bool = False,
+        terminal_order_evidence: Mapping[str, Any] | None = None,
+        fill_reconciliation_evidence: Mapping[str, Any] | None = None,
         coordinator_lease: Any, fencing_generation: int,
     ) -> dict:
         """Release only proven-unfilled quantity; unknown orders remain reserved."""
@@ -284,8 +322,14 @@ class HedgeReservationMixin(HedgeServiceBase):
                             "aggregate_version": int(session["aggregate_version"])}
                 if status in {"CONSUMED", "RECONCILIATION_REQUIRED"}:
                     raise HedgeObligationError(f"cannot release reservation in {status} state")
-                if status != "RESERVED" and not (terminal_order_verified and fills_reconciled):
-                    raise HedgeObligationError("submitted reservation release requires terminal order and fill proof")
+                release_evidence = {}
+                if status != "RESERVED":
+                    if not (terminal_order_verified and fills_reconciled):
+                        raise HedgeObligationError("submitted reservation release requires terminal order and fill proof")
+                    release_evidence = {
+                        "terminal_order": _terminal_order_proof(terminal_order_evidence),
+                        "fill_reconciliation": _fill_reconciliation_proof(fill_reconciliation_evidence),
+                    }
                 items = await conn.fetch(
                     """
                     SELECT i.reservation_id, i.obligation_id,
@@ -330,10 +374,11 @@ class HedgeReservationMixin(HedgeServiceBase):
                 await conn.execute(
                     """
                     UPDATE public.execution_hedge_reservations
-                    SET status='RELEASED', updated_at=clock_timestamp()
+                    SET status='RELEASED', release_evidence=$2::jsonb,
+                        updated_at=clock_timestamp()
                     WHERE reservation_id=$1::uuid
                     """,
-                    reservation_id,
+                    reservation_id, json.dumps(release_evidence, sort_keys=True, default=str),
                 )
                 version = await self._append_event(
                     conn, session_id=session_id, session=session,
@@ -343,6 +388,7 @@ class HedgeReservationMixin(HedgeServiceBase):
                     payload={
                         "reservation_id": reservation_id,
                         "released_base_quantity": _fmt(released_total),
+                        "release_evidence": release_evidence,
                     },
                 )
                 return {
