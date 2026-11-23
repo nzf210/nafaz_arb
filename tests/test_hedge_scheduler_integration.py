@@ -116,8 +116,8 @@ async def _make_obligation(pool, suffix):
         session_id=admitted["session_id"], leg_id=f"spot-{suffix}",
         account_scope_id=account, venue="indodax", market_type="spot",
         symbol="btc_idr", exchange_trade_id="scheduler-spot-" + suffix,
-        side="buy", quantity="0.0002", price="1000000000",
-        quote_asset="IDR", quote_quantity="200000", fee_amount="200",
+        side="buy", quantity="0.001", price="1000000000",
+        quote_asset="IDR", quote_quantity="1000000", fee_amount="200",
         fee_asset="IDR", fee_verified=True, fee_source="EXCHANGE_TRADE",
         filled_at=datetime.now(timezone.utc), actor_id="scheduler-integration-test",
         event_idempotency_key="scheduler-fill-" + suffix,
@@ -161,7 +161,7 @@ async def test_postgres_scheduler_persists_deferral_and_wait_expiry(postgres_poo
     fx = FXSnapshot(Decimal("1"), now_ms, "USDT/USD")
     policy = _policy()
     decision = evaluate_hedge_liquidity(
-        required_base_quantity="0.0002", already_reserved_base_quantity="0",
+        required_base_quantity="0.001", already_reserved_base_quantity="0",
         base_per_unit="0.001", quantity_step="1", venue_min_order_quantity="1",
         venue_min_notional_quote="5", position_side="SHORT",
         book=book, fx=fx, policy=policy, now_ms=now_ms,
@@ -257,8 +257,8 @@ async def test_scheduler_rejects_forged_submit_quantity_above_durable_obligation
     )
     forged = replace(
         valid_defer, action="SUBMIT", reason="forged",
-        executable_base_quantity=Decimal("0.001"),
-        executable_native_quantity=Decimal("1"),
+        executable_base_quantity=Decimal("0.002"),
+        executable_native_quantity=Decimal("2"),
         executable_vwap=Decimal("100"),
         executable_notional_quote=Decimal("100"),
         executable_notional_usd=Decimal("100"),
