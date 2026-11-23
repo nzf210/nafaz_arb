@@ -875,3 +875,42 @@ async def test_postgres_pnl_snapshot_is_idempotent_and_rejects_changed_replay(po
             coordinator_lease=admitted["coordinator_lease"],
             fencing_generation=admitted["coordinator_generation"],
         )
+
+
+@pytest.mark.asyncio
+async def test_postgres_verified_funding_settlement_is_idempotently_ledgered(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, _, _ = await _session(postgres_pool, suffix)
+    now = datetime.now(timezone.utc)
+    service = ExecutionPnLAccountingService(postgres_pool)
+    kwargs = {
+        "session_id": admitted["session_id"],
+        "futures_leg_id": f"future-{suffix}",
+        "account_scope_id": "hedge-account-" + suffix,
+        "venue": "okx", "market_type": "swap", "symbol": "BTC-USDT-SWAP",
+        "exchange_payment_id": "funding-payment-" + suffix,
+        "amount": "-0.05", "asset": "USDT",
+        "reporting_amount": "-0.05", "reporting_currency": "USDT",
+        "fx_rate": "1", "fx_source": "okx-usdt-settlement",
+        "fx_observed_at": now, "settled_at": now, "raw_payload": {"billId": suffix},
+        "coordinator_lease": admitted["coordinator_lease"],
+        "fencing_generation": admitted["coordinator_generation"],
+    }
+    first = await service.record_funding_event(**kwargs)
+    replay = await service.record_funding_event(**kwargs)
+    assert first["duplicate"] is False
+    assert replay["duplicate"] is True
+    with pytest.raises(PnLAccountingError, match="changed valuation"):
+        await service.record_funding_event(**{**kwargs, "reporting_amount": "-0.04"})
+    async with postgres_pool.acquire() as conn:
+        ledger = await conn.fetchrow(
+            """
+            SELECT entry_type, amount_reporting, reporting_currency
+            FROM public.execution_pnl_ledger
+            WHERE source_funding_event_id=$1::uuid
+            """,
+            first["funding_event_id"],
+        )
+    assert ledger["entry_type"] == "FUNDING"
+    assert Decimal(str(ledger["amount_reporting"])) == Decimal("-0.05")
+    assert ledger["reporting_currency"] == "USDT"
