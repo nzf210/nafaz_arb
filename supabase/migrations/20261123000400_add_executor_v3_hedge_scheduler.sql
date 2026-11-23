@@ -58,6 +58,21 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_scheduler_events (
 CREATE INDEX IF NOT EXISTS idx_execution_hedge_scheduler_events_session
     ON public.execution_hedge_scheduler_events(session_id, created_at);
 
+DO $
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_hedge_scheduler_events'::regclass
+          AND conname='fk_hedge_scheduler_event_session_obligation'
+    ) THEN
+        ALTER TABLE public.execution_hedge_scheduler_events
+            ADD CONSTRAINT fk_hedge_scheduler_event_session_obligation
+            FOREIGN KEY (session_id, obligation_id)
+            REFERENCES public.execution_hedge_obligations(session_id, obligation_id)
+            ON DELETE RESTRICT;
+    END IF;
+END $;
+
 CREATE OR REPLACE FUNCTION public.reject_execution_hedge_scheduler_event_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
