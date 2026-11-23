@@ -388,6 +388,85 @@ class HedgeAttemptLedger:
         except Exception:
             return False
 
+    async def recover_unresolved_attempts(self, order_registry: Any) -> bool:
+        """Resolve crash-window attempts after Global STOP submit recovery.
+
+        This must run only after the GlobalStopService has completed its
+        authoritative client-order-ID reconciliation. A registry record with
+        a venue order ID proves acceptance; absence after that recovery pass
+        proves the pre-submit/submit attempt was rejected or never reached the
+        venue. Any inconclusive registry read fails closed.
+        """
+        pool = await self._pool()
+        if pool is None:
+            return False
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    select attempt_id, hedge_client_order_id, futures_exchange,
+                           status, version
+                    from public.executor_hedge_attempts
+                    where status in ('PREPARED','SUBMITTING','UNKNOWN')
+                    order by created_at
+                    """
+                )
+            for row in rows:
+                client_order_id = str(row["hedge_client_order_id"] or "")
+                exchange = str(row["futures_exchange"] or "").lower()
+                record = await order_registry.find_by_client_id(
+                    exchange, client_order_id
+                )
+                venue_order_id = str(
+                    getattr(record, "exchange_order_id", "") or ""
+                ) if record is not None else ""
+                if venue_order_id:
+                    async with pool.acquire() as conn:
+                        async with conn.transaction():
+                            adopted = await conn.fetchrow(
+                                """
+                                update public.executor_hedge_attempts
+                                set status='ACKNOWLEDGED', venue_order_id=$2,
+                                    submitted_at=coalesce(submitted_at,now()),
+                                    version=version+1, updated_at=now()
+                                where attempt_id=$1::uuid and version=$3
+                                  and status in ('PREPARED','SUBMITTING','UNKNOWN')
+                                returning version
+                                """,
+                                str(row["attempt_id"]), venue_order_id,
+                                int(row["version"]),
+                            )
+                            if adopted is None:
+                                return False
+                            await self._event(
+                                conn, row["attempt_id"],
+                                f"recovery-ack:{venue_order_id}",
+                                "ATTEMPT_RECOVERED_ACKNOWLEDGED",
+                                {
+                                    "client_order_id": client_order_id,
+                                    "venue_order_id": venue_order_id,
+                                },
+                            )
+                else:
+                    rejected = await self.mark_rejected(
+                        str(row["attempt_id"]),
+                        expected_version=int(row["version"]),
+                        from_status=str(row["status"]),
+                        reason=(
+                            "startup recovery completed Global STOP client-ID "
+                            "reconciliation and found no accepted venue order"
+                        ),
+                    )
+                    if not rejected:
+                        return False
+            return True
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception(
+                "failed to reconcile unresolved durable hedge attempts"
+            )
+            return False
+
     async def record_fill(
         self,
         *,
