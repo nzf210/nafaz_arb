@@ -186,6 +186,17 @@ class HedgeAttemptLedger:
                         """,
                         claim_key, attempt_no, scope, exchange, symbol, coid, requested,
                     )
+                    # Atomically promote the claim with its first durable
+                    # attempt. A crash can never leave a CLAIMED generation
+                    # whose PREPARED attempt is invisible to retry admission.
+                    await conn.execute(
+                        """
+                        update public.executor_hedge_intent_claims
+                        set status='SUBMITTED', version=version+1, updated_at=now()
+                        where claim_key=$1 and status='CLAIMED'
+                        """,
+                        claim_key,
+                    )
                     await self._event(
                         conn, row["attempt_id"], "prepared",
                         "ATTEMPT_PREPARED",
