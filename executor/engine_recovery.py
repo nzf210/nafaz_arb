@@ -624,6 +624,15 @@ class EngineRecoveryMixin:
                 token = self._bind_pair_client(self._pair_info_for_tag(pair_tag))
             self.pending_entry_orders[pair_tag] = order_info
             self.states[pair_tag] = PositionState.ENTRY_PENDING
+            order_info["spot_terminal"] = True
+            order_info["spot_terminal_status"] = str(status or "closed").lower()
+            order_info["spot_terminal_order"] = {
+                "id": order_id,
+                "status": order_info["spot_terminal_status"],
+                "filled": float(order_info.get("filled", 0.0) or 0.0),
+                "average": order_info.get("average"),
+                "price": order_info.get("price"),
+            }
             if not await self._reconcile_pending_entry_hedges(pair_tag, order_info):
                 self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
                 self._mark_failed(
