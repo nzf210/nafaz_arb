@@ -114,19 +114,195 @@ class ExecutionPnLAccountingService:
                     return {"duplicate": False, "pnl_snapshot_id": str(inserted["pnl_snapshot_id"])}
                 prior = await conn.fetchrow(
                     """
-                    SELECT pnl_snapshot_id, estimated_net_liquidation_pnl, confidence
+                    SELECT pnl_snapshot_id, pair_key, reporting_currency, confidence,
+                           evaluated_at, spot_estimated_liquidation_pnl,
+                           futures_estimated_liquidation_pnl, funding_reporting_amount,
+                           entry_fees_reporting, estimated_exit_fees_reporting,
+                           estimated_tax_reporting, conversion_cost_reporting,
+                           estimated_net_liquidation_pnl, strategy_roi_pct,
+                           return_on_deployed_capital_pct, total_deployed_capital_reporting,
+                           spot_exit_vwap, futures_exit_vwap, spot_slippage_bps,
+                           futures_slippage_bps, spot_executable_base_quantity,
+                           futures_executable_base_quantity, hedge_drift_base_quantity,
+                           provenance
                     FROM public.execution_pnl_snapshots
                     WHERE session_id=$1 AND idempotency_key=$2
                     """,
                     snapshot.session_id, key,
                 )
-                if prior is None or (
-                    Decimal(str(prior["estimated_net_liquidation_pnl"]))
-                    != snapshot.estimated_net_liquidation_pnl
-                    or str(prior["confidence"]) != snapshot.confidence
+                expected_snapshot = {
+                    "pair_key": snapshot.pair_key,
+                    "reporting_currency": snapshot.reporting_currency,
+                    "confidence": snapshot.confidence,
+                    "evaluated_at": values[4],
+                    "spot_estimated_liquidation_pnl": snapshot.spot_estimated_liquidation_pnl,
+                    "futures_estimated_liquidation_pnl": snapshot.futures_estimated_liquidation_pnl,
+                    "funding_reporting_amount": snapshot.funding_reporting_amount,
+                    "entry_fees_reporting": snapshot.entry_fees_reporting,
+                    "estimated_exit_fees_reporting": snapshot.estimated_exit_fees_reporting,
+                    "estimated_tax_reporting": snapshot.estimated_tax_reporting,
+                    "conversion_cost_reporting": snapshot.conversion_cost_reporting,
+                    "estimated_net_liquidation_pnl": snapshot.estimated_net_liquidation_pnl,
+                    "strategy_roi_pct": snapshot.strategy_roi_pct,
+                    "return_on_deployed_capital_pct": snapshot.return_on_deployed_capital_pct,
+                    "total_deployed_capital_reporting": snapshot.total_deployed_capital_reporting,
+                    "spot_exit_vwap": snapshot.spot_exit_vwap,
+                    "futures_exit_vwap": snapshot.futures_exit_vwap,
+                    "spot_slippage_bps": snapshot.spot_slippage_bps,
+                    "futures_slippage_bps": snapshot.futures_slippage_bps,
+                    "spot_executable_base_quantity": snapshot.spot_executable_base_quantity,
+                    "futures_executable_base_quantity": snapshot.futures_executable_base_quantity,
+                    "hedge_drift_base_quantity": snapshot.hedge_drift_base_quantity,
+                    "provenance": snapshot.provenance,
+                }
+                if prior is None or any(
+                    (
+                        Decimal(str(prior[name])) != value
+                        if isinstance(value, Decimal)
+                        else (
+                            prior[name] != value
+                            if name in {"evaluated_at"}
+                            else str(prior[name]) != str(value)
+                        )
+                    )
+                    for name, value in expected_snapshot.items()
                 ):
                     raise PnLAccountingError("snapshot idempotency key was reused with changed valuation")
                 return {"duplicate": True, "pnl_snapshot_id": str(prior["pnl_snapshot_id"])}
+
+
+    async def record_funding_event(
+        self, *, session_id: str, futures_leg_id: str, account_scope_id: str,
+        venue: str, market_type: str, symbol: str, exchange_payment_id: str,
+        amount: Any, asset: str, reporting_amount: Any,
+        reporting_currency: str, fx_rate: Any, fx_source: str,
+        fx_observed_at: Any, settled_at: Any, raw_payload: dict | None,
+        coordinator_lease: Any, fencing_generation: int,
+    ) -> dict:
+        """Append a verified exchange funding settlement and its PnL ledger entry."""
+        payment_id = str(exchange_payment_id or "").strip()
+        account = str(account_scope_id or "").strip()
+        venue_name = str(venue or "").strip().lower()
+        market = str(market_type or "").strip().lower()
+        instrument = str(symbol or "").strip()
+        currency = str(asset or "").strip().upper()
+        reporting = str(reporting_currency or "").strip().upper()
+        source = str(fx_source or "").strip()
+        if not all((payment_id, account, venue_name, market, instrument, currency, reporting, source)):
+            raise PnLAccountingError("funding event identity and FX provenance are required")
+        signed_amount = _d(amount, "funding.amount")
+        valued_amount = _d(reporting_amount, "funding.reporting_amount")
+        rate = _d(fx_rate, "funding.fx_rate", positive=True)
+        if coordinator_lease is None:
+            raise PnLAccountingError("funding event requires coordinator lease")
+        if not isinstance(fx_observed_at, datetime) or not isinstance(settled_at, datetime):
+            raise PnLAccountingError("funding FX observation and settlement timestamps are required")
+        raw = _json(raw_payload or {})
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                session = await conn.fetchrow(
+                    """
+                    SELECT account_scope_id, coordinator_scope_key, coordinator_owner_id
+                    FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
+                    """,
+                    session_id,
+                )
+                if session is None or str(session["account_scope_id"]) != account:
+                    raise PnLAccountingError("funding account scope does not match session")
+                await validate_coordinator_lease(
+                    conn, coordinator_lease, session_id=session_id,
+                    account_scope_id=account, expected_generation=fencing_generation,
+                    session_scope_key=session["coordinator_scope_key"],
+                    session_owner_id=session["coordinator_owner_id"],
+                )
+                leg = await conn.fetchrow(
+                    """
+                    SELECT leg_type, venue, market_type, symbol
+                    FROM public.execution_legs
+                    WHERE session_id=$1 AND leg_id=$2
+                    """,
+                    session_id, futures_leg_id,
+                )
+                if leg is None or (
+                    str(leg["leg_type"]).upper() != "FUTURES"
+                    or str(leg["venue"]).lower() != venue_name
+                    or str(leg["market_type"]).lower() != market
+                    or str(leg["symbol"]) != instrument
+                ):
+                    raise PnLAccountingError("funding event does not match the session Futures leg")
+                if abs((settled_at - fx_observed_at).total_seconds()) > 300:
+                    raise PnLAccountingError("funding FX evidence is stale relative to settlement")
+
+                event = await conn.fetchrow(
+                    """
+                    INSERT INTO public.execution_funding_events (
+                        session_id,futures_leg_id,account_scope_id,venue,market_type,
+                        symbol,exchange_payment_id,amount,asset,reporting_amount,
+                        reporting_currency,fx_rate,fx_source,fx_observed_at,
+                        valuation_verified,settled_at,raw_payload
+                    ) VALUES (
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+                        TRUE,$15,$16::jsonb
+                    )
+                    ON CONFLICT (account_scope_id,venue,market_type,symbol,exchange_payment_id)
+                    DO NOTHING
+                    RETURNING funding_event_id
+                    """,
+                    session_id, futures_leg_id, account, venue_name, market,
+                    instrument, payment_id, signed_amount, currency, valued_amount,
+                    reporting, rate, source, fx_observed_at, settled_at, raw,
+                )
+                if event is None:
+                    prior = await conn.fetchrow(
+                        """
+                        SELECT funding_event_id, session_id, amount, reporting_amount,
+                               reporting_currency, fx_rate, fx_source
+                        FROM public.execution_funding_events
+                        WHERE account_scope_id=$1 AND venue=$2 AND market_type=$3
+                          AND symbol=$4 AND exchange_payment_id=$5
+                        """,
+                        account, venue_name, market, instrument, payment_id,
+                    )
+                    if prior is None or (
+                        str(prior["session_id"]) != session_id
+                        or Decimal(str(prior["amount"])) != signed_amount
+                        or Decimal(str(prior["reporting_amount"])) != valued_amount
+                        or str(prior["reporting_currency"]).upper() != reporting
+                        or Decimal(str(prior["fx_rate"])) != rate
+                        or str(prior["fx_source"]) != source
+                    ):
+                        raise PnLAccountingError("funding payment identity was replayed with changed valuation")
+                    return {"duplicate": True, "funding_event_id": str(prior["funding_event_id"])}
+
+                ledger = await conn.fetchrow(
+                    """
+                    INSERT INTO public.execution_pnl_ledger (
+                        session_id,source_funding_event_id,entry_type,amount_reporting,
+                        reporting_currency,evidence_source,idempotency_key,detail,occurred_at
+                    ) VALUES (
+                        $1,$2::uuid,'FUNDING',$3,$4,'VERIFIED_EXCHANGE_FUNDING',
+                        $5,$6::jsonb,$7
+                    )
+                    ON CONFLICT (session_id,idempotency_key) DO NOTHING
+                    RETURNING pnl_entry_id
+                    """,
+                    session_id, str(event["funding_event_id"]), valued_amount,
+                    reporting, "funding:" + payment_id,
+                    _json({
+                        "exchange_payment_id": payment_id, "amount": str(signed_amount),
+                        "asset": currency, "fx_rate": str(rate), "fx_source": source,
+                        "fx_observed_at": fx_observed_at.isoformat(),
+                    }),
+                    settled_at,
+                )
+                if ledger is None:
+                    raise PnLAccountingError("funding PnL append lost an idempotency race")
+                return {
+                    "duplicate": False, "funding_event_id": str(event["funding_event_id"]),
+                    "pnl_entry_id": str(ledger["pnl_entry_id"]),
+                    "amount_reporting": str(valued_amount), "reporting_currency": reporting,
+                }
 
     async def record_realized_fill_match(
         self, *, session_id: str, entry_fill_id: str, exit_fill_id: str,
