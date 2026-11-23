@@ -35,7 +35,7 @@ class HedgeReservationMixin(HedgeServiceBase):
             "unit": _text(quantity_unit, "quantity_unit").upper(),
         }
         if route["side"] not in {"LONG", "SHORT"}:
-            raise FillValidationError("position_side must be LONG or SHORT")
+            raise HedgeObligationError("position_side must be LONG or SHORT")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 session = await self._lock_session(
@@ -129,10 +129,10 @@ class HedgeReservationMixin(HedgeServiceBase):
                     await conn.execute(
                         """
                         INSERT INTO public.execution_hedge_reservation_items (
-                            reservation_id, obligation_id, reserved_base_quantity
-                        ) VALUES ($1::uuid,$2::uuid,$3)
+                            session_id, reservation_id, obligation_id, reserved_base_quantity
+                        ) VALUES ($1,$2::uuid,$3::uuid,$4)
                         """,
-                        reservation["reservation_id"], obligation["obligation_id"], take,
+                        session_id, reservation["reservation_id"], obligation["obligation_id"], take,
                     )
                     updated_obligation = await conn.execute(
                         """
@@ -264,6 +264,8 @@ class HedgeReservationMixin(HedgeServiceBase):
         """Release only proven-unfilled quantity; unknown orders remain reserved."""
         actor = _text(actor_id, "actor_id")
         key = _text(event_idempotency_key, "event_idempotency_key")
+        if not isinstance(terminal_order_verified, bool) or not isinstance(fills_reconciled, bool):
+            raise HedgeObligationError("terminal order and fill reconciliation evidence must be booleans")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 session = await self._lock_session(
