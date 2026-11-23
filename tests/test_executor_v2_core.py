@@ -205,12 +205,19 @@ class _FakeGatewayStop:
         self.stop_notifications.append(state)
 
 
+class _GatewayVenueClient:
+    """Strict fake venue: unlike bare AsyncMock, it has no dynamic facade methods."""
+    def __init__(self, venue_id):
+        self.id = venue_id
+        self.create_order_direct = AsyncMock()
+
+
 @pytest.mark.asyncio
 async def test_mutation_gateway_create_and_timeout():
     slot_mgr = OrderSlotManager()
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
-    client_mock = AsyncMock()
+    client_mock = _GatewayVenueClient("tokocrypto")
     client_mock.id = "tokocrypto"
     client_mock.create_order_direct.return_value = {
         "id": "ex-101", "filled": 1.5, "price": 100.0,
@@ -229,7 +236,7 @@ async def test_mutation_gateway_create_and_timeout():
     assert stop.acknowledged
     assert await slot_mgr.get_active_slots_count("tokocrypto") == 1
 
-    slow_client = AsyncMock()
+    slow_client = _GatewayVenueClient("tokocrypto")
     slow_client.id = "tokocrypto"
     slow_client.create_order_direct.side_effect = asyncio.TimeoutError("gateway timeout")
     res_timeout = await gateway.execute_create_order(
@@ -245,7 +252,7 @@ async def test_mutation_gateway_create_and_timeout():
 @pytest.mark.asyncio
 async def test_mutation_gateway_create_fails_closed_without_initialized_global_stop():
     gateway = MutationGateway(global_stop=None, slot_manager=OrderSlotManager())
-    client_mock = AsyncMock()
+    client_mock = _GatewayVenueClient("tokocrypto")
     result = await gateway.execute_create_order(
         client_mock, exchange="tokocrypto", market_type="spot",
         symbol="BTC/BIDR", side="buy", order_type="limit",
@@ -261,7 +268,7 @@ async def test_mutation_gateway_connection_reset_is_unknown_and_keeps_slot():
     slot_mgr = OrderSlotManager()
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
-    client_mock = AsyncMock()
+    client_mock = _GatewayVenueClient("okx")
     client_mock.id = "okx"
     client_mock.create_order_direct.side_effect = ConnectionResetError("socket reset")
     result = await gateway.execute_create_order(
@@ -282,7 +289,7 @@ async def test_mutation_gateway_definitive_rejection_releases_slot_after_ledger_
     slot_mgr = OrderSlotManager()
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
-    client_mock = AsyncMock()
+    client_mock = _GatewayVenueClient("tokocrypto")
     client_mock.id = "tokocrypto"
     client_mock.create_order_direct.side_effect = InvalidOrder("invalid order")
     result = await gateway.execute_create_order(
@@ -299,7 +306,7 @@ async def test_mutation_gateway_definitive_rejection_releases_slot_after_ledger_
 async def test_mutation_gateway_missing_order_id_remains_unknown():
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=OrderSlotManager())
-    client_mock = AsyncMock()
+    client_mock = _GatewayVenueClient("mexc")
     client_mock.id = "mexc"
     client_mock.create_order_direct.return_value = {"status": "open"}
     result = await gateway.execute_create_order(
@@ -316,7 +323,7 @@ async def test_mutation_gateway_ack_persistence_failure_keeps_unresolved_slot():
     stop = _FakeGatewayStop(fail_ack=True)
     slot_mgr = OrderSlotManager()
     gateway = MutationGateway(global_stop=stop, slot_manager=slot_mgr)
-    client_mock = AsyncMock()
+    client_mock = _GatewayVenueClient("okx")
     client_mock.id = "okx"
     client_mock.create_order_direct.return_value = {"id": "accepted-but-unpersisted"}
     result = await gateway.execute_create_order(
@@ -332,7 +339,7 @@ async def test_mutation_gateway_ack_persistence_failure_keeps_unresolved_slot():
 async def test_mutation_gateway_explicit_ip_ban_persists_global_stop():
     stop = _FakeGatewayStop()
     gateway = MutationGateway(global_stop=stop, slot_manager=OrderSlotManager())
-    client_mock = AsyncMock()
+    client_mock = _GatewayVenueClient("okx")
     client_mock.id = "okx"
     client_mock.create_order_direct.side_effect = RuntimeError(
         "HTTP_418: IP address banned until reset"
