@@ -74,7 +74,6 @@ def _same_fill(row: Any, facts: Mapping[str, Any]) -> bool:
         and str(row["fee_source"] or "") == facts["fee_source"]
         and str(row["exchange_order_id"] or "") == facts["exchange_order_id"]
         and str(row["client_order_id"] or "") == facts["client_order_id"]
-        and str(row["source_event_id"] or "") == facts["source_event_id"]
         and row["filled_at"] == facts["filled_at"]
     )
 
@@ -309,7 +308,7 @@ class ExecutionFillService:
             "filled_at": _timestamp(filled_at),
             "fee_amount": _decimal(fee_amount, "fee_amount", positive=False),
             "fee_asset": str(fee_asset or "").strip().upper(),
-            "fee_verified": bool(fee_verified),
+            "fee_verified": fee_verified,
             "fee_source": str(fee_source or "UNVERIFIED")[:60],
             "exchange_order_id": str(exchange_order_id or ""),
             "client_order_id": str(client_order_id or ""),
@@ -322,6 +321,10 @@ class ExecutionFillService:
             raise FillValidationError("session, leg, account, venue, market, symbol, trade and quote identity are required")
         if facts["side"] not in {"buy", "sell"}:
             raise FillValidationError("side must be buy or sell")
+        if not isinstance(fee_verified, bool):
+            raise FillValidationError("fee_verified must be a boolean")
+        if facts["fee_amount"] > 0 and not facts["fee_asset"]:
+            raise FillValidationError("fee_asset is required when fee_amount is positive")
         facts["quote_quantity"] = (
             _decimal(quote_quantity, "quote_quantity")
             if quote_quantity is not None
@@ -493,7 +496,9 @@ class ExecutionFillService:
                     SET status=$3, state_version=$4,
                         confirmed_filled_quantity=$5, confirmed_quote_quantity=$6,
                         confirmed_price_quantity=$7, confirmed_exposure_quantity=$8,
-                        average_fill_price=$9, last_fill_at=$10, updated_at=clock_timestamp()
+                        average_fill_price=$9,
+                        last_fill_at=GREATEST(COALESCE(last_fill_at,$10),$10),
+                        updated_at=clock_timestamp()
                     WHERE session_id=$1 AND leg_id=$2 AND state_version=$11
                     """,
                     facts["session_id"], facts["leg_id"], leg_target, new_leg_version,
