@@ -78,6 +78,10 @@ class HedgeReservationMixin(HedgeServiceBase):
                     conn, session_id=session_id, lease=coordinator_lease,
                     generation=fencing_generation,
                 )
+                if str(session["status"]).upper() not in {"HEDGE_PENDING", "PARTIALLY_HEDGED"}:
+                    raise HedgeObligationError(
+                        f"cannot reserve hedge obligations while session is {session['status']}"
+                    )
                 prior = await conn.fetchrow(
                     "SELECT * FROM public.execution_hedge_reservations WHERE session_id=$1 AND idempotency_key=$2 FOR UPDATE",
                     session_id, key,
@@ -222,6 +226,10 @@ class HedgeReservationMixin(HedgeServiceBase):
                     conn, session_id=session_id, lease=coordinator_lease,
                     generation=fencing_generation,
                 )
+                if str(session["status"]).upper() not in {"HEDGE_PENDING", "PARTIALLY_HEDGED"}:
+                    raise HedgeObligationError(
+                        f"cannot submit hedge reservation while session is {session['status']}"
+                    )
                 reservation = await conn.fetchrow(
                     "SELECT * FROM public.execution_hedge_reservations WHERE reservation_id=$1::uuid AND session_id=$2 FOR UPDATE",
                     reservation_id, session_id,
