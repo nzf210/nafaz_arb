@@ -16,6 +16,7 @@ from executor.hedge_liquidity_evaluator import (
     evaluate_hedge_liquidity,
 )
 from executor.hedge_scheduler import HedgeScheduler
+from executor.execution_hedge_common import HedgeObligationError
 from executor.ownership import OwnershipLeaseService
 from executor.session_coordinator import SessionCoordinator
 
@@ -265,7 +266,7 @@ async def test_scheduler_rejects_forged_submit_quantity_above_durable_obligation
         estimated_total_cost_bps=Decimal("10"),
         book_age_ms=0,
     )
-    with pytest.raises(Exception, match="exceeds the unreserved hedge obligation"):
+    with pytest.raises(HedgeObligationError, match="exceeds the unreserved hedge obligation"):
         await HedgeScheduler(postgres_pool).record_decision(
             session_id=admitted["session_id"], obligation_id=obligation["obligation_id"],
             decision=forged, actor_id="scheduler-integration-test",
