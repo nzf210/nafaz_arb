@@ -369,3 +369,20 @@ async def test_verified_fee_requires_asset_and_authoritative_source():
     }
     with pytest.raises(FillValidationError, match="verified fees require"):
         await service.record_fill(**args)
+
+
+@pytest.mark.asyncio
+async def test_postgres_entry_fill_rejects_exit_direction_on_entry_legs(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, leg_version, aggregate = await _admitted_session(postgres_pool, suffix)
+    args = _fill_args(admitted, suffix, leg_version, aggregate)
+    with pytest.raises(FillValidationError, match="entry fill side"):
+        await ExecutionFillService(postgres_pool).record_fill(
+            **{**args, "side": "sell"},
+        )
+    async with postgres_pool.acquire() as conn:
+        count = await conn.fetchval(
+            "SELECT count(*) FROM public.execution_fills WHERE session_id=$1",
+            admitted["session_id"],
+        )
+    assert count == 0
