@@ -716,3 +716,46 @@ begin
         raise exception 'hedge scheduler event session/obligation foreign key is missing';
     end if;
 end $hedge_scheduler_smoke$;
+
+-- Executor V3 PR-07: position, funding and PnL accounting isolation.
+do $position_pnl_smoke$
+begin
+    if not exists (
+        select 1 from pg_class
+        where oid='public.execution_positions'::regclass and relrowsecurity
+    ) or not exists (
+        select 1 from pg_class
+        where oid='public.execution_pnl_ledger'::regclass and relrowsecurity
+    ) or not exists (
+        select 1 from pg_class
+        where oid='public.execution_pnl_snapshots'::regclass and relrowsecurity
+    ) or not exists (
+        select 1 from pg_class
+        where oid='public.execution_funding_events'::regclass and relrowsecurity
+    ) then
+        raise exception 'V3 position/PnL RLS is not enabled';
+    end if;
+    if has_table_privilege('anon','public.execution_pnl_ledger','select')
+       or has_table_privilege('authenticated','public.execution_pnl_ledger','select')
+       or has_table_privilege('service_role','public.execution_pnl_ledger','update')
+       or has_table_privilege('service_role','public.execution_pnl_ledger','delete')
+       or not has_table_privilege('service_role','public.execution_pnl_ledger','insert') then
+        raise exception 'V3 PnL ledger grants are invalid';
+    end if;
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.execution_fills'::regclass
+          and conname='execution_fills_role_valid'
+    ) or not exists (
+        select 1 from pg_constraint
+        where conrelid='public.execution_pnl_ledger'::regclass
+          and conname='execution_pnl_ledger_session_fill_fkey'
+    ) or not exists (
+        select 1 from pg_trigger
+        where tgrelid='public.execution_pnl_ledger'::regclass
+          and tgname='trg_execution_pnl_ledger_append_only'
+          and not tgisinternal
+    ) then
+        raise exception 'V3 fill role, session-bound PnL FK, or append-only trigger is missing';
+    end if;
+end $position_pnl_smoke$;
