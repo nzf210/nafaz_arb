@@ -252,9 +252,9 @@ async def test_session_bound_futures_sell_cannot_use_entry_action_class(postgres
     assert result.status == MutationResultType.REJECTED
     assert venue.calls == []
     async with postgres_pool.acquire() as conn:
-        attempt_count = await conn.fetchval(
-            "SELECT count(*) FROM public.executor_submit_attempts WHERE client_order_id=$1",
+        attempt_status = await conn.fetchval(
+            "SELECT status FROM public.executor_submit_attempts WHERE client_order_id=$1",
             intent["client_order_id"],
         )
-        assert attempt_count == 0
+        assert attempt_status == "ABORTED"
         await global_stop.ownership.release_all(conn)
