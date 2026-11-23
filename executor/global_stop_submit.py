@@ -751,37 +751,37 @@ class GlobalStopSubmitMixin:
                                 )
                             if session_id and leg_id:
                                 session_gate = await conn.fetchrow(
-                                """
-                                SELECT s.status AS session_status,
-                                       l.status AS leg_status
-                                FROM public.execution_sessions s
-                                JOIN public.execution_legs l
-                                  ON l.session_id=s.session_id AND l.leg_id=$2
-                                JOIN public.executor_ownership_leases cl
-                                  ON cl.scope_key=s.coordinator_scope_key
-                                 AND cl.account_scope_id=s.account_scope_id
-                                 AND cl.venue='coordinator'
-                                 AND cl.market_type='session'
-                                 AND cl.instrument=s.session_id
-                                 AND cl.owner_id=s.coordinator_owner_id
-                                 AND cl.generation=s.fencing_generation
-                                 AND cl.lease_expires_at > clock_timestamp()
-                                WHERE s.session_id=$1
-                                  AND s.account_scope_id=$3
-                                  AND l.venue=$4
-                                  AND l.market_type=$5
-                                  AND l.symbol=$6
-                                FOR UPDATE OF s, l, cl
-                                """,
-                                session_id, leg_id, str(intent["account_scope_id"]),
-                                str(intent["exchange"]).lower(),
-                                str(intent["market_type"]).lower(),
-                                str(intent["symbol"]),
-                            )
-                            if session_gate is None or (
-                                str(session_gate["session_status"]).upper() != "ENTRY_IN_PROGRESS"
-                                or str(session_gate["leg_status"]).upper() != "PREPARED"
-                            ):
+                                    """
+                                    SELECT s.status AS session_status,
+                                           l.status AS leg_status
+                                    FROM public.execution_sessions s
+                                    JOIN public.execution_legs l
+                                      ON l.session_id=s.session_id AND l.leg_id=$2
+                                    JOIN public.executor_ownership_leases cl
+                                      ON cl.scope_key=s.coordinator_scope_key
+                                     AND cl.account_scope_id=s.account_scope_id
+                                     AND cl.venue='coordinator'
+                                     AND cl.market_type='session'
+                                     AND cl.instrument=s.session_id
+                                     AND cl.owner_id=s.coordinator_owner_id
+                                     AND cl.generation=s.fencing_generation
+                                     AND cl.lease_expires_at > clock_timestamp()
+                                    WHERE s.session_id=$1
+                                      AND s.account_scope_id=$3
+                                      AND l.venue=$4
+                                      AND l.market_type=$5
+                                      AND l.symbol=$6
+                                    FOR UPDATE OF s, l, cl
+                                    """,
+                                    session_id, leg_id, str(intent["account_scope_id"]),
+                                    str(intent["exchange"]).lower(),
+                                    str(intent["market_type"]).lower(),
+                                    str(intent["symbol"]),
+                                )
+                                if session_gate is None or (
+                                    str(session_gate["session_status"]).upper() != "ENTRY_IN_PROGRESS"
+                                    or str(session_gate["leg_status"]).upper() != "PREPARED"
+                                ):
                                     raise GlobalStopError(
                                         "session-bound ENTRY intent is not admitted for submission: "
                                         "session must be ENTRY_IN_PROGRESS, leg PREPARED, and coordinator lease active"
