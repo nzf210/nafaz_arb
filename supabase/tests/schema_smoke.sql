@@ -667,4 +667,13 @@ begin
     ) then
         raise exception 'hedge release evidence constraint or unique client-order index is missing';
     end if;
+
+    if not exists (
+        select 1 from pg_trigger
+        where tgrelid='public.execution_hedge_reservations'::regclass
+          and tgname='trg_execution_hedge_release_evidence_immutable'
+          and not tgisinternal
+    ) then
+        raise exception 'hedge reservation release evidence immutability trigger is missing';
+    end if;
 end $hedge_smoke$;
