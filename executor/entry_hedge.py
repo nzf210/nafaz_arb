@@ -455,9 +455,10 @@ class EntryHedgeMixin:
             # sizing; never submit from a stale worker-local hedge watermark.
             order_info["hedge_claim_key"] = claim["claim_key"]
             order_info["hedge_claim_client_order_id"] = claim["hedge_client_order_id"]
-            order_info["hedged_short_qty"] = max(
-                float(order_info.get("hedged_short_qty", 0.0) or 0.0),
-                float(claim.get("confirmed_qty", 0.0) or 0.0),
+            # The attempt fill ledger is the durable hedge watermark.
+            # Never let a local order snapshot outrank verified trade facts.
+            order_info["hedged_short_qty"] = float(
+                claim.get("confirmed_qty", 0.0) or 0.0
             )
             unhedged_delta = float(claim["residual_qty"])
             if unhedged_delta <= 0:
