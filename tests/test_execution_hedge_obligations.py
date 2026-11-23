@@ -436,3 +436,17 @@ async def test_invalid_hedge_position_side_uses_domain_error_without_database_ac
             minimum_base_quantity="0.001", idempotency_key="invalid-side",
             actor_id="test", coordinator_lease=object(), fencing_generation=1,
         )
+
+
+@pytest.mark.asyncio
+async def test_hedge_ratio_above_one_requires_explicit_policy():
+    class NoDatabase:
+        def acquire(self):
+            raise AssertionError("invalid hedge ratio must fail before database access")
+    service = ExecutionHedgeObligationService(NoDatabase())
+    with pytest.raises(HedgeObligationError, match="over-hedge policy"):
+        await service.create_from_spot_fill(
+            session_id="s", spot_fill_id="00000000-0000-0000-0000-000000000001",
+            hedge_ratio="1.01", actor_id="test",
+            coordinator_lease=object(), fencing_generation=1,
+        )
