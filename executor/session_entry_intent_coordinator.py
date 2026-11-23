@@ -50,11 +50,13 @@ class SessionEntryIntentCoordinator:
     def __init__(
         self, pool: Any, *,
         order_intents: OrderIntentService | None = None,
+        repository: Any = None,
     ) -> None:
         if pool is None or not hasattr(pool, "acquire"):
             raise ValueError("a PostgreSQL pool is required")
         self.pool = pool
         self.order_intents = order_intents or OrderIntentService(pool)
+        self.repository = repository
 
     async def prepare_entry(
         self, *, session_id: str, coordinator_lease: Any,
@@ -237,15 +239,19 @@ class SessionEntryIntentCoordinator:
             "aggregate_version": aggregate_version + (1 if snapshot["state"] == "ADMITTED" else 0),
         }
 
+    def _repository(self) -> Any:
+        if self.repository is None:
+            from executor.execution_repository import ExecutionSessionRepository
+            self.repository = ExecutionSessionRepository(self.pool)
+        return self.repository
+
     async def _transition_leg(
         self, *, session_id: str, leg_id: str,
         expected_leg_state_version: int, expected_aggregate_version: int,
         fencing_generation: int, coordinator_lease: Any,
         actor_id: str, idempotency_key: str,
     ) -> dict:
-        from executor.execution_repository import ExecutionSessionRepository
-
-        repository = ExecutionSessionRepository(self.pool)
+        repository = self._repository()
         return await repository.transition_leg(
             session_id=session_id, leg_id=leg_id, target_state="PREPARED",
             expected_leg_state_version=expected_leg_state_version,
@@ -264,9 +270,7 @@ class SessionEntryIntentCoordinator:
         coordinator_lease: Any, actor_id: str, idempotency_key: str,
         payload: Mapping[str, Any],
     ) -> dict:
-        from executor.execution_repository import ExecutionSessionRepository
-
-        repository = ExecutionSessionRepository(self.pool)
+        repository = self._repository()
         return await repository.transition_session(
             session_id=session_id, target_state="ENTRY_IN_PROGRESS",
             expected_state_version=expected_state_version,
