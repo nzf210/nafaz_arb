@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from executor.execution_repository import ExecutionRepositoryError
+from executor.execution_states import SESSION_TRANSITIONS
 from executor.execution_repository_fencing import (
     insert_session_event, validate_coordinator_lease,
 )
@@ -18,16 +19,16 @@ def _qty(value: Any, name: str, *, allow_zero: bool = False) -> Decimal:
     try:
         result = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a finite decimal") from exc
+        raise HedgeObligationError(f"{name} must be a finite decimal") from exc
     if not result.is_finite() or (result < 0 if allow_zero else result <= 0):
-        raise ValueError(f"{name} must be {'non-negative' if allow_zero else 'positive'}")
+        raise HedgeObligationError(f"{name} must be {'non-negative' if allow_zero else 'positive'}")
     return result
 
 
 def _text(value: Any, name: str) -> str:
     result = str(value or "").strip()
     if not result:
-        raise ValueError(f"{name} is required")
+        raise HedgeObligationError(f"{name} is required")
     return result
 
 
@@ -54,6 +55,11 @@ class HedgeServiceBase:
         )
         if row is None:
             raise HedgeObligationError("execution session does not exist")
+        if (
+            row["fencing_generation"] is None
+            or int(row["fencing_generation"]) != int(generation)
+        ):
+            raise HedgeObligationError("coordinator fencing generation does not match session")
         await validate_coordinator_lease(
             conn, lease, session_id=session_id,
             account_scope_id=str(row["account_scope_id"]),
@@ -72,6 +78,10 @@ class HedgeServiceBase:
         version = int(session["aggregate_version"]) + 1
         current_state = str(session["status"]).upper()
         next_state = str(target_state or current_state).upper()
+        if next_state != current_state and next_state not in SESSION_TRANSITIONS.get(current_state, set()):
+            raise HedgeObligationError(
+                f"invalid session transition {current_state} -> {next_state}"
+            )
         next_state_version = int(session["state_version"]) + (
             1 if next_state != current_state else 0
         )
