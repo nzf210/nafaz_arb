@@ -104,6 +104,11 @@ class EntryMonitoringMixin:
         # handler could open a hedge for exposure that no longer exists.
         if self.states.get(pair_tag) in (PositionState.FAILED, PositionState.CLOSED):
             return True
+        # A terminal Spot order with a reconciled partial Futures attempt is
+        # retained only as a durable residual-hedge work item. It must not be
+        # canceled, repriced, or subjected to maker adverse-selection checks.
+        if order_info.get("spot_terminal"):
+            return False
         return await self._check_adverse_selection(pair_tag, order_info)
 
     async def _process_pending_entry_bound(self, pair_tag: str, order_info: dict) -> None:
@@ -117,6 +122,31 @@ class EntryMonitoringMixin:
 
             order_id = order_info["order_id"]
             local_symbol = order_info["symbol"]
+
+            if order_info.get("spot_terminal"):
+                # The Spot order is already terminal. Keep using its persisted
+                # fill watermark and retry only the outstanding Futures hedge
+                # after the previous attempt has been reconciled. Never poll,
+                # cancel, or replace the terminal Spot order again.
+                retry_after = float(order_info.get("hedge_retry_after", 0.0) or 0.0)
+                if time.time() < retry_after:
+                    return
+                terminal_order = dict(
+                    order_info.get("spot_terminal_order")
+                    if isinstance(order_info.get("spot_terminal_order"), dict)
+                    else {}
+                )
+                terminal_order.update({
+                    "id": order_id,
+                    "status": str(order_info.get("spot_terminal_status") or "closed"),
+                    "filled": float(order_info.get("filled", 0.0) or 0.0),
+                })
+                await self._handle_entry_fills(pair_tag, order_info, terminal_order)
+                await self._persist_pending_entry(pair_tag, order_info, ttl=None)
+                await self._finalize_entry_order(
+                    pair_tag, terminal_order["status"]
+                )
+                return
 
             # Backoff gate: a venue answering 429/HTML (or timing out) must not
             # be polled 20x/second. Skip this tick while the per-order backoff
@@ -152,11 +182,15 @@ class EntryMonitoringMixin:
                 await self._expire_unfetchable_entry_order(pair_tag, order_info)
                 return
 
-            if await self._expire_stale_entry_order(pair_tag, order_info, order):
-                return
-
-            if await self._refresh_stale_maker_quote(pair_tag, order_info, order):
-                return
+            observed_status = str(order.get("status", "")).lower()
+            is_terminal_status = observed_status in (
+                "closed", "canceled", "cancelled", "rejected", "expired",
+            )
+            if not is_terminal_status:
+                if await self._expire_stale_entry_order(pair_tag, order_info, order):
+                    return
+                if await self._refresh_stale_maker_quote(pair_tag, order_info, order):
+                    return
 
             self.supabase.order(
                 pair_tag,
@@ -169,11 +203,24 @@ class EntryMonitoringMixin:
                 is_mock=bool(getattr(self.config, "mock_mode", False)),
                 submitted_at_ms=int(float(order_info.get("placed_time", 0.0) or 0.0) * 1000) or None,
             )
-            observed_status = str(order.get("status", "")).lower()
-            is_terminal_status = observed_status in (
-                "closed", "canceled", "cancelled", "rejected", "expired",
-            )
             if is_terminal_status:
+                order_info["spot_terminal"] = True
+                order_info["spot_terminal_status"] = observed_status
+                order_info["spot_terminal_order"] = {
+                    "id": str(order_id),
+                    "status": observed_status,
+                    "filled": float(order.get("filled", 0.0) or 0.0),
+                    "average": (
+                        float(order["average"])
+                        if isinstance(order.get("average"), (int, float))
+                        else None
+                    ),
+                    "price": (
+                        float(order["price"])
+                        if isinstance(order.get("price"), (int, float))
+                        else None
+                    ),
+                }
                 self.supabase.event(
                     "ENTRY_ORDER_TERMINAL_OBSERVED",
                     pair_key=pair_tag,

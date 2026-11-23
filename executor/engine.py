@@ -51,6 +51,7 @@ from executor.supabase import SupabaseWriter
 from executor.global_stop import GlobalStopService
 from executor.fill_ledger import ExecutionFillLedger
 from executor.hedge_claims import HedgeIntentClaimService
+from executor.hedge_attempt_ledger import HedgeAttemptLedger
 from executor.postgres_risk import PostgresRiskStateService
 from executor.order_slots import OrderSlotManager
 from executor.mutation_gateway import MutationGateway
@@ -208,6 +209,7 @@ class ArbitrageEngine(
         self.fill_ledger = ExecutionFillLedger(dsn=pg_dsn) if pg_dsn else None
         # Cross-instance hedge generation claims share the fencing pool.
         self.hedge_claims = HedgeIntentClaimService(global_stop=self.global_stop)
+        self.hedge_attempt_ledger = HedgeAttemptLedger(global_stop=self.global_stop)
         self.slot_manager = OrderSlotManager()
         self.mutation_gateway = MutationGateway(
             global_stop=self.global_stop,

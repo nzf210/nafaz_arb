@@ -269,10 +269,10 @@ class EntryHedgeMixin:
             # through. A deferred hedge (wait_until_covered) keeps the pair in
             # ENTRY_PARTIAL: the unhedged exposure stays a visible obligation,
             # never silently promoted to HEDGED_ACTIVE.
-            if (
-                self.states.get(pair_tag) == PositionState.ENTRY_PARTIAL
-                and not order_info.get("hedge_waiting_for_coverage")
-            ):
+            if order_info.get("hedge_waiting_for_coverage"):
+                self.states[pair_tag] = PositionState.ENTRY_PARTIAL
+                await self._maybe_publish_status()
+            elif self.states.get(pair_tag) == PositionState.ENTRY_PARTIAL:
                 self.states[pair_tag] = PositionState.HEDGED_ACTIVE
         elif 0 < current_filled < float(order_info.get("qty", 0.0)):
             # Below the hedge threshold with the maker order still resting: the spot
@@ -449,18 +449,31 @@ class EntryHedgeMixin:
                     pair_tag,
                 )
                 order_info["hedge_waiting_for_coverage"] = True
+                order_info["hedge_waiting_reason"] = "prior_attempt_unresolved_or_claim_unavailable"
+                order_info["hedge_retry_after"] = time.time() + 5.0
                 return None, {}, None, 0.0
             # The claim service recomputes the residual while holding the
             # per-parent PostgreSQL lock. Replace the local snapshot before
             # sizing; never submit from a stale worker-local hedge watermark.
             order_info["hedge_claim_key"] = claim["claim_key"]
-            order_info["hedged_short_qty"] = max(
-                float(order_info.get("hedged_short_qty", 0.0) or 0.0),
-                float(claim.get("confirmed_qty", 0.0) or 0.0),
+            order_info["hedge_claim_client_order_id"] = claim["hedge_client_order_id"]
+            order_info["hedge_claim_retry"] = bool(
+                claim.get("retry_after_terminal_attempt")
             )
+            # The attempt fill ledger is the durable hedge watermark.
+            # Never let a local order snapshot outrank verified trade facts.
+            order_info["hedged_short_qty"] = float(
+                claim.get("confirmed_qty", 0.0) or 0.0
+            )
+            # Use the database-derived residual for sizing; the caller's local
+            # order snapshot may lag the authoritative per-attempt fill ledger.
+            unhedged_delta = float(claim.get("residual_qty", unhedged_delta))
+            order_info["hedge_target_residual_qty"] = unhedged_delta
             unhedged_delta = float(claim["residual_qty"])
             if unhedged_delta <= 0:
                 order_info["hedge_waiting_for_coverage"] = False
+                order_info.pop("hedge_waiting_reason", None)
+                order_info.pop("hedge_retry_after", None)
                 return None, {}, None, 0.0
         # A fresh durable claim owns its deterministic client id. Never
         # reuse the previous generation's pending id after a deferred fill;
@@ -582,6 +595,7 @@ class EntryHedgeMixin:
                 f"(${futures_min_notional:.2f}); holding unhedged delta for the next fill."
             )
             order_info["hedge_waiting_for_coverage"] = True
+            order_info["hedge_waiting_reason"] = "below_min_notional"
             # No venue request was started, so release this generation's
             # durable claim. The next cumulative Spot fill may then claim the
             # full outstanding residual without overlapping an older submit.
@@ -607,6 +621,70 @@ class EntryHedgeMixin:
             )
             order_info["delta_imbalance"] = delta_imbalance
 
+        global_stop = getattr(self, "global_stop", None)
+        hedge_account_scope_id = (
+            account_scope_id_for(
+                self.config, str(order_info.get("global_exchange") or "")
+            )
+            if (
+                global_stop is not None
+                and getattr(self, "config", None) is not None
+                and not getattr(self.config, "mock_mode", False)
+            )
+            else None
+        )
+        attempt_ledger = getattr(self, "hedge_attempt_ledger", None)
+        attempt = None
+        claim_key = str(order_info.get("hedge_claim_key") or "")
+        if claim_key and attempt_ledger is not None and attempt_ledger.enabled:
+            if not hedge_account_scope_id:
+                raise GlobalStopError(
+                    "durable hedge attempt requires a Futures account scope"
+                )
+            attempt = await attempt_ledger.prepare_attempt(
+                claim_key=claim_key,
+                futures_account_scope_id=hedge_account_scope_id,
+                futures_exchange=str(order_info.get("global_exchange") or ""),
+                futures_symbol=global_symbol,
+                actor_id=f"executor:{id(self):x}",
+                requested_qty_base=futures_hedge_qty,
+            )
+            if attempt is None:
+                raise GlobalStopError(
+                    "could not reserve a durable Futures hedge attempt; submit blocked"
+                )
+            if attempt.get("blocked"):
+                # An older attempt may already exist on the venue. Preserve the
+                # exposure and block rollback/re-submit until reconciliation.
+                order_info["hedge_submit_started"] = True
+                order_info["hedge_attempt_blocked"] = True
+                order_info["pending_hedge_client_order_id"] = attempt["client_order_id"]
+                raise AmbiguousOrderSubmission(
+                    "an unresolved durable hedge attempt already owns this claim"
+                )
+            attempt_qty = float(attempt["requested_qty_base"])
+            if abs(attempt_qty - futures_hedge_qty) > max(1e-12, futures_hedge_qty * 1e-10):
+                await attempt_ledger.mark_rejected(
+                    attempt["attempt_id"],
+                    expected_version=int(attempt["version"]),
+                    from_status="PREPARED",
+                    reason="durable attempt quantity differs from exchange order quantity",
+                )
+                raise GlobalStopError(
+                    "durable hedge attempt quantity does not match exchange order quantity"
+                )
+            order_info.pop("hedge_retry_after", None)
+            order_info["hedge_attempt_id"] = attempt["attempt_id"]
+            order_info["hedge_attempt_no"] = int(attempt["attempt_no"])
+            order_info["hedge_attempt_version"] = int(attempt["version"])
+            # Attempt 1 deliberately reuses the claim's original ID; subsequent
+            # attempts have distinct IDs and are reconciled independently.
+            hedge_coid = str(attempt["client_order_id"])
+            order_info["pending_hedge_client_order_id"] = hedge_coid
+            recovery_context["hedge_client_order_id"] = hedge_coid
+            recovery_context["hedge_attempt_id"] = attempt["attempt_id"]
+            recovery_context["hedge_attempt_no"] = int(attempt["attempt_no"])
+
         await self._register_order_intent(
             pair_tag,
             hedge_coid,
@@ -621,18 +699,6 @@ class EntryHedgeMixin:
             global_amount_spec=order_info.get("global_amount_spec"),
             recovery_context=recovery_context,
             required=True,
-        )
-        global_stop = getattr(self, "global_stop", None)
-        hedge_account_scope_id = (
-            account_scope_id_for(
-                self.config, str(order_info.get("global_exchange") or "")
-            )
-            if (
-                global_stop is not None
-                and getattr(self, "config", None) is not None
-                and not getattr(self.config, "mock_mode", False)
-            )
-            else None
         )
         if global_stop is not None:
             await global_stop.prepare_submit_attempt(
@@ -689,6 +755,20 @@ class EntryHedgeMixin:
                         risk_metrics=risk_metrics,
                         risk_limits=risk_limits,
                     ) as fence_conn:
+                        attempt_id = str(order_info.get("hedge_attempt_id") or "")
+                        if attempt_id and not await attempt_ledger.mark_submitting(
+                            attempt_id,
+                            expected_version=int(order_info.get("hedge_attempt_version", 0)),
+                        ):
+                            # No venue mutation has happened, but another
+                            # worker or recovery path changed the attempt.
+                            order_info["hedge_submit_started"] = True
+                            order_info["hedge_attempt_blocked"] = True
+                            raise AmbiguousOrderSubmission(
+                                "durable hedge attempt lost its PREPARED version before submit"
+                            )
+                        if attempt_id:
+                            order_info["hedge_attempt_version"] = 1
                         order_info["hedge_submit_started"] = True
                         try:
                             short_order = await self.client.open_global_short_market(
@@ -768,6 +848,25 @@ class EntryHedgeMixin:
                     if ip_ban_state is not None:
                         await global_stop.notify_state(ip_ban_state)
         except Exception as submit_error:
+            attempt_id = str(order_info.get("hedge_attempt_id") or "")
+            attempt_version = int(order_info.get("hedge_attempt_version", 0))
+            rejection_check = getattr(
+                self, "_is_definitive_order_rejection", None
+            )
+            if attempt_id and attempt_version == 1:
+                if callable(rejection_check) and rejection_check(submit_error):
+                    if await attempt_ledger.mark_rejected(
+                        attempt_id, expected_version=attempt_version,
+                        reason=str(submit_error), from_status="SUBMITTING",
+                    ):
+                        order_info["hedge_attempt_version"] = 2
+                        order_info["hedge_attempt_terminal"] = True
+                else:
+                    if await attempt_ledger.mark_unknown(
+                        attempt_id, expected_version=attempt_version,
+                        reason=str(submit_error),
+                    ):
+                        order_info["hedge_attempt_version"] = 2
             if ip_ban_stop_persistence_failed:
                 # Do not let an eventually-consistent lookup retire the only
                 # durable cross-instance guard after canonical STOP failed.
@@ -820,14 +919,33 @@ class EntryHedgeMixin:
                 "futures hedge acknowledgement has no exchange order id; "
                 "reconciliation required"
             )
-        # Record the durable hedge claim transition only after the venue
-        # acknowledgement is known. If this write fails, keep the accepted
-        # order ambiguous and let reconciliation resolve it; never release or
-        # recreate the claim for a new Spot fill generation.
+        # The attempt ACK must be durable before the hedge can be considered
+        # reconciled. Its version may be 2 after a lost-ack UNKNOWN transition.
+        attempt_id = str(order_info.get("hedge_attempt_id") or "")
+        if attempt_id:
+            attempt_version = int(order_info.get("hedge_attempt_version", 1))
+            if not await attempt_ledger.mark_acknowledged(
+                attempt_id,
+                expected_version=attempt_version,
+                venue_order_id=str(short_order.get("id") or ""),
+            ):
+                raise AmbiguousOrderSubmission(
+                    "venue acknowledged hedge but durable attempt ACK could not be persisted"
+                )
+            order_info["hedge_attempt_version"] = attempt_version + 1
+
+        # The claim ID remains the generation identity; attempt IDs identify
+        # individual venue orders. The attempt repository atomically promotes a
+        # claim to SUBMITTED when it inserts PREPARED. Legacy non-attempt paths
+        # retain the acknowledgement-based claim transition below.
         claim_key = str(order_info.get("hedge_claim_key") or "")
+        claim_coid = str(
+            order_info.get("hedge_claim_client_order_id") or hedge_coid
+        )
         claims_service = getattr(self, "hedge_claims", None)
-        if claim_key and claims_service is not None:
-            marked_submitted = await claims_service.mark_submitted(claim_key, hedge_coid)
+        attempt_no = int(order_info.get("hedge_attempt_no", 1) or 1)
+        if claim_key and claims_service is not None and not attempt_id:
+            marked_submitted = await claims_service.mark_submitted(claim_key, claim_coid)
             if not marked_submitted:
                 raise AmbiguousOrderSubmission(
                     "futures order was acknowledged but durable hedge claim "
@@ -846,7 +964,9 @@ class EntryHedgeMixin:
                         hedge_status = str(short_order.get("status", "")).lower()
                 except Exception as exc:
                     logger.debug("[State 2] follow-up futures hedge verification failed for %s: %s", order_id, exc)
-        if hedge_status not in ("closed", "filled"):
+        if hedge_status not in (
+            "closed", "filled", "canceled", "cancelled", "expired"
+        ):
             raise ValueError(
                 f"futures hedge is not terminal (status={hedge_status})"
             )
@@ -855,11 +975,24 @@ class EntryHedgeMixin:
         except (TypeError, ValueError):
             actual_hedged_qty = 0.0
         qty_tolerance = max(1e-12, futures_hedge_qty * 1e-8)
-        if actual_hedged_qty + qty_tolerance < futures_hedge_qty:
+        if actual_hedged_qty <= qty_tolerance:
             raise ValueError(
-                f"futures hedge fill incomplete: requested={futures_hedge_qty}, "
-                f"filled={actual_hedged_qty}; spot rollback will be guarded by "
-                "an authoritative futures-position check"
+                f"terminal futures hedge has no verified fill: requested={futures_hedge_qty}, "
+                f"filled={actual_hedged_qty}; attempt remains blocked for reconciliation"
+            )
+        attempt_target_residual = float(
+            order_info.get("hedge_target_residual_qty", unhedged_delta) or unhedged_delta
+        )
+        is_partial_attempt_fill = (
+            actual_hedged_qty + qty_tolerance < attempt_target_residual
+        )
+        if is_partial_attempt_fill:
+            order_info["hedge_attempt_partial"] = True
+            logger.warning(
+                "[Hedge Attempt] %s: terminal partial Futures fill %.12f / %.12f; "
+                "persisting only the filled quantity and waiting for trade reconciliation "
+                "before any residual retry",
+                pair_tag, actual_hedged_qty, futures_hedge_qty,
             )
         if actual_hedged_qty > futures_hedge_qty + qty_tolerance:
             raise ValueError(
@@ -868,7 +1001,8 @@ class EntryHedgeMixin:
             )
 
         recovery_order = dict(short_order)
-        recovery_order["status"] = "open"
+        # Keep the authoritative terminal status so trade reconciliation can
+        # release the attempt reservation after verifying individual trades.
         hedge_journal = await self._register_order(
             pair_tag,
             hedge_coid,
@@ -946,7 +1080,13 @@ class EntryHedgeMixin:
         global_symbol = order_info["global_symbol"]
         order_info["hedged_short_qty"] += actual_hedged_qty
         # The deferred obligation is now (at least partially) covered.
-        order_info["hedge_waiting_for_coverage"] = False
+        order_info["hedge_waiting_for_coverage"] = bool(
+            order_info.pop("hedge_attempt_partial", False)
+        )
+        if order_info["hedge_waiting_for_coverage"]:
+            order_info["hedge_waiting_reason"] = "terminal_partial_attempt"
+        else:
+            order_info.pop("hedge_waiting_reason", None)
         watermark_persisted = await self._persist_entry_hedge_watermark(
             pair_tag,
             order_info,
@@ -1056,6 +1196,17 @@ class EntryHedgeMixin:
         """Execute market short on global exchange and persist position state."""
         order_info["hedge_submit_started"] = False
         order_info.pop("pending_hedge_client_order_id", None)
+        # Every monitor pass must acquire a fresh claim/attempt snapshot. Old
+        # attempt identifiers remain in the durable order registry, not in the
+        # mutable Spot pending-order dictionary.
+        for key in (
+            "hedge_claim_key", "hedge_claim_client_order_id", "hedge_claim_retry",
+            "hedge_attempt_id", "hedge_attempt_no",
+            "hedge_attempt_version", "hedge_attempt_terminal",
+            "hedge_attempt_partial", "hedge_attempt_blocked",
+            "hedge_target_residual_qty",
+        ):
+            order_info.pop(key, None)
         global_symbol = order_info["global_symbol"]
         try:
             expected_short_price = float(
@@ -1088,7 +1239,7 @@ class EntryHedgeMixin:
                 expected_short_price,
             )
             claim_key = str(order_info.get("hedge_claim_key") or "")
-            if claim_key:
+            if claim_key and not order_info.get("hedge_attempt_id"):
                 claims_service = getattr(self, "hedge_claims", None)
                 if claims_service is not None:
                     claim_confirmed = await claims_service.mark_confirmed(
@@ -1134,12 +1285,35 @@ class EntryHedgeMixin:
             # call has started, keep CLAIMED/SUBMITTED durable until recovery
             # proves the outcome; never release an ambiguous submission.
             claim_key = str(order_info.get("hedge_claim_key") or "")
+            claim_coid = str(
+                order_info.get("hedge_claim_client_order_id")
+                or order_info.get("pending_hedge_client_order_id")
+                or ""
+            )
             claims_service = getattr(self, "hedge_claims", None)
-            if claim_key and claims_service is not None and not order_info.get(
-                "hedge_submit_started"
+            attempt_id = str(order_info.get("hedge_attempt_id") or "")
+            attempt_ledger = getattr(self, "hedge_attempt_ledger", None)
+            if (
+                attempt_id and attempt_ledger is not None
+                and not order_info.get("hedge_submit_started")
+                and not order_info.get("hedge_attempt_terminal")
+            ):
+                await attempt_ledger.mark_rejected(
+                    attempt_id,
+                    expected_version=int(order_info.get("hedge_attempt_version", 0)),
+                    from_status="PREPARED",
+                    reason=f"pre-submit hedge failure: {type(he).__name__}: {he}",
+                )
+                order_info["hedge_attempt_terminal"] = True
+            if (
+                claim_key and claims_service is not None and claim_coid
+                and not order_info.get("hedge_submit_started")
+                and not attempt_id
+                and int(order_info.get("hedge_attempt_no", 1) or 1) == 1
+                and not order_info.get("hedge_claim_retry")
             ):
                 await claims_service.mark_abandoned(
-                    claim_key, hedge_coid,
+                    claim_key, claim_coid,
                     f"pre-submit hedge failure: {type(he).__name__}: {he}"
                 )
             global_exchange = str(order_info.get("global_exchange", ""))
@@ -1369,23 +1543,28 @@ class EntryHedgeMixin:
             return
 
         order_info = self.pending_entry_orders.get(pair_tag, {})
-        # If partial fill left unused reserved funds, release the remainder
-        if hasattr(self.client, "unlock_funds"):
-            pos = self.active_positions.get(pair_tag)
-            used_spot = pos.spot_cost_usdt if pos else 0.0
-            used_fut = pos.futures_margin_usdt if pos else 0.0
-            reserved_spot = float(order_info.get("spot_cost_usdt", 0.0))
-            reserved_fut = float(order_info.get("futures_margin_usdt", 0.0))
-            unused_spot = max(0.0, reserved_spot - used_spot)
-            unused_fut = max(0.0, reserved_fut - used_fut)
-            if unused_spot > 0 or unused_fut > 0:
-                self.client.unlock_funds(unused_spot, unused_fut)
+        # Terminal Spot resources are released once. The durable pending-entry
+        # record may remain as a residual-hedge work item after this point.
+        if not order_info.get("terminal_resources_released"):
+            if hasattr(self.client, "unlock_funds"):
+                pos = self.active_positions.get(pair_tag)
+                used_spot = pos.spot_cost_usdt if pos else 0.0
+                used_fut = pos.futures_margin_usdt if pos else 0.0
+                reserved_spot = float(order_info.get("spot_cost_usdt", 0.0))
+                reserved_fut = float(order_info.get("futures_margin_usdt", 0.0))
+                unused_spot = max(0.0, reserved_spot - used_spot)
+                unused_fut = max(0.0, reserved_fut - used_fut)
+                if unused_spot > 0 or unused_fut > 0:
+                    self.client.unlock_funds(unused_spot, unused_fut)
 
-        if getattr(self, "slot_manager", None) is not None:
-            venue = str(order_info.get("local_exchange") or "").lower()
-            coid = str(order_info.get("client_order_id") or "")
-            if venue and coid:
-                await self.slot_manager.release_slot(venue, client_order_id=coid, reason=status.upper())
+            if getattr(self, "slot_manager", None) is not None:
+                venue = str(order_info.get("local_exchange") or "").lower()
+                coid = str(order_info.get("client_order_id") or "")
+                if venue and coid:
+                    await self.slot_manager.release_slot(
+                        venue, client_order_id=coid, reason=status.upper()
+                    )
+            order_info["terminal_resources_released"] = True
 
         awaiting_coverage = bool(order_info.get("hedge_waiting_for_coverage"))
         hedged_qty = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
@@ -1410,8 +1589,6 @@ class EntryHedgeMixin:
             and order_info.get("pending_hedge_client_order_id")
             and order_info.get("hedge_submit_started")
         )
-        del self.pending_entry_orders[pair_tag]
-        await self._clear_pending_entry(pair_tag)
         if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
             # A reconciliation halt set while the order was terminal must not
             # be silently reset by cleanup; manual intervention is pending.
@@ -1423,9 +1600,33 @@ class EntryHedgeMixin:
         # exposure remains. active_positions alone is never proof the hedge
         # target is complete.
         if residual > 1e-12 or has_unknown_hedge:
-            # Residual unhedged exposure (deferred or not) or an unresolved
-            # hedge submission must surface as a reconciliation obligation,
-            # never collapse into IDLE or a clean HEDGED_ACTIVE.
+            retryable_residual = (
+                residual > 1e-12
+                and not has_unknown_hedge
+                and bool(order_info.get("spot_terminal"))
+                and awaiting_coverage
+                and str(order_info.get("hedge_waiting_reason") or "") in (
+                    "terminal_partial_attempt",
+                    "prior_attempt_unresolved_or_claim_unavailable",
+                )
+            )
+            if retryable_residual:
+                # Keep the terminal Spot snapshot durable and re-enter only the
+                # Futures hedge path on later monitor ticks. The claim service
+                # still blocks until the prior attempt's trades are verified.
+                self.states[pair_tag] = PositionState.ENTRY_PARTIAL
+                await self._persist_pending_entry(pair_tag, order_info, ttl=None)
+                logger.warning(
+                    "[Hedge Attempt] retaining terminal Spot order %s for residual %.12f; "
+                    "retry waits for durable attempt reconciliation",
+                    order_info.get("order_id"), residual,
+                )
+                return
+            # Residual exposure without a safely retryable attempt (for example
+            # below-minimum notional or UNKNOWN submit) remains a manual
+            # reconciliation obligation.
+            self.pending_entry_orders.pop(pair_tag, None)
+            await self._clear_pending_entry(pair_tag)
             self._mark_failed(
                 pair_tag,
                 "DEFERRED_HEDGE_UNCOVERED_ON_TERMINAL_SPOT"
@@ -1450,6 +1651,8 @@ class EntryHedgeMixin:
                 state=PositionState.RECONCILIATION_REQUIRED,
             )
             return
+        del self.pending_entry_orders[pair_tag]
+        await self._clear_pending_entry(pair_tag)
         if pair_tag in self.active_positions and self.active_positions[pair_tag].qty > 0:
             # Only reached when residual == 0 and no UNKNOWN submission: the
             # hedge target is fully covered.

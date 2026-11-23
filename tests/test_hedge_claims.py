@@ -43,6 +43,34 @@ class _FakeConn:
                 and row.get("parent_spot_order_id") == args[1]
                 and row.get("status") in ("CLAIMED", "SUBMITTED")
             ), None)
+        if "status='CONFIRMED'" in query and "select claim_key" in query:
+            return next((
+                dict(row) for row in reversed(list(self.table.values()))
+                if isinstance(row, dict)
+                and row.get("parent_spot_exchange") == args[0]
+                and row.get("parent_spot_order_id") == args[1]
+                and row.get("status") == "CONFIRMED"
+            ), None)
+        if "from public.executor_hedge_attempts" in query:
+            # These unit tests model pre-attempt-ledger legacy claims. A
+            # SUBMITTED claim with no attempt record must remain blocked.
+            return None
+        if "max(cumulative_spot_filled)" in query:
+            rows = [
+                row for row in self.table.values()
+                if row.get("parent_spot_exchange") == args[0]
+                and row.get("parent_spot_order_id") == args[1]
+            ]
+            return {
+                "max_spot_filled": max(
+                    (float(row.get("cumulative_spot_filled", 0.0)) for row in rows),
+                    default=0.0,
+                ),
+                "confirmed_futures_qty": sum(
+                    float(row.get("confirmed_qty", 0.0))
+                    for row in rows if row.get("status") == "CONFIRMED"
+                ),
+            }
         if "on conflict (claim_key) do update" in query:
             key = args[0]
             if key in self.table:
@@ -61,6 +89,9 @@ class _FakeConn:
                 "version": 0,
                 "status": "CLAIMED",
                 "residual_qty": float(args[6]),
+                "cumulative_spot_filled": float(args[4]),
+                "target_hedge_qty": float(args[5]),
+                "confirmed_qty": 0.0,
             }
             return self.table[key]
         raise AssertionError(f"unexpected query: {query[:80]}")
@@ -345,3 +376,35 @@ async def test_crashed_worker_claim_blocks_until_reconciled():
     # The claim stays in CLAIMED state, visible for reconciliation.
     row = table[claim["claim_key"]]
     assert row["status"] == "CLAIMED"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_claim_restores_durable_hedge_watermark_after_restart():
+    key = hedge_claim_key("indodax", "889", 500_000_000)
+    table = {
+        key: {
+            "claim_key": key,
+            "parent_spot_exchange": "indodax",
+            "parent_spot_order_id": "889",
+            "hedge_client_order_id": hedge_client_order_id_for_claim(key),
+            "version": 3,
+            "status": "CONFIRMED",
+            "cumulative_spot_filled": 0.5,
+            "target_hedge_qty": 0.5,
+            "confirmed_qty": 0.5,
+            "residual_qty": 0.0,
+        }
+    }
+
+    claim = await _service(table).claim_generation(
+        **{
+            **_claim_kwargs(residual=0.0),
+            "cumulative_spot_filled": 0.5,
+            "target_hedge_qty": 0.5,
+        }
+    )
+
+    assert claim is not None
+    assert claim["already_confirmed"] is True
+    assert claim["confirmed_qty"] == 0.5
+    assert claim["residual_qty"] == 0.0

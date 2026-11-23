@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import inspect
+import json
 import math
 import time
 from datetime import datetime, timezone
@@ -81,6 +82,9 @@ class TradeFillReconciliationWorker:
                 "futures_exit" if record.market_type == "perpetual" else "force_close"
             ),
         }
+        recovery_context = getattr(record, "recovery_context", None)
+        if not isinstance(recovery_context, dict):
+            recovery_context = {}
         return {
             "pair_key": record.pair_key,
             "exchange_name": record.exchange,
@@ -102,6 +106,7 @@ class TradeFillReconciliationWorker:
             "local_amount_spec": record.local_amount_spec,
             "global_amount_spec": record.global_amount_spec,
             "is_mock": record.is_mock,
+            "hedge_attempt_id": str(recovery_context.get("hedge_attempt_id") or ""),
         }
 
     def _merge_registry_candidates(
@@ -337,6 +342,8 @@ class TradeFillReconciliationWorker:
         self, writer, identity: str, scope: str, exchange: str, symbol: str,
         exchange_order_id: str, client_order_id: str, filled_qty: float,
         trades: list, total_qty: float, unverified_fee_ids: list,
+        order_status: str = "",
+        attempt_required: bool = False,
     ) -> None:
         tolerance = max(
             self.absolute_tolerance, abs(filled_qty) * self.relative_tolerance
@@ -372,6 +379,63 @@ class TradeFillReconciliationWorker:
                 },
             )
             return
+        # The analytics fill journal is not the hedge-attempt authority.
+        # Mirror only individually verified venue trades into the durable
+        # attempt ledger, keyed by the exact client order ID.
+        attempt_ledger = getattr(self.engine, "hedge_attempt_ledger", None)
+        matched_attempt = False
+        if attempt_required and (
+            attempt_ledger is None or not attempt_ledger.enabled
+        ):
+            await self._halt(
+                identity,
+                scope,
+                "Hedge attempt ledger is unavailable; verified trades cannot be finalized.",
+                {"client_order_id": client_order_id, "exchange": exchange, "symbol": symbol},
+            )
+            return
+        if attempt_ledger is not None and attempt_ledger.enabled and client_order_id:
+            try:
+                for trade in trades:
+                    recorded = await attempt_ledger.record_trade_for_client_order_id(
+                        client_order_id=client_order_id,
+                        exchange=exchange,
+                        symbol=symbol,
+                        trade=trade,
+                    )
+                    matched_attempt = matched_attempt or recorded is not None
+                if attempt_required and not matched_attempt:
+                    raise RuntimeError(
+                        "order carries a hedge attempt ID but no durable attempt row matched its client order ID"
+                    )
+                if matched_attempt and str(order_status or "").lower() in (
+                    "closed", "filled", "canceled", "cancelled", "expired", "rejected"
+                ):
+                    finalized = await attempt_ledger.finalize_by_client_order_id(
+                        client_order_id=client_order_id,
+                        terminal_status=order_status,
+                        order_reconciled=True,
+                        fills_reconciled=True,
+                        actor_id="trade-fill-reconciliation",
+                    )
+                    if finalized is not True:
+                        raise RuntimeError(
+                            "verified hedge fills could not finalize their durable attempt"
+                        )
+            except Exception as exc:
+                await self._halt(
+                    identity,
+                    scope,
+                    "Verified Futures fills could not be committed to the hedge attempt ledger.",
+                    {
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "client_order_id": client_order_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+                return
+
         marker = getattr(writer, "mark_fill_sync", None)
         if not callable(marker) or marker(identity, filled_qty) is False:
             raise RuntimeError(
@@ -383,6 +447,19 @@ class TradeFillReconciliationWorker:
     def _candidate_context_fields(
         row: Dict[str, Any], filled_qty: float
     ) -> Dict[str, Any]:
+        raw_payload = row.get("raw_payload")
+        if isinstance(raw_payload, str):
+            try:
+                raw_payload = json.loads(raw_payload)
+            except (TypeError, ValueError):
+                raw_payload = {}
+        if not isinstance(raw_payload, dict):
+            raw_payload = {}
+        recovery_context = row.get("recovery_context")
+        if not isinstance(recovery_context, dict):
+            recovery_context = raw_payload.get("recovery_context")
+        if not isinstance(recovery_context, dict):
+            recovery_context = {}
         context = {
             "exchange": str(row.get("exchange_name") or "").lower(),
             "market_type": str(row.get("market_type") or "").lower(),
@@ -391,6 +468,12 @@ class TradeFillReconciliationWorker:
             "client_order_id": str(row.get("client_order_id") or ""),
             "exchange_order_id": str(row.get("exchange_order_id") or ""),
             "filled_qty": filled_qty,
+            "hedge_attempt_id": str(
+                row.get("hedge_attempt_id")
+                or recovery_context.get("hedge_attempt_id")
+                or raw_payload.get("hedge_attempt_id")
+                or ""
+            ),
         }
         context["scope"] = context["pair_key"] or context["exchange"]
         return context
@@ -419,6 +502,64 @@ class TradeFillReconciliationWorker:
             )
             return None
         if filled_qty <= self.absolute_tolerance:
+            # A terminal zero-fill Futures order has no trade rows to replay,
+            # but its order outcome still releases the durable attempt slot.
+            status = str(row.get("status") or "").lower()
+            client_order_id = str(row.get("client_order_id") or "")
+            raw_payload = row.get("raw_payload")
+            if isinstance(raw_payload, str):
+                try:
+                    raw_payload = json.loads(raw_payload)
+                except (TypeError, ValueError):
+                    raw_payload = {}
+            if not isinstance(raw_payload, dict):
+                raw_payload = {}
+            recovery_context = row.get("recovery_context")
+            if not isinstance(recovery_context, dict):
+                recovery_context = raw_payload.get("recovery_context")
+            if not isinstance(recovery_context, dict):
+                recovery_context = {}
+            attempt_required = bool(
+                row.get("hedge_attempt_id")
+                or recovery_context.get("hedge_attempt_id")
+                or raw_payload.get("hedge_attempt_id")
+            )
+            attempt_ledger = getattr(self.engine, "hedge_attempt_ledger", None)
+            if attempt_required and (
+                attempt_ledger is None or not attempt_ledger.enabled
+            ):
+                await self._halt(
+                    identity, scope,
+                    "Hedge attempt ledger unavailable for terminal zero-fill order.",
+                    {"client_order_id": client_order_id, "status": status},
+                )
+                return None
+            if (
+                status in ("closed", "filled", "canceled", "cancelled", "expired", "rejected")
+                and client_order_id
+                and attempt_ledger is not None
+                and attempt_ledger.enabled
+            ):
+                finalized = await attempt_ledger.finalize_by_client_order_id(
+                    client_order_id=client_order_id,
+                    terminal_status=status,
+                    order_reconciled=True,
+                    fills_reconciled=True,
+                    actor_id="trade-fill-reconciliation-zero-fill",
+                )
+                if finalized is False or (attempt_required and finalized is None):
+                    await self._halt(
+                        identity,
+                        scope,
+                        "Terminal zero-fill order could not finalize its durable hedge attempt.",
+                        {
+                            "client_order_id": client_order_id,
+                            "exchange": row.get("exchange_name"),
+                            "symbol": row.get("symbol"),
+                            "status": status,
+                        },
+                    )
+                    return None
             self._clear(identity, scope)
             return None
         watermark_current = await self._watermark_is_current(
@@ -482,6 +623,8 @@ class TradeFillReconciliationWorker:
             await self._verify_candidate_fills(
                 writer, identity, scope, exchange, symbol, exchange_order_id,
                 client_order_id, filled_qty, trades, total_qty, unverified_fee_ids,
+                order_status=str(row.get("status") or ""),
+                attempt_required=bool(context.get("hedge_attempt_id")),
             )
         except asyncio.CancelledError:
             raise

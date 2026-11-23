@@ -139,7 +139,7 @@ class SupabaseQueryMixin:
                 "exchange_name,market_type,leg,order_role,symbol,side,order_type,"
                 "status,requested_qty,filled_qty,remaining_qty,limit_price,"
                 "average_fill_price,reduce_only,recovery_status,is_mock,"
-                "raw_payload,created_at,updated_at",
+                "recovery_context,raw_payload,created_at,updated_at",
             ),
         )
 
@@ -219,7 +219,7 @@ class SupabaseQueryMixin:
                 "local_order_id,client_order_id,venue_client_order_id,exchange_order_id,pair_key,position_key,"
                 "exchange_name,market_type,leg,order_role,symbol,side,order_type,status,"
                 "requested_qty,filled_qty,remaining_qty,limit_price,average_fill_price,"
-                "reduce_only,recovery_status,is_mock,raw_payload"
+                "reduce_only,recovery_status,is_mock,recovery_context,raw_payload"
             ),
             "recovery_status": "in.(MANAGED,ADOPTED,UNVERIFIED)",
             "status": "not.in.(closed,filled,canceled,cancelled,rejected,expired)",
