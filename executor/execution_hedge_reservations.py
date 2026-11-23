@@ -27,7 +27,7 @@ def _terminal_order_proof(value: Any, expected_client_order_id: str) -> dict:
         ("evidence_id", "source", "verified_at", "client_order_id"),
     )
     status = str(proof.get("terminal_status") or "").strip().lower()
-    if status not in {"closed", "canceled", "cancelled", "filled", "rejected", "expired"}:
+    if status not in {"canceled", "cancelled", "rejected", "expired"}:
         raise HedgeObligationError("terminal_order_evidence.terminal_status must be terminal")
     if str(proof["client_order_id"]).strip() != expected_client_order_id:
         raise HedgeObligationError("terminal_order_evidence client order ID does not match reservation")
