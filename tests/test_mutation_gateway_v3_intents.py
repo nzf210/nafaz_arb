@@ -258,3 +258,40 @@ async def test_session_bound_futures_sell_cannot_use_entry_action_class(postgres
         )
         assert attempt_status == "ABORTED"
         await global_stop.ownership.release_all(conn)
+
+
+@pytest.mark.asyncio
+async def test_hedge_mutation_without_durable_reservation_fails_before_venue(postgres_pool):
+    suffix = uuid.uuid4().hex
+    intents = OrderIntentService(postgres_pool)
+    intent = await intents.prepare_create(
+        account_scope_id="gateway-unreserved-hedge-account-" + suffix,
+        idempotency_key="gateway-unreserved-hedge-" + suffix,
+        venue="okx", market_type="swap",
+        instrument="BTC-USDT-SWAP",
+        pair_key="indodax:btc_idr->okx:btc-usdt-swap",
+        side="sell", order_type="limit",
+        quantity="1", price="65000",
+        reserved_base_qty="0.001", reserved_notional="65",
+        reservation_asset="USDT", actor_id="gateway-test",
+        session_id="session-" + suffix,
+        leg_id="future-" + suffix,
+        request_metadata={"action_class": "HEDGE"},
+    )
+    global_stop = GlobalStopService("unused", require_scoped_submits=True)
+    global_stop.pool = postgres_pool
+    venue = _Venue()
+    gateway = MutationGateway(global_stop=global_stop, order_intent_service=intents)
+
+    result = await gateway.execute_create_intent(
+        venue, intent_id=intent["intent_id"], actor_id="gateway-test",
+    )
+    assert result.status == MutationResultType.REJECTED
+    assert venue.calls == []
+    async with postgres_pool.acquire() as conn:
+        attempt_status = await conn.fetchval(
+            "SELECT status FROM public.executor_submit_attempts WHERE client_order_id=$1",
+            intent["client_order_id"],
+        )
+        assert attempt_status == "ABORTED"
+        await global_stop.ownership.release_all(conn)
