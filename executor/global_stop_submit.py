@@ -731,7 +731,7 @@ class GlobalStopSubmitMixin:
                             logical_session_intent = await conn.fetchrow(
                                 """
                                 SELECT session_id, leg_id, account_scope_id, venue,
-                                       market_type, instrument
+                                       market_type, instrument, pair_key
                                 FROM public.executor_mutation_intents
                                 WHERE intent_id=$1 FOR UPDATE
                                 """,
@@ -771,12 +771,14 @@ class GlobalStopSubmitMixin:
                                       AND l.venue=$4
                                       AND l.market_type=$5
                                       AND l.symbol=$6
+                                      AND s.pair_key=$7
                                     FOR UPDATE OF s, l, cl
                                     """,
                                     session_id, leg_id, str(intent["account_scope_id"]),
                                     str(intent["exchange"]).lower(),
                                     str(intent["market_type"]).lower(),
                                     str(intent["symbol"]),
+                                    str(logical_session_intent["pair_key"]),
                                 )
                                 if session_gate is None or (
                                     str(session_gate["session_status"]).upper() != "ENTRY_IN_PROGRESS"
