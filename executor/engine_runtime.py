@@ -55,13 +55,16 @@ class EngineRuntimeMixin:
                                 attempt_ledger = getattr(
                                     self, "hedge_attempt_ledger", None
                                 )
-                                if (
-                                    attempt_ledger is not None
-                                    and not await attempt_ledger.recover_unresolved_attempts(
-                                        self.order_registry
-                                    )
+                                if attempt_ledger is not None and not getattr(
+                                    self.config, "mock_mode", False
                                 ):
-                                    self._recovery_complete = False
+                                    if (
+                                        not attempt_ledger.enabled
+                                        or not await attempt_ledger.recover_unresolved_attempts(
+                                            self.order_registry
+                                        )
+                                    ):
+                                        self._recovery_complete = False
                         if not self._recovery_complete:
                             self._halt_exposure_scope(
                                 "*", "startup recovery is waiting for distributed ownership or submit reconciliation"
