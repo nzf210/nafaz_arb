@@ -10,64 +10,7 @@ ALTER TABLE public.execution_legs
     ADD COLUMN IF NOT EXISTS average_fill_price NUMERIC(38,18),
     ADD COLUMN IF NOT EXISTS last_fill_at TIMESTAMPTZ;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conrelid='public.execution_legs'::regclass
-          AND conname='execution_legs_confirmed_fill_nonnegative'
-    ) THEN
-        ALTER TABLE public.execution_legs
-            ADD CONSTRAINT execution_legs_confirmed_fill_nonnegative
-            CHECK (
-                confirmed_filled_quantity >= 0
-                AND confirmed_quote_quantity >= 0
-                AND confirmed_price_quantity >= 0
-                AND confirmed_exposure_quantity >= 0
-                AND (average_fill_price IS NULL OR average_fill_price >= 0)
-            ) NOT VALID;
-    END IF;
-END $$;
-
-ALTER TABLE public.execution_legs
-    VALIDATE CONSTRAINT execution_legs_confirmed_fill_nonnegative;
-
--- Preserve the session/leg relationship at the database boundary as well as
--- in the service validator; independent FKs would permit a cross-session leg.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_legs_session_leg
-    ON public.execution_legs(session_id, leg_id);
-
-CREATE TABLE IF NOT EXISTS public.execution_fills (
-    fill_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id TEXT NOT NULL
-        REFERENCES public.execution_sessions(session_id) ON DELETE RESTRICT,
-    leg_id TEXT NOT NULL
-        REFERENCES public.execution_legs(leg_id) ON DELETE RESTRICT,
-    account_scope_id TEXT NOT NULL,
-    venue TEXT NOT NULL,
-    market_type TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    exchange_order_id TEXT,
-    client_order_id TEXT,
-    exchange_trade_id TEXT NOT NULL,
-    side TEXT NOT NULL CHECK (side IN ('buy','sell')),
-    quantity NUMERIC(38,18) NOT NULL CHECK (quantity > 0),
-    price NUMERIC(38,18) NOT NULL CHECK (price > 0),
-    quote_quantity NUMERIC(38,18) NOT NULL CHECK (quote_quantity > 0),
-    quote_asset TEXT NOT NULL,
-    fee_amount NUMERIC(38,18) NOT NULL DEFAULT 0 CHECK (fee_amount >= 0),
-    fee_asset TEXT,
-    fee_verified BOOLEAN NOT NULL DEFAULT FALSE,
-    fee_source TEXT NOT NULL DEFAULT 'UNVERIFIED',
-    filled_at TIMESTAMPTZ NOT NULL,
-    source_event_id TEXT,
-    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    CONSTRAINT uq_execution_fills_venue_trade
-        UNIQUE (account_scope_id, venue, market_type, symbol, exchange_trade_id)
-);
-
-DO $
+DO $fill$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
@@ -80,8 +23,7 @@ BEGIN
             REFERENCES public.execution_legs(session_id, leg_id)
             ON DELETE RESTRICT NOT VALID;
     END IF;
-END $;
-
+END $fill$;
 ALTER TABLE public.execution_fills
     VALIDATE CONSTRAINT execution_fills_session_leg_fkey;
 
