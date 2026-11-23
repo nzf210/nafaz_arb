@@ -345,10 +345,30 @@ async def test_postgres_hedge_reservation_below_minimum_and_unknown_release_fail
             actor_id="hedge-integration-test", event_idempotency_key="release-unverified-" + suffix,
             coordinator_lease=lease, fencing_generation=lease.generation,
         )
+    with pytest.raises(HedgeObligationError, match="terminal_order_evidence"):
+        await service.release(
+            session_id=admitted["session_id"], reservation_id=reservation["reservation_id"],
+            actor_id="hedge-integration-test", event_idempotency_key="release-without-evidence-" + suffix,
+            terminal_order_verified=True, fills_reconciled=True,
+            coordinator_lease=lease, fencing_generation=lease.generation,
+        )
+    now = datetime.now(timezone.utc).isoformat()
+    terminal_evidence = {
+        "evidence_id": "terminal-" + suffix, "source": "okx-private-order-stream",
+        "verified_at": now, "terminal_status": "canceled",
+        "exchange_order_id": "unknown-client-" + suffix,
+    }
+    fill_evidence = {
+        "evidence_id": "fills-" + suffix, "source": "okx-rest-trades",
+        "reconciled_at": now, "fills_checked": True,
+        "exchange_order_id": "unknown-client-" + suffix,
+    }
     released = await service.release(
         session_id=admitted["session_id"], reservation_id=reservation["reservation_id"],
         actor_id="hedge-integration-test", event_idempotency_key="release-verified-" + suffix,
         terminal_order_verified=True, fills_reconciled=True,
+        terminal_order_evidence=terminal_evidence,
+        fill_reconciliation_evidence=fill_evidence,
         coordinator_lease=lease, fencing_generation=lease.generation,
     )
     assert released["status"] == "RELEASED"
