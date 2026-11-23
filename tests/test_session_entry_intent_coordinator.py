@@ -178,3 +178,18 @@ async def test_invalid_second_leg_is_rejected_before_any_intent_is_written():
     assert intents.calls == []
     assert repository.legs == []
     assert repository.sessions == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_leg_idempotency_keys_are_rejected_before_writes():
+    service, lease, intents, repository = _runtime()
+    specs = _specs()
+    specs[1]["idempotency_key"] = specs[0]["idempotency_key"]
+    with pytest.raises(SessionEntryIntentError, match="distinct idempotency key"):
+        await service.prepare_entry(
+            session_id="session-1", coordinator_lease=lease,
+            specs=specs, actor_id="unit-test",
+        )
+    assert intents.calls == []
+    assert repository.legs == []
+    assert repository.sessions == []
