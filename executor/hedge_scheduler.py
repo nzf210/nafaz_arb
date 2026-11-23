@@ -11,6 +11,17 @@ from executor.execution_hedge_common import HedgeObligationError, HedgeServiceBa
 from executor.hedge_liquidity_evaluator import HedgeLiquidityDecision
 
 
+def _decision_decimal(value: Any, field: str, *, allow_zero: bool = False) -> Decimal:
+    try:
+        number = Decimal(str(value))
+    except Exception as exc:
+        raise HedgeObligationError(f"{field} must be a finite decimal") from exc
+    if not number.is_finite() or (number < 0 if allow_zero else number <= 0):
+        condition = "non-negative" if allow_zero else "positive"
+        raise HedgeObligationError(f"{field} must be {condition}")
+    return number
+
+
 class HedgeScheduler(HedgeServiceBase):
     """Persists defer/eligible/de-risk decisions; never submits exchange orders."""
 
@@ -27,24 +38,31 @@ class HedgeScheduler(HedgeServiceBase):
         action = str(decision.action or "").upper()
         if action not in {"SUBMIT", "PARTIAL_SUBMIT", "DEFER", "DE_RISK_REQUIRED"}:
             raise ValueError("unsupported hedge liquidity action")
-        try:
-            executable_base = Decimal(str(decision.executable_base_quantity))
-            executable_native = Decimal(str(decision.executable_native_quantity))
-            if not executable_base.is_finite() or not executable_native.is_finite():
-                raise ValueError
-            if executable_base < 0 or executable_native < 0:
-                raise ValueError
-        except (ArithmeticError, TypeError, ValueError) as exc:
-            raise HedgeObligationError("decision executable quantities must be finite and non-negative") from exc
+        executable_base = _decision_decimal(
+            decision.executable_base_quantity, "executable_base_quantity", allow_zero=True
+        )
+        executable_native = _decision_decimal(
+            decision.executable_native_quantity, "executable_native_quantity", allow_zero=True
+        )
+        _decision_decimal(decision.executable_notional_quote, "executable_notional_quote", allow_zero=True)
+        _decision_decimal(decision.executable_notional_usd, "executable_notional_usd", allow_zero=True)
+        _decision_decimal(decision.unhedged_notional_usd, "unhedged_notional_usd", allow_zero=True)
+        _decision_decimal(decision.estimated_fee_bps, "estimated_fee_bps", allow_zero=True)
+        if decision.slippage_bps is not None:
+            _decision_decimal(decision.slippage_bps, "slippage_bps", allow_zero=True)
+        if decision.estimated_total_cost_bps is not None:
+            _decision_decimal(decision.estimated_total_cost_bps, "estimated_total_cost_bps", allow_zero=True)
         if action in {"SUBMIT", "PARTIAL_SUBMIT"}:
             if (
                 executable_base <= 0 or executable_native <= 0
                 or decision.executable_vwap is None
-                or Decimal(str(decision.executable_vwap)) <= 0
+                or _decision_decimal(decision.executable_vwap, "executable_vwap") <= 0
                 or not str(decision.book_sequence or "").strip()
                 or decision.book_age_ms is None or int(decision.book_age_ms) < 0
+                or decision.book_observed_at_ms <= 0
                 or decision.estimated_total_cost_bps is None
-                or Decimal(str(decision.executable_notional_usd)) <= 0
+                or _decision_decimal(decision.executable_notional_usd, "executable_notional_usd") <= 0
+                or _decision_decimal(decision.executable_notional_quote, "executable_notional_quote") <= 0
             ):
                 raise HedgeObligationError("executable hedge decision is missing valid book, price, or notional evidence")
         elif executable_base != 0 or executable_native != 0:
