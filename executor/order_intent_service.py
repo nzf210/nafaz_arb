@@ -15,7 +15,7 @@ from executor.ownership import build_scope_key
 from executor.order_intent_common import (
     OrderIntentError, OrderIntentConflict, OrderIntentReservationConflict,
     OrderIntentStaleOwner,
-    required,
+    decode_intent, required,
 )
 from executor.order_intent_lifecycle import OrderIntentLifecycleMixin
 
@@ -313,7 +313,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
                 "SELECT * FROM public.executor_mutation_intents WHERE intent_id=$1",
                 key,
             )
-        return dict(row) if row is not None else None
+        return decode_intent(row)
 
     async def list_unresolved(
         self, *, account_scope_id: str | None = None, limit: int = 100,
@@ -329,4 +329,4 @@ class OrderIntentService(OrderIntentLifecycleMixin):
                 str(account_scope_id or "").strip() or None,
                 max(1, min(int(limit), 1000)),
             )
-        return [dict(row) for row in rows]
+        return [decode_intent(row) for row in rows]
