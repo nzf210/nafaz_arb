@@ -155,14 +155,22 @@ class ExecutionPnLAccountingService:
                     "hedge_drift_base_quantity": snapshot.hedge_drift_base_quantity,
                     "provenance": snapshot.provenance,
                 }
+                if prior is not None and isinstance(prior["provenance"], str):
+                    prior_provenance = json.loads(prior["provenance"])
+                else:
+                    prior_provenance = prior["provenance"] if prior is not None else None
                 if prior is None or any(
                     (
                         Decimal(str(prior[name])) != value
                         if isinstance(value, Decimal)
                         else (
                             prior[name] != value
-                            if name in {"evaluated_at"}
-                            else str(prior[name]) != str(value)
+                            if name == "evaluated_at"
+                            else (
+                                prior_provenance != value
+                                if name == "provenance"
+                                else str(prior[name]) != str(value)
+                            )
                         )
                     )
                     for name, value in expected_snapshot.items()
@@ -375,17 +383,21 @@ class ExecutionPnLAccountingService:
                 ):
                     raise PnLAccountingError("entry and exit fee valuation currency must match reporting currency")
                 for fill_name, fill in (("entry", entry), ("exit", exit_fill)):
+                    if not fill["fee_verified"]:
+                        raise PnLAccountingError(f"{fill_name} fee fact is unverified")
                     if Decimal(str(fill["fee_amount"])) > 0 and not fill["fee_valuation_verified"]:
                         raise PnLAccountingError(f"{fill_name} fee valuation is not verified")
-                    if not fill["quote_fx_source"] or not fill["quote_fx_observed_at"]:
-                        raise PnLAccountingError(f"{fill_name} quote FX provenance is missing")
-                    if fill["fee_amount"] > 0 and (
-                        not fill["fee_fx_source"] or not fill["fee_fx_observed_at"]
-                    ):
-                        raise PnLAccountingError(f"{fill_name} fee FX provenance is missing")
+                    if not fill["quote_fx_verified"] or not fill["quote_fx_source"] or not fill["quote_fx_observed_at"]:
+                        raise PnLAccountingError(f"{fill_name} quote FX provenance is missing or unverified")
                     delta_seconds = abs((fill["filled_at"] - fill["quote_fx_observed_at"]).total_seconds())
                     if delta_seconds > max_fx_age_seconds:
                         raise PnLAccountingError(f"{fill_name} quote FX is too far from fill time")
+                    if fill["fee_amount"] > 0:
+                        if not fill["fee_fx_source"] or not fill["fee_fx_observed_at"]:
+                            raise PnLAccountingError(f"{fill_name} fee FX provenance is missing")
+                        fee_delta = abs((fill["filled_at"] - fill["fee_fx_observed_at"]).total_seconds())
+                        if fee_delta > max_fx_age_seconds:
+                            raise PnLAccountingError(f"{fill_name} fee FX is too far from fill time")
                 if str(entry["fee_reporting_currency"] or "").upper() != currency:
                     raise PnLAccountingError("entry fee reporting currency mismatch")
                 if str(exit_fill["fee_reporting_currency"] or "").upper() != currency:
