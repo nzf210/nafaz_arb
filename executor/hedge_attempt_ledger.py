@@ -508,12 +508,42 @@ class HedgeAttemptLedger:
                             version=version+1, updated_at=now()
                         where attempt_id=$1::uuid and version=$2
                           and status in ('ACKNOWLEDGED','OPEN','PARTIALLY_FILLED','RECONCILIATION_REQUIRED')
-                        returning confirmed_qty_base, requested_qty_base
+                        returning claim_key, confirmed_qty_base, requested_qty_base
                         """,
                         attempt_id, int(expected_version), status,
                     )
                     if row is None:
                         return False
+                    aggregate = await conn.fetchrow(
+                        """
+                        select c.target_hedge_qty, c.hedge_client_order_id,
+                               coalesce(sum(f.fill_qty_base),0) as confirmed_total
+                        from public.executor_hedge_intent_claims c
+                        left join public.executor_hedge_attempts a
+                          on a.claim_key=c.claim_key
+                        left join public.executor_hedge_attempt_fills f
+                          on f.attempt_id=a.attempt_id
+                        where c.claim_key=$1
+                        group by c.target_hedge_qty, c.hedge_client_order_id
+                        """,
+                        str(row["claim_key"]),
+                    )
+                    if aggregate is not None:
+                        target = _decimal(aggregate["target_hedge_qty"], "claim target")
+                        confirmed_total = _decimal(
+                            aggregate["confirmed_total"], "claim confirmed fills",
+                            allow_zero=True,
+                        )
+                        if confirmed_total >= target:
+                            await conn.execute(
+                                """
+                                update public.executor_hedge_intent_claims
+                                set status='CONFIRMED', confirmed_qty=$2,
+                                    version=version+1, updated_at=now()
+                                where claim_key=$1 and status in ('CLAIMED','SUBMITTED')
+                                """,
+                                str(row["claim_key"]), confirmed_total,
+                            )
                     await self._event(
                         conn, attempt_id, f"terminal:{status}:{expected_version}",
                         "ATTEMPT_TERMINAL_RECONCILED",
