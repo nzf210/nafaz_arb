@@ -17,6 +17,8 @@ class HedgeObligationMixin(HedgeServiceBase):
     ) -> dict:
         """Create one hedge obligation from one confirmed Spot entry fill."""
         ratio = _qty(hedge_ratio, "hedge_ratio")
+        if ratio > Decimal("1"):
+            raise HedgeObligationError("hedge_ratio above 1.0 requires an approved over-hedge policy")
         actor = _text(actor_id, "actor_id")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
