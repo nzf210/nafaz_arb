@@ -933,8 +933,9 @@ class EntryHedgeMixin:
             order_info["hedge_attempt_version"] = attempt_version + 1
 
         # The claim ID remains the generation identity; attempt IDs identify
-        # individual venue orders. Only attempt 1 performs the CLAIMED->SUBMITTED
-        # transition. Later attempts keep the same submitted claim.
+        # individual venue orders. The attempt repository atomically promotes a
+        # claim to SUBMITTED when it inserts PREPARED. Legacy non-attempt paths
+        # retain the acknowledgement-based claim transition below.
         claim_key = str(order_info.get("hedge_claim_key") or "")
         claim_coid = str(
             order_info.get("hedge_claim_client_order_id") or hedge_coid
