@@ -276,10 +276,20 @@ class HedgeAttemptLedger:
             fee_amount = fee_rows[0].get("cost")
             fee_currency = str(fee_rows[0].get("currency") or "")
         timestamp = trade.get("timestamp")
-        filled_at = (
-            datetime.fromtimestamp(float(timestamp) / 1000.0, tz=timezone.utc)
-            if timestamp is not None else None
-        )
+        filled_at = None
+        if isinstance(timestamp, (int, float)) and float(timestamp) > 0:
+            filled_at = datetime.fromtimestamp(
+                float(timestamp) / 1000.0, tz=timezone.utc
+            )
+        elif isinstance(timestamp, str) and timestamp.strip():
+            try:
+                filled_at = datetime.fromisoformat(
+                    timestamp.replace("Z", "+00:00")
+                )
+                if filled_at.tzinfo is None:
+                    filled_at = filled_at.replace(tzinfo=timezone.utc)
+            except ValueError:
+                filled_at = None
         return await self.record_fill(
             attempt_id=str(attempt["attempt_id"]),
             futures_account_scope_id=str(attempt["futures_account_scope_id"]),
@@ -535,7 +545,8 @@ class HedgeAttemptLedger:
                             aggregate["confirmed_total"], "claim confirmed fills",
                             allow_zero=True,
                         )
-                        if confirmed_total >= target:
+                        tolerance = max(Decimal("1e-12"), target * Decimal("1e-8"))
+                        if confirmed_total + tolerance >= target:
                             await conn.execute(
                                 """
                                 update public.executor_hedge_intent_claims
