@@ -100,7 +100,7 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $hedge_release$
 BEGIN
-    IF OLD.release_evidence <> '{}'::jsonb
+    IF OLD.status = 'RELEASED'
        AND NEW.release_evidence IS DISTINCT FROM OLD.release_evidence THEN
         RAISE EXCEPTION 'hedge reservation release evidence is immutable';
     END IF;
