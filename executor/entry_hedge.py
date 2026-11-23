@@ -450,6 +450,7 @@ class EntryHedgeMixin:
                 )
                 order_info["hedge_waiting_for_coverage"] = True
                 order_info["hedge_waiting_reason"] = "prior_attempt_unresolved_or_claim_unavailable"
+                order_info["hedge_retry_after"] = time.time() + 5.0
                 return None, {}, None, 0.0
             # The claim service recomputes the residual while holding the
             # per-parent PostgreSQL lock. Replace the local snapshot before
@@ -663,6 +664,7 @@ class EntryHedgeMixin:
                 raise GlobalStopError(
                     "durable hedge attempt quantity does not match exchange order quantity"
                 )
+            order_info.pop("hedge_retry_after", None)
             order_info["hedge_attempt_id"] = attempt["attempt_id"]
             order_info["hedge_attempt_no"] = int(attempt["attempt_no"])
             order_info["hedge_attempt_version"] = int(attempt["version"])
