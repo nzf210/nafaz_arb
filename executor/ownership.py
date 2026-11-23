@@ -239,7 +239,7 @@ class OwnershipLeaseService:
                     event_idempotency_key, lease_expires_at, metadata
                 ) VALUES ($1,$2,$3,'RELEASED',$4,$5,'{"source":"explicit-release"}'::jsonb)
                 """,
-                lease.scope_key, lease.owner_id, lease.generation,
+                lease.scope_key, lease.generation, lease.owner_id,
                 uuid.uuid4().hex, row["lease_expires_at"],
             )
             return True
@@ -289,7 +289,7 @@ class OwnershipLeaseService:
                         event_idempotency_key, lease_expires_at, metadata
                     ) VALUES ($1,$2,$3,'RELEASED',$4,$5,'{"source":"graceful-shutdown"}'::jsonb)
                     """,
-                    lease["scope_key"], self.owner_id, lease["generation"],
+                    lease["scope_key"], lease["generation"], self.owner_id,
                     uuid.uuid4().hex, row["lease_expires_at"],
                 )
                 released += 1
