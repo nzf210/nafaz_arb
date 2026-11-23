@@ -244,10 +244,13 @@ class ExecutionFillService:
                 )
                 return dict(claimed) if claimed is not None else None
 
-    async def list_due_inbox_events(self, *, limit: int = 100) -> list[dict]:
+    async def list_due_inbox_events(
+        self, *, limit: int = 100, processing_lease_seconds: int = 120,
+    ) -> list[dict]:
         batch = int(limit)
-        if batch <= 0 or batch > 500:
-            raise FillValidationError("inbox batch limit must be between 1 and 500")
+        lease_seconds = int(processing_lease_seconds)
+        if batch <= 0 or batch > 500 or lease_seconds <= 0:
+            raise FillValidationError("inbox batch limit must be 1-500 and processing lease must be positive")
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 """
@@ -260,12 +263,12 @@ class ExecutionFillService:
                     AND (next_retry_at IS NULL OR next_retry_at <= clock_timestamp())
                 ) OR (
                     processing_status='PROCESSING'
-                    AND processing_started_at < clock_timestamp() - interval '120 seconds'
+                    AND processing_started_at < clock_timestamp() - make_interval(secs => $2)
                 )
                 ORDER BY received_at, inbox_id
                 LIMIT $1
                 """,
-                batch,
+                batch, lease_seconds,
             )
         return [dict(row) for row in rows]
 
