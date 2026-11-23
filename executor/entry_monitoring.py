@@ -212,11 +212,13 @@ class EntryMonitoringMixin:
                     "filled": float(order.get("filled", 0.0) or 0.0),
                     "average": (
                         float(order["average"])
-                        if order.get("average") is not None else None
+                        if isinstance(order.get("average"), (int, float))
+                        else None
                     ),
                     "price": (
                         float(order["price"])
-                        if order.get("price") is not None else None
+                        if isinstance(order.get("price"), (int, float))
+                        else None
                     ),
                 }
                 self.supabase.event(
