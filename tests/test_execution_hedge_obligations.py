@@ -385,6 +385,11 @@ async def test_postgres_hedge_reservation_below_minimum_and_unknown_release_fail
             "SELECT release_evidence #>> '{fill_reconciliation,evidence_id}' FROM public.execution_hedge_reservations WHERE reservation_id=$1::uuid",
             reservation["reservation_id"],
         )
+        with pytest.raises(Exception, match="release evidence is immutable"):
+            await conn.execute(
+                "UPDATE public.execution_hedge_reservations SET release_evidence='{}'::jsonb WHERE reservation_id=$1::uuid",
+                reservation["reservation_id"],
+            )
     assert terminal_evidence_id == terminal_evidence["evidence_id"]
     assert fill_evidence_id == fill_evidence["evidence_id"]
     assert Decimal(str(row["reserved_base_quantity"])) == 0
