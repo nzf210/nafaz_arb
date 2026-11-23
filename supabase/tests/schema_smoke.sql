@@ -601,3 +601,79 @@ begin
             end if;
     end;
 end $fill_smoke$;
+-- Executor V3 PR-05: hedge obligation/reservation/allocation isolation.
+do $hedge_smoke$
+declare
+    tbl text;
+    constraint_name text;
+begin
+    foreach tbl in array array[
+        'execution_hedge_obligations','execution_hedge_reservations',
+        'execution_hedge_reservation_items','execution_hedge_allocations'
+    ] loop
+        if not exists (
+            select 1 from pg_class
+            where oid=format('public.%I',tbl)::regclass and relrowsecurity
+        ) then
+            raise exception 'RLS is not enabled on public.%', tbl;
+        end if;
+        if has_table_privilege('anon',format('public.%I',tbl),'select')
+           or has_table_privilege('authenticated',format('public.%I',tbl),'select') then
+            raise exception 'client role can read public.%', tbl;
+        end if;
+    end loop;
+
+    if not has_table_privilege('service_role','public.execution_hedge_obligations','update')
+       or not has_table_privilege('service_role','public.execution_hedge_reservations','update')
+       or not has_table_privilege('service_role','public.execution_hedge_reservation_items','update')
+       or not has_table_privilege('service_role','public.execution_hedge_allocations','insert')
+       or has_table_privilege('service_role','public.execution_hedge_allocations','update')
+       or has_table_privilege('service_role','public.execution_hedge_allocations','delete') then
+        raise exception 'hedge projection/audit grants are invalid';
+    end if;
+
+    foreach constraint_name in array array[
+        'execution_hedge_obligations_session_fill_fkey',
+        'execution_hedge_obligations_session_spot_leg_fkey',
+        'execution_hedge_obligations_session_futures_leg_fkey',
+        'execution_hedge_reservation_items_session_reservation_fkey',
+        'execution_hedge_reservation_items_session_obligation_fkey',
+        'execution_hedge_allocations_session_reservation_fkey',
+        'execution_hedge_allocations_session_fill_fkey',
+        'execution_hedge_allocations_session_obligation_fkey'
+    ] loop
+        if not exists (select 1 from pg_constraint where conname=constraint_name) then
+            raise exception 'missing session-bound hedge constraint %', constraint_name;
+        end if;
+    end loop;
+
+    if not exists (
+        select 1 from pg_trigger
+        where tgrelid='public.execution_hedge_allocations'::regclass
+          and tgname='trg_execution_hedge_allocations_append_only'
+          and not tgisinternal
+    ) then
+        raise exception 'hedge allocation append-only trigger is missing';
+    end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.execution_hedge_reservations'::regclass
+          and conname='execution_hedge_release_evidence_object'
+    ) or not exists (
+        select 1 from pg_indexes
+        where schemaname='public'
+          and indexname='uq_execution_hedge_reservation_client_order'
+    ) then
+        raise exception 'hedge release evidence constraint or unique client-order index is missing';
+    end if;
+
+    if not exists (
+        select 1 from pg_trigger
+        where tgrelid='public.execution_hedge_reservations'::regclass
+          and tgname='trg_execution_hedge_release_evidence_immutable'
+          and not tgisinternal
+    ) then
+        raise exception 'hedge reservation release evidence immutability trigger is missing';
+    end if;
+end $hedge_smoke$;
