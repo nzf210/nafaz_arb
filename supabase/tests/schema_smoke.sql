@@ -539,3 +539,67 @@ begin
     end;
 end $$;
 
+
+
+-- Executor V3 PR-05 follow-up: distinct durable Futures hedge attempts and
+-- append-only verified fill/event facts.
+do $$
+declare
+    tbl text;
+begin
+    foreach tbl in array array[
+        'executor_hedge_attempts',
+        'executor_hedge_attempt_fills',
+        'executor_hedge_attempt_events'
+    ] loop
+        if not exists (
+            select 1 from pg_class
+            where oid=format('public.%I',tbl)::regclass and relrowsecurity
+        ) then
+            raise exception 'RLS is not enabled on public.%', tbl;
+        end if;
+        if has_table_privilege('anon',format('public.%I',tbl),'select')
+           or has_table_privilege('authenticated',format('public.%I',tbl),'select') then
+            raise exception 'client role has unexpected SELECT on public.%', tbl;
+        end if;
+    end loop;
+
+    if not has_table_privilege('service_role','public.executor_hedge_attempts','select')
+       or not has_table_privilege('service_role','public.executor_hedge_attempts','insert')
+       or not has_table_privilege('service_role','public.executor_hedge_attempts','update')
+       or has_table_privilege('service_role','public.executor_hedge_attempts','delete') then
+        raise exception 'hedge attempt projection grants are invalid';
+    end if;
+
+    if not has_table_privilege('service_role','public.executor_hedge_attempt_fills','select')
+       or not has_table_privilege('service_role','public.executor_hedge_attempt_fills','insert')
+       or has_table_privilege('service_role','public.executor_hedge_attempt_fills','update')
+       or has_table_privilege('service_role','public.executor_hedge_attempt_fills','delete')
+       or not has_table_privilege('service_role','public.executor_hedge_attempt_events','select')
+       or not has_table_privilege('service_role','public.executor_hedge_attempt_events','insert')
+       or has_table_privilege('service_role','public.executor_hedge_attempt_events','update')
+       or has_table_privilege('service_role','public.executor_hedge_attempt_events','delete') then
+        raise exception 'hedge fill/event facts must be append-only for service_role';
+    end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.executor_hedge_attempts'::regclass
+          and contype='f' and confrelid='public.executor_hedge_intent_claims'::regclass
+          and confdeltype='r'
+    ) then
+        raise exception 'hedge attempts must retain their parent claim';
+    end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.executor_hedge_attempts'::regclass
+          and conname='executor_hedge_attempts_claim_key_attempt_no_key'
+    ) or not exists (
+        select 1 from pg_constraint
+        where conrelid='public.executor_hedge_attempt_fills'::regclass
+          and conname='executor_hedge_attempt_fills_futures_account_scope_id_futures_exchange_futures_symbol_venue_trade_id_key'
+    ) then
+        raise exception 'hedge attempt numbering or account-scoped fill idempotency constraint is missing';
+    end if;
+end $$;
