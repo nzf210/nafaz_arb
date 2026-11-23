@@ -950,7 +950,9 @@ class EntryHedgeMixin:
                         hedge_status = str(short_order.get("status", "")).lower()
                 except Exception as exc:
                     logger.debug("[State 2] follow-up futures hedge verification failed for %s: %s", order_id, exc)
-        if hedge_status not in ("closed", "filled"):
+        if hedge_status not in (
+            "closed", "filled", "canceled", "cancelled", "expired"
+        ):
             raise ValueError(
                 f"futures hedge is not terminal (status={hedge_status})"
             )
@@ -959,11 +961,17 @@ class EntryHedgeMixin:
         except (TypeError, ValueError):
             actual_hedged_qty = 0.0
         qty_tolerance = max(1e-12, futures_hedge_qty * 1e-8)
-        if actual_hedged_qty + qty_tolerance < futures_hedge_qty:
+        if actual_hedged_qty <= qty_tolerance:
             raise ValueError(
-                f"futures hedge fill incomplete: requested={futures_hedge_qty}, "
-                f"filled={actual_hedged_qty}; spot rollback will be guarded by "
-                "an authoritative futures-position check"
+                f"terminal futures hedge has no verified fill: requested={futures_hedge_qty}, "
+                f"filled={actual_hedged_qty}; attempt remains blocked for reconciliation"
+            )
+        if actual_hedged_qty + qty_tolerance < futures_hedge_qty:
+            logger.warning(
+                "[Hedge Attempt] %s: terminal partial Futures fill %.12f / %.12f; "
+                "persisting only the filled quantity and waiting for trade reconciliation "
+                "before any residual retry",
+                pair_tag, actual_hedged_qty, futures_hedge_qty,
             )
         if actual_hedged_qty > futures_hedge_qty + qty_tolerance:
             raise ValueError(
@@ -972,7 +980,8 @@ class EntryHedgeMixin:
             )
 
         recovery_order = dict(short_order)
-        recovery_order["status"] = "open"
+        # Keep the authoritative terminal status so trade reconciliation can
+        # release the attempt reservation after verifying individual trades.
         hedge_journal = await self._register_order(
             pair_tag,
             hedge_coid,
