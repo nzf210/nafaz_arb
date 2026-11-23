@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_reservations (
     status TEXT NOT NULL DEFAULT 'RESERVED'
         CHECK (status IN ('RESERVED','SUBMITTED','UNKNOWN','PARTIALLY_FILLED','CONSUMED','RELEASED','RECONCILIATION_REQUIRED')),
     client_order_id TEXT,
+    release_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
     idempotency_key TEXT NOT NULL,
     actor_id TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -74,6 +75,15 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_reservations (
     CONSTRAINT execution_hedge_reservation_allocation_valid
         CHECK (allocated_base_quantity <= reserved_base_quantity)
 );
+
+ALTER TABLE public.execution_hedge_reservations
+    ADD COLUMN IF NOT EXISTS release_evidence JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_hedge_reservation_client_order
+    ON public.execution_hedge_reservations(
+        account_scope_id, futures_venue, futures_market_type, client_order_id
+    )
+    WHERE client_order_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_execution_hedge_reservations_active
     ON public.execution_hedge_reservations (account_scope_id, futures_venue, futures_market_type, futures_symbol, status)
