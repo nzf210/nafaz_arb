@@ -25,11 +25,11 @@ The transaction performs:
 7. Increment the leg entity version and parent aggregate cursor.
 8. Append the corresponding session event in the same transaction.
 
-A duplicate trade with identical facts is a no-op. Reusing a trade identity or event idempotency key with different immutable facts is a conflict. No cumulative total is changed on replay.
+A duplicate trade with identical facts is a no-op. Reusing a trade identity or event idempotency key with different immutable facts is a conflict. No cumulative total is changed on replay. A new trade with a stale leg version, aggregate cursor, or fencing generation is rejected and rolled back before it can affect totals. Verified fees require both a fee asset and an authoritative fee source; string truthiness is never accepted as fee verification. The database also enforces a composite session/leg foreign key so a fill cannot reference a leg belonging to another session.
 
 ## Late fills and uncertainty
 
-A fill received after a canceled/closed/unknown leg or terminal session is not discarded. The fill fact is preserved and the affected leg/session is moved to RECONCILIATION_REQUIRED. This is an explicit audited correction to a previously terminal projection; it is not permission to resume entry.
+A fill received after a canceled/closed/unknown/rejected leg or terminal session is not discarded. The fill fact is preserved and the affected leg/session is moved to RECONCILIATION_REQUIRED. This is an explicit audited correction to a previously terminal projection; it is not permission to resume entry.
 
 A leg remains FILLED only when the existing lifecycle already established that state; this service does not infer order terminality from a trade. In-flight/cancel-pending state is not rewritten to a terminal order status.
 
