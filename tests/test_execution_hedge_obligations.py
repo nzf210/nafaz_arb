@@ -481,3 +481,66 @@ async def test_postgres_hedge_service_rejects_stale_coordinator_generation(postg
             coordinator_lease=admitted["coordinator_lease"],
             fencing_generation=admitted["coordinator_generation"] + 1,
         )
+
+
+@pytest.mark.asyncio
+async def test_postgres_hedge_submit_is_blocked_after_session_enters_reconciliation(postgres_pool):
+    suffix = uuid.uuid4().hex
+    coordinator, admitted, aggregate, leg_versions = await _session(postgres_pool, suffix)
+    fill = await _spot_fill(
+        postgres_pool, admitted, suffix, "submit-gate-" + suffix,
+        leg_versions[f"spot-{suffix}"], aggregate,
+    )
+    service = ExecutionHedgeObligationService(postgres_pool)
+    obligation = await service.create_from_spot_fill(
+        session_id=admitted["session_id"], spot_fill_id=fill["fill_id"],
+        hedge_ratio="1", actor_id="hedge-integration-test",
+        coordinator_lease=admitted["coordinator_lease"],
+        fencing_generation=admitted["coordinator_generation"],
+    )
+    reservation = await service.reserve(
+        session_id=admitted["session_id"], futures_venue="okx",
+        futures_market_type="swap", futures_symbol="BTC-USDT-SWAP",
+        base_asset="BTC", position_side="SHORT",
+        contract_type="LINEAR_PERPETUAL", contract_size="0.001",
+        quantity_unit="CONTRACTS", base_per_unit="0.001",
+        requested_base_quantity=obligation["target_base_quantity"],
+        minimum_base_quantity="0.0001",
+        idempotency_key="submit-gate-reserve-" + suffix,
+        actor_id="hedge-integration-test",
+        coordinator_lease=admitted["coordinator_lease"],
+        fencing_generation=admitted["coordinator_generation"],
+    )
+    async with postgres_pool.acquire() as conn:
+        session = await conn.fetchrow(
+            "SELECT state_version, aggregate_version FROM public.execution_sessions WHERE session_id=$1",
+            admitted["session_id"],
+        )
+    await coordinator.transition(
+        coordinator_lease=admitted["coordinator_lease"],
+        session_id=admitted["session_id"],
+        target_state="RECONCILIATION_REQUIRED",
+        expected_state_version=int(session["state_version"]),
+        expected_aggregate_version=int(session["aggregate_version"]),
+        fencing_generation=admitted["coordinator_generation"],
+        event_type="TEST_SESSION_RECONCILIATION_REQUIRED",
+        event_idempotency_key="submit-gate-reconcile-" + suffix,
+        actor_id="hedge-integration-test",
+    )
+    with pytest.raises(HedgeObligationError, match="cannot submit hedge reservation"):
+        await service.mark_submitted(
+            session_id=admitted["session_id"],
+            reservation_id=reservation["reservation_id"],
+            client_order_id="must-not-submit-" + suffix,
+            actor_id="hedge-integration-test",
+            event_idempotency_key="submit-gate-mark-" + suffix,
+            coordinator_lease=admitted["coordinator_lease"],
+            fencing_generation=admitted["coordinator_generation"],
+        )
+    async with postgres_pool.acquire() as conn:
+        current = await conn.fetchrow(
+            "SELECT status, client_order_id FROM public.execution_hedge_reservations WHERE reservation_id=$1::uuid",
+            reservation["reservation_id"],
+        )
+    assert current["status"] == "RESERVED"
+    assert current["client_order_id"] is None
