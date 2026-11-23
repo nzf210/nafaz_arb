@@ -49,9 +49,12 @@ long transaction across multiple repository operations.
 ## Safety boundary
 
 This service only persists logical intents and session events. It has no exchange
-client and never calls `MutationGateway.execute_create_intent`. A later runtime
-stage must explicitly route each prepared intent through the single mutation
-gateway after the existing instrument ownership/risk/Global STOP fence.
+client and never calls `MutationGateway.execute_create_intent`. The centralized Global STOP submit transaction now also gates session-bound
+ENTRY intents: it locks and verifies the exact session, leg, and active coordinator
+lease, requiring session `ENTRY_IN_PROGRESS`, leg `PREPARED`, and exact account,
+venue, market, native symbol, and pair-route identity before the venue call.
+The same transaction still acquires the instrument ownership/risk/Global STOP
+fence and marks both durable mutation projections SUBMITTING.
 
 No V2 call sites, scanner logic, strategy thresholds, sizing policy, exit policy,
 production migration, LIVE configuration, or deployment are changed here.
