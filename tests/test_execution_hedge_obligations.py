@@ -363,6 +363,15 @@ async def test_postgres_hedge_reservation_below_minimum_and_unknown_release_fail
         "reconciled_at": now, "fills_checked": True,
         "client_order_id": "unknown-client-" + suffix,
     }
+    with pytest.raises(HedgeObligationError, match="does not match reservation"):
+        await service.release(
+            session_id=admitted["session_id"], reservation_id=reservation["reservation_id"],
+            actor_id="hedge-integration-test", event_idempotency_key="release-wrong-order-" + suffix,
+            terminal_order_verified=True, fills_reconciled=True,
+            terminal_order_evidence={**terminal_evidence, "client_order_id": "wrong-order"},
+            fill_reconciliation_evidence=fill_evidence,
+            coordinator_lease=lease, fencing_generation=lease.generation,
+        )
     released = await service.release(
         session_id=admitted["session_id"], reservation_id=reservation["reservation_id"],
         actor_id="hedge-integration-test", event_idempotency_key="release-verified-" + suffix,
