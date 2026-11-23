@@ -354,7 +354,7 @@ class ExecutionFillService:
                     leg_type == "FUTURES" and position_side != "SHORT"
                 ) or facts["side"] != expected_side:
                     raise FillValidationError(
-                        "fill side does not match the configured Spot/Futures leg and fill role"
+                        "entry fill side or exit fill side does not match the configured Spot/Futures leg and fill role"
                     )
 
                 prior_event = await conn.fetchrow(
@@ -413,7 +413,7 @@ class ExecutionFillService:
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
                         $15,$16,$17,$18,$19,$20,$21::jsonb,$22,$23,$24,$25,
-                        $26,$27,$28,$29,$30,$31
+                        $26,$27,$28,$29,$30,$31,$32
                     )
                     ON CONFLICT (account_scope_id, venue, market_type, symbol, exchange_trade_id)
                     DO NOTHING
