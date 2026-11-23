@@ -81,6 +81,9 @@ class TradeFillReconciliationWorker:
                 "futures_exit" if record.market_type == "perpetual" else "force_close"
             ),
         }
+        recovery_context = getattr(record, "recovery_context", None)
+        if not isinstance(recovery_context, dict):
+            recovery_context = {}
         return {
             "pair_key": record.pair_key,
             "exchange_name": record.exchange,
@@ -102,9 +105,7 @@ class TradeFillReconciliationWorker:
             "local_amount_spec": record.local_amount_spec,
             "global_amount_spec": record.global_amount_spec,
             "is_mock": record.is_mock,
-            "hedge_attempt_id": str(
-                (getattr(record, "recovery_context", None) or {}).get("hedge_attempt_id") or ""
-            ),
+            "hedge_attempt_id": str(recovery_context.get("hedge_attempt_id") or ""),
         }
 
     def _merge_registry_candidates(
@@ -445,6 +446,19 @@ class TradeFillReconciliationWorker:
     def _candidate_context_fields(
         row: Dict[str, Any], filled_qty: float
     ) -> Dict[str, Any]:
+        raw_payload = row.get("raw_payload")
+        if isinstance(raw_payload, str):
+            try:
+                raw_payload = json.loads(raw_payload)
+            except (TypeError, ValueError):
+                raw_payload = {}
+        if not isinstance(raw_payload, dict):
+            raw_payload = {}
+        recovery_context = row.get("recovery_context")
+        if not isinstance(recovery_context, dict):
+            recovery_context = raw_payload.get("recovery_context")
+        if not isinstance(recovery_context, dict):
+            recovery_context = {}
         context = {
             "exchange": str(row.get("exchange_name") or "").lower(),
             "market_type": str(row.get("market_type") or "").lower(),
@@ -455,8 +469,8 @@ class TradeFillReconciliationWorker:
             "filled_qty": filled_qty,
             "hedge_attempt_id": str(
                 row.get("hedge_attempt_id")
-                or (row.get("raw_payload") or {}).get("hedge_attempt_id")
-                or ((row.get("raw_payload") or {}).get("recovery_context") or {}).get("hedge_attempt_id")
+                or recovery_context.get("hedge_attempt_id")
+                or raw_payload.get("hedge_attempt_id")
                 or ""
             ),
         }
