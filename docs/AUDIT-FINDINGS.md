@@ -702,3 +702,10 @@ The generic gateway still accepts a no-argument `pre_submit_guard`. Callable pre
 - The PostgreSQL tests used disposable CI PostgreSQL, not the actual VPS topology. Local tests were not run because `git clone` failed with `Could not resolve host: github.com`.
 
 No source-code behavior changed in this follow-up; only the test fake was corrected. No merge, deployment, production migration, cutover, or live order was performed. Overall status remains **PARTIAL / NOT LIVE-CERTIFIED**.
+
+
+## R-59 — exact-venue recovery fallback bypass CONFIRMED / FIXED IN SOURCE
+
+A follow-up call-chain check found that `RecoveryDiscoveryMixin._client_for_exchange()` correctly returns `None` for an unavailable/unconfigured venue, but `RecoveryRegistryMixin._fetch_order_by_client_id()` and `_fetch_order_by_role()` then fell back to `self.client` (the configured base pair facade). This undid the exact venue/market selection at the final lookup boundary. A MEXC spot/futures record with no matching exact client could therefore be queried against the default Indodax/OKX facade, producing a false NOT_FOUND or a misleading symbol error. It did not create a new order, but it violated exact-client-ID reconciliation and could delay or misclassify an already accepted order.
+
+The minimal source fix removes both fallbacks and raises before any venue lookup when the exact exchange/market client cannot be resolved. Mock mode remains supported because its resolver returns the configured mock facade explicitly. A regression test covers both spot and futures paths and asserts that none of the default facade lookup methods are called. Source/test commit and CI result are recorded in the next execution update; until that workflow completes this fix is not marked test-verified.

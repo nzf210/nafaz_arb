@@ -16,6 +16,7 @@ bot orders:
 import asyncio
 import json
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -1973,6 +1974,34 @@ async def test_recovery_looks_up_a_record_on_the_venue_that_owns_it(fake_redis):
     assert result is None
     assert asked["symbol"] == "toko:ATH_USDT"
     assert asked["client_order_id"] == "tokocrypto-6aff40ba-entry-794411778"
+
+
+@pytest.mark.asyncio
+async def test_recovery_never_falls_back_to_default_client_for_unbound_venue(fake_redis):
+    base = MockExchangeClient()
+    base.fetch_local_order_by_client_id = AsyncMock()
+    base.fetch_global_order_by_client_id = AsyncMock()
+    base.fetch_local_order = AsyncMock()
+    base.fetch_global_order = AsyncMock()
+    engine = _engine(fake_redis, client=base, mock_mode=False)
+    engine._client_for_exchange = lambda exchange, market=None: None
+
+    for market_type in ("spot", "perpetual"):
+        record = _entry_record(
+            exchange="mexc", market_type=market_type,
+            symbol="BTC/USDT:USDT" if market_type == "perpetual" else "BTC/USDT",
+            client_order_id=f"unbound-{market_type}-client-id",
+            exchange_order_id="",
+        )
+        with pytest.raises(RuntimeError, match="refusing recovery lookup on the default pair client"):
+            await engine._fetch_order_by_client_id(record)
+        with pytest.raises(RuntimeError, match="refusing recovery lookup on the default pair client"):
+            await engine._fetch_order_by_role(record, "venue-order-1", record.symbol)
+
+    base.fetch_local_order_by_client_id.assert_not_awaited()
+    base.fetch_global_order_by_client_id.assert_not_awaited()
+    base.fetch_local_order.assert_not_awaited()
+    base.fetch_global_order.assert_not_awaited()
 
 
 @pytest.mark.asyncio

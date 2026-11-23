@@ -1838,3 +1838,8 @@ This requires a schema migration plus lifecycle wiring at spot terminal-zero-fil
 The generic MutationGateway still uses a no-argument admission callback; it needs an intent-scoped interface before production entry wiring. It has no production create caller in the inspected paths and is not the sole mutation boundary.
 
 Verification addendum: strict fake venue fixtures replaced permissive bare AsyncMock objects after run 45000129249 exposed 7 test-harness failures. Commit `8fffeda` passed workflow `45132361737`: Python 789 passed/10 skipped, PostgreSQL schema/integration 11 passed, Go race/vet, Docker builds, and migration-runner validation passed. These are CI results, not VPS/live venue certification.
+
+
+## Exact-venue recovery invariant — 2026-11-23
+
+Recovery must never substitute the configured base pair client when the order record names another exchange/market. `_client_for_exchange(exchange, market)` returning `None` is a hard resolution failure. Both client-ID lookup and order-ID lookup must stop before venue I/O; a default-client lookup can return a false NOT_FOUND and cannot prove anything about the owning venue. Mock mode is allowed only when its resolver explicitly returns the configured mock facade. Regression coverage now exercises unbound spot and futures records and verifies that the base client's lookup methods remain untouched.

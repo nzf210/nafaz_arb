@@ -598,12 +598,15 @@ class RecoveryRegistryMixin:
         # the configured base pair (e.g. indodax/okx), so a record submitted on a
         # different spot venue (tokocrypto) would otherwise be looked up on the
         # wrong exchange and fail with that venue's "invalid symbol" error.
+        market = "futures" if record.market_type == "perpetual" else "spot"
         owner = self._client_for_exchange(
-            getattr(record, "exchange", "") or "",
-            "futures" if record.market_type == "perpetual" else "spot",
+            getattr(record, "exchange", "") or "", market
         )
         if owner is None:
-            owner = self.client
+            raise RuntimeError(
+                f"no exact {market} client is bound to venue {record.exchange!r}; "
+                "refusing recovery lookup on the default pair client"
+            )
         if record.market_type == "perpetual":
             fetcher = getattr(owner, "fetch_global_order_by_client_id", None)
             if fetcher is None:
@@ -631,12 +634,15 @@ class RecoveryRegistryMixin:
         same id would either miss it or, worse, return an unrelated spot order.
         """
         spec = record.global_amount_spec if record.market_type == "perpetual" else record.local_amount_spec
+        market = "futures" if record.market_type == "perpetual" else "spot"
         owner = self._client_for_exchange(
-            getattr(record, "exchange", "") or "",
-            "futures" if record.market_type == "perpetual" else "spot",
+            getattr(record, "exchange", "") or "", market
         )
         if owner is None:
-            owner = self.client
+            raise RuntimeError(
+                f"no exact {market} client is bound to venue {record.exchange!r}; "
+                "refusing recovery lookup on the default pair client"
+            )
         if record.market_type == "perpetual":
             fetcher = getattr(owner, "fetch_global_order", None)
             if fetcher is None:
