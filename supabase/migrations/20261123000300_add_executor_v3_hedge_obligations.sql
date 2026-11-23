@@ -44,6 +44,49 @@ CREATE INDEX IF NOT EXISTS idx_execution_hedge_obligations_available
     )
     WHERE status IN ('OPEN','PARTIALLY_HEDGED');
 
+-- Preserve exact session ownership across every source and paired leg.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_fills_session_fill_id
+    ON public.execution_fills(session_id, fill_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_hedge_obligations_session_id
+    ON public.execution_hedge_obligations(session_id, obligation_id);
+
+DO $
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_hedge_obligations'::regclass
+          AND conname='fk_hedge_obligation_session_source_fill'
+    ) THEN
+        ALTER TABLE public.execution_hedge_obligations
+            ADD CONSTRAINT fk_hedge_obligation_session_source_fill
+            FOREIGN KEY (session_id, source_fill_id)
+            REFERENCES public.execution_fills(session_id, fill_id)
+            ON DELETE RESTRICT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_hedge_obligations'::regclass
+          AND conname='fk_hedge_obligation_session_spot_leg'
+    ) THEN
+        ALTER TABLE public.execution_hedge_obligations
+            ADD CONSTRAINT fk_hedge_obligation_session_spot_leg
+            FOREIGN KEY (session_id, spot_leg_id)
+            REFERENCES public.execution_legs(session_id, leg_id)
+            ON DELETE RESTRICT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_hedge_obligations'::regclass
+          AND conname='fk_hedge_obligation_session_futures_leg'
+    ) THEN
+        ALTER TABLE public.execution_hedge_obligations
+            ADD CONSTRAINT fk_hedge_obligation_session_futures_leg
+            FOREIGN KEY (session_id, futures_leg_id)
+            REFERENCES public.execution_legs(session_id, leg_id)
+            ON DELETE RESTRICT;
+    END IF;
+END $;
+
 CREATE TABLE IF NOT EXISTS public.execution_hedge_reservations (
     reservation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id TEXT NOT NULL
