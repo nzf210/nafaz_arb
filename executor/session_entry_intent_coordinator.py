@@ -1,6 +1,8 @@
-"""Prepare both V3 entry intents before advancing a session into execution.
+"""Prepare the initial Spot entry intent for a V3 session.
 
-This coordinator persists logical intents only. It never calls an exchange client.
+The Futures leg is deliberately not submitted as a parallel entry order.
+Confirmed Spot fills create durable hedge obligations; later hedge orders are
+sized from those obligations and routed through reservations and the gateway.
 """
 from __future__ import annotations
 
@@ -12,7 +14,7 @@ from executor.order_intent_service import OrderIntentService
 
 
 class SessionEntryIntentError(RuntimeError):
-    """The session cannot safely prepare its two entry-leg intents."""
+    """The session cannot safely prepare its initial Spot entry intent."""
 
 
 def _positive_decimal(value: Any, field: str) -> Decimal:
@@ -25,27 +27,28 @@ def _positive_decimal(value: Any, field: str) -> Decimal:
     return number
 
 
-def _index_specs(
+def _spot_spec(
     legs: list[Mapping[str, Any]], specs: list[Mapping[str, Any]],
-) -> dict[str, dict]:
-    if not isinstance(specs, list) or len(specs) != 2:
-        raise SessionEntryIntentError("exactly two entry intent specifications are required")
-    leg_ids = {str(leg["leg_id"]) for leg in legs}
-    indexed: dict[str, dict] = {}
-    for raw in specs:
-        if not isinstance(raw, Mapping):
-            raise SessionEntryIntentError("each entry intent specification must be a mapping")
-        leg_id = str(raw.get("leg_id") or "").strip()
-        if not leg_id or leg_id not in leg_ids or leg_id in indexed:
-            raise SessionEntryIntentError("entry intent specifications must map one-to-one to session legs")
-        indexed[leg_id] = dict(raw)
-    if set(indexed) != leg_ids:
-        raise SessionEntryIntentError("an entry intent specification is missing for a session leg")
-    return indexed
+) -> tuple[dict, dict]:
+    if not isinstance(specs, list) or len(specs) != 1:
+        raise SessionEntryIntentError(
+            "exactly one initial Spot entry intent specification is required; Futures is hedged from fills"
+        )
+    spot_legs = [leg for leg in legs if str(leg.get("leg_type") or "").upper() == "SPOT"]
+    if len(spot_legs) != 1:
+        raise SessionEntryIntentError("session must contain exactly one SPOT leg")
+    raw = specs[0]
+    if not isinstance(raw, Mapping):
+        raise SessionEntryIntentError("Spot entry intent specification must be a mapping")
+    leg = dict(spot_legs[0])
+    spec = dict(raw)
+    if str(spec.get("leg_id") or "").strip() != str(leg["leg_id"]):
+        raise SessionEntryIntentError("initial entry intent must map to the session SPOT leg only")
+    return leg, spec
 
 
 class SessionEntryIntentCoordinator:
-    """Idempotently prepare the Spot and Futures intents for one admitted session."""
+    """Idempotently prepare only the Spot entry intent for one admitted session."""
 
     def __init__(
         self, pool: Any, *,
@@ -83,7 +86,7 @@ class SessionEntryIntentCoordinator:
                 state = str(session["status"]).upper()
                 if state not in {"ADMITTED", "ENTRY_IN_PROGRESS"}:
                     raise SessionEntryIntentError(
-                        f"session state {state} cannot prepare entry intents"
+                        f"session state {state} cannot prepare Spot entry intent"
                     )
                 generation = int(session["fencing_generation"] or 0)
                 await validate_coordinator_lease(
@@ -110,7 +113,7 @@ class SessionEntryIntentCoordinator:
                 legs = [dict(row) for row in rows]
                 if len(legs) != 2 or {str(x["leg_type"]).upper() for x in legs} != {"SPOT", "FUTURES"}:
                     raise SessionEntryIntentError("session must contain exactly one SPOT and one FUTURES leg")
-                by_leg = _index_specs(legs, specs)
+                spot_leg, spec = _spot_spec(legs, specs)
                 snapshot = {
                     "state": state,
                     "state_version": int(session["state_version"]),
@@ -118,117 +121,90 @@ class SessionEntryIntentCoordinator:
                     "account_scope_id": str(session["account_scope_id"]),
                     "pair_key": str(session["pair_key"]),
                     "generation": generation,
-                    "legs": legs,
-                    "specs": by_leg,
+                    "spot_leg": spot_leg,
+                    "spec": spec,
                 }
 
-        validated: dict[str, dict] = {}
-        # Validate both legs completely before writing either intent. This avoids
-        # leaving a one-sided reservation because the second specification was
-        # malformed.
-        for leg in snapshot["legs"]:
-            leg_id = str(leg["leg_id"])
-            spec = snapshot["specs"][leg_id]
-            leg_type = str(leg["leg_type"]).upper()
-            expected_side = "buy" if leg_type == "SPOT" else "sell"
-            side = str(spec.get("side") or "").strip().lower()
-            if side != expected_side:
-                raise SessionEntryIntentError(f"{leg_type} entry side must be {expected_side}")
-            if leg_type == "FUTURES" and str(leg.get("position_side") or "").upper() != "SHORT":
-                raise SessionEntryIntentError("Futures entry leg must be SHORT for this Spot/Perpetual strategy")
-            quantity = _positive_decimal(spec.get("quantity"), f"{leg_type}.quantity")
-            expected_quantity = _positive_decimal(leg.get("order_quantity"), f"{leg_type}.order_quantity")
-            if quantity != expected_quantity:
-                raise SessionEntryIntentError(
-                    f"{leg_type} intent quantity differs from the admitted leg order_quantity"
-                )
-            price = _positive_decimal(spec.get("price"), f"{leg_type}.price")
-            idempotency_key = str(spec.get("idempotency_key") or "").strip()
-            if not idempotency_key:
-                raise SessionEntryIntentError(f"{leg_type}.idempotency_key is required")
-            order_type = str(spec.get("order_type") or "").strip().lower()
-            if order_type not in {"limit", "market"}:
-                raise SessionEntryIntentError(f"{leg_type}.order_type must be limit or market")
-            metadata = dict(spec.get("request_metadata") or {})
-            metadata.setdefault("action_class", "ENTRY")
-            if str(metadata["action_class"]).upper() != "ENTRY":
-                raise SessionEntryIntentError("session entry intents must use action_class=ENTRY")
-            validated[leg_id] = {
-                "side": side, "quantity": quantity, "price": price,
-                "idempotency_key": idempotency_key, "order_type": order_type,
-                "metadata": metadata,
-            }
-
-        idempotency_keys = [item["idempotency_key"] for item in validated.values()]
-        if len(set(idempotency_keys)) != len(idempotency_keys):
-            raise SessionEntryIntentError("each entry leg requires a distinct idempotency key")
-
-        prepared: dict[str, dict] = {}
-        for leg in snapshot["legs"]:
-            leg_id = str(leg["leg_id"])
-            spec = snapshot["specs"][leg_id]
-            values = validated[leg_id]
-            intent = await self.order_intents.prepare_create(
-                account_scope_id=snapshot["account_scope_id"],
-                idempotency_key=values["idempotency_key"],
-                venue=str(leg["venue"]),
-                market_type=str(leg["market_type"]),
-                instrument=str(leg["symbol"]),
-                pair_key=snapshot["pair_key"],
-                side=values["side"],
-                order_type=values["order_type"],
-                quantity=values["quantity"],
-                price=values["price"],
-                actor_id=actor,
-                session_id=session_id,
-                leg_id=leg_id,
-                reserved_base_qty=spec.get("reserved_base_qty", 0),
-                reserved_notional=spec.get("reserved_notional", 0),
-                reservation_asset=spec.get("reservation_asset"),
-                max_reserved_base_qty=spec.get("max_reserved_base_qty"),
-                max_reserved_notional=spec.get("max_reserved_notional"),
-                request_metadata=values["metadata"],
+        leg_id = str(snapshot["spot_leg"]["leg_id"])
+        leg = snapshot["spot_leg"]
+        side = str(spec.get("side") or "").strip().lower()
+        if side != "buy":
+            raise SessionEntryIntentError("initial Spot entry side must be buy")
+        if str(leg.get("quantity_unit") or "").upper() != "BASE":
+            raise SessionEntryIntentError("initial Spot entry quantity must use BASE units")
+        quantity = _positive_decimal(spec.get("quantity"), "SPOT.quantity")
+        expected_quantity = _positive_decimal(leg.get("order_quantity"), "SPOT.order_quantity")
+        if quantity != expected_quantity:
+            raise SessionEntryIntentError(
+                "Spot intent quantity differs from the admitted leg order_quantity"
             )
-            intent_status = str(intent.get("status") or "").upper()
-            if intent_status not in {"PREPARED", "SUBMITTING", "UNKNOWN", "ACKNOWLEDGED", "COMPLETED"}:
-                raise SessionEntryIntentError(
-                    f"entry mutation intent {intent.get('intent_id')} is not executable: {intent_status}"
-                )
-            if (
-                str(intent.get("session_id") or "") != session_id
-                or str(intent.get("leg_id") or "") != leg_id
-                or str(intent.get("venue") or "").lower() != str(leg["venue"]).lower()
-                or str(intent.get("instrument") or "").upper() != str(leg["symbol"]).upper()
-                or str(intent.get("pair_key") or "") != snapshot["pair_key"]
-                or str(intent.get("account_scope_id") or "") != snapshot["account_scope_id"]
-            ):
-                raise SessionEntryIntentError("prepared mutation intent does not match its durable session leg")
-            prepared[leg_id] = intent
+        price = _positive_decimal(spec.get("price"), "SPOT.price")
+        idempotency_key = str(spec.get("idempotency_key") or "").strip()
+        if not idempotency_key:
+            raise SessionEntryIntentError("SPOT.idempotency_key is required")
+        order_type = str(spec.get("order_type") or "").strip().lower()
+        if order_type not in {"limit", "market"}:
+            raise SessionEntryIntentError("SPOT.order_type must be limit or market")
+        metadata = dict(spec.get("request_metadata") or {})
+        metadata.setdefault("action_class", "ENTRY")
+        if str(metadata["action_class"]).upper() != "ENTRY":
+            raise SessionEntryIntentError("initial Spot entry intent must use action_class=ENTRY")
 
-        # Aggregate transitions are separate idempotent transactions. If the
-        # process stops between them, retrying the same specs returns the same
-        # intents and continues from the persisted leg/session versions.
+        intent = await self.order_intents.prepare_create(
+            account_scope_id=snapshot["account_scope_id"],
+            idempotency_key=idempotency_key,
+            venue=str(leg["venue"]),
+            market_type=str(leg["market_type"]),
+            instrument=str(leg["symbol"]),
+            pair_key=snapshot["pair_key"],
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
+            price=price,
+            actor_id=actor,
+            session_id=session_id,
+            leg_id=leg_id,
+            reserved_base_qty=spec.get("reserved_base_qty", 0),
+            reserved_notional=spec.get("reserved_notional", 0),
+            reservation_asset=spec.get("reservation_asset"),
+            max_reserved_base_qty=spec.get("max_reserved_base_qty"),
+            max_reserved_notional=spec.get("max_reserved_notional"),
+            request_metadata=metadata,
+        )
+        intent_status = str(intent.get("status") or "").upper()
+        if intent_status not in {"PREPARED", "SUBMITTING", "UNKNOWN", "ACKNOWLEDGED", "COMPLETED"}:
+            raise SessionEntryIntentError(
+                f"Spot mutation intent {intent.get('intent_id')} is not executable: {intent_status}"
+            )
+        if (
+            str(intent.get("session_id") or "") != session_id
+            or str(intent.get("leg_id") or "") != leg_id
+            or str(intent.get("venue") or "").lower() != str(leg["venue"]).lower()
+            or str(intent.get("instrument") or "").upper() != str(leg["symbol"]).upper()
+            or str(intent.get("pair_key") or "") != snapshot["pair_key"]
+            or str(intent.get("account_scope_id") or "") != snapshot["account_scope_id"]
+        ):
+            raise SessionEntryIntentError("prepared mutation intent does not match the durable Spot leg")
+
         aggregate_version = snapshot["aggregate_version"]
-        for leg in snapshot["legs"]:
-            leg_id = str(leg["leg_id"])
-            current_leg_state = str(leg["status"]).upper()
-            if current_leg_state == "PREPARED":
-                continue
+        current_leg_state = str(leg["status"]).upper()
+        if current_leg_state != "PREPARED":
             if current_leg_state not in {"CREATED", "NOT_STARTED"}:
-                if snapshot["state"] == "ENTRY_IN_PROGRESS":
-                    continue
-                raise SessionEntryIntentError(
-                    f"leg {leg_id} state {current_leg_state} cannot be prepared for entry"
+                if snapshot["state"] != "ENTRY_IN_PROGRESS":
+                    raise SessionEntryIntentError(
+                        f"Spot leg state {current_leg_state} cannot be prepared for entry"
+                    )
+            else:
+                transition = await self._transition_leg(
+                    session_id=session_id, leg_id=leg_id,
+                    expected_leg_state_version=int(leg["state_version"]),
+                    expected_aggregate_version=aggregate_version,
+                    fencing_generation=snapshot["generation"],
+                    coordinator_lease=coordinator_lease,
+                    actor_id=actor,
+                    idempotency_key=f"entry-intents:{session_id}:{leg_id}",
                 )
-            transition = await self._transition_leg(
-                session_id=session_id, leg_id=leg_id,
-                expected_leg_state_version=int(leg["state_version"]),
-                expected_aggregate_version=aggregate_version,
-                fencing_generation=snapshot["generation"],
-                coordinator_lease=coordinator_lease,
-                actor_id=actor, idempotency_key=f"entry-intents:{session_id}:{leg_id}",
-            )
-            aggregate_version = int(transition["aggregate_version"])
+                aggregate_version = int(transition["aggregate_version"])
 
         if snapshot["state"] == "ADMITTED":
             await self._transition_session(
@@ -239,15 +215,15 @@ class SessionEntryIntentCoordinator:
                 coordinator_lease=coordinator_lease,
                 actor_id=actor,
                 idempotency_key=f"entry-intents:{session_id}:entry-started",
-                payload={"prepared_intent_ids": sorted(
-                    str(item["intent_id"]) for item in prepared.values()
-                )},
+                payload={"prepared_spot_intent_id": str(intent["intent_id"])},
             )
+            aggregate_version += 1
         return {
             "session_id": session_id,
             "state": "ENTRY_IN_PROGRESS",
-            "intents": prepared,
-            "aggregate_version": aggregate_version + (1 if snapshot["state"] == "ADMITTED" else 0),
+            "spot_intent": intent,
+            "intents": {leg_id: intent},
+            "aggregate_version": aggregate_version,
         }
 
     def _repository(self) -> Any:
@@ -268,10 +244,10 @@ class SessionEntryIntentCoordinator:
             expected_leg_state_version=expected_leg_state_version,
             expected_aggregate_version=expected_aggregate_version,
             fencing_generation=fencing_generation,
-            event_type="ENTRY_INTENT_PREPARED",
+            event_type="SPOT_ENTRY_INTENT_PREPARED",
             event_idempotency_key=idempotency_key,
             actor_id=actor_id,
-            payload={"intent_prepared": True},
+            payload={"intent_prepared": True, "leg_type": "SPOT"},
             coordinator_lease=coordinator_lease,
         )
 
@@ -287,7 +263,7 @@ class SessionEntryIntentCoordinator:
             expected_state_version=expected_state_version,
             expected_aggregate_version=expected_aggregate_version,
             fencing_generation=fencing_generation,
-            event_type="ENTRY_INTENTS_PREPARED",
+            event_type="SPOT_ENTRY_INTENT_PREPARED",
             event_idempotency_key=idempotency_key,
             actor_id=actor_id, payload=payload,
             coordinator_lease=coordinator_lease,
