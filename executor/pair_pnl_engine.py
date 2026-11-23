@@ -232,6 +232,16 @@ def _pnl_decimal(value, name: str, *, allow_zero: bool = False) -> Decimal:
     return result
 
 
+def _pnl_signed_decimal(value, name: str) -> Decimal:
+    try:
+        result = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise PairPnLInputError(f"{name} must be a finite decimal") from exc
+    if not result.is_finite():
+        raise PairPnLInputError(f"{name} must be a finite decimal")
+    return result
+
+
 @dataclass(frozen=True)
 class PnLBookLevel:
     price: Decimal
@@ -413,7 +423,7 @@ def compute_pair_pnl_v3(
     futures_exit_rate = _pnl_decimal(futures_exit_fee_rate, "futures_exit_fee_rate", allow_zero=True)
     if futures_exit_rate >= 1:
         raise PairPnLInputError("Futures exit fee rate must be below 100%")
-    funding = _pnl_decimal(funding_reporting_amount, "funding_reporting_amount")
+    funding = _pnl_signed_decimal(funding_reporting_amount, "funding_reporting_amount")
     conversion_cost = _pnl_decimal(conversion_cost_reporting, "conversion_cost_reporting", allow_zero=True)
     reserve = _pnl_decimal(fee_reserve_reporting, "fee_reserve_reporting", allow_zero=True)
 
