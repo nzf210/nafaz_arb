@@ -44,6 +44,12 @@ def _decimal_text(value: Decimal) -> str:
     return format(value.normalize(), "f")
 
 
+def _boolean(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise FillValidationError(f"{name} must be a boolean")
+    return value
+
+
 def _timestamp(value: Any) -> datetime:
     if isinstance(value, str):
         try:
@@ -195,7 +201,7 @@ class ExecutionFillService:
             "filled_at": _timestamp(filled_at),
             "fee_amount": _decimal(fee_amount, "fee_amount", positive=False),
             "fee_asset": str(fee_asset or "").strip().upper(),
-            "fee_verified": fee_verified,
+            "fee_verified": _boolean(fee_verified, "fee_verified"),
             "fee_source": str(fee_source or "UNVERIFIED")[:60],
             "exchange_order_id": str(exchange_order_id or ""),
             "client_order_id": str(client_order_id or ""),
@@ -208,8 +214,6 @@ class ExecutionFillService:
             raise FillValidationError("session, leg, account, venue, market, symbol, trade and quote identity are required")
         if facts["side"] not in {"buy", "sell"}:
             raise FillValidationError("side must be buy or sell")
-        if not isinstance(fee_verified, bool):
-            raise FillValidationError("fee_verified must be a boolean")
         facts["quote_quantity"] = (
             _decimal(quote_quantity, "quote_quantity")
             if quote_quantity is not None
