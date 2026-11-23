@@ -1191,7 +1191,7 @@ class EntryHedgeMixin:
                 expected_short_price,
             )
             claim_key = str(order_info.get("hedge_claim_key") or "")
-            if claim_key:
+            if claim_key and not order_info.get("hedge_attempt_id"):
                 claims_service = getattr(self, "hedge_claims", None)
                 if claims_service is not None:
                     claim_confirmed = await claims_service.mark_confirmed(
@@ -1237,12 +1237,32 @@ class EntryHedgeMixin:
             # call has started, keep CLAIMED/SUBMITTED durable until recovery
             # proves the outcome; never release an ambiguous submission.
             claim_key = str(order_info.get("hedge_claim_key") or "")
+            claim_coid = str(
+                order_info.get("hedge_claim_client_order_id")
+                or order_info.get("pending_hedge_client_order_id")
+                or ""
+            )
             claims_service = getattr(self, "hedge_claims", None)
-            if claim_key and claims_service is not None and not order_info.get(
-                "hedge_submit_started"
+            attempt_id = str(order_info.get("hedge_attempt_id") or "")
+            attempt_ledger = getattr(self, "hedge_attempt_ledger", None)
+            if (
+                attempt_id and attempt_ledger is not None
+                and not order_info.get("hedge_submit_started")
+                and not order_info.get("hedge_attempt_terminal")
+            ):
+                await attempt_ledger.mark_rejected(
+                    attempt_id,
+                    expected_version=int(order_info.get("hedge_attempt_version", 0)),
+                    from_status="PREPARED",
+                    reason=f"pre-submit hedge failure: {type(he).__name__}: {he}",
+                )
+                order_info["hedge_attempt_terminal"] = True
+            if (
+                claim_key and claims_service is not None and claim_coid
+                and not order_info.get("hedge_submit_started")
             ):
                 await claims_service.mark_abandoned(
-                    claim_key, hedge_coid,
+                    claim_key, claim_coid,
                     f"pre-submit hedge failure: {type(he).__name__}: {he}"
                 )
             global_exchange = str(order_info.get("global_exchange", ""))
