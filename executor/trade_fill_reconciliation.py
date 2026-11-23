@@ -102,6 +102,9 @@ class TradeFillReconciliationWorker:
             "local_amount_spec": record.local_amount_spec,
             "global_amount_spec": record.global_amount_spec,
             "is_mock": record.is_mock,
+            "hedge_attempt_id": str(
+                (getattr(record, "recovery_context", None) or {}).get("hedge_attempt_id") or ""
+            ),
         }
 
     def _merge_registry_candidates(
@@ -338,6 +341,7 @@ class TradeFillReconciliationWorker:
         exchange_order_id: str, client_order_id: str, filled_qty: float,
         trades: list, total_qty: float, unverified_fee_ids: list,
         order_status: str = "",
+        attempt_required: bool = False,
     ) -> None:
         tolerance = max(
             self.absolute_tolerance, abs(filled_qty) * self.relative_tolerance
@@ -378,6 +382,16 @@ class TradeFillReconciliationWorker:
         # attempt ledger, keyed by the exact client order ID.
         attempt_ledger = getattr(self.engine, "hedge_attempt_ledger", None)
         matched_attempt = False
+        if attempt_required and (
+            attempt_ledger is None or not attempt_ledger.enabled
+        ):
+            await self._halt(
+                identity,
+                scope,
+                "Hedge attempt ledger is unavailable; verified trades cannot be finalized.",
+                {"client_order_id": client_order_id, "exchange": exchange, "symbol": symbol},
+            )
+            return
         if attempt_ledger is not None and attempt_ledger.enabled and client_order_id:
             try:
                 for trade in trades:
@@ -388,6 +402,10 @@ class TradeFillReconciliationWorker:
                         trade=trade,
                     )
                     matched_attempt = matched_attempt or recorded is not None
+                if attempt_required and not matched_attempt:
+                    raise RuntimeError(
+                        "order carries a hedge attempt ID but no durable attempt row matched its client order ID"
+                    )
                 if matched_attempt and str(order_status or "").lower() in (
                     "closed", "filled", "canceled", "cancelled", "expired", "rejected"
                 ):
@@ -435,6 +453,12 @@ class TradeFillReconciliationWorker:
             "client_order_id": str(row.get("client_order_id") or ""),
             "exchange_order_id": str(row.get("exchange_order_id") or ""),
             "filled_qty": filled_qty,
+            "hedge_attempt_id": str(
+                row.get("hedge_attempt_id")
+                or (row.get("raw_payload") or {}).get("hedge_attempt_id")
+                or ((row.get("raw_payload") or {}).get("recovery_context") or {}).get("hedge_attempt_id")
+                or ""
+            ),
         }
         context["scope"] = context["pair_key"] or context["exchange"]
         return context
@@ -558,6 +582,7 @@ class TradeFillReconciliationWorker:
                 writer, identity, scope, exchange, symbol, exchange_order_id,
                 client_order_id, filled_qty, trades, total_qty, unverified_fee_ids,
                 order_status=str(row.get("status") or ""),
+                attempt_required=bool(context.get("hedge_attempt_id")),
             )
         except asyncio.CancelledError:
             raise
