@@ -1572,8 +1572,6 @@ class EntryHedgeMixin:
             and order_info.get("hedge_submit_started")
         )
         if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
-            self.pending_entry_orders.pop(pair_tag, None)
-            await self._clear_pending_entry(pair_tag)
             # A reconciliation halt set while the order was terminal must not
             # be silently reset by cleanup; manual intervention is pending.
             self.pending_entry_orders.pop(pair_tag, None)
