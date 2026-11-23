@@ -11,7 +11,7 @@ Every confirmed Spot entry fill creates one durable hedge obligation. The obliga
 
 The target is expressed in base-equivalent quantity. Futures contracts are never compared directly with Spot base quantity; conversion uses the paired Futures leg's pinned `base_per_unit`.
 
-The default hedge ratio is 1.0. Ratios above 1.0 are rejected by this service unless a separately approved over-hedge policy is implemented.
+The default hedge ratio is 1.0. Ratios above 1.0 are rejected by this service unless a separately approved over-hedge policy is implemented. Replaying an existing source fill also compares the complete Spot/Futures leg, account, pair route, venue, market, native symbol, contract, quantity-unit, and conversion identity.
 
 ## Durable states and quantities
 
@@ -27,7 +27,7 @@ Reserved quantity is not treated as confirmed coverage. Multiple partial Spot fi
 
 A reservation is created transactionally by locking compatible OPEN/PARTIALLY_HEDGED obligations in FIFO order, computing available quantity (target − confirmed − reserved), and reserving only the amount that can actually be backed by those obligations. If the backed amount is below the supplied minimum base quantity, no reservation is created.
 
-The route identity pins account, Futures venue, market type, native symbol, base asset, position side, contract type/size, quantity unit, and base-per-unit conversion. This prevents aggregation across incompatible contract definitions.
+The route identity pins account, Futures venue, market type, native symbol, base asset, position side, contract type/size, quantity unit, and base-per-unit conversion. PostgreSQL composite foreign keys enforce that obligations, reservation items, and allocations cannot reference legs, fills, reservations, or obligations belonging to another session. This prevents aggregation across incompatible contract definitions.
 
 Reservation lifecycle:
 - RESERVED: durable intent exists; no submit is claimed.
@@ -36,7 +36,7 @@ Reservation lifecycle:
 - PARTIALLY_FILLED / CONSUMED: confirmed Futures fills have been allocated.
 - RELEASED: only proven-unfilled remainder has been returned to obligations.
 
-UNKNOWN/SUBMITTED/PARTIALLY_FILLED reservations cannot be released without both terminal-order verification and fill reconciliation. Unknown submissions remain locked until evidence is supplied.
+UNKNOWN/SUBMITTED/PARTIALLY_FILLED reservations cannot be released without both terminal-order verification and fill reconciliation. Both proofs must be actual booleans; truthy strings are rejected. Unknown submissions remain locked until evidence is supplied.
 
 ## Allocation contract
 
