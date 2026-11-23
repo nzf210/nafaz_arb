@@ -43,6 +43,10 @@ class _FakeConn:
                 and row.get("parent_spot_order_id") == args[1]
                 and row.get("status") in ("CLAIMED", "SUBMITTED")
             ), None)
+        if "from public.executor_hedge_attempts" in query:
+            # These unit tests model pre-attempt-ledger legacy claims. A
+            # SUBMITTED claim with no attempt record must remain blocked.
+            return None
         if "max(cumulative_spot_filled)" in query:
             rows = [
                 row for row in self.table.values()
