@@ -128,6 +128,9 @@ class EntryMonitoringMixin:
                 # fill watermark and retry only the outstanding Futures hedge
                 # after the previous attempt has been reconciled. Never poll,
                 # cancel, or replace the terminal Spot order again.
+                retry_after = float(order_info.get("hedge_retry_after", 0.0) or 0.0)
+                if time.time() < retry_after:
+                    return
                 terminal_order = dict(
                     order_info.get("spot_terminal_order")
                     if isinstance(order_info.get("spot_terminal_order"), dict)
