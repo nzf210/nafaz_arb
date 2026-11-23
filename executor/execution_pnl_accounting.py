@@ -346,7 +346,7 @@ class ExecutionPnLAccountingService:
                         actual_futures_margin_reporting=EXCLUDED.actual_futures_margin_reporting,
                         fee_reserve_reporting=EXCLUDED.fee_reserve_reporting,
                         status=EXCLUDED.status,state_version=EXCLUDED.state_version,
-                        last_verified_at=COALESCE(EXCLUDED.last_verified_at,public.execution_positions.last_verified_at),
+                        last_verified_at=COALESCE(EXCLUDED.last_verified_at,execution_positions.last_verified_at),
                         spot_exchange_base_quantity=EXCLUDED.spot_exchange_base_quantity,
                         futures_exchange_base_quantity=EXCLUDED.futures_exchange_base_quantity,
                         reconciliation_status=EXCLUDED.reconciliation_status,
