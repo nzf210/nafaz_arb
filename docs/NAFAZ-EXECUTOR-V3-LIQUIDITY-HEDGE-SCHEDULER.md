@@ -36,7 +36,7 @@ Every obligation has durable next-evaluation time, first defer time, max-wait de
 - If the maximum unhedged wait expires, it returns DE_RISK_REQUIRED.
 - DE_RISK_REQUIRED blocks the obligation and its session until an explicit recovery/de-risk workflow resolves the exposure. Further hedge reservations are rejected while the block remains active.
 
-The scheduler stores every decision in an append-only event table and updates the obligation under the session coordinator lease/fencing generation. Duplicate event keys are idempotent; changed decisions under the same key are conflicts.
+The scheduler stores every decision in an append-only event table and updates the obligation under the session coordinator lease/fencing generation. Before persistence, it revalidates that executable quantities are finite, the native/base conversion matches the obligation, the quantity does not exceed unreserved exposure, and SUBMIT really covers the full remainder. A forged or stale decision cannot authorize a quantity beyond the durable obligation. Duplicate event keys are idempotent; changed decisions under the same key are conflicts.
 
 ## Safety boundary
 
