@@ -32,6 +32,11 @@ END $$;
 ALTER TABLE public.execution_legs
     VALIDATE CONSTRAINT execution_legs_confirmed_fill_nonnegative;
 
+-- Preserve the session/leg relationship at the database boundary as well as
+-- in the service validator; independent FKs would permit a cross-session leg.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_legs_session_leg
+    ON public.execution_legs(session_id, leg_id);
+
 CREATE TABLE IF NOT EXISTS public.execution_fills (
     fill_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id TEXT NOT NULL
@@ -61,6 +66,24 @@ CREATE TABLE IF NOT EXISTS public.execution_fills (
     CONSTRAINT uq_execution_fills_venue_trade
         UNIQUE (account_scope_id, venue, market_type, symbol, exchange_trade_id)
 );
+
+DO $
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_fills'::regclass
+          AND conname='execution_fills_session_leg_fkey'
+    ) THEN
+        ALTER TABLE public.execution_fills
+            ADD CONSTRAINT execution_fills_session_leg_fkey
+            FOREIGN KEY (session_id, leg_id)
+            REFERENCES public.execution_legs(session_id, leg_id)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+END $;
+
+ALTER TABLE public.execution_fills
+    VALIDATE CONSTRAINT execution_fills_session_leg_fkey;
 
 CREATE INDEX IF NOT EXISTS idx_execution_fills_session_leg_time
     ON public.execution_fills(session_id, leg_id, filled_at, fill_id);
