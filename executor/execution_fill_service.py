@@ -401,10 +401,15 @@ class ExecutionFillService:
                         symbol, exchange_order_id, client_order_id, exchange_trade_id,
                         side, quantity, price, quote_quantity, quote_asset,
                         fee_amount, fee_asset, fee_verified, fee_source, filled_at,
-                        source_event_id, raw_payload
+                        source_event_id, raw_payload, fill_role,
+                        fee_reporting_amount, fee_reporting_currency, fee_fx_rate,
+                        fee_fx_source, fee_fx_observed_at, fee_valuation_verified,
+                        quote_to_reporting_rate, quote_fx_source, quote_fx_observed_at,
+                        quote_fx_verified
                     ) VALUES (
                         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
-                        $15,$16,$17,$18,$19,$20,$21::jsonb
+                        $15,$16,$17,$18,$19,$20,$21::jsonb,$22,$23,$24,$25,
+                        $26,$27,$28,$29,$30,$31
                     )
                     ON CONFLICT (account_scope_id, venue, market_type, symbol, exchange_trade_id)
                     DO NOTHING
@@ -415,9 +420,14 @@ class ExecutionFillService:
                     exchange_order_id, client_order_id, facts["exchange_trade_id"],
                     facts["side"], facts["quantity"], facts["price"],
                     facts["quote_quantity"], facts["quote_asset"], facts["fee_amount"],
-                    facts["fee_asset"] or None, bool(fee_verified),
-                    str(fee_source or "UNVERIFIED")[:60], facts["filled_at"],
-                    source_event_id, raw,
+                    facts["fee_asset"] or None, facts["fee_verified"],
+                    facts["fee_source"], facts["filled_at"],
+                    source_event_id, raw, facts["fill_role"],
+                    facts["fee_reporting_amount"], facts["fee_reporting_currency"] or None,
+                    facts["fee_fx_rate"], facts["fee_fx_source"] or None,
+                    facts["fee_fx_observed_at"], facts["fee_valuation_verified"],
+                    facts["quote_to_reporting_rate"], facts["quote_fx_source"] or None,
+                    facts["quote_fx_observed_at"], facts["quote_fx_verified"],
                 )
                 if inserted is None:
                     existing = await conn.fetchrow(
