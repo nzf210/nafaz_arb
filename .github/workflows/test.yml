@@ -126,6 +126,11 @@ jobs:
           pytest -q tests/test_mutation_gateway_v3_intents.py
           pytest -q tests/test_mutation_gateway_v3_cancel.py
           pytest -q tests/test_mutation_intent_recovery.py
+      - name: Exercise Executor V3 durable fill lifecycle
+        timeout-minutes: 5
+        env:
+          TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
+        run: pytest -q tests/test_execution_fill_service.py
 
   docker-images:
     runs-on: ubuntu-latest
