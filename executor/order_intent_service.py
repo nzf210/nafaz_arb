@@ -224,7 +224,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
                         raise OrderIntentConflict(
                             "idempotency key is already bound to a different mutation request"
                         )
-                    return dict(existing)
+                    return decode_intent(existing)
 
                 if operation == "CREATE":
                     await self._assert_reservation_budget(
@@ -268,7 +268,7 @@ class OrderIntentService(OrderIntentLifecycleMixin):
                     f"{intent_id}:prepared", actor_id,
                     json.dumps({"request_hash": request_hash, "scope_key": scope_key}),
                 )
-        return dict(row)
+        return decode_intent(row)
 
     @staticmethod
     async def _assert_reservation_budget(
