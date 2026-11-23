@@ -54,7 +54,13 @@ ENTRY intents: it locks and verifies the exact session, leg, and active coordina
 lease, requiring session `ENTRY_IN_PROGRESS`, leg `PREPARED`, and exact account,
 venue, market, native symbol, and pair-route identity before the venue call.
 The same transaction still acquires the instrument ownership/risk/Global STOP
-fence and marks both durable mutation projections SUBMITTING.
+fence and marks both durable mutation projections SUBMITTING. It also advances
+the exact execution leg from PREPARED to SUBMITTING and appends
+`LEG_SUBMISSION_STARTED` to the session event stream before the venue call.
+This is required because a private fill can arrive immediately after the exchange
+accepts the order; the fill service must observe a leg state that permits fill
+accounting. The state transition, external submit attempt, and logical mutation
+intent transition commit atomically before the network request begins.
 
 No V2 call sites, scanner logic, strategy thresholds, sizing policy, exit policy,
 production migration, LIVE configuration, or deployment are changed here.
