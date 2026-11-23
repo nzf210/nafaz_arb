@@ -655,3 +655,50 @@ Reviewed target branch head before this follow-up: `8167cefe153e5c950e4732c9120b
 - No merge, deployment, production migration, cutover, or live order was performed.
 
 Remaining gates: clone-wide/runtime-instrumented create-order inventory; scoped durable active-market admission resilient to Redis loss; production wiring and lifecycle registration for MutationGateway; operator identity and HMAC secret custody/rotation; dual approval and manual-resolution runbook; repeated PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; and per-venue sandbox/paper exact-ID/eventual-consistency tests. Status remains PARTIAL / NOT LIVE-CERTIFIED.
+
+
+## V2 order-path follow-up — 2026-11-23
+
+Reviewed branch source/test head: `8fffeda582f9f4b09765b22c77ffe0ecd3969f3f`.
+
+### Order call-site inventory evidence
+
+The recursive Git tree contains 276 files, including 102 `executor/*.py` files and 151 Python files repository-wide. The tree was enumerated and the order-bearing lifecycle, adapter, recovery, script, and test files were inspected. This is **not** a claim that every Python file has received a full local grep: a local clone remains unavailable because DNS resolution for github.com fails.
+
+Inspected create-order surfaces and their risk classification:
+
+- `executor/exchange_orders.py`: `place_local_limit_buy` -> spot BUY (exposure-increasing); `place_local_limit_sell` and `place_local_market_sell` -> exit/rollback/force-close (de-risking).
+- `executor/exchange_futures.py`: `open_global_short_market` -> futures market SELL with `reduceOnly=False` (exposure-increasing hedge); `close_global_short_market` -> futures market BUY with `reduceOnly=True` (de-risking).
+- `executor/indodax_v2.py`: limit BUY, limit SELL, and market SELL wrappers all funnel through raw `_create_order` / `POST /api/v2/order`; production entry reaches the BUY wrapper through the fenced spot lifecycle.
+- `executor/mutation_gateway.py`: dynamic `create_order_direct` / `create_order` generic entry boundary. No production create caller was found in the inspected branch paths; it is not yet the sole mutation boundary.
+- `scripts/resolve_ai_position.py`: direct Tokocrypto market SELL and OKX market BUY with `reduceOnly=True`; both are explicitly de-risk-only and were not moved behind the entry STOP fence.
+- `executor/paper_exchange_client.py`: simulated orders only.
+- The inspected `executor/venues/*` modular adapters and recovery/order-sync modules showed no direct venue create-order side effects; recovery paths inspected are lookup/adoption/reconciliation paths.
+
+Spot BUY and futures short SELL remain required to use durable PREPARED/SUBMITTING plus the shared PostgreSQL session advisory fence. Exit, close, rollback, force-close, and cancel remain separate risk-reducing paths.
+
+### R-58 — Redis-loss active-market admission gap CONFIRMED / OPEN
+
+The code evidence confirms the previously recorded risk:
+
+1. `EngineSignalMixin._has_active_or_pending_market` checks process memory and Redis active/pending keys; it does not read a canonical PostgreSQL active-market reservation.
+2. `SupabasePositionMixin.position_opened` enqueues the position row into the local SQLite outbox. Delivery to Supabase is asynchronous and the outbox is local to each executor process/volume.
+3. The inspected Supabase query API exposes durable open-order registry reads, but no canonical active-position read used by entry admission.
+4. Startup restores active positions from Redis. `GlobalStopService.order_submit_fence` blocks unresolved SUBMITTING/UNKNOWN attempts, but an ACKNOWLEDGED attempt is not a durable representation of an open position.
+
+Therefore, after Redis active/pending state is lost, a peer with empty local memory can see an empty Redis keyspace and cannot distinguish it from a genuinely flat market. If the position outbox has not yet reached Supabase, the peer has no durable active-position evidence and the current submit fence alone does not prevent a second market entry. This is a **confirmed resilience gap**, not a claim that an ordinary healthy Redis path is currently bypassing the fence.
+
+No partial patch was made: a safe fix needs a PostgreSQL market-exposure reservation with an atomic reserve inside the shared submit fence, explicit release only after verified no-fill/rejection or both legs confirmed flat, startup backfill/recovery, and preservation of de-risk access. Adding only a pre-submit REST query or an unreleased reservation would be unsafe/incomplete.
+
+### R-57 — generic admission callback scope OPEN
+
+The generic gateway still accepts a no-argument `pre_submit_guard`. Callable presence does not prove the guard is bound to the immutable exchange/market/symbol/pair/intent. No production create caller was found, so this remains a wiring blocker rather than an observed production bypass.
+
+### CI correction and evidence
+
+- Run `45000129249` on `9ba44b1a` failed: 7 tests failed, 782 passed, 10 skipped. The failing MutationGateway tests used bare `AsyncMock` objects; dynamic attribute access made `for_venue` appear callable and return an un-awaited mock coroutine, so the strict venue resolver correctly rejected the fake before reaching the lifecycle assertions.
+- Test-only correction: commit `8fffeda582f9f4b09765b22c77ffe0ecd3969f3f` introduced a strict fake venue object with an explicit `.id` and only the intended async create method.
+- Workflow `45132361737` on `8fffeda`: **SUCCESS, 5/5 jobs**. Python: **789 passed, 10 skipped, 117 warnings**. PostgreSQL schema/integration: **11 passed**. Go race tests and `go vet`: passed. VPS migration-runner validation and scanner/executor Docker builds: passed.
+- The PostgreSQL tests used disposable CI PostgreSQL, not the actual VPS topology. Local tests were not run because `git clone` failed with `Could not resolve host: github.com`.
+
+No source-code behavior changed in this follow-up; only the test fake was corrected. No merge, deployment, production migration, cutover, or live order was performed. Overall status remains **PARTIAL / NOT LIVE-CERTIFIED**.

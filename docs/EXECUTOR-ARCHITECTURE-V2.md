@@ -1816,3 +1816,25 @@ The current spot active-market check reads in-memory state and shared Redis acti
 This limitation does not justify putting risk-reducing orders behind entry STOP. Spot SELL, futures reduceOnly close, rollback, force-close, and cancel retain their separate protective semantics.
 
 Verification for the 2026-11-22 follow-up is tracked in `docs/AUDIT-FINDINGS.md` and `docs/V2-BOOTSTRAP-CONFIG-STOP-FENCING-CHECKLIST.md`. No CI pass is claimed until the updated branch head has a verifiable check run.
+
+
+## 2026-11-23 audit addendum — active-market durability boundary
+
+The current market admission implementation is not yet Redis-loss-safe. `EngineSignalMixin._has_active_or_pending_market` checks process-local active/pending maps and Redis keys. It does not consult a canonical PostgreSQL active-market reservation. The universal order registry is not sufficient as a substitute: entry order records may be retired after the hedge lifecycle is complete while the position remains open.
+
+The Supabase position writer queues `positions` and `position_legs` through each process's local SQLite outbox; network delivery is asynchronous. The inspected query path can restore open order-registry rows, but does not provide a canonical active-position query used by entry admission. Startup active-position restoration still begins from Redis. A Redis flush/eviction can therefore erase the only shared market identity before the position outbox is visible to peers. The PostgreSQL submit ledger protects PREPARED/SUBMITTING ambiguity, but ACKNOWLEDGED rows are not active-position locks.
+
+**Required architecture before claiming cross-instance market uniqueness:**
+
+1. Add a PostgreSQL market-exposure reservation keyed by normalized (local venue, base asset, quote asset), with pair/position and entry client-order identity.
+2. Acquire it atomically inside the same shared PostgreSQL submit-fence critical section before SUBMITTING/venue request. A REST lookup or Redis marker is not an atomic substitute.
+3. Retain the reservation across ACK, partial fill, hedge, restart, and RECONCILIATION_REQUIRED.
+4. Release only after authoritative zero-fill terminal/rejection/abort, or after both spot and futures legs are independently verified flat. Unknown/not-found/eventual-consistency states retain it.
+5. Reconcile/backfill existing active positions before a replica becomes READY; conflicting or unclassifiable reservations fail closed.
+6. Keep spot SELL, futures reduceOnly close, rollback, force-close, and cancel on the independent de-risk path. Entry reservations must never become a reason to deny risk reduction.
+
+This requires a schema migration plus lifecycle wiring at spot terminal-zero-fill, rollback completion, normal exit completion, force-close completion, startup recovery, and operator resolution. No incomplete reservation-only patch is acceptable because it could either leak a market lock permanently or release it while exposure remains.
+
+The generic MutationGateway still uses a no-argument admission callback; it needs an intent-scoped interface before production entry wiring. It has no production create caller in the inspected paths and is not the sole mutation boundary.
+
+Verification addendum: strict fake venue fixtures replaced permissive bare AsyncMock objects after run 45000129249 exposed 7 test-harness failures. Commit `8fffeda` passed workflow `45132361737`: Python 789 passed/10 skipped, PostgreSQL schema/integration 11 passed, Go race/vet, Docker builds, and migration-runner validation passed. These are CI results, not VPS/live venue certification.

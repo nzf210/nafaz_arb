@@ -712,3 +712,32 @@ Reviewed branch head before this follow-up: `8167cefe153e5c950e4732c9120bf2c8a0f
 - No merge, deployment, production migration, cutover, or live order was performed.
 
 **Overall status: PARTIAL / NOT LIVE-CERTIFIED.**
+
+
+## Execution update — 2026-11-23 (source/test head 8fffeda)
+
+### Call-site review
+
+- [x] Enumerated the branch Git tree (276 files; 102 executor Python files; 151 Python files total).
+- [x] Inspected the primary spot BUY, futures short SELL, Indodax raw order endpoint, generic MutationGateway create methods, direct manual unwind script, modular venue adapters, and principal recovery/order-sync modules.
+- [x] Classified spot SELL, futures reduceOnly close, rollback, force-close, and cancel as de-risk/cancel operations outside the entry STOP fence.
+- [ ] Full clone-wide source grep/runtime instrumentation of every Python and indirect create-order call remains OPEN; local clone failed due DNS and targeted connector reads are not equivalent to a full local grep.
+
+### Confirmed open items
+
+- [ ] **R-58 — Redis-loss active-market gate:** market admission uses local memory + Redis only. Position writes are queued to per-process SQLite outboxes and delivered asynchronously; no canonical PostgreSQL active-market reservation is queried by the guard. ACKNOWLEDGED submit rows do not represent open positions. Implement a durable market-exposure reservation atomically inside the shared submit fence, with lifecycle-safe release and startup backfill before marking this closed.
+- [ ] **R-57 — Generic gateway guard:** replace the no-argument callback with an intent-scoped, auditable admission contract before any production create caller is wired.
+- [ ] Operator-authenticated manual resolution: operator identity/provisioning, HMAC secret custody/rotation, dual approval, evidence retrieval, and runbook.
+- [ ] Repeated real PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; disposable CI PostgreSQL does not close this.
+- [ ] Per-venue sandbox/paper contract tests for exact client-ID visibility, eventual consistency, partial/pending hedge, cancel/fill race, and reduceOnly close.
+
+### Test/CI evidence
+
+- Run `45000129249` on `9ba44b1a`: failed (7 failed, 782 passed, 10 skipped). Cause was permissive bare AsyncMock test clients exposing a dynamic `for_venue` attribute; source resolver's exact-client validation rejected those fakes before the test's intended lifecycle path.
+- Test fixture correction: `8fffeda582f9f4b09765b22c77ffe0ecd3969f3f` uses strict venue fakes with explicit IDs.
+- Workflow `45132361737` on `8fffeda`: **SUCCESS 5/5**. Python **789 passed, 10 skipped, 117 warnings**; PostgreSQL schema/integration **11 passed**; Go race + vet passed; Docker images and VPS migration-runner validation passed.
+- Local clone/test was not possible (`Could not resolve host: github.com`). CI PostgreSQL is disposable and is not the actual VPS multi-process fault-injection requirement.
+
+No production source behavior was changed in this execution; the test fixture was corrected. No merge, deployment, production migration, cutover, or live order was performed.
+
+**Overall: PARTIAL / NOT LIVE-CERTIFIED.**
