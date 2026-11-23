@@ -184,6 +184,17 @@ class ExecutionFillService:
         fee_asset: str | None = None, fee_verified: bool = False,
         fee_source: str = "UNVERIFIED", source_event_id: str | None = None,
         raw_payload: Mapping[str, Any] | None = None,
+        fill_role: str = "ENTRY",
+        fee_reporting_amount: Any | None = None,
+        fee_reporting_currency: str | None = None,
+        fee_fx_rate: Any | None = None,
+        fee_fx_source: str | None = None,
+        fee_fx_observed_at: Any | None = None,
+        fee_valuation_verified: bool = False,
+        quote_to_reporting_rate: Any | None = None,
+        quote_fx_source: str | None = None,
+        quote_fx_observed_at: Any | None = None,
+        quote_fx_verified: bool = False,
     ) -> dict:
         """Append one confirmed trade and update leg totals/event cursor atomically."""
         facts = {
@@ -203,6 +214,23 @@ class ExecutionFillService:
             "fee_asset": str(fee_asset or "").strip().upper(),
             "fee_verified": _boolean(fee_verified, "fee_verified"),
             "fee_source": str(fee_source or "UNVERIFIED")[:60],
+            "fill_role": str(fill_role or "").strip().upper(),
+            "fee_reporting_amount": (
+                _decimal(fee_reporting_amount, "fee_reporting_amount", positive=False)
+                if fee_reporting_amount is not None else None
+            ),
+            "fee_reporting_currency": str(fee_reporting_currency or "").strip().upper(),
+            "fee_fx_rate": _decimal(fee_fx_rate, "fee_fx_rate") if fee_fx_rate is not None else None,
+            "fee_fx_source": str(fee_fx_source or "").strip(),
+            "fee_fx_observed_at": _timestamp(fee_fx_observed_at) if fee_fx_observed_at is not None else None,
+            "fee_valuation_verified": _boolean(fee_valuation_verified, "fee_valuation_verified"),
+            "quote_to_reporting_rate": (
+                _decimal(quote_to_reporting_rate, "quote_to_reporting_rate")
+                if quote_to_reporting_rate is not None else None
+            ),
+            "quote_fx_source": str(quote_fx_source or "").strip(),
+            "quote_fx_observed_at": _timestamp(quote_fx_observed_at) if quote_fx_observed_at is not None else None,
+            "quote_fx_verified": _boolean(quote_fx_verified, "quote_fx_verified"),
             "exchange_order_id": str(exchange_order_id or ""),
             "client_order_id": str(client_order_id or ""),
             "source_event_id": str(source_event_id or ""),
@@ -214,6 +242,22 @@ class ExecutionFillService:
             raise FillValidationError("session, leg, account, venue, market, symbol, trade and quote identity are required")
         if facts["side"] not in {"buy", "sell"}:
             raise FillValidationError("side must be buy or sell")
+        if facts["fill_role"] not in {"ENTRY", "EXIT"}:
+            raise FillValidationError("fill_role must be ENTRY or EXIT")
+        if facts["fee_valuation_verified"] and (
+            facts["fee_reporting_amount"] is None
+            or not facts["fee_reporting_currency"]
+            or facts["fee_fx_rate"] is None
+            or not facts["fee_fx_source"]
+            or facts["fee_fx_observed_at"] is None
+        ):
+            raise FillValidationError("verified fee valuation requires amount, currency, FX rate, source and timestamp")
+        if facts["quote_fx_verified"] and (
+            facts["quote_to_reporting_rate"] is None
+            or not facts["quote_fx_source"]
+            or facts["quote_fx_observed_at"] is None
+        ):
+            raise FillValidationError("verified quote FX requires rate, source and timestamp")
         facts["quote_quantity"] = (
             _decimal(quote_quantity, "quote_quantity")
             if quote_quantity is not None
