@@ -418,3 +418,21 @@ async def test_unverified_base_denominated_spot_fee_blocks_hedge_sizing(postgres
             fencing_generation=admitted["coordinator_generation"],
         )
     await coordinator.release(admitted["coordinator_lease"])
+
+
+@pytest.mark.asyncio
+async def test_invalid_hedge_position_side_uses_domain_error_without_database_access():
+    class NoDatabase:
+        def acquire(self):
+            raise AssertionError("invalid route must fail before database access")
+    service = ExecutionHedgeObligationService(NoDatabase())
+    with pytest.raises(HedgeObligationError, match="position_side"):
+        await service.reserve(
+            session_id="s", futures_venue="okx", futures_market_type="swap",
+            futures_symbol="BTC-USDT-SWAP", base_asset="BTC",
+            position_side="SIDEWAYS", contract_type="LINEAR_PERPETUAL",
+            contract_size="0.001", quantity_unit="CONTRACTS",
+            base_per_unit="0.001", requested_base_quantity="0.001",
+            minimum_base_quantity="0.001", idempotency_key="invalid-side",
+            actor_id="test", coordinator_lease=object(), fencing_generation=1,
+        )
