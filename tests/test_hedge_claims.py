@@ -376,3 +376,35 @@ async def test_crashed_worker_claim_blocks_until_reconciled():
     # The claim stays in CLAIMED state, visible for reconciliation.
     row = table[claim["claim_key"]]
     assert row["status"] == "CLAIMED"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_claim_restores_durable_hedge_watermark_after_restart():
+    key = hedge_claim_key("indodax", "889", 500_000_000)
+    table = {
+        key: {
+            "claim_key": key,
+            "parent_spot_exchange": "indodax",
+            "parent_spot_order_id": "889",
+            "hedge_client_order_id": hedge_client_order_id_for_claim(key),
+            "version": 3,
+            "status": "CONFIRMED",
+            "cumulative_spot_filled": 0.5,
+            "target_hedge_qty": 0.5,
+            "confirmed_qty": 0.5,
+            "residual_qty": 0.0,
+        }
+    }
+
+    claim = await _service(table).claim_generation(
+        **{
+            **_claim_kwargs(residual=0.0),
+            "cumulative_spot_filled": 0.5,
+            "target_hedge_qty": 0.5,
+        }
+    )
+
+    assert claim is not None
+    assert claim["already_confirmed"] is True
+    assert claim["confirmed_qty"] == 0.5
+    assert claim["residual_qty"] == 0.0
