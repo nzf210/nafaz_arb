@@ -244,6 +244,31 @@ class ExecutionFillService:
                 )
                 return dict(claimed) if claimed is not None else None
 
+    async def list_due_inbox_events(self, *, limit: int = 100) -> list[dict]:
+        batch = int(limit)
+        if batch <= 0 or batch > 500:
+            raise FillValidationError("inbox batch limit must be between 1 and 500")
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT inbox_id, session_id, leg_id, account_scope_id,
+                       venue, event_type, source_event_id, processing_status,
+                       attempts, received_at
+                FROM public.execution_event_inbox
+                WHERE (
+                    processing_status IN ('RECEIVED','RETRY')
+                    AND (next_retry_at IS NULL OR next_retry_at <= clock_timestamp())
+                ) OR (
+                    processing_status='PROCESSING'
+                    AND processing_started_at < clock_timestamp() - interval '120 seconds'
+                )
+                ORDER BY received_at, inbox_id
+                LIMIT $1
+                """,
+                batch,
+            )
+        return [dict(row) for row in rows]
+
     async def get_inbox_event(self, inbox_id: str) -> dict | None:
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
