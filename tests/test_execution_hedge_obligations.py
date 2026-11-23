@@ -707,6 +707,33 @@ async def test_postgres_entry_and_exit_fills_keep_separate_leg_projections(postg
     )
     assert spot_exit["fill_role"] == "EXIT"
     assert futures_exit["fill_role"] == "EXIT"
+
+    pnl_service = ExecutionPnLAccountingService(postgres_pool)
+    spot_realized = await pnl_service.record_realized_fill_match(
+        session_id=admitted["session_id"], entry_fill_id=spot_entry["fill_id"],
+        exit_fill_id=spot_exit["fill_id"], matched_quantity="0.0002",
+        reporting_currency="USDT", idempotency_key="spot-realized-" + suffix,
+        actor_id="hedge-integration-test", coordinator_lease=lease,
+        fencing_generation=lease.generation,
+    )
+    futures_realized = await pnl_service.record_realized_fill_match(
+        session_id=admitted["session_id"], entry_fill_id=futures_entry["fill_id"],
+        exit_fill_id=futures_exit["fill_id"], matched_quantity="0.2",
+        reporting_currency="USDT", idempotency_key="futures-realized-" + suffix,
+        actor_id="hedge-integration-test", coordinator_lease=lease,
+        fencing_generation=lease.generation,
+    )
+    assert Decimal(spot_realized["net_realized_pnl"]) == Decimal("-0.0125")
+    assert Decimal(futures_realized["net_realized_pnl"]) == Decimal("0.00")
+    replay = await pnl_service.record_realized_fill_match(
+        session_id=admitted["session_id"], entry_fill_id=spot_entry["fill_id"],
+        exit_fill_id=spot_exit["fill_id"], matched_quantity="0.0002",
+        reporting_currency="USDT", idempotency_key="spot-realized-" + suffix,
+        actor_id="hedge-integration-test", coordinator_lease=lease,
+        fencing_generation=lease.generation,
+    )
+    assert replay["duplicate"] is True
+
     async with postgres_pool.acquire() as conn:
         rows = await conn.fetch(
             """
