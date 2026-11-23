@@ -201,7 +201,7 @@ class OrderIntentLifecycleMixin:
         if existing is not None:
             if str(existing["event_type"]) != "INTENT_OWNER_RECLAIMED":
                 raise OrderIntentConflict("recovery event key was reused")
-            return dict(row)
+            return decode_intent(row)
         next_version = int(row["state_version"]) + 1
         updated = await conn.fetchrow(
             """
@@ -284,7 +284,7 @@ class OrderIntentLifecycleMixin:
                 or stored.get("risk_control_snapshot") != dict(risk_snapshot)
             ):
                 raise OrderIntentConflict("submit intent replay changed risk evidence")
-            return dict(row)
+            return decode_intent(row)
         if current != "PREPARED":
             raise OrderIntentConflict("SUBMITTING intent has no matching durable submit event")
         next_version = int(row["state_version"]) + 1
@@ -318,7 +318,7 @@ class OrderIntentLifecycleMixin:
                 "target_status": "SUBMITTING", "attempt_count": attempt_count,
             }, sort_keys=True, separators=(",", ":"), default=str),
         )
-        return dict(updated)
+        return decode_intent(updated)
 
     async def mark_submitting(
         self, intent_id: str, *, lease: Any, actor_id: str,
