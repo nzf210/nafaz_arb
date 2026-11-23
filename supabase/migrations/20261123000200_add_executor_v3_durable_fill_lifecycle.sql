@@ -65,6 +65,27 @@ CREATE TABLE IF NOT EXISTS public.execution_fills (
 CREATE INDEX IF NOT EXISTS idx_execution_fills_session_leg_time
     ON public.execution_fills(session_id, leg_id, filled_at, fill_id);
 
+
+-- Enforce that a fill's leg belongs to the same session, not merely that
+-- both referenced identifiers exist independently.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_legs_session_leg_id
+    ON public.execution_legs(session_id, leg_id);
+
+DO $
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_fills'::regclass
+          AND conname='fk_execution_fills_session_leg'
+    ) THEN
+        ALTER TABLE public.execution_fills
+            ADD CONSTRAINT fk_execution_fills_session_leg
+            FOREIGN KEY (session_id, leg_id)
+            REFERENCES public.execution_legs(session_id, leg_id)
+            ON DELETE RESTRICT;
+    END IF;
+END $;
+
 CREATE INDEX IF NOT EXISTS idx_execution_fills_account_time
     ON public.execution_fills(account_scope_id, filled_at DESC);
 
