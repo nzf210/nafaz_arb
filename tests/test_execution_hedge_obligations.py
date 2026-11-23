@@ -735,6 +735,14 @@ async def test_postgres_entry_and_exit_fills_keep_separate_leg_projections(postg
         fencing_generation=lease.generation,
     )
     assert replay["duplicate"] is True
+    with pytest.raises(PnLAccountingError, match="exceeds remaining entry fill quantity"):
+        await pnl_service.record_realized_fill_match(
+            session_id=admitted["session_id"], entry_fill_id=spot_entry["fill_id"],
+            exit_fill_id=spot_exit["fill_id"], matched_quantity="0.0001",
+            reporting_currency="USDT", idempotency_key="spot-realized-overmatch-" + suffix,
+            actor_id="hedge-integration-test", coordinator_lease=lease,
+            fencing_generation=lease.generation,
+        )
 
     async with postgres_pool.acquire() as conn:
         rows = await conn.fetch(
