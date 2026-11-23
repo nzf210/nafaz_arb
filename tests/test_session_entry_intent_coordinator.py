@@ -303,13 +303,6 @@ async def test_gateway_advances_session_leg_to_submitting_before_venue_call(post
                 "side": "buy", "order_type": "limit", "quantity": "0.001",
                 "price": "900000000", "reserved_base_qty": "0.001",
                 "reserved_notional": "900000", "reservation_asset": "IDR",
-                "request_metadata": {"action_class": "ENTRY"},
-            },
-            {
-                "leg_id": "future-" + suffix, "idempotency_key": "entry-future-" + suffix,
-                "side": "sell", "order_type": "limit", "quantity": "1",
-                "price": "90000", "reserved_base_qty": "0.001",
-                "reserved_notional": "90", "reservation_asset": "USDT",
                 "request_metadata": {"action_class": "ENTRY", "risk_metrics": risk_metrics},
             },
         ],
@@ -317,7 +310,7 @@ async def test_gateway_advances_session_leg_to_submitting_before_venue_call(post
     global_stop = GlobalStopService("unused", require_scoped_submits=True)
     global_stop.pool = postgres_pool
     class Venue:
-        id = "okx"
+        id = "indodax"
         calls = []
         async def create_order_direct(self, **kwargs):
             self.calls.append(kwargs)
@@ -325,7 +318,7 @@ async def test_gateway_advances_session_leg_to_submitting_before_venue_call(post
     venue = Venue()
     gateway = MutationGateway(global_stop=global_stop, order_intent_service=intents)
     result = await gateway.execute_create_intent(
-        venue, intent_id=prepared["intents"]["future-" + suffix]["intent_id"],
+        venue, intent_id=prepared["spot_intent"]["intent_id"],
         actor_id="integration-test",
     )
     assert result.status == MutationResultType.CONFIRMED
@@ -333,16 +326,21 @@ async def test_gateway_advances_session_leg_to_submitting_before_venue_call(post
     async with postgres_pool.acquire() as conn:
         leg = await conn.fetchrow(
             "SELECT status, state_version FROM public.execution_legs WHERE session_id=$1 AND leg_id=$2",
-            admitted["session_id"], "future-" + suffix,
+            admitted["session_id"], "spot-" + suffix,
         )
         event = await conn.fetchrow(
             """
             SELECT event_type, payload FROM public.execution_session_events
             WHERE session_id=$1 AND event_idempotency_key=$2
             """,
-            admitted["session_id"], "mutation-submit:" + prepared["intents"]["future-" + suffix]["intent_id"],
+            admitted["session_id"], "mutation-submit:" + prepared["spot_intent"]["intent_id"],
         )
         assert leg["status"] == "SUBMITTING"
         assert event["event_type"] == "LEG_SUBMISSION_STARTED"
+        future_status = await conn.fetchval(
+            "SELECT status FROM public.execution_legs WHERE session_id=$1 AND leg_id=$2",
+            admitted["session_id"], "future-" + suffix,
+        )
+        assert future_status == "CREATED"
         await global_stop.ownership.release_all(conn)
     await coordinator.release(lease)
