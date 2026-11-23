@@ -505,7 +505,34 @@ class TradeFillReconciliationWorker:
             # but its order outcome still releases the durable attempt slot.
             status = str(row.get("status") or "").lower()
             client_order_id = str(row.get("client_order_id") or "")
+            raw_payload = row.get("raw_payload")
+            if isinstance(raw_payload, str):
+                try:
+                    raw_payload = json.loads(raw_payload)
+                except (TypeError, ValueError):
+                    raw_payload = {}
+            if not isinstance(raw_payload, dict):
+                raw_payload = {}
+            recovery_context = row.get("recovery_context")
+            if not isinstance(recovery_context, dict):
+                recovery_context = raw_payload.get("recovery_context")
+            if not isinstance(recovery_context, dict):
+                recovery_context = {}
+            attempt_required = bool(
+                row.get("hedge_attempt_id")
+                or recovery_context.get("hedge_attempt_id")
+                or raw_payload.get("hedge_attempt_id")
+            )
             attempt_ledger = getattr(self.engine, "hedge_attempt_ledger", None)
+            if attempt_required and (
+                attempt_ledger is None or not attempt_ledger.enabled
+            ):
+                await self._halt(
+                    identity, scope,
+                    "Hedge attempt ledger unavailable for terminal zero-fill order.",
+                    {"client_order_id": client_order_id, "status": status},
+                )
+                return None
             if (
                 status in ("closed", "filled", "canceled", "cancelled", "expired", "rejected")
                 and client_order_id
@@ -519,7 +546,7 @@ class TradeFillReconciliationWorker:
                     fills_reconciled=True,
                     actor_id="trade-fill-reconciliation-zero-fill",
                 )
-                if finalized is False:
+                if finalized is False or (attempt_required and finalized is None):
                     await self._halt(
                         identity,
                         scope,
