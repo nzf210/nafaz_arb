@@ -603,10 +603,14 @@ class RecoveryRegistryMixin:
             getattr(record, "exchange", "") or "", market
         )
         if owner is None:
-            raise RuntimeError(
-                f"no exact {market} client is bound to venue {record.exchange!r}; "
-                "refusing recovery lookup on the default pair client"
-            )
+            if getattr(self.config, "mock_mode", False):
+                # Paper client is venue-neutral; this fallback cannot reach a CEX.
+                owner = self.client
+            else:
+                raise RuntimeError(
+                    f"no exact {market} client is bound to venue {record.exchange!r}; "
+                    "refusing recovery lookup on the default pair client"
+                )
         if record.market_type == "perpetual":
             fetcher = getattr(owner, "fetch_global_order_by_client_id", None)
             if fetcher is None:
@@ -639,10 +643,14 @@ class RecoveryRegistryMixin:
             getattr(record, "exchange", "") or "", market
         )
         if owner is None:
-            raise RuntimeError(
-                f"no exact {market} client is bound to venue {record.exchange!r}; "
-                "refusing recovery lookup on the default pair client"
-            )
+            if getattr(self.config, "mock_mode", False):
+                # Paper client is venue-neutral; this fallback cannot reach a CEX.
+                owner = self.client
+            else:
+                raise RuntimeError(
+                    f"no exact {market} client is bound to venue {record.exchange!r}; "
+                    "refusing recovery lookup on the default pair client"
+                )
         if record.market_type == "perpetual":
             fetcher = getattr(owner, "fetch_global_order", None)
             if fetcher is None:

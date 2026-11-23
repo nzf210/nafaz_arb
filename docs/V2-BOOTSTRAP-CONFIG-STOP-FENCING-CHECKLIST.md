@@ -746,6 +746,6 @@ No production source behavior was changed in this execution; the test fixture wa
 ## Additional recovery boundary — R-59 (2026-11-23)
 
 - [x] Found final-boundary fallback in `RecoveryRegistryMixin._fetch_order_by_client_id` and `_fetch_order_by_role`: unresolved exact venue client was replaced by `self.client`.
-- [x] Removed default-pair fallback in source; missing exact spot/futures client now raises before lookup.
+- [x] Removed default-pair fallback in LIVE recovery; missing exact spot/futures client now raises before lookup. Venue-neutral fallback remains limited to mock/paper mode.
 - [x] Added fake-client regression for both spot and futures and asserted no default-client lookup occurs.
 - [ ] CI for this new source/test commit is pending; do not mark R-59 verified until the branch workflow succeeds.
