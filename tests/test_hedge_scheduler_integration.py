@@ -5,13 +5,14 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from dataclasses import replace
 
 import pytest
 
 from executor.execution_fill_service import ExecutionFillService
 from executor.execution_hedge_obligations import ExecutionHedgeObligationService
 from executor.hedge_liquidity_evaluator import (
-    BookLevel, FXSnapshot, HedgeLiquidityPolicy, OrderBookSnapshot,
+    BookLevel, FXSnapshot, HedgeLiquidityDecision, HedgeLiquidityPolicy, OrderBookSnapshot,
     evaluate_hedge_liquidity,
 )
 from executor.hedge_scheduler import HedgeScheduler
@@ -232,3 +233,48 @@ async def test_postgres_scheduler_persists_deferral_and_wait_expiry(postgres_poo
             admitted["session_id"],
         )
     assert session_status == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_rejects_forged_submit_quantity_above_durable_obligation(postgres_pool):
+    suffix = uuid.uuid4().hex
+    admitted, lease, obligation, created_at = await _make_obligation(postgres_pool, suffix)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    valid_defer = evaluate_hedge_liquidity(
+        required_base_quantity="0.0002", already_reserved_base_quantity="0",
+        base_per_unit="0.001", quantity_step="1", venue_min_order_quantity="1",
+        venue_min_notional_quote="5", position_side="SHORT",
+        book=OrderBookSnapshot(
+            bids=(BookLevel.make("100", "100"),),
+            asks=(BookLevel.make("100.1", "100"),),
+            observed_at_ms=now_ms, sequence="book-forged-test",
+        ),
+        fx=FXSnapshot(Decimal("1"), now_ms, "USDT/USD"),
+        policy=_policy(), now_ms=now_ms,
+        unhedged_since_ms=int(created_at.timestamp() * 1000),
+        unhedged_notional_usd="20",
+    )
+    forged = replace(
+        valid_defer, action="SUBMIT", reason="forged",
+        executable_base_quantity=Decimal("0.001"),
+        executable_native_quantity=Decimal("1"),
+        executable_vwap=Decimal("100"),
+        executable_notional_quote=Decimal("100"),
+        executable_notional_usd=Decimal("100"),
+        slippage_bps=Decimal("0"),
+        estimated_total_cost_bps=Decimal("10"),
+        book_age_ms=0,
+    )
+    with pytest.raises(Exception, match="exceeds the unreserved hedge obligation"):
+        await HedgeScheduler(postgres_pool).record_decision(
+            session_id=admitted["session_id"], obligation_id=obligation["obligation_id"],
+            decision=forged, actor_id="scheduler-integration-test",
+            idempotency_key="forged-submit-" + suffix,
+            coordinator_lease=lease, fencing_generation=lease.generation,
+        )
+    async with postgres_pool.acquire() as conn:
+        count = await conn.fetchval(
+            "SELECT count(*) FROM public.execution_hedge_scheduler_events WHERE obligation_id=$1::uuid",
+            obligation["obligation_id"],
+        )
+    assert count == 0
