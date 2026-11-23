@@ -159,6 +159,10 @@ class SessionEntryIntentCoordinator:
                 "metadata": metadata,
             }
 
+        idempotency_keys = [item["idempotency_key"] for item in validated.values()]
+        if len(set(idempotency_keys)) != len(idempotency_keys):
+            raise SessionEntryIntentError("each entry leg requires a distinct idempotency key")
+
         prepared: dict[str, dict] = {}
         for leg in snapshot["legs"]:
             leg_id = str(leg["leg_id"])
@@ -185,11 +189,18 @@ class SessionEntryIntentCoordinator:
                 max_reserved_notional=spec.get("max_reserved_notional"),
                 request_metadata=values["metadata"],
             )
+            intent_status = str(intent.get("status") or "").upper()
+            if intent_status not in {"PREPARED", "SUBMITTING", "UNKNOWN", "ACKNOWLEDGED", "COMPLETED"}:
+                raise SessionEntryIntentError(
+                    f"entry mutation intent {intent.get('intent_id')} is not executable: {intent_status}"
+                )
             if (
                 str(intent.get("session_id") or "") != session_id
                 or str(intent.get("leg_id") or "") != leg_id
                 or str(intent.get("venue") or "").lower() != str(leg["venue"]).lower()
                 or str(intent.get("instrument") or "").upper() != str(leg["symbol"]).upper()
+                or str(intent.get("pair_key") or "") != snapshot["pair_key"]
+                or str(intent.get("account_scope_id") or "") != snapshot["account_scope_id"]
             ):
                 raise SessionEntryIntentError("prepared mutation intent does not match its durable session leg")
             prepared[leg_id] = intent
