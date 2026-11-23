@@ -748,4 +748,15 @@ No production source behavior was changed in this execution; the test fixture wa
 - [x] Found final-boundary fallback in `RecoveryRegistryMixin._fetch_order_by_client_id` and `_fetch_order_by_role`: unresolved exact venue client was replaced by `self.client`.
 - [x] Removed default-pair fallback in LIVE recovery; missing exact spot/futures client now raises before lookup. Venue-neutral fallback remains limited to mock/paper mode.
 - [x] Added fake-client regression for both spot and futures and asserted no default-client lookup occurs.
-- [ ] CI for this new source/test commit is pending; do not mark R-59 verified until the branch workflow succeeds.
+- [x] CI verified: workflow `45133454526` on `cf8edbbb` succeeded 5/5 (Python 790 passed/10 skipped; PostgreSQL 11 passed; Go race/vet, Docker, migration runner passed).
+
+
+## Runtime call-site scan closeout — 2026-11-23
+
+- [x] Scanned all 102 production `executor/*.py` files for direct and indirect create-order patterns.
+- [x] Scanned all 43 non-test Go source files; no CEX create-order call-sites found.
+- [x] Scanned the sole Python utility script; it contains only Tokocrypto spot SELL and OKX futures reduceOnly BUY, both de-risk-only.
+- [x] Classified the complete runtime call-site set: spot BUY limit; spot SELL limit/market; futures short SELL market (`reduceOnly=False`); futures close BUY market (`reduceOnly=True`); Indodax raw `_create_order` wrappers; generic MutationGateway dynamic create; and manual de-risk script calls. Paper client is simulation-only; modular venue adapters and recovery/order-sync modules have no direct create side effects.
+- [x] R-59 LIVE exact-venue fallback fix passed workflow `45133454526` (5/5 jobs; Python 790 passed, 10 skipped; PostgreSQL 11 passed; Go race/vet, Docker, migration runner passed).
+
+Still OPEN: R-58 durable PostgreSQL active-market reservation / Redis-loss recovery; R-57 intent-scoped generic admission guard; operator-authenticated manual resolution; real VPS multi-process disconnect/fault injection; venue sandbox contracts. Source call-site inventory is closed for this tree, but the system remains **PARTIAL / NOT LIVE-CERTIFIED**.

@@ -1843,3 +1843,14 @@ Verification addendum: strict fake venue fixtures replaced permissive bare Async
 ## Exact-venue recovery invariant — 2026-11-23
 
 Recovery must never substitute the configured base pair client when the order record names another exchange/market. `_client_for_exchange(exchange, market)` returning `None` is a hard resolution failure. Both client-ID lookup and order-ID lookup must stop before venue I/O; a default-client lookup can return a false NOT_FOUND and cannot prove anything about the owning venue. Mock/paper mode may fall back to its venue-neutral simulator; LIVE mode must raise before venue I/O when exact venue/market resolution returns None. Regression coverage now exercises unbound spot and futures records and verifies that the base client's lookup methods remain untouched.
+
+
+## 2026-11-23 production call-site inventory closeout
+
+A source-pattern scan covered all 102 executor Python modules, all 43 non-test Go source files, and the sole Python utility under `scripts/`. No direct CEX order creation exists in the Go scanner/API/Telegram component, modular `executor/venues/*` adapters, or recovery/order-sync modules.
+
+The complete runtime creation boundary set is: `ExchangeOrderMixin.place_local_limit_buy` (spot entry), `ExchangeOrderMixin.place_local_limit_sell` and `place_local_market_sell` (de-risk), `ExchangeFuturesMixin.open_global_short_market` (futures short entry, reduceOnly false), `close_global_short_market` (de-risk, reduceOnly true), Indodax three public wrappers converging on raw `_create_order`, generic `MutationGateway.execute_create_order` dynamic `create_order_direct/create_order`, and the two direct de-risk-only calls in `scripts/resolve_ai_position.py`. Paper client methods are simulation only.
+
+R-59 is now CI-verified: LIVE recovery fails closed when exact venue/market resolution is unavailable; only mock/paper mode can fall back to the venue-neutral simulator. Workflow `45133454526` on source/test head `cf8edbbb` passed 5/5 jobs (Python 790 passed, 10 skipped; PostgreSQL schema/integration 11 passed; Go race/vet, Docker, and migration runner passed).
+
+This closes the source call-site inventory for the current tree, not the operational readiness gates. R-58 remains open because active-market admission is still memory/Redis-backed rather than a durable PostgreSQL reservation. R-57 remains open because the generic gateway guard is no-argument. Manual operator identity/dual approval, real VPS fault injection, and venue sandbox contracts also remain open.

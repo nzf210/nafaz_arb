@@ -708,4 +708,25 @@ No source-code behavior changed in this follow-up; only the test fake was correc
 
 A follow-up call-chain check found that `RecoveryDiscoveryMixin._client_for_exchange()` correctly returns `None` for an unavailable/unconfigured venue, but `RecoveryRegistryMixin._fetch_order_by_client_id()` and `_fetch_order_by_role()` then fell back to `self.client` (the configured base pair facade). This undid the exact venue/market selection at the final lookup boundary. A MEXC spot/futures record with no matching exact client could therefore be queried against the default Indodax/OKX facade, producing a false NOT_FOUND or a misleading symbol error. It did not create a new order, but it violated exact-client-ID reconciliation and could delay or misclassify an already accepted order.
 
-The minimal source fix removes both fallbacks and raises before any venue lookup when the exact exchange/market client cannot be resolved. Mock mode retains the universal paper-client fallback only; LIVE mode raises before lookup when the exact venue/market client is unavailable. A regression test covers both spot and futures paths and asserts that none of the default facade lookup methods are called. Source/test commit and CI result are recorded in the next execution update; until that workflow completes this fix is not marked test-verified.
+The minimal source fix removes both fallbacks and raises before any venue lookup when the exact exchange/market client cannot be resolved. Mock mode retains the universal paper-client fallback only; LIVE mode raises before lookup when the exact venue/market client is unavailable. A regression test covers both spot and futures paths and asserts that none of the default facade lookup methods are called. Verified by workflow `45133454526` on source/test head `cf8edbbb`: 5/5 jobs succeeded; Python 790 passed/10 skipped/117 warnings; PostgreSQL schema/integration 11 passed; Go race/vet, Docker builds, and migration-runner validation passed.
+
+
+## 2026-11-23 clone-wide runtime order-call scan and R-59 verification
+
+The production source scan is now complete for the branch tree: all 102 `executor/*.py` files were inspected with create-order patterns, all 43 non-test Go files were inspected, and the only Python utility under `scripts/` was inspected. The second utility is a shell migration runner. Tests were not counted as runtime call-sites.
+
+Confirmed runtime create surfaces:
+
+1. `executor/exchange_orders.py`: spot BUY limit; spot SELL limit; spot SELL market. BUY is entry; SELLs are exit/rollback/force-close.
+2. `executor/exchange_futures.py`: futures SELL market with `reduceOnly=False` opens the short hedge; futures BUY market with `reduceOnly=True` closes it.
+3. `executor/indodax_v2.py`: public limit BUY, limit SELL, and market SELL wrappers converge on raw `_create_order` / `POST /api/v2/order`.
+4. `executor/mutation_gateway.py`: generic dynamic `create_order_direct` / `create_order` boundary. No production create caller was found in the inspected call graph; it is not yet the only mutation boundary.
+5. `scripts/resolve_ai_position.py`: direct Tokocrypto market SELL and OKX market BUY with `reduceOnly=True`; both are explicitly de-risk-only.
+6. `executor/paper_exchange_client.py`: simulated orders only. `executor/venues/*` contains no direct create-order implementation. `exchange_common.py` uses private open-order listing endpoints only. Recovery, adoption, order-sync, and reconciliation modules contain no create-order side effects.
+7. The 43 production Go files contain no create-order call-site; the Go component is the scanner/API/Telegram side, not the CEX executor.
+
+All exposure-increasing CEX call-sites are therefore the canonical spot BUY and futures short SELL wrappers plus the currently uncalled generic gateway. Spot/futures de-risk, cancel, and the one-off manual unwind remain outside the entry STOP fence.
+
+R-59 final behavior: LIVE recovery now raises if exact (exchange, market) resolution returns no client and never queries the default pair client. Only mock/paper mode may use the venue-neutral simulator fallback. The first attempt (workflow `45133192762`) exposed three legacy paper-mode fixtures that relied on that simulator fallback; commit `cf8edbbb` restricted the fallback to `mock_mode` and kept LIVE fail-closed. Final workflow `45133454526` succeeded 5/5.
+
+Remaining open: R-58 durable active-market reservation across Redis loss; R-57 intent-scoped generic admission callback; operator-authenticated manual resolution governance; real VPS PostgreSQL multi-process disconnect/fault injection; and venue sandbox contract verification. Full runtime call-site source inventory is now closed for this tree, but this does not certify venue behavior or live readiness.
