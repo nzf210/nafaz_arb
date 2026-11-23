@@ -223,6 +223,12 @@ class ExecutionFillService:
         idem = str(event_idempotency_key or "").strip()
         if not actor or not idem or coordinator_lease is None:
             raise FillValidationError("actor, event idempotency key and coordinator lease are required")
+        if facts["fee_verified"] and (
+            not facts["fee_asset"] or facts["fee_source"].upper() == "UNVERIFIED"
+        ):
+            raise FillValidationError(
+                "verified fees require a fee asset and an authoritative fee source"
+            )
         raw = json.dumps(raw_payload or {}, sort_keys=True, separators=(",", ":"), default=str)
 
         async with self.pool.acquire() as conn:
