@@ -1,0 +1,336 @@
+"""V3 position valuation persistence and fill-matched realized PnL ledger."""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Any
+
+from executor.execution_repository import ExecutionRepositoryError
+from executor.execution_repository_fencing import validate_coordinator_lease
+from executor.pair_pnl_engine import PairPnLSnapshotV3
+
+
+class PnLAccountingError(ExecutionRepositoryError):
+    """PnL evidence is incomplete, inconsistent, or not owned by this session."""
+
+
+def _d(value: Any, name: str, *, positive: bool = False) -> Decimal:
+    try:
+        result = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise PnLAccountingError(f"{name} must be a finite decimal") from exc
+    if not result.is_finite() or (result <= 0 if positive else False):
+        raise PnLAccountingError(f"{name} must be {'positive' if positive else 'finite'}")
+    return result
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
+class ExecutionPnLAccountingService:
+    """Persists immutable estimated valuations and verified realized fill matches."""
+
+    def __init__(self, pool):
+        if pool is None:
+            raise ValueError("PostgreSQL pool is required")
+        self.pool = pool
+
+    async def record_snapshot(
+        self, *, snapshot: PairPnLSnapshotV3, idempotency_key: str,
+        coordinator_lease: Any, fencing_generation: int,
+    ) -> dict:
+        key = str(idempotency_key or "").strip()
+        if not key or coordinator_lease is None:
+            raise PnLAccountingError("snapshot idempotency key and coordinator lease are required")
+        if snapshot.confidence not in {"VERIFIED", "PARTIAL", "UNKNOWN"}:
+            raise PnLAccountingError("unsupported valuation confidence")
+        if snapshot.confidence == "VERIFIED" and (
+            snapshot.return_on_deployed_capital_pct is None
+            or snapshot.total_deployed_capital_reporting is None
+        ):
+            raise PnLAccountingError("VERIFIED snapshot requires complete deployed-capital basis")
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                session = await conn.fetchrow(
+                    """
+                    SELECT pair_key, account_scope_id, coordinator_scope_key,
+                           coordinator_owner_id
+                    FROM public.execution_sessions
+                    WHERE session_id=$1 FOR UPDATE
+                    """,
+                    snapshot.session_id,
+                )
+                if session is None or str(session["pair_key"]) != snapshot.pair_key:
+                    raise PnLAccountingError("PnL snapshot does not match an existing session/pair")
+                await validate_coordinator_lease(
+                    conn, coordinator_lease, session_id=snapshot.session_id,
+                    account_scope_id=str(session["account_scope_id"]),
+                    expected_generation=fencing_generation,
+                    session_scope_key=session["coordinator_scope_key"],
+                    session_owner_id=session["coordinator_owner_id"],
+                )
+                values = (
+                    snapshot.session_id, snapshot.pair_key, snapshot.reporting_currency,
+                    snapshot.confidence,
+                    datetime.fromtimestamp(snapshot.evaluated_at_ms / 1000, tz=timezone.utc),
+                    snapshot.spot_estimated_liquidation_pnl,
+                    snapshot.futures_estimated_liquidation_pnl,
+                    snapshot.funding_reporting_amount, snapshot.entry_fees_reporting,
+                    snapshot.estimated_exit_fees_reporting, snapshot.estimated_tax_reporting,
+                    snapshot.conversion_cost_reporting, snapshot.estimated_net_liquidation_pnl,
+                    snapshot.strategy_roi_pct, snapshot.return_on_deployed_capital_pct,
+                    snapshot.total_deployed_capital_reporting, snapshot.spot_exit_vwap,
+                    snapshot.futures_exit_vwap, snapshot.spot_slippage_bps,
+                    snapshot.futures_slippage_bps, snapshot.spot_executable_base_quantity,
+                    snapshot.futures_executable_base_quantity,
+                    snapshot.hedge_drift_base_quantity, _json(snapshot.provenance), key,
+                )
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO public.execution_pnl_snapshots (
+                        session_id,pair_key,reporting_currency,confidence,evaluated_at,
+                        spot_estimated_liquidation_pnl,futures_estimated_liquidation_pnl,
+                        funding_reporting_amount,entry_fees_reporting,
+                        estimated_exit_fees_reporting,estimated_tax_reporting,
+                        conversion_cost_reporting,estimated_net_liquidation_pnl,
+                        strategy_roi_pct,return_on_deployed_capital_pct,
+                        total_deployed_capital_reporting,spot_exit_vwap,futures_exit_vwap,
+                        spot_slippage_bps,futures_slippage_bps,
+                        spot_executable_base_quantity,futures_executable_base_quantity,
+                        hedge_drift_base_quantity,provenance,idempotency_key
+                    ) VALUES (
+                        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+                        $16,$17,$18,$19,$20,$21,$22,$23,$24::jsonb,$25
+                    )
+                    ON CONFLICT (session_id,idempotency_key) DO NOTHING
+                    RETURNING pnl_snapshot_id
+                    """,
+                    *values,
+                )
+                if inserted is not None:
+                    return {"duplicate": False, "pnl_snapshot_id": str(inserted["pnl_snapshot_id"])}
+                prior = await conn.fetchrow(
+                    """
+                    SELECT pnl_snapshot_id, estimated_net_liquidation_pnl, confidence
+                    FROM public.execution_pnl_snapshots
+                    WHERE session_id=$1 AND idempotency_key=$2
+                    """,
+                    snapshot.session_id, key,
+                )
+                if prior is None or (
+                    Decimal(str(prior["estimated_net_liquidation_pnl"]))
+                    != snapshot.estimated_net_liquidation_pnl
+                    or str(prior["confidence"]) != snapshot.confidence
+                ):
+                    raise PnLAccountingError("snapshot idempotency key was reused with changed valuation")
+                return {"duplicate": True, "pnl_snapshot_id": str(prior["pnl_snapshot_id"])}
+
+    async def record_realized_fill_match(
+        self, *, session_id: str, entry_fill_id: str, exit_fill_id: str,
+        matched_quantity: Any, reporting_currency: str, idempotency_key: str,
+        actor_id: str, coordinator_lease: Any, fencing_generation: int,
+        max_fx_age_seconds: int = 300,
+    ) -> dict:
+        """Match one exit-fill quantity against one entry fill and append realized PnL.
+
+        Matching is quantity-reserved in the ledger: the sum already matched from
+        either source fill is locked and cannot exceed that fill's native quantity.
+        """
+        key = str(idempotency_key or "").strip()
+        actor = str(actor_id or "").strip()
+        currency = str(reporting_currency or "").strip().upper()
+        qty = _d(matched_quantity, "matched_quantity", positive=True)
+        if not key or not actor or not currency or coordinator_lease is None:
+            raise PnLAccountingError("actor, currency, idempotency key and coordinator lease are required")
+        if isinstance(max_fx_age_seconds, bool) or not isinstance(max_fx_age_seconds, int) or max_fx_age_seconds <= 0:
+            raise PnLAccountingError("max_fx_age_seconds must be a positive integer")
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                session = await conn.fetchrow(
+                    """
+                    SELECT account_scope_id, coordinator_scope_key, coordinator_owner_id
+                    FROM public.execution_sessions WHERE session_id=$1 FOR UPDATE
+                    """,
+                    session_id,
+                )
+                if session is None:
+                    raise PnLAccountingError("PnL session does not exist")
+                await validate_coordinator_lease(
+                    conn, coordinator_lease, session_id=session_id,
+                    account_scope_id=str(session["account_scope_id"]),
+                    expected_generation=fencing_generation,
+                    session_scope_key=session["coordinator_scope_key"],
+                    session_owner_id=session["coordinator_owner_id"],
+                )
+                entry = await conn.fetchrow(
+                    """
+                    SELECT * FROM public.execution_fills
+                    WHERE session_id=$1 AND fill_id=$2::uuid FOR UPDATE
+                    """,
+                    session_id, entry_fill_id,
+                )
+                exit_fill = await conn.fetchrow(
+                    """
+                    SELECT * FROM public.execution_fills
+                    WHERE session_id=$1 AND fill_id=$2::uuid FOR UPDATE
+                    """,
+                    session_id, exit_fill_id,
+                )
+                if entry is None or exit_fill is None:
+                    raise PnLAccountingError("entry/exit fill is missing or belongs to another session")
+                if (
+                    str(entry["fill_role"]).upper() != "ENTRY"
+                    or str(exit_fill["fill_role"]).upper() != "EXIT"
+                    or str(entry["leg_id"]) != str(exit_fill["leg_id"])
+                    or str(entry["quote_asset"]).upper() != str(exit_fill["quote_asset"]).upper()
+                ):
+                    raise PnLAccountingError("entry/exit fills do not belong to the same leg and quote asset")
+                if exit_fill["filled_at"] < entry["filled_at"]:
+                    raise PnLAccountingError("exit fill predates its entry fill")
+                if not entry["quote_fx_verified"] or not exit_fill["quote_fx_verified"]:
+                    raise PnLAccountingError("entry and exit quote FX must both be verified")
+                if (
+                    str(entry["fee_reporting_currency"] or "").upper() != currency
+                    or str(exit_fill["fee_reporting_currency"] or "").upper() != currency
+                ):
+                    raise PnLAccountingError("entry and exit fee valuation currency must match reporting currency")
+                for fill_name, fill in (("entry", entry), ("exit", exit_fill)):
+                    if Decimal(str(fill["fee_amount"])) > 0 and not fill["fee_valuation_verified"]:
+                        raise PnLAccountingError(f"{fill_name} fee valuation is not verified")
+                    if not fill["quote_fx_source"] or not fill["quote_fx_observed_at"]:
+                        raise PnLAccountingError(f"{fill_name} quote FX provenance is missing")
+                    if fill["fee_amount"] > 0 and (
+                        not fill["fee_fx_source"] or not fill["fee_fx_observed_at"]
+                    ):
+                        raise PnLAccountingError(f"{fill_name} fee FX provenance is missing")
+                    delta_seconds = abs((fill["filled_at"] - fill["quote_fx_observed_at"]).total_seconds())
+                    if delta_seconds > max_fx_age_seconds:
+                        raise PnLAccountingError(f"{fill_name} quote FX is too far from fill time")
+                if str(entry["fee_reporting_currency"] or "").upper() != currency:
+                    raise PnLAccountingError("entry fee reporting currency mismatch")
+                if str(exit_fill["fee_reporting_currency"] or "").upper() != currency:
+                    raise PnLAccountingError("exit fee reporting currency mismatch")
+
+                prior = await conn.fetchrow(
+                    """
+                    SELECT pnl_entry_id, amount_reporting, source_fill_id,
+                           matched_entry_fill_id, matched_quantity
+                    FROM public.execution_pnl_ledger
+                    WHERE session_id=$1 AND idempotency_key=$2
+                    """,
+                    session_id, key,
+                )
+                if prior is not None:
+                    if (
+                        str(prior["source_fill_id"]) != str(exit_fill_id)
+                        or str(prior["matched_entry_fill_id"]) != str(entry_fill_id)
+                        or Decimal(str(prior["matched_quantity"])) != qty
+                    ):
+                        raise PnLAccountingError("PnL idempotency key was reused with a different fill match")
+                    return {"duplicate": True, "pnl_entry_id": str(prior["pnl_entry_id"]),
+                            "net_realized_pnl": str(prior["amount_reporting"])}
+
+                entry_matched = await conn.fetchval(
+                    """
+                    SELECT COALESCE(SUM(matched_quantity),0)
+                    FROM public.execution_pnl_ledger
+                    WHERE matched_entry_fill_id=$1::uuid
+                    """,
+                    entry_fill_id,
+                )
+                exit_matched = await conn.fetchval(
+                    """
+                    SELECT COALESCE(SUM(matched_quantity),0)
+                    FROM public.execution_pnl_ledger
+                    WHERE source_fill_id=$1::uuid
+                      AND entry_type IN ('REALIZED_SPOT_PNL','REALIZED_FUTURES_PNL')
+                    """,
+                    exit_fill_id,
+                )
+                if Decimal(str(entry_matched)) + qty > Decimal(str(entry["quantity"])):
+                    raise PnLAccountingError("matched quantity exceeds remaining entry fill quantity")
+                if Decimal(str(exit_matched)) + qty > Decimal(str(exit_fill["quantity"])):
+                    raise PnLAccountingError("matched quantity exceeds remaining exit fill quantity")
+
+                leg = await conn.fetchrow(
+                    """
+                    SELECT leg_type, base_per_unit, position_side
+                    FROM public.execution_legs
+                    WHERE session_id=$1 AND leg_id=$2
+                    """,
+                    session_id, entry["leg_id"],
+                )
+                if leg is None:
+                    raise PnLAccountingError("matched fill leg is missing")
+                leg_type = str(leg["leg_type"]).upper()
+                entry_side = str(entry["side"]).lower()
+                exit_side = str(exit_fill["side"]).lower()
+                if (
+                    (leg_type == "SPOT" and (entry_side, exit_side) != ("buy", "sell"))
+                    or (leg_type == "FUTURES" and (entry_side, exit_side) != ("sell", "buy"))
+                    or leg_type not in {"SPOT", "FUTURES"}
+                ):
+                    raise PnLAccountingError("fill sides do not represent a valid long Spot/short Futures close")
+
+                entry_ratio = qty / Decimal(str(entry["quantity"]))
+                exit_ratio = qty / Decimal(str(exit_fill["quantity"]))
+                entry_quote = Decimal(str(entry["quote_quantity"])) * entry_ratio
+                exit_quote = Decimal(str(exit_fill["quote_quantity"])) * exit_ratio
+                entry_fx = Decimal(str(entry["quote_to_reporting_rate"]))
+                exit_fx = Decimal(str(exit_fill["quote_to_reporting_rate"]))
+                if leg_type == "SPOT":
+                    gross = exit_quote * exit_fx - entry_quote * entry_fx
+                    entry_type = "REALIZED_SPOT_PNL"
+                else:
+                    gross = entry_quote * entry_fx - exit_quote * exit_fx
+                    entry_type = "REALIZED_FUTURES_PNL"
+                entry_fee = (
+                    Decimal(str(entry["fee_reporting_amount"] or 0)) * entry_ratio
+                )
+                exit_fee = (
+                    Decimal(str(exit_fill["fee_reporting_amount"] or 0)) * exit_ratio
+                )
+                net = gross - entry_fee - exit_fee
+                detail = {
+                    "actor_id": actor, "entry_fill_id": str(entry_fill_id),
+                    "exit_fill_id": str(exit_fill_id), "matched_quantity": str(qty),
+                    "matched_base_quantity": str(qty * Decimal(str(leg["base_per_unit"]))),
+                    "gross_realized_pnl_reporting": str(gross),
+                    "entry_fee_reporting": str(entry_fee),
+                    "exit_fee_reporting": str(exit_fee),
+                    "entry_quote_fx_rate": str(entry_fx),
+                    "entry_quote_fx_source": entry["quote_fx_source"],
+                    "exit_quote_fx_rate": str(exit_fx),
+                    "exit_quote_fx_source": exit_fill["quote_fx_source"],
+                    "entry_fee_source": entry["fee_source"],
+                    "exit_fee_source": exit_fill["fee_source"],
+                }
+                inserted = await conn.fetchrow(
+                    """
+                    INSERT INTO public.execution_pnl_ledger (
+                        session_id, source_fill_id, matched_entry_fill_id,
+                        matched_quantity, entry_type, amount_reporting,
+                        reporting_currency, evidence_source, idempotency_key,
+                        detail, occurred_at
+                    ) VALUES (
+                        $1,$2::uuid,$3::uuid,$4,$5,$6,$7,
+                        'VERIFIED_ENTRY_EXIT_FILL_MATCH',$8,$9::jsonb,$10
+                    )
+                    ON CONFLICT (session_id,idempotency_key) DO NOTHING
+                    RETURNING pnl_entry_id
+                    """,
+                    session_id, exit_fill_id, entry_fill_id, qty, entry_type,
+                    net, currency, key, _json(detail), exit_fill["filled_at"],
+                )
+                if inserted is None:
+                    raise PnLAccountingError("realized PnL append lost an idempotency race")
+                return {
+                    "duplicate": False, "pnl_entry_id": str(inserted["pnl_entry_id"]),
+                    "entry_type": entry_type, "gross_realized_pnl": str(gross),
+                    "net_realized_pnl": str(net), "matched_quantity": str(qty),
+                    "reporting_currency": currency,
+                }
