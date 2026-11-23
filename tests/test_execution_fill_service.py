@@ -447,3 +447,37 @@ async def test_fill_inbox_creates_spot_obligation_then_allocates_reserved_future
     assert Decimal(str(reservation_row["allocated_base_quantity"])) == Decimal("0.001")
     assert session_state == "PARTIALLY_HEDGED"
     assert [row["processing_status"] for row in inbox_states] == ["PROCESSED", "PROCESSED"]
+
+
+@pytest.mark.asyncio
+async def test_fill_inbox_claim_is_single_flight_and_expired_processing_lease_is_reclaimed(postgres_pool):
+    suffix = uuid.uuid4().hex
+    service = ExecutionFillService(postgres_pool)
+    accepted = await service.persist_inbox_event(
+        account_scope_id="inbox-lease-account-" + suffix,
+        venue="okx", event_type="FILL",
+        source_event_id="inbox-lease-source-" + suffix,
+        payload={"exchange_trade_id": "trade-" + suffix},
+    )
+    first = await service.claim_inbox_event(inbox_id=accepted["inbox_id"])
+    assert first["processing_status"] == "PROCESSING"
+    assert first["attempts"] == 1
+    assert await service.claim_inbox_event(inbox_id=accepted["inbox_id"]) is None
+
+    async with postgres_pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE public.execution_event_inbox
+            SET processing_started_at=clock_timestamp() - interval '5 minutes'
+            WHERE inbox_id=$1::uuid
+            """,
+            accepted["inbox_id"],
+        )
+    reclaimed = await service.claim_inbox_event(
+        inbox_id=accepted["inbox_id"], processing_lease_seconds=60,
+    )
+    assert reclaimed["processing_status"] == "PROCESSING"
+    assert reclaimed["attempts"] == 2
+    assert await service.mark_inbox_event(
+        inbox_id=accepted["inbox_id"], status="PROCESSED",
+    ) is True
