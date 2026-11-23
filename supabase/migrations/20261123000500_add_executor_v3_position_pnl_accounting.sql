@@ -136,6 +136,43 @@ CREATE TABLE IF NOT EXISTS public.execution_positions (
     )
 );
 
+ALTER TABLE public.execution_positions
+    ADD COLUMN IF NOT EXISTS spot_exchange_base_quantity NUMERIC(38,18),
+    ADD COLUMN IF NOT EXISTS futures_exchange_base_quantity NUMERIC(38,18),
+    ADD COLUMN IF NOT EXISTS reconciliation_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+    ADD COLUMN IF NOT EXISTS exchange_snapshot_source TEXT,
+    ADD COLUMN IF NOT EXISTS exchange_snapshot_id TEXT;
+
+DO $position_reconciliation$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_positions'::regclass
+          AND conname='execution_positions_exchange_values_nonnegative'
+    ) THEN
+        ALTER TABLE public.execution_positions
+            ADD CONSTRAINT execution_positions_exchange_values_nonnegative
+            CHECK (
+                (spot_exchange_base_quantity IS NULL OR spot_exchange_base_quantity >= 0)
+                AND (futures_exchange_base_quantity IS NULL OR futures_exchange_base_quantity >= 0)
+            ) NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_positions'::regclass
+          AND conname='execution_positions_reconciliation_status_valid'
+    ) THEN
+        ALTER TABLE public.execution_positions
+            ADD CONSTRAINT execution_positions_reconciliation_status_valid
+            CHECK (reconciliation_status IN ('SYNCED','PENDING_SYNC','MISMATCH','UNKNOWN')) NOT VALID;
+    END IF;
+END $position_reconciliation$;
+
+ALTER TABLE public.execution_positions
+    VALIDATE CONSTRAINT execution_positions_exchange_values_nonnegative;
+ALTER TABLE public.execution_positions
+    VALIDATE CONSTRAINT execution_positions_reconciliation_status_valid;
+
 CREATE INDEX IF NOT EXISTS idx_execution_positions_account_status
     ON public.execution_positions(account_scope_id, status, updated_at DESC);
 
