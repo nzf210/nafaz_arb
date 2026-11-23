@@ -539,3 +539,65 @@ begin
     end;
 end $$;
 
+
+-- Executor V3 PR-04: durable fill and private-event inbox security/integrity.
+do $fill_smoke$
+begin
+    if not exists (
+        select 1 from pg_class
+        where oid='public.execution_fills'::regclass and relrowsecurity
+    ) or not exists (
+        select 1 from pg_class
+        where oid='public.execution_event_inbox'::regclass and relrowsecurity
+    ) then
+        raise exception 'V3 fill/inbox RLS is not enabled';
+    end if;
+
+    if has_table_privilege('anon','public.execution_fills','select')
+       or has_table_privilege('authenticated','public.execution_fills','select')
+       or has_table_privilege('anon','public.execution_event_inbox','select')
+       or has_table_privilege('authenticated','public.execution_event_inbox','select') then
+        raise exception 'client roles must not read V3 fill/inbox records';
+    end if;
+
+    if not has_table_privilege('service_role','public.execution_fills','select')
+       or not has_table_privilege('service_role','public.execution_fills','insert')
+       or has_table_privilege('service_role','public.execution_fills','update')
+       or has_table_privilege('service_role','public.execution_fills','delete')
+       or not has_table_privilege('service_role','public.execution_event_inbox','update') then
+        raise exception 'V3 fill/inbox service_role grants are invalid';
+    end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.execution_fills'::regclass
+          and conname='execution_fills_session_leg_fkey'
+    ) then
+        raise exception 'V3 fill session/leg composite foreign key is missing';
+    end if;
+end $fill_smoke$;
+
+insert into public.execution_fills (
+    session_id, leg_id, account_scope_id, venue, market_type, symbol,
+    exchange_trade_id, side, quantity, price, quote_quantity, quote_asset,
+    filled_at
+) values (
+    'schema-smoke-v3-session', 'schema-smoke-v3-spot',
+    'schema-smoke-v3-account', 'indodax', 'spot', 'btc_idr',
+    'schema-smoke-v3-trade', 'buy', 0.001, 1000000000, 1000000, 'IDR', now()
+);
+
+do $fill_smoke$
+begin
+    begin
+        update public.execution_fills
+        set quantity=0.002
+        where exchange_trade_id='schema-smoke-v3-trade';
+        raise exception 'append-only fill update unexpectedly succeeded';
+    exception
+        when raise_exception then
+            if SQLERRM <> 'execution_fills is append-only; corrections require a separate audited adjustment' then
+                raise;
+            end if;
+    end;
+end $fill_smoke$;
