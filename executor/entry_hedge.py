@@ -1175,6 +1175,16 @@ class EntryHedgeMixin:
         """Execute market short on global exchange and persist position state."""
         order_info["hedge_submit_started"] = False
         order_info.pop("pending_hedge_client_order_id", None)
+        # Every monitor pass must acquire a fresh claim/attempt snapshot. Old
+        # attempt identifiers remain in the durable order registry, not in the
+        # mutable Spot pending-order dictionary.
+        for key in (
+            "hedge_claim_key", "hedge_claim_client_order_id",
+            "hedge_attempt_id", "hedge_attempt_no",
+            "hedge_attempt_version", "hedge_attempt_terminal",
+            "hedge_attempt_partial", "hedge_attempt_blocked",
+        ):
+            order_info.pop(key, None)
         global_symbol = order_info["global_symbol"]
         try:
             expected_short_price = float(
