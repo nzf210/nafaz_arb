@@ -8,6 +8,7 @@ callers must keep the existing Global STOP/mutation fence around that boundary.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -65,6 +66,7 @@ class HedgeAttemptLedger:
         futures_exchange: str,
         futures_symbol: str,
         actor_id: str,
+        requested_qty_base: Any = None,
     ) -> Optional[dict]:
         """Reserve the next residual attempt before crossing the venue boundary.
 
@@ -92,7 +94,7 @@ class HedgeAttemptLedger:
                     claim = await conn.fetchrow(
                         """
                         select target_hedge_qty, futures_exchange, futures_symbol,
-                               status
+                               status, hedge_client_order_id
                         from public.executor_hedge_intent_claims
                         where claim_key=$1
                         for update
@@ -159,7 +161,19 @@ class HedgeAttemptLedger:
                         return None
 
                     attempt_no = int(totals["max_attempt"]) + 1
-                    coid = _client_order_id(claim_key, attempt_no)
+                    requested = (
+                        residual if requested_qty_base is None
+                        else _decimal(requested_qty_base, "requested attempt quantity")
+                    )
+                    if requested > residual:
+                        raise ValueError("requested attempt quantity exceeds durable residual")
+                    # Preserve compatibility with the claim lifecycle for its
+                    # first venue order. Later attempts get independent IDs.
+                    coid = (
+                        str(claim["hedge_client_order_id"])
+                        if attempt_no == 1
+                        else _client_order_id(claim_key, attempt_no)
+                    )
                     row = await conn.fetchrow(
                         """
                         insert into public.executor_hedge_attempts (
@@ -170,7 +184,7 @@ class HedgeAttemptLedger:
                         returning attempt_id, attempt_no, hedge_client_order_id,
                                   requested_qty_base, status, version
                         """,
-                        claim_key, attempt_no, scope, exchange, symbol, coid, residual,
+                        claim_key, attempt_no, scope, exchange, symbol, coid, requested,
                     )
                     await self._event(
                         conn, row["attempt_id"], "prepared",
@@ -178,7 +192,7 @@ class HedgeAttemptLedger:
                         {
                             "claim_key": claim_key,
                             "attempt_no": attempt_no,
-                            "requested_qty_base": str(residual),
+                            "requested_qty_base": str(requested),
                             "actor_id": str(actor_id or ""),
                         },
                     )
@@ -211,6 +225,109 @@ class HedgeAttemptLedger:
         return await self._transition(
             attempt_id, expected_version, "SUBMITTING", "UNKNOWN",
             "ATTEMPT_UNKNOWN", {"reason": str(reason or "")[:1000]},
+        )
+
+    async def mark_rejected(
+        self, attempt_id: str, *, expected_version: int, reason: str,
+        from_status: str = "SUBMITTING",
+    ) -> bool:
+        if from_status not in ("PREPARED", "SUBMITTING", "UNKNOWN"):
+            return False
+        return await self._transition(
+            attempt_id, expected_version, from_status, "REJECTED",
+            "ATTEMPT_REJECTED", {"reason": str(reason or "")[:1000]},
+        )
+
+    async def record_trade_for_client_order_id(
+        self, *, client_order_id: str, exchange: str, symbol: str,
+        trade: dict,
+    ) -> Optional[dict]:
+        """Attach one verified exchange trade to its exact durable attempt.
+
+        None means this order is not owned by the hedge-attempt ledger.
+        """
+        pool = await self._pool()
+        if pool is None:
+            raise RuntimeError("durable hedge attempt ledger is unavailable")
+        coid = str(client_order_id or "").strip()
+        async with pool.acquire() as conn:
+            attempt = await conn.fetchrow(
+                """
+                select attempt_id, futures_account_scope_id, futures_exchange,
+                       futures_symbol
+                from public.executor_hedge_attempts
+                where hedge_client_order_id=$1
+                """,
+                coid,
+            )
+        if attempt is None:
+            return None
+        if (
+            str(attempt["futures_exchange"]).lower() != str(exchange or "").lower()
+            or str(attempt["futures_symbol"]) != str(symbol or "")
+        ):
+            raise ValueError("verified trade venue/instrument differs from hedge attempt")
+
+        fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
+        fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
+        fee_amount = fee.get("cost")
+        fee_currency = str(fee.get("currency") or "")
+        if fee_amount is None and len(fee_rows) == 1:
+            fee_amount = fee_rows[0].get("cost")
+            fee_currency = str(fee_rows[0].get("currency") or "")
+        timestamp = trade.get("timestamp")
+        filled_at = (
+            datetime.fromtimestamp(float(timestamp) / 1000.0, tz=timezone.utc)
+            if timestamp is not None else None
+        )
+        return await self.record_fill(
+            attempt_id=str(attempt["attempt_id"]),
+            futures_account_scope_id=str(attempt["futures_account_scope_id"]),
+            futures_exchange=str(attempt["futures_exchange"]),
+            futures_symbol=str(attempt["futures_symbol"]),
+            venue_trade_id=str(trade.get("id") or ""),
+            source_event_id=str(trade.get("id") or ""),
+            fill_qty_base=trade.get("amount"),
+            fill_price=trade.get("price"),
+            fee_amount=fee_amount,
+            fee_currency=fee_currency,
+            venue_filled_at=filled_at,
+        )
+
+    async def finalize_by_client_order_id(
+        self, *, client_order_id: str, terminal_status: str,
+        order_reconciled: bool, fills_reconciled: bool, actor_id: str,
+    ) -> Optional[bool]:
+        pool = await self._pool()
+        if pool is None:
+            raise RuntimeError("durable hedge attempt ledger is unavailable")
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                select attempt_id, version
+                from public.executor_hedge_attempts
+                where hedge_client_order_id=$1
+                """,
+                str(client_order_id or "").strip(),
+            )
+        if row is None:
+            return None
+        status = str(terminal_status or "").lower()
+        terminal = (
+            "FILLED" if status in ("closed", "filled")
+            else "CANCELED" if status in ("canceled", "cancelled", "expired")
+            else "REJECTED" if status == "rejected"
+            else ""
+        )
+        if not terminal:
+            return False
+        return await self.finalize_attempt(
+            str(row["attempt_id"]),
+            expected_version=int(row["version"]),
+            terminal_status=terminal,
+            order_reconciled=order_reconciled,
+            fills_reconciled=fills_reconciled,
+            actor_id=actor_id,
         )
 
     async def mark_acknowledged(
