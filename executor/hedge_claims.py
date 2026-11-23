@@ -172,27 +172,51 @@ class HedgeIntentClaimService:
                         verified_confirmed = float(
                             attempt_totals["confirmed"] or 0.0
                         )
-                        claim_target = float(unresolved["target_hedge_qty"] or 0.0)
+                        effective_spot_filled = max(
+                            requested_spot_filled,
+                            float(unresolved["cumulative_spot_filled"] or 0.0),
+                        )
+                        claim_target = max(
+                            float(unresolved["target_hedge_qty"] or 0.0),
+                            effective_spot_filled * ratio,
+                        )
                         tolerance = max(1e-12, abs(claim_target) * 1e-8)
                         if verified_confirmed + tolerance >= claim_target:
                             await conn.execute(
                                 """
                                 update public.executor_hedge_intent_claims
                                 set status='CONFIRMED', confirmed_qty=$2,
+                                    cumulative_spot_filled=$3, target_hedge_qty=$4,
+                                    residual_qty=0, hedge_ratio=$5,
                                     version=version+1, updated_at=now()
                                 where claim_key=$1 and status='SUBMITTED'
                                 """,
                                 str(unresolved["claim_key"]), verified_confirmed,
+                                effective_spot_filled, claim_target, ratio,
                             )
                             return None
                         retry_residual = max(0.0, claim_target - verified_confirmed)
                         if retry_residual <= 0:
                             return None
+                        updated = await conn.fetchrow(
+                            """
+                            update public.executor_hedge_intent_claims
+                            set cumulative_spot_filled=$2, target_hedge_qty=$3,
+                                residual_qty=$4, hedge_ratio=$5,
+                                version=version+1, updated_at=now()
+                            where claim_key=$1 and status='SUBMITTED'
+                            returning version
+                            """,
+                            str(unresolved["claim_key"]), effective_spot_filled,
+                            claim_target, retry_residual, ratio,
+                        )
+                        if updated is None:
+                            return None
                         return {
                             "claim_key": str(unresolved["claim_key"]),
                             "hedge_client_order_id": str(unresolved["hedge_client_order_id"]),
-                            "version": int(unresolved["version"]),
-                            "cumulative_spot_filled": float(unresolved["cumulative_spot_filled"]),
+                            "version": int(updated["version"]),
+                            "cumulative_spot_filled": effective_spot_filled,
                             "target_hedge_qty": claim_target,
                             "confirmed_qty": verified_confirmed,
                             "residual_qty": retry_residual,
