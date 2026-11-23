@@ -9,7 +9,7 @@ from decimal import Decimal
 import pytest
 
 from executor.execution_fill_service import (
-    ExecutionFillService, FillConflict, FillValidationError, _decimal, _timestamp,
+    ExecutionFillService, FillConflict, FillValidationError, _boolean, _decimal, _timestamp,
 )
 from executor.ownership import OwnershipLeaseService
 from executor.session_coordinator import SessionCoordinator
@@ -345,6 +345,7 @@ async def test_postgres_fill_rejects_stale_leg_and_aggregate_versions(postgres_p
 
 
 def test_fee_verification_flag_rejects_truthy_non_boolean_values():
+    assert _boolean(True, "fee_verified") is True
+    assert _boolean(False, "fee_verified") is False
     with pytest.raises(FillValidationError, match="fee_verified must be a boolean"):
-        _decimal("0", "fee_amount", positive=False)
-        # The public record_fill boundary performs the strict boolean check.
+        _boolean("false", "fee_verified")
