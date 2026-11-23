@@ -727,33 +727,48 @@ class GlobalStopSubmitMixin:
                         # prepared and the session coordinator has advanced the
                         # aggregate. This check shares the submit transaction and
                         # locks the session, leg and coordinator lease rows.
-                        if action == "ENTRY" and mutation_intent_id:
+                        if action in {"ENTRY", "HEDGE", "DERISK"} and mutation_intent_id:
                             logical_session_intent = await conn.fetchrow(
                                 """
-                                SELECT session_id, leg_id, account_scope_id, venue,
-                                       market_type, instrument, pair_key
+                                SELECT operation, status, session_id, leg_id, account_scope_id,
+                                       venue, market_type, instrument, pair_key
                                 FROM public.executor_mutation_intents
                                 WHERE intent_id=$1 FOR UPDATE
                                 """,
                                 mutation_intent_id,
                             )
+                            if (
+                                logical_session_intent is None
+                                or str(logical_session_intent["operation"]).upper() != "CREATE"
+                                or str(logical_session_intent["status"]).upper() != "PREPARED"
+                            ):
+                                raise GlobalStopError(
+                                    "session-bound mutation requires an exact PREPARED CREATE intent"
+                                )
                             session_id = str(
                                 logical_session_intent.get("session_id") or ""
-                            ).strip() if logical_session_intent is not None else ""
+                            ).strip()
                             leg_id = str(
                                 logical_session_intent.get("leg_id") or ""
-                            ).strip() if logical_session_intent is not None else ""
-                            if logical_session_intent is None:
-                                raise GlobalStopError("linked V3 logical mutation intent is missing")
+                            ).strip()
                             if bool(session_id) != bool(leg_id):
                                 raise GlobalStopError(
-                                    "session-bound ENTRY intent requires both session_id and leg_id"
+                                    "session-bound mutation intent requires both session_id and leg_id"
+                                )
+                            if action == "HEDGE" and not (session_id and leg_id):
+                                raise GlobalStopError(
+                                    "V3 HEDGE mutation requires a session-bound Futures leg intent"
                                 )
                             if session_id and leg_id:
+                                if str(scope_session_id or "").strip() != session_id:
+                                    raise GlobalStopError(
+                                        "submit session scope does not match the immutable mutation intent"
+                                    )
                                 session_gate = await conn.fetchrow(
                                     """
                                     SELECT s.status AS session_status,
-                                           l.status AS leg_status
+                                           l.status AS leg_status,
+                                           l.leg_type AS leg_type
                                     FROM public.execution_sessions s
                                     JOIN public.execution_legs l
                                       ON l.session_id=s.session_id AND l.leg_id=$2
@@ -768,6 +783,7 @@ class GlobalStopSubmitMixin:
                                      AND cl.lease_expires_at > clock_timestamp()
                                     WHERE s.session_id=$1
                                       AND s.account_scope_id=$3
+                                      AND l.account_scope_id=$3
                                       AND l.venue=$4
                                       AND l.market_type=$5
                                       AND l.symbol=$6
@@ -780,13 +796,44 @@ class GlobalStopSubmitMixin:
                                     str(intent["symbol"]),
                                     str(logical_session_intent["pair_key"]),
                                 )
-                                if session_gate is None or (
-                                    str(session_gate["session_status"]).upper() != "ENTRY_IN_PROGRESS"
-                                    or str(session_gate["leg_status"]).upper() != "PREPARED"
+                                if session_gate is None:
+                                    raise GlobalStopError(
+                                        "session-bound mutation has no active coordinator lease or exact leg identity"
+                                    )
+                                session_status = str(session_gate["session_status"]).upper()
+                                leg_status = str(session_gate["leg_status"]).upper()
+                                leg_type = str(session_gate["leg_type"]).upper()
+                                if action == "ENTRY" and (
+                                    session_status != "ENTRY_IN_PROGRESS"
+                                    or leg_status != "PREPARED"
                                 ):
                                     raise GlobalStopError(
                                         "session-bound ENTRY intent is not admitted for submission: "
-                                        "session must be ENTRY_IN_PROGRESS, leg PREPARED, and coordinator lease active"
+                                        "session must be ENTRY_IN_PROGRESS and leg PREPARED"
+                                    )
+                                if action == "HEDGE" and (
+                                    session_status not in {"HEDGE_PENDING", "PARTIALLY_HEDGED"}
+                                    or leg_type != "FUTURES"
+                                    or leg_status not in {"PREPARED", "SUBMITTING", "PARTIALLY_FILLED"}
+                                ):
+                                    raise GlobalStopError(
+                                        "session-bound HEDGE intent is not admitted for submission: "
+                                        "session must be HEDGE_PENDING/PARTIALLY_HEDGED with an active Futures leg"
+                                    )
+                                if action == "DERISK" and (
+                                    session_status not in {
+                                        "HEDGE_PENDING", "PARTIALLY_HEDGED", "HEDGED",
+                                        "RECONCILIATION_REQUIRED", "RECOVERY_IN_PROGRESS",
+                                        "BLOCKED", "EXIT_IN_PROGRESS", "EXIT_PARTIAL",
+                                    }
+                                    or leg_status not in {
+                                        "PREPARED", "SUBMITTING", "OPEN", "PARTIALLY_FILLED",
+                                        "FILLED", "UNKNOWN", "RECONCILIATION_REQUIRED",
+                                        "CLOSING", "CANCELED",
+                                    }
+                                ):
+                                    raise GlobalStopError(
+                                        "session-bound DERISK intent is not admitted for protective submission"
                                     )
                         lease, risk_snapshot = await self._acquire_submit_ownership(
                             conn,
