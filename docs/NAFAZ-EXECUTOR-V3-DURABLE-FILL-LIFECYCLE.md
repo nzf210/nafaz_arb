@@ -6,7 +6,7 @@ Scope: confirmed-fill persistence and durable private-event intake only.
 ## Ownership boundary
 
 - PostgreSQL is canonical for V3 fill facts, inbox identity, leg fill totals, and session event order.
-- The service accepts confirmed venue trade facts. It cannot submit, cancel, replace, or close orders.
+- This stage accepts confirmed ENTRY trade facts only: Spot BUY and configured SHORT Futures SELL. Exit-direction fills are rejected until the separate exit-fill accounting contract is implemented. The service cannot submit, cancel, replace, or close orders.
 - V2 `execution_fill_ledger`, Redis payloads, and V2 engine behavior remain unchanged.
 - A private stream is an acceleration source. REST reconciliation can feed the same durable inbox contract.
 - A fill is not inferred from an order acknowledgement or cumulative order status.
@@ -29,7 +29,7 @@ A duplicate trade with identical facts is a no-op. Reusing a trade identity or e
 
 ## Late fills and uncertainty
 
-A fill received after a canceled/closed/unknown/rejected leg or terminal session is not discarded. The fill fact is preserved and the affected leg/session is moved to RECONCILIATION_REQUIRED. This is an explicit audited correction to a previously terminal projection; it is not permission to resume entry.
+A late entry fill received after a canceled/closed/closing/unknown/rejected leg, a HEDGED/EXIT session, or a terminal session is not discarded. The fill fact is preserved and the affected leg/session is moved to RECONCILIATION_REQUIRED. This is an explicit audited correction to a previously terminal projection; it is not permission to resume entry.
 
 A leg remains FILLED only when the existing lifecycle already established that state; this service does not infer order terminality from a trade. In-flight/cancel-pending state is not rewritten to a terminal order status.
 
