@@ -528,7 +528,10 @@ class ExecutionFillService:
                         session_target = "RECONCILIATION_REQUIRED"
                         late_fill = True
                     elif new_exit_exposure == new_exposure_quantity:
-                        leg_target = "CLOSED"
+                        leg_target = (
+                            "CLOSED" if old_leg_state in {"FILLED", "CLOSING"}
+                            else "CLOSING"
+                        )
                     elif old_leg_state == "FILLED":
                         leg_target = "CLOSING"
                     elif old_leg_state == "CLOSING":
@@ -588,14 +591,18 @@ class ExecutionFillService:
                     conn, session_id=facts["session_id"], aggregate_version=new_aggregate,
                     entity_type="LEG", entity_id=facts["leg_id"],
                     entity_version=new_leg_version,
-                    event_type=("LEG_LATE_FILL_REQUIRES_RECONCILIATION" if late_fill
-                                else "LEG_FILL_RECORDED"),
+                    event_type=(
+                        "LEG_LATE_FILL_REQUIRES_RECONCILIATION" if late_fill
+                        else ("LEG_EXIT_FILL_RECORDED" if facts["fill_role"] == "EXIT"
+                              else "LEG_FILL_RECORDED")
+                    ),
                     idempotency_key=idem, actor_id=actor,
                     fencing_generation=int(fencing_generation),
                     reason=("late venue fill after terminal session state" if late_fill else ""),
                     correlation_id=source_event_id or facts["exchange_trade_id"],
                     payload={
                         "fill_id": str(inserted["fill_id"]),
+                        "fill_role": facts["fill_role"],
                         "exchange_trade_id": facts["exchange_trade_id"],
                         "quantity": str(facts["quantity"]),
                         "price": str(facts["price"]),
@@ -612,5 +619,10 @@ class ExecutionFillService:
             "confirmed_filled_quantity": _decimal_text(new_leg_qty),
             "confirmed_quote_quantity": _decimal_text(new_leg_quote),
             "confirmed_exposure_quantity": _decimal_text(new_exposure_quantity),
-            "average_fill_price": _decimal_text(new_average),
+            "average_fill_price": _decimal_text(new_average) if new_average is not None else None,
+            "fill_role": facts["fill_role"],
+            "confirmed_exit_quantity": _decimal_text(new_exit_qty),
+            "confirmed_exit_quote_quantity": _decimal_text(new_exit_quote),
+            "confirmed_exit_exposure_quantity": _decimal_text(new_exit_exposure),
+            "average_exit_price": _decimal_text(new_exit_average) if new_exit_average is not None else None,
         }
