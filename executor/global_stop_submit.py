@@ -860,6 +860,8 @@ class GlobalStopSubmitMixin:
                                        l.base_asset AS leg_base_asset,
                                        l.base_per_unit AS leg_base_per_unit,
                                        l.quantity_unit AS leg_quantity_unit,
+                                       l.contract_type AS leg_contract_type,
+                                       l.contract_size AS leg_contract_size,
                                        r.status AS reservation_status,
                                        r.client_order_id AS reservation_client_order_id,
                                        r.reserved_base_quantity,
@@ -869,7 +871,9 @@ class GlobalStopSubmitMixin:
                                        r.base_asset AS reservation_base_asset,
                                        r.position_side AS reservation_position_side,
                                        r.quantity_unit AS reservation_quantity_unit,
-                                       r.base_per_unit AS reservation_base_per_unit
+                                       r.base_per_unit AS reservation_base_per_unit,
+                                       r.contract_type AS reservation_contract_type,
+                                       r.contract_size AS reservation_contract_size
                                 FROM public.execution_sessions s
                                 JOIN public.execution_legs l
                                   ON l.session_id=s.session_id AND l.leg_id=$2
@@ -884,6 +888,7 @@ class GlobalStopSubmitMixin:
                                  AND cl.lease_expires_at > clock_timestamp()
                                 JOIN public.execution_hedge_reservations r
                                   ON r.reservation_id=$8::uuid AND r.session_id=s.session_id
+                                 AND r.account_scope_id=s.account_scope_id
                                 WHERE s.session_id=$1
                                   AND s.account_scope_id=$3
                                   AND l.leg_type='FUTURES'
@@ -916,6 +921,14 @@ class GlobalStopSubmitMixin:
                                 or str(hedge_gate["reservation_position_side"]).upper() != "SHORT"
                                 or str(hedge_gate["reservation_quantity_unit"]).upper() != str(hedge_gate["leg_quantity_unit"]).upper()
                                 or Decimal(str(hedge_gate["reservation_base_per_unit"])) != Decimal(str(hedge_gate["leg_base_per_unit"]))
+                                or str(hedge_gate["reservation_contract_type"] or "") != str(hedge_gate["leg_contract_type"] or "")
+                                or (
+                                    Decimal(str(hedge_gate["reservation_contract_size"]))
+                                    if hedge_gate["reservation_contract_size"] is not None else None
+                                ) != (
+                                    Decimal(str(hedge_gate["leg_contract_size"]))
+                                    if hedge_gate["leg_contract_size"] is not None else None
+                                )
                                 or Decimal(str(hedge_intent["quantity"])) * Decimal(str(hedge_gate["leg_base_per_unit"]))
                                    != Decimal(str(hedge_gate["reserved_base_quantity"]))
                             ):
