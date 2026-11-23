@@ -5,6 +5,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from dataclasses import replace
 
 import pytest
 
@@ -13,6 +14,7 @@ from executor.execution_hedge_obligations import (
     ExecutionHedgeObligationService, HedgeObligationError,
 )
 from executor.execution_pnl_accounting import ExecutionPnLAccountingService, PnLAccountingError
+from executor.pair_pnl_engine import PairPnLSnapshotV3
 from executor.ownership import OwnershipLeaseService
 from executor.session_coordinator import SessionCoordinator
 
@@ -821,3 +823,55 @@ async def test_postgres_exit_fill_overclose_forces_reconciliation(postgres_pool)
         fencing_generation=lease.generation, coordinator_lease=lease,
     )
     assert result["session_state"] == "RECONCILIATION_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_postgres_pnl_snapshot_is_idempotent_and_rejects_changed_replay(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, _, _ = await _session(postgres_pool, suffix)
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    snapshot = PairPnLSnapshotV3(
+        session_id=admitted["session_id"],
+        pair_key="indodax:btc_idr->okx:btc-usdt-swap",
+        reporting_currency="USDT", evaluated_at_ms=now_ms,
+        spot_estimated_liquidation_pnl=Decimal("0.5"),
+        futures_estimated_liquidation_pnl=Decimal("0.25"),
+        funding_reporting_amount=Decimal("0.01"),
+        entry_fees_reporting=Decimal("0.02"),
+        estimated_exit_fees_reporting=Decimal("0.02"),
+        estimated_tax_reporting=Decimal("0"),
+        conversion_cost_reporting=Decimal("0"),
+        estimated_net_liquidation_pnl=Decimal("0.72"),
+        strategy_roi_pct=Decimal("0.72"),
+        return_on_deployed_capital_pct=Decimal("0.36"),
+        total_deployed_capital_reporting=Decimal("200"),
+        spot_exit_vwap=Decimal("100"),
+        futures_exit_vwap=Decimal("99"),
+        spot_slippage_bps=Decimal("1"),
+        futures_slippage_bps=Decimal("2"),
+        spot_executable_base_quantity=Decimal("0.01"),
+        futures_executable_base_quantity=Decimal("0.01"),
+        hedge_drift_base_quantity=Decimal("0"),
+        confidence="VERIFIED",
+        provenance={"spot_fx_source": "test-fx", "funding_source": "test-funding"},
+    )
+    service = ExecutionPnLAccountingService(postgres_pool)
+    first = await service.record_snapshot(
+        snapshot=snapshot, idempotency_key="pnl-snapshot-" + suffix,
+        coordinator_lease=admitted["coordinator_lease"],
+        fencing_generation=admitted["coordinator_generation"],
+    )
+    replay = await service.record_snapshot(
+        snapshot=snapshot, idempotency_key="pnl-snapshot-" + suffix,
+        coordinator_lease=admitted["coordinator_lease"],
+        fencing_generation=admitted["coordinator_generation"],
+    )
+    assert first["duplicate"] is False
+    assert replay["duplicate"] is True
+    with pytest.raises(PnLAccountingError, match="changed valuation"):
+        await service.record_snapshot(
+            snapshot=replace(snapshot, estimated_net_liquidation_pnl=Decimal("0.99")),
+            idempotency_key="pnl-snapshot-" + suffix,
+            coordinator_lease=admitted["coordinator_lease"],
+            fencing_generation=admitted["coordinator_generation"],
+        )
