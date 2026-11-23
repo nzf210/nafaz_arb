@@ -359,3 +359,62 @@ async def test_postgres_hedge_reservation_below_minimum_and_unknown_release_fail
         )
     assert Decimal(str(row["reserved_base_quantity"])) == 0
     assert Decimal(str(row["remaining_base_quantity"])) == Decimal("0.0002")
+
+
+@pytest.mark.asyncio
+async def test_base_denominated_verified_spot_fee_reduces_hedge_target(postgres_pool):
+    suffix = uuid.uuid4().hex
+    coordinator, admitted, aggregate, versions = await _session(postgres_pool, suffix)
+    fill = await ExecutionFillService(postgres_pool).record_fill(
+        session_id=admitted["session_id"], leg_id=f"spot-{suffix}",
+        account_scope_id="hedge-account-" + suffix,
+        venue="indodax", market_type="spot", symbol="btc_idr",
+        exchange_trade_id="spot-base-fee-" + suffix, side="buy",
+        quantity="0.0002", price="1000000000", quote_asset="IDR",
+        quote_quantity="200000", fee_amount="0.000001", fee_asset="BTC",
+        fee_verified=True, fee_source="EXCHANGE_TRADE",
+        filled_at=datetime.now(timezone.utc), actor_id="hedge-integration-test",
+        event_idempotency_key="spot-base-fee-event-" + suffix,
+        expected_leg_state_version=versions[f"spot-{suffix}"],
+        expected_aggregate_version=aggregate,
+        fencing_generation=admitted["coordinator_generation"],
+        coordinator_lease=admitted["coordinator_lease"],
+    )
+    service = ExecutionHedgeObligationService(postgres_pool)
+    obligation = await service.create_from_spot_fill(
+        session_id=admitted["session_id"], spot_fill_id=fill["fill_id"],
+        hedge_ratio="1", actor_id="hedge-integration-test",
+        coordinator_lease=admitted["coordinator_lease"],
+        fencing_generation=admitted["coordinator_generation"],
+    )
+    assert obligation["target_base_quantity"] == "0.000199"
+    await coordinator.release(admitted["coordinator_lease"])
+
+
+@pytest.mark.asyncio
+async def test_unverified_base_denominated_spot_fee_blocks_hedge_sizing(postgres_pool):
+    suffix = uuid.uuid4().hex
+    coordinator, admitted, aggregate, versions = await _session(postgres_pool, suffix)
+    fill = await ExecutionFillService(postgres_pool).record_fill(
+        session_id=admitted["session_id"], leg_id=f"spot-{suffix}",
+        account_scope_id="hedge-account-" + suffix,
+        venue="indodax", market_type="spot", symbol="btc_idr",
+        exchange_trade_id="spot-unverified-fee-" + suffix, side="buy",
+        quantity="0.0002", price="1000000000", quote_asset="IDR",
+        quote_quantity="200000", fee_amount="0.000001", fee_asset="BTC",
+        fee_verified=False, fee_source="UNVERIFIED",
+        filled_at=datetime.now(timezone.utc), actor_id="hedge-integration-test",
+        event_idempotency_key="spot-unverified-fee-event-" + suffix,
+        expected_leg_state_version=versions[f"spot-{suffix}"],
+        expected_aggregate_version=aggregate,
+        fencing_generation=admitted["coordinator_generation"],
+        coordinator_lease=admitted["coordinator_lease"],
+    )
+    with pytest.raises(HedgeObligationError, match="must be verified"):
+        await ExecutionHedgeObligationService(postgres_pool).create_from_spot_fill(
+            session_id=admitted["session_id"], spot_fill_id=fill["fill_id"],
+            hedge_ratio="1", actor_id="hedge-integration-test",
+            coordinator_lease=admitted["coordinator_lease"],
+            fencing_generation=admitted["coordinator_generation"],
+        )
+    await coordinator.release(admitted["coordinator_lease"])
