@@ -62,6 +62,7 @@ class HedgeScheduler(HedgeServiceBase):
                     """
                     SELECT status, account_scope_id, target_base_quantity,
                            confirmed_base_quantity, reserved_base_quantity,
+                           remaining_base_quantity,
                            deferred_since, deferred_count, de_risk_required, created_at
                     FROM public.execution_hedge_obligations
                     WHERE obligation_id=$1::uuid AND session_id=$2
@@ -97,8 +98,36 @@ class HedgeScheduler(HedgeServiceBase):
                         "aggregate_version": int(session["aggregate_version"]),
                     }
 
-                if bool(obligation["de_risk_required"]) or str(obligation["status"]) == "BLOCKED":
+                obligation_status = str(obligation["status"]).upper()
+                if bool(obligation["de_risk_required"]) or obligation_status in {
+                    "BLOCKED", "RECONCILIATION_REQUIRED"
+                }:
                     raise HedgeObligationError("blocked hedge obligation requires recovery/de-risk resolution")
+                if obligation_status not in {"OPEN", "PARTIALLY_HEDGED"}:
+                    raise HedgeObligationError(
+                        f"hedge obligation is not schedulable in {obligation_status} state"
+                    )
+                remaining_unreserved = (
+                    Decimal(str(obligation["remaining_base_quantity"]))
+                    - Decimal(str(obligation["reserved_base_quantity"]))
+                )
+                executable_base = Decimal(str(decision.executable_base_quantity))
+                if not executable_base.is_finite() or executable_base < 0:
+                    raise HedgeObligationError("scheduler executable quantity must be finite and non-negative")
+                if action == "SUBMIT" and executable_base != remaining_unreserved:
+                    raise HedgeObligationError(
+                        "SUBMIT decision must cover the exact unreserved obligation residual"
+                    )
+                if action == "PARTIAL_SUBMIT" and not (
+                    Decimal("0") < executable_base < remaining_unreserved
+                ):
+                    raise HedgeObligationError(
+                        "PARTIAL_SUBMIT decision must be positive and below the unreserved residual"
+                    )
+                if action in {"DEFER", "DE_RISK_REQUIRED"} and executable_base != 0:
+                    raise HedgeObligationError(
+                        f"{action} decision cannot authorize executable hedge quantity"
+                    )
                 deferred_since = obligation["deferred_since"]
                 max_wait_until = None
                 if action == "DEFER":
