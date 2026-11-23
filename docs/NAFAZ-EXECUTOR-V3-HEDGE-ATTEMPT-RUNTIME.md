@@ -35,8 +35,33 @@ within that generation.
 7. Keep claim-level confirmation and position-level exposure fenced until the
    sum of verified attempt fills covers the claim target.
 
-This repository is intentionally not wired into the legacy entry hedge path in
-this PR. The integration must be done as a separate change with regression
-coverage for mutation gateway fencing, restart recovery, duplicate fill replay,
-and partial terminal fill residual retry. No LIVE order path should be enabled
-until those tests pass.
+## Current runtime wiring in PR-56
+
+The runtime repository is now connected to the existing entry and reconciliation
+paths:
+
+- `ArbitrageEngine` owns one `HedgeAttemptLedger` backed by the existing
+  `GlobalStopService` PostgreSQL pool.
+- Entry hedge preparation reserves an attempt after exchange sizing and before
+  the existing submit-intent / Global STOP mutation fence.
+- The first attempt reuses the claim's original client order ID to preserve
+  compatibility with the claim lifecycle. Subsequent attempts use a distinct
+  deterministic client order ID.
+- The attempt is moved to `SUBMITTING` inside the existing submit fence,
+  then to `ACKNOWLEDGED` or `UNKNOWN` based on authoritative mutation
+  outcomes.
+- `TradeFillReconciliationWorker` mirrors individually verified venue trades
+  into the exact attempt using the client order ID and venue trade ID.
+- Attempt finalization requires terminal order state and complete individual
+  trade reconciliation. Claim-level `CONFIRMED` is written only when the
+  sum of verified attempt fills covers the claim target.
+- Terminal partial attempts release their reservation only after reconciliation;
+  the next entry monitor pass can then prepare a distinct residual attempt.
+- A legacy `SUBMITTED` claim with no attempt-ledger row is deliberately
+  blocked. It is not safe to assume its old exchange order is terminal.
+
+The current runtime does not automatically retry a residual after the parent
+Spot order has already been removed from the pending-entry lifecycle. That
+terminal-Spot recovery handoff remains a separate required change. Zero-fill
+orders whose terminal status is not durably available also remain blocked for
+manual reconciliation. No LIVE configuration or exchange order was changed.
