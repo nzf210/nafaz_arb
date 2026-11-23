@@ -115,6 +115,16 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
         run: pytest -q tests/test_ownership_risk_control_integration.py
+      - name: Exercise Executor V3 session coordinator and mutation intent gateway
+        timeout-minutes: 5
+        env:
+          TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
+        run: |
+          pytest -q tests/test_session_coordinator.py
+          pytest -q tests/test_order_intent_service.py
+          pytest -q tests/test_mutation_gateway_v3_intents.py
+          pytest -q tests/test_mutation_gateway_v3_cancel.py
+          pytest -q tests/test_mutation_intent_recovery.py
 
   docker-images:
     runs-on: ubuntu-latest
