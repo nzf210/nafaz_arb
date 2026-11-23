@@ -226,6 +226,17 @@ class ExecutionPnLAccountingService:
         if any(value is not None for value in (actual_spot, actual_futures, exchange_observed_at)):
             if actual_spot is None or actual_futures is None or not source or not snapshot_id or not isinstance(exchange_observed_at, datetime):
                 raise PnLAccountingError("exchange exposure snapshot requires both legs, source, ID and timestamp")
+            if exchange_observed_at.tzinfo is None:
+                raise PnLAccountingError("exchange position snapshot timestamp must be timezone-aware")
+            snapshot_age = (datetime.now(timezone.utc) - exchange_observed_at).total_seconds()
+            if snapshot_age < -5 or snapshot_age > 60:
+                raise PnLAccountingError("exchange position snapshot is stale or from the future")
+        if expected_position_version is not None and (
+            isinstance(expected_position_version, bool)
+            or not isinstance(expected_position_version, int)
+            or expected_position_version < 0
+        ):
+            raise PnLAccountingError("expected_position_version must be a non-negative integer")
 
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -293,8 +304,9 @@ class ExecutionPnLAccountingService:
                 current = await conn.fetchrow(
                     """
                     SELECT position_id, state_version, last_verified_at,
-                           exchange_snapshot_id, spot_exchange_base_quantity,
-                           futures_exchange_base_quantity, reconciliation_status
+                           exchange_snapshot_id, exchange_snapshot_source,
+                           spot_exchange_base_quantity, futures_exchange_base_quantity,
+                           reconciliation_status
                     FROM public.execution_positions WHERE session_id=$1 FOR UPDATE
                     """,
                     session_id,
@@ -307,6 +319,8 @@ class ExecutionPnLAccountingService:
                             and Decimal(str(current["spot_exchange_base_quantity"])) == actual_spot
                             and Decimal(str(current["futures_exchange_base_quantity"])) == actual_futures
                             and str(current["reconciliation_status"]) == reconciliation
+                            and str(current["exchange_snapshot_source"] or "") == source
+                            and current["last_verified_at"] == exchange_observed_at
                         ):
                             return {
                                 "duplicate": True, "position_id": str(current["position_id"]),
