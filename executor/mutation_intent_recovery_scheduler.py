@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any
 
 logger = logging.getLogger("executor.mutation_intent_recovery_scheduler")
@@ -27,14 +28,24 @@ class MutationIntentRecoveryScheduler:
     ) -> None:
         if worker is None or not callable(getattr(worker, "reconcile_batch", None)):
             raise ValueError("a mutation-intent recovery worker is required")
-        if interval_seconds <= 0 or max_interval_seconds < interval_seconds:
-            raise ValueError("recovery intervals must be positive and max >= base")
+        try:
+            interval = float(interval_seconds)
+            maximum = float(max_interval_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("recovery intervals must be finite numbers") from exc
+        if (
+            not math.isfinite(interval) or not math.isfinite(maximum)
+            or interval <= 0 or maximum < interval
+        ):
+            raise ValueError("recovery intervals must be finite, positive and max >= base")
+        if isinstance(batch_limit, bool) or not isinstance(batch_limit, int):
+            raise ValueError("batch_limit must be an integer")
         if batch_limit < 1 or batch_limit > 500:
             raise ValueError("batch_limit must be between 1 and 500")
         self.worker = worker
-        self.interval_seconds = float(interval_seconds)
-        self.max_interval_seconds = float(max_interval_seconds)
-        self.batch_limit = int(batch_limit)
+        self.interval_seconds = interval
+        self.max_interval_seconds = maximum
+        self.batch_limit = batch_limit
         self._stop = asyncio.Event()
         self._running = False
 
