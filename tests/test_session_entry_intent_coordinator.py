@@ -10,7 +10,7 @@ from executor.ownership import build_scope_key
 from executor.session_entry_intent_coordinator import (
     SessionEntryIntentCoordinator,
     SessionEntryIntentError,
-    _index_specs,
+    _spot_spec,
     _positive_decimal,
 )
 
@@ -44,12 +44,6 @@ def _specs():
             "side": "buy", "order_type": "limit", "quantity": "0.001",
             "price": "900000000", "reserved_base_qty": "0.001",
             "reserved_notional": "900000", "reservation_asset": "IDR",
-        },
-        {
-            "leg_id": "future-1", "idempotency_key": "dispatch-1-future",
-            "side": "sell", "order_type": "limit", "quantity": "1",
-            "price": "90000", "reserved_base_qty": "0.001",
-            "reserved_notional": "90", "reservation_asset": "USDT",
         },
     ]
 
@@ -138,10 +132,14 @@ def _runtime():
     return service, lease, intents, repository
 
 
-def test_index_specs_requires_exact_one_to_one_leg_mapping():
+def test_spot_spec_rejects_futures_entry_specification():
     legs = _legs()
-    with pytest.raises(SessionEntryIntentError, match="one-to-one"):
-        _index_specs(legs, [_specs()[0], _specs()[0]])
+    future_spec = {
+        "leg_id": "future-1", "idempotency_key": "dispatch-1-future",
+        "side": "sell", "order_type": "limit", "quantity": "1", "price": "90000",
+    }
+    with pytest.raises(SessionEntryIntentError, match="SPOT leg only"):
+        _spot_spec(legs, [future_spec])
 
 
 def test_positive_decimal_rejects_nan_zero_and_negative():
