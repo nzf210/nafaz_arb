@@ -8,7 +8,6 @@ callers must keep the existing Global STOP/mutation fence around that boundary.
 from __future__ import annotations
 
 import hashlib
-import math
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
