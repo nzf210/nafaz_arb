@@ -136,6 +136,13 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
         run: pytest -q tests/test_execution_hedge_obligations.py
+      - name: Exercise Executor V3 liquidity evaluator and durable hedge scheduler
+        timeout-minutes: 5
+        env:
+          TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
+        run: |
+          pytest -q tests/test_hedge_liquidity_evaluator.py
+          pytest -q tests/test_hedge_scheduler_integration.py
 
   docker-images:
     runs-on: ubuntu-latest
