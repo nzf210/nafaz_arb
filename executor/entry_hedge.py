@@ -465,6 +465,10 @@ class EntryHedgeMixin:
             order_info["hedged_short_qty"] = float(
                 claim.get("confirmed_qty", 0.0) or 0.0
             )
+            # Use the database-derived residual for sizing; the caller's local
+            # order snapshot may lag the authoritative per-attempt fill ledger.
+            unhedged_delta = float(claim.get("residual_qty", unhedged_delta))
+            order_info["hedge_target_residual_qty"] = unhedged_delta
             unhedged_delta = float(claim["residual_qty"])
             if unhedged_delta <= 0:
                 order_info["hedge_waiting_for_coverage"] = False
@@ -973,8 +977,11 @@ class EntryHedgeMixin:
                 f"terminal futures hedge has no verified fill: requested={futures_hedge_qty}, "
                 f"filled={actual_hedged_qty}; attempt remains blocked for reconciliation"
             )
+        attempt_target_residual = float(
+            order_info.get("hedge_target_residual_qty", unhedged_delta) or unhedged_delta
+        )
         is_partial_attempt_fill = (
-            actual_hedged_qty + qty_tolerance < unhedged_delta
+            actual_hedged_qty + qty_tolerance < attempt_target_residual
         )
         if is_partial_attempt_fill:
             order_info["hedge_attempt_partial"] = True
@@ -1194,6 +1201,7 @@ class EntryHedgeMixin:
             "hedge_attempt_id", "hedge_attempt_no",
             "hedge_attempt_version", "hedge_attempt_terminal",
             "hedge_attempt_partial", "hedge_attempt_blocked",
+            "hedge_target_residual_qty",
         ):
             order_info.pop(key, None)
         global_symbol = order_info["global_symbol"]
