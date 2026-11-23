@@ -180,6 +180,8 @@ CREATE TABLE IF NOT EXISTS public.execution_pnl_ledger (
         REFERENCES public.execution_sessions(session_id) ON DELETE RESTRICT,
     source_fill_id UUID REFERENCES public.execution_fills(fill_id) ON DELETE RESTRICT,
     source_funding_event_id UUID REFERENCES public.execution_funding_events(funding_event_id) ON DELETE RESTRICT,
+    matched_entry_fill_id UUID REFERENCES public.execution_fills(fill_id) ON DELETE RESTRICT,
+    matched_quantity NUMERIC(38,18),
     entry_type TEXT NOT NULL CHECK (entry_type IN (
         'REALIZED_SPOT_PNL','REALIZED_FUTURES_PNL','ENTRY_FEE',
         'EXIT_FEE','FUNDING','TAX','CONVERSION_COST','ADJUSTMENT'
@@ -194,7 +196,21 @@ CREATE TABLE IF NOT EXISTS public.execution_pnl_ledger (
     CONSTRAINT uq_execution_pnl_ledger_idempotency
         UNIQUE (session_id, idempotency_key),
     CONSTRAINT execution_pnl_ledger_source_valid
-        CHECK (num_nonnulls(source_fill_id, source_funding_event_id) = 1)
+        CHECK (num_nonnulls(source_fill_id, source_funding_event_id) = 1),
+    CONSTRAINT execution_pnl_ledger_match_valid
+        CHECK (
+            (
+                entry_type IN ('REALIZED_SPOT_PNL','REALIZED_FUTURES_PNL')
+                AND source_fill_id IS NOT NULL
+                AND matched_entry_fill_id IS NOT NULL
+                AND matched_quantity > 0
+            )
+            OR (
+                entry_type NOT IN ('REALIZED_SPOT_PNL','REALIZED_FUTURES_PNL')
+                AND matched_entry_fill_id IS NULL
+                AND matched_quantity IS NULL
+            )
+        )
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_funding_events_session_id
@@ -243,6 +259,24 @@ ALTER TABLE public.execution_pnl_ledger
     VALIDATE CONSTRAINT execution_pnl_ledger_session_fill_fkey;
 ALTER TABLE public.execution_pnl_ledger
     VALIDATE CONSTRAINT execution_pnl_ledger_session_funding_fkey;
+
+DO $pnl_match_fk$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_pnl_ledger'::regclass
+          AND conname='execution_pnl_ledger_session_entry_fill_fkey'
+    ) THEN
+        ALTER TABLE public.execution_pnl_ledger
+            ADD CONSTRAINT execution_pnl_ledger_session_entry_fill_fkey
+            FOREIGN KEY (session_id, matched_entry_fill_id)
+            REFERENCES public.execution_fills(session_id, fill_id)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+END $pnl_match_fk$;
+
+ALTER TABLE public.execution_pnl_ledger
+    VALIDATE CONSTRAINT execution_pnl_ledger_session_entry_fill_fkey;
 
 CREATE INDEX IF NOT EXISTS idx_execution_pnl_ledger_session_time
     ON public.execution_pnl_ledger(session_id, occurred_at, pnl_entry_id);
