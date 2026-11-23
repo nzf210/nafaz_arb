@@ -433,3 +433,37 @@ def test_reservation_release_requires_boolean_reconciliation_proofs():
             terminal_order_verified="false", fills_reconciled=True,
             coordinator_lease=object(), fencing_generation=1,
         ))
+
+
+@pytest.mark.asyncio
+async def test_postgres_hedge_reserve_is_blocked_before_hedge_pending(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, _, _ = await _session(postgres_pool, suffix)
+    service = ExecutionHedgeObligationService(postgres_pool)
+    with pytest.raises(HedgeObligationError, match="cannot reserve hedge obligations"):
+        await service.reserve(
+            session_id=admitted["session_id"], futures_venue="okx",
+            futures_market_type="swap", futures_symbol="BTC-USDT-SWAP",
+            base_asset="BTC", position_side="SHORT",
+            contract_type="LINEAR_PERPETUAL", contract_size="0.001",
+            quantity_unit="CONTRACTS", base_per_unit="0.001",
+            requested_base_quantity="0.001", minimum_base_quantity="0.001",
+            idempotency_key="premature-reserve-" + suffix,
+            actor_id="hedge-integration-test",
+            coordinator_lease=admitted["coordinator_lease"],
+            fencing_generation=admitted["coordinator_generation"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_postgres_hedge_service_rejects_stale_coordinator_generation(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, _, _ = await _session(postgres_pool, suffix)
+    service = ExecutionHedgeObligationService(postgres_pool)
+    with pytest.raises(HedgeObligationError, match="fencing generation does not match session"):
+        await service.create_from_spot_fill(
+            session_id=admitted["session_id"], spot_fill_id=str(uuid.uuid4()),
+            hedge_ratio="1", actor_id="hedge-integration-test",
+            coordinator_lease=admitted["coordinator_lease"],
+            fencing_generation=admitted["coordinator_generation"] + 1,
+        )
