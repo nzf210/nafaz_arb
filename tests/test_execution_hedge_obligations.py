@@ -12,6 +12,7 @@ from executor.execution_fill_service import ExecutionFillService, FillConflict
 from executor.execution_hedge_obligations import (
     ExecutionHedgeObligationService, HedgeObligationError,
 )
+from executor.execution_pnl_accounting import ExecutionPnLAccountingService, PnLAccountingError
 from executor.ownership import OwnershipLeaseService
 from executor.session_coordinator import SessionCoordinator
 
@@ -116,7 +117,25 @@ async def _session(postgres_pool, suffix):
     return coordinator, admitted, aggregate, leg_versions
 
 
-async def _spot_fill(pool, admitted, suffix, trade_suffix, leg_version, aggregate):
+async def _spot_fill(
+    pool, admitted, suffix, trade_suffix, leg_version, aggregate,
+    *, include_valuation=False,
+):
+    fill_time = datetime.now(timezone.utc)
+    valuation = {}
+    if include_valuation:
+        valuation = {
+            "fee_reporting_amount": "0.0125",
+            "fee_reporting_currency": "USDT",
+            "fee_fx_rate": "0.0000625",
+            "fee_fx_source": "test-spot-fee-fx",
+            "fee_fx_observed_at": fill_time,
+            "fee_valuation_verified": True,
+            "quote_to_reporting_rate": "0.0000625",
+            "quote_fx_source": "test-spot-quote-fx",
+            "quote_fx_observed_at": fill_time,
+            "quote_fx_verified": True,
+        }
     result = await ExecutionFillService(pool).record_fill(
         session_id=admitted["session_id"], leg_id=f"spot-{suffix}",
         account_scope_id="hedge-account-" + suffix,
@@ -125,8 +144,9 @@ async def _spot_fill(pool, admitted, suffix, trade_suffix, leg_version, aggregat
         quantity="0.0002", price="1000000000", quote_asset="IDR",
         quote_quantity="200000", fee_amount="200", fee_asset="IDR",
         fee_verified=True, fee_source="EXCHANGE_TRADE",
-        filled_at=datetime.now(timezone.utc), actor_id="hedge-integration-test",
+        filled_at=fill_time, actor_id="hedge-integration-test",
         event_idempotency_key="spot-fill-event-" + trade_suffix,
+        **valuation,
         expected_leg_state_version=leg_version,
         expected_aggregate_version=aggregate,
         fencing_generation=admitted["coordinator_generation"],
