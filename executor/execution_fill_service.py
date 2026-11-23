@@ -140,6 +140,7 @@ class ExecutionFillService:
 
     async def mark_inbox_event(
         self, *, inbox_id: str, status: str, error: str | None = None,
+        retry_delay_seconds: int = 0,
     ) -> bool:
         """Move an inbox event through its durable processing states."""
         target = str(status or "").upper()
@@ -153,6 +154,10 @@ class ExecutionFillService:
                 SET processing_status=$2,
                     attempts=attempts + CASE WHEN $2='PROCESSING' THEN 1 ELSE 0 END,
                     last_error=$3,
+                    processing_started_at=CASE WHEN $2='PROCESSING' THEN clock_timestamp() ELSE NULL END,
+                    next_retry_at=CASE WHEN $2='RETRY'
+                        THEN clock_timestamp() + make_interval(secs => $4)
+                        ELSE NULL END,
                     processed_at=CASE WHEN $2='PROCESSED' THEN clock_timestamp() ELSE NULL END
                 WHERE inbox_id=$1::uuid
                   AND (
@@ -163,8 +168,89 @@ class ExecutionFillService:
                 RETURNING inbox_id
                 """,
                 inbox_id, target, str(error or "")[:2000] or None,
+                max(0, int(retry_delay_seconds)),
             )
             return row is not None
+
+    async def claim_inbox_event(
+        self, *, inbox_id: str, processing_lease_seconds: int = 120,
+        max_attempts: int = 12,
+    ) -> dict | None:
+        """Claim one inbox event; reclaim only expired PROCESSING leases."""
+        lease_seconds = int(processing_lease_seconds)
+        attempts_limit = int(max_attempts)
+        if lease_seconds <= 0 or attempts_limit <= 0:
+            raise FillValidationError("processing lease and max attempts must be positive")
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM public.execution_event_inbox
+                    WHERE inbox_id=$1::uuid FOR UPDATE
+                    """,
+                    inbox_id,
+                )
+                if row is None:
+                    return None
+                status = str(row["processing_status"]).upper()
+                if status == "PROCESSING":
+                    reclaimed = await conn.fetchrow(
+                        """
+                        UPDATE public.execution_event_inbox
+                        SET processing_status='RETRY', processing_started_at=NULL,
+                            next_retry_at=clock_timestamp(), last_error='processing lease expired'
+                        WHERE inbox_id=$1::uuid
+                          AND processing_started_at < clock_timestamp() - make_interval(secs => $2)
+                        RETURNING *
+                        """,
+                        inbox_id, lease_seconds,
+                    )
+                    if reclaimed is None:
+                        return None
+                    row = reclaimed
+                    status = "RETRY"
+                if status not in {"RECEIVED", "RETRY"}:
+                    return None
+                if row["next_retry_at"] is not None:
+                    due = await conn.fetchval(
+                        "SELECT $1::timestamptz <= clock_timestamp()",
+                        row["next_retry_at"],
+                    )
+                    if not due:
+                        return None
+                if int(row["attempts"]) >= attempts_limit:
+                    await conn.execute(
+                        """
+                        UPDATE public.execution_event_inbox
+                        SET processing_status='QUARANTINED',
+                            processing_started_at=NULL, next_retry_at=NULL,
+                            last_error=COALESCE(last_error,'maximum processing attempts reached')
+                        WHERE inbox_id=$1::uuid
+                        """,
+                        inbox_id,
+                    )
+                    return None
+                claimed = await conn.fetchrow(
+                    """
+                    UPDATE public.execution_event_inbox
+                    SET processing_status='PROCESSING',
+                        attempts=attempts+1,
+                        processing_started_at=clock_timestamp(),
+                        next_retry_at=NULL, last_error=NULL
+                    WHERE inbox_id=$1::uuid
+                    RETURNING *
+                    """,
+                    inbox_id,
+                )
+                return dict(claimed) if claimed is not None else None
+
+    async def get_inbox_event(self, inbox_id: str) -> dict | None:
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM public.execution_event_inbox WHERE inbox_id=$1::uuid",
+                inbox_id,
+            )
+        return dict(row) if row is not None else None
 
     async def record_fill(
         self, *, session_id: str, leg_id: str, account_scope_id: str,
