@@ -40,7 +40,7 @@ create table if not exists public.executor_hedge_attempts (
     last_reconciled_at timestamptz,
     created_at timestamptz not null default now(),
     updated_at timestamptz not null default now(),
-    unique (claim_key, attempt_no),
+    constraint executor_hedge_attempt_claim_number_key unique (claim_key, attempt_no),
     check (confirmed_qty_base <= requested_qty_base)
 );
 
@@ -74,9 +74,9 @@ create table if not exists public.executor_hedge_attempt_fills (
     fee_currency text,
     venue_filled_at timestamptz,
     observed_at timestamptz not null default now(),
-    unique (attempt_id, venue_trade_id),
-    unique (futures_account_scope_id, futures_exchange, futures_symbol, venue_trade_id),
-    unique (attempt_id, source_event_id)
+    constraint executor_hedge_fill_attempt_trade_key unique (attempt_id, venue_trade_id),
+    constraint executor_hedge_fill_trade_scope_key unique (futures_account_scope_id, futures_exchange, futures_symbol, venue_trade_id),
+    constraint executor_hedge_fill_source_event_key unique (attempt_id, source_event_id)
 );
 
 create index if not exists executor_hedge_attempt_fills_attempt_idx
