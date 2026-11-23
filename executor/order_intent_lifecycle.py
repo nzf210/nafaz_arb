@@ -189,7 +189,7 @@ class OrderIntentLifecycleMixin:
         if generation == previous_generation:
             if owner_id != previous_owner:
                 raise OrderIntentStaleOwner("owner changed without a generation increment")
-            return dict(row)
+            return decode_intent(row)
         event_key = f"{intent_id}:owner-reclaimed:{generation}"
         existing = await conn.fetchrow(
             """
@@ -233,7 +233,7 @@ class OrderIntentLifecycleMixin:
                 "status": status,
             }, sort_keys=True, separators=(",", ":")),
         )
-        return dict(updated)
+        return decode_intent(updated)
 
     async def reclaim_for_reconciliation(
         self, intent_id: str, *, lease: Any, actor_id: str,
