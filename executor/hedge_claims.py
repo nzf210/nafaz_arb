@@ -121,7 +121,9 @@ class HedgeIntentClaimService:
                     )
                     unresolved = await conn.fetchrow(
                         """
-                        select claim_key, status
+                        select claim_key, status, hedge_client_order_id, version,
+                               cumulative_spot_filled, target_hedge_qty, hedge_ratio,
+                               futures_exchange, futures_symbol
                         from public.executor_hedge_intent_claims
                         where parent_spot_exchange = $1
                           and parent_spot_order_id = $2
@@ -132,7 +134,66 @@ class HedgeIntentClaimService:
                         parent_exchange, parent_order_id,
                     )
                     if unresolved is not None:
-                        return None
+                        # CLAIMED means another worker is still preparing its
+                        # first attempt. SUBMITTED may be retried only after all
+                        # prior attempts are terminal and their trade history
+                        # has been reconciled into the append-only attempt ledger.
+                        if str(unresolved["status"]) != "SUBMITTED":
+                            return None
+                        active_attempt = await conn.fetchrow(
+                            """
+                            select attempt_id
+                            from public.executor_hedge_attempts
+                            where claim_key=$1
+                              and status in (
+                                'PREPARED','SUBMITTING','UNKNOWN','ACKNOWLEDGED',
+                                'OPEN','PARTIALLY_FILLED','RECONCILIATION_REQUIRED'
+                              )
+                            limit 1
+                            """,
+                            str(unresolved["claim_key"]),
+                        )
+                        if active_attempt is not None:
+                            return None
+                        attempt_totals = await conn.fetchrow(
+                            """
+                            select coalesce(sum(f.fill_qty_base),0) as confirmed
+                            from public.executor_hedge_attempts a
+                            left join public.executor_hedge_attempt_fills f
+                              on f.attempt_id=a.attempt_id
+                            where a.claim_key=$1
+                            """,
+                            str(unresolved["claim_key"]),
+                        )
+                        verified_confirmed = float(
+                            attempt_totals["confirmed"] or 0.0
+                        )
+                        claim_target = float(unresolved["target_hedge_qty"] or 0.0)
+                        tolerance = max(1e-12, abs(claim_target) * 1e-8)
+                        if verified_confirmed + tolerance >= claim_target:
+                            await conn.execute(
+                                """
+                                update public.executor_hedge_intent_claims
+                                set status='CONFIRMED', confirmed_qty=$2,
+                                    version=version+1, updated_at=now()
+                                where claim_key=$1 and status='SUBMITTED'
+                                """,
+                                str(unresolved["claim_key"]), verified_confirmed,
+                            )
+                            return None
+                        retry_residual = max(0.0, claim_target - verified_confirmed)
+                        if retry_residual <= 0:
+                            return None
+                        return {
+                            "claim_key": str(unresolved["claim_key"]),
+                            "hedge_client_order_id": str(unresolved["hedge_client_order_id"]),
+                            "version": int(unresolved["version"]),
+                            "cumulative_spot_filled": float(unresolved["cumulative_spot_filled"]),
+                            "target_hedge_qty": claim_target,
+                            "confirmed_qty": verified_confirmed,
+                            "residual_qty": retry_residual,
+                            "retry_after_terminal_attempt": True,
+                        }
 
                     totals = await conn.fetchrow(
                         """
