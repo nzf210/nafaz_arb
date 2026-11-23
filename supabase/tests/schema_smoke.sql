@@ -707,4 +707,12 @@ begin
     ) then
         raise exception 'hedge scheduler append-only trigger or due index is missing';
     end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.execution_hedge_scheduler_events'::regclass
+          and conname='execution_hedge_scheduler_events_session_obligation_fkey'
+    ) then
+        raise exception 'hedge scheduler event session/obligation foreign key is missing';
+    end if;
 end $hedge_scheduler_smoke$;
