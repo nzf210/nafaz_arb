@@ -154,6 +154,53 @@ CREATE TABLE IF NOT EXISTS public.execution_pnl_ledger (
         CHECK (num_nonnulls(source_fill_id, source_funding_event_id) <= 1)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_funding_events_session_id
+    ON public.execution_funding_events(session_id, funding_event_id);
+
+DO $pnl_source_fk$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_funding_events'::regclass
+          AND conname='execution_funding_events_session_leg_fkey'
+    ) THEN
+        ALTER TABLE public.execution_funding_events
+            ADD CONSTRAINT execution_funding_events_session_leg_fkey
+            FOREIGN KEY (session_id, futures_leg_id)
+            REFERENCES public.execution_legs(session_id, leg_id)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_pnl_ledger'::regclass
+          AND conname='execution_pnl_ledger_session_fill_fkey'
+    ) THEN
+        ALTER TABLE public.execution_pnl_ledger
+            ADD CONSTRAINT execution_pnl_ledger_session_fill_fkey
+            FOREIGN KEY (session_id, source_fill_id)
+            REFERENCES public.execution_fills(session_id, fill_id)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_pnl_ledger'::regclass
+          AND conname='execution_pnl_ledger_session_funding_fkey'
+    ) THEN
+        ALTER TABLE public.execution_pnl_ledger
+            ADD CONSTRAINT execution_pnl_ledger_session_funding_fkey
+            FOREIGN KEY (session_id, source_funding_event_id)
+            REFERENCES public.execution_funding_events(session_id, funding_event_id)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+END $pnl_source_fk$;
+
+ALTER TABLE public.execution_funding_events
+    VALIDATE CONSTRAINT execution_funding_events_session_leg_fkey;
+ALTER TABLE public.execution_pnl_ledger
+    VALIDATE CONSTRAINT execution_pnl_ledger_session_fill_fkey;
+ALTER TABLE public.execution_pnl_ledger
+    VALIDATE CONSTRAINT execution_pnl_ledger_session_funding_fkey;
+
 CREATE INDEX IF NOT EXISTS idx_execution_pnl_ledger_session_time
     ON public.execution_pnl_ledger(session_id, occurred_at, pnl_entry_id);
 
