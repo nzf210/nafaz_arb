@@ -373,7 +373,8 @@ class ExecutionFillService:
                     )
                     if (
                         str(prior_event["event_type"]) not in {
-                            "LEG_FILL_RECORDED", "LEG_LATE_FILL_REQUIRES_RECONCILIATION"
+                            "LEG_FILL_RECORDED", "LEG_EXIT_FILL_RECORDED",
+                            "LEG_LATE_FILL_REQUIRES_RECONCILIATION"
                         }
                         or str(prior_payload.get("exchange_trade_id") or "")
                         != facts["exchange_trade_id"]
