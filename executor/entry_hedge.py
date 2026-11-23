@@ -941,7 +941,7 @@ class EntryHedgeMixin:
         )
         claims_service = getattr(self, "hedge_claims", None)
         attempt_no = int(order_info.get("hedge_attempt_no", 1) or 1)
-        if claim_key and claims_service is not None and attempt_no == 1:
+        if claim_key and claims_service is not None and not attempt_id:
             marked_submitted = await claims_service.mark_submitted(claim_key, claim_coid)
             if not marked_submitted:
                 raise AmbiguousOrderSubmission(
@@ -1305,6 +1305,7 @@ class EntryHedgeMixin:
             if (
                 claim_key and claims_service is not None and claim_coid
                 and not order_info.get("hedge_submit_started")
+                and not attempt_id
                 and int(order_info.get("hedge_attempt_no", 1) or 1) == 1
                 and not order_info.get("hedge_claim_retry")
             ):
