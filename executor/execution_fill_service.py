@@ -454,32 +454,94 @@ class ExecutionFillService:
 
                 old_leg_state = str(leg["status"]).upper()
                 old_session_state = str(session["status"]).upper()
-                leg_target = old_leg_state
-                if old_leg_state in {"SUBMITTING", "SUBMISSION_UNKNOWN", "OPEN"}:
-                    leg_target = "PARTIALLY_FILLED"
-                elif old_leg_state in {"CANCELED", "CLOSED", "CLOSING", "UNKNOWN", "REJECTED", "RECONCILIATION_REQUIRED"}:
-                    leg_target = "RECONCILIATION_REQUIRED"
-                elif old_leg_state not in {"PARTIALLY_FILLED", "FILLED", "CANCEL_PENDING"}:
-                    raise FillValidationError(f"fill is not valid for leg state {old_leg_state}")
-
-                session_target = old_session_state
-                late_fill = old_session_state in {
-                    "HEDGED", "EXIT_IN_PROGRESS", "EXIT_PARTIAL",
-                    "COMPLETED", "FAILED", "ABORTED", "REJECTED",
-                }
-                if late_fill:
-                    leg_target = "RECONCILIATION_REQUIRED"
-                if late_fill or leg_target == "RECONCILIATION_REQUIRED":
-                    session_target = "RECONCILIATION_REQUIRED"
-                elif old_session_state in {"CREATED", "VALIDATING", "REJECTED"}:
-                    raise FillValidationError(f"fill is not valid for session state {old_session_state}")
-
                 base_per_unit = _decimal(leg["base_per_unit"], "leg.base_per_unit")
-                new_leg_qty = Decimal(str(leg["confirmed_filled_quantity"])) + facts["quantity"]
-                new_leg_quote = Decimal(str(leg["confirmed_quote_quantity"])) + facts["quote_quantity"]
-                new_price_quantity = Decimal(str(leg["confirmed_price_quantity"])) + facts["quantity"] * facts["price"]
-                new_exposure_quantity = Decimal(str(leg["confirmed_exposure_quantity"])) + facts["quantity"] * base_per_unit
-                new_average = new_price_quantity / new_leg_qty
+                new_leg_qty = Decimal(str(leg["confirmed_filled_quantity"]))
+                new_leg_quote = Decimal(str(leg["confirmed_quote_quantity"]))
+                new_price_quantity = Decimal(str(leg["confirmed_price_quantity"]))
+                new_exposure_quantity = Decimal(str(leg["confirmed_exposure_quantity"]))
+                new_exit_qty = Decimal(str(leg["confirmed_exit_quantity"]))
+                new_exit_quote = Decimal(str(leg["confirmed_exit_quote_quantity"]))
+                new_exit_price_quantity = Decimal(str(leg["confirmed_exit_price_quantity"]))
+                new_exit_exposure = Decimal(str(leg["confirmed_exit_exposure_quantity"]))
+                new_average = (
+                    new_price_quantity / new_leg_qty if new_leg_qty > 0 else None
+                )
+                new_exit_average = (
+                    new_exit_price_quantity / new_exit_qty if new_exit_qty > 0 else None
+                )
+                session_target = old_session_state
+                late_fill = False
+
+                if facts["fill_role"] == "ENTRY":
+                    if old_leg_state in {"SUBMITTING", "SUBMISSION_UNKNOWN", "OPEN"}:
+                        leg_target = "PARTIALLY_FILLED"
+                    elif old_leg_state in {"CANCELED", "CLOSED", "CLOSING", "UNKNOWN", "REJECTED", "RECONCILIATION_REQUIRED"}:
+                        leg_target = "RECONCILIATION_REQUIRED"
+                    elif old_leg_state not in {"PARTIALLY_FILLED", "FILLED", "CANCEL_PENDING"}:
+                        raise FillValidationError(f"fill is not valid for leg state {old_leg_state}")
+
+                    late_fill = old_session_state in {
+                        "HEDGED", "EXIT_IN_PROGRESS", "EXIT_PARTIAL",
+                        "COMPLETED", "FAILED", "ABORTED", "REJECTED",
+                    }
+                    if late_fill:
+                        leg_target = "RECONCILIATION_REQUIRED"
+                    if late_fill or leg_target == "RECONCILIATION_REQUIRED":
+                        session_target = "RECONCILIATION_REQUIRED"
+                    elif old_session_state in {"CREATED", "VALIDATING", "REJECTED"}:
+                        raise FillValidationError(f"fill is not valid for session state {old_session_state}")
+
+                    new_leg_qty += facts["quantity"]
+                    new_leg_quote += facts["quote_quantity"]
+                    new_price_quantity += facts["quantity"] * facts["price"]
+                    new_exposure_quantity += facts["quantity"] * base_per_unit
+                    new_average = new_price_quantity / new_leg_qty
+                else:
+                    allowed_exit_sessions = {
+                        "EXIT_IN_PROGRESS", "EXIT_PARTIAL", "RECOVERY_IN_PROGRESS",
+                        "RECONCILIATION_REQUIRED", "BLOCKED", "COMPLETED",
+                        "FAILED", "ABORTED", "REJECTED",
+                    }
+                    if old_session_state not in allowed_exit_sessions:
+                        raise FillValidationError(
+                            f"exit fill is not valid for session state {old_session_state}"
+                        )
+                    if old_leg_state not in {
+                        "CLOSING", "PARTIALLY_FILLED", "FILLED", "CLOSED",
+                        "UNKNOWN", "RECONCILIATION_REQUIRED",
+                    }:
+                        raise FillValidationError(
+                            f"exit fill is not valid for leg state {old_leg_state}"
+                        )
+                    new_exit_qty += facts["quantity"]
+                    new_exit_quote += facts["quote_quantity"]
+                    new_exit_price_quantity += facts["quantity"] * facts["price"]
+                    new_exit_exposure += facts["quantity"] * base_per_unit
+                    new_exit_average = new_exit_price_quantity / new_exit_qty
+                    if new_exit_exposure > new_exposure_quantity:
+                        leg_target = "RECONCILIATION_REQUIRED"
+                        session_target = "RECONCILIATION_REQUIRED"
+                    elif old_session_state in {
+                        "COMPLETED", "FAILED", "ABORTED", "REJECTED"
+                    } or old_leg_state in {"CLOSED", "UNKNOWN", "RECONCILIATION_REQUIRED"}:
+                        leg_target = "RECONCILIATION_REQUIRED"
+                        session_target = "RECONCILIATION_REQUIRED"
+                        late_fill = True
+                    elif new_exit_exposure == new_exposure_quantity:
+                        leg_target = "CLOSED"
+                    elif old_leg_state == "FILLED":
+                        leg_target = "CLOSING"
+                    elif old_leg_state == "CLOSING":
+                        leg_target = "PARTIALLY_FILLED"
+                    else:
+                        leg_target = old_leg_state
+                    if (
+                        session_target == old_session_state
+                        and old_session_state == "EXIT_IN_PROGRESS"
+                        and new_exit_exposure < new_exposure_quantity
+                    ):
+                        session_target = "EXIT_PARTIAL"
+
                 new_leg_version = int(leg["state_version"]) + 1
                 new_aggregate = int(session["aggregate_version"]) + 1
                 new_session_version = int(session["state_version"]) + (
@@ -491,13 +553,18 @@ class ExecutionFillService:
                     SET status=$3, state_version=$4,
                         confirmed_filled_quantity=$5, confirmed_quote_quantity=$6,
                         confirmed_price_quantity=$7, confirmed_exposure_quantity=$8,
-                        average_fill_price=$9, last_fill_at=$10, updated_at=clock_timestamp()
-                    WHERE session_id=$1 AND leg_id=$2 AND state_version=$11
+                        average_fill_price=$9,
+                        confirmed_exit_quantity=$10, confirmed_exit_quote_quantity=$11,
+                        confirmed_exit_price_quantity=$12, confirmed_exit_exposure_quantity=$13,
+                        average_exit_price=$14,
+                        last_fill_at=$15, updated_at=clock_timestamp()
+                    WHERE session_id=$1 AND leg_id=$2 AND state_version=$16
                     RETURNING leg_id
                     """,
                     facts["session_id"], facts["leg_id"], leg_target, new_leg_version,
-                    new_leg_qty, new_leg_quote, new_price_quantity,
-                    new_exposure_quantity, new_average, facts["filled_at"],
+                    new_leg_qty, new_leg_quote, new_price_quantity, new_exposure_quantity,
+                    new_average, new_exit_qty, new_exit_quote, new_exit_price_quantity,
+                    new_exit_exposure, new_exit_average, facts["filled_at"],
                     int(leg["state_version"]),
                 )
                 if leg_update is None:
