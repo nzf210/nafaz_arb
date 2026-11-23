@@ -778,7 +778,8 @@ class EngineRecoveryMixin:
             )
             return
         if status in ("closed", "canceled", "cancelled", "rejected", "expired"):
-            order_info["filled"] = float(filled or 0.0)
+            # Preserve the monotonic max(persisted, venue) watermark above.
+            # A terminal snapshot can be stale just like an open-order snapshot.
             await self._reconcile_terminal_pending_entry(
                 pair_tag, order_info, order_id, symbol, status
             )
