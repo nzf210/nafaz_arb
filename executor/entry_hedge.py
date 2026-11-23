@@ -969,7 +969,7 @@ class EntryHedgeMixin:
                 f"filled={actual_hedged_qty}; attempt remains blocked for reconciliation"
             )
         is_partial_attempt_fill = (
-            actual_hedged_qty + qty_tolerance < futures_hedge_qty
+            actual_hedged_qty + qty_tolerance < unhedged_delta
         )
         if is_partial_attempt_fill:
             order_info["hedge_attempt_partial"] = True
