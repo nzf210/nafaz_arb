@@ -49,11 +49,30 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_scheduler_events (
     wait_elapsed_ms BIGINT,
     wait_remaining_ms BIGINT,
     next_evaluate_at TIMESTAMPTZ,
-    decision_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    decision_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+        CHECK (jsonb_typeof(decision_payload)='object'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     CONSTRAINT uq_execution_hedge_scheduler_idempotency
         UNIQUE (obligation_id, idempotency_key)
 );
+
+DO $hedge_scheduler_fk$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_hedge_scheduler_events'::regclass
+          AND conname='execution_hedge_scheduler_events_session_obligation_fkey'
+    ) THEN
+        ALTER TABLE public.execution_hedge_scheduler_events
+            ADD CONSTRAINT execution_hedge_scheduler_events_session_obligation_fkey
+            FOREIGN KEY (session_id, obligation_id)
+            REFERENCES public.execution_hedge_obligations(session_id, obligation_id)
+            ON DELETE RESTRICT NOT VALID;
+    END IF;
+END $hedge_scheduler_fk$;
+
+ALTER TABLE public.execution_hedge_scheduler_events
+    VALIDATE CONSTRAINT execution_hedge_scheduler_events_session_obligation_fkey;
 
 CREATE INDEX IF NOT EXISTS idx_execution_hedge_scheduler_events_session
     ON public.execution_hedge_scheduler_events(session_id, created_at);
