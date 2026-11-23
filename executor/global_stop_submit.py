@@ -732,7 +732,7 @@ class GlobalStopSubmitMixin:
                             logical_session_intent = await conn.fetchrow(
                                 """
                                 SELECT session_id, leg_id, account_scope_id, venue,
-                                       market_type, instrument, pair_key
+                                       market_type, instrument, pair_key, side
                                 FROM public.executor_mutation_intents
                                 WHERE intent_id=$1 FOR UPDATE
                                 """,
@@ -751,11 +751,18 @@ class GlobalStopSubmitMixin:
                                     "session-bound ENTRY intent requires both session_id and leg_id"
                                 )
                             if session_id and leg_id:
+                                if (
+                                    str(logical_session_intent["side"]).lower() != "buy"
+                                ):
+                                    raise GlobalStopError(
+                                        "session-bound ENTRY is Spot-first; Futures orders must be obligation-backed HEDGE intents"
+                                    )
                                 session_gate = await conn.fetchrow(
                                     """
                                     SELECT s.status AS session_status,
                                            s.fencing_generation,
-                                           l.status AS leg_status
+                                           l.status AS leg_status,
+                                           l.leg_type AS leg_type
                                     FROM public.execution_sessions s
                                     JOIN public.execution_legs l
                                       ON l.session_id=s.session_id AND l.leg_id=$2
@@ -785,10 +792,11 @@ class GlobalStopSubmitMixin:
                                 if session_gate is None or (
                                     str(session_gate["session_status"]).upper() != "ENTRY_IN_PROGRESS"
                                     or str(session_gate["leg_status"]).upper() != "PREPARED"
+                                    or str(session_gate["leg_type"]).upper() != "SPOT"
                                 ):
                                     raise GlobalStopError(
                                         "session-bound ENTRY intent is not admitted for submission: "
-                                        "session must be ENTRY_IN_PROGRESS, leg PREPARED, and coordinator lease active"
+                                        "Spot-first ENTRY requires session ENTRY_IN_PROGRESS, Spot leg PREPARED, and active coordinator lease"
                                     )
                                 # Commit the aggregate leg's SUBMITTING state in
                                 # the same transaction as the external attempt and
