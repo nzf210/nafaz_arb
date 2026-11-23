@@ -21,28 +21,28 @@ def _proof(value: Any, name: str, required_fields: tuple[str, ...]) -> dict:
     return result
 
 
-def _terminal_order_proof(value: Any) -> dict:
+def _terminal_order_proof(value: Any, expected_client_order_id: str) -> dict:
     proof = _proof(
         value, "terminal_order_evidence",
-        ("evidence_id", "source", "verified_at"),
+        ("evidence_id", "source", "verified_at", "client_order_id"),
     )
     status = str(proof.get("terminal_status") or "").strip().lower()
     if status not in {"closed", "canceled", "cancelled", "filled", "rejected", "expired"}:
         raise HedgeObligationError("terminal_order_evidence.terminal_status must be terminal")
-    if not str(proof.get("exchange_order_id") or proof.get("client_order_id") or "").strip():
-        raise HedgeObligationError("terminal_order_evidence requires an order identifier")
+    if str(proof["client_order_id"]).strip() != expected_client_order_id:
+        raise HedgeObligationError("terminal_order_evidence client order ID does not match reservation")
     return proof
 
 
-def _fill_reconciliation_proof(value: Any) -> dict:
+def _fill_reconciliation_proof(value: Any, expected_client_order_id: str) -> dict:
     proof = _proof(
         value, "fill_reconciliation_evidence",
-        ("evidence_id", "source", "reconciled_at"),
+        ("evidence_id", "source", "reconciled_at", "client_order_id"),
     )
     if proof.get("fills_checked") is not True:
         raise HedgeObligationError("fill_reconciliation_evidence.fills_checked must be true")
-    if not str(proof.get("exchange_order_id") or proof.get("client_order_id") or "").strip():
-        raise HedgeObligationError("fill_reconciliation_evidence requires an order identifier")
+    if str(proof["client_order_id"]).strip() != expected_client_order_id:
+        raise HedgeObligationError("fill_reconciliation_evidence client order ID does not match reservation")
     return proof
 
 
@@ -335,8 +335,12 @@ class HedgeReservationMixin(HedgeServiceBase):
                     if not (terminal_order_verified and fills_reconciled):
                         raise HedgeObligationError("submitted reservation release requires terminal order and fill proof")
                     release_evidence = {
-                        "terminal_order": _terminal_order_proof(terminal_order_evidence),
-                        "fill_reconciliation": _fill_reconciliation_proof(fill_reconciliation_evidence),
+                        "terminal_order": _terminal_order_proof(
+                            terminal_order_evidence, str(reservation["client_order_id"] or "")
+                        ),
+                        "fill_reconciliation": _fill_reconciliation_proof(
+                            fill_reconciliation_evidence, str(reservation["client_order_id"] or "")
+                        ),
                     }
                 items = await conn.fetch(
                     """
