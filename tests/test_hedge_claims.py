@@ -43,6 +43,14 @@ class _FakeConn:
                 and row.get("parent_spot_order_id") == args[1]
                 and row.get("status") in ("CLAIMED", "SUBMITTED")
             ), None)
+        if "status='CONFIRMED'" in query and "select claim_key" in query:
+            return next((
+                dict(row) for row in reversed(list(self.table.values()))
+                if isinstance(row, dict)
+                and row.get("parent_spot_exchange") == args[0]
+                and row.get("parent_spot_order_id") == args[1]
+                and row.get("status") == "CONFIRMED"
+            ), None)
         if "from public.executor_hedge_attempts" in query:
             # These unit tests model pre-attempt-ledger legacy claims. A
             # SUBMITTED claim with no attempt record must remain blocked.
