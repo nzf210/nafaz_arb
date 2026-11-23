@@ -78,6 +78,23 @@ def _same_fill(row: Any, facts: Mapping[str, Any]) -> bool:
         and str(row["fee_asset"] or "").upper() == facts["fee_asset"]
         and bool(row["fee_verified"]) == facts["fee_verified"]
         and str(row["fee_source"] or "") == facts["fee_source"]
+        and str(row["fill_role"] or "ENTRY").upper() == facts["fill_role"]
+        and (
+            Decimal(str(row["fee_reporting_amount"])) if row["fee_reporting_amount"] is not None else None
+        ) == facts["fee_reporting_amount"]
+        and str(row["fee_reporting_currency"] or "").upper() == facts["fee_reporting_currency"]
+        and (
+            Decimal(str(row["fee_fx_rate"])) if row["fee_fx_rate"] is not None else None
+        ) == facts["fee_fx_rate"]
+        and str(row["fee_fx_source"] or "") == facts["fee_fx_source"]
+        and row["fee_fx_observed_at"] == facts["fee_fx_observed_at"]
+        and bool(row["fee_valuation_verified"]) == facts["fee_valuation_verified"]
+        and (
+            Decimal(str(row["quote_to_reporting_rate"])) if row["quote_to_reporting_rate"] is not None else None
+        ) == facts["quote_to_reporting_rate"]
+        and str(row["quote_fx_source"] or "") == facts["quote_fx_source"]
+        and row["quote_fx_observed_at"] == facts["quote_fx_observed_at"]
+        and bool(row["quote_fx_verified"]) == facts["quote_fx_verified"]
         and str(row["exchange_order_id"] or "") == facts["exchange_order_id"]
         and str(row["client_order_id"] or "") == facts["client_order_id"]
         and str(row["source_event_id"] or "") == facts["source_event_id"]
