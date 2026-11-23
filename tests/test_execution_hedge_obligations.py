@@ -359,3 +359,47 @@ async def test_postgres_hedge_reservation_below_minimum_and_unknown_release_fail
         )
     assert Decimal(str(row["reserved_base_quantity"])) == 0
     assert Decimal(str(row["remaining_base_quantity"])) == Decimal("0.0002")
+
+
+def test_hedge_ratio_above_one_requires_explicit_overhedge_policy():
+    from types import SimpleNamespace
+
+    service = ExecutionHedgeObligationService(SimpleNamespace(acquire=lambda: None))
+    with pytest.raises(HedgeObligationError, match="above 1.0"):
+        import asyncio
+        asyncio.run(service.create_from_spot_fill(
+            session_id="session", spot_fill_id=str(uuid.uuid4()),
+            hedge_ratio="1.0001", actor_id="test",
+            coordinator_lease=object(), fencing_generation=1,
+        ))
+
+
+def test_reservation_rejects_invalid_position_side_before_database_access():
+    from types import SimpleNamespace
+
+    service = ExecutionHedgeObligationService(SimpleNamespace(acquire=lambda: None))
+    with pytest.raises(HedgeObligationError, match="position_side"):
+        import asyncio
+        asyncio.run(service.reserve(
+            session_id="session", futures_venue="okx", futures_market_type="swap",
+            futures_symbol="BTC-USDT-SWAP", base_asset="BTC",
+            position_side="SIDEWAYS", contract_type="LINEAR_PERPETUAL",
+            contract_size="0.001", quantity_unit="CONTRACTS",
+            base_per_unit="0.001", requested_base_quantity="0.01",
+            minimum_base_quantity="0.001", idempotency_key="reserve",
+            actor_id="test", coordinator_lease=object(), fencing_generation=1,
+        ))
+
+
+def test_reservation_release_requires_boolean_reconciliation_proofs():
+    from types import SimpleNamespace
+
+    service = ExecutionHedgeObligationService(SimpleNamespace(acquire=lambda: None))
+    with pytest.raises(HedgeObligationError, match="must be booleans"):
+        import asyncio
+        asyncio.run(service.release(
+            session_id="session", reservation_id=str(uuid.uuid4()),
+            actor_id="test", event_idempotency_key="release",
+            terminal_order_verified="false", fills_reconciled=True,
+            coordinator_lease=object(), fencing_generation=1,
+        ))
