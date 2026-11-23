@@ -43,6 +43,22 @@ class _FakeConn:
                 and row.get("parent_spot_order_id") == args[1]
                 and row.get("status") in ("CLAIMED", "SUBMITTED")
             ), None)
+        if "max(cumulative_spot_filled)" in query:
+            rows = [
+                row for row in self.table.values()
+                if row.get("parent_spot_exchange") == args[0]
+                and row.get("parent_spot_order_id") == args[1]
+            ]
+            return {
+                "max_spot_filled": max(
+                    (float(row.get("cumulative_spot_filled", 0.0)) for row in rows),
+                    default=0.0,
+                ),
+                "confirmed_futures_qty": sum(
+                    float(row.get("confirmed_qty", 0.0))
+                    for row in rows if row.get("status") == "CONFIRMED"
+                ),
+            }
         if "on conflict (claim_key) do update" in query:
             key = args[0]
             if key in self.table:
@@ -61,6 +77,9 @@ class _FakeConn:
                 "version": 0,
                 "status": "CLAIMED",
                 "residual_qty": float(args[6]),
+                "cumulative_spot_filled": float(args[4]),
+                "target_hedge_qty": float(args[5]),
+                "confirmed_qty": 0.0,
             }
             return self.table[key]
         raise AssertionError(f"unexpected query: {query[:80]}")
