@@ -914,3 +914,69 @@ async def test_postgres_verified_funding_settlement_is_idempotently_ledgered(pos
     assert ledger["entry_type"] == "FUNDING"
     assert Decimal(str(ledger["amount_reporting"])) == Decimal("-0.05")
     assert ledger["reporting_currency"] == "USDT"
+
+
+@pytest.mark.asyncio
+async def test_postgres_position_projection_rebuilds_from_legs_and_rejects_stale_exchange_snapshot(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, aggregate, versions = await _session(postgres_pool, suffix)
+    spot = await _spot_fill(
+        postgres_pool, admitted, suffix, "position-spot-" + suffix,
+        versions[f"spot-{suffix}"], aggregate,
+    )
+    await ExecutionFillService(postgres_pool).record_fill(
+        session_id=admitted["session_id"], leg_id=f"future-{suffix}",
+        account_scope_id="hedge-account-" + suffix,
+        venue="okx", market_type="swap", symbol="BTC-USDT-SWAP",
+        exchange_trade_id="position-futures-" + suffix, side="sell",
+        quantity="0.2", price="65000", quote_asset="USDT",
+        quote_quantity="13", fee_amount="0", fee_asset="USDT",
+        fee_verified=True, fee_source="EXCHANGE_TRADE",
+        filled_at=datetime.now(timezone.utc), actor_id="hedge-integration-test",
+        event_idempotency_key="position-futures-event-" + suffix,
+        expected_leg_state_version=versions[f"future-{suffix}"],
+        expected_aggregate_version=spot["aggregate_version"],
+        fencing_generation=admitted["coordinator_generation"],
+        coordinator_lease=admitted["coordinator_lease"],
+    )
+    service = ExecutionPnLAccountingService(postgres_pool)
+    observed = datetime.now(timezone.utc)
+    kwargs = {
+        "session_id": admitted["session_id"], "reporting_currency": "USDT",
+        "actual_futures_margin_reporting": "2", "fee_reserve_reporting": "0.1",
+        "exchange_snapshot_source": "okx-position-and-indodax-balance",
+        "exchange_snapshot_id": "position-snapshot-" + suffix,
+        "exchange_observed_at": observed,
+        "spot_exchange_base_quantity": "0.0002",
+        "futures_exchange_base_quantity": "0.0002",
+        "expected_position_version": 0,
+        "coordinator_lease": admitted["coordinator_lease"],
+        "fencing_generation": admitted["coordinator_generation"],
+    }
+    first = await service.record_position_projection(**kwargs)
+    assert first["status"] == "OPEN"
+    assert first["reconciliation_status"] == "SYNCED"
+    assert first["hedge_drift_base_quantity"] == "0E-18" or Decimal(first["hedge_drift_base_quantity"]) == 0
+    replay = await service.record_position_projection(**kwargs)
+    assert replay["duplicate"] is True
+
+    with pytest.raises(PnLAccountingError, match="stale exchange position snapshot"):
+        await service.record_position_projection(
+            **{
+                **kwargs,
+                "exchange_snapshot_id": "older-position-snapshot-" + suffix,
+                "exchange_observed_at": observed - timedelta(seconds=10),
+                "expected_position_version": 1,
+            }
+        )
+    mismatch = await service.record_position_projection(
+        **{
+            **kwargs,
+            "exchange_snapshot_id": "mismatch-position-snapshot-" + suffix,
+            "exchange_observed_at": observed + timedelta(seconds=1),
+            "spot_exchange_base_quantity": "0.0003",
+            "expected_position_version": 1,
+        }
+    )
+    assert mismatch["status"] == "RECONCILIATION_REQUIRED"
+    assert mismatch["reconciliation_status"] == "MISMATCH"
