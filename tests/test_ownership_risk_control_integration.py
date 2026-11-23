@@ -728,10 +728,8 @@ def test_graceful_release_retains_lease_while_submit_is_unresolved():
                 "DELETE FROM public.executor_submit_attempts WHERE client_order_id=$1",
                 client_id,
             )
-            await direct.execute(
-                "DELETE FROM public.executor_ownership_leases WHERE account_scope_id=$1",
-                account,
-            )
+            # Ownership lease/event rows are append-only audit history. Keep the
+            # uniquely scoped test lease rather than deleting referenced evidence.
             await direct.close()
             await service.close()
 
