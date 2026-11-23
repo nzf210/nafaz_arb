@@ -198,7 +198,16 @@ class HedgeIntentClaimService:
                                 str(unresolved["claim_key"]), verified_confirmed,
                                 effective_spot_filled, claim_target, ratio,
                             )
-                            return None
+                            return {
+                                "claim_key": str(unresolved["claim_key"]),
+                                "hedge_client_order_id": str(unresolved["hedge_client_order_id"]),
+                                "version": int(unresolved["version"]) + 1,
+                                "cumulative_spot_filled": effective_spot_filled,
+                                "target_hedge_qty": claim_target,
+                                "confirmed_qty": verified_confirmed,
+                                "residual_qty": 0.0,
+                                "already_confirmed": True,
+                            }
                         retry_residual = max(0.0, claim_target - verified_confirmed)
                         if retry_residual <= 0:
                             return None
@@ -262,7 +271,29 @@ class HedgeIntentClaimService:
                         0.0, effective_target - effective_confirmed
                     )
                     if effective_residual <= 0:
-                        return None
+                        confirmed_claim = await conn.fetchrow(
+                            """
+                            select claim_key, hedge_client_order_id, version
+                            from public.executor_hedge_intent_claims
+                            where parent_spot_exchange=$1
+                              and parent_spot_order_id=$2
+                              and status='CONFIRMED'
+                            order by created_at desc limit 1
+                            """,
+                            parent_exchange, parent_order_id,
+                        )
+                        if confirmed_claim is None:
+                            return None
+                        return {
+                            "claim_key": str(confirmed_claim["claim_key"]),
+                            "hedge_client_order_id": str(confirmed_claim["hedge_client_order_id"]),
+                            "version": int(confirmed_claim["version"]),
+                            "cumulative_spot_filled": effective_spot_filled,
+                            "target_hedge_qty": effective_target,
+                            "confirmed_qty": effective_confirmed,
+                            "residual_qty": 0.0,
+                            "already_confirmed": True,
+                        }
 
                     fill_version = int(round(effective_spot_filled * 1e9))
                     key = hedge_claim_key(
