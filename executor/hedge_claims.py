@@ -165,6 +165,10 @@ class HedgeIntentClaimService:
                             """,
                             str(unresolved["claim_key"]),
                         )
+                        if attempt_totals is None:
+                            # Missing aggregate support/schema is not proof
+                            # that the previous venue attempt is safe to retry.
+                            return None
                         verified_confirmed = float(
                             attempt_totals["confirmed"] or 0.0
                         )
