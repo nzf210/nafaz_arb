@@ -741,6 +741,20 @@ class EntryHedgeMixin:
                         risk_metrics=risk_metrics,
                         risk_limits=risk_limits,
                     ) as fence_conn:
+                        attempt_id = str(order_info.get("hedge_attempt_id") or "")
+                        if attempt_id and not await attempt_ledger.mark_submitting(
+                            attempt_id,
+                            expected_version=int(order_info.get("hedge_attempt_version", 0)),
+                        ):
+                            # No venue mutation has happened, but another
+                            # worker or recovery path changed the attempt.
+                            order_info["hedge_submit_started"] = True
+                            order_info["hedge_attempt_blocked"] = True
+                            raise AmbiguousOrderSubmission(
+                                "durable hedge attempt lost its PREPARED version before submit"
+                            )
+                        if attempt_id:
+                            order_info["hedge_attempt_version"] = 1
                         order_info["hedge_submit_started"] = True
                         try:
                             short_order = await self.client.open_global_short_market(
@@ -820,6 +834,25 @@ class EntryHedgeMixin:
                     if ip_ban_state is not None:
                         await global_stop.notify_state(ip_ban_state)
         except Exception as submit_error:
+            attempt_id = str(order_info.get("hedge_attempt_id") or "")
+            attempt_version = int(order_info.get("hedge_attempt_version", 0))
+            rejection_check = getattr(
+                self, "_is_definitive_order_rejection", None
+            )
+            if attempt_id and attempt_version == 1:
+                if callable(rejection_check) and rejection_check(submit_error):
+                    if await attempt_ledger.mark_rejected(
+                        attempt_id, expected_version=attempt_version,
+                        reason=str(submit_error), from_status="SUBMITTING",
+                    ):
+                        order_info["hedge_attempt_version"] = 2
+                        order_info["hedge_attempt_terminal"] = True
+                else:
+                    if await attempt_ledger.mark_unknown(
+                        attempt_id, expected_version=attempt_version,
+                        reason=str(submit_error),
+                    ):
+                        order_info["hedge_attempt_version"] = 2
             if ip_ban_stop_persistence_failed:
                 # Do not let an eventually-consistent lookup retire the only
                 # durable cross-instance guard after canonical STOP failed.
@@ -872,14 +905,32 @@ class EntryHedgeMixin:
                 "futures hedge acknowledgement has no exchange order id; "
                 "reconciliation required"
             )
-        # Record the durable hedge claim transition only after the venue
-        # acknowledgement is known. If this write fails, keep the accepted
-        # order ambiguous and let reconciliation resolve it; never release or
-        # recreate the claim for a new Spot fill generation.
+        # The attempt ACK must be durable before the hedge can be considered
+        # reconciled. Its version may be 2 after a lost-ack UNKNOWN transition.
+        attempt_id = str(order_info.get("hedge_attempt_id") or "")
+        if attempt_id:
+            attempt_version = int(order_info.get("hedge_attempt_version", 1))
+            if not await attempt_ledger.mark_acknowledged(
+                attempt_id,
+                expected_version=attempt_version,
+                venue_order_id=str(short_order.get("id") or ""),
+            ):
+                raise AmbiguousOrderSubmission(
+                    "venue acknowledged hedge but durable attempt ACK could not be persisted"
+                )
+            order_info["hedge_attempt_version"] = attempt_version + 1
+
+        # The claim ID remains the generation identity; attempt IDs identify
+        # individual venue orders. Only attempt 1 performs the CLAIMED->SUBMITTED
+        # transition. Later attempts keep the same submitted claim.
         claim_key = str(order_info.get("hedge_claim_key") or "")
+        claim_coid = str(
+            order_info.get("hedge_claim_client_order_id") or hedge_coid
+        )
         claims_service = getattr(self, "hedge_claims", None)
-        if claim_key and claims_service is not None:
-            marked_submitted = await claims_service.mark_submitted(claim_key, hedge_coid)
+        attempt_no = int(order_info.get("hedge_attempt_no", 1) or 1)
+        if claim_key and claims_service is not None and attempt_no == 1:
+            marked_submitted = await claims_service.mark_submitted(claim_key, claim_coid)
             if not marked_submitted:
                 raise AmbiguousOrderSubmission(
                     "futures order was acknowledged but durable hedge claim "
