@@ -207,12 +207,17 @@ class EntryMonitoringMixin:
                 order_info["spot_terminal"] = True
                 order_info["spot_terminal_status"] = observed_status
                 order_info["spot_terminal_order"] = {
-                    key: order.get(key)
-                    for key in (
-                        "id", "status", "filled", "average", "price", "cost",
-                        "timestamp", "fee", "fees",
-                    )
-                    if order.get(key) is not None
+                    "id": str(order_id),
+                    "status": observed_status,
+                    "filled": float(order.get("filled", 0.0) or 0.0),
+                    "average": (
+                        float(order["average"])
+                        if order.get("average") is not None else None
+                    ),
+                    "price": (
+                        float(order["price"])
+                        if order.get("price") is not None else None
+                    ),
                 }
                 self.supabase.event(
                     "ENTRY_ORDER_TERMINAL_OBSERVED",
