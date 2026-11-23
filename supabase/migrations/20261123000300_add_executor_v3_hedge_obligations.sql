@@ -65,8 +65,7 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_reservations (
     status TEXT NOT NULL DEFAULT 'RESERVED'
         CHECK (status IN ('RESERVED','SUBMITTED','UNKNOWN','PARTIALLY_FILLED','CONSUMED','RELEASED','RECONCILIATION_REQUIRED')),
     client_order_id TEXT,
-    release_evidence JSONB NOT NULL DEFAULT '{}'::jsonb
-        CHECK (jsonb_typeof(release_evidence)='object'),
+    release_evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
     idempotency_key TEXT NOT NULL,
     actor_id TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
