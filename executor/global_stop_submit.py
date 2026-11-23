@@ -724,8 +724,8 @@ class GlobalStopSubmitMixin:
                             expected_mutation_intent_id=mutation_intent_id,
                         )
                         # Session-bound V3 ENTRY intents may cross the venue
-                        # boundary only after both durable leg intents have been
-                        # prepared and the session coordinator has advanced the
+                        # boundary only for the prepared Spot BUY intent after
+                        # the session coordinator has advanced the
                         # aggregate. This check shares the submit transaction and
                         # locks the session, leg and coordinator lease rows.
                         if action == "ENTRY" and mutation_intent_id:
