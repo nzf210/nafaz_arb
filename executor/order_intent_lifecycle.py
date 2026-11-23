@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from executor.ownership import build_scope_key
 from executor.order_intent_common import (
     OrderIntentError, OrderIntentConflict, OrderIntentStaleOwner, required,
+    decode_intent,
 )
 
 
@@ -93,7 +94,7 @@ class OrderIntentLifecycleMixin:
                         stored_payload = json.loads(stored_payload)
                     if any(stored_payload.get(key) != value for key, value in payload.items()):
                         raise OrderIntentConflict("event idempotency key was replayed with different evidence")
-                    return dict(row)
+                    return decode_intent(row)
                 if current not in allowed_from:
                     raise OrderIntentConflict(
                         f"invalid intent transition {current} -> {target_status}"
@@ -160,7 +161,7 @@ class OrderIntentLifecycleMixin:
                     generation or None,
                     json.dumps(body, sort_keys=True, separators=(",", ":"), default=str),
                 )
-        return dict(updated)
+        return decode_intent(updated)
 
     async def reclaim_for_reconciliation_in_transaction(
         self, conn: Any, intent_id: str, *, lease: Any, actor_id: str,
@@ -188,7 +189,7 @@ class OrderIntentLifecycleMixin:
         if generation == previous_generation:
             if owner_id != previous_owner:
                 raise OrderIntentStaleOwner("owner changed without a generation increment")
-            return dict(row)
+            return decode_intent(row)
         event_key = f"{intent_id}:owner-reclaimed:{generation}"
         existing = await conn.fetchrow(
             """
@@ -200,7 +201,7 @@ class OrderIntentLifecycleMixin:
         if existing is not None:
             if str(existing["event_type"]) != "INTENT_OWNER_RECLAIMED":
                 raise OrderIntentConflict("recovery event key was reused")
-            return dict(row)
+            return decode_intent(row)
         next_version = int(row["state_version"]) + 1
         updated = await conn.fetchrow(
             """
@@ -232,7 +233,7 @@ class OrderIntentLifecycleMixin:
                 "status": status,
             }, sort_keys=True, separators=(",", ":")),
         )
-        return dict(updated)
+        return decode_intent(updated)
 
     async def reclaim_for_reconciliation(
         self, intent_id: str, *, lease: Any, actor_id: str,
@@ -283,7 +284,7 @@ class OrderIntentLifecycleMixin:
                 or stored.get("risk_control_snapshot") != dict(risk_snapshot)
             ):
                 raise OrderIntentConflict("submit intent replay changed risk evidence")
-            return dict(row)
+            return decode_intent(row)
         if current != "PREPARED":
             raise OrderIntentConflict("SUBMITTING intent has no matching durable submit event")
         next_version = int(row["state_version"]) + 1
@@ -317,7 +318,7 @@ class OrderIntentLifecycleMixin:
                 "target_status": "SUBMITTING", "attempt_count": attempt_count,
             }, sort_keys=True, separators=(",", ":"), default=str),
         )
-        return dict(updated)
+        return decode_intent(updated)
 
     async def mark_submitting(
         self, intent_id: str, *, lease: Any, actor_id: str,

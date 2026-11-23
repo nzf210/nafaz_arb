@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import os
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from executor.global_stop import GlobalStopService
 from executor.mutation_gateway import MutationGateway, MutationResultType
 from executor.order_intent_service import OrderIntentService
+from executor.ownership import OwnershipLeaseService
+from executor.session_coordinator import SessionCoordinator
 
 
 @pytest.fixture
@@ -184,4 +187,86 @@ async def test_gateway_never_retries_unknown_create_intent(postgres_pool):
             intent["client_order_id"],
         )
         assert attempt["status"] == "UNKNOWN"
+        await global_stop.ownership.release_all(conn)
+
+
+@pytest.mark.asyncio
+async def test_session_bound_entry_intent_fails_closed_without_entry_admission(postgres_pool):
+    suffix = uuid.uuid4().hex
+    now = datetime.now(timezone.utc)
+    evidence = {
+        name: {
+            "status": "VERIFIED" if name != "fx_conversion" else "NOT_REQUIRED",
+            "observed_at": now.isoformat(),
+            "valid_until": (now + timedelta(minutes=5)).isoformat(),
+        }
+        for name in ("market_metadata", "fee_schedule", "fx_conversion")
+    }
+    coordinator = SessionCoordinator(
+        pool=postgres_pool,
+        ownership=OwnershipLeaseService(owner_id="gateway-session-worker-" + suffix),
+    )
+    admitted = await coordinator.admit(
+        opportunity_id="gateway-session-opportunity-" + suffix,
+        source_dispatch_id="gateway-session-dispatch-" + suffix,
+        account_scope_id="gateway-session-account-" + suffix,
+        pair_key="indodax:btc_idr->okx:btc-usdt-swap",
+        actor_id="gateway-test",
+        policy_snapshot={"strategy": "spot-perp", "version": 3, "evidence": evidence},
+        execution_policy_snapshot={"mode": "maker-taker"},
+        risk_policy_snapshot={"max_unhedged_ms": 3000},
+        exit_policy_snapshot={"take_profit": {"net_roi_pct": 0.3}},
+        legs=[
+            {
+                "leg_id": "spot-" + suffix, "leg_type": "SPOT",
+                "venue": "indodax", "market_type": "spot", "symbol": "btc_idr",
+                "normalized_symbol": "BTC/IDR", "base_asset": "BTC",
+                "quote_asset": "IDR", "quantity_unit": "BASE",
+                "base_per_unit": "1", "order_quantity": "0.001",
+                "exposure_quantity": "0.001", "target_qty": "0.001",
+            },
+            {
+                "leg_id": "future-" + suffix, "leg_type": "FUTURES",
+                "venue": "okx", "market_type": "swap", "symbol": "BTC-USDT-SWAP",
+                "normalized_symbol": "BTC/USDT:USDT", "base_asset": "BTC",
+                "quote_asset": "USDT", "settlement_asset": "USDT",
+                "contract_type": "LINEAR_PERPETUAL", "contract_size": "0.001",
+                "position_side": "SHORT", "quantity_unit": "CONTRACTS",
+                "base_per_unit": "0.001", "order_quantity": "1",
+                "exposure_quantity": "0.001", "target_qty": "1",
+            },
+        ],
+    )
+    intents = OrderIntentService(postgres_pool)
+    intent = await intents.prepare_create(
+        account_scope_id="gateway-session-account-" + suffix,
+        idempotency_key="gateway-session-entry-" + suffix,
+        venue="okx", market_type="swap",
+        instrument="BTC-USDT-SWAP",
+        pair_key="indodax:btc_idr->okx:btc-usdt-swap",
+        side="sell", order_type="limit",
+        quantity="1", price="65000",
+        reserved_base_qty="0.001", reserved_notional="65",
+        reservation_asset="USDT", actor_id="gateway-test",
+        session_id=admitted["session_id"],
+        leg_id="future-" + suffix,
+        request_metadata={"action_class": "ENTRY"},
+    )
+    global_stop = GlobalStopService("unused", require_scoped_submits=True)
+    global_stop.pool = postgres_pool
+    venue = _Venue()
+    gateway = MutationGateway(
+        global_stop=global_stop, order_intent_service=intents,
+    )
+
+    # The session exists and owns this Futures leg, but is still CREATED and
+    # the leg is not PREPARED. The centralized submit boundary must reject it.
+    result = await gateway.execute_create_intent(
+        venue, intent_id=intent["intent_id"], actor_id="gateway-test",
+    )
+    assert result.status == MutationResultType.REJECTED
+    assert venue.calls == []
+    current = await intents.get_intent(intent["intent_id"])
+    assert current["status"] in {"PREPARED", "ABORTED"}
+    async with postgres_pool.acquire() as conn:
         await global_stop.ownership.release_all(conn)

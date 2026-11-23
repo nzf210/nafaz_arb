@@ -142,6 +142,7 @@ async def test_cancel_intent_requires_terminal_fetch_and_fill_reconciliation(pos
         account_scope_id="cancel-account-" + suffix,
         idempotency_key="cancel-order-" + suffix,
         venue="indodax", market_type="spot", instrument="BTC_IDR",
+        pair_key="indodax:btc_idr->okx:btc-usdt-swap",
         target_order_id="venue-order-" + suffix,
         actor_id="cancel-test",
     )

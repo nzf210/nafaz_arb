@@ -483,7 +483,8 @@ class GlobalStopSubmitMixin:
                 "both scope_exchange and scope_symbol are required for scoped submit fencing"
             )
         intent = await conn.fetchrow(
-            "select exchange, market_type, symbol, status, account_scope_id, pair_key, mutation_intent_id "
+            "select exchange, market_type, symbol, status, account_scope_id, pair_key, "
+            "mutation_intent_id "
             "from public.executor_submit_attempts "
             "where client_order_id = $1 for update",
             client_order_id,
@@ -721,6 +722,72 @@ class GlobalStopSubmitMixin:
                             scope_market_type=scope_market_type,
                             expected_mutation_intent_id=mutation_intent_id,
                         )
+                        # Session-bound V3 ENTRY intents may cross the venue
+                        # boundary only after both durable leg intents have been
+                        # prepared and the session coordinator has advanced the
+                        # aggregate. This check shares the submit transaction and
+                        # locks the session, leg and coordinator lease rows.
+                        if action == "ENTRY" and mutation_intent_id:
+                            logical_session_intent = await conn.fetchrow(
+                                """
+                                SELECT session_id, leg_id, account_scope_id, venue,
+                                       market_type, instrument, pair_key
+                                FROM public.executor_mutation_intents
+                                WHERE intent_id=$1 FOR UPDATE
+                                """,
+                                mutation_intent_id,
+                            )
+                            session_id = str(
+                                logical_session_intent.get("session_id") or ""
+                            ).strip() if logical_session_intent is not None else ""
+                            leg_id = str(
+                                logical_session_intent.get("leg_id") or ""
+                            ).strip() if logical_session_intent is not None else ""
+                            if logical_session_intent is None:
+                                raise GlobalStopError("linked V3 logical mutation intent is missing")
+                            if bool(session_id) != bool(leg_id):
+                                raise GlobalStopError(
+                                    "session-bound ENTRY intent requires both session_id and leg_id"
+                                )
+                            if session_id and leg_id:
+                                session_gate = await conn.fetchrow(
+                                    """
+                                    SELECT s.status AS session_status,
+                                           l.status AS leg_status
+                                    FROM public.execution_sessions s
+                                    JOIN public.execution_legs l
+                                      ON l.session_id=s.session_id AND l.leg_id=$2
+                                    JOIN public.executor_ownership_leases cl
+                                      ON cl.scope_key=s.coordinator_scope_key
+                                     AND cl.account_scope_id=s.account_scope_id
+                                     AND cl.venue='coordinator'
+                                     AND cl.market_type='session'
+                                     AND cl.instrument=upper(s.session_id)
+                                     AND cl.owner_id=s.coordinator_owner_id
+                                     AND cl.generation=s.fencing_generation
+                                     AND cl.lease_expires_at > clock_timestamp()
+                                    WHERE s.session_id=$1
+                                      AND s.account_scope_id=$3
+                                      AND l.venue=$4
+                                      AND l.market_type=$5
+                                      AND l.symbol=$6
+                                      AND s.pair_key=$7
+                                    FOR UPDATE OF s, l, cl
+                                    """,
+                                    session_id, leg_id, str(intent["account_scope_id"]),
+                                    str(intent["exchange"]).lower(),
+                                    str(intent["market_type"]).lower(),
+                                    str(intent["symbol"]),
+                                    str(logical_session_intent["pair_key"]),
+                                )
+                                if session_gate is None or (
+                                    str(session_gate["session_status"]).upper() != "ENTRY_IN_PROGRESS"
+                                    or str(session_gate["leg_status"]).upper() != "PREPARED"
+                                ):
+                                    raise GlobalStopError(
+                                        "session-bound ENTRY intent is not admitted for submission: "
+                                        "session must be ENTRY_IN_PROGRESS, leg PREPARED, and coordinator lease active"
+                                    )
                         lease, risk_snapshot = await self._acquire_submit_ownership(
                             conn,
                             intent=intent,
