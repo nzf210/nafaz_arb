@@ -130,6 +130,9 @@ jobs:
         env:
           TEST_POSTGRES_DSN: postgresql://postgres@localhost:5432/nafaz_test
         run: pytest -q tests/test_execution_fill_service.py
+      - name: Exercise Executor V3 Decimal pair liquidation PnL
+        timeout-minutes: 3
+        run: pytest -q tests/test_pair_pnl_engine_v3.py
       - name: Exercise Executor V3 hedge obligations and allocations against PostgreSQL
         timeout-minutes: 3
         env:
