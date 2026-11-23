@@ -72,8 +72,14 @@ def _same_fill(row: Any, facts: Mapping[str, Any]) -> bool:
         and str(row["fee_asset"] or "").upper() == facts["fee_asset"]
         and bool(row["fee_verified"]) == facts["fee_verified"]
         and str(row["fee_source"] or "") == facts["fee_source"]
-        and str(row["exchange_order_id"] or "") == facts["exchange_order_id"]
-        and str(row["client_order_id"] or "") == facts["client_order_id"]
+        and (
+            not str(row["exchange_order_id"] or "") or not facts["exchange_order_id"]
+            or str(row["exchange_order_id"]) == facts["exchange_order_id"]
+        )
+        and (
+            not str(row["client_order_id"] or "") or not facts["client_order_id"]
+            or str(row["client_order_id"]) == facts["client_order_id"]
+        )
         and row["filled_at"] == facts["filled_at"]
     )
 
