@@ -96,6 +96,49 @@ END $exit_projection$;
 ALTER TABLE public.execution_legs
     VALIDATE CONSTRAINT execution_legs_exit_projection_nonnegative;
 
+CREATE TABLE IF NOT EXISTS public.execution_positions (
+    position_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id TEXT NOT NULL UNIQUE
+        REFERENCES public.execution_sessions(session_id) ON DELETE RESTRICT,
+    account_scope_id TEXT NOT NULL,
+    pair_key TEXT NOT NULL,
+    base_asset TEXT NOT NULL,
+    reporting_currency TEXT NOT NULL,
+    spot_entry_base_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
+    spot_exit_base_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
+    spot_remaining_base_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
+    futures_entry_base_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
+    futures_exit_base_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
+    futures_remaining_base_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
+    hedge_drift_base_quantity NUMERIC(38,18) NOT NULL DEFAULT 0,
+    actual_futures_margin_reporting NUMERIC(38,18),
+    fee_reserve_reporting NUMERIC(38,18) NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'OPEN'
+        CHECK (status IN ('OPEN','PARTIALLY_CLOSED','CLOSED','RECONCILIATION_REQUIRED')),
+    state_version BIGINT NOT NULL DEFAULT 1 CHECK (state_version > 0),
+    last_verified_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    CONSTRAINT execution_positions_quantities_nonnegative CHECK (
+        spot_entry_base_quantity >= 0 AND spot_exit_base_quantity >= 0
+        AND spot_remaining_base_quantity >= 0
+        AND futures_entry_base_quantity >= 0 AND futures_exit_base_quantity >= 0
+        AND futures_remaining_base_quantity >= 0
+        AND hedge_drift_base_quantity >= 0 AND fee_reserve_reporting >= 0
+        AND (actual_futures_margin_reporting IS NULL OR actual_futures_margin_reporting >= 0)
+    ),
+    CONSTRAINT execution_positions_spot_conservation CHECK (
+        spot_entry_base_quantity >= spot_exit_base_quantity
+        AND spot_entry_base_quantity - spot_exit_base_quantity = spot_remaining_base_quantity
+    ),
+    CONSTRAINT execution_positions_futures_conservation CHECK (
+        futures_entry_base_quantity >= futures_exit_base_quantity
+        AND futures_entry_base_quantity - futures_exit_base_quantity = futures_remaining_base_quantity
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_positions_account_status
+    ON public.execution_positions(account_scope_id, status, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS public.execution_funding_events (
     funding_event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id TEXT NOT NULL
@@ -151,7 +194,7 @@ CREATE TABLE IF NOT EXISTS public.execution_pnl_ledger (
     CONSTRAINT uq_execution_pnl_ledger_idempotency
         UNIQUE (session_id, idempotency_key),
     CONSTRAINT execution_pnl_ledger_source_valid
-        CHECK (num_nonnulls(source_fill_id, source_funding_event_id) <= 1)
+        CHECK (num_nonnulls(source_fill_id, source_funding_event_id) = 1)
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_funding_events_session_id
@@ -270,12 +313,15 @@ CREATE TRIGGER trg_execution_funding_events_append_only
     BEFORE UPDATE OR DELETE ON public.execution_funding_events
     FOR EACH ROW EXECUTE FUNCTION public.reject_execution_funding_event_mutation();
 
+ALTER TABLE public.execution_positions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.execution_funding_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.execution_pnl_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.execution_pnl_snapshots ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.execution_positions FROM anon, authenticated;
 REVOKE ALL ON TABLE public.execution_funding_events FROM anon, authenticated;
 REVOKE ALL ON TABLE public.execution_pnl_ledger FROM anon, authenticated;
 REVOKE ALL ON TABLE public.execution_pnl_snapshots FROM anon, authenticated;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.execution_positions TO service_role;
 GRANT SELECT, INSERT ON TABLE public.execution_funding_events TO service_role;
 GRANT SELECT, INSERT ON TABLE public.execution_pnl_ledger TO service_role;
 GRANT SELECT, INSERT ON TABLE public.execution_pnl_snapshots TO service_role;
