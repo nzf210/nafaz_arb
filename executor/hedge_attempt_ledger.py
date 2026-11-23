@@ -265,7 +265,7 @@ class HedgeAttemptLedger:
             attempt = await conn.fetchrow(
                 """
                 select attempt_id, futures_account_scope_id, futures_exchange,
-                       futures_symbol
+                       futures_symbol, venue_order_id
                 from public.executor_hedge_attempts
                 where hedge_client_order_id=$1
                 """,
@@ -278,6 +278,15 @@ class HedgeAttemptLedger:
             or str(attempt["futures_symbol"]) != str(symbol or "")
         ):
             raise ValueError("verified trade venue/instrument differs from hedge attempt")
+        trade_order_id = str(
+            trade.get("order") or trade.get("orderId") or ""
+        ).strip()
+        expected_order_id = str(attempt["venue_order_id"] or "").strip()
+        if (
+            trade_order_id and expected_order_id
+            and trade_order_id != expected_order_id
+        ):
+            raise ValueError("verified trade belongs to a different venue order")
 
         fee = trade.get("fee") if isinstance(trade.get("fee"), dict) else {}
         fee_rows = trade.get("fees") if isinstance(trade.get("fees"), list) else []
