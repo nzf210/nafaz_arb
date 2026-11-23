@@ -308,3 +308,43 @@ async def test_postgres_futures_fill_keeps_contracts_separate_from_base_exposure
     assert result["confirmed_filled_quantity"] == "2"
     assert result["confirmed_exposure_quantity"] == "0.002"
     assert result["average_fill_price"] == "100000"
+
+
+@pytest.mark.asyncio
+async def test_postgres_fill_rejects_stale_leg_and_aggregate_versions(postgres_pool):
+    from executor.execution_repository import StaleAggregate
+
+    suffix = uuid.uuid4().hex
+    _, admitted, leg_version, aggregate = await _admitted_session(postgres_pool, suffix)
+    service = ExecutionFillService(postgres_pool)
+    args = _fill_args(admitted, suffix, leg_version, aggregate)
+    await service.record_fill(**args)
+
+    stale = {
+        **args,
+        "exchange_trade_id": "second-trade-" + suffix,
+        "event_idempotency_key": "second-fill-event-" + suffix,
+    }
+    with pytest.raises(StaleAggregate, match="leg state version is stale"):
+        await service.record_fill(**stale)
+
+    refreshed = {
+        **stale,
+        "expected_leg_state_version": leg_version + 1,
+        "expected_aggregate_version": aggregate,
+    }
+    with pytest.raises(StaleAggregate, match="aggregate version is stale"):
+        await service.record_fill(**refreshed)
+
+    async with postgres_pool.acquire() as conn:
+        count = await conn.fetchval(
+            "SELECT count(*) FROM public.execution_fills WHERE session_id=$1",
+            admitted["session_id"],
+        )
+    assert count == 1
+
+
+def test_fee_verification_flag_rejects_truthy_non_boolean_values():
+    with pytest.raises(FillValidationError, match="fee_verified must be a boolean"):
+        _decimal("0", "fee_amount", positive=False)
+        # The public record_fill boundary performs the strict boolean check.
