@@ -14,6 +14,7 @@ from executor.ownership import (
     OwnershipError, advisory_scope_lock_key, build_scope_key,
 )
 from executor.risk_control import RiskPermissionDenied, risk_scope_keys
+from executor.execution_repository_fencing import transition_leg_in_transaction
 
 
 class GlobalStopSubmitMixin:
@@ -753,6 +754,7 @@ class GlobalStopSubmitMixin:
                                 session_gate = await conn.fetchrow(
                                     """
                                     SELECT s.status AS session_status,
+                                           s.fencing_generation,
                                            l.status AS leg_status
                                     FROM public.execution_sessions s
                                     JOIN public.execution_legs l
@@ -788,6 +790,28 @@ class GlobalStopSubmitMixin:
                                         "session-bound ENTRY intent is not admitted for submission: "
                                         "session must be ENTRY_IN_PROGRESS, leg PREPARED, and coordinator lease active"
                                     )
+                                # Commit the aggregate leg's SUBMITTING state in
+                                # the same transaction as the external attempt and
+                                # logical intent. Fill ingestion can now safely
+                                # accept an immediate private-stream trade.
+                                await transition_leg_in_transaction(
+                                    conn,
+                                    session_id=session_id,
+                                    leg_id=leg_id,
+                                    expected_state="PREPARED",
+                                    target_state="SUBMITTING",
+                                    fencing_generation=int(session_gate.get("fencing_generation") or 0),
+                                    event_type="LEG_SUBMISSION_STARTED",
+                                    idempotency_key=f"mutation-submit:{mutation_intent_id}",
+                                    actor_id=str(mutation_intent_actor_id or "executor"),
+                                    correlation_id=client_order_id,
+                                    payload={
+                                        "mutation_intent_id": mutation_intent_id,
+                                        "venue": str(logical_session_intent["venue"]),
+                                        "market_type": str(logical_session_intent["market_type"]),
+                                        "instrument": str(logical_session_intent["instrument"]),
+                                    },
+                                )
                         lease, risk_snapshot = await self._acquire_submit_ownership(
                             conn,
                             intent=intent,
