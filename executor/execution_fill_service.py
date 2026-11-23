@@ -260,8 +260,9 @@ class ExecutionFillService:
                 )
                 leg = await conn.fetchrow(
                     """
-                    SELECT status, state_version, venue, market_type, symbol,
-                           quote_asset, account_scope_id, base_per_unit,
+                    SELECT status, state_version, leg_type, position_side,
+                           venue, market_type, symbol, quote_asset,
+                           account_scope_id, base_per_unit,
                            confirmed_filled_quantity, confirmed_quote_quantity,
                            confirmed_price_quantity, confirmed_exposure_quantity
                     FROM public.execution_legs
@@ -279,6 +280,18 @@ class ExecutionFillService:
                     or str(leg["quote_asset"]).upper() != facts["quote_asset"]
                 ):
                     raise FillValidationError("venue-bound fill identity does not match its leg")
+                leg_type = str(leg["leg_type"]).upper()
+                position_side = str(leg["position_side"] or "").upper()
+                if (
+                    (leg_type == "SPOT" and facts["side"] != "buy")
+                    or (
+                        leg_type == "FUTURES"
+                        and (position_side != "SHORT" or facts["side"] != "sell")
+                    )
+                ):
+                    raise FillValidationError(
+                        "entry fill side must BUY Spot or SELL the configured SHORT Futures leg"
+                    )
 
                 prior_event = await conn.fetchrow(
                     """
@@ -376,7 +389,10 @@ class ExecutionFillService:
                     raise FillValidationError(f"fill is not valid for leg state {old_leg_state}")
 
                 session_target = old_session_state
-                late_fill = old_session_state in {"COMPLETED", "FAILED", "ABORTED", "REJECTED"}
+                late_fill = old_session_state in {
+                    "HEDGED", "EXIT_IN_PROGRESS", "EXIT_PARTIAL",
+                    "COMPLETED", "FAILED", "ABORTED", "REJECTED",
+                }
                 if late_fill:
                     leg_target = "RECONCILIATION_REQUIRED"
                 if late_fill or leg_target == "RECONCILIATION_REQUIRED":
