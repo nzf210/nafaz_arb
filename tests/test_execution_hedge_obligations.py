@@ -377,6 +377,16 @@ async def test_postgres_hedge_reservation_below_minimum_and_unknown_release_fail
             "SELECT reserved_base_quantity, remaining_base_quantity FROM public.execution_hedge_obligations WHERE obligation_id=$1::uuid",
             obligation["obligation_id"],
         )
+        terminal_evidence_id = await conn.fetchval(
+            "SELECT release_evidence #>> '{terminal_order,evidence_id}' FROM public.execution_hedge_reservations WHERE reservation_id=$1::uuid",
+            reservation["reservation_id"],
+        )
+        fill_evidence_id = await conn.fetchval(
+            "SELECT release_evidence #>> '{fill_reconciliation,evidence_id}' FROM public.execution_hedge_reservations WHERE reservation_id=$1::uuid",
+            reservation["reservation_id"],
+        )
+    assert terminal_evidence_id == terminal_evidence["evidence_id"]
+    assert fill_evidence_id == fill_evidence["evidence_id"]
     assert Decimal(str(row["reserved_base_quantity"])) == 0
     assert Decimal(str(row["remaining_base_quantity"])) == Decimal("0.0002")
 
