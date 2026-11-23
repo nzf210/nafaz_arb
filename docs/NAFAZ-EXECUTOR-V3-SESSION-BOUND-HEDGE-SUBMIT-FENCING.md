@@ -1,6 +1,6 @@
 # NAFAZ Executor V3 — Session-Bound Hedge Submit Fencing
 
-Status: PR-07 implementation.
+Status: PR-03 follow-up implementation.
 Scope: enforce the coordinator admission boundary for V3 HEDGE CREATE intents at the shared venue mutation fence.
 
 ## Submit contract
