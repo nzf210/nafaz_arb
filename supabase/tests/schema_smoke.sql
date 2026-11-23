@@ -677,3 +677,42 @@ begin
         raise exception 'hedge reservation release evidence immutability trigger is missing';
     end if;
 end $hedge_smoke$;
+-- Executor V3 PR-06b: durable hedge scheduler event isolation.
+do $hedge_scheduler_smoke$
+begin
+    if not exists (
+        select 1 from pg_class
+        where oid='public.execution_hedge_scheduler_events'::regclass
+          and relrowsecurity
+    ) then
+        raise exception 'hedge scheduler event RLS is not enabled';
+    end if;
+    if has_table_privilege('anon','public.execution_hedge_scheduler_events','select')
+       or has_table_privilege('authenticated','public.execution_hedge_scheduler_events','select')
+       or not has_table_privilege('service_role','public.execution_hedge_scheduler_events','select')
+       or not has_table_privilege('service_role','public.execution_hedge_scheduler_events','insert')
+       or has_table_privilege('service_role','public.execution_hedge_scheduler_events','update')
+       or has_table_privilege('service_role','public.execution_hedge_scheduler_events','delete') then
+        raise exception 'hedge scheduler event grants are invalid';
+    end if;
+    if not exists (
+        select 1 from pg_trigger
+        where tgrelid='public.execution_hedge_scheduler_events'::regclass
+          and tgname='trg_execution_hedge_scheduler_events_append_only'
+          and not tgisinternal
+    ) or not exists (
+        select 1 from pg_indexes
+        where schemaname='public'
+          and indexname='idx_execution_hedge_obligations_due'
+    ) then
+        raise exception 'hedge scheduler append-only trigger or due index is missing';
+    end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.execution_hedge_scheduler_events'::regclass
+          and conname='execution_hedge_scheduler_events_session_obligation_fkey'
+    ) then
+        raise exception 'hedge scheduler event session/obligation foreign key is missing';
+    end if;
+end $hedge_scheduler_smoke$;
