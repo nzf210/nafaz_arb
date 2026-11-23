@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 from executor.execution_repository import (
-    ExecutionRepositoryError,
+    ExecutionRepositoryError, StaleAggregate,
 )
 from executor.execution_repository_fencing import (
     insert_session_event, validate_coordinator_lease,
@@ -195,7 +195,7 @@ class ExecutionFillService:
             "filled_at": _timestamp(filled_at),
             "fee_amount": _decimal(fee_amount, "fee_amount", positive=False),
             "fee_asset": str(fee_asset or "").strip().upper(),
-            "fee_verified": bool(fee_verified),
+            "fee_verified": fee_verified,
             "fee_source": str(fee_source or "UNVERIFIED")[:60],
             "exchange_order_id": str(exchange_order_id or ""),
             "client_order_id": str(client_order_id or ""),
@@ -208,6 +208,8 @@ class ExecutionFillService:
             raise FillValidationError("session, leg, account, venue, market, symbol, trade and quote identity are required")
         if facts["side"] not in {"buy", "sell"}:
             raise FillValidationError("side must be buy or sell")
+        if not isinstance(fee_verified, bool):
+            raise FillValidationError("fee_verified must be a boolean")
         facts["quote_quantity"] = (
             _decimal(quote_quantity, "quote_quantity")
             if quote_quantity is not None
@@ -234,6 +236,11 @@ class ExecutionFillService:
                     raise ExecutionRepositoryError("fill session does not exist")
                 if str(session["account_scope_id"]) != facts["account_scope_id"]:
                     raise FillValidationError("fill account scope does not match session")
+                if (
+                    session["fencing_generation"] is None
+                    or int(session["fencing_generation"]) != int(fencing_generation)
+                ):
+                    raise StaleAggregate("fill fencing generation does not match the session")
                 await validate_coordinator_lease(
                     conn, coordinator_lease, session_id=facts["session_id"],
                     account_scope_id=facts["account_scope_id"],
@@ -343,6 +350,11 @@ class ExecutionFillService:
                     return {"duplicate": True, "fill_id": str(existing["fill_id"]),
                             "aggregate_version": int(session["aggregate_version"])}
 
+                if int(leg["state_version"]) != int(expected_leg_state_version):
+                    raise StaleAggregate("fill leg state version is stale")
+                if int(session["aggregate_version"]) != int(expected_aggregate_version):
+                    raise StaleAggregate("fill session aggregate version is stale")
+
                 old_leg_state = str(leg["status"]).upper()
                 old_session_state = str(session["status"]).upper()
                 leg_target = old_leg_state
@@ -373,7 +385,7 @@ class ExecutionFillService:
                 new_session_version = int(session["state_version"]) + (
                     1 if session_target != old_session_state else 0
                 )
-                await conn.execute(
+                leg_update = await conn.fetchrow(
                     """
                     UPDATE public.execution_legs
                     SET status=$3, state_version=$4,
@@ -381,24 +393,30 @@ class ExecutionFillService:
                         confirmed_price_quantity=$7, confirmed_exposure_quantity=$8,
                         average_fill_price=$9, last_fill_at=$10, updated_at=clock_timestamp()
                     WHERE session_id=$1 AND leg_id=$2 AND state_version=$11
+                    RETURNING leg_id
                     """,
                     facts["session_id"], facts["leg_id"], leg_target, new_leg_version,
                     new_leg_qty, new_leg_quote, new_price_quantity,
                     new_exposure_quantity, new_average, facts["filled_at"],
                     int(leg["state_version"]),
                 )
-                await conn.execute(
+                if leg_update is None:
+                    raise StaleAggregate("fill leg compare-and-swap lost")
+                session_update = await conn.fetchrow(
                     """
                     UPDATE public.execution_sessions
                     SET status=$2, state_version=$3, aggregate_version=$4,
                         updated_at=clock_timestamp()
                     WHERE session_id=$1 AND aggregate_version=$5
                       AND state_version=$6 AND fencing_generation=$7
+                    RETURNING session_id
                     """,
                     facts["session_id"], session_target, new_session_version, new_aggregate,
                     int(session["aggregate_version"]), int(session["state_version"]),
                     int(fencing_generation),
                 )
+                if session_update is None:
+                    raise StaleAggregate("fill session aggregate compare-and-swap lost")
                 await insert_session_event(
                     conn, session_id=facts["session_id"], aggregate_version=new_aggregate,
                     entity_type="LEG", entity_id=facts["leg_id"],
