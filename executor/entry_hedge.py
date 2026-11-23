@@ -454,6 +454,7 @@ class EntryHedgeMixin:
             # per-parent PostgreSQL lock. Replace the local snapshot before
             # sizing; never submit from a stale worker-local hedge watermark.
             order_info["hedge_claim_key"] = claim["claim_key"]
+            order_info["hedge_claim_client_order_id"] = claim["hedge_client_order_id"]
             order_info["hedged_short_qty"] = max(
                 float(order_info.get("hedged_short_qty", 0.0) or 0.0),
                 float(claim.get("confirmed_qty", 0.0) or 0.0),
@@ -607,6 +608,69 @@ class EntryHedgeMixin:
             )
             order_info["delta_imbalance"] = delta_imbalance
 
+        global_stop = getattr(self, "global_stop", None)
+        hedge_account_scope_id = (
+            account_scope_id_for(
+                self.config, str(order_info.get("global_exchange") or "")
+            )
+            if (
+                global_stop is not None
+                and getattr(self, "config", None) is not None
+                and not getattr(self.config, "mock_mode", False)
+            )
+            else None
+        )
+        attempt_ledger = getattr(self, "hedge_attempt_ledger", None)
+        attempt = None
+        claim_key = str(order_info.get("hedge_claim_key") or "")
+        if claim_key and attempt_ledger is not None and attempt_ledger.enabled:
+            if not hedge_account_scope_id:
+                raise GlobalStopError(
+                    "durable hedge attempt requires a Futures account scope"
+                )
+            attempt = await attempt_ledger.prepare_attempt(
+                claim_key=claim_key,
+                futures_account_scope_id=hedge_account_scope_id,
+                futures_exchange=str(order_info.get("global_exchange") or ""),
+                futures_symbol=global_symbol,
+                actor_id=f"executor:{id(self):x}",
+                requested_qty_base=futures_hedge_qty,
+            )
+            if attempt is None:
+                raise GlobalStopError(
+                    "could not reserve a durable Futures hedge attempt; submit blocked"
+                )
+            if attempt.get("blocked"):
+                # An older attempt may already exist on the venue. Preserve the
+                # exposure and block rollback/re-submit until reconciliation.
+                order_info["hedge_submit_started"] = True
+                order_info["hedge_attempt_blocked"] = True
+                order_info["pending_hedge_client_order_id"] = attempt["client_order_id"]
+                raise AmbiguousOrderSubmission(
+                    "an unresolved durable hedge attempt already owns this claim"
+                )
+            attempt_qty = float(attempt["requested_qty_base"])
+            if abs(attempt_qty - futures_hedge_qty) > max(1e-12, futures_hedge_qty * 1e-10):
+                await attempt_ledger.mark_rejected(
+                    attempt["attempt_id"],
+                    expected_version=int(attempt["version"]),
+                    from_status="PREPARED",
+                    reason="durable attempt quantity differs from exchange order quantity",
+                )
+                raise GlobalStopError(
+                    "durable hedge attempt quantity does not match exchange order quantity"
+                )
+            order_info["hedge_attempt_id"] = attempt["attempt_id"]
+            order_info["hedge_attempt_no"] = int(attempt["attempt_no"])
+            order_info["hedge_attempt_version"] = int(attempt["version"])
+            # Attempt 1 deliberately reuses the claim's original ID; subsequent
+            # attempts have distinct IDs and are reconciled independently.
+            hedge_coid = str(attempt["client_order_id"])
+            order_info["pending_hedge_client_order_id"] = hedge_coid
+            recovery_context["hedge_client_order_id"] = hedge_coid
+            recovery_context["hedge_attempt_id"] = attempt["attempt_id"]
+            recovery_context["hedge_attempt_no"] = int(attempt["attempt_no"])
+
         await self._register_order_intent(
             pair_tag,
             hedge_coid,
@@ -621,18 +685,6 @@ class EntryHedgeMixin:
             global_amount_spec=order_info.get("global_amount_spec"),
             recovery_context=recovery_context,
             required=True,
-        )
-        global_stop = getattr(self, "global_stop", None)
-        hedge_account_scope_id = (
-            account_scope_id_for(
-                self.config, str(order_info.get("global_exchange") or "")
-            )
-            if (
-                global_stop is not None
-                and getattr(self, "config", None) is not None
-                and not getattr(self.config, "mock_mode", False)
-            )
-            else None
         )
         if global_stop is not None:
             await global_stop.prepare_submit_attempt(
