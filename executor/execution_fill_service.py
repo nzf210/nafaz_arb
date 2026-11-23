@@ -373,7 +373,7 @@ class ExecutionFillService:
                 new_session_version = int(session["state_version"]) + (
                     1 if session_target != old_session_state else 0
                 )
-                await conn.execute(
+                leg_update = await conn.execute(
                     """
                     UPDATE public.execution_legs
                     SET status=$3, state_version=$4,
@@ -387,7 +387,9 @@ class ExecutionFillService:
                     new_exposure_quantity, new_average, facts["filled_at"],
                     int(leg["state_version"]),
                 )
-                await conn.execute(
+                if not str(leg_update).endswith(" 1"):
+                    raise ExecutionRepositoryError("fill leg compare-and-swap lost")
+                session_update = await conn.execute(
                     """
                     UPDATE public.execution_sessions
                     SET status=$2, state_version=$3, aggregate_version=$4,
@@ -399,6 +401,8 @@ class ExecutionFillService:
                     int(session["aggregate_version"]), int(session["state_version"]),
                     int(fencing_generation),
                 )
+                if not str(session_update).endswith(" 1"):
+                    raise ExecutionRepositoryError("fill session aggregate compare-and-swap lost")
                 await insert_session_event(
                     conn, session_id=facts["session_id"], aggregate_version=new_aggregate,
                     entity_type="LEG", entity_id=facts["leg_id"],
