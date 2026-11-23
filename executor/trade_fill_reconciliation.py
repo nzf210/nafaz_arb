@@ -337,6 +337,7 @@ class TradeFillReconciliationWorker:
         self, writer, identity: str, scope: str, exchange: str, symbol: str,
         exchange_order_id: str, client_order_id: str, filled_qty: float,
         trades: list, total_qty: float, unverified_fee_ids: list,
+        order_status: str = "",
     ) -> None:
         tolerance = max(
             self.absolute_tolerance, abs(filled_qty) * self.relative_tolerance
@@ -372,6 +373,49 @@ class TradeFillReconciliationWorker:
                 },
             )
             return
+        # The analytics fill journal is not the hedge-attempt authority.
+        # Mirror only individually verified venue trades into the durable
+        # attempt ledger, keyed by the exact client order ID.
+        attempt_ledger = getattr(self.engine, "hedge_attempt_ledger", None)
+        matched_attempt = False
+        if attempt_ledger is not None and attempt_ledger.enabled and client_order_id:
+            try:
+                for trade in trades:
+                    recorded = await attempt_ledger.record_trade_for_client_order_id(
+                        client_order_id=client_order_id,
+                        exchange=exchange,
+                        symbol=symbol,
+                        trade=trade,
+                    )
+                    matched_attempt = matched_attempt or recorded is not None
+                if matched_attempt and str(order_status or "").lower() in (
+                    "closed", "filled", "canceled", "cancelled", "expired", "rejected"
+                ):
+                    finalized = await attempt_ledger.finalize_by_client_order_id(
+                        client_order_id=client_order_id,
+                        terminal_status=order_status,
+                        order_reconciled=True,
+                        fills_reconciled=True,
+                        actor_id="trade-fill-reconciliation",
+                    )
+                    if finalized is not True:
+                        raise RuntimeError(
+                            "verified hedge fills could not finalize their durable attempt"
+                        )
+            except Exception as exc:
+                await self._halt(
+                    identity,
+                    scope,
+                    "Verified Futures fills could not be committed to the hedge attempt ledger.",
+                    {
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "client_order_id": client_order_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+                return
+
         marker = getattr(writer, "mark_fill_sync", None)
         if not callable(marker) or marker(identity, filled_qty) is False:
             raise RuntimeError(
@@ -482,6 +526,7 @@ class TradeFillReconciliationWorker:
             await self._verify_candidate_fills(
                 writer, identity, scope, exchange, symbol, exchange_order_id,
                 client_order_id, filled_qty, trades, total_qty, unverified_fee_ids,
+                order_status=str(row.get("status") or ""),
             )
         except asyncio.CancelledError:
             raise
