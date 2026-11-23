@@ -191,3 +191,66 @@ async def transition_leg_in_transaction(
         "state": target, "state_version": leg_version,
         "aggregate_version": aggregate_version,
     }
+
+
+async def append_leg_event_in_transaction(
+    conn: Any, *, session_id: str, leg_id: str,
+    fencing_generation: int, event_type: str, idempotency_key: str,
+    actor_id: str, correlation_id: str | None = None,
+    payload: Mapping[str, Any] | None = None,
+) -> dict:
+    """Append an event for a leg without changing its aggregate lifecycle state."""
+    from executor.execution_repository import ExecutionRepositoryError, StaleAggregate
+
+    session = await conn.fetchrow(
+        """
+        SELECT aggregate_version, fencing_generation
+        FROM public.execution_sessions
+        WHERE session_id=$1 FOR UPDATE
+        """,
+        session_id,
+    )
+    if session is None:
+        raise ExecutionRepositoryError("execution session does not exist")
+    if (
+        session["fencing_generation"] is None
+        or int(session["fencing_generation"]) != int(fencing_generation)
+    ):
+        raise StaleAggregate("session fencing generation is stale")
+    leg = await conn.fetchrow(
+        """
+        SELECT status, state_version FROM public.execution_legs
+        WHERE session_id=$1 AND leg_id=$2 FOR UPDATE
+        """,
+        session_id, leg_id,
+    )
+    if leg is None:
+        raise ExecutionRepositoryError("execution leg does not exist in the session")
+    aggregate_version = int(session["aggregate_version"]) + 1
+    updated = await conn.fetchrow(
+        """
+        UPDATE public.execution_sessions
+        SET aggregate_version=$2, updated_at=clock_timestamp()
+        WHERE session_id=$1 AND aggregate_version=$3
+          AND fencing_generation=$4
+        RETURNING aggregate_version
+        """,
+        session_id, aggregate_version, int(session["aggregate_version"]),
+        int(fencing_generation),
+    )
+    if updated is None:
+        raise StaleAggregate("session aggregate compare-and-swap lost")
+    await insert_session_event(
+        conn, session_id=session_id, aggregate_version=aggregate_version,
+        entity_type="LEG", entity_id=leg_id,
+        entity_version=int(leg["state_version"]),
+        event_type=event_type, idempotency_key=idempotency_key,
+        actor_id=actor_id, fencing_generation=int(fencing_generation),
+        reason="", correlation_id=correlation_id,
+        payload={**dict(payload or {}), "leg_state": str(leg["status"]).upper()},
+    )
+    return {
+        "state": str(leg["status"]).upper(),
+        "state_version": int(leg["state_version"]),
+        "aggregate_version": aggregate_version,
+    }

@@ -14,7 +14,9 @@ from executor.ownership import (
     OwnershipError, advisory_scope_lock_key, build_scope_key,
 )
 from executor.risk_control import RiskPermissionDenied, risk_scope_keys
-from executor.execution_repository_fencing import transition_leg_in_transaction
+from executor.execution_repository_fencing import (
+    append_leg_event_in_transaction, transition_leg_in_transaction,
+)
 
 
 class GlobalStopSubmitMixin:
@@ -819,6 +821,175 @@ class GlobalStopSubmitMixin:
                                         "market_type": str(logical_session_intent["market_type"]),
                                         "instrument": str(logical_session_intent["instrument"]),
                                     },
+                                )
+                        if action == "HEDGE" and mutation_intent_id:
+                            hedge_intent = await conn.fetchrow(
+                                """
+                                SELECT session_id, leg_id, account_scope_id, venue,
+                                       market_type, instrument, pair_key, side,
+                                       quantity, client_order_id, request_payload
+                                FROM public.executor_mutation_intents
+                                WHERE intent_id=$1 FOR UPDATE
+                                """,
+                                mutation_intent_id,
+                            )
+                            if hedge_intent is None:
+                                raise GlobalStopError("linked V3 HEDGE mutation intent is missing")
+                            session_id = str(hedge_intent["session_id"] or "").strip()
+                            leg_id = str(hedge_intent["leg_id"] or "").strip()
+                            if not session_id or not leg_id or str(hedge_intent["side"]).lower() != "sell":
+                                raise GlobalStopError("HEDGE intent must bind a session Futures SELL leg")
+                            request_payload = hedge_intent["request_payload"]
+                            if isinstance(request_payload, str):
+                                request_payload = json.loads(request_payload)
+                            request_metadata = (
+                                request_payload.get("request_metadata")
+                                if isinstance(request_payload, dict) else None
+                            )
+                            request_metadata = request_metadata if isinstance(request_metadata, dict) else {}
+                            reservation_id = str(request_metadata.get("hedge_reservation_id") or "").strip()
+                            if not reservation_id:
+                                raise GlobalStopError("HEDGE intent must reference a durable hedge reservation")
+                            hedge_gate = await conn.fetchrow(
+                                """
+                                SELECT s.status AS session_status,
+                                       s.fencing_generation,
+                                       l.status AS leg_status,
+                                       l.leg_type,
+                                       l.position_side AS leg_position_side,
+                                       l.base_asset AS leg_base_asset,
+                                       l.base_per_unit AS leg_base_per_unit,
+                                       l.quantity_unit AS leg_quantity_unit,
+                                       l.contract_type AS leg_contract_type,
+                                       l.contract_size AS leg_contract_size,
+                                       r.status AS reservation_status,
+                                       r.client_order_id AS reservation_client_order_id,
+                                       r.reserved_base_quantity,
+                                       r.futures_venue,
+                                       r.futures_market_type,
+                                       r.futures_symbol,
+                                       r.base_asset AS reservation_base_asset,
+                                       r.position_side AS reservation_position_side,
+                                       r.quantity_unit AS reservation_quantity_unit,
+                                       r.base_per_unit AS reservation_base_per_unit,
+                                       r.contract_type AS reservation_contract_type,
+                                       r.contract_size AS reservation_contract_size
+                                FROM public.execution_sessions s
+                                JOIN public.execution_legs l
+                                  ON l.session_id=s.session_id AND l.leg_id=$2
+                                JOIN public.executor_ownership_leases cl
+                                  ON cl.scope_key=s.coordinator_scope_key
+                                 AND cl.account_scope_id=s.account_scope_id
+                                 AND cl.venue='coordinator'
+                                 AND cl.market_type='session'
+                                 AND cl.instrument=s.session_id
+                                 AND cl.owner_id=s.coordinator_owner_id
+                                 AND cl.generation=s.fencing_generation
+                                 AND cl.lease_expires_at > clock_timestamp()
+                                JOIN public.execution_hedge_reservations r
+                                  ON r.reservation_id=$8::uuid AND r.session_id=s.session_id
+                                 AND r.account_scope_id=s.account_scope_id
+                                WHERE s.session_id=$1
+                                  AND s.account_scope_id=$3
+                                  AND l.leg_type='FUTURES'
+                                  AND l.venue=$4
+                                  AND l.market_type=$5
+                                  AND l.symbol=$6
+                                  AND s.pair_key=$7
+                                FOR UPDATE OF s, l, cl, r
+                                """,
+                                session_id, leg_id, str(hedge_intent["account_scope_id"]),
+                                str(hedge_intent["venue"]).lower(),
+                                str(hedge_intent["market_type"]).lower(),
+                                str(hedge_intent["instrument"]),
+                                str(hedge_intent["pair_key"]),
+                                reservation_id,
+                            )
+                            if hedge_gate is None:
+                                raise GlobalStopError(
+                                    "HEDGE intent lacks an active session coordinator lease, exact Futures leg, or reservation"
+                                )
+                            if (
+                                str(hedge_gate["session_status"]).upper() not in {"HEDGE_PENDING", "PARTIALLY_HEDGED"}
+                                or str(hedge_gate["leg_position_side"] or "").upper() != "SHORT"
+                                or str(hedge_gate["reservation_status"]).upper() != "SUBMITTED"
+                                or str(hedge_gate["reservation_client_order_id"] or "") != client_order_id
+                                or str(hedge_gate["futures_venue"]).lower() != str(hedge_intent["venue"]).lower()
+                                or str(hedge_gate["futures_market_type"]).lower() != str(hedge_intent["market_type"]).lower()
+                                or str(hedge_gate["futures_symbol"]) != str(hedge_intent["instrument"])
+                                or str(hedge_gate["reservation_base_asset"]).upper() != str(hedge_gate["leg_base_asset"]).upper()
+                                or str(hedge_gate["reservation_position_side"]).upper() != "SHORT"
+                                or str(hedge_gate["reservation_quantity_unit"]).upper() != str(hedge_gate["leg_quantity_unit"]).upper()
+                                or Decimal(str(hedge_gate["reservation_base_per_unit"])) != Decimal(str(hedge_gate["leg_base_per_unit"]))
+                                or str(hedge_gate["reservation_contract_type"] or "") != str(hedge_gate["leg_contract_type"] or "")
+                                or (
+                                    Decimal(str(hedge_gate["reservation_contract_size"]))
+                                    if hedge_gate["reservation_contract_size"] is not None else None
+                                ) != (
+                                    Decimal(str(hedge_gate["leg_contract_size"]))
+                                    if hedge_gate["leg_contract_size"] is not None else None
+                                )
+                                or Decimal(str(hedge_intent["quantity"])) * Decimal(str(hedge_gate["leg_base_per_unit"]))
+                                   != Decimal(str(hedge_gate["reserved_base_quantity"]))
+                            ):
+                                raise GlobalStopError("HEDGE intent and reservation route/quantity do not match")
+                            reservation_items = await conn.fetchrow(
+                                """
+                                SELECT count(*) AS item_count,
+                                       coalesce(sum(reserved_base_quantity),0) AS item_quantity
+                                FROM public.execution_hedge_reservation_items
+                                WHERE reservation_id=$1::uuid
+                                """,
+                                reservation_id,
+                            )
+                            if (
+                                int(reservation_items["item_count"]) <= 0
+                                or Decimal(str(reservation_items["item_quantity"]))
+                                   != Decimal(str(hedge_gate["reserved_base_quantity"]))
+                            ):
+                                raise GlobalStopError("HEDGE reservation has no conserved obligation allocation")
+                            leg_state = str(hedge_gate["leg_status"]).upper()
+                            event_payload = {
+                                "mutation_intent_id": mutation_intent_id,
+                                "reservation_id": reservation_id,
+                                "venue": str(hedge_intent["venue"]),
+                                "market_type": str(hedge_intent["market_type"]),
+                                "instrument": str(hedge_intent["instrument"]),
+                                "reserved_base_quantity": str(hedge_gate["reserved_base_quantity"]),
+                            }
+                            if leg_state in {"CREATED", "NOT_STARTED"}:
+                                await transition_leg_in_transaction(
+                                    conn, session_id=session_id, leg_id=leg_id,
+                                    expected_state=leg_state, target_state="PREPARED",
+                                    fencing_generation=int(hedge_gate["fencing_generation"]),
+                                    event_type="HEDGE_LEG_PREPARED",
+                                    idempotency_key=f"hedge-leg-prepared:{mutation_intent_id}",
+                                    actor_id=str(mutation_intent_actor_id or "executor"),
+                                    correlation_id=client_order_id, payload=event_payload,
+                                )
+                                leg_state = "PREPARED"
+                            if leg_state == "PREPARED":
+                                await transition_leg_in_transaction(
+                                    conn, session_id=session_id, leg_id=leg_id,
+                                    expected_state="PREPARED", target_state="SUBMITTING",
+                                    fencing_generation=int(hedge_gate["fencing_generation"]),
+                                    event_type="HEDGE_LEG_SUBMISSION_STARTED",
+                                    idempotency_key=f"mutation-submit:{mutation_intent_id}",
+                                    actor_id=str(mutation_intent_actor_id or "executor"),
+                                    correlation_id=client_order_id, payload=event_payload,
+                                )
+                            elif leg_state in {"SUBMITTING", "OPEN", "PARTIALLY_FILLED"}:
+                                await append_leg_event_in_transaction(
+                                    conn, session_id=session_id, leg_id=leg_id,
+                                    fencing_generation=int(hedge_gate["fencing_generation"]),
+                                    event_type="HEDGE_ORDER_SUBMISSION_STARTED",
+                                    idempotency_key=f"mutation-submit:{mutation_intent_id}",
+                                    actor_id=str(mutation_intent_actor_id or "executor"),
+                                    correlation_id=client_order_id, payload=event_payload,
+                                )
+                            else:
+                                raise GlobalStopError(
+                                    f"Futures leg state {leg_state} cannot accept an obligation-backed hedge order"
                                 )
                         lease, risk_snapshot = await self._acquire_submit_ownership(
                             conn,

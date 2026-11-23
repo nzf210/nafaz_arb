@@ -143,6 +143,7 @@ jobs:
         run: |
           pytest -q tests/test_hedge_liquidity_evaluator.py
           pytest -q tests/test_hedge_scheduler_integration.py
+          pytest -q tests/test_hedge_execution_coordinator.py
 
   docker-images:
     runs-on: ubuntu-latest
