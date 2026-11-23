@@ -762,7 +762,7 @@ class GlobalStopSubmitMixin:
                                      AND cl.account_scope_id=s.account_scope_id
                                      AND cl.venue='coordinator'
                                      AND cl.market_type='session'
-                                     AND cl.instrument=s.session_id
+                                     AND cl.instrument=upper(s.session_id)
                                      AND cl.owner_id=s.coordinator_owner_id
                                      AND cl.generation=s.fencing_generation
                                      AND cl.lease_expires_at > clock_timestamp()
