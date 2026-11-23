@@ -176,7 +176,7 @@ class HedgeExecutionCoordinator:
             client, intent_id=str(intent["intent_id"]), actor_id=actor,
         )
 
-        if result.status == MutationResultType.SUBMISSION_UNKNOWN:
+        if result.status in {MutationResultType.SUBMISSION_UNKNOWN, MutationResultType.DEFERRED}:
             try:
                 await self.obligations.mark_unknown(
                     session_id=session_id, reservation_id=reservation_id,
