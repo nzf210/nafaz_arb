@@ -449,6 +449,7 @@ class EntryHedgeMixin:
                     pair_tag,
                 )
                 order_info["hedge_waiting_for_coverage"] = True
+                order_info["hedge_waiting_reason"] = "prior_attempt_unresolved_or_claim_unavailable"
                 return None, {}, None, 0.0
             # The claim service recomputes the residual while holding the
             # per-parent PostgreSQL lock. Replace the local snapshot before
@@ -584,6 +585,7 @@ class EntryHedgeMixin:
                 f"(${futures_min_notional:.2f}); holding unhedged delta for the next fill."
             )
             order_info["hedge_waiting_for_coverage"] = True
+            order_info["hedge_waiting_reason"] = "below_min_notional"
             # No venue request was started, so release this generation's
             # durable claim. The next cumulative Spot fill may then claim the
             # full outstanding residual without overlapping an older submit.
@@ -1066,6 +1068,10 @@ class EntryHedgeMixin:
         order_info["hedge_waiting_for_coverage"] = bool(
             order_info.pop("hedge_attempt_partial", False)
         )
+        if order_info["hedge_waiting_for_coverage"]:
+            order_info["hedge_waiting_reason"] = "terminal_partial_attempt"
+        else:
+            order_info.pop("hedge_waiting_reason", None)
         watermark_persisted = await self._persist_entry_hedge_watermark(
             pair_tag,
             order_info,
@@ -1519,23 +1525,28 @@ class EntryHedgeMixin:
             return
 
         order_info = self.pending_entry_orders.get(pair_tag, {})
-        # If partial fill left unused reserved funds, release the remainder
-        if hasattr(self.client, "unlock_funds"):
-            pos = self.active_positions.get(pair_tag)
-            used_spot = pos.spot_cost_usdt if pos else 0.0
-            used_fut = pos.futures_margin_usdt if pos else 0.0
-            reserved_spot = float(order_info.get("spot_cost_usdt", 0.0))
-            reserved_fut = float(order_info.get("futures_margin_usdt", 0.0))
-            unused_spot = max(0.0, reserved_spot - used_spot)
-            unused_fut = max(0.0, reserved_fut - used_fut)
-            if unused_spot > 0 or unused_fut > 0:
-                self.client.unlock_funds(unused_spot, unused_fut)
+        # Terminal Spot resources are released once. The durable pending-entry
+        # record may remain as a residual-hedge work item after this point.
+        if not order_info.get("terminal_resources_released"):
+            if hasattr(self.client, "unlock_funds"):
+                pos = self.active_positions.get(pair_tag)
+                used_spot = pos.spot_cost_usdt if pos else 0.0
+                used_fut = pos.futures_margin_usdt if pos else 0.0
+                reserved_spot = float(order_info.get("spot_cost_usdt", 0.0))
+                reserved_fut = float(order_info.get("futures_margin_usdt", 0.0))
+                unused_spot = max(0.0, reserved_spot - used_spot)
+                unused_fut = max(0.0, reserved_fut - used_fut)
+                if unused_spot > 0 or unused_fut > 0:
+                    self.client.unlock_funds(unused_spot, unused_fut)
 
-        if getattr(self, "slot_manager", None) is not None:
-            venue = str(order_info.get("local_exchange") or "").lower()
-            coid = str(order_info.get("client_order_id") or "")
-            if venue and coid:
-                await self.slot_manager.release_slot(venue, client_order_id=coid, reason=status.upper())
+            if getattr(self, "slot_manager", None) is not None:
+                venue = str(order_info.get("local_exchange") or "").lower()
+                coid = str(order_info.get("client_order_id") or "")
+                if venue and coid:
+                    await self.slot_manager.release_slot(
+                        venue, client_order_id=coid, reason=status.upper()
+                    )
+            order_info["terminal_resources_released"] = True
 
         awaiting_coverage = bool(order_info.get("hedge_waiting_for_coverage"))
         hedged_qty = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
@@ -1560,9 +1571,9 @@ class EntryHedgeMixin:
             and order_info.get("pending_hedge_client_order_id")
             and order_info.get("hedge_submit_started")
         )
-        del self.pending_entry_orders[pair_tag]
-        await self._clear_pending_entry(pair_tag)
         if self.states.get(pair_tag) == PositionState.RECONCILIATION_REQUIRED:
+            self.pending_entry_orders.pop(pair_tag, None)
+            await self._clear_pending_entry(pair_tag)
             # A reconciliation halt set while the order was terminal must not
             # be silently reset by cleanup; manual intervention is pending.
             self.pending_entry_orders.pop(pair_tag, None)
@@ -1573,9 +1584,33 @@ class EntryHedgeMixin:
         # exposure remains. active_positions alone is never proof the hedge
         # target is complete.
         if residual > 1e-12 or has_unknown_hedge:
-            # Residual unhedged exposure (deferred or not) or an unresolved
-            # hedge submission must surface as a reconciliation obligation,
-            # never collapse into IDLE or a clean HEDGED_ACTIVE.
+            retryable_residual = (
+                residual > 1e-12
+                and not has_unknown_hedge
+                and bool(order_info.get("spot_terminal"))
+                and awaiting_coverage
+                and str(order_info.get("hedge_waiting_reason") or "") in (
+                    "terminal_partial_attempt",
+                    "prior_attempt_unresolved_or_claim_unavailable",
+                )
+            )
+            if retryable_residual:
+                # Keep the terminal Spot snapshot durable and re-enter only the
+                # Futures hedge path on later monitor ticks. The claim service
+                # still blocks until the prior attempt's trades are verified.
+                self.states[pair_tag] = PositionState.ENTRY_PARTIAL
+                await self._persist_pending_entry(pair_tag, order_info, ttl=None)
+                logger.warning(
+                    "[Hedge Attempt] retaining terminal Spot order %s for residual %.12f; "
+                    "retry waits for durable attempt reconciliation",
+                    order_info.get("order_id"), residual,
+                )
+                return
+            # Residual exposure without a safely retryable attempt (for example
+            # below-minimum notional or UNKNOWN submit) remains a manual
+            # reconciliation obligation.
+            self.pending_entry_orders.pop(pair_tag, None)
+            await self._clear_pending_entry(pair_tag)
             self._mark_failed(
                 pair_tag,
                 "DEFERRED_HEDGE_UNCOVERED_ON_TERMINAL_SPOT"
@@ -1600,6 +1635,8 @@ class EntryHedgeMixin:
                 state=PositionState.RECONCILIATION_REQUIRED,
             )
             return
+        del self.pending_entry_orders[pair_tag]
+        await self._clear_pending_entry(pair_tag)
         if pair_tag in self.active_positions and self.active_positions[pair_tag].qty > 0:
             # Only reached when residual == 0 and no UNKNOWN submission: the
             # hedge target is fully covered.
