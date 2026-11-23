@@ -73,6 +73,111 @@ async def _prepare_intent(pool, suffix, action_class="ENTRY"):
     return intents, intent
 
 
+async def _prepare_session_hedge_intent(pool, suffix, *, session_target="HEDGE_PENDING"):
+    now = datetime.now(timezone.utc)
+    evidence = {
+        name: {
+            "status": "VERIFIED" if name != "fx_conversion" else "NOT_REQUIRED",
+            "observed_at": now.isoformat(),
+            "valid_until": (now + timedelta(minutes=5)).isoformat(),
+        }
+        for name in ("market_metadata", "fee_schedule", "fx_conversion")
+    }
+    account = "gateway-hedge-account-" + suffix
+    pair_key = "indodax:btc_idr->okx:btc-usdt-swap"
+    coordinator = SessionCoordinator(
+        pool=pool,
+        ownership=OwnershipLeaseService(owner_id="gateway-hedge-worker-" + suffix),
+    )
+    admitted = await coordinator.admit(
+        opportunity_id="gateway-hedge-opportunity-" + suffix,
+        source_dispatch_id="gateway-hedge-dispatch-" + suffix,
+        account_scope_id=account, pair_key=pair_key,
+        actor_id="gateway-test",
+        policy_snapshot={"strategy": "spot-perp", "version": 3, "evidence": evidence},
+        execution_policy_snapshot={"mode": "maker-taker"},
+        risk_policy_snapshot={"max_unhedged_ms": 5000},
+        exit_policy_snapshot={"take_profit": {"net_roi_pct": 0.3}},
+        legs=[
+            {
+                "leg_id": "spot-" + suffix, "leg_type": "SPOT",
+                "venue": "indodax", "market_type": "spot", "symbol": "btc_idr",
+                "normalized_symbol": "BTC/IDR", "base_asset": "BTC",
+                "quote_asset": "IDR", "quantity_unit": "BASE",
+                "base_per_unit": "1", "order_quantity": "0.001",
+                "exposure_quantity": "0.001", "target_qty": "0.001",
+            },
+            {
+                "leg_id": "future-" + suffix, "leg_type": "FUTURES",
+                "venue": "okx", "market_type": "swap", "symbol": "BTC-USDT-SWAP",
+                "normalized_symbol": "BTC/USDT:USDT", "base_asset": "BTC",
+                "quote_asset": "USDT", "settlement_asset": "USDT",
+                "contract_type": "LINEAR_PERPETUAL", "contract_size": "0.001",
+                "position_side": "SHORT", "quantity_unit": "CONTRACTS",
+                "base_per_unit": "0.001", "order_quantity": "1",
+                "exposure_quantity": "0.001", "target_qty": "1",
+            },
+        ],
+    )
+    lease = admitted["coordinator_lease"]
+    aggregate, state_version = 3, 1
+    for state in ("VALIDATING", "ADMITTED", "ENTRY_IN_PROGRESS"):
+        result = await coordinator.transition(
+            coordinator_lease=lease, session_id=admitted["session_id"],
+            target_state=state, expected_state_version=state_version,
+            expected_aggregate_version=aggregate,
+            fencing_generation=lease.generation, event_type="SESSION_" + state,
+            event_idempotency_key=f"{admitted['admission_key']}:{state.lower()}",
+            actor_id="gateway-test",
+        )
+        state_version += 1
+        aggregate = result["aggregate_version"]
+    leg_result = await coordinator.transition_leg(
+        coordinator_lease=lease, session_id=admitted["session_id"],
+        leg_id="future-" + suffix, target_state="PREPARED",
+        expected_leg_state_version=1, expected_aggregate_version=aggregate,
+        fencing_generation=lease.generation,
+        event_type="FUTURES_LEG_PREPARED",
+        event_idempotency_key=f"{admitted['admission_key']}:futures:prepared",
+        actor_id="gateway-test",
+    )
+    aggregate = leg_result["aggregate_version"]
+    if session_target == "HEDGE_PENDING":
+        result = await coordinator.transition(
+            coordinator_lease=lease, session_id=admitted["session_id"],
+            target_state="HEDGE_PENDING", expected_state_version=state_version,
+            expected_aggregate_version=aggregate,
+            fencing_generation=lease.generation,
+            event_type="SESSION_HEDGE_PENDING",
+            event_idempotency_key=f"{admitted['admission_key']}:hedge-pending",
+            actor_id="gateway-test",
+        )
+        aggregate = result["aggregate_version"]
+    intents = OrderIntentService(pool)
+    intent = await intents.prepare_create(
+        account_scope_id=account,
+        idempotency_key="gateway-hedge-intent-" + suffix,
+        venue="okx", market_type="swap", instrument="BTC-USDT-SWAP",
+        pair_key=pair_key, side="sell", order_type="market",
+        quantity="1", price="0", reserved_base_qty="0.001",
+        reserved_notional="65", reservation_asset="USDT",
+        actor_id="gateway-test", session_id=admitted["session_id"],
+        leg_id="future-" + suffix,
+        request_metadata={
+            "action_class": "HEDGE",
+            "risk_metrics": {
+                "gross_exposure_usdt": 0, "net_exposure_usdt": 0,
+                "deployed_capital_usdt": 0, "unhedged_notional_usdt": 0,
+                "unhedged_duration_ms": 0, "open_order_count": 0,
+                "daily_loss_usdt": 0, "drawdown_pct": 0,
+                "slippage_bps": 0, "funding_cost_pct": 0,
+                "market_data_age_ms": 0, "venue_health_score": 1,
+            },
+        },
+    )
+    return coordinator, admitted, intents, intent
+
+
 @pytest.mark.asyncio
 async def test_gateway_create_intent_links_attempt_and_persists_ack_atomically(postgres_pool):
     suffix = uuid.uuid4().hex
@@ -268,5 +373,96 @@ async def test_session_bound_entry_intent_fails_closed_without_entry_admission(p
     assert venue.calls == []
     current = await intents.get_intent(intent["intent_id"])
     assert current["status"] in {"PREPARED", "ABORTED"}
+    async with postgres_pool.acquire() as conn:
+        await global_stop.ownership.release_all(conn)
+
+
+@pytest.mark.asyncio
+async def test_session_bound_hedge_intent_requires_hedge_pending_and_futures_leg(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, intents, intent = await _prepare_session_hedge_intent(
+        postgres_pool, suffix, session_target="ENTRY_IN_PROGRESS",
+    )
+    global_stop = GlobalStopService("unused", require_scoped_submits=True)
+    global_stop.pool = postgres_pool
+    venue = _Venue()
+    gateway = MutationGateway(global_stop=global_stop, order_intent_service=intents)
+
+    result = await gateway.execute_create_intent(
+        venue, intent_id=intent["intent_id"], actor_id="gateway-test",
+    )
+    assert result.status == MutationResultType.REJECTED
+    assert venue.calls == []
+    current = await intents.get_intent(intent["intent_id"])
+    assert current["status"] in {"PREPARED", "ABORTED"}
+    async with postgres_pool.acquire() as conn:
+        await global_stop.ownership.release_all(conn)
+
+
+@pytest.mark.asyncio
+async def test_session_bound_hedge_intent_submits_only_with_active_coordinator_lease(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, intents, intent = await _prepare_session_hedge_intent(postgres_pool, suffix)
+    global_stop = GlobalStopService("unused", require_scoped_submits=True)
+    global_stop.pool = postgres_pool
+    venue = _Venue()
+    gateway = MutationGateway(global_stop=global_stop, order_intent_service=intents)
+
+    result = await gateway.execute_create_intent(
+        venue, intent_id=intent["intent_id"], actor_id="gateway-test",
+    )
+    assert result.status == MutationResultType.CONFIRMED
+    assert len(venue.calls) == 1
+    current = await intents.get_intent(intent["intent_id"])
+    assert current["status"] == "ACKNOWLEDGED"
+    async with postgres_pool.acquire() as conn:
+        await global_stop.ownership.release_all(conn)
+
+
+@pytest.mark.asyncio
+async def test_v3_hedge_intent_without_session_leg_is_rejected(postgres_pool):
+    suffix = uuid.uuid4().hex
+    intents, intent = await _prepare_intent(
+        postgres_pool, suffix, action_class="HEDGE",
+    )
+    global_stop = GlobalStopService("unused", require_scoped_submits=True)
+    global_stop.pool = postgres_pool
+    venue = _Venue()
+    gateway = MutationGateway(global_stop=global_stop, order_intent_service=intents)
+
+    result = await gateway.execute_create_intent(
+        venue, intent_id=intent["intent_id"], actor_id="gateway-test",
+    )
+    assert result.status == MutationResultType.REJECTED
+    assert venue.calls == []
+    current = await intents.get_intent(intent["intent_id"])
+    assert current["status"] in {"PREPARED", "ABORTED"}
+    async with postgres_pool.acquire() as conn:
+        await global_stop.ownership.release_all(conn)
+
+
+@pytest.mark.asyncio
+async def test_session_bound_hedge_intent_rejects_stale_coordinator_generation(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, intents, intent = await _prepare_session_hedge_intent(postgres_pool, suffix)
+    async with postgres_pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE public.execution_sessions
+            SET fencing_generation=fencing_generation+1
+            WHERE session_id=$1
+            """,
+            admitted["session_id"],
+        )
+    global_stop = GlobalStopService("unused", require_scoped_submits=True)
+    global_stop.pool = postgres_pool
+    venue = _Venue()
+    gateway = MutationGateway(global_stop=global_stop, order_intent_service=intents)
+
+    result = await gateway.execute_create_intent(
+        venue, intent_id=intent["intent_id"], actor_id="gateway-test",
+    )
+    assert result.status == MutationResultType.REJECTED
+    assert venue.calls == []
     async with postgres_pool.acquire() as conn:
         await global_stop.ownership.release_all(conn)
