@@ -655,4 +655,16 @@ begin
     ) then
         raise exception 'hedge allocation append-only trigger is missing';
     end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.execution_hedge_reservations'::regclass
+          and conname='execution_hedge_release_evidence_object'
+    ) or not exists (
+        select 1 from pg_indexes
+        where schemaname='public'
+          and indexname='uq_execution_hedge_reservation_client_order'
+    ) then
+        raise exception 'hedge release evidence constraint or unique client-order index is missing';
+    end if;
 end $hedge_smoke$;
