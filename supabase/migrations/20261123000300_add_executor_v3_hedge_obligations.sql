@@ -80,6 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_execution_hedge_reservations_active
     WHERE status IN ('RESERVED','SUBMITTED','UNKNOWN','PARTIALLY_FILLED');
 
 CREATE TABLE IF NOT EXISTS public.execution_hedge_reservation_items (
+    session_id TEXT NOT NULL,
     reservation_id UUID NOT NULL
         REFERENCES public.execution_hedge_reservations(reservation_id) ON DELETE RESTRICT,
     obligation_id UUID NOT NULL
@@ -113,6 +114,68 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_allocations (
         UNIQUE (session_id, idempotency_key)
 );
 
+ALTER TABLE public.execution_hedge_reservation_items
+    ADD COLUMN IF NOT EXISTS session_id TEXT;
+
+UPDATE public.execution_hedge_reservation_items i
+SET session_id=r.session_id
+FROM public.execution_hedge_reservations r
+WHERE i.reservation_id=r.reservation_id AND i.session_id IS NULL;
+
+ALTER TABLE public.execution_hedge_reservation_items
+    ALTER COLUMN session_id SET NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_fills_session_fill
+    ON public.execution_fills(session_id, fill_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_hedge_obligations_session_id
+    ON public.execution_hedge_obligations(session_id, obligation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_hedge_reservations_session_id
+    ON public.execution_hedge_reservations(session_id, reservation_id);
+
+DO $hedge$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.execution_hedge_obligations'::regclass AND conname='execution_hedge_obligations_session_fill_fkey') THEN
+        ALTER TABLE public.execution_hedge_obligations ADD CONSTRAINT execution_hedge_obligations_session_fill_fkey
+            FOREIGN KEY (session_id, source_fill_id) REFERENCES public.execution_fills(session_id, fill_id) ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.execution_hedge_obligations'::regclass AND conname='execution_hedge_obligations_session_spot_leg_fkey') THEN
+        ALTER TABLE public.execution_hedge_obligations ADD CONSTRAINT execution_hedge_obligations_session_spot_leg_fkey
+            FOREIGN KEY (session_id, spot_leg_id) REFERENCES public.execution_legs(session_id, leg_id) ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.execution_hedge_obligations'::regclass AND conname='execution_hedge_obligations_session_futures_leg_fkey') THEN
+        ALTER TABLE public.execution_hedge_obligations ADD CONSTRAINT execution_hedge_obligations_session_futures_leg_fkey
+            FOREIGN KEY (session_id, futures_leg_id) REFERENCES public.execution_legs(session_id, leg_id) ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.execution_hedge_reservation_items'::regclass AND conname='execution_hedge_reservation_items_session_reservation_fkey') THEN
+        ALTER TABLE public.execution_hedge_reservation_items ADD CONSTRAINT execution_hedge_reservation_items_session_reservation_fkey
+            FOREIGN KEY (session_id, reservation_id) REFERENCES public.execution_hedge_reservations(session_id, reservation_id) ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.execution_hedge_reservation_items'::regclass AND conname='execution_hedge_reservation_items_session_obligation_fkey') THEN
+        ALTER TABLE public.execution_hedge_reservation_items ADD CONSTRAINT execution_hedge_reservation_items_session_obligation_fkey
+            FOREIGN KEY (session_id, obligation_id) REFERENCES public.execution_hedge_obligations(session_id, obligation_id) ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.execution_hedge_allocations'::regclass AND conname='execution_hedge_allocations_session_reservation_fkey') THEN
+        ALTER TABLE public.execution_hedge_allocations ADD CONSTRAINT execution_hedge_allocations_session_reservation_fkey
+            FOREIGN KEY (session_id, reservation_id) REFERENCES public.execution_hedge_reservations(session_id, reservation_id) ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.execution_hedge_allocations'::regclass AND conname='execution_hedge_allocations_session_fill_fkey') THEN
+        ALTER TABLE public.execution_hedge_allocations ADD CONSTRAINT execution_hedge_allocations_session_fill_fkey
+            FOREIGN KEY (session_id, futures_fill_id) REFERENCES public.execution_fills(session_id, fill_id) ON DELETE RESTRICT NOT VALID;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='public.execution_hedge_allocations'::regclass AND conname='execution_hedge_allocations_session_obligation_fkey') THEN
+        ALTER TABLE public.execution_hedge_allocations ADD CONSTRAINT execution_hedge_allocations_session_obligation_fkey
+            FOREIGN KEY (session_id, obligation_id) REFERENCES public.execution_hedge_obligations(session_id, obligation_id) ON DELETE RESTRICT NOT VALID;
+    END IF;
+END $hedge$;
+
+ALTER TABLE public.execution_hedge_obligations VALIDATE CONSTRAINT execution_hedge_obligations_session_fill_fkey;
+ALTER TABLE public.execution_hedge_obligations VALIDATE CONSTRAINT execution_hedge_obligations_session_spot_leg_fkey;
+ALTER TABLE public.execution_hedge_obligations VALIDATE CONSTRAINT execution_hedge_obligations_session_futures_leg_fkey;
+ALTER TABLE public.execution_hedge_reservation_items VALIDATE CONSTRAINT execution_hedge_reservation_items_session_reservation_fkey;
+ALTER TABLE public.execution_hedge_reservation_items VALIDATE CONSTRAINT execution_hedge_reservation_items_session_obligation_fkey;
+ALTER TABLE public.execution_hedge_allocations VALIDATE CONSTRAINT execution_hedge_allocations_session_reservation_fkey;
+ALTER TABLE public.execution_hedge_allocations VALIDATE CONSTRAINT execution_hedge_allocations_session_fill_fkey;
+ALTER TABLE public.execution_hedge_allocations VALIDATE CONSTRAINT execution_hedge_allocations_session_obligation_fkey;
 CREATE INDEX IF NOT EXISTS idx_execution_hedge_allocations_session
     ON public.execution_hedge_allocations (session_id, created_at);
 
