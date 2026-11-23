@@ -413,11 +413,9 @@ def compute_pair_pnl_v3(
     futures_exit_rate = _pnl_decimal(futures_exit_fee_rate, "futures_exit_fee_rate", allow_zero=True)
     if futures_exit_rate >= 1:
         raise PairPnLInputError("Futures exit fee rate must be below 100%")
-    funding = Decimal(str(funding_reporting_amount))
+    funding = _pnl_decimal(funding_reporting_amount, "funding_reporting_amount")
     conversion_cost = _pnl_decimal(conversion_cost_reporting, "conversion_cost_reporting", allow_zero=True)
     reserve = _pnl_decimal(fee_reserve_reporting, "fee_reserve_reporting", allow_zero=True)
-    if not funding.is_finite():
-        raise PairPnLInputError("funding_reporting_amount must be finite")
 
     spot_vwap, spot_exit_notional, spot_slippage = _sweep_pnl_depth(
         spot_bid_levels, spot_qty, side="SELL",
@@ -439,7 +437,6 @@ def compute_pair_pnl_v3(
         - spot_cost - spot_entry_fee
     ) * spot_fx.quote_to_reporting_rate
 
-    futures_entry_notional = futures_base_qty * futures_entry
     futures_entry_fee_reporting = futures_entry_fee * futures_fx.quote_to_reporting_rate
     futures_exit_fee_reporting = futures_exit_fee_quote * futures_fx.quote_to_reporting_rate
     futures_pnl = (
