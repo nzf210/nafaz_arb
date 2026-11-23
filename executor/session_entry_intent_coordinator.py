@@ -120,7 +120,10 @@ class SessionEntryIntentCoordinator:
                     "specs": by_leg,
                 }
 
-        prepared: dict[str, dict] = {}
+        validated: dict[str, dict] = {}
+        # Validate both legs completely before writing either intent. This avoids
+        # leaving a one-sided reservation because the second specification was
+        # malformed.
         for leg in snapshot["legs"]:
             leg_id = str(leg["leg_id"])
             spec = snapshot["specs"][leg_id]
@@ -128,9 +131,7 @@ class SessionEntryIntentCoordinator:
             expected_side = "buy" if leg_type == "SPOT" else "sell"
             side = str(spec.get("side") or "").strip().lower()
             if side != expected_side:
-                raise SessionEntryIntentError(
-                    f"{leg_type} entry side must be {expected_side}"
-                )
+                raise SessionEntryIntentError(f"{leg_type} entry side must be {expected_side}")
             if leg_type == "FUTURES" and str(leg.get("position_side") or "").upper() != "SHORT":
                 raise SessionEntryIntentError("Futures entry leg must be SHORT for this Spot/Perpetual strategy")
             quantity = _positive_decimal(spec.get("quantity"), f"{leg_type}.quantity")
@@ -143,19 +144,35 @@ class SessionEntryIntentCoordinator:
             idempotency_key = str(spec.get("idempotency_key") or "").strip()
             if not idempotency_key:
                 raise SessionEntryIntentError(f"{leg_type}.idempotency_key is required")
+            order_type = str(spec.get("order_type") or "").strip().lower()
+            if order_type not in {"limit", "market"}:
+                raise SessionEntryIntentError(f"{leg_type}.order_type must be limit or market")
             metadata = dict(spec.get("request_metadata") or {})
             metadata.setdefault("action_class", "ENTRY")
+            if str(metadata["action_class"]).upper() != "ENTRY":
+                raise SessionEntryIntentError("session entry intents must use action_class=ENTRY")
+            validated[leg_id] = {
+                "side": side, "quantity": quantity, "price": price,
+                "idempotency_key": idempotency_key, "order_type": order_type,
+                "metadata": metadata,
+            }
+
+        prepared: dict[str, dict] = {}
+        for leg in snapshot["legs"]:
+            leg_id = str(leg["leg_id"])
+            spec = snapshot["specs"][leg_id]
+            values = validated[leg_id]
             intent = await self.order_intents.prepare_create(
                 account_scope_id=snapshot["account_scope_id"],
-                idempotency_key=idempotency_key,
+                idempotency_key=values["idempotency_key"],
                 venue=str(leg["venue"]),
                 market_type=str(leg["market_type"]),
                 instrument=str(leg["symbol"]),
                 pair_key=snapshot["pair_key"],
-                side=side,
-                order_type=str(spec.get("order_type") or ""),
-                quantity=quantity,
-                price=price,
+                side=values["side"],
+                order_type=values["order_type"],
+                quantity=values["quantity"],
+                price=values["price"],
                 actor_id=actor,
                 session_id=session_id,
                 leg_id=leg_id,
@@ -164,7 +181,7 @@ class SessionEntryIntentCoordinator:
                 reservation_asset=spec.get("reservation_asset"),
                 max_reserved_base_qty=spec.get("max_reserved_base_qty"),
                 max_reserved_notional=spec.get("max_reserved_notional"),
-                request_metadata=metadata,
+                request_metadata=values["metadata"],
             )
             if (
                 str(intent.get("session_id") or "") != session_id
