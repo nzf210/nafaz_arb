@@ -22,9 +22,37 @@ class HedgeScheduler(HedgeServiceBase):
     ) -> dict:
         actor = _text(actor_id, "actor_id")
         key = _text(idempotency_key, "idempotency_key")
+        if not isinstance(decision, HedgeLiquidityDecision):
+            raise HedgeObligationError("a validated HedgeLiquidityDecision is required")
         action = str(decision.action or "").upper()
         if action not in {"SUBMIT", "PARTIAL_SUBMIT", "DEFER", "DE_RISK_REQUIRED"}:
             raise ValueError("unsupported hedge liquidity action")
+        try:
+            executable_base = Decimal(str(decision.executable_base_quantity))
+            executable_native = Decimal(str(decision.executable_native_quantity))
+            if not executable_base.is_finite() or not executable_native.is_finite():
+                raise ValueError
+            if executable_base < 0 or executable_native < 0:
+                raise ValueError
+        except (ArithmeticError, TypeError, ValueError) as exc:
+            raise HedgeObligationError("decision executable quantities must be finite and non-negative") from exc
+        if action in {"SUBMIT", "PARTIAL_SUBMIT"}:
+            if (
+                executable_base <= 0 or executable_native <= 0
+                or decision.executable_vwap is None
+                or Decimal(str(decision.executable_vwap)) <= 0
+                or not str(decision.book_sequence or "").strip()
+                or decision.book_age_ms is None or int(decision.book_age_ms) < 0
+                or decision.estimated_total_cost_bps is None
+                or Decimal(str(decision.executable_notional_usd)) <= 0
+            ):
+                raise HedgeObligationError("executable hedge decision is missing valid book, price, or notional evidence")
+        elif executable_base != 0 or executable_native != 0:
+            raise HedgeObligationError("non-executable hedge decisions must carry zero executable quantities")
+        if action == "DEFER" and int(decision.next_evaluate_at_ms) <= int(decision.evaluated_at_ms):
+            raise HedgeObligationError("deferred hedge decision must schedule a future evaluation")
+        if action == "DE_RISK_REQUIRED" and int(decision.wait_remaining_ms) != 0:
+            raise HedgeObligationError("de-risk decision requires an exhausted wait budget")
         payload = {
             "action": action,
             "reason": decision.reason,
@@ -62,7 +90,8 @@ class HedgeScheduler(HedgeServiceBase):
                     """
                     SELECT status, account_scope_id, target_base_quantity,
                            confirmed_base_quantity, reserved_base_quantity,
-                           deferred_since, deferred_count, de_risk_required, created_at
+                           base_per_unit, deferred_since, deferred_count,
+                           de_risk_required, created_at
                     FROM public.execution_hedge_obligations
                     WHERE obligation_id=$1::uuid AND session_id=$2
                     FOR UPDATE
@@ -97,8 +126,28 @@ class HedgeScheduler(HedgeServiceBase):
                         "aggregate_version": int(session["aggregate_version"]),
                     }
 
-                if bool(obligation["de_risk_required"]) or str(obligation["status"]) == "BLOCKED":
+                obligation_status = str(obligation["status"]).upper()
+                if bool(obligation["de_risk_required"]) or obligation_status == "BLOCKED":
                     raise HedgeObligationError("blocked hedge obligation requires recovery/de-risk resolution")
+                if obligation_status not in {"OPEN", "PARTIALLY_HEDGED"}:
+                    raise HedgeObligationError(
+                        f"hedge obligation in {obligation_status} state is not schedulable"
+                    )
+                available_base = (
+                    Decimal(str(obligation["target_base_quantity"]))
+                    - Decimal(str(obligation["confirmed_base_quantity"]))
+                    - Decimal(str(obligation["reserved_base_quantity"]))
+                )
+                if action in {"SUBMIT", "PARTIAL_SUBMIT"}:
+                    base_per_unit = Decimal(str(obligation["base_per_unit"]))
+                    if executable_base > available_base:
+                        raise HedgeObligationError("liquidity decision exceeds the unreserved hedge obligation")
+                    if executable_native * base_per_unit != executable_base:
+                        raise HedgeObligationError("native and base-equivalent decision quantities do not reconcile")
+                    if action == "SUBMIT" and executable_base < available_base:
+                        raise HedgeObligationError("SUBMIT decision does not cover the full unreserved obligation")
+                    if action == "PARTIAL_SUBMIT" and executable_base >= available_base:
+                        raise HedgeObligationError("PARTIAL_SUBMIT must be smaller than the unreserved obligation")
                 deferred_since = obligation["deferred_since"]
                 max_wait_until = None
                 if action == "DEFER":
