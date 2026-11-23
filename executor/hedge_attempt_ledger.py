@@ -459,8 +459,8 @@ class HedgeAttemptLedger:
                         ),
                     }
                 if attempt_status not in (
-                    "UNKNOWN", "ACKNOWLEDGED", "OPEN", "PARTIALLY_FILLED",
-                    "RECONCILIATION_REQUIRED"
+                    "SUBMITTING", "UNKNOWN", "ACKNOWLEDGED", "OPEN",
+                    "PARTIALLY_FILLED", "RECONCILIATION_REQUIRED"
                 ):
                     raise ValueError("attempt is not in a fill-accepting state")
 
@@ -513,8 +513,9 @@ class HedgeAttemptLedger:
                     """
                     update public.executor_hedge_attempts
                     set confirmed_qty_base=$2,
-                        status=case when status in ('ACKNOWLEDGED','UNKNOWN')
-                                    then 'PARTIALLY_FILLED' else status end,
+                        status=case when status in (
+                                    'SUBMITTING','ACKNOWLEDGED','UNKNOWN'
+                                  ) then 'PARTIALLY_FILLED' else status end,
                         version=version+1, updated_at=now()
                     where attempt_id=$1::uuid
                     """,
@@ -553,7 +554,7 @@ class HedgeAttemptLedger:
                         set status=$3, terminal_at=now(), last_reconciled_at=now(),
                             version=version+1, updated_at=now()
                         where attempt_id=$1::uuid and version=$2
-                          and status in ('UNKNOWN','ACKNOWLEDGED','OPEN','PARTIALLY_FILLED','RECONCILIATION_REQUIRED')
+                          and status in ('SUBMITTING','UNKNOWN','ACKNOWLEDGED','OPEN','PARTIALLY_FILLED','RECONCILIATION_REQUIRED')
                         returning claim_key, confirmed_qty_base, requested_qty_base
                         """,
                         attempt_id, int(expected_version), status,
