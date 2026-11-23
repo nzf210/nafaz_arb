@@ -152,9 +152,19 @@ class HedgeExecutionCoordinator:
         )
         intent_status = str(intent.get("status") or "").upper()
         if intent_status in {"REJECTED", "ABORTED"}:
-            raise HedgeExecutionError(
-                f"durable HEDGE intent is terminal before submission: {intent_status}"
+            released = await self.obligations.release(
+                session_id=session_id, reservation_id=reservation_id,
+                actor_id=actor, event_idempotency_key=f"{key}:reservation-released",
+                terminal_order_verified=True, fills_reconciled=True,
+                coordinator_lease=coordinator_lease,
+                fencing_generation=fencing_generation,
             )
+            return {
+                "scheduled": scheduled, "reservation": reservation,
+                "intent": intent, "submitted": False,
+                "reason": f"terminal intent {intent_status}; reservation released",
+                "release": released,
+            }
         submitted = await self.obligations.mark_submitted(
             session_id=session_id, reservation_id=reservation_id,
             client_order_id=str(intent["client_order_id"]),
