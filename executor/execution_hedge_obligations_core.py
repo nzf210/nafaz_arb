@@ -17,6 +17,8 @@ class HedgeObligationMixin(HedgeServiceBase):
     ) -> dict:
         """Create one hedge obligation from one confirmed Spot entry fill."""
         ratio = _qty(hedge_ratio, "hedge_ratio")
+        if ratio > Decimal("1"):
+            raise HedgeObligationError("hedge_ratio above 1.0 requires an approved over-hedge policy")
         actor = _text(actor_id, "actor_id")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
@@ -78,11 +80,31 @@ class HedgeObligationMixin(HedgeServiceBase):
                     spot_fill_id,
                 )
                 if existing is not None:
+                    existing_contract_size = (
+                        Decimal(str(existing["contract_size"]))
+                        if existing["contract_size"] is not None else None
+                    )
+                    current_contract_size = (
+                        Decimal(str(fill["contract_size"]))
+                        if fill["contract_size"] is not None else None
+                    )
                     same = (
                         str(existing["session_id"]) == session_id
+                        and str(existing["spot_leg_id"]) == str(fill["spot_leg_id"])
+                        and str(existing["futures_leg_id"]) == str(fill["futures_leg_id"])
+                        and str(existing["account_scope_id"]) == str(session["account_scope_id"])
+                        and str(existing["pair_key"]) == str(session["pair_key"])
+                        and str(existing["base_asset"]).upper() == str(fill["base_asset"]).upper()
+                        and str(existing["futures_venue"]).lower() == str(fill["futures_venue"]).lower()
+                        and str(existing["futures_market_type"]).lower() == str(fill["futures_market_type"]).lower()
+                        and str(existing["futures_symbol"]) == str(fill["futures_symbol"])
+                        and str(existing["contract_type"] or "") == str(fill["contract_type"] or "")
+                        and existing_contract_size == current_contract_size
+                        and str(existing["position_side"]).upper() == str(fill["position_side"]).upper()
+                        and str(existing["quantity_unit"]).upper() == str(fill["quantity_unit"]).upper()
+                        and Decimal(str(existing["base_per_unit"])) == future_unit
                         and Decimal(str(existing["hedge_ratio"])) == ratio
                         and Decimal(str(existing["target_base_quantity"])) == target
-                        and str(existing["futures_symbol"]) == str(fill["futures_symbol"])
                     )
                     if not same:
                         raise FillConflict("Spot fill already has a different hedge obligation")
