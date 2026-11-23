@@ -11,6 +11,8 @@ import pytest
 from executor.execution_fill_service import (
     ExecutionFillService, FillConflict, FillValidationError, _decimal, _timestamp,
 )
+from executor.fill_event_processor import FillEventProcessor
+from executor.execution_hedge_obligations import ExecutionHedgeObligationService
 from executor.ownership import OwnershipLeaseService
 from executor.session_coordinator import SessionCoordinator
 
@@ -308,3 +310,140 @@ async def test_postgres_futures_fill_keeps_contracts_separate_from_base_exposure
     assert result["confirmed_filled_quantity"] == "2"
     assert result["confirmed_exposure_quantity"] == "0.002"
     assert result["average_fill_price"] == "100000"
+
+
+@pytest.mark.asyncio
+async def test_fill_inbox_creates_spot_obligation_then_allocates_reserved_futures_fill(postgres_pool):
+    suffix = uuid.uuid4().hex
+    coordinator, admitted, spot_leg_version, aggregate = await _admitted_session(postgres_pool, suffix)
+    lease = admitted["coordinator_lease"]
+    account = "fill-account-" + suffix
+    fills = ExecutionFillService(postgres_pool)
+    processor = FillEventProcessor(postgres_pool)
+
+    spot_inbox = await fills.persist_inbox_event(
+        account_scope_id=account, venue="indodax", event_type="FILL",
+        source_event_id="spot-source-" + suffix,
+        session_id=admitted["session_id"], leg_id=f"spot-{suffix}",
+        payload={
+            "exchange_trade_id": "spot-trade-" + suffix,
+            "side": "buy", "quantity": "0.001", "price": "1000000000",
+            "quote_asset": "IDR", "quote_quantity": "1000000",
+            "fee_amount": "200", "fee_asset": "IDR",
+            "fee_verified": True, "fee_source": "EXCHANGE_TRADE",
+            "filled_at": datetime.now(timezone.utc).isoformat(),
+            "client_order_id": "spot-client-" + suffix,
+        },
+    )
+    spot_result = await processor.process_inbox_event(
+        inbox_id=spot_inbox["inbox_id"], coordinator_lease=lease,
+        fencing_generation=lease.generation,
+        actor_id="fill-event-processor-test", hedge_ratio="1",
+    )
+    assert spot_result["processed"] is True
+    obligation_id = spot_result["obligation"]["obligation_id"]
+
+    hedge_service = ExecutionHedgeObligationService(postgres_pool)
+    reservation = await hedge_service.reserve(
+        session_id=admitted["session_id"], futures_venue="okx",
+        futures_market_type="swap", futures_symbol="BTC-USDT-SWAP",
+        base_asset="BTC", position_side="SHORT",
+        contract_type="LINEAR_PERPETUAL", contract_size="0.001",
+        quantity_unit="CONTRACTS", base_per_unit="0.001",
+        requested_base_quantity="0.001", minimum_base_quantity="0.001",
+        idempotency_key="fill-event-reservation-" + suffix,
+        actor_id="fill-event-processor-test",
+        coordinator_lease=lease, fencing_generation=lease.generation,
+    )
+    client_order_id = "hedge-client-" + suffix
+    await hedge_service.mark_submitted(
+        session_id=admitted["session_id"],
+        reservation_id=reservation["reservation_id"],
+        client_order_id=client_order_id,
+        actor_id="fill-event-processor-test",
+        event_idempotency_key="fill-event-reservation-submit-" + suffix,
+        coordinator_lease=lease, fencing_generation=lease.generation,
+    )
+
+    async with postgres_pool.acquire() as conn:
+        current = await conn.fetchrow(
+            """
+            SELECT s.aggregate_version, l.state_version
+            FROM public.execution_sessions s
+            JOIN public.execution_legs l ON l.session_id=s.session_id
+            WHERE s.session_id=$1 AND l.leg_id=$2
+            """,
+            admitted["session_id"], f"future-{suffix}",
+        )
+    aggregate = int(current["aggregate_version"])
+    future_version = int(current["state_version"])
+    for target in ("PREPARED", "SUBMITTING"):
+        transitioned = await coordinator.transition_leg(
+            coordinator_lease=lease, session_id=admitted["session_id"],
+            leg_id=f"future-{suffix}", target_state=target,
+            expected_leg_state_version=future_version,
+            expected_aggregate_version=aggregate,
+            fencing_generation=lease.generation,
+            event_type="FUTURES_LEG_" + target,
+            event_idempotency_key=f"future-leg-{target}-" + suffix,
+            actor_id="fill-event-processor-test",
+        )
+        future_version += 1
+        aggregate = int(transitioned["aggregate_version"])
+
+    futures_inbox = await fills.persist_inbox_event(
+        account_scope_id=account, venue="okx", event_type="FILL",
+        source_event_id="future-source-" + suffix,
+        session_id=admitted["session_id"], leg_id=f"future-{suffix}",
+        payload={
+            "exchange_trade_id": "future-trade-" + suffix,
+            "side": "sell", "quantity": "1", "price": "100000",
+            "quote_asset": "USDT", "quote_quantity": "100",
+            "fee_amount": "0", "fee_asset": None,
+            "fee_verified": False, "fee_source": "UNVERIFIED",
+            "filled_at": datetime.now(timezone.utc).isoformat(),
+            "client_order_id": client_order_id,
+        },
+    )
+    futures_result = await processor.process_inbox_event(
+        inbox_id=futures_inbox["inbox_id"], coordinator_lease=lease,
+        fencing_generation=lease.generation,
+        actor_id="fill-event-processor-test", hedge_ratio="1",
+    )
+    assert futures_result["processed"] is True
+    assert futures_result["allocation"]["allocated_base_quantity"] == "0.001"
+
+    async with postgres_pool.acquire() as conn:
+        obligation = await conn.fetchrow(
+            """
+            SELECT target_base_quantity, confirmed_base_quantity,
+                   remaining_base_quantity, status
+            FROM public.execution_hedge_obligations
+            WHERE obligation_id=$1::uuid
+            """,
+            obligation_id,
+        )
+        reservation_row = await conn.fetchrow(
+            "SELECT status, allocated_base_quantity FROM public.execution_hedge_reservations WHERE reservation_id=$1::uuid",
+            reservation["reservation_id"],
+        )
+        session_state = await conn.fetchval(
+            "SELECT status FROM public.execution_sessions WHERE session_id=$1",
+            admitted["session_id"],
+        )
+        inbox_states = await conn.fetch(
+            """
+            SELECT processing_status FROM public.execution_event_inbox
+            WHERE inbox_id=ANY($1::uuid[])
+            ORDER BY source_event_id
+            """,
+            [spot_inbox["inbox_id"], futures_inbox["inbox_id"]],
+        )
+    assert Decimal(str(obligation["target_base_quantity"])) == Decimal("0.001")
+    assert Decimal(str(obligation["confirmed_base_quantity"])) == Decimal("0.001")
+    assert Decimal(str(obligation["remaining_base_quantity"])) == Decimal("0")
+    assert obligation["status"] == "HEDGED"
+    assert reservation_row["status"] == "CONSUMED"
+    assert Decimal(str(reservation_row["allocated_base_quantity"])) == Decimal("0.001")
+    assert session_state == "PARTIALLY_HEDGED"
+    assert [row["processing_status"] for row in inbox_states] == ["PROCESSED", "PROCESSED"]
