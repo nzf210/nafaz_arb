@@ -544,3 +544,218 @@ async def test_postgres_hedge_submit_is_blocked_after_session_enters_reconciliat
         )
     assert current["status"] == "RESERVED"
     assert current["client_order_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_postgres_entry_and_exit_fills_keep_separate_leg_projections(postgres_pool):
+    suffix = uuid.uuid4().hex
+    coordinator, admitted, aggregate, versions = await _session(postgres_pool, suffix)
+    lease = admitted["coordinator_lease"]
+    service = ExecutionFillService(postgres_pool)
+
+    spot_entry = await _spot_fill(
+        postgres_pool, admitted, suffix, "pnl-entry-" + suffix,
+        versions[f"spot-{suffix}"], aggregate,
+    )
+    obligation = await ExecutionHedgeObligationService(postgres_pool).create_from_spot_fill(
+        session_id=admitted["session_id"], spot_fill_id=spot_entry["fill_id"],
+        hedge_ratio="1", actor_id="hedge-integration-test",
+        coordinator_lease=lease, fencing_generation=lease.generation,
+    )
+    futures_entry = await service.record_fill(
+        session_id=admitted["session_id"], leg_id=f"future-{suffix}",
+        account_scope_id="hedge-account-" + suffix,
+        venue="okx", market_type="swap", symbol="BTC-USDT-SWAP",
+        exchange_trade_id="futures-entry-" + suffix, side="sell",
+        quantity="0.2", price="65000", quote_asset="USDT",
+        quote_quantity="13", fee_amount="0.01", fee_asset="USDT",
+        fee_verified=True, fee_source="EXCHANGE_TRADE",
+        filled_at=datetime.now(timezone.utc), actor_id="hedge-integration-test",
+        event_idempotency_key="futures-entry-event-" + suffix,
+        expected_leg_state_version=versions[f"future-{suffix}"],
+        expected_aggregate_version=obligation["aggregate_version"],
+        fencing_generation=lease.generation, coordinator_lease=lease,
+    )
+    aggregate = futures_entry["aggregate_version"]
+
+    for leg_id, fill_result, prefix in (
+        (f"spot-{suffix}", spot_entry, "SPOT"),
+        (f"future-{suffix}", futures_entry, "FUTURES"),
+    ):
+        row_version = fill_result["leg_state_version"]
+        transitioned = await coordinator.transition_leg(
+            coordinator_lease=lease, session_id=admitted["session_id"],
+            leg_id=leg_id, target_state="FILLED",
+            expected_leg_state_version=row_version,
+            expected_aggregate_version=aggregate,
+            fencing_generation=lease.generation,
+            event_type=f"{prefix}_ENTRY_FILLED",
+            event_idempotency_key=f"{admitted['admission_key']}:{prefix.lower()}:filled",
+            actor_id="hedge-integration-test",
+        )
+        aggregate = transitioned["aggregate_version"]
+
+    async with postgres_pool.acquire() as conn:
+        session = await conn.fetchrow(
+            "SELECT state_version, aggregate_version FROM public.execution_sessions WHERE session_id=$1",
+            admitted["session_id"],
+        )
+    transitioned = await coordinator.transition(
+        coordinator_lease=lease, session_id=admitted["session_id"],
+        target_state="HEDGED",
+        expected_state_version=int(session["state_version"]),
+        expected_aggregate_version=int(session["aggregate_version"]),
+        fencing_generation=lease.generation,
+        event_type="TEST_SESSION_HEDGED",
+        event_idempotency_key="session-hedged-" + suffix,
+        actor_id="hedge-integration-test",
+    )
+    transitioned = await coordinator.transition(
+        coordinator_lease=lease, session_id=admitted["session_id"],
+        target_state="EXIT_IN_PROGRESS",
+        expected_state_version=transitioned["state_version"],
+        expected_aggregate_version=transitioned["aggregate_version"],
+        fencing_generation=lease.generation,
+        event_type="TEST_SESSION_EXITING",
+        event_idempotency_key="session-exiting-" + suffix,
+        actor_id="hedge-integration-test",
+    )
+    aggregate = transitioned["aggregate_version"]
+
+    leg_versions = {}
+    for leg_id, prefix in ((f"spot-{suffix}", "SPOT"), (f"future-{suffix}", "FUTURES")):
+        row_version = await postgres_pool.fetchval(
+            "SELECT state_version FROM public.execution_legs WHERE session_id=$1 AND leg_id=$2",
+            admitted["session_id"], leg_id,
+        )
+        result = await coordinator.transition_leg(
+            coordinator_lease=lease, session_id=admitted["session_id"],
+            leg_id=leg_id, target_state="CLOSING",
+            expected_leg_state_version=int(row_version),
+            expected_aggregate_version=aggregate,
+            fencing_generation=lease.generation,
+            event_type=f"{prefix}_CLOSING",
+            event_idempotency_key=f"{admitted['admission_key']}:{prefix.lower()}:closing",
+            actor_id="hedge-integration-test",
+        )
+        aggregate = result["aggregate_version"]
+        leg_versions[leg_id] = result["leg_state_version"]
+
+    spot_exit = await service.record_fill(
+        session_id=admitted["session_id"], leg_id=f"spot-{suffix}",
+        account_scope_id="hedge-account-" + suffix,
+        venue="indodax", market_type="spot", symbol="btc_idr",
+        exchange_trade_id="spot-exit-" + suffix, side="sell",
+        quantity="0.0002", price="1001000000", quote_asset="IDR",
+        quote_quantity="200200", fee_amount="200", fee_asset="IDR",
+        fee_verified=True, fee_source="EXCHANGE_TRADE",
+        fill_role="EXIT", filled_at=datetime.now(timezone.utc),
+        actor_id="hedge-integration-test", event_idempotency_key="spot-exit-event-" + suffix,
+        expected_leg_state_version=leg_versions[f"spot-{suffix}"],
+        expected_aggregate_version=aggregate,
+        fencing_generation=lease.generation, coordinator_lease=lease,
+    )
+    aggregate = spot_exit["aggregate_version"]
+    futures_exit = await service.record_fill(
+        session_id=admitted["session_id"], leg_id=f"future-{suffix}",
+        account_scope_id="hedge-account-" + suffix,
+        venue="okx", market_type="swap", symbol="BTC-USDT-SWAP",
+        exchange_trade_id="futures-exit-" + suffix, side="buy",
+        quantity="0.2", price="64900", quote_asset="USDT",
+        quote_quantity="12.98", fee_amount="0.01", fee_asset="USDT",
+        fee_verified=True, fee_source="EXCHANGE_TRADE",
+        fill_role="EXIT", filled_at=datetime.now(timezone.utc),
+        actor_id="hedge-integration-test", event_idempotency_key="futures-exit-event-" + suffix,
+        expected_leg_state_version=leg_versions[f"future-{suffix}"],
+        expected_aggregate_version=aggregate,
+        fencing_generation=lease.generation, coordinator_lease=lease,
+    )
+    assert spot_exit["fill_role"] == "EXIT"
+    assert futures_exit["fill_role"] == "EXIT"
+    async with postgres_pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT leg_id, confirmed_filled_quantity, confirmed_exit_quantity,
+                   confirmed_exposure_quantity, confirmed_exit_exposure_quantity,
+                   status
+            FROM public.execution_legs WHERE session_id=$1 ORDER BY leg_id
+            """,
+            admitted["session_id"],
+        )
+        fill_roles = await conn.fetch(
+            "SELECT fill_role, count(*) AS n FROM public.execution_fills WHERE session_id=$1 GROUP BY fill_role",
+            admitted["session_id"],
+        )
+    by_leg = {row["leg_id"]: row for row in rows}
+    assert Decimal(str(by_leg[f"spot-{suffix}"]["confirmed_filled_quantity"])) == Decimal("0.0002")
+    assert Decimal(str(by_leg[f"spot-{suffix}"]["confirmed_exit_quantity"])) == Decimal("0.0002")
+    assert Decimal(str(by_leg[f"spot-{suffix}"]["confirmed_exit_exposure_quantity"])) == Decimal("0.0002")
+    assert Decimal(str(by_leg[f"future-{suffix}"]["confirmed_filled_quantity"])) == Decimal("0.2")
+    assert Decimal(str(by_leg[f"future-{suffix}"]["confirmed_exit_quantity"])) == Decimal("0.2")
+    assert Decimal(str(by_leg[f"future-{suffix}"]["confirmed_exit_exposure_quantity"])) == Decimal("0.0002")
+    assert {row["fill_role"]: row["n"] for row in fill_roles} == {"ENTRY": 2, "EXIT": 2}
+
+
+@pytest.mark.asyncio
+async def test_postgres_exit_fill_overclose_forces_reconciliation(postgres_pool):
+    suffix = uuid.uuid4().hex
+    coordinator, admitted, aggregate, versions = await _session(postgres_pool, suffix)
+    lease = admitted["coordinator_lease"]
+    spot_entry = await _spot_fill(
+        postgres_pool, admitted, suffix, "overclose-entry-" + suffix,
+        versions[f"spot-{suffix}"], aggregate,
+    )
+    async with postgres_pool.acquire() as conn:
+        session = await conn.fetchrow(
+            "SELECT state_version, aggregate_version FROM public.execution_sessions WHERE session_id=$1",
+            admitted["session_id"],
+        )
+        leg = await conn.fetchrow(
+            "SELECT state_version FROM public.execution_legs WHERE session_id=$1 AND leg_id=$2",
+            admitted["session_id"], f"spot-{suffix}",
+        )
+    transition = await coordinator.transition(
+        coordinator_lease=lease, session_id=admitted["session_id"],
+        target_state="HEDGED",
+        expected_state_version=int(session["state_version"]),
+        expected_aggregate_version=int(session["aggregate_version"]),
+        fencing_generation=lease.generation,
+        event_type="TEST_SESSION_HEDGED_OVER_CLOSE",
+        event_idempotency_key="overclose-hedged-" + suffix,
+        actor_id="hedge-integration-test",
+    )
+    transition = await coordinator.transition(
+        coordinator_lease=lease, session_id=admitted["session_id"],
+        target_state="EXIT_IN_PROGRESS",
+        expected_state_version=transition["state_version"],
+        expected_aggregate_version=transition["aggregate_version"],
+        fencing_generation=lease.generation,
+        event_type="TEST_SESSION_EXITING_OVER_CLOSE",
+        event_idempotency_key="overclose-exiting-" + suffix,
+        actor_id="hedge-integration-test",
+    )
+    leg_transition = await coordinator.transition_leg(
+        coordinator_lease=lease, session_id=admitted["session_id"],
+        leg_id=f"spot-{suffix}", target_state="CLOSING",
+        expected_leg_state_version=int(leg["state_version"]),
+        expected_aggregate_version=transition["aggregate_version"],
+        fencing_generation=lease.generation,
+        event_type="SPOT_CLOSING_OVER_CLOSE",
+        event_idempotency_key="overclose-spot-closing-" + suffix,
+        actor_id="hedge-integration-test",
+    )
+    result = await ExecutionFillService(postgres_pool).record_fill(
+        session_id=admitted["session_id"], leg_id=f"spot-{suffix}",
+        account_scope_id="hedge-account-" + suffix,
+        venue="indodax", market_type="spot", symbol="btc_idr",
+        exchange_trade_id="spot-overclose-" + suffix, side="sell",
+        quantity="0.0003", price="1000000000", quote_asset="IDR",
+        quote_quantity="300000", fee_amount="0", fee_asset="IDR",
+        fee_verified=True, fee_source="EXCHANGE_TRADE", fill_role="EXIT",
+        filled_at=datetime.now(timezone.utc), actor_id="hedge-integration-test",
+        event_idempotency_key="spot-overclose-event-" + suffix,
+        expected_leg_state_version=leg_transition["leg_state_version"],
+        expected_aggregate_version=leg_transition["aggregate_version"],
+        fencing_generation=lease.generation, coordinator_lease=lease,
+    )
+    assert result["session_state"] == "RECONCILIATION_REQUIRED"
