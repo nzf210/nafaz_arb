@@ -439,3 +439,30 @@ async def test_v3_hedge_intent_without_session_leg_is_rejected(postgres_pool):
     assert current["status"] in {"PREPARED", "ABORTED"}
     async with postgres_pool.acquire() as conn:
         await global_stop.ownership.release_all(conn)
+
+
+@pytest.mark.asyncio
+async def test_session_bound_hedge_intent_rejects_stale_coordinator_generation(postgres_pool):
+    suffix = uuid.uuid4().hex
+    _, admitted, intents, intent = await _prepare_session_hedge_intent(postgres_pool, suffix)
+    async with postgres_pool.acquire() as conn:
+        await conn.execute(
+            """
+            UPDATE public.execution_sessions
+            SET fencing_generation=fencing_generation+1
+            WHERE session_id=$1
+            """,
+            admitted["session_id"],
+        )
+    global_stop = GlobalStopService("unused", require_scoped_submits=True)
+    global_stop.pool = postgres_pool
+    venue = _Venue()
+    gateway = MutationGateway(global_stop=global_stop, order_intent_service=intents)
+
+    result = await gateway.execute_create_intent(
+        venue, intent_id=intent["intent_id"], actor_id="gateway-test",
+    )
+    assert result.status == MutationResultType.REJECTED
+    assert venue.calls == []
+    async with postgres_pool.acquire() as conn:
+        await global_stop.ownership.release_all(conn)
