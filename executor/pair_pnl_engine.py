@@ -333,6 +333,7 @@ def compute_pair_pnl_v3(
     spot_entry_cost_quote,
     spot_entry_fee_quote,
     spot_entry_fee_verified: bool,
+    spot_entry_fee_source: str,
     spot_bid_levels: Sequence[PnLBookLevel],
     spot_book_observed_at_ms: int,
     spot_book_sequence: str,
@@ -345,12 +346,15 @@ def compute_pair_pnl_v3(
     futures_entry_price,
     futures_entry_fee_quote,
     futures_entry_fee_verified: bool,
+    futures_entry_fee_source: str,
     futures_ask_levels: Sequence[PnLBookLevel],
     futures_book_observed_at_ms: int,
     futures_book_sequence: str,
     futures_book_checksum_valid: bool,
     futures_fx: PnLFXEvidence,
     futures_exit_fee_rate,
+    exit_fee_policy_verified: bool,
+    exit_fee_policy_source: str,
     funding_reporting_amount,
     funding_verified: bool,
     funding_source: str,
@@ -363,16 +367,18 @@ def compute_pair_pnl_v3(
     This is a valuation only. It never labels estimated liquidation as realized PnL.
     Missing/stale books, fee verification, FX, or funding evidence fail closed.
     """
-    if not str(session_id or "").strip() or not str(pair_key or "").strip():
-        raise PairPnLInputError("session_id and pair_key are required")
+    if not str(session_id or "").strip() or not str(pair_key or "").strip() or not str(reporting_currency or "").strip():
+        raise PairPnLInputError("session_id, pair_key and reporting_currency are required")
     if isinstance(now_ms, bool) or not isinstance(now_ms, int):
         raise PairPnLInputError("now_ms must be an integer timestamp")
     if isinstance(max_book_age_ms, bool) or not isinstance(max_book_age_ms, int) or max_book_age_ms <= 0:
         raise PairPnLInputError("max_book_age_ms must be a positive integer")
-    if not isinstance(spot_entry_fee_verified, bool) or spot_entry_fee_verified is not True:
-        raise PairPnLInputError("Spot entry fee valuation must be verified")
-    if not isinstance(futures_entry_fee_verified, bool) or futures_entry_fee_verified is not True:
-        raise PairPnLInputError("Futures entry fee valuation must be verified")
+    if not isinstance(spot_entry_fee_verified, bool) or spot_entry_fee_verified is not True or not str(spot_entry_fee_source or "").strip():
+        raise PairPnLInputError("Spot entry fee valuation must be verified with a source")
+    if not isinstance(futures_entry_fee_verified, bool) or futures_entry_fee_verified is not True or not str(futures_entry_fee_source or "").strip():
+        raise PairPnLInputError("Futures entry fee valuation must be verified with a source")
+    if exit_fee_policy_verified is not True or not str(exit_fee_policy_source or "").strip():
+        raise PairPnLInputError("exit fee policy must be verified with a source")
     if not isinstance(funding_verified, bool) or funding_verified is not True or not str(funding_source or "").strip():
         raise PairPnLInputError("funding amount must have verified settlement provenance")
     if spot_book_checksum_valid is not True or futures_book_checksum_valid is not True:
@@ -398,11 +404,15 @@ def compute_pair_pnl_v3(
     spot_entry_fee = _pnl_decimal(spot_entry_fee_quote, "spot_entry_fee_quote", allow_zero=True)
     spot_exit_rate = _pnl_decimal(spot_exit_fee_rate, "spot_exit_fee_rate", allow_zero=True)
     tax_rate = _pnl_decimal(spot_tax_rate, "spot_tax_rate", allow_zero=True)
+    if spot_exit_rate >= 1 or tax_rate >= 1:
+        raise PairPnLInputError("Spot fee and tax rates must be below 100%")
     futures_qty = _pnl_decimal(futures_quantity_native, "futures_quantity_native")
     contract_size = _pnl_decimal(futures_contract_size, "futures_contract_size")
     futures_entry = _pnl_decimal(futures_entry_price, "futures_entry_price")
     futures_entry_fee = _pnl_decimal(futures_entry_fee_quote, "futures_entry_fee_quote", allow_zero=True)
     futures_exit_rate = _pnl_decimal(futures_exit_fee_rate, "futures_exit_fee_rate", allow_zero=True)
+    if futures_exit_rate >= 1:
+        raise PairPnLInputError("Futures exit fee rate must be below 100%")
     funding = Decimal(str(funding_reporting_amount))
     conversion_cost = _pnl_decimal(conversion_cost_reporting, "conversion_cost_reporting", allow_zero=True)
     reserve = _pnl_decimal(fee_reserve_reporting, "fee_reserve_reporting", allow_zero=True)
@@ -480,8 +490,12 @@ def compute_pair_pnl_v3(
         spot_executable_base_quantity=spot_qty,
         futures_executable_base_quantity=futures_base_qty,
         hedge_drift_base_quantity=abs(spot_qty - futures_base_qty),
-        confidence="VERIFIED",
+        confidence="VERIFIED" if actual_futures_margin_reporting is not None else "PARTIAL",
         provenance={
+            "spot_entry_fee_source": spot_entry_fee_source,
+            "futures_entry_fee_source": futures_entry_fee_source,
+            "exit_fee_policy_source": exit_fee_policy_source,
+            "capital_basis_complete": actual_futures_margin_reporting is not None,
             "spot_book_sequence": spot_book_sequence,
             "spot_book_observed_at_ms": spot_book_observed_at_ms,
             "futures_book_sequence": futures_book_sequence,
