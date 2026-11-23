@@ -1276,6 +1276,7 @@ class EntryHedgeMixin:
             if (
                 claim_key and claims_service is not None and claim_coid
                 and not order_info.get("hedge_submit_started")
+                and int(order_info.get("hedge_attempt_no", 1) or 1) == 1
             ):
                 await claims_service.mark_abandoned(
                     claim_key, claim_coid,
