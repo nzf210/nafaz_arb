@@ -159,6 +159,48 @@ CREATE TABLE IF NOT EXISTS public.execution_hedge_allocations (
 CREATE INDEX IF NOT EXISTS idx_execution_hedge_allocations_session
     ON public.execution_hedge_allocations (session_id, created_at);
 
+-- Prevent cross-session allocation references even if a caller supplies
+-- valid identifiers that belong to different sessions.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_hedge_reservations_session_id
+    ON public.execution_hedge_reservations(session_id, reservation_id);
+
+DO $
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_hedge_allocations'::regclass
+          AND conname='fk_hedge_allocation_session_reservation'
+    ) THEN
+        ALTER TABLE public.execution_hedge_allocations
+            ADD CONSTRAINT fk_hedge_allocation_session_reservation
+            FOREIGN KEY (session_id, reservation_id)
+            REFERENCES public.execution_hedge_reservations(session_id, reservation_id)
+            ON DELETE RESTRICT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_hedge_allocations'::regclass
+          AND conname='fk_hedge_allocation_session_fill'
+    ) THEN
+        ALTER TABLE public.execution_hedge_allocations
+            ADD CONSTRAINT fk_hedge_allocation_session_fill
+            FOREIGN KEY (session_id, futures_fill_id)
+            REFERENCES public.execution_fills(session_id, fill_id)
+            ON DELETE RESTRICT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid='public.execution_hedge_allocations'::regclass
+          AND conname='fk_hedge_allocation_session_obligation'
+    ) THEN
+        ALTER TABLE public.execution_hedge_allocations
+            ADD CONSTRAINT fk_hedge_allocation_session_obligation
+            FOREIGN KEY (session_id, obligation_id)
+            REFERENCES public.execution_hedge_obligations(session_id, obligation_id)
+            ON DELETE RESTRICT;
+    END IF;
+END $;
+
 CREATE OR REPLACE FUNCTION public.reject_execution_hedge_allocation_mutation()
 RETURNS trigger
 LANGUAGE plpgsql
