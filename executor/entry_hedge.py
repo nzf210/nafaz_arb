@@ -472,6 +472,8 @@ class EntryHedgeMixin:
             unhedged_delta = float(claim["residual_qty"])
             if unhedged_delta <= 0:
                 order_info["hedge_waiting_for_coverage"] = False
+                order_info.pop("hedge_waiting_reason", None)
+                order_info.pop("hedge_retry_after", None)
                 return None, {}, None, 0.0
         # A fresh durable claim owns its deterministic client id. Never
         # reuse the previous generation's pending id after a deferred fill;
