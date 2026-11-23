@@ -20,8 +20,18 @@ def _d(value: Any, name: str, *, positive: bool = False) -> Decimal:
         result = value if isinstance(value, Decimal) else Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise PnLAccountingError(f"{name} must be a finite decimal") from exc
-    if not result.is_finite() or (result <= 0 if positive else False):
-        raise PnLAccountingError(f"{name} must be {'positive' if positive else 'finite'}")
+    if not result.is_finite() or (result <= 0 if positive else result < 0):
+        raise PnLAccountingError(f"{name} must be {'positive' if positive else 'non-negative'}")
+    return result
+
+
+def _signed_d(value: Any, name: str) -> Decimal:
+    try:
+        result = value if isinstance(value, Decimal) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise PnLAccountingError(f"{name} must be a finite decimal") from exc
+    if not result.is_finite():
+        raise PnLAccountingError(f"{name} must be a finite decimal")
     return result
 
 
@@ -390,8 +400,8 @@ class ExecutionPnLAccountingService:
         source = str(fx_source or "").strip()
         if not all((payment_id, account, venue_name, market, instrument, currency, reporting, source)):
             raise PnLAccountingError("funding event identity and FX provenance are required")
-        signed_amount = _d(amount, "funding.amount")
-        valued_amount = _d(reporting_amount, "funding.reporting_amount")
+        signed_amount = _signed_d(amount, "funding.amount")
+        valued_amount = _signed_d(reporting_amount, "funding.reporting_amount")
         rate = _d(fx_rate, "funding.fx_rate", positive=True)
         if coordinator_lease is None:
             raise PnLAccountingError("funding event requires coordinator lease")
