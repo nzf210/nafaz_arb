@@ -356,12 +356,12 @@ async def test_postgres_hedge_reservation_below_minimum_and_unknown_release_fail
     terminal_evidence = {
         "evidence_id": "terminal-" + suffix, "source": "okx-private-order-stream",
         "verified_at": now, "terminal_status": "canceled",
-        "exchange_order_id": "unknown-client-" + suffix,
+        "client_order_id": "unknown-client-" + suffix,
     }
     fill_evidence = {
         "evidence_id": "fills-" + suffix, "source": "okx-rest-trades",
         "reconciled_at": now, "fills_checked": True,
-        "exchange_order_id": "unknown-client-" + suffix,
+        "client_order_id": "unknown-client-" + suffix,
     }
     released = await service.release(
         session_id=admitted["session_id"], reservation_id=reservation["reservation_id"],
