@@ -157,7 +157,8 @@ class HedgeIntentClaimService:
                             return None
                         attempt_totals = await conn.fetchrow(
                             """
-                            select coalesce(sum(f.fill_qty_base),0) as confirmed
+                            select coalesce(sum(f.fill_qty_base),0) as confirmed,
+                                   count(distinct a.attempt_id) as attempt_count
                             from public.executor_hedge_attempts a
                             left join public.executor_hedge_attempt_fills f
                               on f.attempt_id=a.attempt_id
@@ -165,9 +166,12 @@ class HedgeIntentClaimService:
                             """,
                             str(unresolved["claim_key"]),
                         )
-                        if attempt_totals is None:
-                            # Missing aggregate support/schema is not proof
-                            # that the previous venue attempt is safe to retry.
+                        if (
+                            attempt_totals is None
+                            or int(attempt_totals["attempt_count"] or 0) <= 0
+                        ):
+                            # A legacy SUBMITTED claim with no attempt-ledger
+                            # row cannot be assumed terminal or safe to replay.
                             return None
                         verified_confirmed = float(
                             attempt_totals["confirmed"] or 0.0
