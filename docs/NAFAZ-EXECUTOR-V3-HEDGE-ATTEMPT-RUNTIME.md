@@ -47,6 +47,9 @@ paths:
 - The first attempt reuses the claim's original client order ID to preserve
   compatibility with the claim lifecycle. Subsequent attempts use a distinct
   deterministic client order ID.
+- The first `PREPARED` attempt and the claim's `SUBMITTED` promotion are
+  committed in one PostgreSQL transaction, eliminating a crash gap between
+  attempt reservation and claim activation.
 - The attempt is moved to `SUBMITTING` inside the existing submit fence,
   then to `ACKNOWLEDGED` or `UNKNOWN` based on authoritative mutation
   outcomes.
@@ -57,11 +60,18 @@ paths:
   sum of verified attempt fills covers the claim target.
 - Terminal partial attempts release their reservation only after reconciliation;
   the next entry monitor pass can then prepare a distinct residual attempt.
+- Terminal Spot orders with retryable partial Futures fills remain in the
+  durable pending-entry queue. The monitor reuses the terminal Spot snapshot
+  and retries only the Futures residual; it never polls or cancels the Spot
+  order again.
+- Startup recovery runs after Global STOP submit-intent reconciliation. It
+  adopts PREPARED/SUBMITTING/UNKNOWN attempts when the exact venue order is
+  found by client ID, and rejects an unresolved attempt only after the
+  authoritative recovery pass proves no accepted order exists.
 - A legacy `SUBMITTED` claim with no attempt-ledger row is deliberately
   blocked. It is not safe to assume its old exchange order is terminal.
 
-The current runtime does not automatically retry a residual after the parent
-Spot order has already been removed from the pending-entry lifecycle. That
-terminal-Spot recovery handoff remains a separate required change. Zero-fill
-orders whose terminal status is not durably available also remain blocked for
-manual reconciliation. No LIVE configuration or exchange order was changed.
+Below-minimum residuals and ambiguous/unknown submissions remain explicit
+manual reconciliation obligations. A legacy `SUBMITTED` claim with no
+attempt-ledger row remains blocked rather than being assumed safe to replay.
+No LIVE configuration or exchange order was changed.
