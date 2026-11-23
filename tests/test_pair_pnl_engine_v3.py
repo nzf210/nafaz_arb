@@ -12,10 +12,10 @@ def _levels(*rows):
     return tuple(PnLBookLevel(Decimal(price), Decimal(quantity)) for price, quantity in rows)
 
 
-def _fx(*, observed=9900, rate="1", source="verified-usdt-idr"):
+def _fx(*, observed=9900, rate="1", source="verified-usdt-idr", max_age=30000):
     return PnLFXEvidence(
         quote_to_reporting_rate=Decimal(rate), source=source,
-        observed_at_ms=observed, verified=True, max_age_ms=30000,
+        observed_at_ms=observed, verified=True, max_age_ms=max_age,
     )
 
 
@@ -95,7 +95,7 @@ def test_insufficient_depth_fails_closed_instead_of_assuming_a_price():
 
 def test_stale_or_unverified_fx_and_book_data_fail_closed():
     with pytest.raises(PairPnLInputError, match="Spot FX evidence is stale"):
-        _valuation(spot_fx=_fx(observed=1))
+        _valuation(spot_fx=_fx(observed=1, max_age=1000))
     with pytest.raises(PairPnLInputError, match="Futures order book is stale"):
         _valuation(futures_book_observed_at_ms=100)
 
