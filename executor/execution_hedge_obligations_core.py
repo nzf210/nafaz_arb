@@ -28,10 +28,11 @@ class HedgeObligationMixin(HedgeServiceBase):
                     """
                     SELECT f.fill_id, f.session_id, f.account_scope_id, f.venue,
                            f.market_type, f.symbol, f.side, f.quantity,
+                           f.fee_amount, f.fee_asset, f.fee_verified,
                            f.exchange_trade_id, spot.leg_id AS spot_leg_id,
                            spot.leg_type AS spot_leg_type, spot.base_asset,
                            spot.venue AS spot_venue, spot.market_type AS spot_market_type,
-                           spot.symbol AS spot_symbol,
+                           spot.symbol AS spot_symbol, spot.quantity_unit AS spot_quantity_unit,
                            spot.base_per_unit AS spot_base_per_unit,
                            futures.leg_id AS futures_leg_id,
                            futures.venue AS futures_venue,
@@ -70,9 +71,24 @@ class HedgeObligationMixin(HedgeServiceBase):
                 if str(fill["base_asset"]).upper() != str(fill["futures_base_asset"]).upper():
                     raise HedgeObligationError("Spot/Futures base asset identity mismatch")
 
+                if str(fill["spot_quantity_unit"] or "").upper() != "BASE":
+                    raise HedgeObligationError("Spot entry fills must be expressed in base-asset units")
                 spot_unit = _qty(fill["spot_base_per_unit"], "spot_base_per_unit")
                 future_unit = _qty(fill["futures_base_per_unit"], "futures_base_per_unit")
-                target = _qty(fill["quantity"], "spot_fill_quantity") * spot_unit * ratio
+                gross_base = _qty(fill["quantity"], "spot_fill_quantity") * spot_unit
+                fee_asset = str(fill["fee_asset"] or "").upper()
+                fee_amount = _qty(fill["fee_amount"], "spot_fee_amount", allow_zero=True)
+                if fee_asset == str(fill["base_asset"]).upper():
+                    if not bool(fill["fee_verified"]):
+                        raise HedgeObligationError(
+                            "base-denominated Spot fee must be verified before sizing its hedge obligation"
+                        )
+                    if fee_amount >= gross_base:
+                        raise HedgeObligationError("verified base-denominated fee consumes the entire Spot fill")
+                    net_base = gross_base - fee_amount
+                else:
+                    net_base = gross_base
+                target = net_base * ratio
                 existing = await conn.fetchrow(
                     "SELECT * FROM public.execution_hedge_obligations WHERE source_fill_id=$1::uuid FOR UPDATE",
                     spot_fill_id,
