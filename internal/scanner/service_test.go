@@ -938,3 +938,55 @@ func TestApplyEvaluationResultsCountsFailedPairs(t *testing.T) {
 		t.Fatalf("failed_pairs=%d, want 1", result.FailedPairs)
 	}
 }
+
+
+
+type recordingOpportunitySink struct {
+	scans []domain.ScanResult
+}
+
+func (s *recordingOpportunitySink) EnqueueScan(scan domain.ScanResult) {
+	s.scans = append(s.scans, scan)
+}
+
+func TestScanEnqueuesOpportunityObservations(t *testing.T) {
+	cfg := config.Config{
+		Mode:                  "MOCK",
+		QuoteAssets:           []string{"USDT"},
+		CapitalTotal:          1000,
+		AllocationPerPair:     0.5,
+		PerpLeverage:          1,
+		EstimatedHoldingHours: 8,
+		MinNetROIPct:          0.1,
+		MaxNetROIPct:          10,
+		MaxSlippagePct:        1,
+		SpotTakerFeePct:       0.1,
+		PerpTakerFeePct:       0.05,
+	}
+	svc := New(cfg, exchange.NewMockAdapter())
+	sink := &recordingOpportunitySink{}
+	svc.SetOpportunitySink(sink)
+
+	result, complete, err := svc.Scan(context.Background())
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	if !complete {
+		t.Fatalf("expected complete scan, errors=%v", result.Errors)
+	}
+	if len(sink.scans) != 1 {
+		t.Fatalf("sink received %d scans, want 1", len(sink.scans))
+	}
+	persisted := sink.scans[0]
+	if persisted.ScanID != result.ScanID || persisted.Complete != result.Complete {
+		t.Fatalf("sink received stale scan metadata: got %+v want %+v", persisted, result)
+	}
+	if len(persisted.Opportunities) != len(result.Opportunities) {
+		t.Fatalf("sink received %d opportunities, want %d", len(persisted.Opportunities), len(result.Opportunities))
+	}
+	for _, opportunity := range persisted.Opportunities {
+		if opportunity.LocalExchange == "" || opportunity.GlobalExchange == "" {
+			t.Fatalf("venue identity missing from persisted opportunity: %+v", opportunity)
+		}
+	}
+}

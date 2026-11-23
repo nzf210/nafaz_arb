@@ -58,7 +58,20 @@ Pastikan VPS Anda telah terpasang:
    mkdir -p data
    ```
 
-4. Edit file `config.json` sesuai kebutuhan:
+4. (Opsional) Aktifkan Supabase untuk audit scanner dan executor melalui file
+   `.env` yang tidak di-commit (sudah masuk `.gitignore`):
+   ```bash
+   cat > .env <<'EOF'
+   SUPABASE_URL=https://<project-ref>.supabase.co
+   SUPABASE_KEY=<service_role_key>
+   EOF
+   chmod 600 .env
+   ```
+   Gunakan key server-side `service_role`, bukan publishable/anon key. Compose
+   meneruskan variabel ini ke scanner dan executor; jangan menaruh key di
+   `config.json`, source code, atau image container.
+
+5. Edit file `config.json` sesuai kebutuhan:
    * Ubah `"mode"`: `"MOCK"` (testing simulasi) atau `"LIVE"` (koneksi data bursa live).
    * Konfigurasi alert Telegram jika ingin notifikasi aktif:
      ```json

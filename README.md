@@ -283,28 +283,30 @@ across process restarts.
 
 ## Supabase Database
 
-The initial Supabase PostgreSQL schema and migration workflow are documented in
-[`supabase/README.md`](./supabase/README.md). The versioned migration creates
-operational tables for exchange accounts, strategy/risk configuration, market pairs,
-scanner opportunities, orders/fills, positions/legs, funding payments, closed trades,
-balances, risk events, and executor events/status snapshots.
+The versioned Supabase PostgreSQL schema and migration workflow are documented in
+[`supabase/README.md`](./supabase/README.md). The Go scanner now writes every
+evaluated candidate (eligible and excluded) to `scanner_opportunities`; the Python
+executor writes `positions`, `orders`, `order_fills`, `closed_trades`, and
+`executor_events`. Scanner opportunity IDs are deterministic per `scan_id + pair_key`
+and are upserted, so replaying the same scan does not create duplicate rows.
 
-**Important:** the schema is created, and the executor now writes to it on a
-best-effort basis. Redis remains the live coordination layer and scanner
-opportunity history still uses the configured JSON file.
+Set both `SUPABASE_URL` and `SUPABASE_KEY` (server-side service-role key) in the
+deployment environment. Docker Compose passes them to both backend containers.
+Do not place the key in tracked config, frontend code, or image layers. If both
+variables are absent, Supabase persistence stays disabled.
 
-Set both `SUPABASE_URL` and `SUPABASE_KEY` (secret/service-role key — never the
-publishable key, whose `anon` role these tables deliberately deny) in the server
-environment to enable it. With either unset the writer is inert, and every write
-is queued and flushed by a background task, so an unreachable database can never
-delay a hedge, rollback, or force close.
+Redis remains the real-time coordination store for signals, prices, Pub/Sub,
+pending orders, active-position coordination, and locks. The JSON history file
+continues to store opportunity-episode lifecycle and metrics; Supabase stores the
+per-scan candidate audit trail.
 
-Persisted by the executor: `positions`, `orders`, `order_fills`, `closed_trades`,
-`executor_events`. Writes are upserts on client-generated ids, so retries are
-idempotent, and fill rows derive from cumulative filled quantity so a replayed
-write cannot duplicate a fill. `scanner_opportunities`, `balance_snapshots`,
-`funding_payments`, and `executor_status_snapshots` are not yet written.
-
+Persistence is asynchronous and best-effort, not a transactional or disk-backed
+outbox. Transient HTTP errors are retried, but buffered rows can be lost on process
+restart or after retries are exhausted. Supabase must never gate a hedge, rollback,
+force close, scanner signal, or risk decision. The remaining schema tables
+(`position_legs`, `funding_payments`, `balance_snapshots`, `risk_events`,
+`executor_status_snapshots`, `market_pairs`, `exchange_accounts`,
+`strategy_configs`, and `risk_limits`) are not yet populated by runtime writers.
 
 For LIVE mode, configure a cryptographically random `api_auth_token` of at least 32 characters in `config.json` or `API_AUTH_TOKEN` in the server environment. The scanner refuses to load LIVE configuration without it. LIVE startup also verifies restored futures short quantities against the exchange before resuming automatic position management.
 

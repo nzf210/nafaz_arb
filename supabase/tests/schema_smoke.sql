@@ -71,3 +71,31 @@ begin
         raise exception 'trade currency / FX audit columns are missing';
     end if;
 end $$;
+
+
+
+-- Runtime Go scanner writer contract: fail CI if its PostgREST payload columns
+-- drift from the versioned scanner_opportunities table.
+do $$
+declare
+    required_column text;
+    required_columns text[] := array[
+        'id','scan_id','pair_key','local_exchange','global_exchange',
+        'local_symbol','global_symbol','quote_asset','execution_mode',
+        'eligibility_status','reason','spot_price','perp_price','spread_pct',
+        'funding_rate','estimated_net_profit','estimated_net_roi_pct',
+        'executable_qty','capacity_pct','observed_at','payload'
+    ];
+begin
+    foreach required_column in array required_columns loop
+        if not exists (
+            select 1
+            from information_schema.columns
+            where table_schema = 'public'
+              and table_name = 'scanner_opportunities'
+              and column_name = required_column
+        ) then
+            raise exception 'scanner_opportunities is missing runtime column %', required_column;
+        end if;
+    end loop;
+end $$;
