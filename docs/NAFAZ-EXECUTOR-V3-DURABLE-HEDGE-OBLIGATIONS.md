@@ -7,11 +7,11 @@ Scope: one execution session at a time; no exchange mutation calls.
 
 Every confirmed Spot entry fill creates one durable hedge obligation. The obligation target is:
 
-`spot_fill_native_quantity × spot_leg.base_per_unit × immutable_hedge_ratio`
+`(spot_fill_native_quantity × spot_leg.base_per_unit − verified base-denominated fee) × immutable_hedge_ratio`
 
 The target is expressed in base-equivalent quantity. Futures contracts are never compared directly with Spot base quantity; conversion uses the paired Futures leg's pinned `base_per_unit`.
 
-The default hedge ratio is 1.0. Ratios above 1.0 are rejected by this service unless a separately approved over-hedge policy is implemented.
+The default hedge ratio is 1.0. Ratios above 1.0 are rejected by this service unless a separately approved over-hedge policy is implemented. If the verified Spot fee is charged in the base asset, that fee is subtracted before calculating the hedge target. An unverified base-denominated fee blocks obligation sizing; it is not silently ignored.
 
 ## Durable states and quantities
 
@@ -27,7 +27,7 @@ Reserved quantity is not treated as confirmed coverage. Multiple partial Spot fi
 
 A reservation is created transactionally by locking compatible OPEN/PARTIALLY_HEDGED obligations in FIFO order, computing available quantity (target − confirmed − reserved), and reserving only the amount that can actually be backed by those obligations. If the backed amount is below the supplied minimum base quantity, no reservation is created.
 
-The route identity pins account, Futures venue, market type, native symbol, base asset, position side, contract type/size, quantity unit, and base-per-unit conversion. This prevents aggregation across incompatible contract definitions.
+The route identity pins account, Futures venue, market type, native symbol, base asset, position side, contract type/size, quantity unit, and base-per-unit conversion. Composite foreign keys enforce that source fills, paired legs, reservations, and allocations all belong to the same session. This prevents aggregation across incompatible contract definitions.
 
 Reservation lifecycle:
 - RESERVED: durable intent exists; no submit is claimed.
