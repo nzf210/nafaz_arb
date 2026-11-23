@@ -380,4 +380,3 @@ async def test_obligation_backed_hedge_reaches_gateway_with_exact_reservation(po
         assert leg["status"] == "SUBMITTING"
         assert event["event_type"] == "HEDGE_LEG_SUBMISSION_STARTED"
         await global_stop.ownership.release_all(conn)
-    await admitted["coordinator"].release(lease) if "coordinator" in admitted else None
