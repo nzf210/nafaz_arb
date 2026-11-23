@@ -206,14 +206,27 @@ class OwnershipLeaseService:
             )
 
     async def release(self, conn: Any, lease: ScopeLease) -> bool:
+        """Release a lease only when no unresolved venue mutation uses its generation."""
         async with conn.transaction():
+            await conn.execute(
+                "select pg_advisory_xact_lock(hashtextextended('nafaz:ownership:' || $1, 0))",
+                lease.scope_key,
+            )
             row = await conn.fetchrow(
                 """
-                UPDATE public.executor_ownership_leases
+                UPDATE public.executor_ownership_leases AS lease
                 SET lease_expires_at=clock_timestamp(), updated_at=clock_timestamp()
-                WHERE scope_key=$1 AND owner_id=$2 AND generation=$3
-                  AND lease_expires_at > clock_timestamp()
-                RETURNING lease_expires_at
+                WHERE lease.scope_key=$1 AND lease.owner_id=$2
+                  AND lease.generation=$3
+                  AND lease.lease_expires_at > clock_timestamp()
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM public.executor_submit_attempts AS attempt
+                      WHERE attempt.owner_scope_key=lease.scope_key
+                        AND attempt.owner_generation=lease.generation
+                        AND attempt.status IN ('SUBMITTING','UNKNOWN')
+                  )
+                RETURNING lease.lease_expires_at
                 """,
                 lease.scope_key, lease.owner_id, lease.generation,
             )
@@ -226,24 +239,49 @@ class OwnershipLeaseService:
                     event_idempotency_key, lease_expires_at, metadata
                 ) VALUES ($1,$2,$3,'RELEASED',$4,$5,'{"source":"explicit-release"}'::jsonb)
                 """,
-                lease.scope_key, lease.generation, lease.owner_id,
+                lease.scope_key, lease.owner_id, lease.generation,
                 uuid.uuid4().hex, row["lease_expires_at"],
             )
             return True
 
     async def release_all(self, conn: Any) -> int:
-        """Release this process owner's live leases during graceful shutdown."""
+        """Release idle process-owned leases; unresolved venue mutations retain their fence."""
         async with conn.transaction():
-            rows = await conn.fetch(
+            leases = await conn.fetch(
                 """
-                UPDATE public.executor_ownership_leases
-                SET lease_expires_at=clock_timestamp(), updated_at=clock_timestamp()
+                SELECT scope_key, generation
+                FROM public.executor_ownership_leases
                 WHERE owner_id=$1 AND lease_expires_at > clock_timestamp()
-                RETURNING scope_key, generation, lease_expires_at
+                ORDER BY scope_key
                 """,
                 self.owner_id,
             )
-            for row in rows:
+            released = 0
+            for lease in leases:
+                await conn.execute(
+                    "select pg_advisory_xact_lock(hashtextextended('nafaz:ownership:' || $1, 0))",
+                    lease["scope_key"],
+                )
+                row = await conn.fetchrow(
+                    """
+                    UPDATE public.executor_ownership_leases AS lease
+                    SET lease_expires_at=clock_timestamp(), updated_at=clock_timestamp()
+                    WHERE lease.scope_key=$1 AND lease.owner_id=$2
+                      AND lease.generation=$3
+                      AND lease.lease_expires_at > clock_timestamp()
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM public.executor_submit_attempts AS attempt
+                          WHERE attempt.owner_scope_key=lease.scope_key
+                            AND attempt.owner_generation=lease.generation
+                            AND attempt.status IN ('SUBMITTING','UNKNOWN')
+                      )
+                    RETURNING lease.lease_expires_at
+                    """,
+                    lease["scope_key"], self.owner_id, lease["generation"],
+                )
+                if row is None:
+                    continue
                 await conn.execute(
                     """
                     INSERT INTO public.executor_ownership_events (
@@ -251,7 +289,8 @@ class OwnershipLeaseService:
                         event_idempotency_key, lease_expires_at, metadata
                     ) VALUES ($1,$2,$3,'RELEASED',$4,$5,'{"source":"graceful-shutdown"}'::jsonb)
                     """,
-                    row["scope_key"], row["generation"], self.owner_id,
+                    lease["scope_key"], self.owner_id, lease["generation"],
                     uuid.uuid4().hex, row["lease_expires_at"],
                 )
-            return len(rows)
+                released += 1
+            return released
