@@ -64,6 +64,10 @@ def test_scheduler_rejects_unbounded_or_invalid_configuration():
     with pytest.raises(ValueError):
         MutationIntentRecoveryScheduler(worker, interval_seconds=0)
     with pytest.raises(ValueError):
+        MutationIntentRecoveryScheduler(worker, interval_seconds=float("nan"))
+    with pytest.raises(ValueError):
         MutationIntentRecoveryScheduler(worker, interval_seconds=10, max_interval_seconds=5)
     with pytest.raises(ValueError):
         MutationIntentRecoveryScheduler(worker, batch_limit=501)
+    with pytest.raises(ValueError):
+        MutationIntentRecoveryScheduler(worker, batch_limit=1.5)
