@@ -325,7 +325,9 @@ class ExecutionFillService:
                            venue, market_type, symbol, quote_asset,
                            account_scope_id, base_per_unit,
                            confirmed_filled_quantity, confirmed_quote_quantity,
-                           confirmed_price_quantity, confirmed_exposure_quantity
+                           confirmed_price_quantity, confirmed_exposure_quantity,
+                           confirmed_exit_quantity, confirmed_exit_quote_quantity,
+                           confirmed_exit_price_quantity, confirmed_exit_exposure_quantity
                     FROM public.execution_legs
                     WHERE session_id=$1 AND leg_id=$2 FOR UPDATE
                     """,
@@ -343,15 +345,16 @@ class ExecutionFillService:
                     raise FillValidationError("venue-bound fill identity does not match its leg")
                 leg_type = str(leg["leg_type"]).upper()
                 position_side = str(leg["position_side"] or "").upper()
-                if (
-                    (leg_type == "SPOT" and facts["side"] != "buy")
-                    or (
-                        leg_type == "FUTURES"
-                        and (position_side != "SHORT" or facts["side"] != "sell")
-                    )
-                ):
+                expected_side = (
+                    ("buy" if facts["fill_role"] == "ENTRY" else "sell")
+                    if leg_type == "SPOT"
+                    else ("sell" if facts["fill_role"] == "ENTRY" else "buy")
+                )
+                if leg_type not in {"SPOT", "FUTURES"} or (
+                    leg_type == "FUTURES" and position_side != "SHORT"
+                ) or facts["side"] != expected_side:
                     raise FillValidationError(
-                        "entry fill side must BUY Spot or SELL the configured SHORT Futures leg"
+                        "fill side does not match the configured Spot/Futures leg and fill role"
                     )
 
                 prior_event = await conn.fetchrow(
