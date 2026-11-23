@@ -1,9 +1,9 @@
 """Idempotent V3 fill event processing and hedge accounting orchestration."""
 from __future__ import annotations
 
+import inspect
 import json
-from decimal import Decimal
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from executor.execution_fill_service import ExecutionFillService, FillValidationError
 from executor.execution_hedge_common import HedgeObligationError
@@ -74,6 +74,61 @@ class FillEventProcessor:
                 "quarantined": terminal, "retry_delay_seconds": delay,
                 "inbox_id": inbox_id, "error": f"{type(exc).__name__}: {exc}",
             }
+
+    async def process_batch(
+        self, *, coordinator_lease_resolver: Callable[[str], Any],
+        actor_id: str, limit: int = 100,
+        hedge_ratio_resolver: Callable[[str], Any] | None = None,
+    ) -> list[dict]:
+        """Process a bounded due batch using caller-owned session lease resolution.
+
+        Resolver result must be a mapping with \`lease\` and
+        \`fencing_generation\`; a missing lease leaves the event untouched for
+        another worker/owner to claim later.
+        """
+        if not callable(coordinator_lease_resolver):
+            raise ValueError("coordinator_lease_resolver callback is required")
+        due = await self.fills.list_due_inbox_events(
+            limit=limit, processing_lease_seconds=self.processing_lease_seconds,
+        )
+        results: list[dict] = []
+        for item in due:
+            session_id = str(item.get("session_id") or "").strip()
+            leg_id = str(item.get("leg_id") or "").strip()
+            if not session_id or not leg_id:
+                changed = await self.fills.mark_inbox_event(
+                    inbox_id=str(item["inbox_id"]), status="QUARANTINED",
+                    error="fill inbox event is missing session_id or leg_id",
+                )
+                results.append({
+                    "inbox_id": str(item["inbox_id"]),
+                    "quarantined": bool(changed),
+                    "error": "fill inbox event is missing session_id or leg_id",
+                })
+                continue
+            lease_context = coordinator_lease_resolver(session_id)
+            if inspect.isawaitable(lease_context):
+                lease_context = await lease_context
+            if not isinstance(lease_context, Mapping):
+                continue
+            lease = lease_context.get("lease")
+            generation = lease_context.get("fencing_generation")
+            if lease is None or generation is None:
+                continue
+            ratio = "1"
+            if hedge_ratio_resolver is not None:
+                ratio = hedge_ratio_resolver(session_id)
+                if inspect.isawaitable(ratio):
+                    ratio = await ratio
+            result = await self.process_inbox_event(
+                inbox_id=str(item["inbox_id"]),
+                coordinator_lease=lease,
+                fencing_generation=int(generation),
+                actor_id=actor_id,
+                hedge_ratio=ratio,
+            )
+            results.append(result)
+        return results
 
     async def _process_claimed(
         self, *, event: Mapping[str, Any], coordinator_lease: Any,
