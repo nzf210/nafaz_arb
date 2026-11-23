@@ -35,7 +35,7 @@ class HedgeReservationMixin(HedgeServiceBase):
             "unit": _text(quantity_unit, "quantity_unit").upper(),
         }
         if route["side"] not in {"LONG", "SHORT"}:
-            raise FillValidationError("position_side must be LONG or SHORT")
+            raise HedgeObligationError("position_side must be LONG or SHORT")
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 session = await self._lock_session(
