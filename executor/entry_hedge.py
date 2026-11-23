@@ -269,10 +269,10 @@ class EntryHedgeMixin:
             # through. A deferred hedge (wait_until_covered) keeps the pair in
             # ENTRY_PARTIAL: the unhedged exposure stays a visible obligation,
             # never silently promoted to HEDGED_ACTIVE.
-            if (
-                self.states.get(pair_tag) == PositionState.ENTRY_PARTIAL
-                and not order_info.get("hedge_waiting_for_coverage")
-            ):
+            if order_info.get("hedge_waiting_for_coverage"):
+                self.states[pair_tag] = PositionState.ENTRY_PARTIAL
+                await self._maybe_publish_status()
+            elif self.states.get(pair_tag) == PositionState.ENTRY_PARTIAL:
                 self.states[pair_tag] = PositionState.HEDGED_ACTIVE
         elif 0 < current_filled < float(order_info.get("qty", 0.0)):
             # Below the hedge threshold with the maker order still resting: the spot
@@ -966,7 +966,11 @@ class EntryHedgeMixin:
                 f"terminal futures hedge has no verified fill: requested={futures_hedge_qty}, "
                 f"filled={actual_hedged_qty}; attempt remains blocked for reconciliation"
             )
-        if actual_hedged_qty + qty_tolerance < futures_hedge_qty:
+        is_partial_attempt_fill = (
+            actual_hedged_qty + qty_tolerance < futures_hedge_qty
+        )
+        if is_partial_attempt_fill:
+            order_info["hedge_attempt_partial"] = True
             logger.warning(
                 "[Hedge Attempt] %s: terminal partial Futures fill %.12f / %.12f; "
                 "persisting only the filled quantity and waiting for trade reconciliation "
@@ -1059,7 +1063,9 @@ class EntryHedgeMixin:
         global_symbol = order_info["global_symbol"]
         order_info["hedged_short_qty"] += actual_hedged_qty
         # The deferred obligation is now (at least partially) covered.
-        order_info["hedge_waiting_for_coverage"] = False
+        order_info["hedge_waiting_for_coverage"] = bool(
+            order_info.pop("hedge_attempt_partial", False)
+        )
         watermark_persisted = await self._persist_entry_hedge_watermark(
             pair_tag,
             order_info,
