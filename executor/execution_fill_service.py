@@ -370,7 +370,7 @@ class ExecutionFillService:
                 leg_target = old_leg_state
                 if old_leg_state in {"SUBMITTING", "SUBMISSION_UNKNOWN", "OPEN"}:
                     leg_target = "PARTIALLY_FILLED"
-                elif old_leg_state in {"CANCELED", "CLOSED", "UNKNOWN", "REJECTED", "RECONCILIATION_REQUIRED"}:
+                elif old_leg_state in {"CANCELED", "CLOSED", "CLOSING", "UNKNOWN", "REJECTED", "RECONCILIATION_REQUIRED"}:
                     leg_target = "RECONCILIATION_REQUIRED"
                 elif old_leg_state not in {"PARTIALLY_FILLED", "FILLED", "CANCEL_PENDING"}:
                     raise FillValidationError(f"fill is not valid for leg state {old_leg_state}")
