@@ -13,6 +13,8 @@ from executor.helpers import (
     resolve_local_market_identity,
 )
 from executor.order_slots import SlotExhaustedError
+from executor.ownership import account_scope_id_for
+from executor.risk_budget import RiskBudgetMetricsBuilder
 from executor.engine_common import logger
 
 
@@ -380,6 +382,15 @@ class EngineEntrySubmissionMixin:
             )
             entry_seq = self._next_order_seq()
             entry_coid = build_client_order_id(pair_tag, "entry", entry_seq)
+            account_scope_id = (
+                account_scope_id_for(self.config, pair_info.local_exchange)
+                if (
+                    self.global_stop is not None
+                    and getattr(self, "config", None) is not None
+                    and not getattr(self.config, "mock_mode", False)
+                )
+                else None
+            )
             placed_time = time.time()
             exchange_order_price = self._local_order_limit_price(
                 pair_info, snapshot, buy_price_idr
@@ -387,6 +398,51 @@ class EngineEntrySubmissionMixin:
             recovery_context = self._entry_recovery_context(
                 payload, pair_info, snapshot, directives, actual_cost_usdt
             )
+            best_ask = float(getattr(snapshot, "local_best_ask", 0.0) or 0.0)
+            slippage_bps = (
+                max(0.0, (exchange_order_price - best_ask) / best_ask * 10000.0)
+                if best_ask > 0 else None
+            )
+            snapshot_timestamp = int(getattr(snapshot, "timestamp_ms", 0) or 0)
+            market_data_age_ms = (
+                max(0, int(time.time() * 1000) - snapshot_timestamp)
+                if snapshot_timestamp > 0 else None
+            )
+            funding_data = (
+                payload.get("funding_metrics") if isinstance(payload, dict)
+                else getattr(payload, "funding_metrics", None)
+            )
+            funding_rate = (
+                funding_data.get("current_funding_rate")
+                if isinstance(funding_data, dict)
+                else getattr(funding_data, "current_funding_rate", None)
+            )
+            funding_cost_pct = (
+                abs(float(funding_rate)) * 100.0 if funding_rate is not None else None
+            )
+            risk_metrics = RiskBudgetMetricsBuilder.build(
+                self,
+                venue=pair_info.local_exchange,
+                action_class="ENTRY",
+                proposed_notional_usdt=actual_cost_usdt,
+                planned_hedge_notional_usdt=max(
+                    actual_cost_usdt,
+                    (
+                        float(pair_info.global_amount_spec.minimum or 0.0)
+                        * float(pair_info.global_amount_spec.base_per_unit or 1.0)
+                        * float(snapshot.global_best_ask_usdt or 0.0)
+                        if (
+                            bool(getattr(getattr(self, "config", None), "futures_allow_min_notional_overhedge", False))
+                            and pair_info.global_amount_spec is not None
+                        ) else 0.0
+                    ),
+                ),
+                related_venues=[pair_info.global_exchange],
+                slippage_bps=slippage_bps,
+                funding_cost_pct=funding_cost_pct,
+                market_data_age_ms=market_data_age_ms,
+            )
+            risk_limits = RiskBudgetMetricsBuilder.limits_from_config(getattr(self, "config", None))
             recovery_context["strategy_price_idr"] = buy_price_idr
             recovery_context["exchange_order_price"] = exchange_order_price
             recovery_context["exchange_quote_asset"] = str(
@@ -423,6 +479,7 @@ class EngineEntrySubmissionMixin:
                     pair_key=pair_tag,
                     recovery_context=recovery_context,
                     amount_spec=pair_info.local_amount_spec.to_dict(),
+                    account_scope_id=account_scope_id,
                 )
             quote_asset = self._spot_slot_account(pair_info)
             if getattr(self, "slot_manager", None) is not None:
@@ -487,6 +544,12 @@ class EngineEntrySubmissionMixin:
                             pre_submit_guard=_pair_admission_guard,
                             scope_exchange=pair_info.local_exchange,
                             scope_symbol=pair_info.local_symbol,
+                            scope_market_type="spot",
+                            account_scope_id=account_scope_id,
+                            action_class="ENTRY",
+                            scope_pair_key=pair_tag,
+                            risk_metrics=risk_metrics,
+                            risk_limits=risk_limits,
                         ) as fence_conn:
                             submission_started = True
                             try:

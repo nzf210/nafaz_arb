@@ -315,7 +315,7 @@ class ForceCloseLegMixin:
 
         await self._sync_force_close_market_price(pair_key, global_sym)
         try:
-            async with derisk_fence(self, client_order_id=force_coid):
+            async with derisk_fence(self, client_order_id=force_coid, venue=pos.global_exchange, market_type="perpetual", instrument=global_sym):
                 if not is_mock:
                     try:
                         prior_intent = await registry.find_by_client_id(
@@ -646,7 +646,7 @@ class ForceCloseLegMixin:
             pair_key, "force-liq", force_seq
         )
         try:
-            async with derisk_fence(self, client_order_id=client_order_id):
+            async with derisk_fence(self, client_order_id=client_order_id, venue=pos.local_exchange, market_type="spot", instrument=pos.symbol):
                 # Lookup and intent registration must be inside the same shared
                 # lock as the POST. A pre-lock lookup is a TOCTOU race across
                 # executor replicas even when the client ID is deterministic.

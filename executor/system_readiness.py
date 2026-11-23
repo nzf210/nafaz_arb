@@ -52,6 +52,8 @@ class SystemReadinessGate:
             blocking.append(f"GLOBAL_TRADING_HALTED: {getattr(engine, '_halt_reason', 'manual')}")
 
         # 2. Risk State Persistence Trustworthiness
+        if getattr(engine, "_risk_persistence_pending", False) is True:
+            blocking.append("RISK_PERSISTENCE_PENDING")
         if getattr(engine, "_risk_persistence_failed", False):
             blocking.append("RISK_PERSISTENCE_UNAVAILABLE")
 

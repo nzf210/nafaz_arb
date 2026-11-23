@@ -164,6 +164,9 @@ class ArbitrageEngine(
         self._halt_reason: str = ""
         self._risk_state_restored = False
         self._risk_persistence_failed = False
+        self._risk_persistence_pending = False
+        self._risk_persistence_pending_count = 0
+        self._risk_persistence_tasks = set()
 
         # Risk-control: halts keyed by exchange name (venue-level, not global).
         self._exchange_halted: Dict[str, str] = {}
@@ -190,7 +193,10 @@ class ArbitrageEngine(
         self.supabase = SupabaseWriter(getattr(config, "supabase", None))
         pg_dsn = str(getattr(config, "postgres_dsn", "") or "")
         self.global_stop = (
-            GlobalStopService(pg_dsn, redis_client)
+            GlobalStopService(
+                pg_dsn, redis_client,
+                require_scoped_submits=not bool(getattr(config, "mock_mode", False)),
+            )
             if pg_dsn else None
         )
         self.postgres_risk = (

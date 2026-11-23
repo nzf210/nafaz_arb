@@ -3,6 +3,7 @@
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from executor.models import ActivePosition, PositionState
@@ -565,6 +566,10 @@ async def test_live_order_rejection_notifies_exchange_insufficient_balance(
     engine.config.mock_mode = False
     engine.global_stop = _RiskGlobalStop()
     engine.config.global_exchange_name = "binance"
+    engine.config.exchanges = {
+        **(getattr(engine.config, "exchanges", {}) or {}),
+        "indodax": SimpleNamespace(account_scope_id="test-indodax-account"),
+    }
     engine.client = client
     # Keep this test focused on mapping the venue rejection to its public
     # failure reason; adaptive-maker book validation is covered separately.

@@ -128,6 +128,8 @@ class MutationGateway:
         pair_key: str,
         session_id: Optional[str] = None,
         extra_params: Optional[dict] = None,
+        account_scope_id: Optional[str] = None,
+        action_class: str = "ENTRY",
     ) -> MutationResult:
         """Create through the durable PREPARED/SUBMITTING + shared session fence."""
         exchange = exchange.lower().strip()
@@ -135,7 +137,6 @@ class MutationGateway:
         side = side.lower().strip()
         order_type = order_type.lower().strip()
         params = dict(extra_params or {})
-
         # Cancellation may use this gateway without entry admission; creates may
         # never degrade to an unfenced compatibility path.
         if self.global_stop is None or not getattr(self.global_stop, "enabled", False):
@@ -143,6 +144,16 @@ class MutationGateway:
                 status=MutationResultType.REJECTED,
                 client_order_id="",
                 error_message="PostgreSQL Global STOP fencing is not initialized; create-order blocked",
+            )
+
+        account_scope_id = str(
+            account_scope_id or params.get("account_scope_id") or ""
+        ).strip()
+        if not account_scope_id:
+            return MutationResult(
+                status=MutationResultType.REJECTED,
+                client_order_id="",
+                error_message="account_scope_id is required for scoped create-order ownership",
             )
 
         client_order_id = str(
@@ -197,6 +208,7 @@ class MutationGateway:
                 pair_key=pair_key,
                 recovery_context=params.get("recovery_context"),
                 amount_spec=params.get("amount_spec"),
+                account_scope_id=account_scope_id,
             )
         except Exception as exc:
             if slot_reserved:
@@ -224,7 +236,14 @@ class MutationGateway:
         ip_ban_state = None
         try:
             async with self.global_stop.order_submit_fence(
-                client_order_id=client_order_id
+                client_order_id=client_order_id,
+                scope_exchange=exchange,
+                scope_symbol=symbol,
+                scope_market_type=market_type,
+                account_scope_id=account_scope_id,
+                action_class=action_class,
+                scope_pair_key=pair_key,
+                scope_session_id=session_id,
             ) as fence_conn:
                 try:
                     raw = await _call_venue()

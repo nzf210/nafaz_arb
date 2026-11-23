@@ -78,18 +78,23 @@ class _FakeConnection:
                 "status": "PREPARED",
                 "recovery_context": args[9],
                 "amount_spec": args[10],
+                "account_scope_id": args[11] if len(args) > 11 else None,
             }
             return dict(self.attempts[client_order_id])
         if "where status in ('SUBMITTING','UNKNOWN')" in query:
             current_id = args[0]
             scope_ex = args[1] if len(args) > 1 else None
-            scope_sym = args[2] if len(args) > 2 else None
+            scope_market = args[2] if len(args) > 2 else None
+            scope_sym = args[3] if len(args) > 3 else None
+            account_scope = args[4] if len(args) > 4 else None
             return next(
                 (dict(row) for key, row in self.attempts.items()
                  if key != current_id
                  and row["status"] in ("SUBMITTING", "UNKNOWN")
                  and (scope_ex is None or str(row.get("exchange", "")).lower() == str(scope_ex).lower())
-                 and (scope_sym is None or str(row.get("symbol", "")).lower() == str(scope_sym).lower())),
+                 and (scope_market is None or str(row.get("market_type", "")).lower() == str(scope_market).lower())
+                 and (scope_sym is None or str(row.get("symbol", "")).lower() == str(scope_sym).lower())
+                 and (account_scope is None or row.get("account_scope_id") == account_scope)),
                 None,
             )
         if "update public.executor_submit_attempts" in query and "returning client_order_id" in query:
@@ -97,6 +102,9 @@ class _FakeConnection:
             if row and row["status"] == "PREPARED":
                 row["status"] = "SUBMITTING"
                 row["fence_epoch"] = args[1]
+                row["owner_scope_key"] = args[2]
+                row["owner_generation"] = args[3]
+                row["risk_control_snapshot"] = args[4]
                 return {"client_order_id": args[0]}
             return None
         if "where client_order_id = $1" in query:
@@ -414,6 +422,10 @@ class _SpotIPRestrictedVenue:
 
 class _SpotSubmissionHarness(EngineEntrySubmissionMixin):
     def __init__(self, stop, venue):
+        self.config = SimpleNamespace(
+            mock_mode=False,
+            exchanges={"binance": SimpleNamespace(account_scope_id="test-binance-account")},
+        )
         self.global_stop = stop
         self.client = venue
         self.halts = []
@@ -485,6 +497,8 @@ async def test_spot_ip_ban_stop_write_failure_never_uses_lookup_to_acknowledge()
         local_amount_spec=_FakeAmountSpec(),
         global_amount_spec={"unit": "BASE", "step": 0.001},
         quote_asset="USDT",
+        global_exchange="okx",
+        base_asset="BTC",
     )
 
     await engine._submit_entry_order(
@@ -1126,16 +1140,39 @@ async def test_derisk_fence_uses_independent_session_lock_key():
     service = GlobalStopService("postgresql://unused")
     service.pool = _FakePool(conn)
 
-    async with service.derisk_submit_fence(client_order_id="stable-exit-order") as fenced_conn:
+    async def _allow(*args, **kwargs):
+        return {"action_class": "DERISK"}
+
+    async def _acquire(*args, **kwargs):
+        return SimpleNamespace(generation=1)
+
+    async def _validate(*args, **kwargs):
+        return True
+
+    service.risk_control_plane.assert_allowed = _allow
+    service.ownership.acquire = _acquire
+    service.ownership.validate = _validate
+
+    async with service.derisk_submit_fence(
+        client_order_id="stable-exit-order",
+        account_scope_id="test-account",
+        venue="okx",
+        market_type="swap",
+        instrument="BTC-USDT-SWAP",
+    ) as fenced_conn:
         assert fenced_conn is conn
 
     lock_calls = [
-        args[0]
-        for query, args in conn.executed
-        if "pg_advisory_lock" in query or "pg_advisory_unlock" in query
+        args[0] for query, args in conn.executed
+        if "pg_try_advisory_lock" in query
     ]
-    assert lock_calls == [DERISK_LOCK_KEY, DERISK_LOCK_KEY]
-    assert DERISK_LOCK_KEY != FENCE_LOCK_KEY
+    unlock_calls = [
+        args[0] for query, args in conn.executed
+        if "pg_advisory_unlock" in query
+    ]
+    assert len(lock_calls) == len(unlock_calls) == 1
+    assert lock_calls == unlock_calls
+    assert lock_calls[0] != FENCE_LOCK_KEY
 
 
 class _RecordingAsyncContext:
@@ -1193,7 +1230,10 @@ class _SlotOrderingHarness(_SpotSubmissionHarness):
     def __init__(self, stop, venue, slot_manager):
         super().__init__(stop, venue)
         self.slot_manager = slot_manager
-        self.config = SimpleNamespace(mock_mode=False)
+        self.config = SimpleNamespace(
+            mock_mode=False,
+            exchanges={"mexc": SimpleNamespace(account_scope_id="test-mexc-account")},
+        )
 
     def _spot_slot_account(self, pair_info):
         return pair_info.quote_asset
@@ -1218,6 +1258,8 @@ async def test_spot_entry_persists_prepared_intent_before_reserving_slot():
         local_amount_spec=_FakeAmountSpec(),
         global_amount_spec=_FakeAmountSpec(),
         quote_asset="USDT",
+        global_exchange="okx",
+        base_asset="BTC",
     )
 
     await engine._submit_entry_order(
@@ -1230,3 +1272,15 @@ async def test_spot_entry_persists_prepared_intent_before_reserving_slot():
     assert venue.submit_calls == 1
     assert "ledger_rejected" in events
     assert "release_slot" in events
+
+@pytest.mark.asyncio
+async def test_live_global_stop_requires_complete_scope_before_submit():
+    service = GlobalStopService(
+        "postgresql://unused", require_scoped_submits=True
+    )
+    service.pool = object()
+    with pytest.raises(GlobalStopError, match="scoped ENTRY/HEDGE action"):
+        async with service.order_submit_fence(
+            client_order_id="live-unscoped-order"
+        ):
+            pytest.fail("unscoped live submit must not enter the venue mutation section")

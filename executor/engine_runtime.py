@@ -767,8 +767,16 @@ class EngineRuntimeMixin:
             "trading_resume", scope="global", reason="manual resume",
             value={"loss_day": self._loss_day},
         )
-        if halt_saved and resume_saved:
-            self.supabase.clear_risk_persistence_failure()
+        persistence_flushed = await self._flush_risk_state_persistence()
+        if halt_saved and resume_saved and persistence_flushed:
+            latch_cleared = self._clear_risk_persistence_latch()
+            if not latch_cleared:
+                return False
+            pg_risk = getattr(self, "postgres_risk", None)
+            if pg_risk is not None:
+                pg_risk.clear_risk_persistence_failure()
+            if self.supabase is not None:
+                self.supabase.clear_risk_persistence_failure()
             self._risk_persistence_failed = False
             self._refresh_entry_gate()
         logger.warning(f"[Kill Switch] Trading resumed ({reason})")

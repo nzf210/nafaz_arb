@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from executor.derisk_fence import derisk_fence
+from executor.emergency_derisk import EmergencyDeriskLease
 from executor.entry_hedge import EntryHedgeMixin
 from executor.force_close_legs import ForceCloseLegMixin
 from executor.engine_order_intents import EngineOrderIntentMixin
@@ -10,6 +11,23 @@ from executor.engine_signal import EngineSignalMixin
 from executor.global_stop import GlobalStopError, GlobalStopService
 from executor.helpers import PENDING_ENTRY_KEY_PREFIX, is_transient_settlement_error
 from executor.rollback import RollbackMixin
+
+
+class _EmergencyRedis:
+    def __init__(self):
+        self.values = {}
+
+    async def set(self, key, value, *, nx=False, px=None):
+        if nx and key in self.values:
+            return None
+        self.values[key] = value
+        return "OK"
+
+    async def eval(self, script, numkeys, key, token):
+        if self.values.get(key) == token:
+            del self.values[key]
+            return 1
+        return 0
 
 
 class _AsyncContext:
@@ -129,7 +147,15 @@ class _TimeoutSpotVenue:
 class _RollbackHarness(RollbackMixin):
     def __init__(self, venue):
         self.global_stop = None
-        self.config = SimpleNamespace(local_exchange_name="tokocrypto")
+        self.redis = _EmergencyRedis()
+        self.config = SimpleNamespace(
+            local_exchange_name="tokocrypto",
+            exchanges={"tokocrypto": SimpleNamespace(api_key="test-tokocrypto-key")},
+            executor_instance_id="test-worker",
+            emergency_derisk_owner_id="test-worker",
+            emergency_derisk_allowed=True,
+            emergency_derisk_lease_ttl_ms=120000,
+        )
         self.client = venue
         self.order_intents = []
 
@@ -191,6 +217,7 @@ class _HedgeHarness(EntryHedgeMixin):
             mock_mode=False,
             futures_min_notional=0.0,
             partial_fill_safety_policy="scale_to_min",
+            exchanges={"okx": SimpleNamespace(account_scope_id="test-okx-account")},
         )
         self.capabilities = None
         self.client = _FuturesVenue()
@@ -249,23 +276,60 @@ async def test_derisking_is_allowed_while_global_stop_is_active_and_submit_is_un
     service = GlobalStopService("postgresql://unused")
     service.pool = _Pool(conn)
 
-    async with service.derisk_submit_fence(client_order_id="exit-client-1") as fenced:
+    async def _allow(*args, **kwargs):
+        return {"action_class": "DERISK"}
+
+    async def _acquire(*args, **kwargs):
+        return SimpleNamespace(generation=1)
+
+    async def _validate(*args, **kwargs):
+        return True
+
+    service.risk_control_plane.assert_allowed = _allow
+    service.ownership.acquire = _acquire
+    service.ownership.validate = _validate
+
+    async with service.derisk_submit_fence(
+        client_order_id="exit-client-1",
+        account_scope_id="test-okx-account",
+        venue="okx",
+        market_type="perpetual",
+        instrument="BTC/USDT:USDT",
+    ) as fenced:
         assert fenced is conn
 
-    assert any("pg_advisory_lock" in query for query in conn.statements)
+    assert any("pg_try_advisory_lock" in query for query in conn.statements)
     assert any("pg_advisory_unlock" in query for query in conn.statements)
 
 
 @pytest.mark.asyncio
-async def test_derisking_falls_back_unfenced_when_postgres_is_unavailable():
-    engine = SimpleNamespace(global_stop=GlobalStopService(""))
+async def test_derisking_uses_designated_redis_lease_when_postgres_is_unavailable():
+    engine = SimpleNamespace(
+        global_stop=GlobalStopService(""),
+        redis=_EmergencyRedis(),
+        config=SimpleNamespace(
+            mock_mode=False,
+            executor_instance_id="test-worker",
+            emergency_derisk_owner_id="test-worker",
+            emergency_derisk_allowed=True,
+            emergency_derisk_lease_ttl_ms=120000,
+        ),
+    )
     entered = False
 
-    async with derisk_fence(engine, client_order_id="force-close-client-1") as conn:
+    async with derisk_fence(
+        engine,
+        client_order_id="force-close-client-1",
+        venue="okx",
+        market_type="perpetual",
+        instrument="BTC/USDT:USDT",
+        account_scope_id="test-okx-account",
+    ) as lease:
         entered = True
-        assert conn is None
+        assert isinstance(lease, EmergencyDeriskLease)
 
     assert entered
+    assert engine.redis.values == {}
 
 
 @pytest.mark.asyncio
@@ -376,7 +440,16 @@ class _AmbiguousSpotCloseVenue:
 
 class _ForceCloseHarness(ForceCloseLegMixin):
     def __init__(self):
-        self.config = SimpleNamespace(mock_mode=False, postgres_dsn="postgresql://unused")
+        self.config = SimpleNamespace(
+            mock_mode=False,
+            postgres_dsn="postgresql://unused",
+            exchanges={"tokocrypto": SimpleNamespace(api_key="test-tokocrypto-key")},
+            executor_instance_id="test-worker",
+            emergency_derisk_owner_id="test-worker",
+            emergency_derisk_allowed=True,
+            emergency_derisk_lease_ttl_ms=120000,
+        )
+        self.redis = _EmergencyRedis()
         self.order_registry = _ForceCloseRegistry()
         self.client = _AmbiguousSpotCloseVenue()
         self.registered_intents = []

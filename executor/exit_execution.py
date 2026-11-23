@@ -215,7 +215,7 @@ class ExitExecutionMixin:
                 global_amount_spec=pos.global_amount_spec,
                 required=False,
             )
-            async with derisk_fence(self, client_order_id=unwind_coid):
+            async with derisk_fence(self, client_order_id=unwind_coid, venue=pos.global_exchange, market_type="perpetual", instrument=global_sym):
                 close_order = await self.client.close_global_short_market(
                     global_sym,
                     futures_close_qty,

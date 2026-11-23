@@ -395,3 +395,147 @@ begin
     end;
 end $$;
 
+-- Executor V3 PR-02: scoped ownership and independent risk permissions.
+do $$
+declare
+    tbl text;
+begin
+    foreach tbl in array array[
+        'executor_ownership_leases','executor_ownership_events',
+        'executor_risk_controls','executor_risk_control_events'
+    ] loop
+        if not exists (
+            select 1 from pg_class
+            where oid=format('public.%I',tbl)::regclass and relrowsecurity
+        ) then
+            raise exception 'RLS is not enabled on public.%', tbl;
+        end if;
+        if has_table_privilege('anon',format('public.%I',tbl),'select')
+           or has_table_privilege('authenticated',format('public.%I',tbl),'select') then
+            raise exception 'client role has unexpected SELECT on public.%', tbl;
+        end if;
+    end loop;
+
+    if not has_table_privilege('service_role','public.executor_ownership_leases','update')
+       or not has_table_privilege('service_role','public.executor_risk_controls','update')
+       or has_table_privilege('service_role','public.executor_ownership_events','update')
+       or has_table_privilege('service_role','public.executor_ownership_events','delete')
+       or has_table_privilege('service_role','public.executor_risk_control_events','update')
+       or has_table_privilege('service_role','public.executor_risk_control_events','delete') then
+        raise exception 'ownership/risk grants do not match mutable projection + append-only audit contract';
+    end if;
+
+    if not exists (
+        select 1 from information_schema.columns
+        where table_schema='public' and table_name='executor_submit_attempts'
+          and column_name='account_scope_id'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema='public' and table_name='executor_submit_attempts'
+          and column_name='owner_generation'
+    ) or not exists (
+        select 1 from information_schema.columns
+        where table_schema='public' and table_name='executor_submit_attempts'
+          and column_name='risk_control_snapshot'
+    ) then
+        raise exception 'submit attempt owner scope/fencing/risk snapshot columns are missing';
+    end if;
+
+    if not exists (
+        select 1 from pg_constraint
+        where conrelid='public.executor_submit_attempts'::regclass
+          and conname='executor_submit_owner_generation_pair'
+    ) then
+        raise exception 'submit attempt owner scope/generation consistency constraint is missing';
+    end if;
+
+    if not exists (
+        select 1 from pg_trigger
+        where tgrelid='public.executor_ownership_leases'::regclass
+          and tgname='trg_executor_ownership_leases_updated_at'
+          and not tgisinternal
+    ) or not exists (
+        select 1 from pg_trigger
+        where tgrelid='public.executor_risk_controls'::regclass
+          and tgname='trg_executor_risk_controls_updated_at'
+          and not tgisinternal
+    ) then
+        raise exception 'ownership/risk projection updated_at triggers are missing';
+    end if;
+
+    if not has_table_privilege('service_role','public.executor_ownership_events','select')
+       or not has_table_privilege('service_role','public.executor_ownership_events','insert')
+       or not has_table_privilege('service_role','public.executor_risk_control_events','select')
+       or not has_table_privilege('service_role','public.executor_risk_control_events','insert') then
+        raise exception 'service_role must be able to read and append ownership/risk events';
+    end if;
+end $$;
+
+insert into public.executor_ownership_leases (
+    scope_key, account_scope_id, venue, market_type, instrument,
+    owner_id, generation, lease_expires_at
+) values (
+    'schema-smoke-owner-scope', 'schema-smoke-account', 'indodax',
+    'spot', 'btc_idr', 'schema-smoke-worker', 1, now() + interval '1 minute'
+);
+
+insert into public.executor_ownership_events (
+    scope_key, generation, owner_id, event_type,
+    event_idempotency_key, lease_expires_at
+) values (
+    'schema-smoke-owner-scope', 1, 'schema-smoke-worker',
+    'ACQUIRED', 'schema-smoke-owner-acquired', now() + interval '1 minute'
+);
+
+insert into public.executor_risk_controls (
+    scope_key, scope_type, entry_blocked, derisk_allowed, version,
+    state
+) values (
+    'schema-smoke-global-risk', 'GLOBAL', true, true, 1,
+    '{"reason":"entry budget reached"}'::jsonb
+);
+
+insert into public.executor_risk_control_events (
+    scope_key, version, event_type, event_idempotency_key, actor_id,
+    entry_blocked, derisk_allowed, payload
+) values (
+    'schema-smoke-global-risk', 1, 'ENTRY_BLOCKED',
+    'schema-smoke-risk-control-1', 'schema-smoke',
+    true, true, '{"source":"schema-smoke"}'::jsonb
+);
+
+do $$
+begin
+    if not exists (
+        select 1 from public.executor_risk_controls
+        where scope_key='schema-smoke-global-risk'
+          and entry_blocked=true and derisk_allowed=true
+    ) then
+        raise exception 'ENTRY_BLOCKED must remain independent from DE_RISK_ALLOWED';
+    end if;
+
+    begin
+        update public.executor_ownership_events
+        set metadata='{"tampered":true}'::jsonb
+        where event_idempotency_key='schema-smoke-owner-acquired';
+        raise exception 'ownership audit update unexpectedly succeeded';
+    exception
+        when raise_exception then
+            if SQLERRM <> 'executor ownership/risk audit records are append-only' then
+                raise;
+            end if;
+    end;
+
+    begin
+        update public.executor_risk_control_events
+        set payload='{"tampered":true}'::jsonb
+        where event_idempotency_key='schema-smoke-risk-control-1';
+        raise exception 'risk audit update unexpectedly succeeded';
+    exception
+        when raise_exception then
+            if SQLERRM <> 'executor ownership/risk audit records are append-only' then
+                raise;
+            end if;
+    end;
+end $$;
+

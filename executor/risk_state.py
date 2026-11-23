@@ -10,78 +10,11 @@ from executor.models import PositionState
 logger = logging.getLogger("executor.engine")
 
 
-class RiskStateMixin:
+from executor.risk_persistence import RiskPersistenceMixin
+
+
+class RiskStateMixin(RiskPersistenceMixin):
     """Persistence and lifecycle controls for durable risk state."""
-
-    def _persist_risk_state(
-        self, state_type: str, *, scope: str = "global", exchange: str = None,
-        pair_key: str = None, reason: str = "", value=None, resolved: bool = False,
-    ) -> bool:
-        """Persist safety state synchronously to the durable local outbox."""
-        writer = getattr(self, "supabase", None)
-        pg_risk = getattr(self, "postgres_risk", None)
-        has_pg = pg_risk is not None and getattr(pg_risk, "enabled", False)
-        has_sb = writer is not None and getattr(writer, "enabled", False)
-
-        if not has_pg and not has_sb:
-            if not getattr(self.config, "mock_mode", False):
-                self._entry_blocked = True
-                self._risk_persistence_failed = True
-                logger.critical("LIVE entry blocked: durable risk-state storage is unavailable")
-            return False
-
-        ok = False
-        if has_pg:
-            try:
-                loop = None
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    pass
-                if loop and loop.is_running():
-                    loop.create_task(
-                        pg_risk.persist_risk_state(
-                            state_type=state_type, scope=scope, exchange=exchange,
-                            pair_key=pair_key, reason=reason, value=value, resolved=resolved,
-                            is_mock=bool(getattr(self.config, "mock_mode", False)),
-                        )
-                    )
-                    ok = True
-                else:
-                    ok = asyncio.run(
-                        pg_risk.persist_risk_state(
-                            state_type=state_type, scope=scope, exchange=exchange,
-                            pair_key=pair_key, reason=reason, value=value, resolved=resolved,
-                            is_mock=bool(getattr(self.config, "mock_mode", False)),
-                        )
-                    )
-            except Exception:
-                logger.exception("Durable PostgreSQL risk-state write raised for %s", state_type)
-                ok = False
-
-        if not ok and has_sb:
-            try:
-                ok = writer.risk_state(
-                    state_type=state_type, scope=scope, exchange=exchange,
-                    pair_key=pair_key, reason=reason, value=value, resolved=resolved,
-                    is_mock=bool(getattr(self.config, "mock_mode", False)),
-                )
-            except Exception:
-                logger.exception("Durable risk-state write raised for %s", state_type)
-                ok = False
-
-        if not ok and not getattr(self.config, "mock_mode", False):
-            if has_sb:
-                try:
-                    writer.mark_risk_persistence_failure()
-                except Exception:
-                    pass
-            if has_pg:
-                pg_risk.mark_risk_persistence_failure()
-            self._entry_blocked = True
-            self._risk_persistence_failed = True
-            logger.critical("LIVE entry blocked: risk state could not be journaled")
-        return bool(ok)
 
     def _restore_daily_loss_record(self, value) -> None:
         state = value if isinstance(value, dict) else {}
@@ -227,81 +160,6 @@ class RiskStateMixin:
             self._restore_reconciliation_halt(scope, exchange, pair_key, reason)
         elif kind == "position_failure" and pair_key:
             self._restore_position_failure_record(pair_key, reason, value)
-
-    def _restore_risk_persistence_failure(self, writer) -> None:
-        if not getattr(writer, "risk_persistence_failed", lambda: False)():
-            return
-        self._risk_persistence_failed = True
-        self._trading_halted = True
-        self._halt_reason = "RISK_STATE_PERSISTENCE_FAILED"
-        self._entry_blocked = True
-
-    async def _restore_daily_loss_ledger(self, writer) -> None:
-        self._daily_realized_loss_usdt = await writer.fetch_daily_realized_loss_usdt(
-            self._utc_day(), is_mock=bool(getattr(self.config, "mock_mode", False))
-        )
-        self._loss_day = self._utc_day()
-        self._risk_state_restored = True
-        limit = float(getattr(self.config, "max_daily_loss_usdt", 0.0) or 0.0)
-        if self._halt_reason == "DAILY_LOSS_LIMIT" and (
-            limit <= 0 or self._daily_realized_loss_usdt < limit
-        ):
-            self._trading_halted = False
-            self._halt_reason = ""
-            self._persist_risk_state("trading_halt", scope="global", resolved=True)
-        manual_resume_today = getattr(self, "_manual_resume_day", None) == self._loss_day
-        if limit > 0 and self._daily_realized_loss_usdt >= limit and (
-            not self._trading_halted and not manual_resume_today
-        ):
-            self._trading_halted = True
-            self._halt_reason = "DAILY_LOSS_LIMIT"
-            self._persist_risk_state(
-                "trading_halt",
-                scope="global",
-                reason="DAILY_LOSS_LIMIT",
-                value={
-                    "halt_reason": "DAILY_LOSS_LIMIT",
-                    "loss_usdt": self._daily_realized_loss_usdt,
-                    "loss_day": self._loss_day,
-                },
-            )
-        self._roll_loss_day_if_needed()
-
-    async def _restore_risk_state(self) -> None:
-        """Restore unresolved durable halts before recovery/listeners can accept signals."""
-        pg_risk = getattr(self, "postgres_risk", None)
-        has_pg = pg_risk is not None and getattr(pg_risk, "enabled", False)
-        writer = getattr(self, "supabase", None)
-        has_sb = writer is not None and getattr(writer, "enabled", False)
-
-        if not has_pg and not has_sb:
-            self._risk_state_restored = True
-            if not getattr(self.config, "mock_mode", False):
-                self._trading_halted = True
-                self._halt_reason = "RISK_STATE_PERSISTENCE_UNAVAILABLE"
-                self._entry_blocked = True
-                self._risk_persistence_failed = True
-                logger.critical(
-                    "LIVE startup fail-closed: configure durable PostgreSQL or Supabase risk-state storage"
-                )
-            return
-
-        active_backend = pg_risk if has_pg else writer
-        rows = []
-        if has_pg:
-            rows = await pg_risk.fetch_active_risk_states(
-                is_mock=bool(getattr(self.config, "mock_mode", False))
-            )
-        elif has_sb:
-            rows = await writer.fetch_active_risk_states(
-                is_mock=bool(getattr(self.config, "mock_mode", False))
-            )
-
-        for row in rows:
-            self._restore_risk_record(row)
-        self._restore_risk_persistence_failure(active_backend)
-        await self._restore_daily_loss_ledger(active_backend)
-        logger.warning("Restored %d unresolved durable risk-state records", len(rows))
 
     def _record_order_success(self, exchange: str) -> None:
         """Clears the consecutive-failure counter for an exchange after a clean order."""

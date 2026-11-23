@@ -4,6 +4,7 @@ import json
 import math
 import time
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -421,7 +422,23 @@ async def test_derisk_fence_allows_exit_while_stopped():
     service = GlobalStopService("postgresql://x")
     service.pool = pool
     reached = False
-    async with service.derisk_submit_fence(client_order_id="exit-1"):
+    async def _allow(*args, **kwargs):
+        return {"action_class": "DERISK"}
+
+    async def _acquire(*args, **kwargs):
+        return SimpleNamespace(generation=1)
+
+    async def _validate(*args, **kwargs):
+        return True
+
+    service.risk_control_plane.assert_allowed = _allow
+    service.ownership.acquire = _acquire
+    service.ownership.validate = _validate
+
+    async with service.derisk_submit_fence(
+        client_order_id="exit-1", account_scope_id="acct-test",
+        venue="okx", market_type="swap", instrument="BTC-USDT-SWAP",
+    ):
         reached = True
     assert reached, "risk-reducing submit must not be blocked by STOP"
     assert any("executor_global_control" in sql for sql, _ in pool.calls)
@@ -432,10 +449,25 @@ async def test_derisk_fence_still_serializes_on_advisory_lock():
     pool = FencePool(is_stopped=False)
     service = GlobalStopService("postgresql://x")
     service.pool = pool
-    async with service.derisk_submit_fence(client_order_id="unwind-1"):
+    async def _allow(*args, **kwargs):
+        return {"action_class": "DERISK"}
+
+    async def _acquire(*args, **kwargs):
+        return SimpleNamespace(generation=1)
+
+    async def _validate(*args, **kwargs):
+        return True
+
+    service.risk_control_plane.assert_allowed = _allow
+    service.ownership.acquire = _acquire
+    service.ownership.validate = _validate
+    async with service.derisk_submit_fence(
+        client_order_id="unwind-1", account_scope_id="acct-test",
+        venue="okx", market_type="swap", instrument="BTC-USDT-SWAP",
+    ):
         pass
     sqls = [sql for sql, _ in pool.calls]
-    assert any("pg_advisory_lock" in sql for sql in sqls)
+    assert any("pg_try_advisory_lock" in sql for sql in sqls)
     assert any("pg_advisory_unlock" in sql for sql in sqls)
 
 
@@ -451,7 +483,22 @@ async def test_derisk_fence_proceeds_despite_unresolved_entry():
     )
     service = GlobalStopService("postgresql://x")
     service.pool = pool
-    async with service.derisk_submit_fence(client_order_id="exit-9"):
+    async def _allow(*args, **kwargs):
+        return {"action_class": "DERISK"}
+
+    async def _acquire(*args, **kwargs):
+        return SimpleNamespace(generation=1)
+
+    async def _validate(*args, **kwargs):
+        return True
+
+    service.risk_control_plane.assert_allowed = _allow
+    service.ownership.acquire = _acquire
+    service.ownership.validate = _validate
+    async with service.derisk_submit_fence(
+        client_order_id="exit-9", account_scope_id="acct-test",
+        venue="indodax", market_type="spot", instrument="BTC_IDR",
+    ):
         pass  # must not raise
 
 

@@ -14,6 +14,23 @@ from executor.exchange_common import _find_order_by_client_id
 from executor.exchange_client import BALANCE_MARKETS, V2_ADAPTERS, validate_runtime_venue_pair
 
 
+class EmergencyRedis:
+    def __init__(self):
+        self.values = {}
+
+    async def set(self, key, value, *, nx=False, px=None):
+        if nx and key in self.values:
+            return None
+        self.values[key] = value
+        return "OK"
+
+    async def eval(self, script, numkeys, key, token):
+        if self.values.get(key) == token:
+            del self.values[key]
+            return 1
+        return 0
+
+
 class DelayedVisibilityVenue:
     def __init__(self, venue_id, client_id):
         self.id = venue_id
@@ -92,7 +109,15 @@ class MissingLookupClient:
 
 class ForceCloseHarness(ForceCloseLegMixin):
     def __init__(self):
-        self.config = SimpleNamespace(mock_mode=False)
+        self.config = SimpleNamespace(
+            mock_mode=False,
+            exchanges={"okx": SimpleNamespace(api_key="test-okx-key")},
+            executor_instance_id="test-worker",
+            emergency_derisk_owner_id="test-worker",
+            emergency_derisk_allowed=True,
+            emergency_derisk_lease_ttl_ms=120000,
+        )
+        self.redis = EmergencyRedis()
         self.order_registry = ExistingIntentRegistry()
         self.client = MissingLookupClient()
 

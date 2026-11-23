@@ -88,7 +88,7 @@ class RollbackMixin:
             async def _fenced_rollback_sell():
                 # Emergency unwind: STOP must never block removing exposure, but
                 # the submit still serializes against STOP and other submits.
-                async with derisk_fence(self, client_order_id=rollback_coid):
+                async with derisk_fence(self, client_order_id=rollback_coid, venue=venue_exchange, market_type="spot", instrument=symbol):
                     return await self.client.place_local_market_sell(
                         symbol,
                         sell_qty,

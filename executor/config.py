@@ -24,6 +24,7 @@ class ExchangeCredentials:
     passphrase: Optional[str] = None
     testnet: bool = False
     options: Dict[str, Any] = field(default_factory=dict)
+    account_scope_id: str = ""
 
 
 @dataclass
@@ -120,6 +121,10 @@ class ExecutorConfig:
     # Hard stop: halt all new entries once the day's realized loss crosses this.
     # 0 disables the breaker.
     max_daily_loss_usdt: float = 50.0
+    max_drawdown_pct: float = 0.0
+    max_funding_cost_pct: float = 0.0
+    max_unhedged_duration_ms: int = 0
+    min_venue_health_score: float = 0.2
     # Abort the hedge if the live futures ask is worse than the expected short
     # price by more than this fraction (0.003 = 0.3%). 0 disables the guard.
     max_entry_slippage_pct: float = 0.003
@@ -147,6 +152,10 @@ class ExecutorConfig:
     # proven path. When on, stale or missing entries still fall back to REST.
     private_stream_enabled: bool = False
     private_stream_max_age_seconds: float = 5.0
+    executor_instance_id: str = ""
+    emergency_derisk_owner_id: str = ""
+    emergency_derisk_allowed: bool = False
+    emergency_derisk_lease_ttl_ms: int = 120000
     # Fraction of accumulated funding retained for realized PnL; only the
     # complementary fraction may decay the target exit spread.
     funding_decay_retention_ratio: float = 0.60
@@ -256,6 +265,10 @@ class ExecutorConfig:
                 ("min_allocated_capital", float),
                 ("max_position_usdt", float),
                 ("max_daily_loss_usdt", float),
+                ("max_drawdown_pct", float),
+                ("max_funding_cost_pct", float),
+                ("max_unhedged_duration_ms", int),
+                ("min_venue_health_score", float),
                 ("max_entry_slippage_pct", float),
                 ("entry_revalidation_min_spread_pct", float),
                 ("max_exposure_per_exchange_usdt", float),
@@ -265,6 +278,10 @@ class ExecutorConfig:
                 ("mock_mode", bool),
                 ("private_stream_enabled", bool),
                 ("private_stream_max_age_seconds", float),
+                ("executor_instance_id", str),
+                ("emergency_derisk_owner_id", str),
+                ("emergency_derisk_allowed", bool),
+                ("emergency_derisk_lease_ttl_ms", int),
                 ("funding_decay_retention_ratio", float),
                 ("monitor_interval_seconds", float),
                 ("heartbeat_interval_seconds", float),
@@ -296,6 +313,7 @@ class ExecutorConfig:
                             api_secret=str(ex_data.get("api_secret", "")),
                             passphrase=ex_data.get("passphrase"),
                             testnet=bool(ex_data.get("testnet", False)),
+                            account_scope_id=str(ex_data.get("account_scope_id", "") or ""),
                             options=dict(ex_data.get("options", {})),
                         )
 
@@ -476,6 +494,32 @@ class ExecutorConfig:
             except ValueError:
                 pass
 
+        for env_name, attr, caster in (
+            ("MAX_DRAWDOWN_PCT", "max_drawdown_pct", float),
+            ("MAX_FUNDING_COST_PCT", "max_funding_cost_pct", float),
+            ("MAX_UNHEDGED_DURATION_MS", "max_unhedged_duration_ms", int),
+            ("MIN_VENUE_HEALTH_SCORE", "min_venue_health_score", float),
+        ):
+            if raw_value := os.getenv(env_name):
+                try:
+                    setattr(self, attr, caster(raw_value))
+                except ValueError:
+                    pass
+
+        if instance_id := os.getenv("EXECUTOR_INSTANCE_ID"):
+            self.executor_instance_id = instance_id.strip()
+        if emergency_owner := os.getenv("EMERGENCY_DERISK_OWNER_ID"):
+            self.emergency_derisk_owner_id = emergency_owner.strip()
+        if emergency_allowed := os.getenv("EMERGENCY_DERISK_ALLOWED"):
+            self.emergency_derisk_allowed = emergency_allowed.strip().lower() in {
+                "1", "true", "yes", "on"
+            }
+        if emergency_ttl := os.getenv("EMERGENCY_DERISK_LEASE_TTL_MS"):
+            try:
+                self.emergency_derisk_lease_ttl_ms = int(emergency_ttl)
+            except ValueError:
+                pass
+
         if slippage_env := os.getenv("MAX_ENTRY_SLIPPAGE_PCT"):
             try:
                 self.max_entry_slippage_pct = float(slippage_env)
@@ -603,6 +647,11 @@ class ExecutorConfig:
         "allocation_per_pair": (0.0, 1.0, 0.5),
         "min_allocated_capital": (0.0, None, 10.0),
         "max_daily_loss_usdt": (0.0, None, 50.0),
+        "max_drawdown_pct": (0.0, 100.0, 0.0),
+        "max_funding_cost_pct": (0.0, 10.0, 0.0),
+        "max_unhedged_duration_ms": (0, 86400000, 0),
+        "min_venue_health_score": (0.0, 1.0, 0.2),
+        "emergency_derisk_lease_ttl_ms": (1000, 300000, 120000),
         "max_entry_slippage_pct": (0.0, 1.0, 0.003),
         "entry_revalidation_min_spread_pct": (0.0, 100.0, 0.0),
         "max_exposure_per_exchange_usdt": (0.0, None, 0.0),
@@ -688,6 +737,15 @@ class ExecutorConfig:
                 "max_position_usdt": getattr(self, "max_position_usdt", 0.0),
                 "allocation_per_pair": getattr(self, "allocation_per_pair", 0.0),
                 "min_allocated_capital": getattr(self, "min_allocated_capital", 0.0),
+                "max_daily_loss_usdt": getattr(self, "max_daily_loss_usdt", 0.0),
+                "max_drawdown_pct": getattr(self, "max_drawdown_pct", 0.0),
+                "max_funding_cost_pct": getattr(self, "max_funding_cost_pct", 0.0),
+                "max_unhedged_duration_ms": getattr(self, "max_unhedged_duration_ms", 0),
+                "min_venue_health_score": getattr(self, "min_venue_health_score", 0.2),
+                "executor_instance_id": getattr(self, "executor_instance_id", ""),
+                "emergency_derisk_owner_id": getattr(self, "emergency_derisk_owner_id", ""),
+                "emergency_derisk_allowed": getattr(self, "emergency_derisk_allowed", False),
+                "emergency_derisk_lease_ttl_ms": getattr(self, "emergency_derisk_lease_ttl_ms", 120000),
                 "mock_mode": getattr(self, "mock_mode", False),
                 "execution_mode": getattr(self, "execution_mode", "TAKER_TAKER"),
             })

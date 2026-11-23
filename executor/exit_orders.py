@@ -262,7 +262,7 @@ class ExitOrderManagementMixin:
                 required=False,
             )
             try:
-                async with derisk_fence(self, client_order_id=exit_coid):
+                async with derisk_fence(self, client_order_id=exit_coid, venue=pos.local_exchange, market_type="spot", instrument=pos.symbol):
                     order = await self.client.place_local_limit_sell(
                         pos.symbol,
                         qty_to_sell,
@@ -508,7 +508,7 @@ class ExitOrderManagementMixin:
             required=False,
         )
         try:
-            async with derisk_fence(self, client_order_id=taker_coid):
+            async with derisk_fence(self, client_order_id=taker_coid, venue=pos.local_exchange, market_type="spot", instrument=pos.symbol):
                 order = await self.client.place_local_market_sell(
                     pos.symbol,
                     sell_qty,
