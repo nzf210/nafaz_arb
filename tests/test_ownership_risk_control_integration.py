@@ -671,3 +671,68 @@ async def test_risk_block_update_linearizes_against_submit_admission(postgres_po
             conn, scope_keys=[key], action_class="DERISK"
         )
 
+
+
+@pytest.mark.integration
+def test_graceful_release_retains_lease_while_submit_is_unresolved():
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    async def run():
+        import asyncpg
+
+        suffix = uuid.uuid4().hex
+        account = "release-guard-account-" + suffix
+        client_id = "release-guard-submit-" + suffix
+        service = GlobalStopService(dsn, min_size=1, max_size=2)
+        await service.start()
+        direct = await asyncpg.connect(dsn)
+        try:
+            await service.prepare_submit_attempt(
+                client_order_id=client_id,
+                exchange="okx",
+                market_type="swap",
+                symbol="BTC-USDT-SWAP-" + suffix,
+                side="sell",
+                order_type="market",
+                quantity=0.001,
+                price=0,
+                pair_key="release-guard:" + suffix,
+                account_scope_id=account,
+            )
+            async with service.order_submit_fence(
+                client_order_id=client_id,
+                scope_exchange="okx",
+                scope_market_type="swap",
+                scope_symbol="BTC-USDT-SWAP-" + suffix,
+                account_scope_id=account,
+                action_class="HEDGE",
+            ):
+                lease = await service.ownership.acquire(
+                    direct,
+                    account_scope_id=account,
+                    venue="okx",
+                    market_type="swap",
+                    instrument="BTC-USDT-SWAP-" + suffix,
+                )
+                assert await service.ownership.release(direct, lease) is False
+                assert await service.ownership.release_all(direct) == 0
+
+            await service.mark_submit_acknowledged(
+                client_id, {"id": "venue-order-" + suffix, "status": "open"}
+            )
+            assert await service.ownership.release(direct, lease) is True
+        finally:
+            await direct.execute(
+                "DELETE FROM public.executor_submit_attempts WHERE client_order_id=$1",
+                client_id,
+            )
+            await direct.execute(
+                "DELETE FROM public.executor_ownership_leases WHERE account_scope_id=$1",
+                account,
+            )
+            await direct.close()
+            await service.close()
+
+    asyncio.run(run())
