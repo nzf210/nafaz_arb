@@ -193,3 +193,155 @@ async def test_duplicate_leg_idempotency_keys_are_rejected_before_writes():
     assert intents.calls == []
     assert repository.legs == []
     assert repository.sessions == []
+
+
+@pytest.fixture
+async def postgres_pool():
+    import os
+    dsn = os.getenv("TEST_POSTGRES_DSN", "").strip()
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+    import asyncpg
+    pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=8)
+    try:
+        yield pool
+    finally:
+        await pool.close()
+
+
+def _integration_policy_snapshots():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    evidence = {
+        name: {
+            "status": "VERIFIED" if name != "fx_conversion" else "NOT_REQUIRED",
+            "observed_at": now.isoformat(),
+            "valid_until": (now + timedelta(minutes=2)).isoformat(),
+        }
+        for name in ("market_metadata", "fee_schedule", "fx_conversion")
+    }
+    return {
+        "policy_snapshot": {"strategy": "spot-perp", "version": 3, "evidence": evidence},
+        "execution_policy_snapshot": {"mode": "maker-taker"},
+        "risk_policy_snapshot": {"max_unhedged_ms": 3000},
+        "exit_policy_snapshot": {"take_profit": {"net_roi_pct": 0.3}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_gateway_advances_session_leg_to_submitting_before_venue_call(postgres_pool):
+    import uuid
+    from executor.session_coordinator import SessionCoordinator
+    from executor.ownership import OwnershipLeaseService
+    from executor.order_intent_service import OrderIntentService
+    from executor.global_stop import GlobalStopService
+    from executor.mutation_gateway import MutationGateway, MutationResultType
+
+    suffix = uuid.uuid4().hex
+    account = "entry-submit-account-" + suffix
+    session_legs = [
+        {
+            "leg_id": "spot-" + suffix, "leg_type": "SPOT", "venue": "indodax",
+            "market_type": "spot", "symbol": "btc_idr", "normalized_symbol": "BTC/IDR",
+            "base_asset": "BTC", "quote_asset": "IDR", "quantity_unit": "BASE",
+            "base_per_unit": "1", "order_quantity": "0.001",
+            "exposure_quantity": "0.001", "target_qty": "0.001",
+        },
+        {
+            "leg_id": "future-" + suffix, "leg_type": "FUTURES", "venue": "okx",
+            "market_type": "swap", "symbol": "BTC-USDT-SWAP",
+            "normalized_symbol": "BTC/USDT:USDT", "base_asset": "BTC",
+            "quote_asset": "USDT", "settlement_asset": "USDT",
+            "contract_type": "LINEAR_PERPETUAL", "contract_size": "0.001",
+            "position_side": "SHORT", "quantity_unit": "CONTRACTS",
+            "base_per_unit": "0.001", "order_quantity": "1",
+            "exposure_quantity": "0.001", "target_qty": "1",
+        },
+    ]
+    coordinator = SessionCoordinator(
+        pool=postgres_pool,
+        ownership=OwnershipLeaseService(owner_id="entry-submit-coordinator-" + suffix),
+    )
+    admitted = await coordinator.admit(
+        opportunity_id="opp-" + suffix, source_dispatch_id="dispatch-" + suffix,
+        account_scope_id=account,
+        pair_key="indodax:btc_idr->okx:btc-usdt-swap",
+        legs=session_legs, actor_id="integration-test",
+        **_integration_policy_snapshots(),
+    )
+    lease = admitted["coordinator_lease"]
+    for state, state_version, aggregate in (
+        ("VALIDATING", 1, 3), ("ADMITTED", 2, 4),
+    ):
+        await coordinator.transition(
+            coordinator_lease=lease, session_id=admitted["session_id"],
+            target_state=state, expected_state_version=state_version,
+            expected_aggregate_version=aggregate,
+            fencing_generation=lease.generation,
+            event_type="SESSION_" + state,
+            event_idempotency_key=admitted["admission_key"] + ":" + state.lower(),
+            actor_id="integration-test",
+        )
+
+    intents = OrderIntentService(postgres_pool)
+    entry = SessionEntryIntentCoordinator(postgres_pool, order_intents=intents)
+    risk_metrics = {
+        "gross_exposure_usdt": 0, "net_exposure_usdt": 0,
+        "deployed_capital_usdt": 0, "unhedged_notional_usdt": 0,
+        "unhedged_duration_ms": 0, "open_order_count": 0,
+        "daily_loss_usdt": 0, "drawdown_pct": 0,
+        "slippage_bps": 0, "funding_cost_pct": 0,
+        "market_data_age_ms": 0, "venue_health_score": 1,
+    }
+    prepared = await entry.prepare_entry(
+        session_id=admitted["session_id"], coordinator_lease=lease,
+        actor_id="integration-test",
+        specs=[
+            {
+                "leg_id": "spot-" + suffix, "idempotency_key": "entry-spot-" + suffix,
+                "side": "buy", "order_type": "limit", "quantity": "0.001",
+                "price": "900000000", "reserved_base_qty": "0.001",
+                "reserved_notional": "900000", "reservation_asset": "IDR",
+                "request_metadata": {"action_class": "ENTRY"},
+            },
+            {
+                "leg_id": "future-" + suffix, "idempotency_key": "entry-future-" + suffix,
+                "side": "sell", "order_type": "limit", "quantity": "1",
+                "price": "90000", "reserved_base_qty": "0.001",
+                "reserved_notional": "90", "reservation_asset": "USDT",
+                "request_metadata": {"action_class": "ENTRY", "risk_metrics": risk_metrics},
+            },
+        ],
+    )
+    global_stop = GlobalStopService("unused", require_scoped_submits=True)
+    global_stop.pool = postgres_pool
+    class Venue:
+        id = "okx"
+        calls = []
+        async def create_order_direct(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"id": "venue-order-" + suffix, "status": "open", "filled": "0"}
+    venue = Venue()
+    gateway = MutationGateway(global_stop=global_stop, order_intent_service=intents)
+    result = await gateway.execute_create_intent(
+        venue, intent_id=prepared["intents"]["future-" + suffix]["intent_id"],
+        actor_id="integration-test",
+    )
+    assert result.status == MutationResultType.CONFIRMED
+    assert len(venue.calls) == 1
+    async with postgres_pool.acquire() as conn:
+        leg = await conn.fetchrow(
+            "SELECT status, state_version FROM public.execution_legs WHERE session_id=$1 AND leg_id=$2",
+            admitted["session_id"], "future-" + suffix,
+        )
+        event = await conn.fetchrow(
+            """
+            SELECT event_type, payload FROM public.execution_session_events
+            WHERE session_id=$1 AND event_idempotency_key=$2
+            """,
+            admitted["session_id"], "mutation-submit:" + prepared["intents"]["future-" + suffix]["intent_id"],
+        )
+        assert leg["status"] == "SUBMITTING"
+        assert event["event_type"] == "LEG_SUBMISSION_STARTED"
+        await global_stop.ownership.release_all(conn)
+    await coordinator.release(lease)
