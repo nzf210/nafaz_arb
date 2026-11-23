@@ -594,11 +594,11 @@ begin
     if not exists (
         select 1 from pg_constraint
         where conrelid='public.executor_hedge_attempts'::regclass
-          and conname='executor_hedge_attempts_claim_key_attempt_no_key'
+          and conname='executor_hedge_attempt_claim_number_key'
     ) or not exists (
         select 1 from pg_constraint
         where conrelid='public.executor_hedge_attempt_fills'::regclass
-          and conname='executor_hedge_attempt_fills_futures_account_scope_id_futures_exchange_futures_symbol_venue_trade_id_key'
+          and conname='executor_hedge_fill_trade_scope_key'
     ) then
         raise exception 'hedge attempt numbering or account-scoped fill idempotency constraint is missing';
     end if;
