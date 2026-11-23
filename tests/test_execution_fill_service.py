@@ -349,3 +349,23 @@ def test_fee_verification_flag_rejects_truthy_non_boolean_values():
     assert _boolean(False, "fee_verified") is False
     with pytest.raises(FillValidationError, match="fee_verified must be a boolean"):
         _boolean("false", "fee_verified")
+
+
+@pytest.mark.asyncio
+async def test_verified_fee_requires_asset_and_authoritative_source():
+    from types import SimpleNamespace
+
+    service = ExecutionFillService(SimpleNamespace(acquire=lambda: None))
+    args = {
+        "session_id": "session", "leg_id": "spot", "account_scope_id": "account",
+        "venue": "indodax", "market_type": "spot", "symbol": "BTC_IDR",
+        "exchange_trade_id": "trade", "side": "buy", "quantity": "0.1",
+        "price": "100", "quote_asset": "IDR",
+        "filled_at": datetime.now(timezone.utc), "actor_id": "test",
+        "event_idempotency_key": "event", "expected_leg_state_version": 1,
+        "expected_aggregate_version": 1, "fencing_generation": 1,
+        "coordinator_lease": object(), "fee_verified": True,
+        "fee_amount": "0", "fee_asset": "", "fee_source": "UNVERIFIED",
+    }
+    with pytest.raises(FillValidationError, match="verified fees require"):
+        await service.record_fill(**args)
