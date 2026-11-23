@@ -457,6 +457,9 @@ class EntryHedgeMixin:
             # sizing; never submit from a stale worker-local hedge watermark.
             order_info["hedge_claim_key"] = claim["claim_key"]
             order_info["hedge_claim_client_order_id"] = claim["hedge_client_order_id"]
+            order_info["hedge_claim_retry"] = bool(
+                claim.get("retry_after_terminal_attempt")
+            )
             # The attempt fill ledger is the durable hedge watermark.
             # Never let a local order snapshot outrank verified trade facts.
             order_info["hedged_short_qty"] = float(
@@ -1187,7 +1190,7 @@ class EntryHedgeMixin:
         # attempt identifiers remain in the durable order registry, not in the
         # mutable Spot pending-order dictionary.
         for key in (
-            "hedge_claim_key", "hedge_claim_client_order_id",
+            "hedge_claim_key", "hedge_claim_client_order_id", "hedge_claim_retry",
             "hedge_attempt_id", "hedge_attempt_no",
             "hedge_attempt_version", "hedge_attempt_terminal",
             "hedge_attempt_partial", "hedge_attempt_blocked",
@@ -1295,6 +1298,7 @@ class EntryHedgeMixin:
                 claim_key and claims_service is not None and claim_coid
                 and not order_info.get("hedge_submit_started")
                 and int(order_info.get("hedge_attempt_no", 1) or 1) == 1
+                and not order_info.get("hedge_claim_retry")
             ):
                 await claims_service.mark_abandoned(
                     claim_key, claim_coid,
