@@ -45,6 +45,39 @@ def risk_scope_keys(
     return keys
 
 
+def _validate_scope_identity(
+    *, scope_key: str, scope_type: str, account_scope_id: Optional[str],
+    venue: Optional[str], market_type: Optional[str], instrument: Optional[str],
+    pair_key: Optional[str], session_id: Optional[str],
+) -> None:
+    """Reject controls stored under keys that admission can never resolve."""
+    account = str(account_scope_id or "").strip()
+    exchange = str(venue or "").strip().lower()
+    market = str(market_type or "").strip().lower()
+    symbol = str(instrument or "").strip().upper()
+    pair = str(pair_key or "").strip()
+    session = str(session_id or "").strip()
+    expected = None
+    if scope_type == "GLOBAL":
+        expected = "global"
+    elif scope_type == "ACCOUNT" and account:
+        expected = "account:" + account
+    elif scope_type == "VENUE" and account and exchange:
+        expected = f"venue:{account}:{exchange}"
+    elif scope_type == "INSTRUMENT" and account and exchange and market and symbol:
+        expected = f"instrument:{account}:{exchange}:{market}:{symbol}"
+    elif scope_type == "PAIR" and pair:
+        expected = "pair:" + pair
+    elif scope_type == "SESSION" and session:
+        expected = "session:" + session
+    if expected is None:
+        raise ValueError(f"incomplete identity fields for risk scope type {scope_type}")
+    if scope_key != expected:
+        raise ValueError(
+            f"risk scope key does not match {scope_type} identity; expected {expected!r}"
+        )
+
+
 class RiskControlPlane:
     """PostgreSQL control projection and append-only control event journal."""
 
@@ -157,6 +190,16 @@ class RiskControlPlane:
             raise ValueError(
                 "scope_key, scope_type, event_type, actor_id and event_idempotency_key are required"
             )
+        _validate_scope_identity(
+            scope_key=key,
+            scope_type=kind,
+            account_scope_id=account_scope_id,
+            venue=venue,
+            market_type=market_type,
+            instrument=instrument,
+            pair_key=pair_key,
+            session_id=session_id,
+        )
         payload = {
             "entry_blocked": bool(entry_blocked),
             "derisk_allowed": bool(derisk_allowed),
