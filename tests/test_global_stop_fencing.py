@@ -69,7 +69,7 @@ class _FakeConnection:
                 "base_asset": args[2], "quote_asset": args[3], "pair_key": args[4],
                 "source_client_order_id": args[5],
                 "status": args[6] if len(args) > 6 else "ACTIVE",
-                "source": args[7] if len(args) > 7 else "SPOT_ENTRY_SUBMIT",
+                "source": "ORDER_REGISTRY_BACKFILL" if "ORDER_REGISTRY_BACKFILL" in query else "SPOT_ENTRY_SUBMIT",
             }
             return "INSERT 0 1"
         elif "update public.executor_market_exposure_reservations" in query:
