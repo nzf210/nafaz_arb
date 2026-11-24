@@ -24,7 +24,7 @@ from executor.hedge_claims import HedgeIntentClaimService
 
 def _submitter(
     dsn, client_id, venue_active, venue_release, backend_queue,
-    *, exchange="mexc", symbol="BTC/USDT",
+    *, exchange="mexc", symbol="BTC/USDT", market_type="spot", side="buy",
     scope_exchange=None, scope_symbol=None,
 ):
     async def run():
@@ -32,8 +32,8 @@ def _submitter(
         await service.start()
         try:
             await service.prepare_submit_attempt(
-                client_order_id=client_id, exchange=exchange, market_type="spot",
-                symbol=symbol, side="buy", order_type="limit",
+                client_order_id=client_id, exchange=exchange, market_type=market_type,
+                symbol=symbol, side=side, order_type="limit",
                 quantity=0.001, price=60000, pair_key=f"{exchange}:{symbol}",
             )
             async with service.order_submit_fence(
@@ -77,15 +77,15 @@ def _derisk_holder(dsn, active_event, release_event, result_queue):
 
 def _peer_submitter(
     dsn, client_id, result_queue, *,
-    exchange="mexc", symbol="ETH/USDT",
+    exchange="mexc", symbol="ETH/USDT", market_type="spot", side="buy",
     scope_exchange=None, scope_symbol=None,
 ):
     async def run():
         service = GlobalStopService(dsn, min_size=1, max_size=1)
         await service.start()
         await service.prepare_submit_attempt(
-            client_order_id=client_id, exchange=exchange, market_type="spot",
-            symbol=symbol, side="buy", order_type="limit",
+            client_order_id=client_id, exchange=exchange, market_type=market_type,
+            symbol=symbol, side=side, order_type="limit",
             quantity=0.01, price=3000, pair_key=f"{exchange}:{symbol}",
         )
         try:
@@ -538,6 +538,8 @@ def test_postgres_scoped_unresolved_submit_blocks_only_same_venue_symbol_after_d
         kwargs={
             "exchange": "mexc",
             "symbol": "DODO_USDT",
+            "market_type": "perpetual",
+            "side": "sell",
             "scope_exchange": "mexc",
             "scope_symbol": "DODO_USDT",
         },
@@ -566,6 +568,8 @@ def test_postgres_scoped_unresolved_submit_blocks_only_same_venue_symbol_after_d
             kwargs={
                 "exchange": "okx",
                 "symbol": "BTC_USDT",
+                "market_type": "perpetual",
+                "side": "sell",
                 "scope_exchange": "okx",
                 "scope_symbol": "BTC_USDT",
             },
@@ -585,6 +589,8 @@ def test_postgres_scoped_unresolved_submit_blocks_only_same_venue_symbol_after_d
             kwargs={
                 "exchange": "mexc",
                 "symbol": "DODO_USDT",
+                "market_type": "perpetual",
+                "side": "sell",
                 "scope_exchange": "mexc",
                 "scope_symbol": "DODO_USDT",
             },
@@ -635,6 +641,11 @@ def test_postgres_scoped_unresolved_submit_blocks_only_same_venue_symbol_after_d
             import asyncpg
             conn = await asyncpg.connect(dsn)
             try:
+                await conn.execute(
+                    "delete from public.executor_market_exposure_reservations "
+                    "where source_client_order_id = any($1::text[])",
+                    [first_id, other_id, same_id],
+                )
                 await conn.execute(
                     "delete from public.executor_submit_attempts "
                     "where client_order_id = any($1::text[])",
@@ -728,9 +739,9 @@ def test_postgres_scoped_submit_rejects_scope_not_matching_durable_intent():
             await service.prepare_submit_attempt(
                 client_order_id=unresolved_id,
                 exchange="mexc",
-                market_type="spot",
+                market_type="perpetual",
                 symbol="DODO_USDT",
-                side="buy",
+                side="sell",
                 order_type="limit",
                 quantity=1.0,
                 price=0.1,
@@ -746,9 +757,9 @@ def test_postgres_scoped_submit_rejects_scope_not_matching_durable_intent():
             await service.prepare_submit_attempt(
                 client_order_id=wrong_scope_id,
                 exchange="mexc",
-                market_type="spot",
+                market_type="perpetual",
                 symbol="DODO_USDT",
-                side="buy",
+                side="sell",
                 order_type="limit",
                 quantity=2.0,
                 price=0.1,
@@ -778,6 +789,11 @@ def test_postgres_scoped_submit_rejects_scope_not_matching_durable_intent():
             import asyncpg
             conn = await asyncpg.connect(dsn)
             try:
+                await conn.execute(
+                    "delete from public.executor_market_exposure_reservations "
+                    "where source_client_order_id = any($1::text[])",
+                    [unresolved_id, wrong_scope_id],
+                )
                 await conn.execute(
                     "delete from public.executor_submit_attempts "
                     "where client_order_id = any($1::text[])",
@@ -809,7 +825,7 @@ def test_postgres_derisk_lane_is_not_blocked_by_active_entry_fence():
     entry = ctx.Process(
         target=_submitter,
         args=(dsn, entry_id, venue_active, venue_release, backend_queue),
-        kwargs={"exchange": "mexc", "symbol": "DODO_USDT"},
+        kwargs={"exchange": "mexc", "symbol": f"RISK{suffix}_USDT"},
     )
     derisk = ctx.Process(
         target=_derisk_holder,
@@ -835,6 +851,10 @@ def test_postgres_derisk_lane_is_not_blocked_by_active_entry_fence():
             import asyncpg
             conn = await asyncpg.connect(dsn)
             try:
+                await conn.execute(
+                    "delete from public.executor_market_exposure_reservations where source_client_order_id=$1",
+                    entry_id,
+                )
                 await conn.execute(
                     "delete from public.executor_submit_attempts where client_order_id=$1",
                     entry_id,
@@ -1042,3 +1062,165 @@ def test_postgres_slot_sweep_preserves_live_and_unresolved_reservations():
             await service.close()
 
     asyncio.run(run())
+
+def _market_reservation_submitter(
+    dsn, client_id, pair_key, symbol, venue_active, venue_release, result_queue
+):
+    async def run():
+        service = GlobalStopService(dsn, min_size=1, max_size=1)
+        await service.start()
+        try:
+            base_asset = symbol.split("_", 1)[0]
+            await service.prepare_submit_attempt(
+                client_order_id=client_id,
+                exchange="tokocrypto",
+                market_type="spot",
+                symbol=symbol,
+                side="buy",
+                order_type="limit",
+                quantity=0.01,
+                price=1000.0,
+                pair_key=pair_key,
+                recovery_context={
+                    "local_market_scope": {
+                        "local_exchange": "tokocrypto",
+                        "base_asset": base_asset,
+                        "quote_asset": "IDR",
+                    }
+                },
+            )
+            async with service.order_submit_fence(
+                client_order_id=client_id,
+                scope_exchange="tokocrypto",
+                scope_symbol=symbol,
+            ):
+                result_queue.put("FAKE_VENUE_CREATE_ORDER")
+                venue_active.set()
+                await asyncio.to_thread(venue_release.wait, 30)
+            await service.mark_submit_acknowledged(
+                client_id, {"id": "fake-market-order-" + client_id, "status": "open"}
+            )
+            result_queue.put("ACKNOWLEDGED")
+        except GlobalStopError as exc:
+            result_queue.put("BLOCKED:" + str(exc))
+        except Exception as exc:
+            result_queue.put("ERROR:" + type(exc).__name__ + ":" + str(exc))
+        finally:
+            await service.close()
+    asyncio.run(run())
+
+
+@pytest.mark.integration
+def test_postgres_market_reservation_blocks_second_process_after_ack_and_releases_after_verified_flat():
+    dsn = os.getenv("TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TEST_POSTGRES_DSN is not configured")
+
+    ctx = mp.get_context("fork")
+    suffix = uuid.uuid4().hex[:12]
+    base = "R58" + suffix.upper()
+    symbol = base + "_IDR"
+    first_pair = f"tokocrypto:{symbol}__okx:{base}_USDT_SWAP"
+    second_pair = f"tokocrypto:{symbol}__bybit:{base}_USDT"
+    third_pair = f"tokocrypto:{symbol}__mexc:{base}_USDT"
+    first_id = "pg-market-first-" + suffix
+    second_id = "pg-market-second-" + suffix
+    third_id = "pg-market-third-" + suffix
+
+    first_active, first_release = ctx.Event(), ctx.Event()
+    second_active, second_release = ctx.Event(), ctx.Event()
+    third_active, third_release = ctx.Event(), ctx.Event()
+    first_queue, second_queue, third_queue = ctx.Queue(), ctx.Queue(), ctx.Queue()
+    first = ctx.Process(
+        target=_market_reservation_submitter,
+        args=(dsn, first_id, first_pair, symbol, first_active, first_release, first_queue),
+    )
+    second = None
+    third = None
+    try:
+        first.start()
+        assert first_active.wait(15), "first process never reached fake spot BUY venue boundary"
+        assert first_queue.get(timeout=3) == "FAKE_VENUE_CREATE_ORDER"
+        first_release.set()
+        first.join(15)
+        if first.is_alive():
+            first.terminate()
+            first.join(5)
+            pytest.fail("first market-reservation submitter did not finish")
+        assert first.exitcode == 0
+        assert first_queue.get(timeout=3) == "ACKNOWLEDGED"
+
+        second = ctx.Process(
+            target=_market_reservation_submitter,
+            args=(dsn, second_id, second_pair, symbol, second_active, second_release, second_queue),
+        )
+        second.start()
+        second.join(15)
+        if second.is_alive():
+            second.terminate()
+            second.join(5)
+            pytest.fail("second market-reservation peer did not finish")
+        assert second.exitcode == 0
+        second_outcome = second_queue.get(timeout=3)
+        assert second_outcome.startswith("BLOCKED:")
+        assert "active exposure reservation" in second_outcome
+        assert not second_active.is_set(), "blocked peer must not reach fake venue create-order"
+
+        async def release_first_claim():
+            service = GlobalStopService(dsn, min_size=1, max_size=1)
+            await service.start()
+            try:
+                await service.release_market_exposure_reservation(
+                    first_pair,
+                    evidence={
+                        "spot_flat": True,
+                        "futures_flat": True,
+                        "venue_verified": True,
+                        "source": "VERIFIED_EXIT_LIFECYCLE",
+                    },
+                )
+            finally:
+                await service.close()
+        asyncio.run(release_first_claim())
+
+        third = ctx.Process(
+            target=_market_reservation_submitter,
+            args=(dsn, third_id, third_pair, symbol, third_active, third_release, third_queue),
+        )
+        third.start()
+        assert third_active.wait(15), "verified-flat release did not admit the next process"
+        assert third_queue.get(timeout=3) == "FAKE_VENUE_CREATE_ORDER"
+        third_release.set()
+        third.join(15)
+        if third.is_alive():
+            third.terminate()
+            third.join(5)
+            pytest.fail("third market-reservation submitter did not finish")
+        assert third.exitcode == 0
+        assert third_queue.get(timeout=3) == "ACKNOWLEDGED"
+    finally:
+        for event in (first_release, second_release, third_release):
+            event.set()
+        for process in (third, second, first):
+            if process is not None and process.is_alive():
+                process.terminate()
+                process.join(5)
+
+        async def cleanup():
+            import asyncpg
+            conn = await asyncpg.connect(dsn)
+            try:
+                await conn.execute(
+                    "delete from public.executor_market_exposure_reservations "
+                    "where source_client_order_id = any($1::text[])",
+                    [first_id, second_id, third_id],
+                )
+                await conn.execute(
+                    "delete from public.executor_submit_attempts "
+                    "where client_order_id = any($1::text[])",
+                    [first_id, second_id, third_id],
+                )
+            finally:
+                await conn.close()
+        asyncio.run(cleanup())
+
