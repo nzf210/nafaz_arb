@@ -286,7 +286,7 @@ async def test_durable_market_reservation_blocks_fake_venue_until_verified_flat(
             venue_calls.append("must-not-submit")
     assert venue_calls == ["first-create-order"]
 
-    with pytest.raises(GlobalStopError, match="verified spot and futures flat"):
+    with pytest.raises(GlobalStopError, match="approved verified-flat lifecycle source"):
         await service.release_market_exposure_reservation(
             first_pair, evidence={"spot_flat": True, "futures_flat": True, "source": "missing_venue_proof"}
         )
@@ -396,7 +396,7 @@ async def test_startup_backfill_rejects_registry_order_with_mismatched_pair_iden
         "recovery_status": "MANAGED",
     }]
 
-    with pytest.raises(GlobalStopError, match="pair-key reservation"):
+    with pytest.raises(GlobalStopError, match="pair key does not match"):
         await service.backfill_market_exposure_reservations()
 
 

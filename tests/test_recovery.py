@@ -599,6 +599,11 @@ async def test_live_startup_recovery_verifies_futures_short_quantity(fake_redis,
     monkeypatch.setattr(GlobalStopService, "start", fake_start)
     monkeypatch.setattr(GlobalStopService, "read_state", fake_read_state)
     monkeypatch.setattr(GlobalStopService, "list_unresolved_submit_attempts", fake_list_unresolved)
+    async def fake_backfill(self, records=None):
+        return 0
+    monkeypatch.setattr(
+        GlobalStopService, "backfill_market_exposure_reservations", fake_backfill
+    )
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False, postgres_dsn="postgresql://test"),
         client=client, redis_client=fake_redis
@@ -639,6 +644,11 @@ async def test_live_startup_recovery_blocks_position_quantity_mismatch(fake_redi
     monkeypatch.setattr(GlobalStopService, "start", fake_start)
     monkeypatch.setattr(GlobalStopService, "read_state", fake_read_state)
     monkeypatch.setattr(GlobalStopService, "list_unresolved_submit_attempts", fake_list_unresolved)
+    async def fake_backfill(self, records=None):
+        return 0
+    monkeypatch.setattr(
+        GlobalStopService, "backfill_market_exposure_reservations", fake_backfill
+    )
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False, postgres_dsn="postgresql://test"),
         client=client, redis_client=fake_redis

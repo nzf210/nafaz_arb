@@ -399,7 +399,18 @@ class FenceConn(FakeConn):
                 "epoch": 3,
                 "reason": "manual" if self.pool.is_stopped else None,
             }
-        if "executor_submit_attempts" in sql and sql.strip().startswith("select"):
+        if "from public.executor_submit_attempts where client_order_id = $1 for update" in sql:
+            return {
+                "client_order_id": "prepared-test-entry",
+                "exchange": "indodax",
+                "market_type": "perpetual",
+                "symbol": "BTC/USDT:USDT",
+                "side": "sell",
+                "pair_key": "indodax:btc_idr__okx:btc_usdt:usdt",
+                "recovery_context": {},
+                "status": "PREPARED",
+            }
+        if "executor_submit_attempts" in sql and "where status in ('SUBMITTING','UNKNOWN')" in sql:
             return self.pool.unresolved
         if sql.strip().startswith("update public.executor_submit_attempts"):
             return {"client_order_id": args[0]}
@@ -530,6 +541,11 @@ async def test_startup_recovery_blocks_when_spot_inventory_missing(fake_redis, m
     monkeypatch.setattr(GlobalStopService, "start", fake_start)
     monkeypatch.setattr(GlobalStopService, "read_state", fake_read_state)
     monkeypatch.setattr(GlobalStopService, "list_unresolved_submit_attempts", fake_unresolved)
+    async def fake_backfill(self, records=None):
+        return 0
+    monkeypatch.setattr(
+        GlobalStopService, "backfill_market_exposure_reservations", fake_backfill
+    )
 
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False, postgres_dsn="postgresql://test"),
@@ -572,6 +588,11 @@ async def test_startup_recovery_unlocks_when_both_legs_match(fake_redis, monkeyp
     monkeypatch.setattr(GlobalStopService, "start", fake_start)
     monkeypatch.setattr(GlobalStopService, "read_state", fake_read_state)
     monkeypatch.setattr(GlobalStopService, "list_unresolved_submit_attempts", fake_unresolved)
+    async def fake_backfill(self, records=None):
+        return 0
+    monkeypatch.setattr(
+        GlobalStopService, "backfill_market_exposure_reservations", fake_backfill
+    )
 
     engine = ArbitrageEngine(
         config=ExecutorConfig(mock_mode=False, postgres_dsn="postgresql://test"),

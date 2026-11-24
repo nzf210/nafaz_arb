@@ -78,6 +78,8 @@ class _SubmitConnection:
             return dict(self.attempt)
         if "select is_stopped, epoch, reason" in query:
             return dict(self.control)
+        if "from public.executor_submit_attempts where client_order_id = $1 for update" in query:
+            return dict(self.attempt) if self.attempt is not None else None
         if "where status in ('SUBMITTING','UNKNOWN')" in query:
             return None
         if "returning client_order_id" in query:
