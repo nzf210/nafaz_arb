@@ -730,3 +730,14 @@ All exposure-increasing CEX call-sites are therefore the canonical spot BUY and 
 R-59 final behavior: LIVE recovery now raises if exact (exchange, market) resolution returns no client and never queries the default pair client. Only mock/paper mode may use the venue-neutral simulator fallback. The first attempt (workflow `45133192762`) exposed three legacy paper-mode fixtures that relied on that simulator fallback; commit `cf8edbbb` restricted the fallback to `mock_mode` and kept LIVE fail-closed. Final workflow `45133454526` succeeded 5/5.
 
 Remaining open: R-58 durable active-market reservation across Redis loss; R-57 intent-scoped generic admission callback; operator-authenticated manual resolution governance; real VPS PostgreSQL multi-process disconnect/fault injection; and venue sandbox contract verification. Full runtime call-site source inventory is now closed for this tree, but this does not certify venue behavior or live readiness.
+
+
+## Durable market exposure reservation update — 2026-11-24
+
+| ID | Finding | Remediation / evidence | Status |
+|---|---|---|---|
+| R-58 | Redis-only active/pending market admission could miss an existing local spot exposure after key loss or process restart. The Global STOP submit fence serialized requests but did not retain market ownership after ACK. | Added the PostgreSQL executor_market_exposure_reservations table with a unique active (local_exchange, base_asset, quote_asset) claim. Spot BUY creates the claim in the same PostgreSQL transaction as PREPARED -> SUBMITTING while the shared session advisory fence is held. Startup backfill scans active PostgreSQL positions, unresolved spot BUY attempts, open spot BUY registry rows, plus Redis-restored positions/pending entries. Verified exit/force-close releases only after both legs are venue-verified flat; definitive rejection releases its own claim. Ambiguous submit, ACK persistence failure, Redis loss, and database disconnect retain the claim. | IMPLEMENTED IN BRANCH; PostgreSQL multi-process integration test added, CI result pending. Real VPS fault-injection and legacy/outbox-loss proof remain OPEN. |
+
+**Safety boundary:** this reservation applies only to exposure-increasing spot BUY. Spot SELL, futures reduceOnly=true, cancel, rollback, force-close, and other de-risking operations remain outside the entry STOP fence. Reservation release is post-close metadata work; a release failure leaves the market blocked and does not undo a completed de-risk action.
+
+The branch remains NOT LIVE-CERTIFIED. Operator-authenticated manual resolution, real VPS PostgreSQL disconnect/fault injection, and venue contract verification remain outstanding.

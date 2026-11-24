@@ -28,6 +28,7 @@ class _FakeConnection:
         self.executed = []
         self.fetches = []
         self.attempts = {}
+        self.reservations = {}
         self.control = {"is_stopped": False, "epoch": 12, "reason": None}
 
     def transaction(self):
@@ -49,6 +50,27 @@ class _FakeConnection:
         elif "set status=$2" in query:
             row = self.attempts[args[0]]
             row["status"] = args[1]
+        elif "insert into public.executor_market_exposure_reservations" in query:
+            self.reservations[args[0]] = {
+                "reservation_key": args[0], "local_exchange": args[1],
+                "base_asset": args[2], "quote_asset": args[3], "pair_key": args[4],
+                "source_client_order_id": args[5], "status": "ACTIVE",
+            }
+            return "INSERT 0 1"
+        elif "update public.executor_market_exposure_reservations" in query:
+            count = 0
+            if "where pair_key=$1" in query:
+                for row in self.reservations.values():
+                    if row["pair_key"] == args[0] and row["status"] in ("ACTIVE", "RECONCILIATION_REQUIRED"):
+                        row["status"] = "RELEASED"
+                        count += 1
+            elif "where source_client_order_id=$1" in query:
+                for row in self.reservations.values():
+                    if row["source_client_order_id"] == args[0] and row["status"] in ("ACTIVE", "RECONCILIATION_REQUIRED"):
+                        row["status"] = "RELEASED"
+                        count += 1
+            return f"UPDATE {count}"
+        return "UPDATE 1"
 
     async def fetchrow(self, query, *args):
         self.fetches.append((query, args))
@@ -99,6 +121,23 @@ class _FakeConnection:
                 row["fence_epoch"] = args[1]
                 return {"client_order_id": args[0]}
             return None
+        if "from public.executor_market_exposure_reservations" in query:
+            if "where lower(local_exchange)" in query:
+                exchange, base, quote = args[:3]
+                return next(
+                    (dict(row) for row in self.reservations.values()
+                     if row["local_exchange"] == exchange and row["base_asset"] == base
+                     and row["quote_asset"] == quote
+                     and row["status"] in ("ACTIVE", "RECONCILIATION_REQUIRED")),
+                    None,
+                )
+            if "where pair_key=$1" in query:
+                return next(
+                    (dict(row) for row in self.reservations.values()
+                     if row["pair_key"] == args[0]
+                     and row["status"] in ("ACTIVE", "RECONCILIATION_REQUIRED")),
+                    None,
+                )
         if "where client_order_id = $1" in query:
             row = self.attempts.get(args[0])
             if row is None:
@@ -121,7 +160,7 @@ class _FakePool:
         return _AsyncContext(self.conn)
 
 
-async def _prepare(service, client_order_id, recovery_context=None, exchange="binance", symbol="BTC/USDT"):
+async def _prepare(service, client_order_id, recovery_context=None, exchange="binance", symbol="BTC/USDT", pair_key=None):
     await service.prepare_submit_attempt(
         client_order_id=client_order_id,
         exchange=exchange,
@@ -131,7 +170,7 @@ async def _prepare(service, client_order_id, recovery_context=None, exchange="bi
         order_type="limit",
         quantity=0.01,
         price=50000,
-        pair_key=f"{exchange}__okx__btc",
+        pair_key=pair_key or f"{exchange}__okx__btc",
         recovery_context=(
             recovery_context if recovery_context is not None else {"test": True}
         ),
@@ -201,6 +240,43 @@ async def test_submit_fence_commits_durable_submitting_before_http_scope():
     assert any("pg_advisory_unlock" in query for query in statements)
     assert conn.attempts["stable-client-order-id"]["fence_epoch"] == 12
 
+
+
+
+@pytest.mark.asyncio
+async def test_durable_market_reservation_blocks_fake_venue_until_verified_flat():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    venue_calls = []
+    first_pair = "tokocrypto:BTC_IDR__okx:BTC_USDT_SWAP"
+    second_pair = "tokocrypto:BTC_IDR__bybit:BTC_USDT"
+    await _prepare(service, "market-owner", exchange="tokocrypto", symbol="BTC/IDR", pair_key=first_pair)
+    async with service.order_submit_fence(client_order_id="market-owner", scope_exchange="tokocrypto", scope_symbol="BTC/IDR"):
+        venue_calls.append("first-create-order")
+    await service.mark_submit_acknowledged("market-owner", {"id": "venue-order-1", "status": "open"})
+
+    await _prepare(service, "market-peer", exchange="tokocrypto", symbol="BTC/IDR", pair_key=second_pair)
+    with pytest.raises(GlobalStopError, match="local market already has an active exposure reservation"):
+        async with service.order_submit_fence(client_order_id="market-peer", scope_exchange="tokocrypto", scope_symbol="BTC/IDR"):
+            venue_calls.append("must-not-submit")
+    assert venue_calls == ["first-create-order"]
+
+    with pytest.raises(GlobalStopError, match="verified spot and futures flat"):
+        await service.release_market_exposure_reservation(
+            first_pair, evidence={"spot_flat": True, "futures_flat": True, "source": "missing_venue_proof"}
+        )
+    assert next(iter(conn.reservations.values()))["status"] == "ACTIVE"
+
+    await service.release_market_exposure_reservation(
+        first_pair, evidence={
+            "spot_flat": True, "futures_flat": True, "venue_verified": True,
+            "source": "TEST_VERIFIED_FLAT",
+        }
+    )
+    async with service.order_submit_fence(client_order_id="market-peer", scope_exchange="tokocrypto", scope_symbol="BTC/IDR"):
+        venue_calls.append("second-create-order")
+    assert venue_calls == ["first-create-order", "second-create-order"]
 
 @pytest.mark.asyncio
 async def test_pair_admission_guard_runs_under_lock_before_submitting_transition():

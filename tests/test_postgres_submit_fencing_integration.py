@@ -186,18 +186,27 @@ def test_postgres_disconnect_during_active_venue_request_keeps_peer_fenced():
             import asyncpg
             conn = await asyncpg.connect(dsn)
             try:
-                return await conn.fetchval(
+                attempt_status = await conn.fetchval(
                     "select status from public.executor_submit_attempts where client_order_id=$1",
                     first_id,
                 )
+                reservation_status = await conn.fetchval(
+                    "select status from public.executor_market_exposure_reservations where source_client_order_id=$1",
+                    first_id,
+                )
+                return attempt_status, reservation_status
             finally:
                 await conn.close()
-        assert asyncio.run(final_status()) == "SUBMITTING"
+        assert asyncio.run(final_status()) == ("SUBMITTING", "ACTIVE")
 
         async def cleanup_attempt():
             import asyncpg
             conn = await asyncpg.connect(dsn)
             try:
+                await conn.execute(
+                    "delete from public.executor_market_exposure_reservations where source_client_order_id=$1",
+                    first_id,
+                )
                 await conn.execute(
                     "delete from public.executor_submit_attempts where client_order_id=$1",
                     first_id,
@@ -349,6 +358,11 @@ def test_postgres_pair_guard_blocks_second_replica_after_first_entry_ack():
             import asyncpg
             conn = await asyncpg.connect(dsn)
             try:
+                await conn.execute(
+                    "delete from public.executor_market_exposure_reservations "
+                    "where source_client_order_id = any($1::text[])",
+                    [first_id, second_id],
+                )
                 await conn.execute(
                     "delete from public.executor_submit_attempts "
                     "where client_order_id = any($1::text[])",

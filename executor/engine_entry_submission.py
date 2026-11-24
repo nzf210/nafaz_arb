@@ -55,7 +55,19 @@ class EngineEntrySubmissionMixin:
 
     @staticmethod
     def _entry_recovery_context(payload, pair_info, snapshot, directives, actual_cost):
+        market_identity = resolve_local_market_identity(
+            pair_info.local_symbol, pair_info.base_asset, pair_info.quote_asset
+        )
+        if market_identity is None:
+            raise ValueError("local spot market identity is inconsistent; cannot persist exposure scope")
+        base_asset, quote_asset = market_identity
+        quote_asset = "IDR" if quote_asset == "idr" else "USDT" if quote_asset == "usdt" else str(quote_asset).upper()
         return {
+            "local_market_scope": {
+                "local_exchange": str(pair_info.local_exchange or "").strip().lower(),
+                "base_asset": str(base_asset).upper(),
+                "quote_asset": quote_asset,
+            },
             "usdt_idr_rate": snapshot.usdt_idr_rate,
             "fx_rate_timestamp_ms": snapshot.timestamp_ms,
             "global_ask_usdt": snapshot.global_best_ask_usdt,

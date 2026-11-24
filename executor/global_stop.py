@@ -29,6 +29,38 @@ def _json_mapping(value: Any) -> Optional[dict]:
             return None
     return value if isinstance(value, dict) else None
 
+
+def _market_exposure_scope(exchange: Any, symbol: Any, pair_key: Any, recovery_context: Any) -> dict:
+    """Resolve the durable local spot market identity from the prepared intent."""
+    context = _json_mapping(recovery_context) or {}
+    explicit = _json_mapping(context.get("local_market_scope")) or {}
+    local_exchange = str(explicit.get("local_exchange") or exchange or "").strip().lower()
+    base_asset = str(explicit.get("base_asset") or context.get("base_asset") or "").strip().upper()
+    quote_asset = str(explicit.get("quote_asset") or context.get("quote_asset") or "").strip().upper()
+    raw_symbol = str(symbol or "").strip()
+    if not base_asset or not quote_asset:
+        candidate = raw_symbol
+        if ":" in candidate and "/" not in candidate:
+            candidate = candidate.rsplit(":", 1)[-1]
+        if "/" in candidate:
+            parsed_base, parsed_quote = candidate.split("/", 1)
+        elif "_" in candidate:
+            parsed_base, parsed_quote = candidate.rsplit("_", 1)
+        else:
+            parsed_base, parsed_quote = "", ""
+        base_asset = base_asset or parsed_base.strip().upper()
+        quote_asset = quote_asset or parsed_quote.strip().upper()
+    quote_asset = quote_asset.split(":", 1)[0]
+    if quote_asset in {"BIDR", "IDR"}:
+        quote_asset = "IDR"
+    elif quote_asset in {"USDC", "USDT"}:
+        quote_asset = "USDT"
+    normalized_pair = str(pair_key or "").strip()
+    if not local_exchange or not base_asset or not quote_asset or not normalized_pair:
+        raise GlobalStopError("spot BUY intent lacks a complete local market exposure identity")
+    return {"local_exchange": local_exchange, "base_asset": base_asset,
+            "quote_asset": quote_asset, "pair_key": normalized_pair}
+
 # Stable, application-wide PostgreSQL advisory-lock keys. Do not change
 # without coordinating every executor instance using this schema.
 FENCE_LOCK_KEY = 731_904_221
@@ -219,6 +251,163 @@ class GlobalStopService:
                 row = existing
         return dict(row)
 
+
+    async def _reserve_market_exposure_in_transaction(self, conn: Any, *, client_order_id: str, scope: dict) -> None:
+        """Claim one local spot market atomically with PREPARED -> SUBMITTING."""
+        existing = await conn.fetchrow(
+            "select reservation_key, pair_key, source_client_order_id "
+            "from public.executor_market_exposure_reservations "
+            "where lower(local_exchange)=$1 and upper(base_asset)=$2 "
+            "and upper(quote_asset)=$3 and status in ('ACTIVE','RECONCILIATION_REQUIRED') "
+            "order by created_at limit 1 for update",
+            scope["local_exchange"], scope["base_asset"], scope["quote_asset"],
+        )
+        if existing is not None:
+            raise GlobalStopError(
+                "local market already has an active exposure reservation: "
+                f"{scope['local_exchange']}:{scope['base_asset']}/{scope['quote_asset']} "
+                f"owned by pair_key={existing['pair_key']}"
+            )
+        await conn.execute(
+            "insert into public.executor_market_exposure_reservations "
+            "(reservation_key, local_exchange, base_asset, quote_asset, pair_key, "
+            "source_client_order_id, status, source) "
+            "values ($1,$2,$3,$4,$5,$6,'ACTIVE','SPOT_ENTRY_SUBMIT')",
+            client_order_id, scope["local_exchange"], scope["base_asset"],
+            scope["quote_asset"], scope["pair_key"], client_order_id,
+        )
+
+    async def backfill_market_exposure_reservations(self, records: Optional[list] = None) -> int:
+        """Backfill active markets from PostgreSQL and Redis before entry is unlocked."""
+        self._require_pool()
+        pending = [dict(row) for row in (records or []) if isinstance(row, dict)]
+        inserted = 0
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("select pg_advisory_xact_lock($1)", FENCE_LOCK_KEY)
+                positions = await conn.fetch(
+                    "select pair_key, local_exchange, local_symbol as symbol, base_asset, quote_asset, "
+                    "id::text as position_ref, status from public.positions where is_mock=false "
+                    "and status in ('ENTRY_PENDING','ENTRY_PARTIAL','HEDGED_ACTIVE','EXIT_PENDING','RECONCILIATION_REQUIRED')"
+                )
+                pending.extend(dict(row) for row in positions)
+                unresolved = await conn.fetch(
+                    "select client_order_id, exchange, market_type, symbol, side, pair_key, recovery_context, status "
+                    "from public.executor_submit_attempts where status in ('SUBMITTING','UNKNOWN') "
+                    "and lower(market_type) in ('spot','local') and lower(side)='buy'"
+                )
+                for attempt in unresolved:
+                    row = dict(attempt)
+                    row["local_exchange"] = row.get("exchange")
+                    row["source_client_order_id"] = row.get("client_order_id")
+                    row["source"] = "UNRESOLVED_SUBMIT"
+                    pending.append(row)
+                for record in pending:
+                    context = record.get("recovery_context")
+                    scope = _market_exposure_scope(
+                        record.get("local_exchange") or record.get("exchange"),
+                        record.get("symbol") or record.get("local_symbol"),
+                        record.get("pair_key"),
+                        context if context is not None else {
+                            "local_market_scope": {
+                                "local_exchange": record.get("local_exchange") or record.get("exchange"),
+                                "base_asset": record.get("base_asset"),
+                                "quote_asset": record.get("quote_asset"),
+                            }
+                        },
+                    )
+                    by_pair = await conn.fetchrow(
+                        "select reservation_key, local_exchange, base_asset, quote_asset "
+                        "from public.executor_market_exposure_reservations where pair_key=$1 "
+                        "and status in ('ACTIVE','RECONCILIATION_REQUIRED') order by created_at limit 1 for update",
+                        scope["pair_key"],
+                    )
+                    if by_pair is not None and (
+                        str(by_pair["local_exchange"]).lower() != scope["local_exchange"]
+                        or str(by_pair["base_asset"]).upper() != scope["base_asset"]
+                        or str(by_pair["quote_asset"]).upper() != scope["quote_asset"]
+                    ):
+                        raise GlobalStopError("active pair_key has conflicting durable market identity: "+scope["pair_key"])
+                    existing = await conn.fetchrow(
+                        "select reservation_key, pair_key from public.executor_market_exposure_reservations "
+                        "where lower(local_exchange)=$1 and upper(base_asset)=$2 and upper(quote_asset)=$3 "
+                        "and status in ('ACTIVE','RECONCILIATION_REQUIRED') order by created_at limit 1 for update",
+                        scope["local_exchange"], scope["base_asset"], scope["quote_asset"],
+                    )
+                    if existing is not None:
+                        if str(existing["pair_key"]) != scope["pair_key"]:
+                            raise GlobalStopError(
+                                "two active pair keys claim the same local market: "
+                                f"{scope['local_exchange']}:{scope['base_asset']}/{scope['quote_asset']}"
+                            )
+                        continue
+                    source_coid = str(record.get("source_client_order_id") or record.get("client_order_id") or "").strip() or None
+                    position_ref = str(record.get("position_ref") or record.get("opened_at") or "").strip()
+                    reservation_key = source_coid or (
+                        "legacy:" + hashlib.sha256("|".join((
+                            scope["local_exchange"], scope["base_asset"], scope["quote_asset"],
+                            scope["pair_key"], position_ref,
+                        )).encode("utf-8")).hexdigest()
+                    )
+                    reservation_status = (
+                        "RECONCILIATION_REQUIRED"
+                        if str(record.get("status") or "").upper() == "RECONCILIATION_REQUIRED"
+                        or record.get("source") == "UNRESOLVED_SUBMIT" else "ACTIVE"
+                    )
+                    await conn.execute(
+                        "insert into public.executor_market_exposure_reservations "
+                        "(reservation_key, local_exchange, base_asset, quote_asset, pair_key, source_client_order_id, status, source) "
+                        "values ($1,$2,$3,$4,$5,$6,$7,'STARTUP_BACKFILL')",
+                        reservation_key, scope["local_exchange"], scope["base_asset"], scope["quote_asset"],
+                        scope["pair_key"], source_coid, reservation_status,
+                    )
+                    inserted += 1
+                open_orders = await conn.fetch(
+                    "select pair_key, exchange_name, symbol, client_order_id from public.order_registry "
+                    "where is_mock=false and lower(market_type)='spot' and lower(side)='buy' and reduce_only=false "
+                    "and lower(status) not in ('closed','filled','canceled','cancelled','rejected','expired')"
+                )
+                for order in open_orders:
+                    pair_key = str(order.get("pair_key") or "").strip()
+                    if not pair_key:
+                        raise GlobalStopError("open live spot BUY order has no pair_key; market claim cannot be proven")
+                    reservation = await conn.fetchrow(
+                        "select reservation_key from public.executor_market_exposure_reservations "
+                        "where pair_key=$1 and status in ('ACTIVE','RECONCILIATION_REQUIRED') limit 1",
+                        pair_key,
+                    )
+                    if reservation is None:
+                        raise GlobalStopError(
+                            "open live spot BUY order has no durable market reservation: "
+                            + str(order.get("client_order_id") or order.get("symbol") or pair_key)
+                        )
+        return inserted
+
+    async def release_market_exposure_reservation(self, pair_key: str, *, evidence: dict) -> int:
+        """Release only after both spot and futures legs are venue-verified flat."""
+        self._require_pool()
+        source = str((evidence or {}).get("source") or "").strip()
+        if (
+            not source or (evidence or {}).get("spot_flat") is not True
+            or (evidence or {}).get("futures_flat") is not True
+            or (evidence or {}).get("venue_verified") is not True
+        ):
+            raise GlobalStopError("market exposure reservation release requires verified spot and futures flat evidence")
+        payload = json.dumps(evidence, separators=(",", ":"), default=str)
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("select pg_advisory_xact_lock($1)", FENCE_LOCK_KEY)
+                result = await conn.execute(
+                    "update public.executor_market_exposure_reservations "
+                    "set status='RELEASED', released_at=now(), release_evidence=$2::jsonb, updated_at=now() "
+                    "where pair_key=$1 and status in ('ACTIVE','RECONCILIATION_REQUIRED')",
+                    str(pair_key or "").strip(), payload,
+                )
+        try:
+            return int(str(result).rsplit(" ", 1)[-1])
+        except (TypeError, ValueError):
+            return 0
+
     @asynccontextmanager
     async def derisk_submit_fence(self, *, client_order_id: str) -> AsyncIterator[Any]:
         """Serialize a risk-reducing submit without allowing STOP to block it.
@@ -352,42 +541,45 @@ class GlobalStopService:
                             raise GlobalStopError(
                                 f"global STOP active (epoch={control['epoch']} reason={control['reason'] or 'unspecified'})"
                             )
+                        intent = await conn.fetchrow(
+                            "select exchange, market_type, symbol, side, pair_key, recovery_context, status "
+                            "from public.executor_submit_attempts where client_order_id = $1 for update",
+                            client_order_id,
+                        )
+                        if intent is None or intent["status"] != "PREPARED":
+                            raise GlobalStopError(f"submit requires a durable PREPARED intent: {client_order_id}")
+                        durable_exchange = str(intent["exchange"] or "").strip().lower()
+                        durable_symbol = str(intent["symbol"] or "").strip()
                         scope_requested = scope_exchange is not None or scope_symbol is not None
                         if scope_requested:
                             if not str(scope_exchange or "").strip() or not str(scope_symbol or "").strip():
-                                raise GlobalStopError(
-                                    "both scope_exchange and scope_symbol are required for scoped submit fencing"
-                                )
-                            intent = await conn.fetchrow(
-                                "select exchange, symbol, status from public.executor_submit_attempts "
-                                "where client_order_id = $1 for update",
-                                client_order_id,
-                            )
-                            if intent is None or intent["status"] != "PREPARED":
-                                raise GlobalStopError(
-                                    f"scoped submit requires a durable PREPARED intent: {client_order_id}"
-                                )
-                            durable_exchange = str(intent["exchange"] or "").strip().lower()
-                            durable_symbol = str(intent["symbol"] or "").strip()
+                                raise GlobalStopError("both scope_exchange and scope_symbol are required for scoped submit fencing")
                             if (
                                 str(scope_exchange).strip().lower() != durable_exchange
                                 or str(scope_symbol).strip() != durable_symbol
                             ):
-                                raise GlobalStopError(
-                                    "provided submit fence scope does not match the durable PREPARED intent"
-                                )
+                                raise GlobalStopError("provided submit fence scope does not match the durable PREPARED intent")
+                        if (
+                            str(intent.get("market_type") or "").strip().lower() in ("spot", "local")
+                            and str(intent.get("side") or "").strip().lower() == "buy"
+                        ):
+                            market_scope = _market_exposure_scope(
+                                durable_exchange, durable_symbol, intent.get("pair_key"), intent.get("recovery_context")
+                            )
+                            await self._reserve_market_exposure_in_transaction(
+                                conn, client_order_id=client_order_id, scope=market_scope
+                            )
+                        if scope_requested:
                             unresolved = await conn.fetchrow(
                                 "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
                                 "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
-                                "and exchange = $2 and symbol = $3 "
-                                "order by created_at limit 1",
+                                "and exchange = $2 and symbol = $3 order by created_at limit 1",
                                 client_order_id, durable_exchange, durable_symbol,
                             )
                         else:
                             unresolved = await conn.fetchrow(
                                 "select client_order_id, exchange, symbol, status from public.executor_submit_attempts "
-                                "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 "
-                                "order by created_at limit 1",
+                                "where status in ('SUBMITTING','UNKNOWN') and client_order_id <> $1 order by created_at limit 1",
                                 client_order_id,
                             )
                         if unresolved is not None:
@@ -447,11 +639,19 @@ class GlobalStopService:
         )
 
     async def mark_submit_rejected(self, client_order_id: str, error: str) -> None:
-        """Resolve only a definitive venue rejection, never a transport timeout."""
+        """Resolve a definitive rejection and release only its unfilled market claim."""
         await self._update_submit_attempt(
             client_order_id, "REJECTED", exchange_order_id=None,
             venue_response=None, error=str(error)[:2000],
         )
+        async with self.pool.acquire() as conn:
+            await conn.execute(
+                "update public.executor_market_exposure_reservations "
+                "set status='RELEASED', released_at=now(), "
+                "release_evidence=jsonb_build_object('source','DEFINITIVE_VENUE_REJECTION'), updated_at=now() "
+                "where source_client_order_id=$1 and status in ('ACTIVE','RECONCILIATION_REQUIRED')",
+                client_order_id,
+            )
 
     async def mark_submit_aborted(self, client_order_id: str, reason: str) -> None:
         """Retire an intent proven not to have crossed the venue HTTP boundary."""
@@ -624,6 +824,15 @@ class GlobalStopService:
                 )
                 if result.endswith(" 0"):
                     raise GlobalStopError("attempt changed during operator resolution")
+                if target_status in ("REJECTED", "ABORTED"):
+                    await conn.execute(
+                        "update public.executor_market_exposure_reservations "
+                        "set status='RELEASED', released_at=now(), "
+                        "release_evidence=jsonb_build_object('source','SIGNED_OPERATOR_RESOLUTION','decision',$2), "
+                        "updated_at=now() where source_client_order_id=$1 "
+                        "and status in ('ACTIVE','RECONCILIATION_REQUIRED')",
+                        client_id, decision,
+                    )
         return {
             "client_order_id": client_id, "status": target_status,
             "operator_id": operator, "decision": decision,

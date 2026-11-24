@@ -291,6 +291,17 @@ class ForceCloseLifecycleMixin:
 
     async def _handle_force_close_success(self, pair_key: str, pos, pnl: dict) -> None:
         """Cleans up active state in Redis and memory when force close fully succeeds."""
+        if (
+            pos is not None
+            and getattr(self, "global_stop", None) is not None
+            and not getattr(self.config, "mock_mode", False)
+        ):
+            await self.global_stop.release_market_exposure_reservation(
+                pair_key, evidence={
+                    "spot_flat": True, "futures_flat": True, "venue_verified": True,
+                    "source": "VERIFIED_FORCE_CLOSE_LIFECYCLE",
+                },
+            )
         await self.redis.delete(f"arb:active_pos:{pair_key}")
         self.active_positions.pop(pair_key, None)
         self.last_pegged_global_ask.pop(pair_key, None)

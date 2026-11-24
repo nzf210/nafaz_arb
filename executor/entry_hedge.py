@@ -1419,6 +1419,19 @@ class EntryHedgeMixin:
                     retire=True,
                 )
             return
+        if (
+            getattr(self, "global_stop", None) is not None
+            and not getattr(self.config, "mock_mode", False)
+            and cumulative_filled <= 1e-12
+            and hedged_qty <= 1e-12
+            and not has_unknown_hedge
+        ):
+            await self.global_stop.release_market_exposure_reservation(
+                pair_tag, evidence={
+                    "spot_flat": True, "futures_flat": True, "venue_verified": True,
+                    "source": "VERIFIED_ZERO_FILL_ENTRY_TERMINAL",
+                },
+            )
         self.states[pair_tag] = PositionState.IDLE
         sync_entry = getattr(self, "_sync_entry_order_record", None)
         if callable(sync_entry):

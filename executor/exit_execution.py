@@ -379,6 +379,13 @@ class ExitExecutionMixin:
             logger.info(
                 f"[State 4 Complete] Arbitrage position for {pair_tag} fully exited! Deleting active pos."
             )
+            if getattr(self, "global_stop", None) is not None and not getattr(self.config, "mock_mode", False):
+                await self.global_stop.release_market_exposure_reservation(
+                    pair_tag, evidence={
+                        "spot_flat": True, "futures_flat": True, "venue_verified": True,
+                        "source": "VERIFIED_EXIT_LIFECYCLE",
+                    },
+                )
             await self.redis.delete(active_key)
             self.active_positions.pop(pair_tag, None)
             self.pending_exit_orders.pop(pair_tag, None)

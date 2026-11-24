@@ -1854,3 +1854,21 @@ The complete runtime creation boundary set is: `ExchangeOrderMixin.place_local_l
 R-59 is now CI-verified: LIVE recovery fails closed when exact venue/market resolution is unavailable; only mock/paper mode can fall back to the venue-neutral simulator. Workflow `45133454526` on source/test head `cf8edbbb` passed 5/5 jobs (Python 790 passed, 10 skipped; PostgreSQL schema/integration 11 passed; Go race/vet, Docker, and migration runner passed).
 
 This closes the source call-site inventory for the current tree, not the operational readiness gates. R-58 remains open because active-market admission is still memory/Redis-backed rather than a durable PostgreSQL reservation. R-57 remains open because the generic gateway guard is no-argument. Manual operator identity/dual approval, real VPS fault injection, and venue sandbox contracts also remain open.
+
+
+## Durable local-market exposure reservations
+
+The PostgreSQL executor_market_exposure_reservations table is the canonical cross-process claim for a local spot market (local_exchange, base_asset, quote_asset). Its partial unique index permits at most one ACTIVE or RECONCILIATION_REQUIRED claim per market.
+
+For every exposure-increasing spot BUY, GlobalStopService.order_submit_fence derives the market identity from the durable PREPARED intent and inserts the reservation in the same transaction that commits SUBMITTING, while the shared session advisory fence is held. The reservation therefore survives Redis key loss, ACK persistence failure, and a PostgreSQL session disconnect after the venue request has started.
+
+Startup recovery backfills claims from active PostgreSQL positions, unresolved spot BUY submit attempts, open spot BUY registry rows, and the process's restored active/pending state. An identity conflict, missing claim for an open order, or database read/write failure prevents startup recovery from completing.
+
+A claim remains active after venue ACK and through partial fills, hedge completion, and position management. It is released only after:
+- a definitive rejection of the exact spot entry client order ID; or
+- the verified exit/force-close lifecycle confirms both spot and futures are flat; or
+- a terminal zero-fill spot entry is confirmed with no hedge submission.
+
+NOT_FOUND, timeout, transport failure, UNKNOWN, failed ACK persistence, partial close, and incomplete rollback never release a claim. Manual release requires a separate authenticated operator-resolution workflow and evidence.
+
+This is an admission invariant, not a de-risk fence. Spot SELL, futures reduceOnly=true, cancel, rollback, and force-close remain independent of Global STOP entry admission. A failed post-close reservation release may temporarily block a later entry, but it must never prevent or reverse the already-completed close.

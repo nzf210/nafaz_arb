@@ -760,3 +760,19 @@ No production source behavior was changed in this execution; the test fixture wa
 - [x] R-59 LIVE exact-venue fallback fix passed workflow `45133454526` (5/5 jobs; Python 790 passed, 10 skipped; PostgreSQL 11 passed; Go race/vet, Docker, migration runner passed).
 
 Still OPEN: R-58 durable PostgreSQL active-market reservation / Redis-loss recovery; R-57 intent-scoped generic admission guard; operator-authenticated manual resolution; real VPS multi-process disconnect/fault injection; venue sandbox contracts. Source call-site inventory is closed for this tree, but the system remains **PARTIAL / NOT LIVE-CERTIFIED**.
+
+
+## 4.1 Durable local-market exposure reservation (R-58)
+
+- [x] Add PostgreSQL executor_market_exposure_reservations with a unique active local market scope.
+- [x] Create the reservation in the same transaction as spot BUY SUBMITTING, under the shared session advisory fence.
+- [x] Derive the reservation scope from the durable PREPARED intent, not from Redis or caller-only metadata.
+- [x] Retain the reservation on ACK, partial fill, UNKNOWN, NOT_FOUND, ACK persistence failure, and DB disconnect.
+- [x] Release on definitive rejection of the exact spot BUY intent.
+- [x] Release after verified exit/force-close confirms both spot and futures flat; keep spot SELL/futures reduceOnly/cancel/rollback/force-close outside entry STOP admission.
+- [x] Startup backfill active PostgreSQL positions, unresolved spot BUY attempts, open spot BUY order-registry rows, and Redis-restored state; conflict or incomplete evidence fails startup closed.
+- [ ] Run the new real PostgreSQL multi-process reservation test in CI and retain the exact workflow result.
+- [ ] Repeat DB disconnect/fault injection against the actual VPS PostgreSQL topology and verify reservations remain after backend termination.
+- [ ] Prove recovery of legacy positions when both Redis state and local SQLite outbox are unavailable; until then, keep this as an operational blocker.
+
+**R-58 status:** implementation and regression coverage added on this branch; not closed for production until CI and real-topology evidence are verified.

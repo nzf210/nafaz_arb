@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 from redis.exceptions import WatchError
 
 from executor.exchange_common import _accepted_client_order_ids
-from executor.helpers import is_explicit_rate_limit_rejection
+from executor.helpers import is_explicit_rate_limit_rejection, parse_pair_tag_local_market, resolve_local_market_identity
 from executor.models import OrderRecord, OrderRole, PositionState, RecoveryStatus
 
 logger = logging.getLogger("executor.order_recovery")
@@ -92,6 +92,61 @@ class RecoveryRegistryMixin:
             self._run_startup_recovery_with_lock
         )
 
+
+    async def _backfill_market_exposure_reservations(self) -> None:
+        """Restore local-market claims before startup recovery can unlock entry."""
+        service = getattr(self, "global_stop", None)
+        if service is None or getattr(self.config, "mock_mode", False):
+            return
+        records = []
+        for pair_key, position in (getattr(self, "active_positions", {}) or {}).items():
+            pair_info = (getattr(self, "_pair_infos", {}) or {}).get(pair_key)
+            tag_exchange, tag_base, tag_quote = parse_pair_tag_local_market(pair_key)
+            local_exchange = str(
+                getattr(position, "local_exchange", "") or getattr(pair_info, "local_exchange", "")
+                or tag_exchange or ""
+            ).strip().lower()
+            base_asset = str(
+                getattr(position, "base_asset", "") or getattr(pair_info, "base_asset", "")
+                or tag_base or ""
+            ).strip().upper()
+            quote_asset = str(getattr(pair_info, "quote_asset", "") or tag_quote or "").strip().upper()
+            identity = resolve_local_market_identity(getattr(position, "symbol", ""), base_asset, quote_asset)
+            if identity is None or not local_exchange:
+                raise RuntimeError(f"active position {pair_key} has no trustworthy local market identity")
+            records.append({
+                "pair_key": pair_key, "local_exchange": local_exchange,
+                "base_asset": identity[0], "quote_asset": identity[1],
+                "symbol": getattr(position, "symbol", ""),
+                "position_ref": getattr(position, "opened_at_ms", ""),
+                "status": getattr(getattr(position, "state", "HEDGED_ACTIVE"), "value", getattr(position, "state", "HEDGED_ACTIVE")),
+                "source": "REDIS_ACTIVE_POSITION",
+            })
+        for pair_key, order in (getattr(self, "pending_entry_orders", {}) or {}).items():
+            pair_info = (getattr(self, "_pair_infos", {}) or {}).get(pair_key)
+            tag_exchange, tag_base, tag_quote = parse_pair_tag_local_market(pair_key)
+            local_exchange = str(
+                (order or {}).get("local_exchange") or getattr(pair_info, "local_exchange", "")
+                or tag_exchange or ""
+            ).strip().lower()
+            symbol = str((order or {}).get("symbol") or getattr(pair_info, "local_symbol", "") or "")
+            base_asset = str(
+                (order or {}).get("base_asset") or getattr(pair_info, "base_asset", "") or tag_base or ""
+            ).strip().upper()
+            quote_asset = str(
+                (order or {}).get("quote_asset") or getattr(pair_info, "quote_asset", "") or tag_quote or ""
+            ).strip().upper()
+            identity = resolve_local_market_identity(symbol, base_asset, quote_asset)
+            if identity is None or not local_exchange:
+                raise RuntimeError(f"pending entry {pair_key} has no trustworthy local market identity")
+            records.append({
+                "pair_key": pair_key, "local_exchange": local_exchange,
+                "base_asset": identity[0], "quote_asset": identity[1], "symbol": symbol,
+                "source_client_order_id": str((order or {}).get("client_order_id") or ""),
+                "source": "REDIS_PENDING_ENTRY",
+            })
+        await service.backfill_market_exposure_reservations(records)
+
     async def _run_startup_recovery_with_lock(self) -> None:
         """Restore positions, pending entries and orders as one exclusive pass."""
         await self._restore_risk_state()
@@ -107,6 +162,7 @@ class RecoveryRegistryMixin:
             verified_positions = await self._verify_recovered_active_positions()
             await self.trade_fill_reconciliation.reconcile_once()
             await self.exposure_reconciliation.reconcile_once()
+        await self._backfill_market_exposure_reservations()
         self._recovery_pending_orders = await self.order_registry.pending_recovery_ids()
         if not self._recovery_pending_orders:
             self._recovery_scope_halts.pop("unknown", None)
