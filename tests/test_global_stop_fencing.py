@@ -29,6 +29,9 @@ class _FakeConnection:
         self.fetches = []
         self.attempts = {}
         self.reservations = {}
+        self.positions = []
+        self.unresolved_rows = []
+        self.open_orders = []
         self.control = {"is_stopped": False, "epoch": 12, "reason": None}
 
     def transaction(self):
@@ -39,6 +42,16 @@ class _FakeConnection:
         if "pg_try_advisory_lock" in query:
             return True
         raise AssertionError(f"unexpected fetchval query: {query[:80]}")
+
+    async def fetch(self, query, *args):
+        self.fetches.append((query, args))
+        if "from public.positions" in query:
+            return list(self.positions)
+        if "from public.executor_submit_attempts" in query:
+            return list(self.unresolved_rows)
+        if "from public.order_registry" in query:
+            return list(self.open_orders)
+        return []
 
     async def execute(self, query, *args):
         self.executed.append((query, args))
@@ -54,7 +67,9 @@ class _FakeConnection:
             self.reservations[args[0]] = {
                 "reservation_key": args[0], "local_exchange": args[1],
                 "base_asset": args[2], "quote_asset": args[3], "pair_key": args[4],
-                "source_client_order_id": args[5], "status": "ACTIVE",
+                "source_client_order_id": args[5],
+                "status": args[6] if len(args) > 6 else "ACTIVE",
+                "source": args[7] if len(args) > 7 else "SPOT_ENTRY_SUBMIT",
             }
             return "INSERT 0 1"
         elif "update public.executor_market_exposure_reservations" in query:
@@ -122,6 +137,12 @@ class _FakeConnection:
                 return {"client_order_id": args[0]}
             return None
         if "from public.executor_market_exposure_reservations" in query:
+            if "where source_client_order_id=$1" in query:
+                return next(
+                    (dict(row) for row in self.reservations.values()
+                     if row["source_client_order_id"] == args[0]),
+                    None,
+                )
             if "where lower(local_exchange)" in query:
                 exchange, base, quote = args[:3]
                 return next(
@@ -160,13 +181,16 @@ class _FakePool:
         return _AsyncContext(self.conn)
 
 
-async def _prepare(service, client_order_id, recovery_context=None, exchange="binance", symbol="BTC/USDT", pair_key=None):
+async def _prepare(
+    service, client_order_id, recovery_context=None, exchange="binance",
+    symbol="BTC/USDT", pair_key=None, market_type="spot", side="buy",
+):
     await service.prepare_submit_attempt(
         client_order_id=client_order_id,
         exchange=exchange,
-        market_type="spot",
+        market_type=market_type,
         symbol=symbol,
-        side="buy",
+        side=side,
         order_type="limit",
         quantity=0.01,
         price=50000,
@@ -271,12 +295,110 @@ async def test_durable_market_reservation_blocks_fake_venue_until_verified_flat(
     await service.release_market_exposure_reservation(
         first_pair, evidence={
             "spot_flat": True, "futures_flat": True, "venue_verified": True,
-            "source": "TEST_VERIFIED_FLAT",
+            "source": "VERIFIED_EXIT_LIFECYCLE",
         }
     )
     async with service.order_submit_fence(client_order_id="market-peer", scope_exchange="tokocrypto", scope_symbol="BTC/IDR"):
         venue_calls.append("second-create-order")
     assert venue_calls == ["first-create-order", "second-create-order"]
+
+
+@pytest.mark.asyncio
+async def test_spot_market_scope_rejects_mismatched_recovery_identity_before_venue():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    await _prepare(
+        service,
+        "mismatched-market-scope",
+        exchange="mexc",
+        symbol="ETH/USDT",
+        pair_key="mexc:ETH_USDT__okx:ETH_USDT",
+        recovery_context={
+            "local_market_scope": {
+                "local_exchange": "tokocrypto",
+                "base_asset": "BTC",
+                "quote_asset": "IDR",
+            }
+        },
+    )
+    venue_calls = []
+    with pytest.raises(GlobalStopError, match="does not match the durable order intent"):
+        async with service.order_submit_fence(
+            client_order_id="mismatched-market-scope",
+            scope_exchange="mexc",
+            scope_symbol="ETH/USDT",
+        ):
+            venue_calls.append("must-not-submit")
+    assert venue_calls == []
+    assert conn.attempts["mismatched-market-scope"]["status"] == "PREPARED"
+    assert conn.reservations == {}
+
+
+@pytest.mark.asyncio
+async def test_startup_backfill_claims_open_spot_buy_registry_order():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    pair_key = "mexc:ETH_USDT__okx:ETH_USDT"
+    conn.open_orders = [{
+        "local_order_id": "registry-local-1",
+        "pair_key": pair_key,
+        "exchange_name": "mexc",
+        "symbol": "ETH_USDT",
+        "client_order_id": "registry-entry-1",
+        "recovery_status": "UNVERIFIED",
+    }]
+
+    inserted = await service.backfill_market_exposure_reservations()
+    assert inserted == 1
+    reservation = next(iter(conn.reservations.values()))
+    assert reservation["status"] == "RECONCILIATION_REQUIRED"
+    assert reservation["source"] == "ORDER_REGISTRY_BACKFILL"
+
+    await _prepare(
+        service,
+        "registry-conflict-entry",
+        exchange="mexc",
+        symbol="ETH_USDT",
+        pair_key="mexc:ETH_USDT__bybit:ETH_USDT",
+    )
+    with pytest.raises(GlobalStopError, match="active exposure reservation"):
+        async with service.order_submit_fence(
+            client_order_id="registry-conflict-entry",
+            scope_exchange="mexc",
+            scope_symbol="ETH_USDT",
+        ):
+            pytest.fail("open registry BUY must retain the market reservation")
+
+
+@pytest.mark.asyncio
+async def test_startup_backfill_rejects_registry_order_with_mismatched_pair_identity():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    pair_key = "mexc:BTC_USDT__okx:BTC_USDT"
+    conn.reservations["existing"] = {
+        "reservation_key": "existing",
+        "local_exchange": "mexc",
+        "base_asset": "BTC",
+        "quote_asset": "USDT",
+        "pair_key": pair_key,
+        "source_client_order_id": "old-entry",
+        "status": "ACTIVE",
+    }
+    conn.open_orders = [{
+        "local_order_id": "registry-local-2",
+        "pair_key": pair_key,
+        "exchange_name": "mexc",
+        "symbol": "ETH_USDT",
+        "client_order_id": "new-entry",
+        "recovery_status": "MANAGED",
+    }]
+
+    with pytest.raises(GlobalStopError, match="pair-key reservation"):
+        await service.backfill_market_exposure_reservations()
+
 
 @pytest.mark.asyncio
 async def test_pair_admission_guard_runs_under_lock_before_submitting_transition():
@@ -310,13 +432,19 @@ async def test_lost_submit_connection_leaves_durable_row_blocking_next_entry():
     conn = _FakeConnection()
     service = GlobalStopService("postgresql://unused")
     service.pool = _FakePool(conn)
-    await _prepare(service, "possibly-accepted-order")
+    await _prepare(
+        service, "possibly-accepted-order", exchange="okx",
+        symbol="BTC/USDT:USDT", market_type="perpetual", side="sell",
+    )
     with pytest.raises(ConnectionError):
         async with service.order_submit_fence(client_order_id="possibly-accepted-order"):
             raise ConnectionError("connection dropped after request boundary")
 
     assert conn.attempts["possibly-accepted-order"]["status"] == "SUBMITTING"
-    await _prepare(service, "next-order")
+    await _prepare(
+        service, "next-order", exchange="bybit",
+        symbol="ETH/USDT:USDT", market_type="perpetual", side="sell",
+    )
     with pytest.raises(GlobalStopError, match="unresolved in-flight submit"):
         async with service.order_submit_fence(client_order_id="next-order"):
             pytest.fail("second venue request must not be entered")
@@ -330,7 +458,10 @@ async def test_scoped_submit_fence_allows_different_venue_while_one_unresolved()
     service.pool = _FakePool(conn)
 
     # Prepare and leave UNKNOWN attempt on mexc:DODO_USDT
-    await _prepare(service, "mexc-dodo-order", exchange="mexc", symbol="DODO_USDT")
+    await _prepare(
+        service, "mexc-dodo-order", exchange="mexc", symbol="DODO_USDT",
+        market_type="perpetual", side="sell",
+    )
     with pytest.raises(ConnectionError):
         async with service.order_submit_fence(
             client_order_id="mexc-dodo-order", scope_exchange="mexc", scope_symbol="DODO_USDT"
@@ -339,7 +470,10 @@ async def test_scoped_submit_fence_allows_different_venue_while_one_unresolved()
     assert conn.attempts["mexc-dodo-order"]["status"] == "SUBMITTING"
 
     # Scoped entry on okx:BTC_USDT succeeds despite MEXC unresolved
-    await _prepare(service, "okx-btc-order", exchange="okx", symbol="BTC_USDT")
+    await _prepare(
+        service, "okx-btc-order", exchange="okx", symbol="BTC_USDT",
+        market_type="perpetual", side="sell",
+    )
     async with service.order_submit_fence(
         client_order_id="okx-btc-order", scope_exchange="okx", scope_symbol="BTC_USDT"
     ):
@@ -347,7 +481,10 @@ async def test_scoped_submit_fence_allows_different_venue_while_one_unresolved()
     assert conn.attempts["okx-btc-order"]["status"] == "SUBMITTING"
 
     # Same venue+symbol (mexc:DODO_USDT) is blocked
-    await _prepare(service, "mexc-dodo-retry", exchange="mexc", symbol="DODO_USDT")
+    await _prepare(
+        service, "mexc-dodo-retry", exchange="mexc", symbol="DODO_USDT",
+        market_type="perpetual", side="sell",
+    )
     with pytest.raises(GlobalStopError, match="unresolved in-flight submit"):
         async with service.order_submit_fence(
             client_order_id="mexc-dodo-retry", scope_exchange="mexc", scope_symbol="DODO_USDT"
