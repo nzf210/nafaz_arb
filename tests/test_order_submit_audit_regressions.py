@@ -785,6 +785,7 @@ class _RollbackLifecycleHarness(RollbackMixin):
         self.client = SimpleNamespace()
         self.redis = _RecordingRedis()
         self.supabase = _RecordingSupabase()
+        self.ARB_TRADE_EVENTS = "arb:trade_events"
         self.states = {}
         self.failures = []
         self.hedged_short_qty = hedged_short_qty
