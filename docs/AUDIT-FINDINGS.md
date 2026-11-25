@@ -736,8 +736,38 @@ Remaining open: R-58 durable active-market reservation across Redis loss; R-57 i
 
 | ID | Finding | Remediation / evidence | Status |
 |---|---|---|---|
-| R-58 | Redis-only active/pending market admission could miss an existing local spot exposure after key loss or process restart. The Global STOP submit fence serialized requests but did not retain market ownership after ACK. | Added the PostgreSQL executor_market_exposure_reservations table with a unique active (local_exchange, base_asset, quote_asset) claim. Spot BUY creates the claim in the same PostgreSQL transaction as PREPARED -> SUBMITTING while the shared session advisory fence is held. Startup backfill scans active PostgreSQL positions, unresolved spot BUY attempts, open spot BUY registry rows, plus Redis-restored positions/pending entries. Verified exit/force-close releases only after both legs are venue-verified flat; definitive rejection releases its own claim. Ambiguous submit, ACK persistence failure, Redis loss, and database disconnect retain the claim. | IMPLEMENTED IN BRANCH; PostgreSQL multi-process integration test added, CI result pending. Real VPS fault-injection and legacy/outbox-loss proof remain OPEN. |
+| R-58 | Redis-only active/pending market admission could miss an existing local spot exposure after key loss or process restart. The Global STOP submit fence serialized requests but did not retain market ownership after ACK. | Added the PostgreSQL executor_market_exposure_reservations table with a unique active (local_exchange, base_asset, quote_asset) claim. Spot BUY creates the claim in the same PostgreSQL transaction as PREPARED -> SUBMITTING while the shared session advisory fence is held. Startup backfill scans active PostgreSQL positions, unresolved spot BUY attempts, open spot BUY registry rows, plus Redis-restored positions/pending entries. Verified exit/force-close releases only after both legs are venue-verified flat; definitive rejection releases its own claim. Ambiguous submit, ACK persistence failure, Redis loss, and database disconnect retain the claim. | IMPLEMENTED AND CI-VERIFIED on baseline `bfc69454`; disposable PostgreSQL multi-process submit-disconnect passed in workflow `45568229845`. Actual VPS topology and legacy/outbox-loss proof remain OPEN. |
 
 **Safety boundary:** this reservation applies only to exposure-increasing spot BUY. Spot SELL, futures reduceOnly=true, cancel, rollback, force-close, and other de-risking operations remain outside the entry STOP fence. Reservation release is post-close metadata work; a release failure leaves the market blocked and does not undo a completed de-risk action.
 
 The branch remains NOT LIVE-CERTIFIED. Operator-authenticated manual resolution, real VPS PostgreSQL disconnect/fault injection, and venue contract verification remain outstanding.
+
+
+## 2026-11-25 follow-up — R-60 generic futures admission and R-61 atomic rejection cleanup
+
+**Audited branch head:** `bfc69454c729e57b403a8d8e48e5845c0b47d23b`  
+**Source/test remediation head:** `6d211b0d21bd3074c5a32d84add4054ccae610d7`
+
+### R-60 — generic gateway could open futures exposure outside the hedge-generation lifecycle
+
+The generic `MutationGateway.execute_create_order` accepted futures SELL and futures BUY when `reduceOnly` was false. It persisted PREPARED/SUBMITTING and used the global fence, but it did not own the durable parent spot-fill hedge-generation claim enforced by `EntryHedgeMixin`. A future caller could therefore create a naked futures short or long through the generic path. No production create caller was found; this was an exposed API boundary, not an observed live caller bypass.
+
+**Fix:** generic futures exposure-increasing creates now fail closed before PREPARED, slot reservation, or venue I/O. Futures reduceOnly remains rejected to the independent de-risk path. The only enabled LIVE futures entry is `EntryHedgeMixin._submit_entry_hedge_order`, which binds the order to the parent spot fill and durable hedge-generation claim. Generic spot BUY remains protected by the PostgreSQL local-market reservation created atomically with SUBMITTING. The no-argument `pre_submit_guard` remains a production-wiring limitation and is not treated as the canonical market uniqueness control.
+
+### R-61 — definitive rejection and market-reservation release were not atomic
+
+`mark_submit_rejected` previously committed the submit-attempt transition and released the reservation in a second database operation. A process crash between them could leave a REJECTED intent with an ACTIVE reservation indefinitely. This was a stale-claim/liveness defect, not an exposure-opening bypass.
+
+**Fix:** submit status transition and reservation release now execute in one PostgreSQL transaction. Callers already inside the submit fence reuse its yielded connection; post-boundary recovery callers acquire one connection for both writes. If reservation release fails, the REJECTED transition rolls back too. A fault-injection regression covers rollback and successful paired commit.
+
+### Verification and remaining gates
+
+- Baseline workflow [45568229845](https://github.com/nzf210/nafaz_arb/actions/runs/45568229845) on `bfc69454` succeeded 5/5 jobs. Python: **809 passed, 11 skipped**. Disposable PostgreSQL integration: **12 passed**, including backend termination during a fake venue request and peer blocking with durable `SUBMITTING` / `ACTIVE` reservation.
+- R-60/R-61 head `6d211b0d` has been pushed; its fresh CI result is **PENDING** at the time of this documentation update. No pass is claimed until the resulting workflow is observed.
+- R-57 remains OPEN: the generic gateway's `pre_submit_guard` is still a no-argument callback. Generic futures creates are disabled, but future LIVE gateway wiring still requires an intent-scoped, auditable contract.
+- Operator resolution has HMAC signature, nonce/replay protection, two distinct evidence references, state precondition, and append-only audit persistence. Operator identity/provisioning, secret custody/rotation, dual approval, audit retrieval, and runbook remain OPEN.
+- Disposable PostgreSQL multi-process disconnect/fault injection is CI-verified, but repeated testing against the actual VPS PostgreSQL topology and legacy/outbox-loss recovery remain OPEN.
+- Per-venue sandbox/paper exact-client-ID idempotency/visibility, eventual consistency, pending/partial hedge, cancel/fill race, and reduceOnly semantics remain OPEN.
+- Minimum-notional overhedge/delta-drift policy and durable de-risk persistence during Redis/registry-writer outage remain OPEN.
+
+**Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.

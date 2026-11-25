@@ -1872,3 +1872,14 @@ A claim remains active after venue ACK and through partial fills, hedge completi
 NOT_FOUND, timeout, transport failure, UNKNOWN, failed ACK persistence, partial close, and incomplete rollback never release a claim. Manual release requires a separate authenticated operator-resolution workflow and evidence.
 
 This is an admission invariant, not a de-risk fence. Spot SELL, futures reduceOnly=true, cancel, rollback, and force-close remain independent of Global STOP entry admission. A failed post-close reservation release may temporarily block a later entry, but it must never prevent or reverse the already-completed close.
+
+
+## 2026-11-25 safety addendum — generic futures admission and rejection atomicity
+
+The generic `MutationGateway.execute_create_order` is deliberately restricted to spot BUY. It rejects every futures exposure-increasing create before PREPARED or venue I/O. Futures short creation must use `EntryHedgeMixin._submit_entry_hedge_order`, which owns the durable parent spot-fill generation claim and exact hedge client ID. Futures `reduceOnly=True` and spot SELL continue to use their independent de-risk paths; this change does not place exits behind the entry STOP fence.
+
+For spot BUY, `GlobalStopService.order_submit_fence` creates the canonical PostgreSQL local-market reservation in the same transaction as PREPARED -> SUBMITTING. The generic gateway's no-argument guard remains a supplemental wiring limitation (R-57), not the uniqueness authority. Do not wire a new generic LIVE caller until the guard contract is intent-scoped and its implementation is tested.
+
+Definitive rejection is now atomic with release of the reservation owned by that exact client order ID. The submit-attempt transition and reservation release share one PostgreSQL transaction. In-fence callers reuse the yielded session connection; callers outside the submit scope acquire one connection for both writes. A failure releasing the claim rolls back the REJECTED transition, leaving the prior unresolved state and reservation intact.
+
+**Verification boundary:** baseline head `bfc69454` passed workflow [45568229845](https://github.com/nzf210/nafaz_arb/actions/runs/45568229845): Python 809 passed/11 skipped; disposable PostgreSQL integration 12 passed, including multi-process backend termination during a fake venue request; all five jobs succeeded. R-60/R-61 head `6d211b0d` requires a fresh workflow. Actual VPS PostgreSQL topology, operator identity/dual-approval governance, and per-venue sandbox contracts remain release gates. Status remains **PARTIAL / NOT LIVE-CERTIFIED**.

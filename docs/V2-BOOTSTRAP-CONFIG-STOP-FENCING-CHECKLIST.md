@@ -771,8 +771,25 @@ Still OPEN: R-58 durable PostgreSQL active-market reservation / Redis-loss recov
 - [x] Release on definitive rejection of the exact spot BUY intent.
 - [x] Release after verified exit/force-close confirms both spot and futures flat; keep spot SELL/futures reduceOnly/cancel/rollback/force-close outside entry STOP admission.
 - [x] Startup backfill active PostgreSQL positions, unresolved spot BUY attempts, open spot BUY order-registry rows, and Redis-restored state; conflict or incomplete evidence fails startup closed.
-- [ ] Run the new real PostgreSQL multi-process reservation test in CI and retain the exact workflow result.
+- [x] Run the multi-process reservation/disconnect test against disposable CI PostgreSQL; workflow `45568229845` passed (12 integration tests). Actual VPS-topology fault injection remains open.
 - [ ] Repeat DB disconnect/fault injection against the actual VPS PostgreSQL topology and verify reservations remain after backend termination.
 - [ ] Prove recovery of legacy positions when both Redis state and local SQLite outbox are unavailable; until then, keep this as an operational blocker.
 
-**R-58 status:** implementation and regression coverage added on this branch; not closed for production until CI and real-topology evidence are verified.
+**R-58 status:** implementation and disposable-PostgreSQL integration are CI-verified on baseline head `bfc69454`; not closed for production until actual VPS-topology fault injection and legacy/outbox-loss recovery are verified.
+
+
+## 2026-11-25 follow-up — R-60/R-61
+
+- [x] Disable generic futures BUY/SELL exposure-increasing creates before PREPARED or venue I/O. Futures entries must pass through `EntryHedgeMixin` and its parent-fill/hedge-generation claim.
+- [x] Keep spot SELL, futures reduceOnly close, cancel, rollback, and force-close outside entry STOP admission.
+- [x] Make definitive submit rejection and its exact client-ID market-reservation release atomic in one PostgreSQL transaction.
+- [x] Add fake-connection fault injection: reservation-release failure rolls back the REJECTED transition; successful release commits both state changes.
+- [ ] Replace generic gateway's no-argument `pre_submit_guard` with an intent-scoped, auditable contract before any future LIVE gateway wiring (R-57).
+- [ ] Complete operator identity/provisioning, HMAC secret custody/rotation, dual approval, audit retrieval, and runbook.
+- [ ] Repeat multi-process disconnect/fault injection against the actual VPS PostgreSQL topology; disposable CI PostgreSQL is not production-topology sign-off.
+- [ ] Complete per-venue sandbox/paper exact-client-ID visibility/idempotency, delayed lookup consistency, pending/partial hedge, cancel/fill race, and reduceOnly tests.
+- [ ] Resolve minimum-notional overhedge/delta-drift policy and durable de-risk persistence when Redis/registry writers are unavailable.
+
+Baseline head `bfc69454` passed workflow [45568229845](https://github.com/nzf210/nafaz_arb/actions/runs/45568229845), with Python **809 passed / 11 skipped** and disposable PostgreSQL integration **12 passed**. This is baseline evidence only; R-60/R-61 changes require a fresh workflow on the resulting head.
+
+**Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover is authorized by this checklist.
