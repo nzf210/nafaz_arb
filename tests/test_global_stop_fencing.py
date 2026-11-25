@@ -62,6 +62,19 @@ class _FakeConnection:
             row["fence_epoch"] = args[1]
         elif "set status=$2" in query:
             row = self.attempts[args[0]]
+            allowed = (
+                ("status = 'PREPARED'" in query and row["status"] == "PREPARED")
+                or (
+                    "status in ('SUBMITTING','UNKNOWN')" in query
+                    and row["status"] in ("SUBMITTING", "UNKNOWN")
+                )
+                or (
+                    "status in ('PREPARED','SUBMITTING','UNKNOWN')" in query
+                    and row["status"] in ("PREPARED", "SUBMITTING", "UNKNOWN")
+                )
+            )
+            if not allowed:
+                return "UPDATE 0"
             row["status"] = args[1]
         elif "insert into public.executor_market_exposure_reservations" in query:
             self.reservations[args[0]] = {
@@ -265,6 +278,21 @@ async def test_submit_fence_commits_durable_submitting_before_http_scope():
     assert conn.attempts["stable-client-order-id"]["fence_epoch"] == 12
 
 
+
+
+@pytest.mark.asyncio
+async def test_submit_acknowledgement_cannot_skip_durable_submitting_state():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    await _prepare(service, "ack-before-submit")
+
+    with pytest.raises(GlobalStopError, match="transition rejected"):
+        await service.mark_submit_acknowledged(
+            "ack-before-submit", {"id": "venue-order-without-submit"}
+        )
+
+    assert conn.attempts["ack-before-submit"]["status"] == "PREPARED"
 
 
 @pytest.mark.asyncio

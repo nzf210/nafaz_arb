@@ -785,11 +785,14 @@ class GlobalStopService:
             raise ValueError("invalid submit-attempt transition")
         # ABORTED is proof that the venue boundary was never crossed. It may
         # retire PREPARED only; it must never clear a SUBMITTING/UNKNOWN attempt.
-        allowed_from = (
-            "status = 'PREPARED'"
-            if status == "ABORTED"
-            else "status in ('PREPARED','SUBMITTING','UNKNOWN')"
-        )
+        if status == "ABORTED":
+            allowed_from = "status = 'PREPARED'"
+        elif status == "ACKNOWLEDGED":
+            # A venue ACK is only possible after the durable SUBMITTING commit
+            # or exact-client-ID recovery of an already ambiguous submission.
+            allowed_from = "status in ('SUBMITTING','UNKNOWN')"
+        else:
+            allowed_from = "status in ('PREPARED','SUBMITTING','UNKNOWN')"
         async with self.pool.acquire() as conn:
             result = await conn.execute(
                 "update public.executor_submit_attempts set status=$2, "
