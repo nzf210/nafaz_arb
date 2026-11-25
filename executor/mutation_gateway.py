@@ -218,7 +218,17 @@ class MutationGateway:
                     "it is not subject to the entry Global STOP fence"
                 ),
             )
-        market_type = "spot" if market_scope == "spot" else "perpetual"
+        if market_scope == "futures":
+            return MutationResult(
+                status=MutationResultType.REJECTED,
+                client_order_id="",
+                error_message=(
+                    "generic futures exposure-increasing creates are disabled; "
+                    "use EntryHedgeMixin so the order is linked to a durable parent "
+                    "spot fill and hedge-generation claim"
+                ),
+            )
+        market_type = "spot"
 
         # Cancellation may use this gateway without entry admission; creates may
         # never degrade to an unfenced compatibility path.
@@ -381,7 +391,9 @@ class MutationGateway:
 
                     if self._is_definitive_order_rejection(exc):
                         try:
-                            await self.global_stop.mark_submit_rejected(client_order_id, str(exc))
+                            await self.global_stop.mark_submit_rejected(
+                                client_order_id, str(exc), conn=fence_conn
+                            )
                         except Exception:
                             await self._mark_unknown_best_effort(client_order_id, exc)
                             return MutationResult(

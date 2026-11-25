@@ -186,6 +186,41 @@ class _FakeConnection:
         return None
 
 
+
+class _AtomicTransaction:
+    def __init__(self, conn):
+        self.conn = conn
+
+    async def __aenter__(self):
+        self.snapshot = (
+            {key: dict(value) for key, value in self.conn.attempts.items()},
+            {key: dict(value) for key, value in self.conn.reservations.items()},
+        )
+        return self.conn
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self.conn.attempts, self.conn.reservations = self.snapshot
+        return False
+
+
+class _AtomicFakeConnection(_FakeConnection):
+    def __init__(self):
+        super().__init__()
+        self.fail_reservation_release = False
+
+    def transaction(self):
+        return _AtomicTransaction(self)
+
+    async def execute(self, query, *args):
+        if (
+            self.fail_reservation_release
+            and "update public.executor_market_exposure_reservations" in query
+        ):
+            raise RuntimeError("injected reservation-release persistence failure")
+        return await super().execute(query, *args)
+
+
 class _FakePool:
     def __init__(self, conn):
         self.conn = conn
@@ -293,6 +328,35 @@ async def test_submit_acknowledgement_cannot_skip_durable_submitting_state():
         )
 
     assert conn.attempts["ack-before-submit"]["status"] == "PREPARED"
+
+
+
+@pytest.mark.asyncio
+async def test_definitive_rejection_and_market_claim_release_are_atomic():
+    conn = _AtomicFakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    conn.attempts["rejected-entry"] = {
+        "client_order_id": "rejected-entry", "status": "SUBMITTING"
+    }
+    conn.reservations["rejected-entry"] = {
+        "reservation_key": "rejected-entry",
+        "source_client_order_id": "rejected-entry",
+        "pair_key": "tokocrypto:BTC_IDR__okx:BTC_USDT_SWAP",
+        "status": "ACTIVE",
+    }
+
+    conn.fail_reservation_release = True
+    with pytest.raises(RuntimeError, match="injected reservation-release"):
+        await service.mark_submit_rejected("rejected-entry", "explicit venue rejection")
+
+    assert conn.attempts["rejected-entry"]["status"] == "SUBMITTING"
+    assert conn.reservations["rejected-entry"]["status"] == "ACTIVE"
+
+    conn.fail_reservation_release = False
+    await service.mark_submit_rejected("rejected-entry", "explicit venue rejection")
+    assert conn.attempts["rejected-entry"]["status"] == "REJECTED"
+    assert conn.reservations["rejected-entry"]["status"] == "RELEASED"
 
 
 @pytest.mark.asyncio
@@ -795,7 +859,7 @@ class _FakeHedgeStop:
     async def mark_submit_unknown(self, client_order_id, error):
         self.unknown.append((client_order_id, error))
 
-    async def mark_submit_rejected(self, client_order_id, error):
+    async def mark_submit_rejected(self, client_order_id, error, *, conn=None):
         self.rejected.append((client_order_id, error))
 
     async def mark_submit_acknowledged(self, client_order_id, order):
@@ -1435,7 +1499,7 @@ class _RecordingSpotStop(_FakeSpotStop):
     def order_submit_fence(self, *, client_order_id, pre_submit_guard=None, **kwargs):
         return _RecordingAsyncContext(self.events)
 
-    async def mark_submit_rejected(self, client_order_id, error):
+    async def mark_submit_rejected(self, client_order_id, error, *, conn=None):
         self.events.append("ledger_rejected")
 
 

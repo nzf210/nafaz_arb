@@ -699,7 +699,7 @@ class EntryHedgeMixin:
                             )
                             if callable(rejection_check) and rejection_check(fenced_error):
                                 await global_stop.mark_submit_rejected(
-                                    hedge_coid, str(fenced_error)
+                                    hedge_coid, str(fenced_error), conn=fence_conn
                                 )
                                 raise
                             await global_stop.mark_submit_unknown(

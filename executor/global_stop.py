@@ -747,20 +747,32 @@ class GlobalStopService:
             venue_response=order, error=None,
         )
 
-    async def mark_submit_rejected(self, client_order_id: str, error: str) -> None:
-        """Resolve a definitive rejection and release only its unfilled market claim."""
-        await self._update_submit_attempt(
-            client_order_id, "REJECTED", exchange_order_id=None,
-            venue_response=None, error=str(error)[:2000],
-        )
-        async with self.pool.acquire() as conn:
-            await conn.execute(
-                "update public.executor_market_exposure_reservations "
-                "set status='RELEASED', released_at=now(), "
-                "release_evidence=jsonb_build_object('source','DEFINITIVE_VENUE_REJECTION'), updated_at=now() "
-                "where source_client_order_id=$1 and status in ('ACTIVE','RECONCILIATION_REQUIRED')",
-                client_order_id,
-            )
+    async def mark_submit_rejected(
+        self, client_order_id: str, error: str, *, conn: Any = None
+    ) -> None:
+        """Atomically reject an intent and release only its own market claim."""
+        self._require_pool()
+
+        async def _apply(target: Any) -> None:
+            async with target.transaction():
+                await self._update_submit_attempt_on_connection(
+                    target, client_order_id, "REJECTED",
+                    exchange_order_id=None, venue_response=None,
+                    error=str(error)[:2000],
+                )
+                await target.execute(
+                    "update public.executor_market_exposure_reservations "
+                    "set status='RELEASED', released_at=now(), "
+                    "release_evidence=jsonb_build_object('source','DEFINITIVE_VENUE_REJECTION'), updated_at=now() "
+                    "where source_client_order_id=$1 and status in ('ACTIVE','RECONCILIATION_REQUIRED')",
+                    client_order_id,
+                )
+
+        if conn is not None:
+            await _apply(conn)
+        else:
+            async with self.pool.acquire() as target:
+                await _apply(target)
 
     async def mark_submit_aborted(self, client_order_id: str, reason: str) -> None:
         """Retire an intent proven not to have crossed the venue HTTP boundary."""
@@ -776,11 +788,11 @@ class GlobalStopService:
             venue_response=None, error=str(error)[:2000],
         )
 
-    async def _update_submit_attempt(
-        self, client_order_id: str, status: str, *, exchange_order_id: Optional[str],
-        venue_response: Optional[dict], error: Optional[str],
+    async def _update_submit_attempt_on_connection(
+        self, conn: Any, client_order_id: str, status: str, *,
+        exchange_order_id: Optional[str], venue_response: Optional[dict],
+        error: Optional[str],
     ) -> None:
-        self._require_pool()
         if status not in {"ACKNOWLEDGED", "REJECTED", "UNKNOWN", "ABORTED"}:
             raise ValueError("invalid submit-attempt transition")
         # ABORTED is proof that the venue boundary was never crossed. It may
@@ -793,21 +805,32 @@ class GlobalStopService:
             allowed_from = "status in ('SUBMITTING','UNKNOWN')"
         else:
             allowed_from = "status in ('PREPARED','SUBMITTING','UNKNOWN')"
-        async with self.pool.acquire() as conn:
-            result = await conn.execute(
-                "update public.executor_submit_attempts set status=$2, "
-                "exchange_order_id=coalesce($3, exchange_order_id), "
-                "venue_response=case when $4::jsonb is null then venue_response else $4::jsonb end, "
-                "last_error=$5, resolved_at=case when $2 in ('ACKNOWLEDGED','REJECTED','ABORTED') then now() else null end, "
-                f"updated_at=now() where client_order_id=$1 and {allowed_from}",
-                client_order_id, status, exchange_order_id,
-                json.dumps(venue_response, separators=(",", ":"), default=str) if venue_response is not None else None,
-                error,
+        result = await conn.execute(
+            "update public.executor_submit_attempts set status=$2, "
+            "exchange_order_id=coalesce($3, exchange_order_id), "
+            "venue_response=case when $4::jsonb is null then venue_response else $4::jsonb end, "
+            "last_error=$5, resolved_at=case when $2 in ('ACKNOWLEDGED','REJECTED','ABORTED') then now() else null end, "
+            f"updated_at=now() where client_order_id=$1 and {allowed_from}",
+            client_order_id, status, exchange_order_id,
+            json.dumps(venue_response, separators=(",", ":"), default=str) if venue_response is not None else None,
+            error,
+        )
+        if result.endswith(" 0"):
+            raise GlobalStopError(
+                f"submit attempt transition rejected for {client_order_id} (current state may have changed)"
             )
-            if result.endswith(" 0"):
-                raise GlobalStopError(
-                    f"submit attempt transition rejected for {client_order_id} (current state may have changed)"
-                )
+
+    async def _update_submit_attempt(
+        self, client_order_id: str, status: str, *, exchange_order_id: Optional[str],
+        venue_response: Optional[dict], error: Optional[str],
+    ) -> None:
+        self._require_pool()
+        async with self.pool.acquire() as conn:
+            await self._update_submit_attempt_on_connection(
+                conn, client_order_id, status,
+                exchange_order_id=exchange_order_id,
+                venue_response=venue_response, error=error,
+            )
 
     async def list_unresolved_submit_attempts(self, *, limit: int = 100) -> list:
         """Return attempts whose venue outcome is not yet proven."""

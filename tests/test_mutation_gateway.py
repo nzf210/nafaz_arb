@@ -20,7 +20,7 @@ class _FakeGlobalStop:
     async def mark_submit_aborted(self, client_order_id, reason):
         self.events.append("aborted")
 
-    async def mark_submit_rejected(self, client_order_id, error):
+    async def mark_submit_rejected(self, client_order_id, error, *, conn=None):
         self.events.append("rejected")
 
     async def mark_submit_unknown(self, client_order_id, error):
@@ -319,8 +319,9 @@ async def test_generic_create_rejects_mismatched_direct_venue_before_preparing()
     assert events == []
 
 
+@pytest.mark.parametrize("side", ["sell", "buy"])
 @pytest.mark.asyncio
-async def test_generic_create_resolves_exact_futures_client_from_exchange_facade():
+async def test_generic_create_rejects_futures_exposure_without_hedge_generation_claim(side):
     events = []
     stop = _FakeGlobalStop(events)
     slots = _RecordingSlots(events)
@@ -333,17 +334,17 @@ async def test_generic_create_resolves_exact_futures_client_from_exchange_facade
         exchange="okx",
         market_type="perpetual",
         symbol="BTC/USDT:USDT",
-        side="sell",
+        side=side,
         order_type="market",
         pair_key="tokocrypto__okx__btc",
     )
 
     result = await gateway.execute_create_order(facade, **args)
 
-    assert result.status == MutationResultType.CONFIRMED
+    assert result.status == MutationResultType.REJECTED
+    assert "EntryHedgeMixin" in result.error_message
     assert facade.resolutions == [("okx", "futures")]
-    assert events.count("venue_create") == 1
-    assert "reserve_slot" not in events
+    assert events == []
 
 
 @pytest.mark.asyncio
