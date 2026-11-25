@@ -763,7 +763,7 @@ The generic `MutationGateway.execute_create_order` accepted futures SELL and fut
 ### Verification and remaining gates
 
 - Baseline workflow [45568229845](https://github.com/nzf210/nafaz_arb/actions/runs/45568229845) on `bfc69454` succeeded 5/5 jobs. Python: **809 passed, 11 skipped**. Disposable PostgreSQL integration: **12 passed**, including backend termination during a fake venue request and peer blocking with durable `SUBMITTING` / `ACTIVE` reservation.
-- R-60/R-61 head `6d211b0d` has been pushed; its fresh CI result is **PENDING** at the time of this documentation update. No pass is claimed until the resulting workflow is observed.
+- R-60/R-61 source/test head `6d211b0d` completed workflow [45571240202](https://github.com/nzf210/nafaz_arb/actions/runs/45571240202) **SUCCESS, 5/5 jobs**: Python **811 passed, 11 skipped, 11 warnings**; disposable PostgreSQL integration **12 passed**; Go tests/race/vet, Docker builds, and migration-runner checks passed. Documentation head `45910f22` also completed [45571374728](https://github.com/nzf210/nafaz_arb/actions/runs/45571374728) **SUCCESS, 5/5 jobs**.
 - R-57 remains OPEN: the generic gateway's `pre_submit_guard` is still a no-argument callback. Generic futures creates are disabled, but future LIVE gateway wiring still requires an intent-scoped, auditable contract.
 - Operator resolution has HMAC signature, nonce/replay protection, two distinct evidence references, state precondition, and append-only audit persistence. Operator identity/provisioning, secret custody/rotation, dual approval, audit retrieval, and runbook remain OPEN.
 - Disposable PostgreSQL multi-process disconnect/fault injection is CI-verified, but repeated testing against the actual VPS PostgreSQL topology and legacy/outbox-loss recovery remain OPEN.
@@ -771,3 +771,14 @@ The generic `MutationGateway.execute_create_order` accepted futures SELL and fut
 - Minimum-notional overhedge/delta-drift policy and durable de-risk persistence during Redis/registry-writer outage remain OPEN.
 
 **Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
+
+
+### R-62 — manual de-risk utility retry is not exact-client-ID reconciled
+
+`scripts/resolve_ai_position.py` is deliberately outside the entry STOP fence: it submits a Tokocrypto spot market SELL and an OKX futures market BUY with `reduceOnly=True`. It uses fixed client IDs (`resolveaispotv1`, `resolveaifuturesv1`) and, before a new POST, does not perform an exact-client-ID lookup to adopt a prior order. It fetches by exchange order ID only after receiving an acknowledgement that contains an ID. A timeout/lost acknowledgement followed by rerunning the utility can therefore repeat the same client-ID create request; whether each configured venue treats that as idempotent has not been proven by sandbox contract tests.
+
+**No source change was made:** these are de-risk-only operations and must not be moved behind the entry STOP fence. Until venue idempotency/exact-ID semantics are verified and the utility has a guarded retry/resolution flow, operators must inspect the venue before rerunning after any ambiguous result. Spot SELL remains bounded by the current free balance; futures BUY remains `reduceOnly=True`, so this is not an entry-lane bypass, but duplicate close semantics remain unverified.
+
+### Manual STOP/operator authentication boundary
+
+`resolve_submit_attempt_signed` verifies HMAC, timestamp, nonce, two distinct evidence references, unresolved state, and writes an audit row. The signed payload's `operator_id` is still a claimed string; there is no identity-provider binding, dual approval, or secret custody/rotation workflow in this repository. `acknowledge_resume` accepts an operator string and expected epoch but has no signature check and no production command caller was found. Do not expose either API as an operator-authenticated workflow until those controls are implemented.

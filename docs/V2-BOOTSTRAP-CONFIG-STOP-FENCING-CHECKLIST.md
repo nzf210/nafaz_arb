@@ -790,6 +790,18 @@ Still OPEN: R-58 durable PostgreSQL active-market reservation / Redis-loss recov
 - [ ] Complete per-venue sandbox/paper exact-client-ID visibility/idempotency, delayed lookup consistency, pending/partial hedge, cancel/fill race, and reduceOnly tests.
 - [ ] Resolve minimum-notional overhedge/delta-drift policy and durable de-risk persistence when Redis/registry writers are unavailable.
 
-Baseline head `bfc69454` passed workflow [45568229845](https://github.com/nzf210/nafaz_arb/actions/runs/45568229845), with Python **809 passed / 11 skipped** and disposable PostgreSQL integration **12 passed**. This is baseline evidence only; R-60/R-61 changes require a fresh workflow on the resulting head.
+Source/test head `6d211b0d` passed workflow [45571240202](https://github.com/nzf210/nafaz_arb/actions/runs/45571240202), **5/5 jobs**: Python **811 passed / 11 skipped / 11 warnings**, disposable PostgreSQL integration **12 passed**, Go tests/race/vet, Docker builds, and migration-runner checks. Documentation head `45910f22` also passed workflow [45571374728](https://github.com/nzf210/nafaz_arb/actions/runs/45571374728), **5/5 jobs**.
 
 **Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover is authorized by this checklist.
+
+
+## 2026-11-25 follow-up — R-62 manual de-risk retry
+
+- [x] Confirmed the utility's two direct create calls are risk-reducing only: Tokocrypto spot market SELL and OKX futures market BUY with `reduceOnly=True`.
+- [ ] Add exact-client-ID lookup/adoption before any rerun after ambiguous utility submission; verify Tokocrypto/OKX idempotency and lookup eventual consistency in sandbox.
+- [ ] Keep manual de-risk operations outside entry STOP fencing. Until R-62 closes, inspect venue state before rerunning the utility after timeout/lost ACK.
+- [ ] Bind signed manual resolution to provisioned operator identity, dual approval, HMAC secret rotation/custody, and auditable runbook. The current payload operator ID is not independently authenticated; `acknowledge_resume` accepts a plain string and has no production command caller.
+
+**Verification:** source/test head `6d211b0d` passed workflow `45571240202`; documentation head `45910f22` passed `45571374728`. The current documentation-only commit will trigger a new workflow; no new source changes are included in this update.
+
+**Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover.
