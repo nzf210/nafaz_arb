@@ -261,45 +261,72 @@ class RollbackMixin:
         expected_short_qty: float = 0.0,
     ) -> bool:
         """
-        Returns True when a futures short MIGHT be open after a hedge error.
+        Return True unless the venue proves the expected SHORT quantity exactly.
 
-        Only a venue-confirmed zero position is safe to roll back against. Any
-        query failure or unexpected payload blocks the rollback (fail-safe):
-        a wrongly-cancelled rollback leaves unhedged spot (recoverable by an
-        operator), whereas a wrong rollback on an open short inverts exposure.
+        A rollback amount is derived from confirmed hedge fills. Treating any
+        position with the same absolute quantity as that short is unsafe: a
+        LONG, an under-sized short, or an over-sized short changes the net
+        exposure differently. Only a valid position snapshot whose short
+        quantity matches the durable fill watermark and has no long leg may
+        authorize an automatic spot rollback.
         """
         if not global_symbol:
             return True
         try:
+            expected = float(expected_short_qty or 0.0)
+        except (TypeError, ValueError):
+            return True
+        if not math.isfinite(expected) or expected < 0:
+            logger.critical(
+                "[Hedge Ambiguity] %s: invalid expected futures short quantity %r; spot rollback blocked",
+                pair_tag, expected_short_qty,
+            )
+            return True
+        try:
             positions = await self.client.fetch_positions(global_symbol)
         except AttributeError:
-            # Client without fetch_positions (e.g. some mocks): cannot confirm.
             logger.warning(
-                f"[Hedge Ambiguity] {pair_tag}: client lacks fetch_positions; treating hedge state as unknown"
+                "[Hedge Ambiguity] %s: client lacks fetch_positions; treating hedge state as unknown",
+                pair_tag,
             )
             return True
         except Exception as exc:
             logger.warning(
-                f"[Hedge Ambiguity] {pair_tag}: position query failed ({exc}); treating hedge state as unknown"
+                "[Hedge Ambiguity] %s: position query failed (%s); treating hedge state as unknown",
+                pair_tag, exc,
             )
             return True
-        if not positions:
-            return False
-        exposure = 0.0
+        if not isinstance(positions, (list, tuple)):
+            logger.critical(
+                "[Hedge Ambiguity] %s: malformed futures position collection; spot rollback blocked",
+                pair_tag,
+            )
+            return True
+
+        short_exposure = 0.0
+        long_exposure = 0.0
         for position in positions:
             if not isinstance(position, dict):
                 logger.critical(
-                    f"[Hedge Ambiguity] {pair_tag}: malformed futures position; "
-                    "spot rollback blocked"
+                    "[Hedge Ambiguity] %s: malformed futures position; spot rollback blocked",
+                    pair_tag,
                 )
                 return True
             info = position.get("info") or {}
             if not isinstance(info, dict):
                 logger.critical(
-                    f"[Hedge Ambiguity] {pair_tag}: malformed futures position info; "
-                    "spot rollback blocked"
+                    "[Hedge Ambiguity] %s: malformed futures position info; spot rollback blocked",
+                    pair_tag,
                 )
                 return True
+
+            side = str(
+                position.get("side")
+                or position.get("positionSide")
+                or info.get("posSide")
+                or info.get("positionSide")
+                or "",
+            ).strip().lower()
             raw_contracts = position.get("contracts")
             if raw_contracts is not None:
                 try:
@@ -312,16 +339,26 @@ class RollbackMixin:
                     return True
                 if qty <= 1e-12:
                     continue
-                side = str(
-                    position.get("side")
-                    or position.get("positionSide")
-                    or info.get("posSide")
-                    or info.get("positionSide")
-                    or ""
-                ).lower()
-                if side not in {"short", "long"}:
+                if side == "short":
+                    short_exposure += qty
+                elif side == "long":
+                    long_exposure += qty
+                elif side in {"", "both"}:
+                    raw_amount = position.get("positionAmt", info.get("positionAmt"))
+                    if raw_amount is None:
+                        return True
+                    try:
+                        signed_amount = float(raw_amount)
+                    except (TypeError, ValueError):
+                        return True
+                    if not math.isfinite(signed_amount) or abs(signed_amount) <= 1e-12:
+                        return True
+                    if signed_amount < 0:
+                        short_exposure += qty
+                    else:
+                        long_exposure += qty
+                else:
                     return True
-                exposure += qty
                 continue
 
             raw_amount = position.get("positionAmt", info.get("positionAmt"))
@@ -333,14 +370,34 @@ class RollbackMixin:
                 return True
             if not math.isfinite(signed_amount):
                 return True
-            # Binance-style positionAmt is signed: negative is short, positive long.
-            exposure += abs(signed_amount)
-        tolerance = max(1e-12, expected_short_qty * 1e-4)
-        if exposure > expected_short_qty + tolerance:
+            qty = abs(signed_amount)
+            if qty <= 1e-12:
+                continue
+            if side == "short":
+                short_exposure += qty
+            elif side == "long":
+                long_exposure += qty
+            elif side in {"", "both"}:
+                if signed_amount < 0:
+                    short_exposure += qty
+                else:
+                    long_exposure += qty
+            else:
+                return True
+
+        tolerance = max(1e-12, expected * 1e-4)
+        if long_exposure > tolerance:
             logger.critical(
-                f"[Hedge Ambiguity] {pair_tag}: venue reports unexpected futures exposure "
-                f"(gross exposure {exposure} > expected {expected_short_qty}) on {global_symbol} "
-                f"despite hedge error ({error}) - spot NOT rolled back"
+                "[Hedge Ambiguity] %s: venue reports LONG futures exposure %.8f on %s; "
+                "automatic spot rollback blocked (expected short %.8f)",
+                pair_tag, long_exposure, global_symbol, expected,
+            )
+            return True
+        if abs(short_exposure - expected) > tolerance:
+            logger.critical(
+                "[Hedge Ambiguity] %s: venue short quantity %.8f does not match confirmed "
+                "hedge quantity %.8f on %s; automatic spot rollback blocked",
+                pair_tag, short_exposure, expected, global_symbol,
             )
             return True
         return False
@@ -488,9 +545,16 @@ class RollbackMixin:
         # is actually open would leave the book net-short in the wrong direction.
         # Only proceed with the rollback when the venue confirms no open short.
         global_symbol = str(order_info.get("global_symbol", ""))
-        confirmed_hedged_qty = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
-        hedge_error_is_ambiguous = await self._hedge_may_be_open(
-            pair_tag, global_symbol, error, expected_short_qty=confirmed_hedged_qty,
+        try:
+            confirmed_hedged_qty = float(order_info.get("hedged_short_qty", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confirmed_hedged_qty = float("nan")
+        hedge_error_is_ambiguous = (
+            not math.isfinite(confirmed_hedged_qty)
+            or confirmed_hedged_qty < 0
+            or await self._hedge_may_be_open(
+                pair_tag, global_symbol, error, expected_short_qty=confirmed_hedged_qty,
+            )
         )
         if hedge_error_is_ambiguous:
             self._mark_failed(
@@ -547,12 +611,59 @@ class RollbackMixin:
 
         # Release reserved capital only after the exchange confirms a full,
         # terminal rollback fill. An ambiguous/partial sell must remain blocked.
+        reservation_release_failed = False
         if emergency_error is None:
             order_info["rolled_back_qty"] = unhedged_delta
             await self._settle_rolled_back_entry_record(order_info, unhedged_delta)
             await self._release_unhedged_reserve(
                 pair_tag, order_info, unhedged_delta, price_idr, usdt_rate
             )
+
+            # A successful rollback releases the local-market claim only when
+            # there was no confirmed futures short. If a short remains, this
+            # rollback sold only the unhedged spot residual and the market is
+            # still an active paired position.
+            if (
+                getattr(self, "global_stop", None) is not None
+                and not getattr(self.config, "mock_mode", False)
+                and confirmed_hedged_qty == 0.0
+            ):
+                try:
+                    await self.global_stop.release_market_exposure_reservation(
+                        pair_tag,
+                        evidence={
+                            "spot_flat": True,
+                            "futures_flat": True,
+                            "venue_verified": True,
+                            "source": "VERIFIED_HEDGE_FAILURE_ROLLBACK",
+                            "spot_entry_client_order_id": str(order_info.get("client_order_id") or ""),
+                            "futures_hedge_client_order_id": str(
+                                order_info.get("pending_hedge_client_order_id") or ""
+                            ),
+                            "spot_rollback_order_id": str((emergency_order or {}).get("id") or ""),
+                            "rolled_back_qty": float(unhedged_delta),
+                        },
+                    )
+                except Exception as release_error:
+                    reservation_release_failed = True
+                    logger.critical(
+                        "[Hedge Rollback] %s: spot and futures were verified flat, but "
+                        "durable market reservation release failed; claim remains blocking: %s",
+                        pair_tag, release_error,
+                        exc_info=True,
+                    )
+                    self._mark_failed(
+                        pair_tag,
+                        "MARKET_EXPOSURE_RESERVATION_RELEASE_FAILED",
+                        "Rollback completed and venue exposure is flat, but the durable local-market claim "
+                        "could not be released; new entry remains blocked pending reconciliation.",
+                        detail={
+                            "spot_entry_client_order_id": order_info.get("client_order_id"),
+                            "rollback_order_id": (emergency_order or {}).get("id"),
+                            "release_error": str(release_error),
+                        },
+                        state=PositionState.RECONCILIATION_REQUIRED,
+                    )
 
         event = {
             "event": "HEDGE_FAILED",
@@ -592,8 +703,10 @@ class RollbackMixin:
                 },
             )
         else:
-            if float(order_info.get("hedged_short_qty", 0.0) or 0.0) > 0:
+            if confirmed_hedged_qty > 1e-12:
                 self.states[pair_tag] = PositionState.HEDGED_ACTIVE
+            elif reservation_release_failed:
+                self.states[pair_tag] = PositionState.RECONCILIATION_REQUIRED
             else:
                 self.states[pair_tag] = PositionState.CLOSED
         await self.publish_status()

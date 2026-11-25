@@ -10,6 +10,7 @@ from executor.engine_signal import EngineSignalMixin
 from executor.global_stop import GlobalStopError, GlobalStopService
 from executor.helpers import PENDING_ENTRY_KEY_PREFIX, is_transient_settlement_error
 from executor.rollback import RollbackMixin
+from executor.models import PositionState
 
 
 class _AsyncContext:
@@ -713,3 +714,198 @@ def test_partial_futures_fill_leaves_only_residual_for_next_hedge():
     residual = max(0.0, target_hedge_qty - confirmed_futures)
     assert residual == pytest.approx(0.006)
     # Bukan full 0.01 dan bukan 0: hanya sisa yang di-hedge ulang.
+
+
+class _PositionQueryVenue:
+    def __init__(self, positions):
+        self.positions = positions
+
+    async def fetch_positions(self, symbol):
+        return self.positions
+
+
+class _HedgeStateHarness(RollbackMixin):
+    def __init__(self, positions):
+        self.client = _PositionQueryVenue(positions)
+        self.config = SimpleNamespace(mock_mode=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "positions, expected_short_qty, ambiguous",
+    [
+        ([], 0.0, False),
+        ([{"contracts": 0.01, "contractSize": 1, "side": "short"}], 0.01, False),
+        ([{"contracts": 0.01, "contractSize": 1, "side": "long"}], 0.01, True),
+        ([{"positionAmt": "-0.01"}], 0.01, False),
+        ([{"positionAmt": "0.01"}], 0.01, True),
+        ([{"contracts": 0.005, "contractSize": 1, "side": "short"}], 0.01, True),
+        ([{"contracts": 0.02, "contractSize": 1, "side": "short"}], 0.01, True),
+        ([{"contracts": 0.01, "contractSize": 1, "side": "both"}], 0.01, True),
+    ],
+)
+async def test_hedge_state_requires_exact_short_side_and_quantity(
+    positions, expected_short_qty, ambiguous
+):
+    engine = _HedgeStateHarness(positions)
+    result = await engine._hedge_may_be_open(
+        "tokocrypto:BTC_IDR", "BTC/USDT:USDT",
+        RuntimeError("hedge submission failed"),
+        expected_short_qty=expected_short_qty,
+    )
+    assert result is ambiguous
+
+
+class _RecordingMarketStop:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.releases = []
+
+    async def release_market_exposure_reservation(self, pair_key, *, evidence):
+        self.releases.append((pair_key, dict(evidence)))
+        if self.fail:
+            raise ConnectionError("postgres disconnected during reservation release")
+        return 1
+
+
+class _RecordingRedis:
+    async def publish(self, *args, **kwargs):
+        return 1
+
+
+class _RecordingSupabase:
+    def event(self, *args, **kwargs):
+        return None
+
+
+class _RollbackLifecycleHarness(RollbackMixin):
+    def __init__(self, *, hedged_short_qty=0.0, rollback_error=None, release_error=False):
+        self.global_stop = _RecordingMarketStop(fail=release_error)
+        self.config = SimpleNamespace(local_exchange_name="tokocrypto", mock_mode=False)
+        self.client = SimpleNamespace()
+        self.redis = _RecordingRedis()
+        self.supabase = _RecordingSupabase()
+        self.states = {}
+        self.failures = []
+        self.hedged_short_qty = hedged_short_qty
+        self.rollback_error = rollback_error
+
+    async def _hedge_may_be_open(self, *args, **kwargs):
+        return False
+
+    async def _liquidate_unhedged_spot(self, pair_tag, symbol, unhedged_delta, *args, **kwargs):
+        if self.rollback_error is not None:
+            return None, self.rollback_error
+        return {
+            "id": "rollback-order-1",
+            "status": "closed",
+            "filled": unhedged_delta,
+            "average": 99.0,
+        }, None
+
+    async def _settle_rolled_back_entry_record(self, *args, **kwargs):
+        return None
+
+    async def _release_unhedged_reserve(self, *args, **kwargs):
+        return None
+
+    def _mark_failed(self, pair_key, reason, message, **kwargs):
+        self.failures.append((pair_key, reason, message, kwargs))
+
+    async def publish_status(self):
+        return None
+
+
+def _rollback_order_info(hedged_short_qty):
+    return {
+        "symbol": "BTC_IDR",
+        "local_exchange": "tokocrypto",
+        "global_exchange": "okx",
+        "global_symbol": "BTC/USDT:USDT",
+        "client_order_id": "spot-entry-client-1",
+        "pending_hedge_client_order_id": "futures-hedge-client-1",
+        "order_id": "spot-entry-order-1",
+        "filled": 0.01,
+        "hedged_short_qty": hedged_short_qty,
+    }
+
+
+@pytest.mark.asyncio
+async def test_verified_zero_hedge_rollback_releases_market_reservation():
+    engine = _RollbackLifecycleHarness(hedged_short_qty=0.0)
+    pair_key = "tokocrypto:BTC_IDR__okx:BTC_USDT_SWAP"
+
+    await engine._rollback_hedge_failure(
+        pair_key, _rollback_order_info(0.0), 0.01, 1_000_000_000.0, 16_000.0,
+        RuntimeError("futures hedge definitively failed"),
+    )
+
+    assert len(engine.global_stop.releases) == 1
+    released_pair, evidence = engine.global_stop.releases[0]
+    assert released_pair == pair_key
+    assert evidence["source"] == "VERIFIED_HEDGE_FAILURE_ROLLBACK"
+    assert evidence["spot_flat"] is True
+    assert evidence["futures_flat"] is True
+    assert evidence["spot_rollback_order_id"] == "rollback-order-1"
+    assert engine.states[pair_key] == PositionState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_partial_hedge_rollback_keeps_market_reservation_active():
+    engine = _RollbackLifecycleHarness(hedged_short_qty=0.005)
+    pair_key = "tokocrypto:BTC_IDR__okx:BTC_USDT_SWAP"
+
+    await engine._rollback_hedge_failure(
+        pair_key, _rollback_order_info(0.005), 0.005, 1_000_000_000.0, 16_000.0,
+        RuntimeError("remaining hedge quantity could not be submitted"),
+    )
+
+    assert engine.global_stop.releases == []
+    assert engine.states[pair_key] == PositionState.HEDGED_ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_rollback_reservation_release_failure_keeps_pair_blocked():
+    engine = _RollbackLifecycleHarness(hedged_short_qty=0.0, release_error=True)
+    pair_key = "tokocrypto:BTC_IDR__okx:BTC_USDT_SWAP"
+
+    await engine._rollback_hedge_failure(
+        pair_key, _rollback_order_info(0.0), 0.01, 1_000_000_000.0, 16_000.0,
+        RuntimeError("futures hedge definitively failed"),
+    )
+
+    assert len(engine.global_stop.releases) == 1
+    assert engine.states[pair_key] == PositionState.RECONCILIATION_REQUIRED
+    assert engine.failures[-1][1] == "MARKET_EXPOSURE_RESERVATION_RELEASE_FAILED"
+
+
+@pytest.mark.asyncio
+async def test_failed_or_partial_spot_rollback_does_not_release_market_reservation():
+    engine = _RollbackLifecycleHarness(
+        hedged_short_qty=0.0, rollback_error=RuntimeError("rollback fill incomplete")
+    )
+    pair_key = "tokocrypto:BTC_IDR__okx:BTC_USDT_SWAP"
+
+    await engine._rollback_hedge_failure(
+        pair_key, _rollback_order_info(0.0), 0.01, 1_000_000_000.0, 16_000.0,
+        RuntimeError("futures hedge definitively failed"),
+    )
+
+    assert engine.global_stop.releases == []
+    assert engine.states.get(pair_key) != PositionState.CLOSED
+
+
+@pytest.mark.asyncio
+async def test_unverified_long_or_mismatched_short_blocks_automatic_spot_rollback():
+    cases = [
+        ([{"contracts": 0.01, "contractSize": 1, "side": "long"}], 0.01),
+        ([{"contracts": 0.005, "contractSize": 1, "side": "short"}], 0.01),
+        ([{"contracts": 0.02, "contractSize": 1, "side": "short"}], 0.01),
+    ]
+    for positions, expected in cases:
+        engine = _HedgeStateHarness(positions)
+        assert await engine._hedge_may_be_open(
+            "tokocrypto:BTC_IDR", "BTC/USDT:USDT",
+            RuntimeError("ambiguous hedge"),
+            expected_short_qty=expected,
+        ) is True

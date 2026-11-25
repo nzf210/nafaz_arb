@@ -491,6 +491,7 @@ class GlobalStopService:
             "VERIFIED_EXIT_LIFECYCLE",
             "VERIFIED_FORCE_CLOSE_LIFECYCLE",
             "VERIFIED_ZERO_FILL_ENTRY_TERMINAL",
+            "VERIFIED_HEDGE_FAILURE_ROLLBACK",
         }
         if (
             source not in allowed_sources

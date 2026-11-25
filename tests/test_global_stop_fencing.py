@@ -304,6 +304,37 @@ async def test_durable_market_reservation_blocks_fake_venue_until_verified_flat(
 
 
 @pytest.mark.asyncio
+async def test_market_reservation_accepts_verified_hedge_failure_rollback_release():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    pair_key = "tokocrypto:BTC_IDR__okx:BTC_USDT_SWAP"
+    conn.reservations["spot-entry-client-1"] = {
+        "reservation_key": "spot-entry-client-1",
+        "local_exchange": "tokocrypto",
+        "base_asset": "BTC",
+        "quote_asset": "IDR",
+        "pair_key": pair_key,
+        "source_client_order_id": "spot-entry-client-1",
+        "status": "ACTIVE",
+    }
+
+    released = await service.release_market_exposure_reservation(
+        pair_key,
+        evidence={
+            "spot_flat": True,
+            "futures_flat": True,
+            "venue_verified": True,
+            "source": "VERIFIED_HEDGE_FAILURE_ROLLBACK",
+            "spot_rollback_order_id": "rollback-order-1",
+        },
+    )
+
+    assert released == 1
+    assert conn.reservations["spot-entry-client-1"]["status"] == "RELEASED"
+
+
+@pytest.mark.asyncio
 async def test_spot_market_scope_rejects_mismatched_recovery_identity_before_venue():
     conn = _FakeConnection()
     service = GlobalStopService("postgresql://unused")
