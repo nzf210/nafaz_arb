@@ -697,7 +697,7 @@ Reviewed branch head before this follow-up: `8167cefe153e5c950e4732c9120bf2c8a0f
 
 - [ ] Full clone-wide and runtime-instrumented inventory of every direct create-order call, CCXT wrapper, adapter, retry and recovery caller.
 - [x] R-57: GlobalStopService.order_submit_fence now supplies an immutable SubmitAdmissionContext built from the durable PREPARED intent (including a SHA-256 fingerprint over amount specification and recovery context); the row is re-read under FOR UPDATE and the fingerprint must match before SUBMITTING. Legacy no-argument callbacks fail closed. The active spot entry guard validates client ID, exchange, market, symbol, side, order type, quantity, price and pair key.
-- [ ] Make active-market single-flight admission durable across executor processes and resilient to Redis eviction/flush. Current spot guard uses process memory + Redis keys; PostgreSQL submit fencing serializes requests but does not represent an already ACKNOWLEDGED open position.
+- [ ] Complete R-58 recovery coverage: the PostgreSQL local-market reservation is implemented and atomically created with spot BUY SUBMITTING; verify startup backfill and legacy recovery when Redis keys and/or the process-local SQLite outbox volume are lost, then repeat on the actual VPS topology.
 - [ ] Wire MutationGateway into production lifecycle only after order-registry registration, parent/position linkage, exact-ID startup recovery, and post-ACK persistence are complete. It currently has no production create caller in the inspected paths.
 - [ ] Operator-authenticated manual resolution: operator identity/provisioning, HMAC secret custody and rotation, dual approval, evidence retrieval, and runbook.
 - [ ] Repeated real PostgreSQL multi-process disconnect/fault injection on the actual VPS topology. Disposable PostgreSQL CI evidence does not close this requirement.
@@ -725,7 +725,7 @@ Reviewed branch head before this follow-up: `8167cefe153e5c950e4732c9120bf2c8a0f
 
 ### Confirmed open items
 
-- [ ] **R-58 — Redis-loss active-market gate:** market admission uses local memory + Redis only. Position writes are queued to per-process SQLite outboxes and delivered asynchronously; no canonical PostgreSQL active-market reservation is queried by the guard. ACKNOWLEDGED submit rows do not represent open positions. Implement a durable market-exposure reservation atomically inside the shared submit fence, with lifecycle-safe release and startup backfill before marking this closed.
+- [x] **R-58 durable PostgreSQL reservation:** atomic claim under the shared submit fence and lifecycle release are implemented/CI-tested. [ ] Residual R-58 gate: prove Redis + outbox-loss recovery/backfill and actual VPS multi-process fault injection.
 - [x] **R-57 — Generic gateway guard: FIXED (2026-11-26).** Admission callbacks receive the immutable durable-intent context; no-argument callbacks fail closed. PostgreSQL market reservation remains the canonical cross-process uniqueness authority.
 - [ ] Operator-authenticated manual resolution: operator identity/provisioning, HMAC secret custody/rotation, dual approval, evidence retrieval, and runbook.
 - [ ] Repeated real PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; disposable CI PostgreSQL does not close this.

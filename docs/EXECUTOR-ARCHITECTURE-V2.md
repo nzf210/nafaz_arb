@@ -1853,7 +1853,7 @@ The complete runtime creation boundary set is: `ExchangeOrderMixin.place_local_l
 
 R-59 is now CI-verified: LIVE recovery fails closed when exact venue/market resolution is unavailable; only mock/paper mode can fall back to the venue-neutral simulator. Workflow `45133454526` on source/test head `cf8edbbb` passed 5/5 jobs (Python 790 passed, 10 skipped; PostgreSQL schema/integration 11 passed; Go race/vet, Docker, and migration runner passed).
 
-This closes the source call-site inventory for the current tree, not the operational readiness gates. R-58 remains open because active-market admission is still memory/Redis-backed rather than a durable PostgreSQL reservation. R-57 is fixed at the API boundary; the generic gateway still has no production create caller. Manual operator identity/dual approval, real VPS fault injection, and venue sandbox contracts also remain open.
+This closes the source call-site inventory for the current tree, not the operational readiness gates. R-58's canonical PostgreSQL local-market reservation is implemented and created atomically with spot BUY SUBMITTING; the remaining R-58 gate is Redis/outbox-loss recovery and startup backfill completeness, especially when the process-local outbox volume is unavailable. R-57 is fixed at the API boundary; the generic gateway still has no production create caller. Manual operator identity/dual approval, real VPS fault injection, and venue sandbox contracts also remain open.
 
 
 ## Durable local-market exposure reservations

@@ -677,7 +677,7 @@ Inspected create-order surfaces and their risk classification:
 
 Spot BUY and futures short SELL remain required to use durable PREPARED/SUBMITTING plus the shared PostgreSQL session advisory fence. Exit, close, rollback, force-close, and cancel remain separate risk-reducing paths.
 
-### R-58 — Redis-loss active-market admission gap CONFIRMED / OPEN
+### R-58 — Historical Redis-loss admission gap (pre-reservation fix; recovery gate remains OPEN)
 
 The code evidence confirms the previously recorded risk:
 
@@ -688,7 +688,7 @@ The code evidence confirms the previously recorded risk:
 
 Therefore, after Redis active/pending state is lost, a peer with empty local memory can see an empty Redis keyspace and cannot distinguish it from a genuinely flat market. If the position outbox has not yet reached Supabase, the peer has no durable active-position evidence and the current submit fence alone does not prevent a second market entry. This is a **confirmed resilience gap**, not a claim that an ordinary healthy Redis path is currently bypassing the fence.
 
-No partial patch was made: a safe fix needs a PostgreSQL market-exposure reservation with an atomic reserve inside the shared submit fence, explicit release only after verified no-fill/rejection or both legs confirmed flat, startup backfill/recovery, and preservation of de-risk access. Adding only a pre-submit REST query or an unreleased reservation would be unsafe/incomplete.
+This paragraph records the pre-fix assessment and is superseded by the 2026-11-24 durable-reservation implementation below. The branch now has a PostgreSQL local-market reservation created atomically with spot BUY SUBMITTING under the shared session advisory fence, with startup backfill from PostgreSQL positions, unresolved spot BUY attempts, open spot BUY registry rows, and restored Redis state. The remaining R-58 gate is proof of complete backfill/recovery when Redis keys and/or the process-local SQLite outbox volume are lost, plus repeated testing on the actual VPS topology. De-risking remains outside entry STOP admission.
 
 ### R-57 — generic admission callback scope FIXED (2026-11-26)
 
