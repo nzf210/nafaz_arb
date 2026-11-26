@@ -83,7 +83,7 @@ def _create_args():
         "quantity": 0.01,
         "price": 10.0,
         "pair_key": "tokocrypto:BTC/USDT",
-        "pre_submit_guard": lambda: True,
+        "pre_submit_guard": lambda intent: (intent.exchange == "tokocrypto" and intent.market_type == "spot" and intent.symbol == "BTC/USDT" and intent.side == "buy" and intent.pair_key == "tokocrypto:BTC/USDT"),
         "extra_params": {"client_order_id": "stable-entry-client-id"},
     }
 

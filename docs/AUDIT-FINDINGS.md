@@ -635,7 +635,7 @@ Reviewed target branch head before this follow-up: `8167cefe153e5c950e4732c9120b
 |---|---|---|
 | R-55 | `EngineOrderIntentMixin._register_order_intent` treated an enabled `GlobalStopService` / `POSTGRES_DSN` as proof that the separate universal order registry was durable. When the Supabase/outbox writer was disabled, `OrderRegistryStorage._persist` could succeed from Redis alone, allowing a required LIVE order intent to pass despite the lifecycle registry not being durable. The code comment already stated that the STOP database is not the order-registry writer, but the condition contradicted it. | **FIXED** in `203d74480ee6b4c3e984ccab1a48ebc7b9b843b4`: required LIVE intents now require `supabase.enabled`; a GlobalStop connection alone no longer satisfies the registry gate. Regression test added in `1e68e26f3462a4550c69e8532e9e6bc139931124` proves Redis-only registry mode is rejected before `_register_order` is called. |
 | R-56 | `MutationGateway.execute_create_order` previously submitted through the caller-supplied client without verifying that the client belonged to the exchange and market recorded in the durable intent. A mismatched client could therefore send to venue B while the ledger claimed venue A. The same entry method also accepted risk-reducing spot SELL / futures `reduceOnly` mutations, which would put exits behind the entry STOP lane. | **FIXED** in `b69d82cfe8b354c7fc71506a74661b0c23cad6e1`: resolve `for_venue(exchange, market)` when available, require the resolved client's exact `.id`, and fail before PREPARED/slot reservation on mismatch. The generic create method is now explicitly exposure-increasing only: spot SELL and futures reduceOnly are rejected from this lane and must continue through the independent de-risk path. Fake-client regressions are in `b10ae10a910eb9f7851ca26c88847496d2698802` and `e83fa8ec1ed7fa6c057e740919732455a528ee74`. |
-| R-57 | The generic gateway's `pre_submit_guard` is still a caller-supplied no-argument callable. Requiring `callable()` does not prove that the callback checks the correct durable market scope; a no-op callback can return true. No production caller for `execute_create_order` was found in the inspected branch paths (CommandProcessor uses cancel; current spot/futures LIVE paths still submit through their dedicated fenced wrappers), so this is not recorded as an active production bypass, but it is a production-wiring blocker. | **OPEN** — replace the loose callback contract with a scoped, auditable admission interface and test its actual implementation before wiring the generic gateway to LIVE entry. |
+| R-57 | The generic gateway and spot-entry pre_submit_guard previously received no durable intent scope. A no-op callback could not demonstrate which exchange/market/symbol/pair was admitted. | **FIXED (2026-11-26)** — order_submit_fence now passes immutable SubmitAdmissionContext derived from the durable PREPARED row, including a fingerprint over amount specification and recovery context; it revalidates the same context under FOR UPDATE before SUBMITTING. The live spot guard checks all scope fields. Legacy no-argument callbacks fail closed. No production generic-gateway create caller was found. |
 | R-58 | The current spot single-market admission guard reads process-local state plus shared Redis active/pending keys. It does not query a canonical PostgreSQL active-market reservation. If Redis returns an empty keyspace after eviction/flush while another executor still owns an active position, a peer with empty local memory has no durable active-market proof. The global submit lock serializes requests but does not by itself reject a previously ACKNOWLEDGED order/position. | **OPEN / RESILIENCE NOT PROVEN** — add a durable cross-instance market-exposure reservation or an equivalent transactionally checked canonical gate before claiming Redis-loss safety. Do not solve this by blocking de-risking. |
 
 ### Current order-path classification
@@ -690,9 +690,9 @@ Therefore, after Redis active/pending state is lost, a peer with empty local mem
 
 No partial patch was made: a safe fix needs a PostgreSQL market-exposure reservation with an atomic reserve inside the shared submit fence, explicit release only after verified no-fill/rejection or both legs confirmed flat, startup backfill/recovery, and preservation of de-risk access. Adding only a pre-submit REST query or an unreleased reservation would be unsafe/incomplete.
 
-### R-57 — generic admission callback scope OPEN
+### R-57 — generic admission callback scope FIXED (2026-11-26)
 
-The generic gateway still accepts a no-argument `pre_submit_guard`. Callable presence does not prove the guard is bound to the immutable exchange/market/symbol/pair/intent. No production create caller was found, so this remains a wiring blocker rather than an observed production bypass.
+The generic gateway and active spot entry now receive an immutable SubmitAdmissionContext built from the durable PREPARED row. The callback is bound to client order ID, exchange, market type, symbol, side, order type, quantity, price, pair key and an intent fingerprint covering amount specification and recovery context. The service re-reads the intent under FOR UPDATE before SUBMITTING; a legacy no-argument callback fails closed. PostgreSQL market reservation remains the canonical cross-process uniqueness authority. No production create caller for the generic gateway was found, so this closes the API contract rather than changing the active mutation boundary.
 
 ### CI correction and evidence
 
@@ -729,7 +729,7 @@ All exposure-increasing CEX call-sites are therefore the canonical spot BUY and 
 
 R-59 final behavior: LIVE recovery now raises if exact (exchange, market) resolution returns no client and never queries the default pair client. Only mock/paper mode may use the venue-neutral simulator fallback. The first attempt (workflow `45133192762`) exposed three legacy paper-mode fixtures that relied on that simulator fallback; commit `cf8edbbb` restricted the fallback to `mock_mode` and kept LIVE fail-closed. Final workflow `45133454526` succeeded 5/5.
 
-Remaining open: R-58 durable active-market reservation across Redis loss; R-57 intent-scoped generic admission callback; operator-authenticated manual resolution governance; real VPS PostgreSQL multi-process disconnect/fault injection; and venue sandbox contract verification. Full runtime call-site source inventory is now closed for this tree, but this does not certify venue behavior or live readiness.
+Remaining open: R-58 Redis/outbox-loss recovery and reservation backfill completeness; operator-authenticated manual resolution governance; real VPS PostgreSQL multi-process disconnect/fault injection; and venue sandbox contract verification. Full runtime call-site source inventory is now closed for this tree, but this does not certify venue behavior or live readiness.
 
 
 ## Durable market exposure reservation update — 2026-11-24
@@ -752,7 +752,7 @@ The branch remains NOT LIVE-CERTIFIED. Operator-authenticated manual resolution,
 
 The generic `MutationGateway.execute_create_order` accepted futures SELL and futures BUY when `reduceOnly` was false. It persisted PREPARED/SUBMITTING and used the global fence, but it did not own the durable parent spot-fill hedge-generation claim enforced by `EntryHedgeMixin`. A future caller could therefore create a naked futures short or long through the generic path. No production create caller was found; this was an exposed API boundary, not an observed live caller bypass.
 
-**Fix:** generic futures exposure-increasing creates now fail closed before PREPARED, slot reservation, or venue I/O. Futures reduceOnly remains rejected to the independent de-risk path. The only enabled LIVE futures entry is `EntryHedgeMixin._submit_entry_hedge_order`, which binds the order to the parent spot fill and durable hedge-generation claim. Generic spot BUY remains protected by the PostgreSQL local-market reservation created atomically with SUBMITTING. The no-argument `pre_submit_guard` remains a production-wiring limitation and is not treated as the canonical market uniqueness control.
+**Fix:** generic futures exposure-increasing creates now fail closed before PREPARED, slot reservation, or venue I/O. Futures reduceOnly remains rejected to the independent de-risk path. The only enabled LIVE futures entry is `EntryHedgeMixin._submit_entry_hedge_order`, which binds the order to the parent spot fill and durable hedge-generation claim. Generic spot BUY remains protected by the PostgreSQL local-market reservation created atomically with SUBMITTING. The intent-scoped SubmitAdmissionContext guard is now verified; the PostgreSQL market reservation remains the canonical market uniqueness control.
 
 ### R-61 — definitive rejection and market-reservation release were not atomic
 
@@ -764,7 +764,7 @@ The generic `MutationGateway.execute_create_order` accepted futures SELL and fut
 
 - Baseline workflow [45568229845](https://github.com/nzf210/nafaz_arb/actions/runs/45568229845) on `bfc69454` succeeded 5/5 jobs. Python: **809 passed, 11 skipped**. Disposable PostgreSQL integration: **12 passed**, including backend termination during a fake venue request and peer blocking with durable `SUBMITTING` / `ACTIVE` reservation.
 - R-60/R-61 source/test head `6d211b0d` completed workflow [45571240202](https://github.com/nzf210/nafaz_arb/actions/runs/45571240202) **SUCCESS, 5/5 jobs**: Python **811 passed, 11 skipped, 11 warnings**; disposable PostgreSQL integration **12 passed**; Go tests/race/vet, Docker builds, and migration-runner checks passed. Documentation head `45910f22` also completed [45571374728](https://github.com/nzf210/nafaz_arb/actions/runs/45571374728) **SUCCESS, 5/5 jobs**.
-- R-57 remains OPEN: the generic gateway's `pre_submit_guard` is still a no-argument callback. Generic futures creates are disabled, but future LIVE gateway wiring still requires an intent-scoped, auditable contract.
+- R-57 FIXED: the generic gateway and spot-entry guard now use durable-intent-scoped SubmitAdmissionContext; legacy no-argument callbacks fail closed. No production generic-gateway create caller was found.
 - Operator resolution has HMAC signature, nonce/replay protection, two distinct evidence references, state precondition, and append-only audit persistence. Operator identity/provisioning, secret custody/rotation, dual approval, audit retrieval, and runbook remain OPEN.
 - Disposable PostgreSQL multi-process disconnect/fault injection is CI-verified, but repeated testing against the actual VPS PostgreSQL topology and legacy/outbox-loss recovery remain OPEN.
 - Per-venue sandbox/paper exact-client-ID idempotency/visibility, eventual consistency, pending/partial hedge, cancel/fill race, and reduceOnly semantics remain OPEN.
@@ -782,3 +782,20 @@ The generic `MutationGateway.execute_create_order` accepted futures SELL and fut
 ### Manual STOP/operator authentication boundary
 
 `resolve_submit_attempt_signed` verifies HMAC, timestamp, nonce, two distinct evidence references, unresolved state, and writes an audit row. The signed payload's `operator_id` is still a claimed string; there is no identity-provider binding, dual approval, or secret custody/rotation workflow in this repository. `acknowledge_resume` accepts an operator string and expected epoch but has no signature check and no production command caller was found. Do not expose either API as an operator-authenticated workflow until those controls are implemented.
+
+## 2026-11-26 follow-up — R-57 intent-scoped admission contract
+
+**Finding:** the optional pre-submit callback was invoked with no arguments before the durable intent was loaded. This allowed a callback to return True without receiving any verifiable order scope. The PostgreSQL reservation was already the canonical uniqueness control, so this was an admission-contract/auditability defect rather than a proven production reservation bypass.
+
+**Fix:**
+- SubmitAdmissionContext is built from the durable PREPARED row while the shared session advisory lock is held.
+- The context includes client order ID, exchange, market type, symbol, side, order type, quantity, price, pair key, and a SHA-256 fingerprint covering amount_spec and recovery_context.
+- The callback receives that context. The row is then re-read FOR UPDATE; any field/fingerprint change rejects before SUBMITTING.
+- The active spot-entry guard compares the full context with the entry being submitted before consulting active/pending pair state.
+- A legacy no-argument callback fails closed and leaves PREPARED; fake-gateway and disposable PostgreSQL integration fixtures now exercise the scoped contract.
+
+**Scope:** no de-risk path was changed. Generic futures create remains disabled; no production create caller for the generic gateway was found.
+
+**Remaining release gates:** R-58 Redis/outbox-loss recovery and reservation backfill completeness; operator identity/authentication, dual approval and secret custody; repeated fault injection on the actual VPS PostgreSQL topology; per-venue sandbox idempotency/visibility/eventual-consistency contracts; manual de-risk exact-client-ID retry resolution.
+
+**Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.

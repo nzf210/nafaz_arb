@@ -696,7 +696,7 @@ Reviewed branch head before this follow-up: `8167cefe153e5c950e4732c9120bf2c8a0f
 ### Remaining blockers — do not mark release-ready
 
 - [ ] Full clone-wide and runtime-instrumented inventory of every direct create-order call, CCXT wrapper, adapter, retry and recovery caller.
-- [ ] Replace the generic gateway's loose no-argument `pre_submit_guard` callback with a scoped, auditable contract bound to exchange, market type, symbol, pair key and durable intent. A callable/no-op returning true is not proof of active-market admission.
+- [x] R-57: GlobalStopService.order_submit_fence now supplies an immutable SubmitAdmissionContext built from the durable PREPARED intent (including a SHA-256 fingerprint over amount specification and recovery context); the row is re-read under FOR UPDATE and the fingerprint must match before SUBMITTING. Legacy no-argument callbacks fail closed. The active spot entry guard validates client ID, exchange, market, symbol, side, order type, quantity, price and pair key.
 - [ ] Make active-market single-flight admission durable across executor processes and resilient to Redis eviction/flush. Current spot guard uses process memory + Redis keys; PostgreSQL submit fencing serializes requests but does not represent an already ACKNOWLEDGED open position.
 - [ ] Wire MutationGateway into production lifecycle only after order-registry registration, parent/position linkage, exact-ID startup recovery, and post-ACK persistence are complete. It currently has no production create caller in the inspected paths.
 - [ ] Operator-authenticated manual resolution: operator identity/provisioning, HMAC secret custody and rotation, dual approval, evidence retrieval, and runbook.
@@ -726,7 +726,7 @@ Reviewed branch head before this follow-up: `8167cefe153e5c950e4732c9120bf2c8a0f
 ### Confirmed open items
 
 - [ ] **R-58 — Redis-loss active-market gate:** market admission uses local memory + Redis only. Position writes are queued to per-process SQLite outboxes and delivered asynchronously; no canonical PostgreSQL active-market reservation is queried by the guard. ACKNOWLEDGED submit rows do not represent open positions. Implement a durable market-exposure reservation atomically inside the shared submit fence, with lifecycle-safe release and startup backfill before marking this closed.
-- [ ] **R-57 — Generic gateway guard:** replace the no-argument callback with an intent-scoped, auditable admission contract before any production create caller is wired.
+- [x] **R-57 — Generic gateway guard: FIXED (2026-11-26).** Admission callbacks receive the immutable durable-intent context; no-argument callbacks fail closed. PostgreSQL market reservation remains the canonical cross-process uniqueness authority.
 - [ ] Operator-authenticated manual resolution: operator identity/provisioning, HMAC secret custody/rotation, dual approval, evidence retrieval, and runbook.
 - [ ] Repeated real PostgreSQL multi-process disconnect/fault injection on the actual VPS topology; disposable CI PostgreSQL does not close this.
 - [ ] Per-venue sandbox/paper contract tests for exact client-ID visibility, eventual consistency, partial/pending hedge, cancel/fill race, and reduceOnly close.
@@ -759,7 +759,7 @@ No production source behavior was changed in this execution; the test fixture wa
 - [x] Classified the complete runtime call-site set: spot BUY limit; spot SELL limit/market; futures short SELL market (`reduceOnly=False`); futures close BUY market (`reduceOnly=True`); Indodax raw `_create_order` wrappers; generic MutationGateway dynamic create; and manual de-risk script calls. Paper client is simulation-only; modular venue adapters and recovery/order-sync modules have no direct create side effects.
 - [x] R-59 LIVE exact-venue fallback fix passed workflow `45133454526` (5/5 jobs; Python 790 passed, 10 skipped; PostgreSQL 11 passed; Go race/vet, Docker, migration runner passed).
 
-Still OPEN: R-58 durable PostgreSQL active-market reservation / Redis-loss recovery; R-57 intent-scoped generic admission guard; operator-authenticated manual resolution; real VPS multi-process disconnect/fault injection; venue sandbox contracts. Source call-site inventory is closed for this tree, but the system remains **PARTIAL / NOT LIVE-CERTIFIED**.
+Still OPEN: R-58 Redis/outbox-loss recovery and reservation backfill completeness; operator-authenticated manual resolution; real VPS multi-process disconnect/fault injection; venue sandbox contracts. Source call-site inventory is closed for this tree, but the system remains **PARTIAL / NOT LIVE-CERTIFIED**.
 
 
 ## 4.1 Durable local-market exposure reservation (R-58)
@@ -784,7 +784,7 @@ Still OPEN: R-58 durable PostgreSQL active-market reservation / Redis-loss recov
 - [x] Keep spot SELL, futures reduceOnly close, cancel, rollback, and force-close outside entry STOP admission.
 - [x] Make definitive submit rejection and its exact client-ID market-reservation release atomic in one PostgreSQL transaction.
 - [x] Add fake-connection fault injection: reservation-release failure rolls back the REJECTED transition; successful release commits both state changes.
-- [ ] Replace generic gateway's no-argument `pre_submit_guard` with an intent-scoped, auditable contract before any future LIVE gateway wiring (R-57).
+- [x] Replace generic gateway's no-argument pre_submit_guard with the intent-scoped SubmitAdmissionContext contract and fail-closed legacy-callback regression (R-57).
 - [ ] Complete operator identity/provisioning, HMAC secret custody/rotation, dual approval, audit retrieval, and runbook.
 - [ ] Repeat multi-process disconnect/fault injection against the actual VPS PostgreSQL topology; disposable CI PostgreSQL is not production-topology sign-off.
 - [ ] Complete per-venue sandbox/paper exact-client-ID visibility/idempotency, delayed lookup consistency, pending/partial hedge, cancel/fill race, and reduceOnly tests.
@@ -805,3 +805,14 @@ Source/test head `6d211b0d` passed workflow [45571240202](https://github.com/nzf
 **Verification:** source/test head `6d211b0d` passed workflow `45571240202`; documentation head `45910f22` passed `45571374728`. The current documentation-only commit will trigger a new workflow; no new source changes are included in this update.
 
 **Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, or cutover.
+
+## 2026-11-26 follow-up — R-57 intent-scoped admission contract
+
+- [x] GlobalStopService.order_submit_fence reads the durable PREPARED row under the shared session advisory lock and constructs immutable SubmitAdmissionContext from its persisted fields.
+- [x] The context carries client order ID, exchange, market type, symbol, side, order type, quantity, price, pair key, and a SHA-256 fingerprint covering amount specification and recovery context.
+- [x] The callback runs outside the PostgreSQL transaction but while the session lock is held; the intent is then re-read FOR UPDATE and the full context/fingerprint must still match before PREPARED -> SUBMITTING.
+- [x] The live spot-entry guard checks every scope field against the active entry and then checks active/pending pair state. A legacy no-argument callback raises and leaves the attempt PREPARED.
+- [x] Generic MutationGateway fake-venue coverage now uses a scoped callback. No production create caller for the generic gateway was found; this change closes the loose API contract, not a claim that the gateway is the sole mutation boundary.
+- [ ] R-58 Redis/outbox-loss recovery and reservation backfill completeness remain open. Operator-authenticated manual resolution, repeated VPS PostgreSQL fault injection, and per-venue sandbox contracts remain release gates.
+
+**Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.

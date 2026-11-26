@@ -531,9 +531,17 @@ async def test_pair_admission_guard_runs_under_lock_before_submitting_transition
     await _prepare(service, "pair-guarded-order")
     guard_calls = []
 
-    async def reject_existing_pair():
+    async def reject_existing_pair(context):
         assert any("pg_try_advisory_lock" in query for query, _ in conn.executed)
-        guard_calls.append(True)
+        assert context.client_order_id == "pair-guarded-order"
+        assert context.exchange == "binance"
+        assert context.market_type == "spot"
+        assert context.symbol == "BTC/USDT"
+        assert context.side == "buy"
+        assert context.order_type == "limit"
+        assert context.pair_key == "binance__okx__btc"
+        assert len(context.intent_fingerprint) == 64
+        guard_calls.append(context)
         return False
 
     with pytest.raises(GlobalStopError, match="pre-submit admission guard"):
@@ -543,7 +551,7 @@ async def test_pair_admission_guard_runs_under_lock_before_submitting_transition
         ):
             pytest.fail("venue request must not be entered for an occupied pair")
 
-    assert guard_calls == [True]
+    assert len(guard_calls) == 1
     assert conn.attempts["pair-guarded-order"]["status"] == "PREPARED"
     statements = [query for query, _ in conn.executed]
     assert any("pg_advisory_unlock" in query for query in statements)
@@ -1566,3 +1574,24 @@ async def test_spot_entry_persists_prepared_intent_before_reserving_slot():
     assert venue.submit_calls == 1
     assert "ledger_rejected" in events
     assert "release_slot" in events
+
+
+@pytest.mark.asyncio
+async def test_legacy_no_argument_admission_guard_fails_closed():
+    conn = _FakeConnection()
+    service = GlobalStopService("postgresql://unused")
+    service.pool = _FakePool(conn)
+    await _prepare(service, "legacy-guard-order")
+
+    async def legacy_guard():
+        return True
+
+    with pytest.raises(GlobalStopError, match="intent-scoped pre-submit admission guard failed closed"):
+        async with service.order_submit_fence(
+            client_order_id="legacy-guard-order",
+            pre_submit_guard=legacy_guard,
+        ):
+            pytest.fail("legacy no-argument guard must not reach the venue boundary")
+
+    assert conn.attempts["legacy-guard-order"]["status"] == "PREPARED"
+    assert not any("set status='SUBMITTING'" in query for query, _ in conn.executed)

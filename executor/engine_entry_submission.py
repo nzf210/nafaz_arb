@@ -6,7 +6,7 @@ import re
 import time
 
 from executor.models import OrderRole, PositionState
-from executor.global_stop import GlobalStopError
+from executor.global_stop import GlobalStopError, SubmitAdmissionContext
 from executor.helpers import (
     build_client_order_id,
     is_explicit_rate_limit_rejection,
@@ -470,7 +470,35 @@ class EngineEntrySubmissionMixin:
                     strict=not bool(getattr(self.config, "mock_mode", False)),
                 )
 
-            async def _pair_admission_guard():
+            async def _pair_admission_guard(admission: SubmitAdmissionContext):
+                # The fence supplies this immutable context from the durable
+                # PREPARED row, not from caller-provided scope arguments.
+                if not isinstance(admission, SubmitAdmissionContext):
+                    return False
+                try:
+                    intent_quantity = float(admission.quantity)
+                    intent_price = float(admission.price)
+                except (TypeError, ValueError):
+                    return False
+                if (
+                    admission.client_order_id != entry_coid
+                    or admission.exchange != str(pair_info.local_exchange or "").strip().lower()
+                    or admission.market_type not in {"spot", "local"}
+                    or admission.symbol != str(pair_info.local_symbol or "").strip()
+                    or admission.side != "buy"
+                    or admission.order_type != "limit"
+                    or admission.pair_key != pair_tag
+                    or len(admission.intent_fingerprint) != 64
+                    or not math.isfinite(intent_quantity)
+                    or not math.isclose(intent_quantity, float(buy_qty), rel_tol=1e-12, abs_tol=1e-12)
+                    or not math.isfinite(intent_price)
+                    or not math.isclose(intent_price, float(exchange_order_price), rel_tol=1e-12, abs_tol=1e-12)
+                ):
+                    logger.error(
+                        "[Entry] durable admission scope does not match the active spot BUY intent: %s",
+                        entry_coid,
+                    )
+                    return False
                 if await self._has_active_or_pending_position(pair_tag):
                     return False
                 identity = resolve_local_market_identity(

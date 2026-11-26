@@ -237,7 +237,14 @@ def _pair_guard_submitter(
                 quantity=0.001, price=1_000_000_000, pair_key=pair_key,
             )
 
-            async def pair_guard():
+            async def pair_guard(context):
+                assert context.client_order_id == client_id
+                assert context.exchange == "tokocrypto"
+                assert context.market_type == "spot"
+                assert context.symbol == "BTC/IDR"
+                assert context.side == "buy"
+                assert context.pair_key == pair_key
+                assert len(context.intent_fingerprint) == 64
                 return pair_key not in shared_claims
 
             async with service.order_submit_fence(

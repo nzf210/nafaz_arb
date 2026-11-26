@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 
 from executor.helpers import parse_pair_tag_local_market, resolve_local_market_identity
@@ -82,6 +83,54 @@ def _market_exposure_scope(exchange: Any, symbol: Any, pair_key: Any, recovery_c
         "quote_asset": str(normalized_quote).upper(),
         "pair_key": pair,
     }
+
+@dataclass(frozen=True)
+class SubmitAdmissionContext:
+    """Immutable scope derived from the durable PREPARED order intent."""
+
+    client_order_id: str
+    exchange: str
+    market_type: str
+    symbol: str
+    side: str
+    order_type: str
+    quantity: str
+    price: str
+    pair_key: str
+    intent_fingerprint: str
+
+
+def _submit_admission_context(client_order_id: str, row: Any) -> SubmitAdmissionContext:
+    """Build a stable, auditable admission scope from persisted intent fields."""
+    intent = dict(row)
+    fingerprint_fields = (
+        "exchange", "market_type", "symbol", "side", "order_type",
+        "quantity", "price", "pair_key", "amount_spec", "recovery_context",
+    )
+    payload = {}
+    for key in fingerprint_fields:
+        value = intent.get(key)
+        if isinstance(value, str) and key in {"amount_spec", "recovery_context"}:
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                pass
+        payload[key] = value
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return SubmitAdmissionContext(
+        client_order_id=str(client_order_id),
+        exchange=str(intent.get("exchange") or "").strip().lower(),
+        market_type=str(intent.get("market_type") or "").strip().lower(),
+        symbol=str(intent.get("symbol") or "").strip(),
+        side=str(intent.get("side") or "").strip().lower(),
+        order_type=str(intent.get("order_type") or "").strip().lower(),
+        quantity=str(intent.get("quantity")),
+        price=str(intent.get("price")),
+        pair_key=str(intent.get("pair_key") or "").strip(),
+        intent_fingerprint=fingerprint,
+    )
+
 
 # Stable, application-wide PostgreSQL advisory-lock keys. Do not change
 # without coordinating every executor instance using this schema.
@@ -596,10 +645,12 @@ class GlobalStopService:
         The SUBMITTING row is committed before yielding and survives a lost
         PostgreSQL session. A venue transport error must not be mistaken for a
         PostgreSQL disconnect; the yielded scope contains the external request.
-        An optional asynchronous ``pre_submit_guard`` runs after acquiring the
-        shared session lock but before changing the durable attempt to
-        SUBMITTING. A false result or guard error fails closed while leaving the
-        attempt PREPARED, so the caller can safely mark it ABORTED.
+        An optional asynchronous ``pre_submit_guard`` receives an immutable
+        ``SubmitAdmissionContext` created from the durable PREPARED row while the
+        shared session lock is held. Legacy no-argument callbacks fail closed.
+        The row is re-read under the transaction and its full intent fingerprint
+        must still match before PREPARED -> SUBMITTING. A false result or guard
+        error leaves the attempt PREPARED, so the caller can safely mark it ABORTED.
         When ``scope_exchange`` and ``scope_symbol`` are provided, they
         must exactly match the durable PREPARED intent; the unresolved query then
         uses that stored identity rather than trusting caller-supplied scope values.
@@ -625,19 +676,33 @@ class GlobalStopService:
                             "another venue submission currently holds the global submit fence"
                         )
                     locked = True
+                    admission_context = None
                     if pre_submit_guard is not None:
+                        intent_snapshot = await conn.fetchrow(
+                            "select exchange, market_type, symbol, side, order_type, "
+                            "quantity, price, pair_key, amount_spec, recovery_context, status "
+                            "from public.executor_submit_attempts where client_order_id = $1",
+                            client_order_id,
+                        )
+                        if intent_snapshot is None or intent_snapshot["status"] != "PREPARED":
+                            raise GlobalStopError(
+                                f"scoped admission requires a durable PREPARED intent: {client_order_id}"
+                            )
+                        admission_context = _submit_admission_context(
+                            client_order_id, intent_snapshot
+                        )
                         try:
-                            allowed = pre_submit_guard()
+                            allowed = pre_submit_guard(admission_context)
                             if hasattr(allowed, "__await__"):
                                 allowed = await allowed
                         except Exception as guard_error:
                             raise GlobalStopError(
-                                "pre-submit admission guard failed closed: "
+                                "intent-scoped pre-submit admission guard failed closed: "
                                 f"{type(guard_error).__name__}: {guard_error}"
                             ) from guard_error
                         if not allowed:
                             raise GlobalStopError(
-                                "pre-submit admission guard rejected an already active or pending pair"
+                                "intent-scoped pre-submit admission guard rejected the durable order intent"
                             )
                     async with conn.transaction():
                         control = await conn.fetchrow(
@@ -651,12 +716,19 @@ class GlobalStopService:
                                 f"global STOP active (epoch={control['epoch']} reason={control['reason'] or 'unspecified'})"
                             )
                         intent = await conn.fetchrow(
-                            "select exchange, market_type, symbol, side, pair_key, recovery_context, status "
+                            "select exchange, market_type, symbol, side, order_type, quantity, price, "
+                            "pair_key, amount_spec, recovery_context, status "
                             "from public.executor_submit_attempts where client_order_id = $1 for update",
                             client_order_id,
                         )
                         if intent is None or intent["status"] != "PREPARED":
                             raise GlobalStopError(f"submit requires a durable PREPARED intent: {client_order_id}")
+                        if admission_context is not None and (
+                            _submit_admission_context(client_order_id, intent) != admission_context
+                        ):
+                            raise GlobalStopError(
+                                "durable submit intent changed while scoped admission was running"
+                            )
                         durable_exchange = str(intent["exchange"] or "").strip().lower()
                         durable_symbol = str(intent["symbol"] or "").strip()
                         scope_requested = scope_exchange is not None or scope_symbol is not None
