@@ -1900,3 +1900,7 @@ The guard is invoked outside the database transaction to avoid holding a transac
 This is an API-scope hardening, not a replacement for the canonical PostgreSQL market-exposure reservation. The generic MutationGateway still has no production create caller in the inspected tree and is not the only mutation boundary. R-58 Redis/outbox-loss recovery, operator-authenticated manual resolution, repeated VPS PostgreSQL fault injection, and venue sandbox contracts remain open.
 
 **Status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
+
+### Verification — R-57 scoped admission source/test head
+
+Source/test commit `a5d7c05f8a217c565a91dc007874dcb1e83c4f79` passed GitHub Actions workflow [45777304013](https://github.com/nzf210/nafaz_arb/actions/runs/45777304013), **5/5 jobs SUCCESS**. Python executor suite: **812 passed, 11 skipped, 11 warnings**. Disposable PostgreSQL schema/integration job: **12 passed**, including the real PostgreSQL multi-process submit-disconnect scenario. Go tests, Go race tests, Go vet, scanner/executor Docker builds, and isolated VPS migration-runner validation all passed. The pytest warnings are unregistered `integration` marks; no test failed. This is CI evidence, not repeated testing against the actual VPS PostgreSQL topology or real CEX sandbox certification.

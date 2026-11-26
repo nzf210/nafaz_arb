@@ -799,3 +799,7 @@ The generic `MutationGateway.execute_create_order` accepted futures SELL and fut
 **Remaining release gates:** R-58 Redis/outbox-loss recovery and reservation backfill completeness; operator identity/authentication, dual approval and secret custody; repeated fault injection on the actual VPS PostgreSQL topology; per-venue sandbox idempotency/visibility/eventual-consistency contracts; manual de-risk exact-client-ID retry resolution.
 
 **Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
+
+### Verification — R-57 scoped admission source/test head
+
+Source/test commit `a5d7c05f8a217c565a91dc007874dcb1e83c4f79` passed GitHub Actions workflow [45777304013](https://github.com/nzf210/nafaz_arb/actions/runs/45777304013), **5/5 jobs SUCCESS**. Python executor suite: **812 passed, 11 skipped, 11 warnings**. Disposable PostgreSQL schema/integration job: **12 passed**, including the real PostgreSQL multi-process submit-disconnect scenario. Go tests, Go race tests, Go vet, scanner/executor Docker builds, and isolated VPS migration-runner validation all passed. The pytest warnings are unregistered `integration` marks; no test failed. This is CI evidence, not repeated testing against the actual VPS PostgreSQL topology or real CEX sandbox certification.
