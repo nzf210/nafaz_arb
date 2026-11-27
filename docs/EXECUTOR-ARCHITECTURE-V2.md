@@ -1904,3 +1904,12 @@ This is an API-scope hardening, not a replacement for the canonical PostgreSQL m
 ### Verification — R-57 scoped admission source/test head
 
 Source/test commit `a5d7c05f8a217c565a91dc007874dcb1e83c4f79` passed GitHub Actions workflow [45777304013](https://github.com/nzf210/nafaz_arb/actions/runs/45777304013), **5/5 jobs SUCCESS**. Python executor suite: **812 passed, 11 skipped, 11 warnings**. Disposable PostgreSQL schema/integration job: **12 passed**, including the real PostgreSQL multi-process submit-disconnect scenario. Go tests, Go race tests, Go vet, scanner/executor Docker builds, and isolated VPS migration-runner validation all passed. The pytest warnings are unregistered `integration` marks; no test failed. This is CI evidence, not repeated testing against the actual VPS PostgreSQL topology or real CEX sandbox certification.
+
+
+## Audit implementation note — R-63 pre-submit hedge failure handling (2026-11-27)
+
+The futures hedge lifecycle keeps the durable parent-spot-fill claim until the hedge is confirmed or an unsubmitted claim is safely abandoned. A failure before the futures venue boundary is a de-risk case: release only the exact current claim using the client ID persisted on the order context, then continue the guarded spot rollback. Do not derive the claim ID from a return tuple that may never have been assigned.
+
+Claim abandonment is best-effort and must not suppress a risk-reducing rollback. If PostgreSQL is unavailable, the claim remains CLAIMED and therefore conservative/blocking; it is not safe to invent a new hedge ID or retry a possibly submitted order. A new cumulative-fill attempt clears stale in-memory claim metadata before acquiring its own durable claim.
+
+Regression coverage added for the correct persisted client ID, stale-generation isolation, and a PostgreSQL cleanup failure while asserting that the spot rollback still executes. This is a pre-submit error-path fix only; no venue create-order behavior or de-risk fencing policy is changed.

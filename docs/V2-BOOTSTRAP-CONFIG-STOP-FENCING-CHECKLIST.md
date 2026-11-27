@@ -820,3 +820,19 @@ Source/test head `6d211b0d` passed workflow [45571240202](https://github.com/nzf
 ### Verification — R-57 scoped admission source/test head
 
 Source/test commit `a5d7c05f8a217c565a91dc007874dcb1e83c4f79` passed GitHub Actions workflow [45777304013](https://github.com/nzf210/nafaz_arb/actions/runs/45777304013), **5/5 jobs SUCCESS**. Python executor suite: **812 passed, 11 skipped, 11 warnings**. Disposable PostgreSQL schema/integration job: **12 passed**, including the real PostgreSQL multi-process submit-disconnect scenario. Go tests, Go race tests, Go vet, scanner/executor Docker builds, and isolated VPS migration-runner validation all passed. The pytest warnings are unregistered `integration` marks; no test failed. This is CI evidence, not repeated testing against the actual VPS PostgreSQL topology or real CEX sandbox certification.
+
+
+## 2026-11-27 follow-up — R-63 pre-submit hedge rollback boundary
+
+- [x] Found a pre-submit failure bug in `EntryHedgeMixin._execute_entry_hedge`: its exception handler referenced local `hedge_coid`, which is assigned only after `_submit_entry_hedge_order` returns. A STOP/PREPARED/database failure after acquiring a durable hedge claim but before the venue request could therefore raise `UnboundLocalError` while trying to abandon the claim, preventing the existing risk-reducing spot rollback from running.
+- [x] Resolve the claim client ID from `order_info.pending_hedge_client_order_id`, which is persisted by the claim owner before pre-submit validation/ledger work.
+- [x] Clear the prior generation's claim key at the start of each new hedge attempt so a pre-claim failure cannot abandon a stale generation.
+- [x] Make claim abandonment best-effort and log a failed release without suppressing the spot rollback. If PostgreSQL cannot persist ABANDONED, the durable CLAIMED row remains conservative/blocking for reconciliation.
+- [x] Add fake-claim regressions for correct ID adoption, stale-claim isolation, and PostgreSQL failure while ensuring rollback still executes.
+- [ ] Verify the new source/test head in GitHub Actions; no PASS is claimed until the workflow completes.
+
+This change does not create or retry a futures order. It only repairs the pre-submit error path and preserves the existing spot SELL rollback/de-risk path. It does not move rollback behind the entry STOP fence.
+
+**Remaining gates are unchanged:** operator-authenticated manual resolution, actual VPS PostgreSQL multi-process disconnect/fault injection, Redis/outbox-loss backfill proof, per-venue exact-ID/idempotency/eventual-consistency contracts, and minimum-notional overhedge/delta-drift policy.
+
+**Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.

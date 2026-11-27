@@ -1010,6 +1010,9 @@ class EntryHedgeMixin:
         """Execute market short on global exchange and persist position state."""
         order_info["hedge_submit_started"] = False
         order_info.pop("pending_hedge_client_order_id", None)
+        # A new cumulative-fill attempt must never inherit a previous generation's
+        # claim key. The new claim is written only after the durable CAS succeeds.
+        order_info.pop("hedge_claim_key", None)
         global_symbol = order_info["global_symbol"]
         try:
             expected_short_price = float(
@@ -1088,14 +1091,37 @@ class EntryHedgeMixin:
             # call has started, keep CLAIMED/SUBMITTED durable until recovery
             # proves the outcome; never release an ambiguous submission.
             claim_key = str(order_info.get("hedge_claim_key") or "")
+            claim_client_order_id = str(
+                order_info.get("pending_hedge_client_order_id") or ""
+            )
             claims_service = getattr(self, "hedge_claims", None)
-            if claim_key and claims_service is not None and not order_info.get(
-                "hedge_submit_started"
+            if (
+                claim_key
+                and claim_client_order_id
+                and claims_service is not None
+                and not order_info.get("hedge_submit_started")
             ):
-                await claims_service.mark_abandoned(
-                    claim_key, hedge_coid,
-                    f"pre-submit hedge failure: {type(he).__name__}: {he}"
-                )
+                # _submit_entry_hedge_order may raise before returning its tuple,
+                # so a local hedge_coid is not assigned yet. Use the ID persisted
+                # on order_info by the claim owner. Claim cleanup is best-effort:
+                # a DB failure must never prevent the risk-reducing spot rollback.
+                try:
+                    abandoned = await claims_service.mark_abandoned(
+                        claim_key, claim_client_order_id,
+                        f"pre-submit hedge failure: {type(he).__name__}: {he}"
+                    )
+                    if not abandoned:
+                        logger.critical(
+                            "[Hedge Claim] could not abandon pre-submit claim %s for %s; "
+                            "continuing the spot rollback while the durable claim remains blocking",
+                            claim_key, pair_tag,
+                        )
+                except Exception:
+                    logger.exception(
+                        "[Hedge Claim] pre-submit claim cleanup failed for %s; "
+                        "continuing the risk-reducing spot rollback",
+                        pair_tag,
+                    )
             global_exchange = str(order_info.get("global_exchange", ""))
             # A key-permission refusal or trading restriction is a definitive venue response:
             # the short was never created, so the spot leg must be unwound immediately and

@@ -803,3 +803,14 @@ The generic `MutationGateway.execute_create_order` accepted futures SELL and fut
 ### Verification — R-57 scoped admission source/test head
 
 Source/test commit `a5d7c05f8a217c565a91dc007874dcb1e83c4f79` passed GitHub Actions workflow [45777304013](https://github.com/nzf210/nafaz_arb/actions/runs/45777304013), **5/5 jobs SUCCESS**. Python executor suite: **812 passed, 11 skipped, 11 warnings**. Disposable PostgreSQL schema/integration job: **12 passed**, including the real PostgreSQL multi-process submit-disconnect scenario. Go tests, Go race tests, Go vet, scanner/executor Docker builds, and isolated VPS migration-runner validation all passed. The pytest warnings are unregistered `integration` marks; no test failed. This is CI evidence, not repeated testing against the actual VPS PostgreSQL topology or real CEX sandbox certification.
+
+
+## 2026-11-27 follow-up — R-63 pre-submit hedge failure could suppress spot rollback
+
+| ID | Finding | Remediation | Status |
+|---|---|---|---|
+| R-63 | `EntryHedgeMixin._execute_entry_hedge` referenced local `hedge_coid` in its exception handler even though that variable is assigned only when `_submit_entry_hedge_order` returns. If STOP/PREPARED/DB failure occurred after a durable hedge-generation claim but before the futures venue boundary, the exception handler could itself raise `UnboundLocalError` while abandoning the claim. That could prevent the already-required risk-reducing spot rollback from executing. | Resolve the exact claim client ID from `order_info.pending_hedge_client_order_id`; clear stale claim metadata at the start of a new generation; make ABANDONED persistence best-effort and ensure its failure cannot block spot rollback. If the DB write fails, the CLAIMED row remains blocking for reconciliation. Added fake-claim regression tests for correct ID, stale-generation isolation, and DB cleanup failure with rollback continuation. | FIX IMPLEMENTED; CI verification pending for this head. |
+
+This is not a new futures create-order bypass: the failure occurs before the venue boundary. It is a confirmed rollback/recovery defect that could leave a filled spot leg unhedged after a pre-submit STOP/DB failure. No risk-reducing operation was moved behind entry STOP, and no venue retry was added.
+
+**Release state remains PARTIAL / NOT LIVE-CERTIFIED.** Operator-authenticated manual resolution, actual VPS PostgreSQL multi-process disconnect/fault injection, Redis/outbox-loss recovery proof, and per-venue sandbox contracts remain open. No merge, deployment, production migration, cutover, or live order was performed.
