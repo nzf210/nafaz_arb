@@ -1913,3 +1913,6 @@ The futures hedge lifecycle keeps the durable parent-spot-fill claim until the h
 Claim abandonment is best-effort and must not suppress a risk-reducing rollback. If PostgreSQL is unavailable, the claim remains CLAIMED and therefore conservative/blocking; it is not safe to invent a new hedge ID or retry a possibly submitted order. A new cumulative-fill attempt clears stale in-memory claim metadata before acquiring its own durable claim.
 
 Regression coverage added for the correct persisted client ID, stale-generation isolation, and a PostgreSQL cleanup failure while asserting that the spot rollback still executes. This is a pre-submit error-path fix only; no venue create-order behavior or de-risk fencing policy is changed.
+
+
+**R-63 verification:** source/test commit `70507e392129ffb6cad1f1afc7637c99d7a793b3` passed workflow [45957394891](https://github.com/nzf210/nafaz_arb/actions/runs/45957394891), 5/5 jobs. Python: 815 passed, 11 skipped, 11 warnings. Disposable PostgreSQL integration: 12 passed. Go tests/race/vet, Docker builds, and isolated migration-runner validation passed. This does not close actual VPS-topology fault injection or venue sandbox contract gates.

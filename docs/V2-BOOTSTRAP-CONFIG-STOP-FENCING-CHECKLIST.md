@@ -829,7 +829,7 @@ Source/test commit `a5d7c05f8a217c565a91dc007874dcb1e83c4f79` passed GitHub Acti
 - [x] Clear the prior generation's claim key at the start of each new hedge attempt so a pre-claim failure cannot abandon a stale generation.
 - [x] Make claim abandonment best-effort and log a failed release without suppressing the spot rollback. If PostgreSQL cannot persist ABANDONED, the durable CLAIMED row remains conservative/blocking for reconciliation.
 - [x] Add fake-claim regressions for correct ID adoption, stale-claim isolation, and PostgreSQL failure while ensuring rollback still executes.
-- [ ] Verify the new source/test head in GitHub Actions; no PASS is claimed until the workflow completes.
+- [x] Source/test head `70507e392129ffb6cad1f1afc7637c99d7a793b3` verified by workflow [45957394891](https://github.com/nzf210/nafaz_arb/actions/runs/45957394891): **5/5 jobs SUCCESS**. Python **815 passed, 11 skipped, 11 warnings**; disposable PostgreSQL integration **12 passed**; Go tests/race/vet, Docker builds, and isolated migration-runner checks passed. This is CI evidence, not actual VPS-topology or CEX sandbox certification.
 
 This change does not create or retry a futures order. It only repairs the pre-submit error path and preserves the existing spot SELL rollback/de-risk path. It does not move rollback behind the entry STOP fence.
 
