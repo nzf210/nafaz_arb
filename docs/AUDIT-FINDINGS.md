@@ -843,3 +843,35 @@ Source/test commits: 7346bf1, ceed3a4, fb06268, eba1396, 86007bc, 35b06ee, 0f66b
 **Remaining release gates:** operator-authenticated manual resolution and dual approval; actual VPS PostgreSQL multi-process disconnect/fault injection; Redis/local-outbox loss recovery and startup backfill proof; per-venue sandbox client-ID idempotency/eventual consistency; manual de-risk exact-client-ID retry; minimum-notional overhedge/delta-drift policy; and durable post-close state persistence.
 
 **Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
+
+## 2026-11-28 follow-up — R-66 unresolved hedge-claim startup recovery gap
+
+| ID | Finding | Evidence / impact | Remediation | Status |
+|---|---|---|---|---|
+| R-66 | Hedge-generation claims are not included in startup reconciliation. | `HedgeIntentClaimService.claim_generation` commits a `CLAIMED` row before the futures submit-attempt row is prepared. If the claim transaction commits but its response is lost, `HedgeClaimUnavailableError` carries the deterministic `claim_key`; `_execute_entry_hedge` halts the pair, retains the market reservation, and correctly does not submit Futures or race an automatic Spot rollback. However, `EngineRecoveryMixin._reconcile_durable_submit_attempts` enumerates only `executor_submit_attempts`, and `Engine.initialize` invokes that reconciliation after normal startup recovery. There is no corresponding startup enumeration of unresolved `executor_hedge_intent_claims`. The peer-contention query also selects only `claim_key,status`; `claim_generation` returns `None` without exposing the existing claim's exact futures client order ID. Consequently, a pre-submit claim with no submit-attempt row is not independently covered by the exact-client-ID startup reconciliation path. If Redis/order-registry state is also missing, startup has no claim-specific signal from this table to keep the affected exposure gated. This is a recovery-coverage gap, not evidence that a Futures create-order bypass occurred. | Add a durable unresolved-claim reader and startup reconciliation by the exact stored `hedge_client_order_id` through the exact futures venue client. A lookup result of NOT_FOUND, timeout, missing venue client, or eventual-consistency window must remain unresolved; it must not mark the claim ABANDONED or authorize rollback. Until a complete claim/order/position reconciliation and operator-authenticated resolution exist, startup must retain an entry halt. Add fake-venue tests and a PostgreSQL commit-response-loss fault boundary. | OPEN — no source change in this execution. |
+
+### R-66 audit details
+
+- Verified: the R-64 runtime exception path stores `hedge_claim_key`, sets `HEDGE_CLAIM_AUTHORITY_UNAVAILABLE`, marks the pair `RECONCILIATION_REQUIRED`, retains the existing reservation, and does not call the futures venue or automatic Spot rollback.
+- Verified: `HedgeClaimUnavailableError` currently carries `claim_key` only. The persisted claim row owns the authoritative `hedge_client_order_id`; deriving a fresh ID from the base claim key is not always safe because terminal zero-fill recovery rotates the stored ID before a later claim retry.
+- Verified: normal durable submit-attempt startup recovery resolves exact venue/client IDs and preserves NOT_FOUND as unresolved. That path does not enumerate claim rows created before `prepare_submit_attempt`.
+- Verified: peer contention returns `None` after finding an unresolved claim, but the selected row does not expose the stored futures client ID to the waiting caller.
+- No order, reservation, or claim was modified during this audit. No manual resolution or venue request was performed.
+
+### De-risk boundary revalidation
+
+R-65 remains an intentional risk-reduction availability tradeoff. `derisk_fence` validates a non-empty stable client order ID before attempting the optional PostgreSQL de-risk lock. If the lock authority cannot be entered because of `GlobalStopError`, asyncpg, connection, timeout, or OS-level database errors, it logs CRITICAL and yields without shared serialization. Exceptions raised inside the yielded venue call are propagated; cleanup errors do not replace the original ambiguous venue error. This does not route Spot SELL, Futures `reduceOnly=True`, rollback, or force-close through the entry STOP fence. It does mean concurrent de-risk calls are not cross-process serialized during database unavailability, so exact-ID adoption and post-order position/balance verification remain mandatory.
+
+The standalone `scripts/resolve_ai_position.py` still contains direct Tokocrypto market SELL and OKX `reduceOnly=True` market BUY calls with fixed client IDs and no exact-client-ID lookup before POST. These are de-risk-only calls, not exposure-increasing entry bypasses. R-62 remains OPEN; do not rerun the utility after an ambiguous result without checking both venue order histories and actual balances/positions.
+
+### Verification for this follow-up
+
+- Branch head inspected before this documentation update: `cbf30ffc31b78221be656349883db3861b1dc696`.
+- Source/test head recorded by the current checklist: `35b06ee7c073c669341745e3e520bf938872dbfe`.
+- `fetch_commit_workflow_runs` returned no PR-triggered runs for either head, and combined commit status returned no status contexts. The connected workflow-run reader exposes PR-triggered runs only; this is not proof that no push workflow exists, and it is not a CI pass.
+- Local clone/test execution was attempted but blocked by DNS resolution for `github.com`. No tests are claimed as run or passed in this follow-up.
+- The previously recorded workflow `45957800613` predates R-64/R-65 and is not evidence for the current source/test head.
+
+**Release gates remain open:** R-66 claim-row startup reconciliation; operator-authenticated manual resolution and dual approval; HMAC secret custody/rotation; actual VPS PostgreSQL multi-process disconnect/fault injection; Redis/local-outbox loss recovery; per-venue exact-ID idempotency and eventual-consistency contracts; manual de-risk exact-ID retry; minimum-notional overhedge/delta-drift policy; and durable post-close state persistence.
+
+**Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
