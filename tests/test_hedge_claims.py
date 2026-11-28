@@ -289,8 +289,11 @@ async def test_db_unavailable_raises_distinct_failure_for_pre_submit_rollback():
     # authority loss from a valid DB conflict and execute its spot de-risk path.
     service = HedgeIntentClaimService(global_stop=None)
     assert service.enabled is False
-    with pytest.raises(HedgeClaimUnavailableError, match="authority is unavailable"):
+    with pytest.raises(HedgeClaimUnavailableError, match="authority is unavailable") as exc:
         await service.claim_generation(**_claim_kwargs())
+    assert exc.value.claim_key == hedge_claim_key(
+        "indodax", "889", int(0.004 * 1e9)
+    )
 
 
 class _BrokenAcquire:
@@ -308,8 +311,11 @@ class _BrokenPool:
 @pytest.mark.asyncio
 async def test_pool_disconnect_during_claim_raises_not_duplicate_conflict():
     service = HedgeIntentClaimService(global_stop=_FakeStop(_BrokenPool()))
-    with pytest.raises(HedgeClaimUnavailableError, match="ConnectionError"):
+    with pytest.raises(HedgeClaimUnavailableError, match="ConnectionError") as exc:
         await service.claim_generation(**_claim_kwargs())
+    assert exc.value.claim_key == hedge_claim_key(
+        "indodax", "889", int(0.004 * 1e9)
+    )
 
 
 @pytest.mark.asyncio
