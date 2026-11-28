@@ -7,6 +7,7 @@ import pytest
 from executor.entry_hedge import EntryHedgeMixin
 from executor.global_stop import GlobalStopError
 from executor.hedge_claims import HedgeClaimUnavailableError
+from executor.models import PositionState
 
 
 class _Claims:
@@ -29,6 +30,10 @@ class _PreSubmitFailureEngine(EntryHedgeMixin):
         self.claim_on_submit = claim_on_submit
         self.rollback_calls = []
         self.order_failures = []
+        self.halted_scopes = []
+        self.failed_states = []
+        self.entry_gate_refreshed = False
+        self.status_publish_count = 0
 
     async def _assert_hedge_slippage_within_limit(
         self, pair_tag, order_info, unhedged_delta, expected_short_price
@@ -50,6 +55,18 @@ class _PreSubmitFailureEngine(EntryHedgeMixin):
 
     async def _rollback_hedge_failure(self, *args):
         self.rollback_calls.append(args)
+
+    def _halt_exposure_scope(self, pair_tag, reason):
+        self.halted_scopes.append((pair_tag, reason))
+
+    def _refresh_entry_gate(self):
+        self.entry_gate_refreshed = True
+
+    def _mark_failed(self, pair_tag, code, message, *, detail=None, state=None):
+        self.failed_states.append((pair_tag, code, message, detail or {}, state))
+
+    async def _maybe_publish_status(self):
+        self.status_publish_count += 1
 
 
 def _order_info(**overrides):
@@ -130,7 +147,10 @@ class _ClaimUnavailable:
     enabled = True
 
     async def claim_generation(self, **kwargs):
-        raise HedgeClaimUnavailableError("PostgreSQL claim connection lost")
+        raise HedgeClaimUnavailableError(
+            "PostgreSQL claim connection lost",
+            claim_key="tokocrypto:spot-123:10000000",
+        )
 
 
 class _ClaimContended:
@@ -171,7 +191,7 @@ class _ClaimAdmissionEngine(EntryHedgeMixin):
 
 
 @pytest.mark.asyncio
-async def test_claim_database_outage_triggers_spot_rollback_before_futures_submit():
+async def test_claim_database_outage_halts_pair_for_reconciliation_without_racing_rollback():
     engine = _ClaimAdmissionEngine(_ClaimUnavailable())
     order_info = _order_info(
         local_exchange="tokocrypto",
@@ -190,7 +210,15 @@ async def test_claim_database_outage_triggers_spot_rollback_before_futures_submi
     )
 
     assert engine.client.calls == 0
-    assert len(engine.rollback_calls) == 1
+    # The claim commit may be ambiguous; an automatic rollback could race a
+    # peer that already owns/submitted the futures hedge.
+    assert engine.rollback_calls == []
+    assert engine.halted_scopes
+    assert engine.entry_gate_refreshed is True
+    assert order_info["hedge_claim_key"] == "tokocrypto:spot-123:10000000"
+    assert engine.failed_states[0][1] == "HEDGE_CLAIM_AUTHORITY_UNAVAILABLE"
+    assert engine.failed_states[0][4] == PositionState.RECONCILIATION_REQUIRED
+    assert engine.status_publish_count == 1
     assert order_info["hedge_submit_started"] is False
 
 
