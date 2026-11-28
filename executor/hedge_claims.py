@@ -19,6 +19,10 @@ from typing import Any, Optional
 from executor.entry_common import logger
 
 
+class HedgeClaimUnavailableError(RuntimeError):
+    """Raised when PostgreSQL cannot prove ownership of a hedge generation."""
+
+
 def hedge_claim_key(
     parent_spot_exchange: str, parent_spot_order_id: str, fill_version: int
 ) -> str:
@@ -76,14 +80,12 @@ class HedgeIntentClaimService:
     ) -> Optional[dict]:
         """Atomically claim one hedge generation.
 
-        Returns the claim row (dict) when this worker won the generation, or
-        None when another worker already holds it (or the DB is unavailable —
-        callers must then fail closed for LIVE submissions).
+        Returns None only when another unresolved worker already owns this
+        parent Spot order generation. PostgreSQL unavailability or an
+        indeterminate claim transaction raises HedgeClaimUnavailableError so
+        the caller can run the existing pre-submit spot de-risk/rollback path.
         """
         if residual_qty <= 0:
-            return None
-        pool = await self._conn()
-        if pool is None:
             return None
         # Fill version: monotonic micro-units of the cumulative spot fill so
         # every new cumulative level is a distinct, replay-safe generation.
@@ -94,6 +96,11 @@ class HedgeIntentClaimService:
         )
         coid = hedge_client_order_id_for_claim(key)
         try:
+            pool = await self._conn()
+            if pool is None:
+                raise HedgeClaimUnavailableError(
+                    "PostgreSQL hedge-claim authority is unavailable"
+                )
             async with pool.acquire() as conn:
                 parent_exchange = str(parent_spot_exchange or "").lower()
                 parent_order_id = str(parent_spot_order_id or "")
@@ -121,6 +128,9 @@ class HedgeIntentClaimService:
                         parent_exchange, parent_order_id,
                     )
                     if unresolved is not None:
+                        # A peer owns this generation or an earlier fill
+                        # generation. Do not submit a duplicate and do not
+                        # trigger rollback while that peer may be hedging.
                         return None
                     row = await conn.fetchrow(
                         """
@@ -166,11 +176,17 @@ class HedgeIntentClaimService:
                         "hedge_client_order_id": row["hedge_client_order_id"],
                         "version": int(row["version"]),
                     }
-        except Exception:
+        except HedgeClaimUnavailableError:
+            raise
+        except Exception as exc:
             logger.exception(
-                "[Hedge Claim] claim insert failed for %s; failing closed", key
+                "[Hedge Claim] claim transaction failed for %s; no futures submit is permitted",
+                key,
             )
-            return None
+            raise HedgeClaimUnavailableError(
+                f"PostgreSQL hedge-claim transaction is unavailable for {key}: "
+                f"{type(exc).__name__}"
+            ) from exc
 
     async def mark_submitted(
         self, claim_key: str, hedge_client_order_id: str
