@@ -817,3 +817,29 @@ This is not a new futures create-order bypass: the failure occurs before the ven
 
 
 **R-63 verification detail:** the new fake-claim tests ran as part of the full `pytest -q` job and passed. The disposable PostgreSQL multi-process submit-disconnect suite also passed (12 tests); this remains CI disposable-PostgreSQL evidence, not repeated fault injection on the actual VPS topology.
+
+
+## 2026-11-28 follow-up — R-64 hedge-claim outage and R-65 de-risk fence fallback
+
+| ID | Finding | Remediation | Status |
+|---|---|---|---|
+| R-64 | HedgeIntentClaimService.claim_generation returned None both for a legitimate peer-owned/unresolved generation and for PostgreSQL pool/connection/transaction failure. _submit_entry_hedge_order treated both as contention and returned short_order=None; _execute_entry_hedge then treated every None as a below-minimum wait and returned without invoking the existing spot rollback. A PostgreSQL outage during pre-submit claim admission could therefore leave an already-filled spot leg unhedged without attempting de-risk. This was a rollback/recovery failure, not a futures create-order bypass. | Added HedgeClaimUnavailableError: None now means a DB-confirmed peer/unresolved claim only; unavailable pool or failed/indeterminate claim transaction raises. The exception follows the existing pre-submit failure path and triggers spot rollback before any futures venue request. A peer-owned claim remains pending without duplicate submit or rollback because that peer may already be at the venue boundary. Added pool-acquire fault and fake-venue/rollback regressions. | IMPLEMENTED; CI verification pending for this head. |
+| R-65 | derisk_fence only treated a narrow connection-error set or the exact text "serialization is unavailable" as a missing advisory-lock authority. A missing Global STOP singleton or an asyncpg schema/grant error during fence acquisition propagated and could block rollback, normal futures close, or force-close even though the failure was in optional de-risk serialization, not the venue operation. | The de-risk wrapper now treats GlobalStopError and asyncpg exceptions raised while entering/leaving the fence as unavailable serialization and yields None so the risk-reducing venue operation can proceed unfenced with a critical log. Invalid client IDs are still rejected before fallback. Exceptions raised inside the yielded venue/caller block are not classified or swallowed; ambiguous venue outcomes still propagate for exact-ID reconciliation. Added missing-row, schema-error, venue-timeout propagation, and invalid-ID regressions. | IMPLEMENTED; CI verification pending for this head. |
+
+**De-risk impact analysis:** the affected callers are RollbackMixin._liquidate_unhedged_spot (spot market SELL), ExitExecutionMixin (futures close with reduceOnly), and ForceCloseLegMixin (futures reduceOnly close and spot market SELL). These remain outside entry Global STOP admission. The change only removes the optional PostgreSQL serialization prerequisite when that authority cannot be acquired; it does not disable entry STOP, alter order side/reduceOnly flags, or swallow venue errors.
+
+**Changed source/test files:**
+- executor/hedge_claims.py
+- executor/entry_hedge.py
+- executor/derisk_fence.py
+- tests/test_hedge_claims.py
+- tests/test_hedge_pre_submit_recovery.py
+- tests/test_derisk_fence.py
+
+Source/test commits: 7346bf1, ceed3a4, fb06268, eba1396, 86007bc, 35b06ee.
+
+**CI evidence:** the last verified pre-change documentation head a4a6af72 passed workflow [45957800613](https://github.com/nzf210/nafaz_arb/actions/runs/45957800613), 5/5 jobs. The current source/test head 35b06ee7c073c669341745e3e520bf938872dbfe has no workflow run exposed by the connected GitHub Actions read endpoint (which returns PR-triggered runs only; no PR exists for this branch), and its combined commit status contains no status contexts. Therefore R-64/R-65 tests and the current full suite are **not yet CI-verified**; no PASS is claimed for this head.
+
+**Remaining release gates:** operator-authenticated manual resolution and dual approval; actual VPS PostgreSQL multi-process disconnect/fault injection; Redis/local-outbox loss recovery and startup backfill proof; per-venue sandbox client-ID idempotency/eventual consistency; manual de-risk exact-client-ID retry; minimum-notional overhedge/delta-drift policy; and durable post-close state persistence.
+
+**Overall status: PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
