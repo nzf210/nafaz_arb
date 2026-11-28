@@ -836,3 +836,24 @@ This change does not create or retry a futures order. It only repairs the pre-su
 **Remaining gates are unchanged:** operator-authenticated manual resolution, actual VPS PostgreSQL multi-process disconnect/fault injection, Redis/outbox-loss backfill proof, per-venue exact-ID/idempotency/eventual-consistency contracts, and minimum-notional overhedge/delta-drift policy.
 
 **Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
+
+
+## 2026-11-28 follow-up — pre-submit hedge outage and de-risk availability
+
+- [x] Separate a DB-confirmed peer-owned hedge claim (None) from PostgreSQL pool/connection/claim-transaction failure (HedgeClaimUnavailableError).
+- [x] On claim-authority failure before the futures venue boundary, route through the existing spot rollback path; assert the fake futures venue receives zero create calls.
+- [x] Preserve the peer-contention behavior: do not duplicate the futures hedge and do not race the peer with a competing rollback while its durable claim is unresolved.
+- [x] Distinguish peer-owned claim wait from minimum-notional wait_until_covered in runtime state/logging.
+- [x] Keep risk-reducing spot SELL, futures reduceOnly close, rollback, and force-close outside entry STOP admission.
+- [x] Treat missing Global STOP singleton and asyncpg schema/grant failures while acquiring the optional de-risk advisory fence as unavailable serialization; proceed unfenced with a critical log.
+- [x] Preserve venue/caller exceptions inside the de-risk fence, including timeout/lost ACK, for exact-client-ID reconciliation; invalid client order IDs remain rejected.
+- [ ] Verify current source/test head 35b06ee7c073c669341745e3e520bf938872dbfe in GitHub Actions and record the full Python/PostgreSQL/Go/Docker results. The prior workflow 45957800613 predates these changes and is not proof for this head.
+- [ ] Repeat PostgreSQL multi-process disconnect/fault injection against the actual VPS topology; disposable CI PostgreSQL is not production-topology sign-off.
+- [ ] Close operator identity/provisioning, dual approval, HMAC secret custody/rotation, audit retrieval, and manual-resolution runbook.
+- [ ] Prove Redis/local-SQLite-outbox loss recovery and startup reservation backfill before any replica becomes READY.
+- [ ] Complete per-venue sandbox exact-client-ID idempotency, visibility/eventual-consistency, partial-fill, cancel/fill-race, and reduceOnly contract tests.
+- [ ] Close manual de-risk exact-client-ID retry, minimum-notional overhedge/delta-drift, and durable post-close state persistence.
+
+**R-64/R-65 status:** source and regression-test changes are committed; CI is pending/unverified for the current head. Latest prior verified workflow 45957800613 passed 5/5 on the pre-change documentation head a4a6af72; it must not be reused as a pass claim for this head.
+
+**Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
