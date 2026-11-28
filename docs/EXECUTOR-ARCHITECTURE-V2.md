@@ -1941,3 +1941,48 @@ These are risk-reducing operations and must not be denied merely because the opt
 The fallback is narrowly scoped to the fence context manager's enter/exit. Exceptions inside the yielded venue call are preserved, so a timeout/lost ACK remains ambiguous and must be reconciled by exact client ID. Invalid de-risk client IDs remain rejected before the fallback. No order side, quantity, reduceOnly flag, or venue routing was changed.
 
 **Verification boundary:** regression tests were added in tests/test_hedge_claims.py, tests/test_hedge_pre_submit_recovery.py, and tests/test_derisk_fence.py. Current source/test head 35b06ee7c073c669341745e3e520bf938872dbfe is not yet CI-verified; the latest previously verified head remains a4a6af72 / workflow 45957800613 (5/5 jobs). Do not treat the earlier CI result as evidence for these changes.
+
+## 14. Recovery untuk durable hedge-generation claim (R-66)
+
+Hedge-generation claim dan submit-attempt ledger adalah dua state machine yang berbeda. `executor_hedge_intent_claims` dapat memiliki baris `CLAIMED` sebelum `executor_submit_attempts` memiliki baris `PREPARED`. Karena itu, rekonsiliasi startup yang hanya membaca `executor_submit_attempts` belum cukup untuk membuktikan seluruh futures hedge attempt telah terklasifikasi.
+
+### Batas yang sudah benar
+
+- Claim PostgreSQL harus diperoleh sebelum futures create-order.
+- Kegagalan/hasil commit claim yang ambigu menghasilkan `HedgeClaimUnavailableError`; caller tidak boleh mengirim futures order.
+- Pada jalur R-64, pair ditandai `RECONCILIATION_REQUIRED`, market reservation dipertahankan, dan automatic Spot rollback tidak dijalankan karena peer mungkin telah memiliki claim atau melewati venue boundary.
+- Claim `CLAIMED`/`SUBMITTED` tidak boleh dilepas hanya karena satu exact-client-ID lookup mengembalikan NOT_FOUND.
+- Terminal zero-fill yang telah diverifikasi mengganti client order ID claim sebelum retry; karena itu ID yang benar harus dibaca dari row claim, bukan selalu dihitung ulang dari claim key.
+
+### Gap startup yang masih terbuka
+
+`EngineRecoveryMixin._reconcile_durable_submit_attempts` merekonsiliasi `executor_submit_attempts` dengan exact venue/client ID, tetapi startup belum melakukan enumerasi terpisah terhadap `executor_hedge_intent_claims`. Selain itu, peer-contention lookup saat ini hanya mengambil `claim_key,status` dan tidak mengembalikan stored `hedge_client_order_id` ke caller yang menunggu.
+
+Implementasi berikutnya harus:
+
+1. Menambahkan reader PostgreSQL untuk seluruh claim `CLAIMED` dan `SUBMITTED`, termasuk stored `hedge_client_order_id`, parent Spot identity, futures exchange, dan futures symbol.
+2. Menjalankan pemeriksaan tersebut sebelum executor boleh menjadi READY.
+3. Memilih client dengan pasangan tepat `(futures_exchange, futures market)`; tidak boleh fallback ke configured/default client.
+4. Melakukan lookup berdasarkan stored exact client order ID.
+5. Memperlakukan order found sebagai bukti untuk mengadopsi lifecycle; bila parent order/registry tidak tersedia, tetap halt dan jangan membuat order pengganti.
+6. Memperlakukan NOT_FOUND, timeout, lookup error, venue client missing, atau response malformed sebagai UNKNOWN/unresolved. Tidak boleh mengubah claim menjadi ABANDONED atau mengizinkan rollback hanya dari satu NOT_FOUND.
+7. Melepaskan claim hanya setelah bukti terminal order, individual fills, posisi Futures, dan Spot exposure lengkap serta perubahan dilakukan melalui operator-authenticated resolution.
+8. Menguji commit-response-loss setelah PostgreSQL commit tetapi sebelum client menerima hasil, crash sebelum PREPARED submit attempt, dan restart dengan Redis/local outbox tidak tersedia.
+
+Sampai langkah tersebut tersedia, unresolved claim harus diperlakukan sebagai release gate. R-66 adalah gap recovery/startup, bukan bukti bahwa futures create-order telah melewati claim authority.
+
+## 15. Ketersediaan de-risk ketika PostgreSQL tidak tersedia (R-65)
+
+Entry dan exposure-increasing submit tetap fail-closed melalui `order_submit_fence`. Sebaliknya, `derisk_fence` adalah pagar serialisasi opsional yang terpisah: STOP tidak boleh menghalangi Spot SELL, Futures close `reduceOnly=True`, rollback, atau force-close. Jika otoritas lock PostgreSQL tidak dapat dimasuki, helper mencatat CRITICAL dan mengizinkan operasi pengurangan risiko berjalan tanpa shared serialization.
+
+Tradeoff ini disengaja agar posisi yang sudah terbuka tidak tertinggal hanya karena database tidak tersedia. Namun tanpa lock, dua proses dapat menjalankan de-risk bersamaan. Karena itu:
+- gunakan stable client order ID;
+- jangan retry timeout/lost ACK sebagai definitive rejection;
+- lakukan exact-ID lookup dan verifikasi balance/position sebelum retry;
+- Futures close wajib tetap `reduceOnly=True`;
+- Spot SELL harus dibatasi pada saldo bebas/kuantitas yang benar-benar dapat dijual;
+- kegagalan database saat lock release tidak boleh mengganti exception venue asli.
+
+R-65 belum menjadi bukti idempotensi seluruh venue. Sandbox contract dan manual exact-ID retry tetap menjadi release gate.
+
+**Status desain/implementasi:** PARTIAL / NOT LIVE-CERTIFIED.
