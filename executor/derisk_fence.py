@@ -16,13 +16,25 @@ from executor.engine_common import logger
 
 
 def _database_unavailable(service: Any, exc: BaseException) -> bool:
-    """Recognize only a failed fencing authority, never caller/venue errors."""
-    if (
-        isinstance(exc, GlobalStopError)
-        and "serialization is unavailable" in str(exc).lower()
-    ):
+    """Recognize failures while acquiring/releasing the DB fence.
+
+    This helper is called only around the fence context manager's enter/exit;
+    exceptions raised by the venue/caller inside the yielded block bypass it.
+    A missing control row, schema error, permission error, or disconnected
+    PostgreSQL session means serialization is unavailable, not that a
+    risk-reducing order should be denied.
+    """
+    if isinstance(exc, GlobalStopError):
+        # The caller validates client_order_id before asking the service for a
+        # fence. GlobalStopError here therefore means the optional de-risk
+        # serialization authority could not be established.
         return True
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+        return True
+    # asyncpg exceptions raised before yielding are database-fence failures
+    # (including missing control rows/tables and grants), not venue failures.
+    module = type(exc).__module__.lower()
+    if module.startswith("asyncpg"):
         return True
     checker = getattr(service, "_is_connection_error", None)
     if callable(checker):
