@@ -10,6 +10,7 @@ import pytest
 
 from executor.hedge_claims import (
     HedgeIntentClaimService,
+    HedgeClaimUnavailableError,
     hedge_claim_key,
     hedge_client_order_id_for_claim,
 )
@@ -283,11 +284,32 @@ async def test_terminal_zero_fill_releases_submitted_claim():
     assert table[claim["claim_key"]]["hedge_client_order_id"] == rotated_client_id
 
 @pytest.mark.asyncio
-async def test_db_unavailable_fails_closed():
-    # No pool configured: claim returns None -> caller must not submit.
+async def test_db_unavailable_raises_distinct_failure_for_pre_submit_rollback():
+    # No pool configured is not a peer-owned claim. The caller must distinguish
+    # authority loss from a valid DB conflict and execute its spot de-risk path.
     service = HedgeIntentClaimService(global_stop=None)
     assert service.enabled is False
-    assert await service.claim_generation(**_claim_kwargs()) is None
+    with pytest.raises(HedgeClaimUnavailableError, match="authority is unavailable"):
+        await service.claim_generation(**_claim_kwargs())
+
+
+class _BrokenAcquire:
+    async def __aenter__(self):
+        raise ConnectionError("PostgreSQL connection dropped during claim")
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _BrokenPool:
+    def acquire(self):
+        return _BrokenAcquire()
+
+
+@pytest.mark.asyncio
+async def test_pool_disconnect_during_claim_raises_not_duplicate_conflict():
+    service = HedgeIntentClaimService(global_stop=_FakeStop(_BrokenPool()))
+    with pytest.raises(HedgeClaimUnavailableError, match="ConnectionError"):
+        await service.claim_generation(**_claim_kwargs())
 
 
 @pytest.mark.asyncio
