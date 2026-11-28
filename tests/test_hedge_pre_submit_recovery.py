@@ -6,6 +6,7 @@ import pytest
 
 from executor.entry_hedge import EntryHedgeMixin
 from executor.global_stop import GlobalStopError
+from executor.hedge_claims import HedgeClaimUnavailableError
 
 
 class _Claims:
@@ -122,3 +123,96 @@ async def test_pre_submit_failure_does_not_abandon_stale_previous_generation_cla
 
     assert claims.abandoned == []
     assert len(engine.rollback_calls) == 1
+
+
+
+class _ClaimUnavailable:
+    enabled = True
+
+    async def claim_generation(self, **kwargs):
+        raise HedgeClaimUnavailableError("PostgreSQL claim connection lost")
+
+
+class _ClaimContended:
+    enabled = True
+
+    async def claim_generation(self, **kwargs):
+        return None
+
+
+class _NeverSubmitVenue:
+    def __init__(self):
+        self.calls = 0
+
+    async def open_global_short_market(self, *args, **kwargs):
+        self.calls += 1
+        raise AssertionError("venue create-order must not run without a durable claim")
+
+
+class _ClaimAdmissionEngine(EntryHedgeMixin):
+    def __init__(self, claims):
+        self.config = SimpleNamespace(mock_mode=False)
+        self.global_stop = SimpleNamespace(enabled=True)
+        self.hedge_claims = claims
+        self.client = _NeverSubmitVenue()
+        self.rollback_calls = []
+        self.order_failures = []
+
+    async def _assert_hedge_slippage_within_limit(
+        self, pair_tag, order_info, unhedged_delta, expected_short_price
+    ):
+        return None
+
+    def _record_order_failure(self, exchange, reason):
+        self.order_failures.append((exchange, reason))
+
+    async def _rollback_hedge_failure(self, *args):
+        self.rollback_calls.append(args)
+
+
+@pytest.mark.asyncio
+async def test_claim_database_outage_triggers_spot_rollback_before_futures_submit():
+    engine = _ClaimAdmissionEngine(_ClaimUnavailable())
+    order_info = _order_info(
+        local_exchange="tokocrypto",
+        order_id="spot-123",
+        client_order_id="spot-client-123",
+        filled=0.01,
+        hedged_short_qty=0.0,
+    )
+
+    await engine._execute_entry_hedge(
+        "tokocrypto:BTC_IDR",
+        order_info,
+        0.01,
+        1_000_000_000.0,
+        16_000.0,
+    )
+
+    assert engine.client.calls == 0
+    assert len(engine.rollback_calls) == 1
+    assert order_info["hedge_submit_started"] is False
+
+
+@pytest.mark.asyncio
+async def test_peer_owned_claim_waits_without_duplicate_submit_or_rollback():
+    engine = _ClaimAdmissionEngine(_ClaimContended())
+    order_info = _order_info(
+        local_exchange="tokocrypto",
+        order_id="spot-456",
+        client_order_id="spot-client-456",
+        filled=0.01,
+        hedged_short_qty=0.0,
+    )
+
+    await engine._execute_entry_hedge(
+        "tokocrypto:BTC_IDR",
+        order_info,
+        0.01,
+        1_000_000_000.0,
+        16_000.0,
+    )
+
+    assert engine.client.calls == 0
+    assert engine.rollback_calls == []
+    assert order_info["hedge_waiting_for_claim"] is True
