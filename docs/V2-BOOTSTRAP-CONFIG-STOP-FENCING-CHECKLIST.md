@@ -841,9 +841,10 @@ This change does not create or retry a futures order. It only repairs the pre-su
 ## 2026-11-28 follow-up — pre-submit hedge outage and de-risk availability
 
 - [x] Separate a DB-confirmed peer-owned hedge claim (None) from PostgreSQL pool/connection/claim-transaction failure (HedgeClaimUnavailableError).
-- [x] On claim-authority failure before the futures venue boundary, route through the existing spot rollback path; assert the fake futures venue receives zero create calls.
-- [x] Preserve the peer-contention behavior: do not duplicate the futures hedge and do not race the peer with a competing rollback while its durable claim is unresolved.
+- [x] On claim-authority failure before the futures venue boundary, do not submit futures; persist the deterministic claim key in failure detail, retain the active market reservation, mark the pair RECONCILIATION_REQUIRED, and halt its entry scope.
+- [x] Preserve peer-contention and ambiguous-claim behavior: do not duplicate the futures hedge or automatically roll back spot while a peer may already own/submit the hedge; require exact claim-row/client-ID reconciliation first.
 - [x] Distinguish peer-owned claim wait from minimum-notional wait_until_covered in runtime state/logging.
+- [x] Fail closed when LIVE Global STOP/hedge-claim authority is missing or disabled; do not fall through to a legacy hedge ID.
 - [x] Keep risk-reducing spot SELL, futures reduceOnly close, rollback, and force-close outside entry STOP admission.
 - [x] Treat missing Global STOP singleton and asyncpg schema/grant failures while acquiring the optional de-risk advisory fence as unavailable serialization; proceed unfenced with a critical log.
 - [x] Preserve venue/caller exceptions inside the de-risk fence, including timeout/lost ACK, for exact-client-ID reconciliation; invalid client order IDs remain rejected.
