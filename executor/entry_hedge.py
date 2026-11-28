@@ -442,10 +442,11 @@ class EntryHedgeMixin:
             )
             if claim is None:
                 logger.info(
-                    "[Hedge Claim] %s: generation already claimed by another "
-                    "worker (or DB unavailable); skipping duplicate hedge.",
+                    "[Hedge Claim] %s: another unresolved worker owns this parent "
+                    "Spot generation; skipping duplicate hedge until it is reconciled.",
                     pair_tag,
                 )
+                order_info["hedge_waiting_for_claim"] = True
                 order_info["hedge_waiting_for_coverage"] = True
                 return None, {}, None, 0.0
             order_info["hedge_claim_key"] = claim["claim_key"]
@@ -1010,6 +1011,7 @@ class EntryHedgeMixin:
         """Execute market short on global exchange and persist position state."""
         order_info["hedge_submit_started"] = False
         order_info.pop("pending_hedge_client_order_id", None)
+        order_info.pop("hedge_waiting_for_claim", None)
         # A new cumulative-fill attempt must never inherit a previous generation's
         # claim key. The new claim is written only after the durable CAS succeeds.
         order_info.pop("hedge_claim_key", None)
@@ -1030,14 +1032,23 @@ class EntryHedgeMixin:
                 )
             )
             if short_order is None:
-                # "wait_until_covered": delta is below the futures minimum, the
-                # hedge is intentionally deferred. Keep the pair pending so the
-                # next fill can accumulate coverage — no rollback, no failure.
-                logger.info(
-                    f"[Wait Until Covered] {pair_tag}: hedge deferred; "
-                    f"unhedged delta ${unhedged_delta * expected_short_price:.2f} "
-                    "remains pending."
-                )
+                if order_info.get("hedge_waiting_for_claim"):
+                    # A peer owns an unresolved durable claim for this parent
+                    # Spot order. Do not duplicate its hedge or roll back while
+                    # that peer may already be at the venue boundary.
+                    logger.warning(
+                        "[Hedge Claim] %s: another worker owns the unresolved "
+                        "generation; waiting for exact-ID reconciliation.",
+                        pair_tag,
+                    )
+                else:
+                    # "wait_until_covered": delta is below the futures minimum.
+                    # Keep the pair pending so later fills can accumulate.
+                    logger.info(
+                        f"[Wait Until Covered] {pair_tag}: hedge deferred; "
+                        f"unhedged delta ${unhedged_delta * expected_short_price:.2f} "
+                        "remains pending."
+                    )
                 return
             await self._persist_entry_hedge_success(
                 pair_tag, order_info, unhedged_delta, price_idr, usdt_rate,
