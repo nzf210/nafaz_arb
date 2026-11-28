@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from executor.models import ActivePosition, OrderRole, PositionState
 from executor.global_stop import GlobalStopError
+from executor.hedge_claims import HedgeClaimUnavailableError
 from executor import helpers
 from executor.quantity import (
     AmountSpec,
@@ -428,18 +429,26 @@ class EntryHedgeMixin:
                 float(order_info.get("hedged_short_qty", 0.0) or 0.0),
                 _ratio0,
             )
-            claim = await claims_service.claim_generation(
-                parent_spot_exchange=str(order_info.get("local_exchange", "")),
-                parent_spot_order_id=str(order_info.get("order_id", "")),
-                parent_spot_client_order_id=str(order_info.get("client_order_id", "")),
-                cumulative_spot_filled=float(order_info.get("filled", 0.0) or 0.0),
-                target_hedge_qty=_target0,
-                residual_qty=unhedged_delta,
-                hedge_ratio=_ratio0,
-                futures_exchange=str(order_info.get("global_exchange", "")),
-                futures_symbol=global_symbol,
-                claimed_by=f"executor:{id(self):x}",
-            )
+            try:
+                claim = await claims_service.claim_generation(
+                    parent_spot_exchange=str(order_info.get("local_exchange", "")),
+                    parent_spot_order_id=str(order_info.get("order_id", "")),
+                    parent_spot_client_order_id=str(order_info.get("client_order_id", "")),
+                    cumulative_spot_filled=float(order_info.get("filled", 0.0) or 0.0),
+                    target_hedge_qty=_target0,
+                    residual_qty=unhedged_delta,
+                    hedge_ratio=_ratio0,
+                    futures_exchange=str(order_info.get("global_exchange", "")),
+                    futures_symbol=global_symbol,
+                    claimed_by=f"executor:{id(self):x}",
+                )
+            except HedgeClaimUnavailableError as claim_error:
+                # The DB may have committed the claim before its response was
+                # lost. Preserve its deterministic key for startup/manual
+                # reconciliation; do not guess that the claim is absent.
+                if claim_error.claim_key:
+                    order_info["hedge_claim_key"] = claim_error.claim_key
+                raise
             if claim is None:
                 logger.info(
                     "[Hedge Claim] %s: another unresolved worker owns this parent "
@@ -1093,6 +1102,46 @@ class EntryHedgeMixin:
                             state=PositionState.RECONCILIATION_REQUIRED,
                         )
                         await self._maybe_publish_status()
+        except HedgeClaimUnavailableError as he:
+            # A failed claim transaction is not equivalent to a confirmed
+            # peer-owned claim. Its commit outcome may be unknown, so another
+            # executor may already own or be about to submit this generation.
+            # Do not create a futures order and do not race that peer with an
+            # automatic spot rollback. Retain the spot market reservation and
+            # halt this pair until the claim key and exact venue client ID are
+            # reconciled. Independent de-risk commands remain available.
+            claim_key = str(
+                getattr(he, "claim_key", "")
+                or order_info.get("hedge_claim_key") or ""
+            )
+            order_info["hedge_claim_authority_unavailable"] = True
+            if claim_key:
+                order_info["hedge_claim_key"] = claim_key
+            reason = (
+                "PostgreSQL could not prove ownership of the parent Spot-fill hedge claim; "
+                "exact claim/client-ID reconciliation is required before rollback or retry"
+            )
+            logger.critical("[Hedge Claim] %s: %s (%s)", pair_tag, reason, he)
+            self._halt_exposure_scope(pair_tag, reason)
+            self._refresh_entry_gate()
+            self._mark_failed(
+                pair_tag,
+                "HEDGE_CLAIM_AUTHORITY_UNAVAILABLE",
+                reason,
+                detail={
+                    "hedge_claim_key": claim_key,
+                    "parent_spot_exchange": order_info.get("local_exchange"),
+                    "parent_spot_order_id": order_info.get("order_id"),
+                    "parent_spot_client_order_id": order_info.get("client_order_id"),
+                    "global_exchange": order_info.get("global_exchange"),
+                    "global_symbol": global_symbol,
+                    "unhedged_qty": unhedged_delta,
+                    "claim_error": f"{type(he).__name__}: {he}",
+                },
+                state=PositionState.RECONCILIATION_REQUIRED,
+            )
+            await self._maybe_publish_status()
+            return
         except Exception as he:
             logger.critical(
                 f"[State 2 CRITICAL] Failed to execute instant short hedge for {pair_tag}: {he}"
