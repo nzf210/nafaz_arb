@@ -177,6 +177,10 @@ class _ClaimAdmissionEngine(EntryHedgeMixin):
         self.client = _NeverSubmitVenue()
         self.rollback_calls = []
         self.order_failures = []
+        self.halted_scopes = []
+        self.failed_states = []
+        self.entry_gate_refreshed = False
+        self.status_publish_count = 0
 
     async def _assert_hedge_slippage_within_limit(
         self, pair_tag, order_info, unhedged_delta, expected_short_price
