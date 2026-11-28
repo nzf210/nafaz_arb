@@ -22,6 +22,10 @@ from executor.entry_common import logger
 class HedgeClaimUnavailableError(RuntimeError):
     """Raised when PostgreSQL cannot prove ownership of a hedge generation."""
 
+    def __init__(self, message: str, *, claim_key: str = ""):
+        super().__init__(message)
+        self.claim_key = str(claim_key or "")
+
 
 def hedge_claim_key(
     parent_spot_exchange: str, parent_spot_order_id: str, fill_version: int
@@ -82,8 +86,8 @@ class HedgeIntentClaimService:
 
         Returns None only when another unresolved worker already owns this
         parent Spot order generation. PostgreSQL unavailability or an
-        indeterminate claim transaction raises HedgeClaimUnavailableError so
-        the caller can run the existing pre-submit spot de-risk/rollback path.
+        indeterminate claim transaction raises HedgeClaimUnavailableError
+        carrying the deterministic claim key for later exact claim/order recovery.
         """
         if residual_qty <= 0:
             return None
@@ -99,7 +103,8 @@ class HedgeIntentClaimService:
             pool = await self._conn()
             if pool is None:
                 raise HedgeClaimUnavailableError(
-                    "PostgreSQL hedge-claim authority is unavailable"
+                    "PostgreSQL hedge-claim authority is unavailable",
+                    claim_key=key,
                 )
             async with pool.acquire() as conn:
                 parent_exchange = str(parent_spot_exchange or "").lower()
@@ -185,7 +190,8 @@ class HedgeIntentClaimService:
             )
             raise HedgeClaimUnavailableError(
                 f"PostgreSQL hedge-claim transaction is unavailable for {key}: "
-                f"{type(exc).__name__}"
+                f"{type(exc).__name__}",
+                claim_key=key,
             ) from exc
 
     async def mark_submitted(
