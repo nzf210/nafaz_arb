@@ -286,7 +286,8 @@ async def test_terminal_zero_fill_releases_submitted_claim():
 @pytest.mark.asyncio
 async def test_db_unavailable_raises_distinct_failure_for_pre_submit_rollback():
     # No pool configured is not a peer-owned claim. The caller must distinguish
-    # authority loss from a valid DB conflict and execute its spot de-risk path.
+    # authority loss from a valid DB conflict and halt for exact claim/order
+    # reconciliation rather than treating the state as ordinary contention.
     service = HedgeIntentClaimService(global_stop=None)
     assert service.enabled is False
     with pytest.raises(HedgeClaimUnavailableError, match="authority is unavailable") as exc:
