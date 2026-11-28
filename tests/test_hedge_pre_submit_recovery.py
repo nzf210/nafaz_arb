@@ -244,3 +244,30 @@ async def test_peer_owned_claim_waits_without_duplicate_submit_or_rollback():
     assert engine.client.calls == 0
     assert engine.rollback_calls == []
     assert order_info["hedge_waiting_for_claim"] is True
+
+
+@pytest.mark.asyncio
+async def test_missing_live_claim_authority_halts_pair_without_rollback():
+    engine = _ClaimAdmissionEngine(None)
+    engine.global_stop = SimpleNamespace(enabled=False)
+    order_info = _order_info(
+        local_exchange="tokocrypto",
+        order_id="spot-no-authority",
+        client_order_id="spot-client-no-authority",
+        filled=0.01,
+        hedged_short_qty=0.0,
+    )
+
+    await engine._execute_entry_hedge(
+        "tokocrypto:BTC_IDR",
+        order_info,
+        0.01,
+        1_000_000_000.0,
+        16_000.0,
+    )
+
+    assert engine.client.calls == 0
+    assert engine.rollback_calls == []
+    assert engine.failed_states[0][1] == "HEDGE_CLAIM_AUTHORITY_UNAVAILABLE"
+    assert engine.failed_states[0][4] == PositionState.RECONCILIATION_REQUIRED
+    assert engine.halted_scopes
