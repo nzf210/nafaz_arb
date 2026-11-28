@@ -858,3 +858,35 @@ This change does not create or retry a futures order. It only repairs the pre-su
 **R-64/R-65 status:** source and regression-test changes are committed; CI is pending/unverified for the current head. Latest prior verified workflow 45957800613 passed 5/5 on the pre-change documentation head a4a6af72; it must not be reused as a pass claim for this head.
 
 **Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
+
+## 2026-11-28 follow-up — R-66 hedge-claim startup recovery audit
+
+- [x] Confirmed R-64 pre-submit claim-authority failure does not call the futures venue, retains the market reservation, marks the pair `RECONCILIATION_REQUIRED`, and avoids racing a peer with an automatic Spot rollback.
+- [x] Confirmed `HedgeClaimUnavailableError` carries the deterministic claim key, while the persisted claim row is authoritative for the current futures client ID (which can be rotated after terminal zero-fill).
+- [x] Confirmed normal startup exact-client-ID reconciliation covers `executor_submit_attempts`, but does not enumerate `executor_hedge_intent_claims` created before the submit-attempt PREPARED row.
+- [x] Confirmed peer-contention lookup currently selects only `claim_key,status` and returns `None`, so the waiting caller does not receive the peer's stored futures client ID.
+- [ ] Add `list_unresolved_claims()` to the PostgreSQL hedge-claim repository, returning the stored exact client ID and complete parent/futures identity.
+- [ ] Add startup claim reconciliation before READY using the exact futures venue client. Missing client, timeout, malformed response, or NOT_FOUND must retain the claim and entry halt; do not infer rejection or release from eventual-consistency-sensitive NOT_FOUND.
+- [ ] Add fake-venue tests for order-found, NOT_FOUND, timeout, wrong/missing futures venue, and missing parent order-registry record. Assert zero create-order calls and no claim release.
+- [ ] Add a PostgreSQL commit-response-loss/fault-boundary test for a claim committed before the caller receives the result, including restart before submit-attempt PREPARED.
+- [ ] Keep operator-authenticated manual resolution as a separate gate; no unsigned/manual shortcut may abandon a claim.
+- [ ] Rerun targeted Python tests, full executor suite, PostgreSQL integration, Go tests/race/vet, and inspect CI for the exact resulting head.
+
+### R-65 de-risk availability revalidation
+
+- [x] Confirmed entry STOP and de-risk serialization use separate advisory lock keys.
+- [x] Confirmed de-risk helper validates stable client order ID before the optional fence fallback.
+- [x] Confirmed missing control row, schema/grant/asyncpg failure, and database disconnect while entering the optional fence are logged as unavailable serialization; the de-risk venue operation can proceed unfenced.
+- [x] Confirmed venue/caller exceptions inside the yielded de-risk scope are propagated and not converted into a successful order result.
+- [ ] Complete exact-client-ID retry/reconciliation for `scripts/resolve_ai_position.py`; it remains de-risk-only and is not behind entry STOP.
+- [ ] Prove per-venue idempotency and reduceOnly/spot-balance behavior in sandbox.
+
+### Verification record for this follow-up
+
+- Branch head inspected before documentation updates: `cbf30ffc31b78221be656349883db3861b1dc696`.
+- Source/test head recorded in the audit documentation: `35b06ee7c073c669341745e3e520bf938872dbfe`.
+- No PR-triggered workflow runs or combined status contexts were exposed for those heads. The workflow reader is PR-triggered only; no CI pass is claimed.
+- Local clone attempt failed because DNS could not resolve `github.com`; tests were not run in this execution.
+- The previously reported workflow `45957800613` is pre-R-64/R-65 and is not evidence for this source/test head.
+
+**R-66 remains OPEN. Overall status remains PARTIAL / NOT LIVE-CERTIFIED.** No merge, deployment, production migration, cutover, or live order was performed.
