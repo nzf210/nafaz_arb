@@ -189,6 +189,18 @@ class _ClaimAdmissionEngine(EntryHedgeMixin):
     async def _rollback_hedge_failure(self, *args):
         self.rollback_calls.append(args)
 
+    def _halt_exposure_scope(self, pair_tag, reason):
+        self.halted_scopes.append((pair_tag, reason))
+
+    def _refresh_entry_gate(self):
+        self.entry_gate_refreshed = True
+
+    def _mark_failed(self, pair_tag, code, message, *, detail=None, state=None):
+        self.failed_states.append((pair_tag, code, message, detail or {}, state))
+
+    async def _maybe_publish_status(self):
+        self.status_publish_count += 1
+
 
 @pytest.mark.asyncio
 async def test_claim_database_outage_halts_pair_for_reconciliation_without_racing_rollback():
