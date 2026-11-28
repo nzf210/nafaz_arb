@@ -6,8 +6,10 @@ import time
 from typing import Any, Dict
 
 from executor.models import ActivePosition, OrderRole, PositionState
-from executor.global_stop import GlobalStopError
-from executor.hedge_claims import HedgeClaimUnavailableError
+from executor.hedge_claims import (
+    HedgeClaimUnavailableError,
+    hedge_claim_key,
+)
 from executor import helpers
 from executor.quantity import (
     AmountSpec,
@@ -401,11 +403,25 @@ class EntryHedgeMixin:
         self, pair_tag: str, order_info: dict, global_symbol: str,
         unhedged_delta: float, expected_short_price: float,
     ):
-        if getattr(self, "global_stop", None) is None and not getattr(
-            getattr(self, "config", None), "mock_mode", False
+        cfg0 = getattr(self, "config", None)
+        mock_mode = bool(getattr(cfg0, "mock_mode", False))
+        global_stop = getattr(self, "global_stop", None)
+        claims_service = getattr(self, "hedge_claims", None)
+        if not mock_mode and (
+            global_stop is None
+            or not getattr(global_stop, "enabled", False)
+            or claims_service is None
+            or not getattr(claims_service, "enabled", False)
         ):
-            raise GlobalStopError(
-                "LIVE futures hedge requires initialized PostgreSQL PREPARED/SUBMITTING fencing"
+            fill_version = int(round(float(order_info.get("filled", 0.0) or 0.0) * 1e9))
+            claim_key = hedge_claim_key(
+                str(order_info.get("local_exchange", "")),
+                str(order_info.get("order_id", "")),
+                fill_version,
+            )
+            raise HedgeClaimUnavailableError(
+                "LIVE futures hedge requires an enabled PostgreSQL hedge-generation claim authority",
+                claim_key=claim_key,
             )
         # This flag means the venue create-order boundary was actually crossed,
         # not merely that an intent is being prepared. A PREPARED/STOP failure
@@ -416,7 +432,6 @@ class EntryHedgeMixin:
         # deterministic client order id. In mock mode (no PostgreSQL) the
         # claim is skipped and the legacy id path is used.
         claim = None
-        claims_service = getattr(self, "hedge_claims", None)
         if claims_service is not None and claims_service.enabled:
             _cfg0 = getattr(self, "config", None)
             _hed0 = getattr(_cfg0, "hedging", None)
