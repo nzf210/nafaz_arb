@@ -1916,3 +1916,28 @@ Regression coverage added for the correct persisted client ID, stale-generation 
 
 
 **R-63 verification:** source/test commit `70507e392129ffb6cad1f1afc7637c99d7a793b3` passed workflow [45957394891](https://github.com/nzf210/nafaz_arb/actions/runs/45957394891), 5/5 jobs. Python: 815 passed, 11 skipped, 11 warnings. Disposable PostgreSQL integration: 12 passed. Go tests/race/vet, Docker builds, and isolated migration-runner validation passed. This does not close actual VPS-topology fault injection or venue sandbox contract gates.
+
+
+## 2026-11-28 safety addendum — R-64 hedge-claim outage vs contention
+
+HedgeIntentClaimService.claim_generation now has a strict result contract:
+- a returned claim authorizes exactly one parent-Spot cumulative-fill generation;
+- None means PostgreSQL positively observed another unresolved claim for that parent order;
+- HedgeClaimUnavailableError means the database/pool/claim transaction could not prove ownership.
+
+This distinction is required because the two outcomes have different de-risk behavior. A peer-owned claim must not trigger rollback while that peer may have submitted the futures hedge. A database outage must not be reported as ordinary minimum-notional deferral: it is a pre-submit failure and the existing _execute_entry_hedge exception path invokes the spot SELL rollback. No futures venue call is made without a successful durable claim. If the database response is lost after a claim transaction may have committed, the claim can remain CLAIMED and block later generations; this is conservative and requires reconciliation, while the spot rollback is still attempted.
+
+Regression coverage verifies both branches: DB acquisition failure causes spot rollback with zero futures venue calls; peer contention causes neither duplicate futures submit nor a competing rollback.
+
+## 2026-11-28 safety addendum — R-65 de-risk serialization fallback
+
+derisk_fence is used by:
+- RollbackMixin._liquidate_unhedged_spot for spot market SELL;
+- ExitExecutionMixin for futures short close with reduceOnly=True;
+- ForceCloseLegMixin for futures reduceOnly close and spot market SELL.
+
+These are risk-reducing operations and must not be denied merely because the optional PostgreSQL advisory serialization authority cannot be established. Fence-entry GlobalStopError and asyncpg database/schema/grant errors now produce a critical audit log and yield without a shared lock. Entry creation remains fail-closed in order_submit_fence and startup/readiness gates.
+
+The fallback is narrowly scoped to the fence context manager's enter/exit. Exceptions inside the yielded venue call are preserved, so a timeout/lost ACK remains ambiguous and must be reconciled by exact client ID. Invalid de-risk client IDs remain rejected before the fallback. No order side, quantity, reduceOnly flag, or venue routing was changed.
+
+**Verification boundary:** regression tests were added in tests/test_hedge_claims.py, tests/test_hedge_pre_submit_recovery.py, and tests/test_derisk_fence.py. Current source/test head 35b06ee7c073c669341745e3e520bf938872dbfe is not yet CI-verified; the latest previously verified head remains a4a6af72 / workflow 45957800613 (5/5 jobs). Do not treat the earlier CI result as evidence for these changes.
